@@ -49,8 +49,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/groups"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/cipher/logmask"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
@@ -60,13 +62,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/reread"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/wake"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -232,28 +234,40 @@ func main() {
 	// The profiles, read here beside the port-0 refusal: before the database is migrated, before
 	// the socket is bound and before anything reaches for AWS, so a pod given a file it cannot
 	// read or cannot serve refuses to start instead of running without the profiles its operator
-	// believes are in force. The file is read once; a change to it rolls the pods. The airlock's
-	// rules are the profiles' proxy blocks, which the proxy port, every release and the judge
-	// read alike.
+	// believes are in force. The file is read once; a change to it rolls the pods. The file's own
+	// part of the airlock's rules is its kinds and its dpop blocks (FileRules); which secret is
+	// behind which kind is its proxy tag, which every policy load reads again, so the proxy port
+	// and every release read the rules from the live policy (requests.Machine.AirlockRules).
 	profiles, err := readProfiles(cfg.ProfilesFile, serviceNames(cfg))
 	fatal(err)
-	proxyRules := profiles.ProxyRules()
-	// The airlock runs only for a profile with a proxy block, so its settings are required only
-	// then, and refused the same way: a deployment whose profiles hold none, such as one that
-	// serves GitHub Apps through profiles alone, needs no proxy, no certificate authority and no
-	// cluster ranges, and binds no proxy port.
-	proxied := make([]string, len(proxyRules.Secrets))
-	for i, rule := range proxyRules.Secrets {
-		proxied[i] = rule.Name
+	fileRules := profiles.FileRules()
+	// Each kind's own placeholder prefix joins the log mask's before anything binds or serves: a
+	// placeholder opens the proxy port, so one of a kind's prefix, which a command can write into
+	// a path or a header the broker logs, is masked as the default prefix's is.
+	kindPrefixes := make([]string, 0, len(fileRules.Kinds))
+	for _, k := range fileRules.Kinds {
+		kindPrefixes = append(kindPrefixes, k.PlaceholderPrefix)
 	}
+	logmask.AddPrefixes(kindPrefixes)
+	// The airlock runs only for a file that declares a kind or holds a dpop block, so its
+	// settings are required only then, and refused the same way: a deployment whose file holds
+	// neither, such as one that serves GitHub Apps through profiles alone, needs no proxy, no
+	// certificate authority and no cluster ranges, and binds no proxy port.
+	proxied := config.AirlockSubjects(fileRules)
 	fatal(cfg.RequireAirlock(proxied))
-	// The proxy blocks of kind dpop, checked on every broker whatever capabilities it grants
+	// The dpop blocks, checked on every broker whatever capabilities it grants
 	// (config.ProxyMintedRules): every broker with an airlock port serves every minted grant of
 	// the database it shares, so a pod that grants none still sends a grant's token, and a proof
 	// of its own key, to every host a dpop block binds. Each binds one exact host, a private
-	// destination's, with an allow list, in Authorization alone, and no block of another kind
-	// binds that host; each destination needs a dpop block to bind its host.
-	fatal(config.ProxyMintedRules(proxyRules, cfg.ProxyPrivateUpstreams))
+	// destination's, with an allow list, in Authorization alone, and no kind binds that host;
+	// each destination needs a dpop block to bind its host.
+	fatal(config.ProxyMintedRules(fileRules, cfg.ProxyPrivateUpstreams))
+	// The approve capability, from the dpop block named oauth.ApproveName: a person's sign-in is
+	// traded for its placeholder, and the proxy mints a token for the grant on each pod at the
+	// grant's first allowed request there, and again there after the policy version moves, and
+	// spends it while the grant lives. A file with no such block serves none.
+	approve, approveServed := approveCapabilityOf(profiles, fileRules, cfg.ProxyPrivateUpstreams)
+	logApproveCapability(approve, approveServed)
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
 	// with, and the certificate itself, which every release of a name a proxy block holds back
@@ -387,8 +401,19 @@ func main() {
 	// address and one account there (projectAccessClients). config.Load holds the two settings to
 	// both or neither. Built before the loader, which serves a tagged secret, and each profile of
 	// one, only when this broker can ask whether its project is private
-	// (policy.Loader.ProjectChecks).
-	projectAccess, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	// (policy.Loader.ProjectChecks). projectAccess is projectClient, for the hold
+	// gate below, which reads its person answers (hold.Config.Access) from the cache the token
+	// exchange fills. The client keeps each person answer it fetches in one write: its member kind
+	// in person_member_kind, so that while Dispatch cannot be asked a person last answered a full
+	// member is served as one and everyone else is refused 503 MEMBER_KIND_UNCHECKABLE, as before,
+	// and its hold in person_standing, which the hold gate answers from; and it keeps each project
+	// answer in project_standing for the request machine's person rule (projectaccess.Client.Keep).
+	projectClient, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	var projectAccess projectaccess.Access
+	if projectClient != nil {
+		projectClient.Keep(st, slog.Default(), registry)
+		projectAccess = projectClient
+	}
 	// The broker's one reader of Google group members, which every decision site asks who is a
 	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
 	// its chain check and the approval page. A full policy load names its groups to it; it reads
@@ -465,9 +490,9 @@ func main() {
 		},
 		Listen: listenTCP(cfg.ListenAddr),
 		// The proxy port, bound by the same boot and only for a deployment that has an
-		// airlock: without a proxy block among its profiles no name is ever held back, so there
-		// is nothing for a proxy to carry and no port to bind.
-		ListenAirlock: airlockListen(cfg, proxyRules),
+		// airlock: with no kind and no dpop block in its profiles file no name is ever held
+		// back, so there is nothing for a proxy to carry and no port to bind.
+		ListenAirlock: airlockListen(cfg, proxied),
 		// The edge, bound by the same boot and only for a deployment that names one
 		// (BROKER_EDGE_LISTEN_ADDR): with none, the broker binds nothing for it.
 		ListenEdge: edgeListen(cfg),
@@ -531,15 +556,22 @@ func main() {
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, proxyRules, airlockCACertificate, secrets.NewRetry(registry), dispatch, groupReader)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, airlockCACertificate, secrets.NewRetry(registry), dispatch, groupReader)
 	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
-	wireJudge(ctx, cfg, proxyRules, reqMachine, dispatch)
+	wireJudge(ctx, cfg, reqMachine, dispatch)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
+	// The approve capability's grants, which the proxy reads by a presented placeholder's hash
+	// and mints a token of this pod's key for (requests.MintedKind).
+	var approveSettings *oauth.ApproveSettings
+	if approveServed {
+		reqMachine.Minted = append(reqMachine.Minted, approve.kind(oauthStore))
+		approveSettings = approve.settings(cfg.AirlockProxyURL, airlockCACertificate)
+	}
 	// The one table that says which principal holds a session name is written by both of the
 	// things that name a session: the token exchange, at every token it mints, and an
 	// enrollment, at every session it enrols (enroll.Service.Sessions). So a name a session
@@ -574,15 +606,17 @@ func main() {
 		// The key set discoverVerifiers read for Google, for the same reason the cluster's is
 		// shared: BROKER_GOOGLE_OIDC_AUDIENCE is what made it read one, so this is never nil.
 		exchangeConfig.Google = oauth.IssuerConfig{Issuer: cfg.GoogleOIDCIssuer, Audience: cfg.GoogleOIDCAudience, Keys: discovered.GoogleKeys}
-		exchangeConfig.MachineCredentials = machineCredentials(enr)
+		exchangeConfig.MachineCredentials = enr.MachineCredentials()
 	}
 	if cfg.SignInDeviceAudience != "" {
 		// A person signs in through Google, which is also the issuer of the machine's actor
 		// token, so BROKER_SIGNIN_DEVICE_AUDIENCE needs BROKER_GOOGLE_OIDC_AUDIENCE and the two
 		// share the key set read above. What a person may be is BROKER_SIGNIN_DOMAIN's to say,
-		// which the exchange's policy already holds.
+		// which the exchange's policy already holds. A trade ends a sign-in from before migration
+		// 0047, which records no account, only where BROKER_PROJECT_ACCESS_URL is set
+		// (store.SignInTrade.EndUnrecorded); unset, such a sign-in goes on as before.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
-		exchangeConfig.PersonSignIns = personSignIns()
+		exchangeConfig.PersonSignIns = enroll.PersonSignIns(endUnrecordedSignIns(projectAccess))
 		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
@@ -592,12 +626,22 @@ func main() {
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
+	// The hold of refused people (internal/cipher/hold) asks Dispatch through the exchange's own
+	// client, so the two share one cache of person answers and one call per person, and answers
+	// from what that client keeps in person_standing (projectClient.Keep, above) for when Dispatch
+	// cannot be asked. With no Dispatch to ask the broker builds no gate and holds nobody, as
+	// before the hold. An IAP deployment's broker sets BROKER_HOLD_REQUIRES_DEADLINE, so the gate
+	// serves a person only on an answer with a deadline (hold.Config.RequireDeadline).
+	var holdGate *hold.Gate
 	if projectAccess != nil {
 		exchangeConfig.Projects = projectAccess
+		holdGate = hold.New(hold.Config{Access: projectClient, Log: slog.Default(), Metrics: registry, RequireDeadline: cfg.HoldRequiresDeadline})
+		exchangeConfig.Hold = holdGate
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
-			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is")
+			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a restricted member's machine login as its person and held to no one project, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is")
+		slog.Info("hold of refused people", "state", "off", "reason", "BROKER_PROJECT_ACCESS_URL is not set")
 	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
@@ -641,6 +685,7 @@ func main() {
 		RefreshLifetime: credentialLifetime, VerificationURL: cfg.MachineLoginURL,
 		ProofSkew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		Exchange:  exchangeConfig,
+		Approve:   approveSettings,
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
@@ -653,6 +698,7 @@ func main() {
 		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		PendingTTL: machineLoginPendingTTL, CredentialLifetime: credentialLifetime,
 		OAuth: provider, Replay: enr.Replay,
+		ApprovalsWithoutGeneration: machine.NewApprovalsWithoutGeneration(registry),
 	}
 	// The approval page signs a person in with the broker's own client and returns them to
 	// BROKER_PUBLIC_URL as resolved above. A broker that signs nobody in (BROKER_SIGNIN=off)
@@ -662,7 +708,7 @@ func main() {
 	if !cfg.SignInOff {
 		page, err = approval.New(approval.Config{
 			SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
-			Store: st, Machine: reqMachine,
+			Store: st, Machine: reqMachine, Hold: holdGate,
 		})
 		fatal(err)
 	}
@@ -741,6 +787,7 @@ func main() {
 		GoogleExchangeAudience: googleExchangeAudience(cfg),
 		TrustedProxyHeader:     cfg.TrustedProxyHeader,
 		Approval:               page,
+		Hold:                   holdGate,
 		Draining:               draining.Load,
 		NotifyReread: func(ctx context.Context, name string, moved []string) {
 			// This pod reread the name itself and merged what it read (the reread route's
@@ -790,8 +837,8 @@ func main() {
 		slog.Info("broker: the proxy's DPoP key", "thumbprint", podThumbprint)
 		reqMachine.MintedTokens, reqMachine.MintedKey = provider, podThumbprint
 		proxyServer = proxy.New(proxy.Options{
-			Rules:   proxyRules,
 			Grants:  reqMachine,
+			Hold:    holdGate,
 			DPoPKey: podKey,
 			CA:      airlockCA,
 			Idle:    time.Duration(cfg.AirlockIdleSeconds) * time.Second,
@@ -993,15 +1040,16 @@ func secondSignalFindsServing(again <-chan os.Signal, serveStarted <-chan struct
 
 // requestDeadline bounds every request's own context, so no handler outlives its caller by more
 // than a Dispatch call's worth of time; writeTimeout sits past it so a handler that honours its
-// context always gets to write its answer.
-const requestDeadline = 45 * time.Second
+// context always gets to write its answer. It is wire's RequestDeadline, the figure a caller can
+// count on for how long a request it gave up on may still commit (wire.RequestWriteMargin).
+const requestDeadline = wire.RequestDeadline
 
 // writeTimeout is the http.Server's own WriteTimeout: the request deadline plus the fifteen
-// seconds a handler that honours its context needs to write the answer it already has. Go resets
-// the write deadline once a request's headers are read, so what it bounds is the exchange after
-// the headers and not the whole accepted connection, whose header read has its own
-// ReadHeaderTimeout above.
-const writeTimeout = requestDeadline + 15*time.Second
+// seconds a handler that honours its context needs to write the answer it already has
+// (wire.RequestWriteMargin). Go resets the write deadline once a request's headers are read, so
+// what it bounds is the exchange after the headers and not the whole accepted connection, whose
+// header read has its own ReadHeaderTimeout above.
+const writeTimeout = requestDeadline + wire.RequestWriteMargin
 
 // shutdownTimeout is how long the broker waits for its in-flight requests once the drain has run
 // out, and it is the write timeout rather than a figure of its own because that is the longest
@@ -1126,7 +1174,7 @@ func publicURLPortZero(publicURL string) bool {
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// settings, the airlock's ten and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
 // a local run, as the port-0 refusal above does and for the same reason: each of them points
 // the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
 // a check the airlock or the judge is made of, so one reaching a real deployment must fail
@@ -1144,6 +1192,8 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 	}{
 		{"BROKER_AIRLOCK_TEST_GITHUB_API_BASE", cfg.AirlockTestGitHubAPIBase != ""},
 		{"BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL", cfg.AirlockTestGoogleTokenURL != ""},
+		{"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL", cfg.AirlockTestAnthropicTokenURL != ""},
+		{"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL", cfg.AirlockTestIAMCredentialsURL != ""},
 		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", len(cfg.AirlockTestDialAllow) > 0},
 		{"BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE", cfg.AirlockTestUpstreamCAFile != ""},
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
@@ -1273,12 +1323,12 @@ func readProfiles(path string, services []string) (policy.Profiles, error) {
 }
 
 // airlockListen is brokerBoot.ListenAirlock in production: the bind on
-// BROKER_AIRLOCK_LISTEN_ADDR, and nil for a deployment whose profiles hold no proxy block, rules
-// being their proxy blocks (policy.Profiles.ProxyRules). Nil rather than a bind of the default
-// address, because a broker with no airlock holds back no name, so a proxy port there would be a
-// port that authenticates nobody and carries nothing.
-func airlockListen(cfg config.Config, rules proxyrules.Rules) func() (net.Listener, error) {
-	if len(rules.Secrets) == 0 {
+// BROKER_AIRLOCK_LISTEN_ADDR, and nil for a deployment whose profiles file declares no kind and
+// holds no dpop block, proxied naming those it does (config.AirlockSubjects). Nil rather than a
+// bind of the default address, because a broker with no airlock holds back no name, so a proxy
+// port there would be a port that authenticates nobody and carries nothing.
+func airlockListen(cfg config.Config, proxied []string) func() (net.Listener, error) {
+	if len(proxied) == 0 {
 		return nil
 	}
 	return listenTCP(cfg.AirlockListenAddr)
@@ -1360,19 +1410,19 @@ func airlockCACertificatePEM(ca *proxy.Authority) string {
 // names, for each service account BROKER_POD_OPERATORS maps, the person a pod enrolled under its
 // login acts for, and, for each google-service-account secret, the one account the deployment
 // binds it to and so the only one its release mints a token for. A grant lasts the lifetime its
-// request signed, or until its session ends. rules are the profiles' proxy blocks
-// (policy.Profiles.ProxyRules) and caCertificate the airlock's authority, both read at boot: a
-// name a proxy block holds is released as placeholders, and every such release carries the
-// proxy's URL and this certificate. retry is the one retry policy and process-wide retry budget
-// of the three minters that call an upstream over HTTP (main's is secrets.NewRetry on the
-// process's registry, which broker_mint_attempts_total is counted on), so a GitHub brownout that
-// spends the budget leaves a Google mint's failure unretried too: each holds the one pointer,
-// which typeMinters' copies keep. dispatch is the broker's one read of Dispatch (judgeDispatch),
-// nil where BROKER_JUDGE_DISPATCH_URL is unset; where it is set it also names a Legion pod's
-// issue's assignee, whose Inbox lists that pod's request for a shared secret. groupReader is the
-// broker's one reader of group members (newGroupReader), which the machine's decisions, revokes
-// and lists and its chain check ask who is a member of a group.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules proxyrules.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
+// request signed, or until its session ends. caCertificate is the airlock's authority, read at
+// boot: a name its secret's proxy tag puts behind a kind of the profiles file is released as
+// placeholders (the machine reads the airlock's rules from the live policy), and every such
+// release carries the proxy's URL and this certificate. retry is the one retry policy and
+// process-wide retry budget of the three minters that call an upstream over HTTP (main's is
+// secrets.NewRetry on the process's registry, which broker_mint_attempts_total is counted on), so
+// a GitHub brownout that spends the budget leaves a Google mint's failure unretried too: each
+// holds the one pointer, which typeMinters' copies keep. dispatch is the broker's one read of
+// Dispatch (judgeDispatch), nil where BROKER_JUDGE_DISPATCH_URL is unset; where it is set it also
+// names a Legion pod's issue's assignee, whose Inbox lists that pod's request for a shared secret.
+// groupReader is the broker's one reader of group members (newGroupReader), which the machine's
+// decisions, revokes and lists and its chain check ask who is a member of a group.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
@@ -1381,9 +1431,9 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		VMServicesByAccount: cfg.VMServicesByAccount,
 		PodOperators:        cfg.PodOperators,
 		VMPersonsByAccount:  vmPersonsByAccount(cfg.ExchangeGoogleAccounts),
-		// The two types whose minter calls an endpoint of its own carry the local stack's
+		// The three types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
-		// zero mints against GitHub and Google themselves.
+		// zero mints against GitHub, Google and Anthropic themselves.
 		Minters: typeMinters(
 			githubApp,
 			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
@@ -1400,10 +1450,12 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// The anthropic-federation minter takes the same binding: the broker may mint the
 			// identity token of every bound account, so the binding chooses the account. Each
 			// exchange presents an identity token read for it alone (no cache), which it sends
-			// once, and counts that one attempt on the same Retry.
+			// once, and counts that one attempt on the same Retry. The local stack names its
+			// stand-ins of the exchange and of IAM's generateIdToken; empty, each is the real one.
 			&secrets.AnthropicFederation{
 				Accounts:      cfg.ServiceAccountSecrets,
-				IdentityToken: (&ciphertoken.GoogleAccounts{Audience: secrets.AnthropicAudience}).Read,
+				IdentityToken: (&ciphertoken.GoogleAccounts{Audience: secrets.AnthropicAudience, IAMCredentialsURL: cfg.AirlockTestIAMCredentialsURL}).Read,
+				TokenURL:      cfg.AirlockTestAnthropicTokenURL,
 				Retry:         retry,
 			}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
@@ -1411,7 +1463,6 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// endpoint and retry. A github-installations token has no give-back: it is the token the
 		// secret stores, which every other release of it hands over too.
 		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
-		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,
 		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
@@ -1432,7 +1483,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		GitHubAppFieldSecrets: cfg.GitHubAppFieldSecrets,
 		Groups:                groupReader,
 	}
-	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
+	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Policy)
 	m.Chain.Groups = groupReader
 	if dispatch != nil {
 		m.Assignees = dispatch
@@ -1451,13 +1502,23 @@ func projectAccessHTTPClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
+// endUnrecordedSignIns reports whether a trade ends the sessions of a sign-in from before
+// migration 0047 that recorded no account. The broker does that only where it can ask Dispatch:
+// projectAccess is nil exactly when BROKER_PROJECT_ACCESS_URL is unset.
+func endUnrecordedSignIns(projectAccess projectaccess.Access) bool {
+	return projectAccess != nil
+}
+
 // projectAccessClients is the broker's two clients of the Dispatch at baseURL, both reading the
 // broker's own projected ServiceAccount token at tokenFile, read at call time: its project access,
 // over projectAccessHTTPClient, and the repository answer GET /v1/project-repositories relays. Both
-// are nil, as interfaces, when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL
-// holds none. main wires the broker with these, and the test of the client's connections reads its
-// project access through this same call, so a client built here on another transport fails it.
-func projectAccessClients(baseURL, tokenFile string) (projectaccess.Access, api.ProjectRepositoriesReader) {
+// are nil when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL holds none. The
+// project access client is the concrete client, which main keeps answers on (Client.Keep) and
+// builds the hold gate on; main puts it in an Access field only where it is not nil, since a nil
+// *Client in an interface is a non-nil Access. main wires the broker with these, and the test of the
+// client's connections reads its project access through this same call, so a client built here on
+// another transport fails it.
+func projectAccessClients(baseURL, tokenFile string) (*projectaccess.Client, api.ProjectRepositoriesReader) {
 	if baseURL == "" {
 		return nil, nil
 	}
@@ -1594,7 +1655,7 @@ const judgeDispatchTimeout = 10 * time.Second
 // the right way round for a judge where it is not for the policy reload — a half-finished reload
 // costs a pod stale tags for its drain, while a half-finished run would approve a credential as
 // the pod goes away.
-func wireJudge(ctx context.Context, cfg config.Config, rules proxyrules.Rules, m *requests.Machine, dispatch *judge.Dispatch) {
+func wireJudge(ctx context.Context, cfg config.Config, m *requests.Machine, dispatch *judge.Dispatch) {
 	if cfg.JudgeModelURL == "" {
 		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,
 		// and its line says what such a broker does with a request a person would decide.
@@ -1608,7 +1669,7 @@ func wireJudge(ctx context.Context, cfg config.Config, rules proxyrules.Rules, m
 	account := ciphertoken.NewGoogleAccount(cfg.JudgeModelAudience)
 	account.ServiceAccount = cfg.JudgeModelAccount
 	runner := judge.New(ctx, judge.Options{
-		Rules:      rules,
+		Policy:     m.Policy,
 		Dispatch:   *dispatch,
 		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, account),
 		Requests:   m,
@@ -1728,67 +1789,6 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 	// metadata server already hands it.
 	found.GoogleIdentities = oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.GoogleOIDCAudience, googleKeys)
 	return found, nil
-}
-
-// machineCredentials is oauth.ExchangeConfig.MachineCredentials over the enrollment service: the
-// launcher credential a trade mints or moves, written in the exchange's own transaction
-// (enroll.Service.IssueTokenLoginTx), so the credential and the access token that names it land
-// together. Both trades that mint one come through here — a machine's own, which carries its
-// fleet's service and no person, and a person's sign-in on such a machine, which carries that
-// person as its operator — so there is one way a credential is minted and not two. A key
-// another live credential holds is oauth.ErrMachineKeyTaken, and a key a live read token is bound
-// to (enroll.ErrKeyBindsReadToken) is oauth.ErrMachineKeyBindsReadToken; the exchange answers
-// each invalid_grant with a hint of its own.
-func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
-	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return "", errors.New("broker: a machine's launcher credential is minted in the exchange's transaction")
-		}
-		id, err := enr.IssueTokenLoginTx(ctx, tx, enroll.TokenLogin{
-			Subject:      cred.Subject,
-			Service:      cred.Service,
-			Host:         cred.Host,
-			Operator:     cred.Operator,
-			TokenExpires: cred.Expires,
-			Thumbprint:   cred.Thumbprint,
-			JWK:          cred.JWK,
-			Expires:      cred.Expires,
-		})
-		if enroll.KeyHeld(err) {
-			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
-		}
-		if errors.Is(err, enroll.ErrKeyBindsReadToken) {
-			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyBindsReadToken, err)
-		}
-		if err != nil {
-			return "", err
-		}
-		return id.String(), nil
-	}
-}
-
-// personSignIns is oauth.ExchangeConfig.PersonSignIns over the broker's store: the sign-in a
-// person's trade belongs to, written in the exchange's own transaction
-// (store.RecordPersonSignIn), so the sign-in and the access token minted under it land
-// together. A box key that person has revoked is store.ErrSignInRevoked, and one whose sign-in
-// was made on another machine is store.ErrSignInMachineChanged; the exchange answers both
-// invalid_grant naming the sign-in command.
-func personSignIns() oauth.PersonSignIns {
-	return func(ctx context.Context, in oauth.PersonSignIn) error {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return errors.New("broker: a person's sign-in is recorded in the exchange's transaction")
-		}
-		err := store.RecordPersonSignIn(ctx, tx, in.Person, in.Thumbprint, in.Machine)
-		switch {
-		case errors.Is(err, store.ErrSignInRevoked):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)
-		case errors.Is(err, store.ErrSignInMachineChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInMachineChanged, err)
-		}
-		return err
-	}
 }
 
 // issuerKeys reads issuer's published signing keys: the source a token's own key is resolved
@@ -1946,7 +1946,7 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		return runProfilesCheck(args[2:], stdout, stderr)
 	case removedAirlockCheckCommand:
-		fmt.Fprintf(stderr, "broker: %s is removed: the airlock's rules are the proxy blocks of the profiles file now; check that file with broker %s\n",
+		fmt.Fprintf(stderr, "broker: %s is removed: the airlock's rules are the kinds of the profiles file now; check that file with broker %s\n",
 			removedAirlockCheckCommand, profilesCheckForm)
 		return 2
 	}

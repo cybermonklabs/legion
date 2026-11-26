@@ -76,6 +76,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_JUDGE_DISPATCH_TOKEN_FILE":     givesNone("a file path"),
 	"BROKER_PROJECT_ACCESS_URL":            givesNone("a Dispatch's URL"),
 	"BROKER_PROJECT_ACCESS_TOKEN_FILE":     givesNone("a file path"),
+	"BROKER_HOLD_REQUIRES_DEADLINE":        givesNone("an on/off switch: it decides which of Dispatch's answers the hold gate serves, and names no account"),
 	"BROKER_AZURE_TOKEN_FILE":              givesNone("a file path"),
 	"BROKER_AZURE_LOGIN_SECRET":            givesNone("a secret's name"),
 	"BROKER_K8S_OIDC_ISSUER":               givesNone("an issuer"),
@@ -84,6 +85,9 @@ var settingRoles = map[string]settingRole{
 	"BROKER_GOOGLE_OIDC_AUDIENCE":          givesNone("an audience"),
 	"BROKER_ENVOY_URL":                     givesNone("an Envoy listener's URL"),
 	"BROKER_TRUSTED_PROXY_HEADER":          givesNone("a header name"),
+
+	"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL": givesNone("a test-only URL"),
+	"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL": givesNone("a test-only URL"),
 
 	"BROKER_AIRLOCK_TEST_DIAL_ALLOW":      givesNone("test-only addresses"),
 	"BROKER_AIRLOCK_TEST_RESOLVE":         givesNone("test-only addresses"),

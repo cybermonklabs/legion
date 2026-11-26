@@ -1,16 +1,16 @@
-# go-extra-header: the swap also writes into a header the entry does not name, here
+# go-extra-header: the swap also writes into a header the kind does not name, here
 # authorization. Caught by the comparison fuzz test: the model's rewrite leaves that
 # header as it came in. Applied with patch -p1 from a copy of the repository.
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -309,7 +309,8 @@
- 	if sr == nil {
+@@ -738,7 +738,8 @@
+ 	if k == nil {
  		return nil
  	}
--	names := sr.HeaderNames()
-+	// MUTANT: authorization is swapped too, even when the entry does not name it.
-+	names := append([]string{"authorization"}, sr.HeaderNames()...)
+-	names := k.HeaderNames()
++	// MUTANT: authorization is swapped too, even when the kind does not name it.
++	names := append([]string{"authorization"}, k.HeaderNames()...)
  	out := *r
- 	out.Headers = make([][2]string, len(r.Headers))
- 	for i, h := range r.Headers {
+ 	out.Headers = make([][2]string, 0, len(r.Headers))
+ 	for _, h := range r.Headers {

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
@@ -297,6 +298,110 @@ func TestAPauseHoldWaitsForTheTurnsResultAndKeepsATaskAProviderRefused(t *testin
 	}
 	h.advance(promptRetryDelay(1))
 	h.wantPrompts(1)
+}
+
+// A pause's hold over a claim whose turn ends before the answer to its prompt's send waits for
+// that answer as it waits for the result of an acknowledged prompt (stopWaitsForResult,
+// resultPending's send window). The send's outcome reaches the machine on the send's own
+// goroutine and the turn's frames on the stream's queue, so the turn's end can be decided first.
+// Stopped at that end, the claim retired the task as a finished turn's, and the acknowledgement
+// and the result behind it were fenced out: a provider's refusal of the task was lost with them,
+// as in the row above. The provider's refusal as the result then runs the stop, in either order
+// with the acknowledgement. A send then lost or refused brings no result and runs no stop: the
+// claim stays idle under the hold with the task kept, unconfirmed, and nothing is sent, until the
+// pause's stop asked again stops it with a launch owed for the task (suspend). That keeps a task
+// main retired at the turn's end.
+func TestAPauseHoldWaitsForTheAnswerOfASendWhoseTurnAlreadyEnded(t *testing.T) {
+	const providerError = "overloaded_error"
+	// stopAskedAgain has the send's outcome, which the gate releases, bring no result, and then the
+	// pause's stop asked again reach the claim the hold has kept idle with its task.
+	stopAskedAgain := func(t *testing.T, h *harness, gated *gatedConn, task string) {
+		t.Helper()
+		gated.release <- struct{}{}
+		h.m.Wait()
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 0)
+		if pause, held := h.heldPause(); !held || pause != 7 {
+			t.Fatalf("after the send's outcome the claim holds pause %d (held %v), want pause 7's hold kept", pause, held)
+		}
+		if p := h.pending(); p.ID != task || !p.ConfirmedAt.IsZero() {
+			t.Fatalf("after the send's outcome the claim holds %+v, want %s kept, unconfirmed: its prompt ran no turn the daemon knows of", p, task)
+		}
+		select {
+		case again := <-gated.entered:
+			t.Fatalf("the task was sent again as %s while the pause's hold stands", again)
+		default:
+		}
+		if err := h.m.Handle(h.ctx, pauseStop(h.token, 7)); err != nil {
+			t.Fatalf("the pause's stop asked again of the idle claim: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		// answer ends the send and the prompt's work, after the turn's end and while the hold stands.
+		answer func(t *testing.T, h *harness, gated *gatedConn, task string)
+	}{
+		{name: "acknowledged, then the provider's refusal as the result", answer: func(t *testing.T, h *harness, gated *gatedConn, task string) {
+			gated.release <- struct{}{}
+			h.m.Wait()
+			h.wantState(StateIdle)
+			h.wantCalls("Suspend", 0)
+			if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true, Error: providerError, HTTPStatus: 529}); err != nil {
+				t.Fatalf("the prompt's result: %v", err)
+			}
+		}},
+		{name: "the provider's refusal as the result, then the acknowledgement", answer: func(t *testing.T, h *harness, gated *gatedConn, task string) {
+			if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true, Error: providerError, HTTPStatus: 529}); err != nil {
+				t.Fatalf("the prompt's result: %v", err)
+			}
+			gated.release <- struct{}{}
+			h.m.Wait()
+		}},
+		{name: "the send lost, then the pause's stop asked again", answer: func(t *testing.T, h *harness, gated *gatedConn, task string) {
+			gated.FailPrompt(errBoom)
+			stopAskedAgain(t, h, gated, task)
+		}},
+		{name: "the send refused, then the pause's stop asked again", answer: func(t *testing.T, h *harness, gated *gatedConn, task string) {
+			gated.RefusePrompt("the model provider refused the request")
+			stopAskedAgain(t, h, gated, task)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, flag, stops := pauseHarness(t, queuedClaim())
+			h.reach(StateReady)
+			gated := newGatedConn()
+			h.conns.Register(h.token, gated)
+			if err := h.m.Handle(h.ctx, RequestDeliver{Claim: h.token, Task: providerErrorTaskText}); err != nil {
+				t.Fatal(err)
+			}
+			task := testwait.Receive(t, "the send", gated.entered)
+			if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: h.token}); err != nil {
+				t.Fatal(err)
+			}
+			flag.set(7)
+			if err := h.m.Handle(h.ctx, pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
+				t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
+			}
+
+			if err := h.m.Handle(h.ctx, StreamTurnEnd{Claim: h.token}); err != nil {
+				t.Fatalf("the turn's end: %v", err)
+			}
+			stops.wantStops(t)
+			h.wantCalls("Suspend", 0)
+			if p := h.pending(); p.ID != task || p.ConfirmedAt.IsZero() {
+				t.Fatalf("the claim holds %+v after the turn's end, want the task its turn confirmed, kept for the send's answer", p)
+			}
+
+			tc.answer(t, h, gated, task)
+
+			h.wantState(StateSuspended)
+			h.wantCalls("Suspend", 1)
+			stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
+			if stored, held := h.store.delivery(h.token); !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
+				t.Fatalf("the stored task is %+v (held %v), want the task back unconfirmed", stored, held)
+			}
+		})
+	}
 }
 
 // A pause's stop of a claim whose relaunch waits in the pacing over the process that died is
@@ -1539,12 +1644,12 @@ func TestAWaitThatEndsWithNoLetOutIsToldAtItsEnd(t *testing.T) {
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
 	want(t, 1)
 
-	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session})
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session, By: SuspendedByOperator})
 	h.wantStarts(secondToken, 0)
 	want(t, 1)
 
 	h.clock.Advance(wakePart)
-	h.mustPostTo(second, RequestResume{Claim: secondToken})
+	h.mustPostTo(second, RequestResume{Claim: secondToken, By: SuspendedByOperator})
 	h.wantStarts(secondToken, 1)
 	want(t, 1, h.clock.Now())
 }
