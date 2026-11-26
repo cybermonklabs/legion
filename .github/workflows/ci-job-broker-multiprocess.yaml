@@ -63,6 +63,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The suite's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -71,8 +73,14 @@ jobs:
       - name: Two-process tests of the secrets broker
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/cipherd)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
+          ../../.github/scripts/go-test.sh go test -tags multiprocess -count=1 -timeout 20m -run "$pattern" ./cmd/cipherd
         working-directory: packages/envoy
+
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: broker-multiprocess
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

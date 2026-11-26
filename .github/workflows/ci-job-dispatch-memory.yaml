@@ -63,6 +63,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The suite's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -73,8 +75,14 @@ jobs:
       - name: Memory tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          ../../.github/scripts/go-test.sh go test -tags memory -count=1 -timeout 60m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: dispatch-memory
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -163,6 +163,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The suite's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -248,7 +250,7 @@ jobs:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          ../../.github/scripts/go-test.sh go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
       # dispatch-browser.yaml's shard job's step of this name, for the reason
       # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
@@ -327,6 +329,12 @@ jobs:
         with:
           name: dispatch-two-builds-browser-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: dispatch-two-builds
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -437,6 +445,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The suite's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -467,8 +477,14 @@ jobs:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          ../../.github/scripts/go-test.sh go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: dispatch-two-builds-same
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

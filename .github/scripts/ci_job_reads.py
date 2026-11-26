@@ -670,6 +670,13 @@ def go_notices_runs():
     return out
 
 
+def under_runner(workdir, command):
+    """`command`, a go test, as a step in `workdir` runs it under .github/scripts/go-test.sh: the
+    script's path from that directory, then the command's own words."""
+    up = "/".join([".."] * len(Path(workdir).parts))
+    return f"{up}/.github/scripts/go-test.sh {command}"
+
+
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
@@ -722,11 +729,11 @@ done"""
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
-go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch"""
+{under_runner(ENVOY, 'go test -tags memory -count=1 -timeout 60m -run "$pattern" ./cmd/dispatch')}"""
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"
 DISPATCH_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/dispatch)
-go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch"""
+{under_runner(ENVOY, 'go test -tags multiprocess -count=1 -timeout 20m -run "$pattern" ./cmd/dispatch')}"""
 # The two-build job's Go step, which runs only what the twobuild tag adds, as the two above do:
 # envoy-go's unit step runs ./cmd/dispatch's untagged tests, so a run of them here would be a
 # second one. The step is a gate of its own (dispatch_two_builds_go), so the TAG_RUNS pairing
@@ -735,7 +742,7 @@ TWO_BUILDS_JOB = "dispatch-two-builds"
 TWO_BUILDS_STEP = "Two-build tests of the Dispatch server"
 TWO_BUILDS_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} twobuild ./cmd/dispatch)
-go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch"""
+{under_runner(ENVOY, 'go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch')}"""
 # The same suite in the same file's dispatch-two-builds-same job, with this tree's own build as
 # the previous build, which a merge-group run alone runs (that job's comment says why). Its gates
 # and its TAG_RUNS entry are the Go step's.
@@ -744,11 +751,11 @@ TWO_BUILDS_SAME_STEP = "Two-build tests of the Dispatch server against its own b
 BROKER_MP_STEP = "Two-process tests of the secrets broker"
 BROKER_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/cipherd)
-go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd"""
+{under_runner(ENVOY, 'go test -tags multiprocess -count=1 -timeout 20m -run "$pattern" ./cmd/cipherd')}"""
 SOAK_STEP = "Server-change soak of the listener"
 SOAK_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} serverchange ./cmd/listener)
-go test -tags serverchange -count=1 -timeout 15m -v -run "$pattern" ./cmd/listener"""
+{under_runner(ENVOY, 'go test -tags serverchange -count=1 -timeout 15m -run "$pattern" ./cmd/listener')}"""
 # The airlock-lean job's two runs of the model comparison. `-run`, `-fuzz` and `-fuzztime` are no
 # flags the simple form reduces, so each step is pinned whole; they move no closure, since both
 # runs compile the proxyrules package's tests, whichever cases they then drive.
@@ -756,9 +763,9 @@ AIRLOCK_JOB = "airlock-lean"
 AIRLOCK_LEAN = f"{ENVOY}/internal/cipher/proxyrules/lean"
 AIRLOCK_PKGS = ["./internal/cipher/proxyrules/"]
 AIRLOCK_SEED_STEP = "Compare the Go airlock with the model over the seed corpus"
-AIRLOCK_SEED_SCRIPT = "go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/"
+AIRLOCK_SEED_SCRIPT = under_runner(ENVOY, "go test -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/")
 AIRLOCK_FUZZ_STEP = "Fuzz the Go airlock against the model"
-AIRLOCK_FUZZ_SCRIPT = "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/"
+AIRLOCK_FUZZ_SCRIPT = under_runner(ENVOY, "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/")
 AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
@@ -935,7 +942,8 @@ def two_builds_go_reads():
          "cmd/dispatch/twobuild_harness_test.go checks, and "
          f"{at(TWO_BUILDS_SAME_JOB, 'Build this tree as the previous build', job_file(TWO_BUILDS_JOB))} "
          "writes the one its own Go step runs against"),
-    ) + ceiling_reads(TWO_BUILDS_JOB) + service_settings_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
+    ) + ceiling_reads(TWO_BUILDS_JOB) + service_settings_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB) \
+        + go_test_runner(TWO_BUILDS_JOB) + go_test_runner(TWO_BUILDS_SAME_JOB, job_file(TWO_BUILDS_JOB))
 
 
 # ---------------------------------------------------------------- reading a Go file as text
@@ -1212,7 +1220,7 @@ PLUGIN_PACK_PACKAGE = "internal/daemon"
 PLUGIN_PACK_JOB = "plugin-pack"
 PLUGIN_PACK_STEP = "Pack the plugin releases and run the prompt probes on the real Oh My Pi"
 PLUGIN_PACK_PATTERN = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS))})$'"
-PLUGIN_PACK_SCRIPT = f"go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/"
+PLUGIN_PACK_SCRIPT = under_runner(DAEMON, f"go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/")
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: a package moved out of the race step while the
 # pack tests stayed in it would run them twice and read the lockfile in both jobs.
@@ -1331,7 +1339,7 @@ SUPERVISE_TABLE_PACKAGE = "internal/supervise"
 SUPERVISE_TABLE_SOURCE = f"{DAEMON}/{SUPERVISE_TABLE_PACKAGE}"
 SUPERVISE_TABLE_STEP = "Test the supervise table's two pure pins (no database)"
 SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
-SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
+SUPERVISE_TABLE_SCRIPT = under_runner(DAEMON, f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/")
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: the plain legs' step skips them, and this package
 # moved out of the plain legs, into a race leg or the text checks, while these tests stayed here
@@ -1727,7 +1735,7 @@ FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
 WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
 # The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
 # they move no closure: the whole pmdoc package compiles, whichever test the run selects.
-FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
+FIXTURE_SCRIPT = under_runner(ENVOY, f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check")
 # pmdoc's readers on tables in a build made without inlining (-gcflags=all=-l), envoy-go-build's
 # step of its own: goldmark builds pmdoc's readers through an interface, which Go's initialization
 # order does not look through, so a reader that copies a variable of pmdoc can be handed nil in
@@ -1735,8 +1743,8 @@ FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PA
 # through the display reader. Its `-run` and `-gcflags` are not flags the simple form reduces, and
 # they move no closure: the whole pmdoc package compiles, whichever test the run selects.
 NO_INLINE_TABLE_STEP = "Test pmdoc's tables in a build without inlining"
-NO_INLINE_TABLE_SCRIPT = (f"go test -count=1 -gcflags=all=-l "
-                          f"-run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./{WEB_FIXTURE_PACKAGE}/")
+NO_INLINE_TABLE_SCRIPT = under_runner(ENVOY, f"go test -count=1 -gcflags=all=-l "
+                                      f"-run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./{WEB_FIXTURE_PACKAGE}/")
 # The skip belongs to the step that would otherwise run these tests, so the two are held together
 # here rather than by a reader noticing: the unit legs run the packages go-legs.yaml lists under
 # envoy-go, and pmdoc taken out of them - moved into the race lane, say - while the skip stayed
@@ -2310,9 +2318,9 @@ TEXT_CHECK_MODULES = (ENVOY, INFRA, DAEMON)
 TEXT_CHECK_STEPS = {module: f"Check the text {module} pins" for module in TEXT_CHECK_MODULES}
 GUARD_PACKAGE = "./internal/dispatch/api"
 GUARD_STEP = "Test the Dispatch API's source guards (no database)"
-GUARD_SCRIPT = ("go test -count=1 -run "
-                f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
-                f"{GUARD_PACKAGE}")
+GUARD_SCRIPT = under_runner(ENVOY, "go test -count=1 -run "
+                           f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
+                           f"{GUARD_PACKAGE}")
 
 # The claim model's job: the mention sender's claim model and the test of the rules it restates,
 # by name (CLAIM_MODEL_TESTS), the same declaration that leaves exactly those two out of envoy-go's
@@ -2325,9 +2333,9 @@ CLAIM_MODEL_STEP = "Search every order of the mention sender's claims"
 # Twice the 19 min 18 s the step took on an ubuntu-24.04 runner at three periods; the job's
 # timeout-minutes is this and ten.
 CLAIM_MODEL_TIMEOUT = "40m"
-CLAIM_MODEL_SCRIPT = (f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -v -run "
-                      f"'^({'|'.join(sorted(name for names in CLAIM_MODEL_TESTS.values() for name in names))})$' "
-                      f"{CLAIM_MODEL_PACKAGE}")
+CLAIM_MODEL_SCRIPT = under_runner(ENVOY, f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -run "
+                                  f"'^({'|'.join(sorted(name for names in CLAIM_MODEL_TESTS.values() for name in names))})$' "
+                                  f"{CLAIM_MODEL_PACKAGE}")
 
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"

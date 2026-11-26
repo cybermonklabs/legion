@@ -50,6 +50,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The two go tests below run under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # No Go cache family: the proxyrules package imports the standard library and internal/fold,
       # which imports nothing, so this job downloads no module and compiles no third-party code,
       # as envoy-go-race-api does.
@@ -83,11 +85,16 @@ jobs:
       # a host-less entry, which both validations refuse and a proxy request for which both
       # refuse as a secret not behind the airlock.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
+        run: ../../.github/scripts/go-test.sh go test -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
+        run: ../../.github/scripts/go-test.sh go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
         working-directory: packages/envoy
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: airlock-lean
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

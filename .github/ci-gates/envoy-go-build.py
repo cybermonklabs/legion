@@ -114,4 +114,4 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
              "spec-check guard reads every file under it")
       for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
 ) + setup_go("envoy-go-build", f"{ENVOY}/go.mod") + bun_job("envoy-go-build")
-  + darwin_vet_reads("envoy-go-build", ENVOY_DARWIN_VET, ENVOY))
+  + darwin_vet_reads("envoy-go-build", ENVOY_DARWIN_VET, ENVOY) + go_test_runner("envoy-go-build"))

@@ -17,7 +17,7 @@ GATE = gate("airlock_lean", AIRLOCK_JOB, exact=[
     (f"{AIRLOCK_LEAN}/lean-toolchain", f"{at(AIRLOCK_JOB, 'elan-cache')}: the elan cache's key is hashFiles of it"),
     (AIRLOCK_AXIOMS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} is one line running it, and check k15 of "
                             f"{ENVOY}/scripts/airlock-check.sh runs the same script, so the two cannot drift"),
-) + setup_go(AIRLOCK_JOB, f"{ENVOY}/go.mod"))
+) + setup_go(AIRLOCK_JOB, f"{ENVOY}/go.mod") + go_test_runner(AIRLOCK_JOB))
 GATE = with_reads(GATE, [
     Read('packages/envoy/internal/cipher/proxyrules/**', "filter airlock_lean held packages/envoy/internal/cipher/proxyrules/** by hand before the filters were computed: it selected 3 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])

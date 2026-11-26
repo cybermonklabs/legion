@@ -23,4 +23,4 @@ GATE = gate("text_checks", TEXT_CHECK_JOB, runs=[
         (DAEMON, [f"./{SUPERVISE_TABLE_PACKAGE}/"],
          f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
     ]),
-], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod"))
+], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + go_test_runner(TEXT_CHECK_JOB))
