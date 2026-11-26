@@ -383,6 +383,42 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 		}
 	})
 
+	// (7) Case (2) on a kept volume that the issue's next pod mounts. R7 makes no exception for
+	// such a disk: a round over a drift the pod's roles can keep working under replaces nothing
+	// there either, a turn that runs at the bound included, although a replacement would leave the
+	// files on the volume, since it stops that turn and its subagents. The read finds the unpushed
+	// commit, nothing is replaced, the turn runs on, and the implementer, the open phase's worker,
+	// is told once.
+	t.Run("a kept volume past the bound over a turn", func(t *testing.T) {
+		t.Parallel()
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+		rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
+		rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+		rig.drifts(podUpdateDrift)
+		rig.tick()
+		rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+		rig.awaitAsked(claim.RoleTester, podUpdateRound)
+		rig.signal(claim.RoleTester, "a1b2c3d")
+		rig.envoyTurn(claim.RoleImplementer)
+		rig.clockAt(podUpdateBound)
+
+		rig.roundEndsKept("at the bound over a turn, on a kept volume whose workspace holds an unpushed commit", claim.RoleImplementer, claim.RoleTester)
+		if c := rig.claimOf(claim.RoleImplementer); c.State != supervise.StateWorking || podOf(c.Locator) != podUpdatePod {
+			t.Fatalf("the implementer is %s in pod %q, want its turn running on in pod %s", c.State, podOf(c.Locator), podUpdatePod)
+		}
+		if reason, pod := rig.keptReason(); reason != pods.DeclineUnpushedWork || pod != podUpdatePod {
+			t.Fatalf("the decline row reads %q of pod %q, want unpushed_work of the round's pod %s", reason, pod, podUpdatePod)
+		}
+		told := rig.roleMessagesTo(claim.RoleImplementer)
+		if len(told) != 1 || !strings.Contains(told[0], passedOverCommit) {
+			t.Fatalf("the implementer was told %q, want one message naming the commit %s", told, passedOverCommit)
+		}
+		rig.noRoundOver("while the turn runs on over the kept volume", claim.RoleImplementer, claim.RoleTester)
+		if taken := rig.architectNotices(record.WorkspaceTakenNotice); len(taken) != 0 {
+			t.Fatalf("the architect was told %+v, want no workspace-taken notice: nothing was replaced", taken)
+		}
+	})
+
 	// The controls: each round over a workspace that holds nothing origin lacks replaces the pod at
 	// its sweep.
 	t.Run("control through a process", func(t *testing.T) {
