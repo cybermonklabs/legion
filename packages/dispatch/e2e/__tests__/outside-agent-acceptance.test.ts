@@ -674,9 +674,10 @@ describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
     // `curl`'s own 1 s (exit 28), and the squatter never answered. The kernel takes each
     // connection into this listener's queue while the wait blocks this file's event loop, so
     // every read connects and then hears nothing until its 1 s passes. A wall-time cap of 15 s
-    // read the machine: in a builds pod with ten fork-exec loops beside the whole harness, a read
-    // that began before the deadline ended late, as its `curl` started late, and the row failed at
-    // 16.8 s (dispatch://INFRA-3904).
+    // read the machine, since each look and each read of the wait is a fork, which load slows: in
+    // builds pods with ten fork-exec loops beside the whole harness, at main `b47ad6c75c`, the row
+    // failed at 16.0 s and 16.5 s in 2 of 458 runs, and at 16.8 s in another such run
+    // (dispatch://INFRA-3904).
     test("the squat's wait is held by the clock: on a port that takes connections and never answers, each read ends at its own 1 s and none begins past the wait's deadline", () => {
       const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
       let trial: SquatTrial;
