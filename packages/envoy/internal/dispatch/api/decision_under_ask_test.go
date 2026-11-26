@@ -29,18 +29,23 @@ import (
 // the spec stands under that ask's node, and one with no from_ask under the issue. A decision a
 // PATCH moved holds the placement stored, and the text write that gives it a from_ask moves it
 // under that ask with the placement text. A text write that takes a from_ask out puts the decision
-// back under the issue, where its text puts it, and one that names another ask moves it there. The
+// back under the issue, where its text puts it, and one that names another ask moves it there. A
+// decision of a second document, which plays no role and so is a room of its own, settles the ask
+// of the spec's ask block, which the spec's room keys, and stands under that ask's node too. The
 // census kind block then counts no difference over the store, and a PATCH of a decision that holds
 // a from_ask, with a current If-Match, is 400 NODE_NOT_MOVABLE, naming the decision and its ask,
 // and writes nothing; once the caller may not read that ask, the same refusal names the decision
 // alone.
 //
-// Its three controls, each run alone: dropping the from_ask branch of planBlockParents
+// Its four controls, each run alone: dropping the from_ask branch of planBlockParents
 // (refs/block_nodes.go) prints "decision <id> stands under issue <key>, want ask <uuid>"; dropping
 // the census's reading of a decision's parent through its from_ask (settledAsk in
 // graphcensus/census_blocks.go) prints "census kind block counts <n> differences, want 0" with the
-// address of each decision under an ask; dropping the PATCH's refusal of a decision that holds a
-// from_ask prints "PATCH of decision <id> answered 200, want 400 NODE_NOT_MOVABLE".
+// address of each decision under an ask; reading the ask's block id there for a decision of
+// another document than the one holding the ask's block, which the node side reads as the
+// decision's own parent (graphcensus' askBlockID), prints the same with the address of d4; dropping
+// the PATCH's refusal of a decision that holds a from_ask prints "PATCH of decision <id> answered
+// 200, want 400 NODE_NOT_MOVABLE".
 func TestADecisionThatSettlesAnAskStandsUnderThatAsk(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -112,6 +117,27 @@ func TestADecisionThatSettlesAnAskStandsUnderThatAsk(t *testing.T) {
 	})
 	requireDecisionUnder(t, handler, database, key, d2, graphstore.KindAsk, first)
 
+	// d4, in a second document of the issue, settles the ask of the spec's ask block q1. The issue
+	// is no one room: the document plays no role, so it is a room of its own, and d4's row and node
+	// are keyed by its own ref_key, while the ask's row names the block of the spec's room.
+	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]any{
+		"actor": sessionActor(), "name": "choices.md",
+		"content": ":::decision{#d4 from_ask=\"" + asked(blockAsk) + "\"}\n" + decisionUnderAskD4 + "\n:::\n",
+	})
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload choices.md, holding d4: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	awaitNoSettlementOwed(t, database)
+	choices, spec := readDecisionDocument(t, database, key, "choices-md"), readDecisionDocument(t, database, key, "spec")
+	if choices.room != choices.id || spec.room == choices.id {
+		t.Fatalf("choices.md is keyed under the room %s and the spec under %s, want choices.md a room of its own beside the spec's, or the case proves nothing", choices.room, spec.room)
+	}
+	d4 := blockAddressOf(t, database, key, "d4")
+	if held, err := graphstore.CurrentOut(ctx, database.Pool, refs.BlockNodeKind, d4, []string{graphstore.TuplePartOf}); err != nil ||
+		len(held) != 1 || held[0].ToKind != graphstore.KindAsk || held[0].ToID != blockAsk {
+		t.Errorf("decision %s of choices.md stands under %+v (%v), want ask %s alone", d4, held, err, blockAsk)
+	}
+
 	requireBlockCensusAgrees(t, database)
 
 	// A PATCH of a decision that holds a from_ask, with a current If-Match, is refused before
@@ -162,6 +188,7 @@ const (
 	decisionUnderAskD1       = "Every writer takes one store."
 	decisionUnderAskD2       = "The writers take the one ledger."
 	decisionUnderAskD3       = "The ledger orders every write."
+	decisionUnderAskD4       = "The choices take the ledger the spec asks about."
 )
 
 // decisionUnderAskSpec is the spec the test's issue is created with: a paragraph and an ask block,

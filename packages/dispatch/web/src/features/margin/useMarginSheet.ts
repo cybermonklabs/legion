@@ -253,6 +253,7 @@ export function useMarginSheet(): MarginSheetModel {
   } = useMarginItems(owner, tab, visibleArtifact, markPlacements, blockPlacements, blockFilterId, {
     documentShown: placementsPublished,
     held: heldReplyKeys,
+    issue: issue.data,
   });
   const onEdit = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {

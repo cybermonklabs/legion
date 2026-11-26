@@ -265,11 +265,12 @@ export function personDecision(id: string, partial: Partial<Decision> = {}): Dec
 }
 
 /** The entry the decisions read answers beside `row` (`api/decisions.go`'s `decisionEntry`): an
- *  agent's decision by the spec's block node that holds it, with the asks its `from_ask`
- *  settles, a person's by the ask's own node, and each member the node holds none of null. */
-export function entryOf(row: Decision): DecisionEntry {
+ *  agent's decision by the block node of `spec`, the issue's spec, that holds it, with the asks its
+ *  `from_ask` settles, a person's by the ask's own node, and each member the node holds none of
+ *  null. */
+export function entryOf(row: Decision, spec: SpecDocument = SPEC_DOCUMENT): DecisionEntry {
   const person = row.kind === "person";
-  const block = `${SPEC_DOCUMENT.ref_key}#${row.block_id}`;
+  const block = `${spec.ref_key}#${row.block_id}`;
   return {
     answer: null,
     answer_state: person ? "answered" : null,
@@ -283,10 +284,10 @@ export function entryOf(row: Decision): DecisionEntry {
     document: person
       ? null
       : {
-          artifact_id: SPEC_DOCUMENT.id,
+          artifact_id: spec.id,
           block,
           block_id: row.block_id,
-          ref: `dispatch://${KEY}/spec`,
+          ref: `dispatch://${KEY}/${spec.slug}`,
         },
     from_ask: person ? [] : (row.asks ?? []),
     kept: row.kept,
@@ -313,16 +314,25 @@ export function entryOf(row: Decision): DecisionEntry {
   };
 }
 
+/** The spec document an entry's block stands in, which the decisions read names by its own id
+ *  (`DecisionEntry.document`): `SPEC_DOCUMENT` for this file's issue, the spec of its own issue
+ *  read for a case that builds another. */
+type SpecDocument = Pick<Artifact, "id" | "ref_key" | "slug">;
+
 /** The decisions read over `made`, as this build's server answers it (`api/decisions.go`): an
  *  entry for each, which is all a reader of this build reads of it, so the old `decisions` member
- *  holds none of them, and no decisions document, which is retired. A Change's anchor names the
- *  spec by its id, which the issue's documents tie to the decision's address
- *  (`decisionDocumentId`). */
-export function decisionsRead(made: readonly Decision[]): IssueDecisions {
+ *  holds none of them, and no decisions document, which is retired. Each agent's entry names the
+ *  document its block stands in, `spec`, by the id a Change's anchor names it by
+ *  (`decisionDocumentId`), so a case whose issue read has a spec of its own passes it here: a
+ *  server names no document of another issue. */
+export function decisionsRead(
+  made: readonly Decision[],
+  spec: SpecDocument = SPEC_DOCUMENT
+): IssueDecisions {
   return {
     decisions: [],
     document: null,
-    entries: made.map(entryOf),
+    entries: made.map((row) => entryOf(row, spec)),
     open_questions: [],
   };
 }

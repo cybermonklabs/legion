@@ -297,7 +297,7 @@ func blockPlacedLinks(kinds string) string {
 		                      else held.kind || '>` + outsideArtifact + `' || split_part(n.id, '#', 1) end
 		            when held.kind = '` + graphstore.TuplePartOf + `' and held.to_kind = '` + graphstore.KindAsk + `'
 		            then coalesce(held.kind || '>` + refs.BlockNodeKind + `:' || split_part(n.id, '#', 1) || '#' || ` +
-		askBlockID(`held.to_id`) + `, held.kind || '>' || held.to_kind || ':' || held.to_id)
+		askBlockID(`n.id`, `held.to_id`) + `, held.kind || '>' || held.to_kind || ':' || held.to_id)
 		            else held.kind || '>' || held.to_kind || ':' || held.to_id end as link
 		from (
 			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
@@ -327,18 +327,25 @@ func storedRow(alias string) string {
 // from_ask to an ask whose marked row is one of the issue of artifact, the row's own artifacts row,
 // and the decision stands under that ask's node whatever its parent_block_id says, since that
 // column keeps the block its text stands in. The far end is read as blockPlacedLinks reads a
-// part_of to an ask's node: the block of the row's own artifact that holds the ask, where its row
-// names one (askBlockID), else the ask's own address. It is null for every other row, whose parent
+// part_of to an ask's node (askBlockID), spelled out here over the row: where the ask's row names a
+// block and the document holding it (asks.block_id, asks.block_artifact_id) is the row's own
+// artifact, that block; where that document is another, the block the row's own parent_block_id
+// names, which askBlockID reads off the same row; and the ask's own address where the ask's row
+// names no block or the row's parent_block_id none. It is null for every other row, whose parent
 // its own columns state.
 func settledAsk(alias, artifact string) string {
 	return `case when ` + alias + `.type = '` + refs.DecisionSupertag + `' then (
-		select coalesce('` + refs.BlockNodeKind + `:' || ` + artifact + `.ref_key || '#' || settled.block_id,
+		select coalesce('` + refs.BlockNodeKind + `:' || ` + artifact + `.ref_key || '#' ||
+		                case when own.id is null then null
+		                     when own.ref_key = ` + artifact + `.ref_key then settled.block_id
+		                     else ` + alias + `.parent_block_id end,
 		                '` + graphstore.KindAsk + `:' || settled.node_address)
 		from (` + graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted`,
 		`t.from_kind = `+alias+`.node_kind and t.from_id = `+alias+`.node_address and t.kind = '`+refs.TupleFromAsk+`'
 		  and t.to_kind = '`+graphstore.KindAsk+`'`) + `) held
 		join asks settled on settled.node_kind = '` + graphstore.KindAsk + `' and settled.node_address = held.to_id
 		  and settled.issue_key = ` + artifact + `.issue_key
+		left join artifacts own on own.id = settled.block_artifact_id and settled.block_id is not null
 		where held.asserted
 		order by held.to_id limit 1) end`
 }

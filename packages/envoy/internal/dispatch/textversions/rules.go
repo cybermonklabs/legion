@@ -107,6 +107,7 @@ var unchangingTypes = map[string]string{
 	"artifact.indexed":                          "it changes no issue's title or primary document version: the version it indexed rode its own artifact.version",
 	"artifact.approved":                         "it changes no issue's title or primary document version",
 	"artifact.changes_requested":                "it changes no issue's title or primary document version",
+	"document.retired":                          "a retirement writes no version of the document, so it changes no issue's title or primary document version",
 	"ask.resolved":                              "it leaves the ask's question, options and answer alone",
 	"ask.handed_back":                           "it leaves the ask's question, options and answer alone: a reword before a hand-back is its own ask.edited",
 	"ask.asked_of":                              "it leaves the ask's question, options and answer alone",

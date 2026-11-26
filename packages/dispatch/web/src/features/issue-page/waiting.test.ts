@@ -12,7 +12,12 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
-import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-review";
+import {
+  anchorQuote,
+  changeAnchor,
+  changeDocumentIds,
+  decisionChangeComments,
+} from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
 import { coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
@@ -523,6 +528,53 @@ test("a Change its author deleted leaves its decision on the review list and in 
     deletedAt: "2026-11-05T12:00:00Z",
     text: "Deleted by alice · 2026-11-05T12:00:00Z",
   });
+});
+
+// The decisions read names the document each decision's block stands in
+// (`DecisionEntry.document`), and every reader takes it there, whether or not the issue read lists
+// the issue's documents yet: the Change of `changed` is placed under it, so the count counts
+// `listed` alone, the header and the Decisions filter read that document's blocks, and the tree
+// reads the decision's words against it. An answered ask's entry names the document its block
+// stands in too, and takes no Change, though its words hold the Change's quote.
+test("a decision's document is the one the read names, before the issue read lists its documents", () => {
+  const unlisted: IssueDetails = { ...issue, artifacts: [] };
+  const asked: DecisionEntry = {
+    ...entryOf(waitingDecision("q1", [])),
+    answer: "Yes.",
+    answer_state: "answered",
+    kind: "person",
+    node: { id: "ask-1", kind: "ask" },
+    question: "The words of changed.",
+    ref: `dispatch://${KEY}/ask/ask-1`,
+    text: "The words of changed.",
+    waiting_review: false,
+  };
+  const read: IssueDecisions = { ...decisions, entries: [asked, ...(decisions.entries ?? [])] };
+
+  expect(decisionChangeComments(read, [change], unlisted, undefined)).toEqual(
+    new Map([[change.id, `dispatch://${KEY}/spec#b-changed`]])
+  );
+  expect(changeDocumentIds(unlisted, read)).toEqual(new Set([spec.id]));
+  const counted = waitingOnReader(
+    unlisted,
+    "alice",
+    read,
+    isCoverageStatement,
+    [change],
+    undefined
+  );
+  expect(counted.decisions).toBe(1);
+  const root = buildIssueTree({
+    comments: [change],
+    coverage,
+    decisions: read,
+    issue: unlisted,
+    viewer: "alice",
+  });
+  const listed = nodesInOrder(root).find(
+    (node) => node.reference === `dispatch://${KEY}/spec#b-listed`
+  );
+  expect(listed?.source).toEqual({ id: spec.id, issue: KEY, kind: "artifact" });
 });
 
 // R3, R7 and R13: a Change belongs to the decision whose block of the spec holds the block the

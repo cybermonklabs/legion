@@ -1099,6 +1099,79 @@ func TestACopyOfARestoredSourceRewordedAndAnsweredOpensItsOwnAsk(t *testing.T) {
 	}
 }
 
+// A copy whose block a person retypes to a callout under the same id is no copy any more (R3:
+// copied_from is a tuple from the copy to the ask it was copied from), so the settlement after the
+// retype retracts the copied_from the block's node held. It does so where the document still holds
+// another ask block, whose own claim names no other block, and where it holds none, which leaves
+// the settlement no ask block to claim at all.
+func TestACopyRetypedToACalloutStatesNoCopiedFrom(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ name, beside string }{
+		{name: "beside another ask block", beside: "\n:::ask{#own urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"},
+		{name: "as the document's last ask block"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			service, original := newTestService(t)
+			service.settle = time.Hour
+			seedServiceText(t, service, original, "Context\n\n"+shipBlock)
+			settleCurrentGeneration(t, service, original)
+			source := blockAskOn(t, service, original, "ship")
+			copied := createIssueDocument(t, service.store, 1, "# Copy")
+			seedServiceText(t, service, copied, "Record\n\n"+shipBlock+test.beside)
+			settleCurrentGeneration(t, service, copied)
+			if blockType, stated := copiedFromStated(t, service, copied, "ship"); blockType != "ask" || stated != source.ID {
+				t.Fatalf("the copy's block ship is a %s block whose node states copied_from %q, want an ask block copied from %s", blockType, stated, source.ID)
+			}
+
+			editLiveTree(t, service, copied, func(tree *pmdoc.Node) *pmdoc.Node {
+				retyped, err := pmdoc.RetypeBlock(tree, "ship", "callout", nil)
+				if err != nil {
+					t.Fatalf("retype the copy's block ship to a callout: %v", err)
+				}
+				return retyped
+			})
+			settleCurrentGeneration(t, service, copied)
+			if blockType, stated := copiedFromStated(t, service, copied, "ship"); blockType != "callout" || stated != "" {
+				t.Fatalf("the retyped block ship is a %s block whose node states copied_from %q, want a callout whose node states none", blockType, stated)
+			}
+			if test.beside != "" {
+				if blockType, stated := copiedFromStated(t, service, copied, "own"); blockType != "ask" || stated != "" {
+					t.Fatalf("the copy's own block is a %s block whose node states copied_from %q, want an ask block that is no copy", blockType, stated)
+				}
+			}
+		})
+	}
+}
+
+// copiedFromStated is the type block blockID of document has in the document's block index, and
+// the ask that block's node states it was copied from now (graphstore.CurrentOut: the newest
+// copied_from tuple of each far end, while it asserts), "" where it states none.
+func copiedFromStated(t *testing.T, service *Service, document, blockID string) (blockType, source string) {
+	t.Helper()
+	ctx := context.Background()
+	var node string
+	if err := service.store.Pool.QueryRow(ctx, `
+		select type, coalesce(node_address, '') from document_blocks where artifact_id = $1 and block_id = $2
+	`, document, blockID).Scan(&blockType, &node); err != nil {
+		t.Fatalf("read block %s of the document's block index: %v", blockID, err)
+	}
+	if node == "" {
+		t.Fatalf("block %s of the document's block index names no node", blockID)
+	}
+	stated, err := graphstore.CurrentOut(ctx, service.store.Pool, refs.BlockNodeKind, node, []string{graphstore.TupleCopiedFrom})
+	if err != nil {
+		t.Fatalf("read the copied_from the node of block %s states: %v", blockID, err)
+	}
+	if len(stated) > 1 {
+		t.Fatalf("the node of block %s states %d copied_from tuples, want one at most: %+v", blockID, len(stated), stated)
+	}
+	if len(stated) == 1 {
+		source = stated[0].ToID
+	}
+	return blockType, source
+}
+
 // pendingSettlements counts the documents that owe a settlement no settlement has committed.
 func pendingSettlements(t *testing.T, service *Service) int {
 	t.Helper()

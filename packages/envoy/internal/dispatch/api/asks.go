@@ -1209,7 +1209,7 @@ func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, 
 }
 
 // pgx caches prepared plans by query text. State and ownership each have a fixed query, with the
-// state written in as a literal. A state is the ask's node's (askNodeStateOf), which every row
+// state written in as a literal. A state is the ask's node's (asks.NodeStateOf), which every row
 // these read shows (scanAskRead), so a list by state is picked by the state it shows (R3); no
 // index of asks holds it, so the issue's lists read asks_issue_key (20261101182426) and a
 // document's read asks_artifact_id (0032), and each filters the owner's asks by their node's
@@ -1218,21 +1218,21 @@ func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, 
 // (issueSummaryJoins). asks_open_artifact, the partial index 0009 built for a document's open
 // asks, went unused for the nine days the index audit measured and migration 20261101182440 drops
 // it. An issue's asks with no state filter read asks_issue_key too. They are vars, not consts,
-// because askReadFrom builds its anchor join from store.CastableUUID and askNodeStateOf its read
+// because askReadFrom builds its anchor join from store.CastableUUID and asks.NodeStateOf its read
 // of the node from graphstore.CurrentTupleRead.
 var (
 	listIssueAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.issue_key = $1 order by a.created_at, a.id`
 	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and ` + askNodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
+		where a.issue_key = $1 and ` + asks.NodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
 	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and ` + askNodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
+		where a.issue_key = $1 and ` + asks.NodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
 	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.artifact_id = $1 order by a.created_at, a.id`
 	listArtifactAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and ` + askNodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
+		where a.artifact_id = $1 and ` + asks.NodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
 	listArtifactAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and ` + askNodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
+		where a.artifact_id = $1 and ` + asks.NodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
 )
 
 // queryOwnerAsks returns an owner's asks, oldest first, filtered by state ("all",

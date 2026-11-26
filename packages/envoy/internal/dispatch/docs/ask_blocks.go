@@ -122,8 +122,9 @@ type answerInStep struct {
 // documents naming the document whose fragment holds each block of another than the room's own
 // (roomLayout.blockDocuments), so each tie records its block's own document's version. It runs
 // before the events are appended, since an appended event is never rewritten. A settlement that
-// writes a version needs none of this: that version's block index runs after the rows are queued
-// and states the ties with every other link of the document.
+// writes a version runs it after that version's block index, which reads the asks table, where the
+// rows this settlement queued are not written yet, so it stated none of these ties; this plans
+// against what that index leaves (heldBlockIndex).
 func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, documents map[string]string, tree *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
 	if len(r.opened) == 0 {
 		return nil
@@ -264,31 +265,61 @@ func (r *settlementReconciliation) causedByEvent(events []model.Event) (map[int]
 // document's block index holds once this settlement's own indexing is written (heldBlockIndex,
 // refs.BlockIndex.NodeOf), the copied_from of that node: the source ask where copiedAskSources
 // resolved one, and none where it resolved none, so a block that stopped being a copy - its source
-// retracted, its wording changed, its own ask opened - retracts the copied_from it held. It
-// answers the step that states them under cause, nil where there is none to state. Each is a
-// claim (graphstore.WriteArms), which appends only where the node holds another far end or none,
-// so a settlement that moved no copy appends nothing. It runs once the version's blocks are
-// planned, so a copy pasted in this version has its node, and the caller queues the step under
-// that version's event, right after it (graphstore.LatestEvent), or under graphstore.NoEvent for
-// a settlement that writes no version. The copy's source document is not stated here: a reader
-// takes it from the source ask's own part_of (graphstore.AskFacts).
+// retracted, its wording changed, its own ask opened - retracts the copied_from it held. It reads
+// once which blocks of the document hold a copied_from now (refs.DocumentCopiedFrom), from the
+// block index as it stood before this settlement, and retracts the relation from each block that
+// is no longer an ask block - one a person retyped, or one this settlement's version drops - on
+// the node that read names, so a settlement of a document that holds no ask block now still
+// retracts the copied_from of a block that was a copy (R3). It answers the step that states them
+// under cause, nil where there is none to state. Each is a claim (graphstore.WriteArms), which
+// appends only where the node holds another far end or none, so a settlement that moved no copy
+// appends nothing. It runs once the version's blocks are planned, so a copy pasted in this version
+// has its node, and the caller queues the step under that version's event, right after it
+// (graphstore.LatestEvent), or under graphstore.NoEvent for a settlement that writes no version.
+// The copy's source document is not stated here: a reader takes it from the source ask's own
+// part_of (graphstore.AskFacts).
 func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, artifactID string, who model.Actor, at time.Time) (func(b *store.WriteBatch, cause int64) error, error) {
-	if len(r.copiedFrom) == 0 {
+	standing, err := refs.DocumentCopiedFrom(ctx, tx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the copies the blocks of %s hold: %w", artifactID, err)
+	}
+	if len(r.copiedFrom) == 0 && len(standing) == 0 {
 		return nil, nil
 	}
-	index, err := heldBlockIndex(ctx, tx, artifactID)
-	if err != nil {
-		return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+	// Only an ask block is claimed on the node the block index holds for it. A block that holds a
+	// copied_from has the node the standing read named, so its retraction needs no index.
+	var index refs.BlockIndex
+	if len(r.copiedFrom) > 0 {
+		if index, err = heldBlockIndex(ctx, tx, artifactID); err != nil {
+			return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+		}
 	}
+	blocks := make([]string, 0, len(r.copiedFrom)+len(standing))
+	for blockID := range r.copiedFrom {
+		blocks = append(blocks, blockID)
+	}
+	for blockID := range standing {
+		if _, asked := r.copiedFrom[blockID]; !asked {
+			blocks = append(blocks, blockID)
+		}
+	}
+	slices.Sort(blocks)
 	var claims []graphstore.Claim
-	for _, blockID := range slices.Sorted(maps.Keys(r.copiedFrom)) {
-		node, named := index.NodeOf(blockID)
-		if !named {
-			continue
+	for _, blockID := range blocks {
+		// A block that is no longer an ask block has no source, so its claim retracts, on the node
+		// the standing read named.
+		node := standing[blockID].Node
+		source, asked := r.copiedFrom[blockID]
+		if asked {
+			held, named := index.NodeOf(blockID)
+			if !named {
+				continue
+			}
+			node = held
 		}
 		claims = append(claims, graphstore.Claim{
 			FromKind: refs.BlockNodeKind, FromID: node, Kind: graphstore.TupleCopiedFrom,
-			ToKind: graphstore.KindAsk, ToID: r.copiedFrom[blockID],
+			ToKind: graphstore.KindAsk, ToID: source,
 			At: at, Who: who,
 		})
 	}
@@ -766,10 +797,11 @@ func closeWithdrawn(ask model.Ask) bool {
 // step with it and the rest of the seven a version can store taken out (keptAskState). A block
 // settlement cannot read keeps whatever a browser wrote onto it - a forged state or answerer
 // among them - so once the fleet is one build it is given its row's kept state where a row
-// indexes it, and none of the seven where none does. `invalid` is written into the live tree
-// either way (G1): onto a block that fails the strict read, and off one that reads again, and
-// where the block has an ask row its node holds the reason too, until the block reads again
-// (stateInvalidReasons).
+// indexes it, its source's, provenance and all, where it is a copy flagged for a reading its
+// source holds no answer for, and none of the seven where it is neither. `invalid` is written
+// into the live tree either way (G1): onto a block that fails the strict read, and off one that
+// reads again, and where the block has an ask row its node holds the reason too, until the block
+// reads again (stateInvalidReasons).
 //
 // issueClosed is whether the issue row, as the settlement's transaction locked it, reads closed
 // (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew every ask of
@@ -917,24 +949,33 @@ func (s *Service) reconcileAskBlocks(
 			))
 		}
 		// Once the fleet is one build, an invalid block keeps none of the attributes a version can
-		// store where it has no ask row (R10), which stays, and an indexed one what a version keeps
-		// of its ask, which goes with that form; the roll window's branch goes with it.
+		// store where it has no ask row and is no copy (R10), which stays, an indexed one what a
+		// version keeps of its ask, and a copy - one flagged for a reading its source holds no
+		// answer for - what a version keeps of its source, its provenance among it whatever the
+		// source's state, both of which go with that form; the roll window's branch goes with it.
 		// kept for one release: roll-window-attributes
 		if twoBuilds {
 			continue
 		}
 		unread := withoutStoredAskAttributes
 		// kept for one release: stored-ask-state
-		if indexed {
+		switch source, copied := sources[invalid.id]; {
+		case indexed:
 			unread = keptAskState(shown(ask), "")
+		case copied:
+			unread = keptAskState(shown(source.ask), source.document)
 		}
 		reconciled.repair(invalid.node, invalid.id, unread)
 	}
 	// Every ask block of the tree, readable or not, names the ask it is a copy of, or none, for
-	// claimCopies once the version's blocks are indexed.
+	// claimCopies once the version's blocks are indexed: a copy flagged for a reading is still a
+	// copy of its source (R3).
 	reconciled.copiedFrom = make(map[string]string, len(blocks)+len(invalidBlocks))
 	for _, invalid := range invalidBlocks {
 		reconciled.copiedFrom[invalid.id] = ""
+		if source, copied := sources[invalid.id]; copied {
+			reconciled.copiedFrom[invalid.id] = source.ask.ID
+		}
 	}
 	for _, block := range blocks {
 		reconciled.copiedFrom[block.id] = ""

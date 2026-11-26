@@ -78,7 +78,7 @@ func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T
 	// The inner paragraph the previous release's version dropped reads gone, and its link is
 	// retracted, once this build drained the mark.
 	requireDroppedBlockGone(t, database, link.innerAddress, link.dropped)
-	requireNoCensusDifference(t, database, "after this build drained the backfill's mark over a link the previous release added and a block it dropped")
+	requireStoreCensusZero(t, database, "after this build drained the backfill's mark over a link the previous release added and a block it dropped")
 }
 
 // A version write of this build that drains the mark gives the previous release's version its node
@@ -109,7 +109,7 @@ func TestAVersionWriteThatDrainsTheMarkGivesThePreviousReleasesVersionItsNode(t 
 
 	requirePresentVersionNode(t, database, refKey, previousReleaseVersion, "after this build's version write drained the backfill's mark")
 	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
-	requireNoCensusDifference(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
+	requireStoreCensusZero(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
 }
 
 // A version write of this build that drains the mark writes no more of the previous release's
@@ -174,7 +174,7 @@ func TestAVersionWriteLeavesMoreMissingVersionNodesThanItsBoundToTheTick(t *test
 		t.Errorf("after the tick versions %v hold no node, want the tick to write every one", held)
 	}
 	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
-	requireNoCensusDifference(t, database, "after the tick wrote the previous release's version nodes")
+	requireStoreCensusZero(t, database, "after the tick wrote the previous release's version nodes")
 }
 
 // A version the release before writes of a document of an issue room, with no version node, has
@@ -478,9 +478,10 @@ func requirePresentVersionNode(t *testing.T, database *store.Store, refKey strin
 	return node
 }
 
-// requireNoCensusDifference takes the store census and fails the test on each difference it
-// reads, and on its refusal.
-func requireNoCensusDifference(t *testing.T, database *store.Store, when string) {
+// requireStoreCensusZero takes the store census and fails the test on each difference it
+// reads, and on its refusal (requireNoCensusDifference, ask_block_node_test.go, checks named kinds
+// of a census its caller took).
+func requireStoreCensusZero(t *testing.T, database *store.Store, when string) {
 	t.Helper()
 	census := takeStoreCensus(t, database)
 	for _, kind := range census.Kinds {

@@ -198,6 +198,8 @@ var readsWithoutAViewer = map[string]string{
 	"DecisionFacts":        serverWork + " - a version write's read phase reads what the store and the asks rows hold of the version's decisions, readings and ask blocks",
 	"DecisionIndexing.PlanAuthored": serverWork + " - a write that leaves a version's blocks to the reconciliation reads what the store " +
 		"holds of the requirements, checks and plan tasks it writes at once, and of the blocks above them",
+	"DocumentCopiedFrom": serverWork + " - a settlement's read phase reads which blocks of the room it settles hold a " +
+		"copied_from now, to retract it from each that is no longer an ask block (docs' claimCopies)",
 	"DocumentIsCited":      noNode,
 	"DocumentMentioning":   serverWork + " - rebuild-refs reads the document whose references it reconciles, to sign the mentions it states",
 	"DocumentWindowOwner":  "it answers a node id and nothing of any node: the key the windows of the one document its caller names are written and read under, the room that document is edited in (DocumentRoomSQL), which the write of its windows writes under (WriteDocumentWindows) and the read of its blocks reads their embedding states by (api's describeBlocks, BlockEmbeddingStates), so no reader is answered the key",
@@ -231,6 +233,8 @@ var readsWithoutAViewer = map[string]string{
 		"see answers what an address nobody holds answers",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
+	"OwedQueue.Count": serverWork + " - the forms drain counts the rows a queue of owed reference forms holds, for its " +
+		"tick's report, and the count names no node",
 	"PartOfChains": serverWork + " - the block index climbs the part_of chain of each block an authored node may hang under, " +
 		"to keep a cycle out of where it places that node (placeAuthored), and the chain reaches no reader",
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
@@ -245,6 +249,7 @@ var readsWithoutAViewer = map[string]string{
 	"PreventionRetractions": serverWork + " - the index pass, a retirement and the backfill read the prevented_by tuples at the checks " +
 		"they end, under those checks' owner lock, to retract each; its writer signs the retractions and views nothing",
 	"QueueAskPartIDs":    nodeDetail,
+	"QueueHeadCut":       treeWalk + " - HeadCut queued on a batch the caller already sends (the approval request's), the cut of the store its ask pins",
 	"ReadBlockIDCensus":  "it answers no reader: `envoy-dispatch census --block-ids` reads the block ids an issue's spec, Verification and plan share, for the whole instance, as a one-off task a deployment runs under the server's own identity",
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadCommentPage":    treeWalk + " - the page of the issue's conversation comments a walk of the skeleton takes (WalkIssueSkeleton), and the position of its oldest; no comment is a node the store takes reserved for its author (graphstore.AdmitAuthorOnly), so every reader the issue's read admits may see each comment of the page, and each is answered the same page",

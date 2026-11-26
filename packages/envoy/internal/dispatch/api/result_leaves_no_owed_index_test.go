@@ -63,23 +63,29 @@ func queuedRowsOf(t *testing.T, database *store.Store, issueKey string) []string
 	return queued
 }
 
-// formsQueuedRowsOf is each row of refs_forms_owed that names a document of the issue issueKey,
-// its tree artifact and its decisions query among them, as its kind, the document's name and its
-// id.
-func formsQueuedRowsOf(t *testing.T, database *store.Store, issueKey string) []string {
+// formsQueues are the forms re-index queues a document's text can be owed in: refs_forms_owed, and
+// the two halves of the Decisions page's queue, the live one the relay of a delete from
+// refs_forms_owed writes (refs_decisions_forms_owed) and the bootstrap one the seed writes
+// (refs_decisions_forms_seed_owed).
+var formsQueues = []refs.OwedQueue{refs.RefsFormsOwed, refs.RefsDecisionsFormsOwed, refs.RefsDecisionsFormsSeedOwed}
+
+// formsQueuedRowsOf is each row of the forms queue queue that names a document of the issue
+// issueKey, its tree artifact and its decisions query among them, as its kind, the document's name
+// and its id.
+func formsQueuedRowsOf(t *testing.T, database *store.Store, queue refs.OwedQueue, issueKey string) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
 		select o.kind || ' ' || a.name || ' (' || a.id::text || ')'
-		from refs_forms_owed o
+		from `+queue.Table()+` o
 		join artifacts a on a.id = o.id
 		where a.issue_key = $1
 		order by a.name, o.kind`, issueKey)
 	if err != nil {
-		t.Fatalf("read refs_forms_owed of the documents of %s: %v", issueKey, err)
+		t.Fatalf("read %s of the documents of %s: %v", queue.Table(), issueKey, err)
 	}
 	queued, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("read refs_forms_owed of the documents of %s: %v", issueKey, err)
+		t.Fatalf("read %s of the documents of %s: %v", queue.Table(), issueKey, err)
 	}
 	return queued
 }
@@ -184,8 +190,10 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 		if queued := queuedRowsOf(t, database, issue.Key); len(queued) > 0 {
 			t.Errorf("%s: the re-index queue holds %q (%s), want no row of a document of %s", what, queued, documentsAt(), issue.Key)
 		}
-		if queued := formsQueuedRowsOf(t, database, issue.Key); len(queued) > 0 {
-			t.Errorf("%s: refs_forms_owed holds %q (%s), want no row of a document of %s", what, queued, documentsAt(), issue.Key)
+		for _, queue := range formsQueues {
+			if queued := formsQueuedRowsOf(t, database, queue, issue.Key); len(queued) > 0 {
+				t.Errorf("%s: %s holds %q (%s), want no row of a document of %s", what, queue.Table(), queued, documentsAt(), issue.Key)
+			}
 		}
 	}
 	// oneTick runs the block-index reconciliation once, as the server's loop runs a tick, and reads
@@ -266,14 +274,18 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 		t.Errorf("the drain of a result after the edit leaves the re-index queue holding %q of verification.md (%s), want the scope row that stood before its insert, and no artifact row",
 			kinds, documentsAt())
 	}
-	if forms := formsRowsOf(t, database, verification.id); len(forms) > 0 {
-		t.Errorf("the drain of a result after the edit leaves refs_forms_owed holding %q of verification.md (%s), want none",
-			forms, documentsAt())
+	for _, queue := range formsQueues {
+		if forms := formsRowsOf(t, database, queue, verification.id); len(forms) > 0 {
+			t.Errorf("the drain of a result after the edit leaves %s holding %q of verification.md (%s), want none",
+				queue.Table(), forms, documentsAt())
+		}
 	}
 	requireDrawn("a result recorded over a scope row that stood")
 
 	// A refs_forms_owed row that already stood before the result (as an older build's write
-	// leaves it) stays standing across a result's drain.
+	// leaves it) stays standing across a result's drain, and since the drain deletes none of it,
+	// the relay of a delete from refs_forms_owed owes neither half of the Decisions page's queue
+	// verification.md.
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into refs_forms_owed (kind, id) values ('artifact', $1::uuid)
 		on conflict (kind, id) do update set enqueued_at = now()
@@ -286,24 +298,30 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 		t.Errorf("the result over a standing forms row leaves verification.md at version %d holding %q, want the drained version %d holding the bytes of the one before, %q",
 			held.number, held.markdown, before.number+1, before.markdown)
 	}
-	if forms := formsRowsOf(t, database, verification.id); !slices.Equal(forms, []string{"artifact"}) {
+	if forms := formsRowsOf(t, database, refs.RefsFormsOwed, verification.id); !slices.Equal(forms, []string{"artifact"}) {
 		t.Errorf("the drain of a result over a standing forms row leaves refs_forms_owed holding %q of verification.md (%s), want the artifact row that stood before its insert",
 			forms, documentsAt())
 	}
+	for _, queue := range []refs.OwedQueue{refs.RefsDecisionsFormsOwed, refs.RefsDecisionsFormsSeedOwed} {
+		if forms := formsRowsOf(t, database, queue, verification.id); len(forms) > 0 {
+			t.Errorf("the drain of a result over a standing forms row leaves %s holding %q of verification.md (%s), want none",
+				queue.Table(), forms, documentsAt())
+		}
+	}
 }
 
-// formsRowsOf is the kind of each row of refs_forms_owed that names the document artifactID, in
-// kind order.
-func formsRowsOf(t *testing.T, database *store.Store, artifactID string) []string {
+// formsRowsOf is the kind of each row of the forms queue queue that names the document artifactID,
+// in kind order.
+func formsRowsOf(t *testing.T, database *store.Store, queue refs.OwedQueue, artifactID string) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(),
-		`select kind from refs_forms_owed where id = $1::uuid order by kind`, artifactID)
+		`select kind from `+queue.Table()+` where id = $1::uuid order by kind`, artifactID)
 	if err != nil {
-		t.Fatalf("read refs_forms_owed of %s: %v", artifactID, err)
+		t.Fatalf("read %s of %s: %v", queue.Table(), artifactID, err)
 	}
 	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("read refs_forms_owed of %s: %v", artifactID, err)
+		t.Fatalf("read %s of %s: %v", queue.Table(), artifactID, err)
 	}
 	return kinds
 }
@@ -311,8 +329,9 @@ func formsRowsOf(t *testing.T, database *store.Store, artifactID string) []strin
 // TestTheDecisionsQueryOwesNoReindexQueueOnCreateOrConversion: an issue's decisions query node
 // holds no fragment of a room and no block (R15), so neither its version 1 (at issue create or at
 // issue conversion) nor a version the drain writes leaves any row naming it in refs_grammar_owed
-// or refs_forms_owed, and no tick owes it a block index even when its stored rendering writes a
-// bare `#id` candidate (a decision referencing `#q1`).
+// or in a forms queue (formsQueues: refs_forms_owed and both halves of the Decisions page's
+// queue), and no tick owes it a block index even when its stored rendering writes a bare `#id`
+// candidate (a decision referencing `#q1`).
 //
 // Subcase 1 (born converted): an issue created with a spec holding a decision that writes `#q1`
 // renders that decision into version 1 of its decisions query (api's queueDecisionsFirstVersion).
@@ -338,8 +357,10 @@ func TestTheDecisionsQueryOwesNoReindexQueueOnCreateOrConversion(t *testing.T) {
 		if kinds := queuedKindsOf(t, database, decisions); len(kinds) > 0 {
 			t.Errorf("%s: refs_grammar_owed holds %q for the decisions query %s of %s, want none", what, kinds, decisions, issueKey)
 		}
-		if kinds := formsRowsOf(t, database, decisions); len(kinds) > 0 {
-			t.Errorf("%s: refs_forms_owed holds %q for the decisions query %s of %s, want none", what, kinds, decisions, issueKey)
+		for _, queue := range formsQueues {
+			if kinds := formsRowsOf(t, database, queue, decisions); len(kinds) > 0 {
+				t.Errorf("%s: %s holds %q for the decisions query %s of %s, want none", what, queue.Table(), kinds, decisions, issueKey)
+			}
 		}
 		if owed := owedDocumentNames(t, database, readCoverage(t, handler, issueKey).OwedDocuments); len(owed) > 0 {
 			t.Errorf("%s: owed_documents of %s names %s, want no document owed its block index", what, issueKey, strings.Join(owed, ", "))

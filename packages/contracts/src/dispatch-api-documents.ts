@@ -356,3 +356,27 @@ export const DecisionKeptEventPayloadSchema = z
   .readonly();
 
 export type DecisionKeptEventPayload = z.output<typeof DecisionKeptEventPayloadSchema>;
+
+/** `document.retired`: `docs.RetireDocument` retired the document, once, on its owner: the
+ *  document, the role it played until its retirement cleared it (absent where it had none), why
+ *  it was retired, and the standing approval the retirement superseded (null where none stood). */
+export const DocumentRetiredEventPayloadSchema = z
+  .strictObject({
+    artifact_id: z.string(),
+    ref_key: z.string(),
+    name: z.string(),
+    role: z.string().optional(),
+    reason: z.string(),
+    superseded_approval: z
+      .strictObject({
+        review_id: z.string(),
+        approved_version: z.number().int(),
+        approved_by: ActorSchema,
+        kind: ArtifactReviewKindSchema,
+      })
+      .readonly()
+      .nullable(),
+  })
+  .readonly();
+
+export type DocumentRetiredEventPayload = z.output<typeof DocumentRetiredEventPayloadSchema>;

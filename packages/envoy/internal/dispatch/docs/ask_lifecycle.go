@@ -712,7 +712,7 @@ func closedIssueAskState(row model.Ask) (model.Ask, bool) {
 //
 // kept for one release: roll-window-attributes
 func answeredCopyWrite(ask model.Ask, copied string) func(*pmdoc.Node) bool {
-	whole := askReadableWrite(true, ask, copied)
+	whole := askReadableWith(rollWindowAskAttributes(ask, copied))
 	withheld := askReadableWriteWithheld(ask, copied)
 	return func(node *pmdoc.Node) bool {
 		if !whole(attributesOf(node)) {

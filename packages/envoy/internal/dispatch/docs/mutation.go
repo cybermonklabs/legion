@@ -67,9 +67,9 @@ type versionWrite struct {
 	// stated it.
 	roomIndexed bool
 	// steps names the phases of the decisions step whose own write this version is (restoreCase,
-	// conversionCase): set by SnapshotVersion and SettleVersion (snapshotVersion) from the mark the
-	// step alone puts on its context (withDecisionStepWrite), which no route can send, and zero for
-	// every other version, which the restore's and the conversion's carry cases do not reach.
+	// conversionCase): set by the step's own version write (issueRestore.writeVersion), which
+	// hands them to snapshotVersion and which no route reaches, and zero for every other version,
+	// which the restore's and the conversion's carry cases do not reach.
 	//
 	// kept for one release: decisions-step
 	steps decisionStepCases
@@ -1912,7 +1912,7 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 // its context (WithDeferredBlockIndex) leaves the version's blocks above deferBlockIndexBlocks to
 // the block-index reconciliation (versionWrite.deferLarge).
 func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
-	return s.snapshotVersion(ctx, artifactID, actor, false)
+	return s.snapshotVersion(ctx, artifactID, actor, false, decisionStepCases{})
 }
 
 // SettleVersion is SnapshotVersion written as the document's settlement writes its version
@@ -1942,11 +1942,13 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 // stamp, the ask blocks' repairs and the document's pending-settlement row, with the editor a
 // closed issue keeps past it (clearSettlementPending).
 func (s *Service) SettleVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
-	return s.snapshotVersion(ctx, artifactID, actor, true)
+	return s.snapshotVersion(ctx, artifactID, actor, true, decisionStepCases{})
 }
 
-// snapshotVersion is SnapshotVersion, and SettleVersion where settles is set.
-func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor model.Actor, settles bool) (VersionResult, error) {
+// snapshotVersion is SnapshotVersion, and SettleVersion where settles is set. steps names the
+// phases of the decisions step whose own write the version is (versionWrite.steps): the step's own
+// version write passes them (issueRestore.writeVersion), and every other caller the zero value.
+func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor model.Actor, settles bool, steps decisionStepCases) (VersionResult, error) {
 	ctx = commentMarkOperation(ctx)
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -2015,7 +2017,7 @@ func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor 
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
-		steps:            decisionStepCasesOf(ctx), // kept for one release: decisions-step
+		steps:            steps, // kept for one release: decisions-step
 		deferLarge:       deferredBlockIndex(ctx),
 		closedIssue:      closedIssue,
 		settlement:       settles,
@@ -2478,13 +2480,9 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 	if err != nil {
 		return err
 	}
-	keep := rollWindowAskAttributes(twoBuilds, ask, "")
-	if keep == nil {
-		// ask holds what the route states on the ask's node in this transaction, its writes queued
-		// behind this one, so the block is written from the node as the commit leaves it.
-		// kept for one release: stored-ask-state
-		keep = keptAskState(ask, "")
-	}
+	// ask holds what the route states on the ask's node in this transaction, its writes queued
+	// behind this one, so the block is written from the node as the commit leaves it.
+	keep := askStateWrite(twoBuilds, ask, "")
 	err = s.applyLive(ctx, *ask.BlockArtifactID, actor, func(doc liveDoc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		valid, err := startTree(current, doc)
 		if err != nil {

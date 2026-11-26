@@ -824,7 +824,9 @@ func main() {
 	blockIndexLeases := reserve("block index")
 	// The reference forms drain's, a caller of its own beside the block index's: the two passes
 	// run on their own goroutines under their own leases, so each can hold a connection while the
-	// other does.
+	// other does. It drains all of its queues under the one lease, a pass of each one after the
+	// other (docs.Service.RunRefsFormsReconciliation), so it keeps the one connection it had
+	// before the added queues, and the pool's size stays what it was.
 	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
@@ -1140,14 +1142,18 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar. Then the reference forms drain: each comment, ask,
 	// issue message and document a build that predates an issue's tab addresses and a document's
-	// dashboard URLs indexed without them (refs_forms_owed). The drain is a loop of its own under a
-	// lease of its own, on the block index's interval: a period a process of the previous release
-	// served under the block index's lease would otherwise drain none of it, and a document's row
-	// is settled only by this build's own index of the document. DISPATCH_TEST_HOLD_BLOCK_INDEX,
-	// under the test hooks, holds both loops - the block index, its tick and its pass, and the
-	// drain, which indexes a document through the block index's own index (drainFormsDocument), so
-	// a hold of the block index alone would see a document it left owed indexed anyway - and
-	// nothing else. Each loop's lease is reserved above whether or not it starts.
+	// dashboard URLs indexed without them (refs_forms_owed), and each one the release before
+	// settled that reads an issue's Decisions page as no more than its document
+	// (refs_decisions_forms_owed, and refs_decisions_forms_seed_owed for the text stored before
+	// it), each queue drained in turn by the one loop (docs.Service.RunRefsFormsReconciliation).
+	// The drain is a loop of its own under a lease of its own, on the block index's interval: a
+	// period a process of the previous release served under the block index's lease would
+	// otherwise drain none of it, and a document's row is settled only by this build's own index
+	// of the document. DISPATCH_TEST_HOLD_BLOCK_INDEX, under the test hooks, holds both loops -
+	// the block index, its tick and its pass, and the drain of every one of its queues, which
+	// indexes a document through the block index's own index (drainFormsDocument), so a hold of
+	// the block index alone would see a document it left owed indexed anyway - and nothing else.
+	// Each loop's lease is reserved above whether or not it starts.
 	if !boot.HoldBlockIndex {
 		go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases, daemonThreadStep.Tick)
 		go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)

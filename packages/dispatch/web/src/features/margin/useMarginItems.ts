@@ -29,6 +29,7 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { type DecisionDocuments, decisionDocumentId } from "../issue-page/decision-review";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { useNewIssuePageFreshness } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
@@ -77,9 +78,11 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: DecisionEntry;
-  /** The artifact id of the document the decision is written in (`DecisionEntry.document`), the
-   *  record its text is, which a `#id` in that text names a question block of; undefined for an
-   *  entry that names no document. */
+  /** The artifact id of the document the decision is written in (`decisionDocumentId`): the one
+   *  the Decisions view names for it, else the one its own address names among the issue read's
+   *  documents, the record an agent's decision's words are, whose `#id`s name a question block of
+   *  it (`entryTextSource`). Undefined for an ask, whose words are the ask's own record, and for a
+   *  block of a document the issue read does not list yet. */
   readonly documentId: string | undefined;
   /** `decision:<node id>:<KEY>/spec#<block id>`: the node that holds the entry, and the spec
    *  block it shaped by the spec's own address, so two documents' decisions under one block id
@@ -331,6 +334,7 @@ export function useMarginItems(
   {
     documentShown = false,
     held = NO_THREADS,
+    issue,
   }: {
     /** Whether the document whose margin this is has reported its layout: the issue page keeps
      *  its Spec editor mounted while the Conversation covers it, so without this the decisions
@@ -340,6 +344,10 @@ export function useMarginItems(
      *  in the list it was in, open or resolved, whoever resolves or reopens it meanwhile: moving
      *  it between them would remount its card, and the composer and what it holds with it. */
     readonly held?: ReadonlySet<string>;
+    /** The issue read the page holds, among whose documents a decision the Decisions view names
+     *  no document for is found by its own address (`decisionDocumentId`); absent until it
+     *  answers, and for a margin of no issue. */
+    readonly issue?: DecisionDocuments;
   } = {}
 ) {
   const queryClient = useQueryClient();
@@ -525,6 +533,8 @@ export function useMarginItems(
   const specNode = `${issueKey ?? ""}/spec`;
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
+    // Until the issue read answers, a decision is found only where the view names its document.
+    const documents = issue ?? { key: issueKey ?? "", primary_artifact_id: "" };
     const decisionItems = (decisionsView.data?.entries ?? []).flatMap((decision) => {
       if (decision.replaced || !isDecisionEntry(decision)) return [];
       // The spec blocks this entry shaped, each once: a block the link names the spec on screen
@@ -538,12 +548,15 @@ export function useMarginItems(
           blocks.add(blockId);
         }
       }
+      // A decision the view names no document for - one of a document that plays no role - is
+      // found by its own address among the issue read's documents, as the Decisions tab finds it.
+      const documentId = decisionDocumentId(documents, decision);
       return [...blocks]
         .filter((blockId) => blockFilterId === undefined || blockId === blockFilterId)
         .map((blockId) => ({
           blockId,
           decision,
-          documentId: decision.document?.artifact_id,
+          documentId,
           id: `decision:${decision.node.id}:${specNode}#${blockId}`,
           kind: "decision" as const,
         }));
@@ -558,6 +571,8 @@ export function useMarginItems(
     blockFilterId,
     blockPlacements,
     decisionsView.data,
+    issue,
+    issueKey,
     markPlacements,
     showsDecisions,
     specAddress,

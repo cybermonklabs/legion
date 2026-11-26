@@ -1019,7 +1019,8 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   if (
     event.type === "artifact.version" ||
     event.type === "artifact.created" ||
-    event.type === "artifact.renamed"
+    event.type === "artifact.renamed" ||
+    event.type === "document.retired"
   ) {
     const created = event.type === "artifact.created";
     targets.push({
@@ -1318,6 +1319,19 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push(
       { queryKey: ["artifacts", key] },
       { queryKey: ["artifact", event.payload.artifact.id] },
+      issueSummaryOf(key, event),
+      referencePanel(issueReference)
+    );
+    return targets;
+  }
+  if (event.type === "document.retired") {
+    // A retirement takes the document out of the issue's document list, summary and Decisions
+    // view, states its artifact node gone (moving the backlink panel), and supersedes any
+    // standing approval on its own read.
+    targets.push(
+      { queryKey: ["artifacts", key] },
+      { queryKey: ["artifact", event.payload.artifact_id] },
+      { exact: true, queryKey: ["decisions", key] },
       issueSummaryOf(key, event),
       referencePanel(issueReference)
     );
@@ -1672,6 +1686,10 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
     case "artifact.removed":
     case "artifact.renamed":
       return event.payload.artifact.slug;
+    case "document.retired": {
+      const slash = event.payload.ref_key.indexOf("/");
+      return slash === -1 ? undefined : event.payload.ref_key.slice(slash + 1);
+    }
     case "ask.edited":
       return (
         event.payload.anchor_artifact?.slug ??
@@ -1874,6 +1892,7 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.renamed":
     case "artifact.version":
     case "artifact.indexed":
+    case "document.retired":
     case "ask.edited":
     case "comment.edited":
     case "comment.deleted":

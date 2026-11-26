@@ -16,12 +16,10 @@ import (
 )
 
 // TestTheTickSettlesDecisionsQueryDebtsWithoutWork: a database written before this fix can still
-// hold rows for an issue's decisions query node in refs_grammar_owed (artifact and scope), in
-// refs_forms_owed (artifact), or an owed document_block_versions row. The decisions query holds no
-// fragment of a room and no block (R15), so:
-//   - ConvertIssue leaves no row of the decisions query in either queue;
-//   - ReconcileRefsForms settles a standing refs_forms_owed row for the decisions query without
-//     indexing its stored text or owing it a block index;
+// hold rows for an issue's Decisions query node in the grammar and forms queues, or an owed
+// document_block_versions row. The Decisions query holds no fragment of a room and no block (R15):
+//   - ConvertIssue leaves no queue rows for the Decisions query;
+//   - each forms pass settles its listed row without indexing stored text or owing a block index;
 //   - ReconcileBlockIndex settles standing artifact and scope rows of the decisions query in
 //     refs_grammar_owed without owing a block index or walking a scope;
 //   - ReconcileBlockIndex settles an already-owed document_block_versions row of the decisions
@@ -66,8 +64,15 @@ func TestTheTickSettlesDecisionsQueryDebtsWithoutWork(t *testing.T) {
 	if kinds := grammarKinds(); len(kinds) > 0 {
 		t.Errorf("ConvertIssue left refs_grammar_owed holding %q for the decisions query %s, want none", kinds, decisions)
 	}
-	if _, owed := formsOwedRows(t, database)["artifact "+decisions]; owed {
-		t.Errorf("ConvertIssue left refs_forms_owed holding the decisions query %s, want none", decisions)
+	row := "artifact " + decisions
+	for queue, owed := range map[string]map[string]time.Time{
+		"refs_forms_owed":                formsOwedRows(t, database),
+		"refs_decisions_forms_owed":      decisionsFormsOwedRows(t, database),
+		"refs_decisions_forms_seed_owed": decisionsFormsSeedOwedRows(t, database),
+	} {
+		if _, held := owed[row]; held {
+			t.Errorf("ConvertIssue left %s holding %s, want none", queue, row)
+		}
 	}
 
 	// Simulate rows already present in a database from before this fix: a decisions query version 2
@@ -89,12 +94,25 @@ func TestTheTickSettlesDecisionsQueryDebtsWithoutWork(t *testing.T) {
 	if at := blockIndexAt(t, database, decisions); at != nil {
 		t.Fatalf("planted version left document_block_versions.version = %d, want null (owed)", *at)
 	}
+	if _, err := database.Pool.Exec(ctx, `insert into refs_decisions_forms_seed_owed (kind, id) values ('artifact', $1::uuid)`, decisions); err != nil {
+		t.Fatalf("plant a bootstrap row for %s: %v", decisions, err)
+	}
 
 	// 1. Forms drain: settles the decisions query's refs_forms_owed row without indexing its text
 	//    or touching its block index.
 	formsTick := reconcileRefsForms(t, service)
 	if _, owed := formsOwedRows(t, database)["artifact "+decisions]; owed {
 		t.Errorf("ReconcileRefsForms left the decisions query %s in refs_forms_owed (tick %#v)", decisions, formsTick)
+	}
+	if decisionsFormsOwedRows(t, database)[row].IsZero() || decisionsFormsSeedOwedRows(t, database)[row].IsZero() {
+		t.Fatal("the forms pass should relay the existing Decisions query to the live queue and leave its seed row")
+	}
+	reconcileDecisionsForms(t, service)
+	if !decisionsFormsOwedRows(t, database)[row].IsZero() || decisionsFormsSeedOwedRows(t, database)[row].IsZero() {
+		t.Fatal("the live Decisions pass should settle its row alone without indexing")
+	}
+	if tick, err := service.ReconcileRefsForms(ctx, refs.RefsDecisionsFormsSeedOwed, refs.Owed{}, newFormsLiveAhead()); err != nil || tick.OwedTexts != 0 {
+		t.Fatalf("the seed pass left debt for the Decisions query: %+v, %v", tick, err)
 	}
 	if citesIssue(t, database, "artifact", decisions, "DOC-2") {
 		t.Errorf("ReconcileRefsForms indexed the stored rendering of the decisions query %s: %#v",
@@ -204,6 +222,12 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 	if owed := formsOwedRows(t, database); len(owed) > 0 {
 		t.Fatalf("after initial forms drain refs_forms_owed still holds %v, want empty", owed)
 	}
+	if owed := decisionsFormsOwedRows(t, database); len(owed) > 0 {
+		t.Fatalf("after initial forms drain refs_decisions_forms_owed holds %v, want empty", owed)
+	}
+	if owed := decisionsFormsSeedOwedRows(t, database); len(owed) > 0 {
+		t.Fatalf("after initial forms drain refs_decisions_forms_seed_owed holds %v, want empty", owed)
+	}
 
 	// 1. A recorded result and its drain write an unchanged version of Verification and leave no
 	//    row in refs_forms_owed; a forms drain pass then counts no document.
@@ -214,6 +238,12 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 	}
 	if owed := formsOwedRows(t, database); len(owed) > 0 {
 		t.Errorf("the result's drain left refs_forms_owed holding %v for %s, want none", owed, room.issue)
+	}
+	if owed := decisionsFormsOwedRows(t, database); len(owed) > 0 {
+		t.Errorf("the result's drain left refs_decisions_forms_owed holding %v, want none", owed)
+	}
+	if owed := decisionsFormsSeedOwedRows(t, database); len(owed) > 0 {
+		t.Errorf("the result's drain left refs_decisions_forms_seed_owed holding %v, want none", owed)
 	}
 	formsTick := reconcileRefsForms(t, service)
 	if formsTick.Documents != 0 || formsTick.OwedTexts != 0 {
@@ -234,5 +264,28 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 	}
 	if _, stood := formsOwedRows(t, database)["artifact "+room.verification]; !stood {
 		t.Errorf("the drain over a standing refs_forms_owed row deleted %s's row, want it kept", room.verification)
+	}
+
+	// 3. With no older forms row, the next version's relay must leave independent Decisions debt.
+	if _, err := database.Pool.Exec(ctx, `delete from refs_forms_owed where kind = 'artifact' and id = $1::uuid`, room.verification); err != nil {
+		t.Fatalf("relay the standing forms row of %s: %v", room.verification, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `insert into refs_decisions_forms_seed_owed (kind, id) values ('artifact', $1::uuid)`, room.verification); err != nil {
+		t.Fatalf("plant a bootstrap debt for %s: %v", room.verification, err)
+	}
+	row := "artifact " + room.verification
+	live, seed := decisionsFormsOwedRows(t, database)[row], decisionsFormsSeedOwedRows(t, database)[row]
+	if live.IsZero() || seed.IsZero() {
+		t.Fatalf("the standing Decisions debt was not planted: live %v, seed %v", live, seed)
+	}
+	recordResult(t, database, service, room)
+	if next := newestVersionNumber(t, database, room.verification); next != after+2 {
+		t.Fatalf("the third result's drain left Verification at version %d, want %d", next, after+2)
+	}
+	if got := decisionsFormsOwedRows(t, database)[row]; !got.Equal(live) {
+		t.Errorf("the drain changed standing live Decisions debt from %v to %v", live, got)
+	}
+	if got := decisionsFormsSeedOwedRows(t, database)[row]; !got.Equal(seed) {
+		t.Errorf("the drain changed standing seed Decisions debt from %v to %v", seed, got)
 	}
 }

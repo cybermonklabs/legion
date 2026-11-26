@@ -2633,16 +2633,16 @@ func isConversationKind(kind string) bool {
 }
 
 // treeAskAnswer fills the answer members of the ask node target's wording from its facts, as the
-// decisions read's entries read them (askNodeAnswer): the answer's words, the options it selected
-// and when it was answered, each a value of the node, and who answered, the far end of its
-// answered_by. A declined ask answers none of them, as its entry answers none. A stored value that
-// does not parse, for which the entries read leaves the whole entry out, answers null and is
+// decisions read's entries read them (asks.NodeAnswer): the answer's words, the options it
+// selected and when it was answered, each a value of the node, and who answered, the far end of
+// its answered_by. A declined ask answers none of them, as its entry answers none. A stored value
+// that does not parse, for which the entries read leaves the whole entry out, answers null and is
 // logged.
 func (b *issueTreeBuilder) treeAskAnswer(ask *model.IssueTreeAsk, target refs.Target) {
 	held := b.facts[target]
-	var answer askNodeAnswer
+	var answer asks.NodeAnswer
 	read := func(kind, value string) {
-		if _, err := answer.read(kind, value); err != nil {
+		if _, err := answer.Read(kind, value); err != nil {
 			slog.Warn("dispatch: an ask's stored answer does not parse, and the tree read answers it null",
 				"issue", b.key, "ask", target.ID, "err", err)
 		}

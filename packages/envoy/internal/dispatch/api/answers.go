@@ -38,7 +38,7 @@ func parseMyAnswersPage(r *http.Request) (limit, offset int, err error) {
 
 // listMyAnswers returns the caller's real answer transitions (answerEventsQuery) and their replies
 // on asks, newest first. Each row's ask state, and whether its answer is the one the ask holds now
-// (current), are the ask's node's (askAnswerRead), as every read of an answer reads them (R3): an
+// (current), are the ask's node's (asks.ReadAnswer), as every read of an answer reads them (R3): an
 // answer is current while the ask is answered and its answer was given at that answer's time. A
 // reply the caller edited carries the time of the edit (edited_at), and one the caller deleted
 // carries its mark (deleted_at, deleted_by) and the empty body the delete left, so the page says
@@ -70,7 +70,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 			where c.ask_id is not null and c.author->>'kind' = 'user' and user_threads_login(c.author->>'id') = $1
 		)
 		select m.at, m.kind, m.ask_id, m.answer, m.reply_id, m.body, m.event_id, m.reply_edited_at, m.deleted_at, m.deleted_by, `+askItemRefExpression+` as ref,
-		       a.question, a.kind, a.state, a.answer, `+askNodeAnswerColumn+`, a.edited_at,
+		       a.question, a.kind, a.state, a.answer, `+asks.NodeAnswerColumn("a")+`, a.edited_at,
 		       i.key, i.title, ar.project_key, ar.slug, ar.name, count(*) over () as total
 		from mine m
 		join asks a on a.id = m.ask_id::uuid
@@ -150,7 +150,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 				ID: *replyID, Body: *body, EditedAt: replyEditedAt, DeletedAt: deletedAt, DeletedBy: deletedBy,
 			}
 		}
-		ask, err := askAnswerRead(row.AskID, askState, askAnswer, nodeAnswer)
+		ask, err := asks.ReadAnswer(row.AskID, askState, askAnswer, nodeAnswer)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

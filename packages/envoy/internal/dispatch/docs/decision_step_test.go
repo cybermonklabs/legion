@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"regexp"
 	"strings"
 	"testing"
@@ -865,5 +866,293 @@ func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
 	}
 	if owed, err := graphcensus.AsksOwed(ctx, database.Pool); err != nil || owed {
 		t.Fatalf("phase 1 owes a row %t (%v) after the boot, want nothing owed", owed, err)
+	}
+}
+
+// registerTheReleaseBefore registers in server_processes, the registry processes.Live reads, a
+// live process of the release before, with the schema numbers a process of it registers
+// (serveTwoBuilds), and answers its instance.
+func registerTheReleaseBefore(t *testing.T, database *store.Store) string {
+	t.Helper()
+	var instance string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), 'the-release-before', $1, $2, now() + interval '1 hour', $3)
+		returning instance::text
+	`, baseSchemaVersion, baseSchemaCreatable, store.OwnerLockProtocol).Scan(&instance); err != nil {
+		t.Fatalf("register a live process of the release before: %v", err)
+	}
+	return instance
+}
+
+// leaveTheFleet deletes the process instance from server_processes, as a process deregisters once
+// its drain has ended.
+func leaveTheFleet(t *testing.T, database *store.Store, instance string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `delete from server_processes where instance = $1::uuid`, instance); err != nil {
+		t.Fatalf("take process %s out of the fleet: %v", instance, err)
+	}
+}
+
+// joiningBuild is a log handler of the decisions step that registers a live process of the release
+// before (registerTheReleaseBefore) the moment the step logs that it restored and converted issue:
+// a process of another build that joins the fleet between two issues of one pass of the third
+// phase, after the first committed.
+type joiningBuild struct {
+	t        *testing.T
+	database *store.Store
+	issue    string
+	joined   bool
+}
+
+func (j *joiningBuild) Enabled(context.Context, slog.Level) bool { return true }
+
+func (j *joiningBuild) Handle(_ context.Context, record slog.Record) error {
+	if j.joined || record.Message != "dispatch: decisions step restored and converted an issue" {
+		return nil
+	}
+	record.Attrs(func(attr slog.Attr) bool {
+		j.joined = attr.Key == "issue" && attr.Value.String() == j.issue
+		return !j.joined
+	})
+	if j.joined {
+		registerTheReleaseBefore(j.t, j.database)
+	}
+	return nil
+}
+
+func (j *joiningBuild) WithAttrs([]slog.Attr) slog.Handler { return j }
+
+func (j *joiningBuild) WithGroup(string) slog.Handler { return j }
+
+// readRetired reports whether document is retired (documentRetired).
+func readRetired(t *testing.T, database *store.Store, document string) bool {
+	t.Helper()
+	retired, err := documentRetired(context.Background(), database.Pool, document)
+	if err != nil {
+		t.Fatalf("read whether %s is retired: %v", document, err)
+	}
+	return retired
+}
+
+// A pass of the third phase converts nothing once a process of another build goes live during it
+// (the spec's Design): that build reads the decisions documents the pass retires, and would meet
+// them half moved. Each issue's transaction reads the fleet again (restoreIssue), so the pass stops
+// at the issue after the process joined, with that issue's transaction rolled back, and answers
+// that it stopped (ErrAnotherBuildLive); a later pass, on a fleet of one build again, converts the
+// rest.
+//
+// DOC-1 and DOC-2 each hold a decisions document of one section that cites no ask. A process of
+// the release before registers the moment the step logs DOC-1 converted. The pass answers
+// ErrAnotherBuildLive with DOC-1 alone touched and its decisions document retired, while DOC-2's
+// decisions document stands at the one version it was written at and its spec gains no version.
+// Once that process leaves the fleet, the next pass converts DOC-2 and retires its document.
+func TestAPassOfTheThirdPhaseStopsWhereAProcessOfAnotherBuildGoesLiveDuringIt(t *testing.T) {
+	ctx := context.Background()
+	const section = "# Decisions\n\n## Files stay out of the corpus\n\nWe write no file beside the database.\n"
+	first := newRestoreIssue(t, "# Spec\n\nThe corpus.\n")
+	firstDecisions := first.document("decisions-md", "decisions.md", false, "decisions", section)
+	second := first.another(2, "# Spec\n\nThe corpus.\n")
+	secondDecisions := second.document("decisions-md", "decisions.md", false, "decisions", section)
+	database := first.database
+	specBefore := specVersions(t, database, second.spec)
+	joining := &joiningBuild{t: t, database: database, issue: "DOC-1"}
+	step := NewDecisionStep(database, catchUpCommit, slog.New(joining))
+	step.UseDocuments(first.service)
+
+	done, failed, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+	if !joining.joined {
+		t.Fatalf("the pass answered %v having touched %+v, and never logged DOC-1 converted, so no process of another build joined it", err, done)
+	}
+	if !errors.Is(err, ErrAnotherBuildLive) || len(failed) != 0 || len(done) != 1 || done[0].Issue != "DOC-1" || !done[0].Retired {
+		t.Fatalf("the pass a process of another build joined after DOC-1 answered %v, touched %+v and failed %+v, want ErrAnotherBuildLive with DOC-1 alone converted and retired",
+			err, done, failed)
+	}
+	if !readRetired(t, database, firstDecisions) {
+		t.Errorf("DOC-1's decisions document stands after the pass converted it, want it retired")
+	}
+	if readRetired(t, database, secondDecisions) {
+		t.Fatalf("DOC-2's decisions document was retired after a process of another build joined the pass, want it standing")
+	}
+	if versions := specVersions(t, database, secondDecisions); versions != 1 {
+		t.Errorf("DOC-2's decisions document holds %d versions after the pass stopped, want the one it was written at", versions)
+	}
+	if versions := specVersions(t, database, second.spec); versions != specBefore {
+		t.Errorf("DOC-2's spec holds %d versions after the pass stopped, want the %d it held before", versions, specBefore)
+	}
+
+	if _, err := database.Pool.Exec(ctx, `delete from server_processes where commit = 'the-release-before'`); err != nil {
+		t.Fatalf("take the release before out of the fleet: %v", err)
+	}
+	done, failed, err = step.RestoreAndConvert(ctx, "DOC", true, false)
+	if err != nil || len(failed) != 0 || len(done) != 1 || done[0].Issue != "DOC-2" || done[0].Decisions != 1 || !done[0].Retired {
+		t.Fatalf("the pass on a fleet of one build again answered %v, touched %+v and failed %+v, want DOC-2's section a decision and its document retired",
+			err, done, failed)
+	}
+	if !readRetired(t, database, secondDecisions) {
+		t.Errorf("DOC-2's decisions document stands after the later pass converted it, want it retired")
+	}
+}
+
+// announceBuild records an announcement of commit in server_build_announcements, as the announcer
+// records each build the whole fleet serves (startup's announcer), dated by the database now.
+func announceBuild(t *testing.T, database *store.Store, commit string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `insert into server_build_announcements (commit) values ($1)`, commit); err != nil {
+		t.Fatalf("announce %s: %v", commit, err)
+	}
+}
+
+// The release before's answer on a row this build marked reaches the ask's node after a rollback
+// and a second roll forward (R3, the roll window), and so does the restore it owes, which leaves
+// what the step owes at 0 (decisions_step_owed). A rollback announces the release before again
+// under a new seq, after that answer, so the catch-up's window opens at the newest announcement of
+// another commit that comes before this build's first one, and not at the newest of all: a window
+// opened at the rollback's announcement would open after the answer, and no process of this build
+// would ever state it on the node, which the Decisions read and the restore's finder read.
+//
+// The release before is announced, then this build: DOC-1's spec holds an open ask this build
+// marked, and a process of this build ticks on a fleet of its one build. A process of the release
+// before goes live and that process of this build ticks once more, its last. The release before
+// answers the ask on its row alone and its agent takes the ask's block out of the spec, and it is
+// announced whole; its process leaves, and this build is announced again. A new process of this
+// build ticks until its count reads nothing owed: the ask's node holds the answer under the
+// release before's ask.answered, the spec holds the ask's block again, and the count reads 0.
+func TestTheReleaseBeforesAnswerReachesTheNodeAfterARollBackAndAnotherRollForward(t *testing.T) {
+	ctx := context.Background()
+	const head = "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n"
+	issue := newRestoreIssue(t, head+"\n:::ask{#q-roll urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
+	database := issue.database
+	ask := blockAskOn(t, issue.service, issue.spec, "q-roll").ID
+	if !askMarked(t, database, ask) {
+		t.Fatalf("ask %s names no node, want this build to have marked it as it opened it", ask)
+	}
+	announceBuild(t, database, "the-release-before")
+	announceBuild(t, database, catchUpCommit)
+	first := NewDecisionStep(database, catchUpCommit, nil)
+	first.UseDocuments(issue.service)
+	if err := first.Tick(ctx); err != nil {
+		t.Fatalf("tick on a fleet of this build: %v", err)
+	}
+	instance := registerTheReleaseBefore(t, database)
+	if err := first.Tick(ctx); err != nil {
+		t.Fatalf("tick once the release before is live: %v", err)
+	}
+	answered := answerAsThePreviousBuild(t, database, issue.key, ask, "The base release")
+	issue.replace(issue.spec, head)
+	announceBuild(t, database, "the-release-before")
+	leaveTheFleet(t, database, instance)
+	announceBuild(t, database, catchUpCommit)
+
+	second := NewDecisionStep(database, catchUpCommit, nil)
+	second.UseDocuments(issue.service)
+	for ticks := 1; ; ticks++ {
+		if err := second.Tick(ctx); err != nil {
+			t.Fatalf("tick %d of the process of the roll forward: %v", ticks, err)
+		}
+		if owed := second.Owed(); owed != nil && owed.Total == 0 && strings.Contains(issue.latest(issue.spec), "#q-roll urgency=") {
+			t.Logf("the process of the roll forward owed nothing after %d ticks", ticks)
+			break
+		}
+		if ticks == 5 {
+			state, event := newestAnswerState(t, database, ask)
+			t.Fatalf("after %d ticks the step owes %+v, the ask's node holds answer_state %q under event %d, and the spec reads:\n%s\nwant the release before's ask.answered %d stated, the ask restored and nothing owed",
+				ticks, second.Owed(), state, event, issue.latest(issue.spec), answered)
+		}
+	}
+	if state, event := newestAnswerState(t, database, ask); state != asks.StateAnswered || event != answered {
+		t.Errorf("the ask's node holds answer_state %q under event %d, want answered under the release before's ask.answered %d", state, event, answered)
+	}
+	if total := second.OwedTotal(); total == nil || *total != 0 {
+		t.Errorf("decisions_step_owed reads %v, want 0", total)
+	}
+}
+
+// appendIssueClaim stores project key and its issue <key>-1 as rows alone, appending nothing, and
+// then appends the issue's claim, issue.claimed, through the broker: an event of a write that
+// moves no part of what the restore and the conversion owe (decisionStepOwedMovers).
+func appendIssueClaim(t *testing.T, database *store.Store, key string) {
+	t.Helper()
+	ctx := context.Background()
+	issue := key + "-1"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ($1, $1, 'alice');
+	`, key); err != nil {
+		t.Fatalf("store project %s: %v", key, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ($1, $2, 1, 'One', '{"kind":"user","id":"alice"}', 'U')
+	`, issue, key); err != nil {
+		t.Fatalf("store issue %s: %v", issue, err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the claim of %s: %v", issue, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := events.NewBroker().Append(ctx, tx, model.Event{
+		IssueKey: &issue, Type: "issue.claimed", Actor: catchUpAlice, Payload: map[string]string{"key": issue},
+	}); err != nil {
+		t.Fatalf("append the issue.claimed of %s: %v", issue, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the claim of %s: %v", issue, err)
+	}
+}
+
+// A tick after an event of a write that cannot move what the restore and the conversion owe reads
+// no table whole (recountOwed): a fleet appends such events all the time, and a count read again
+// after each would read every question ask, document and project every 30 s on every process. The
+// tick reads the events appended since its last read, finds none of a write that can move the
+// count (decisionStepOwedMovers), and leaves the count standing; an event of such a write is
+// counted at the next tick all the same.
+//
+// The step boots on an empty database and runs the tick that takes its catch-up's final pass and
+// the one that counts after it. An issue is then claimed, with the issue.claimed its write appends,
+// and the next tick, every statement of which a tracer on the step's pool records, reads the
+// events since and none of the tables the count reads, and the count stands at nothing owed. A
+// project then stores a list of gated steps holding `decisions`, with the project.created its
+// write appends, and the next tick counts it.
+func TestATickAfterAnEventThatCannotMoveTheCountReadsNoRestoreWork(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	recorder := &storetest.StatementRecorder{}
+	traced := storetest.Reopened(t, database, func(config *pgxpool.Config) { config.ConnConfig.Tracer = recorder })
+	step := NewDecisionStep(traced, catchUpCommit, nil)
+	if err := step.Boot(ctx); err != nil {
+		t.Fatalf("boot the step: %v", err)
+	}
+	for range 2 {
+		if err := step.Tick(ctx); err != nil {
+			t.Fatalf("run a tick of the step: %v", err)
+		}
+	}
+	appendIssueClaim(t, database, "QUIET")
+	before := len(recorder.Statements())
+	if err := step.Tick(ctx); err != nil {
+		t.Fatalf("run the tick after the claim: %v", err)
+	}
+	readEvents := false
+	for _, statement := range recorder.Statements()[before:] {
+		lowered := strings.ToLower(statement)
+		if read := wholeTableRead.FindString(lowered); read != "" {
+			t.Errorf("the tick after an issue's claim runs a statement that reads %q to the end:\n%s", read, statement)
+		}
+		readEvents = readEvents || strings.Contains(lowered, "from events e") && strings.Contains(lowered, "e.id > $1")
+	}
+	if !readEvents {
+		t.Errorf("the tick after an issue's claim read no event of a write that can move the count, want the events since its last read read")
+	}
+	if owed := step.Owed(); owed == nil || owed.Total != 0 {
+		t.Errorf("the step's count reads %+v after the claim, want it standing at 0", owed)
+	}
+
+	storeGatedProject(t, database, "LOUD")
+	if err := step.Tick(ctx); err != nil {
+		t.Fatalf("run the tick after a project's write: %v", err)
+	}
+	if owed := step.Owed(); owed == nil || owed.GatedStepsLists != 1 || owed.Total != 1 {
+		t.Errorf("the step's count reads %+v after a project stored a list of gated steps holding decisions, want gated_steps_lists 1 and total 1", owed)
 	}
 }

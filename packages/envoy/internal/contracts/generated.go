@@ -382,6 +382,7 @@ var DispatchEventTypes = []string{
 	"comment.reopened",
 	"comment.resolved",
 	"decision.kept",
+	"document.retired",
 	"handoff.recorded",
 	"issue.claimed",
 	"issue.closed",

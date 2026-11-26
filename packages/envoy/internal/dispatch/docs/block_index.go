@@ -442,7 +442,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		cold := s.srv.GetDoc(document.resident()) == nil
 		outcome, read := rooms[document.room]
 		if !read || document.room == "" {
-			outcome = s.indexOwed(ctx, document)
+			outcome = s.indexOwed(ctx, document, nil)
 			if document.room != "" {
 				rooms[document.room] = outcome
 			}
@@ -1329,18 +1329,19 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // project document has no issue, and its pass appends nothing either.
 //
 // settle is the forms queue's row the caller drains with this index (drainFormsDocument), nil for
-// the block index's own batch. It is read under the document owner's lock, after every check
-// above, and the index runs for it only while it holds the enqueued_at it was listed with
-// (refs.StillOwed): a row this index did not run for - a document another process indexed first,
-// one whose live text is ahead, one whose latest version moved - is left owed, and so is one a
-// write moved meanwhile, with nothing written for it. The index then settles every queue the
-// document is in, after its own deletes from block_refs and from refs (refs.BlockIndexing.Queue,
-// then the reconciliation of its references, which settles the forms queue:
-// refs.Replacement.SettlingForms), each of which owes the forms queue the document it rewrites
-// (migrations 20261117025906 and 20261117025907). It settles it only where its block pass won the
-// revision fence (indexRenderedVersion): a pass that lost writes no block, and leaves the row owed
-// for the next pass, as it leaves the block index's own mark. So a document rebuild-refs left
-// owed is settled by this build's block index of it, which writes its blocks, and not before.
+// the block index's own batch; the row is of refs_forms_owed or of refs_decisions_forms_owed. It
+// is read under the document owner's lock, after every check above, and the index runs for it
+// only while it holds the enqueued_at it was listed with (refs.StillOwed): a row this index did
+// not run for - a document another process indexed first, one whose live text is ahead, one whose
+// latest version moved - is left owed, and so is one a write moved meanwhile, with nothing
+// written for it. The index then settles every queue the document is in, after its own deletes
+// from block_refs and from refs (refs.BlockIndexing.Queue, then the reconciliation of its
+// references, which settles both forms queues: refs.Replacement.SettlingForms), each of which
+// owes the first forms queue the document it rewrites (migrations 20261117025906 and
+// 20261117025907). It settles them only where its block pass won the revision fence
+// (indexRenderedVersion): a pass that lost writes no block, and leaves the row owed for the next
+// pass, as it leaves the block index's own mark. So a document rebuild-refs left owed is settled
+// by this build's block index of it, which writes its blocks, and not before.
 func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, settle *refs.Owed) (indexed, liveAhead bool, err error) {
 	var markdown string
 	var blocks []model.ArtifactBlock
@@ -1651,12 +1652,12 @@ func (s *Service) queueIndexedEvent(ctx context.Context, tx pgx.Tx, issueKey *st
 
 // indexOwed indexes one owed document (indexOwedDocument), or the issue room it is an artifact
 // of, whole (indexOwedRoom).
-func (s *Service) indexOwed(ctx context.Context, document owedDocument) owedOutcome {
+func (s *Service) indexOwed(ctx context.Context, document owedDocument, settle *refs.Owed) owedOutcome {
 	if document.room != "" {
-		indexed, ahead, unreadable, err := s.indexOwedRoom(ctx, document)
+		indexed, ahead, unreadable, err := s.indexOwedRoom(ctx, document, settle)
 		return owedOutcome{indexed: indexed, ahead: ahead, unreadable: unreadable, err: err}
 	}
-	indexed, ahead, err := s.indexOwedDocument(ctx, document, nil)
+	indexed, ahead, err := s.indexOwedDocument(ctx, document, settle)
 	return owedOutcome{indexed: indexed, ahead: ahead, err: err}
 }
 
@@ -1720,14 +1721,17 @@ func (s *Service) indexOwed(ctx context.Context, document owedDocument) owedOutc
 // nothing once the pass has run unless it holds a mark of a higher rule than the Service's, which
 // the pass leaves for that rule's pass (stateRoom), and a pass that clears no artifact's mark
 // appends nothing.
-func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (indexed, liveAhead, unreadable bool, err error) {
+func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument, settle *refs.Owed) (indexed, liveAhead, unreadable bool, err error) {
 	room := document.room
 	read, err := readDocumentRoom(ctx, s.store.Pool, room)
 	if err != nil {
 		return false, false, false, err
 	}
 	if len(read.layout) == 0 {
-		indexed, liveAhead, err := s.indexOwedDocument(ctx, owedDocument{id: room, version: document.version, markedAt: document.markedAt}, nil)
+		if settle != nil && settle.ID != room {
+			return false, false, false, nil
+		}
+		indexed, liveAhead, err := s.indexOwedDocument(ctx, owedDocument{id: room, version: document.version, markedAt: document.markedAt}, settle)
 		return indexed, liveAhead, false, err
 	}
 	documents := read.layout.documents(room)
@@ -1794,6 +1798,16 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 	}
 	if revision != document.version || !owed || !slices.Equal(held, slices.Sorted(slices.Values(documents[1:]))) {
 		return false, false, false, nil
+	}
+	// The forms drain must still own its listed row in its own queue, and the pass must
+	// cover that document. A previous complete index may have settled it.
+	if settle != nil {
+		if !slices.Contains(documents, settle.ID) {
+			return false, false, false, nil
+		}
+		if still, err := refs.StillOwed(queued, tx, *settle); err != nil || !still {
+			return false, false, false, err
+		}
 	}
 	latest, err := readRoomVersions(queued, tx, documents)
 	if err != nil {

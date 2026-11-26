@@ -474,3 +474,202 @@ func TestTheConversionLeavesOutOfADecisionAPartItCannotHoldAndCitesTheSection(t 
 		t.Errorf("with no version of the section indexed the section became fate %d (%v), want it left for the next pass", converted.fate, err)
 	}
 }
+
+// askShaped is the far end of each shaped tie ask's node states now.
+func (issue *restoreIssue) askShaped(ask string) []string {
+	issue.t.Helper()
+	tuples, err := graphstore.CurrentOut(context.Background(), issue.database.Pool, graphstore.KindAsk, ask, []string{refs.TupleShaped})
+	if err != nil {
+		issue.t.Fatalf("read the shaped ties of ask %s: %v", ask, err)
+	}
+	var shaped []string
+	for _, tuple := range tuples {
+		if tuple.Asserted {
+			shaped = append(shaped, tuple.ToID)
+		}
+	}
+	return shaped
+}
+
+// requireReadingWithLinks checks the conversion's work on the section of decisions whose heading is
+// heading, a section about ask that links the spec's r1, restated in ask's block block of document:
+// document's newest version holds that block with a reading of the section's words and a shaped
+// pointer to r1, ask's node states one shaped tie, to r1, and the heading's one moved_to reaches
+// the block.
+func (issue *restoreIssue) requireReadingWithLinks(decisions, heading, ask, document, block, words string) {
+	t := issue.t
+	t.Helper()
+	markdown := issue.latest(document)
+	start := strings.Index(markdown, "#"+block+" ")
+	if start < 0 {
+		t.Fatalf("the newest version of %s holds no ask block %s:\n%s", document, block, markdown)
+	}
+	end := strings.Index(markdown[start:], "\n::::\n")
+	if end < 0 || !strings.Contains(markdown[start:start+end], ":::reading{#") || !strings.Contains(markdown[start:start+end], words) {
+		t.Errorf("the ask block %s of the newest version of %s holds no reading of the section's words %q:\n%s", block, document, words, markdown)
+	}
+	if opener := openerOf(markdown, block); !strings.Contains(opener, `shaped="dispatch://DOC-1/spec#b-r1"`) {
+		t.Errorf("the ask block %s opens %q, want it shaped by the section's link to r1", block, opener)
+	}
+	if shaped := issue.askShaped(ask); !slices.Equal(shaped, []string{issue.refKey(issue.spec) + "#r1"}) {
+		t.Errorf("ask %s's node states shaped %v, want the section's link to r1 alone", ask, shaped)
+	}
+	if moved := issue.movedTo(decisions)[issue.refKey(decisions)+"#"+heading]; moved != issue.refKey(document)+"#"+block {
+		t.Errorf("the heading %s moves to %q, want the ask block %s its reading stands in", heading, moved, block)
+	}
+}
+
+// A restore alone (restore-answered-asks) gives a section's links to no block it does not write
+// (R9): a section that holds an ask block the restore moves, and cites an answered ask whose block
+// the spec holds, stays in the decisions document, with its words and its link, once the block it
+// held has moved, and the conversion after it writes its words as a reading into that ask's block
+// and gives the block the section's link. Were the restore to take the section out as a reading,
+// the conversion would no longer see it, and its link would be lost.
+//
+// DOC-1's spec holds requirement r1 and the answered ask q-store. Its decisions document holds a
+// section with an open ask block of its own, q-shelf, and a paragraph citing q-store's ask that
+// links r1. The restore alone moves q-shelf into the spec and leaves the section, counted, with
+// its paragraph in the decisions document's newest version, no moved_to from its heading, and no
+// shaped tie on q-store's ask. The conversion then writes the paragraph as a reading into
+// q-store's block, which it shapes by r1, moves the heading to that block, and retires the
+// document.
+func TestARestoreAloneLeavesASectionAboutAnAskTheSpecHoldsWithItsLinksForTheConversion(t *testing.T) {
+	const title = "The corpus lives in the database"
+	const words = "The person ruled it in"
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"+
+		":::ask{#q-store urgency=\"med\" multiple=\"false\"}\nWhich store holds the corpus?\n:::\n")
+	stored := issue.answer(issue.spec, "q-store", "The seeded database.")
+	paragraph := words + " dispatch://DOC-1/ask/" + stored + ", which shapes dispatch://DOC-1/spec#b-r1."
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n## "+title+"\n\n"+
+		":::ask{#q-shelf urgency=\"low\" multiple=\"false\"}\nWhich shelf holds the printed corpus?\n:::\n\n"+paragraph+"\n")
+	heading := issue.headingID(decisions, title)
+
+	restored := issue.run(false)
+	from := issue.refKey(decisions) + "#q-shelf"
+	if len(restored.Restored) != 1 || restored.Restored[0].From != from || restored.Readings != 0 || restored.Dropped != 0 ||
+		restored.Left != 1 || restored.Retired {
+		t.Fatalf("the restore alone did %+v, want q-shelf moved from %s, the section left with no reading and the document standing", restored, from)
+	}
+	if markdown := issue.latest(decisions); !strings.Contains(markdown, "## "+title) || !strings.Contains(markdown, paragraph) || strings.Contains(markdown, "#q-shelf ") {
+		t.Errorf("the decisions document's newest version reads:\n%s\nwant the section with its paragraph and link, and no block q-shelf", markdown)
+	}
+	if moved, stated := issue.movedTo(decisions)[issue.refKey(decisions)+"#"+heading]; stated {
+		t.Errorf("the section's heading moves to %s after the restore alone, want it standing in the decisions document", moved)
+	}
+	if shaped := issue.askShaped(stored); len(shaped) != 0 {
+		t.Errorf("ask %s's node states shaped %v after the restore alone, want none yet", stored, shaped)
+	}
+
+	converted := issue.run(true)
+	if converted.Readings != 1 || converted.Decisions != 0 || converted.Left != 0 || !converted.Retired {
+		t.Fatalf("the conversion did %+v, want the section a reading, none left, the document retired", converted)
+	}
+	issue.requireReadingWithLinks(decisions, heading, stored, issue.spec, "q-store", words)
+	issue.requireRetiredAndOwedNothing(decisions)
+}
+
+// A pass leaves an issue a document of which owes its block index for a later pass, writing
+// nothing of it (restoreIssueDecisions): that document's document_blocks rows are not current, and
+// the pass reads from them where each block of the issue stands - the restore's finder leaves a
+// spec that owes its index out, and the conversion looks for an answered ask's block in every
+// document of the issue (askBlockOf). A pass that read those rows would read an answered ask whose
+// block stands in such a document, or left the spec, as standing in no document: it would make the
+// section about that ask a decision waiting for a person's review and retire the decisions
+// document, and the section's reading and link would reach that ask's block in no later pass.
+//
+// DOC-1's decisions document holds a section citing an answered ask that links the spec's r1, and
+// a document of DOC-1 then owes its block index, as a version past the deferral bound leaves it:
+//   - the spec, whose answered ask q-store lost its block to the release before's agent;
+//   - its notes, a third document, which hold the answered ask q-notes, and whose block index holds
+//     no row of that block yet, as a version whose index its write deferred leaves it.
+//
+// A pass touches no issue and fails none, the decisions document stands at its one version, and
+// neither the spec nor the document that owes its index gains one. Once the block-index
+// reconciliation has indexed that document, the next pass writes the section as a reading into the
+// ask's block - q-store restored into the spec, or q-notes where the notes hold it - shapes it by
+// r1, and retires the decisions document.
+func TestAPassLeavesAnIssueADocumentOfWhichOwesItsBlockIndexForALaterPass(t *testing.T) {
+	const title = "The corpus lives in the database"
+	const words = "The person ruled it in"
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n"
+	const question = "Which store holds the corpus?"
+	for _, test := range []struct {
+		name, spec string
+		// write writes the answered ask and the document that is to owe its block index, and answers
+		// the ask, the document whose block holds it once the later pass has run, and the document
+		// that owes its index.
+		write func(t *testing.T, issue *restoreIssue) (ask, holder, owing string)
+		// restores is whether the later pass restores the ask into the spec.
+		restores bool
+	}{
+		{
+			name: "the spec, which the answered ask's block left",
+			spec: head + "\n:::ask{#q-store urgency=\"med\" multiple=\"false\"}\n" + question + "\n:::\n",
+			write: func(t *testing.T, issue *restoreIssue) (string, string, string) {
+				stored := issue.answer(issue.spec, "q-store", "The seeded database.")
+				issue.replace(issue.spec, head)
+				return stored, issue.spec, issue.spec
+			},
+			restores: true,
+		},
+		{
+			name: "a third document, which holds the answered ask's block",
+			spec: head,
+			write: func(t *testing.T, issue *restoreIssue) (string, string, string) {
+				notes := issue.document("notes-md", "notes.md", false, "",
+					"# Notes\n\n:::ask{#q-notes urgency=\"med\" multiple=\"false\"}\n"+question+"\n:::\n")
+				noted := issue.answer(notes, "q-notes", "The seeded database.")
+				settleCurrentGeneration(t, issue.service, notes)
+				if _, err := issue.database.Pool.Exec(context.Background(), `
+					delete from document_blocks where artifact_id = $1 and block_id = 'q-notes'
+				`, notes); err != nil {
+					t.Fatalf("leave the notes' block index without the ask's block: %v", err)
+				}
+				return noted, notes, notes
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			issue := newRestoreIssue(t, test.spec)
+			ask, holder, owing := test.write(t, issue)
+			decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n## "+title+"\n\n"+
+				words+" dispatch://DOC-1/ask/"+ask+", which shapes dispatch://DOC-1/spec#b-r1.\n")
+			heading := issue.headingID(decisions, title)
+			if _, err := issue.database.Pool.Exec(ctx, `update document_block_versions set version = null where artifact_id = $1`, owing); err != nil {
+				t.Fatalf("leave %s owing its block index: %v", owing, err)
+			}
+			specBefore, owingBefore := specVersions(t, issue.database, issue.spec), specVersions(t, issue.database, owing)
+			step := NewDecisionStep(issue.database, "", nil)
+			step.UseDocuments(issue.service)
+
+			done, failed, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+			if err != nil || len(done) != 0 || len(failed) != 0 {
+				t.Fatalf("the pass over an issue a document of which owes its block index answered %v, touched %+v and failed %+v, want the issue left alone",
+					err, done, failed)
+			}
+			if readRetired(t, issue.database, decisions) || specVersions(t, issue.database, decisions) != 1 ||
+				specVersions(t, issue.database, issue.spec) != specBefore || specVersions(t, issue.database, owing) != owingBefore {
+				t.Fatalf("the pass that left DOC-1 wrote it: the decisions document retired %t at %d versions, the spec at %d versions and %s at %d, want the document standing at one, the spec at %d and %s at %d",
+					readRetired(t, issue.database, decisions), specVersions(t, issue.database, decisions),
+					specVersions(t, issue.database, issue.spec), owing, specVersions(t, issue.database, owing), specBefore, owing, owingBefore)
+			}
+
+			drainBlockIndex(t, issue.service, owing+" owed its block index")
+			if indexed := issue.indexedVersion(owing); indexed != owingBefore {
+				t.Fatalf("the block index of %s stands at version %d after the reconciliation, want its newest, %d", owing, indexed, owingBefore)
+			}
+			result := issue.run(true)
+			restored := 0
+			if test.restores {
+				restored = 1
+			}
+			if len(result.Restored) != restored || result.Readings != 1 || result.Decisions != 0 || !result.Retired {
+				t.Fatalf("the later pass did %+v, want %d ask restored, the section the ask's reading, no decision, the document retired", result, restored)
+			}
+			block, _ := issue.askRow(ask)
+			issue.requireReadingWithLinks(decisions, heading, ask, holder, block, words)
+			issue.requireRetiredAndOwedNothing(decisions)
+		})
+	}
+}

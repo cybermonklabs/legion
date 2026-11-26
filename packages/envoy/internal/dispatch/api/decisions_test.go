@@ -422,6 +422,98 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	}
 }
 
+// One value of an ask's node that does not parse drops that one ask from the Decisions read and
+// never fails the whole read (R4): the open questions and the entries are answered without it, as
+// they are answered for every other ask of the spec. Two asks of the spec hold a value written by
+// hand - an answered_at that is no time, and a selected that is no list of labels - beside one
+// whose node is as the server wrote it. The same holds while the spec owes its block index, where
+// the open questions are read by the ask blocks the spec's fragment holds (specOpenQuestions):
+// reading those blocks decodes no answer, so the ask whose node holds an answered_at that is no
+// time is left out there too, and the read answers the open ask beside it.
+func TestAnAskWhoseNodeHoldsAValueThatDoesNotParseIsLeftOutOfTheDecisionsRead(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE",
+		":::ask{#fine}\nWhich store?\n:::\n\n:::ask{#late}\nWhich name?\n:::\n\n:::ask{#listed}\nWhich port?\n:::\n")
+	waitForOpenQuestions(t, handler, issue.Key, 3)
+	fine, late, listed := blockAskID(t, handler, issue.Key, "fine"), blockAskID(t, handler, issue.Key, "late"), blockAskID(t, handler, issue.Key, "listed")
+	for ask, written := range map[string][2]string{
+		late:   {graphstore.TupleAnsweredAt, "next Tuesday"},
+		listed: {graphstore.TupleSelected, "Yes, No"},
+	} {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			values ($1, $2, $3, $4, $5, now(), '{"kind":"user","id":"alice"}'::jsonb, 0, true)
+		`, graphstore.KindAsk, ask, written[0], graphstore.KindValue, written[1]); err != nil {
+			t.Fatalf("state %s %q on the node of ask %s: %v", written[0], written[1], ask, err)
+		}
+	}
+
+	view := readIssueDecisions(t, handler, issue.Key)
+	if len(view.OpenQuestions) != 1 || view.OpenQuestions[0].ID != fine {
+		ids := []string{}
+		for _, question := range view.OpenQuestions {
+			ids = append(ids, question.ID)
+		}
+		t.Errorf("open_questions = %v, want the one ask whose node parses, %s", ids, fine)
+	}
+	entries := entriesByNode(view.Entries)
+	if _, held := entries[graphstore.KindAsk+":"+fine]; !held {
+		t.Errorf("the entries hold no entry for the ask %s whose node parses: %s", fine, entryJSON(t, view.Entries))
+	}
+	for _, dropped := range []string{late, listed} {
+		if _, held := entries[graphstore.KindAsk+":"+dropped]; held {
+			t.Errorf("the entries hold an entry for the ask %s, whose node holds a value that does not parse", dropped)
+		}
+	}
+
+	t.Run("a spec that owes its block index", func(t *testing.T) {
+		t.Parallel()
+		handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+		documents := deps.Docs.(*docs.Service)
+		createReferenceAPIProject(t, handler, "OWED")
+		issue := createSpecIssue(t, handler, "OWED", "A spec.\n")
+		key, spec := issue.Key, issue.PrimaryArtifactID
+		reconcileUntilNothingOwed(t, handler, deps, key)
+		const lateAsk = ":::ask{#q-late urgency=\"med\" multiple=\"false\"}\nWhen does the queue ship?\n:::\n"
+		written := uploadDocument(t, handler, "/api/v1/issues/"+key, "spec.md",
+			"A spec.\n\n"+owedAsk+"\n"+lateAsk+"\n"+deferralList(itemsOverTheBlockBound, "end"))
+		version := written.Version.Number
+		settleIssue(t, documents, key)
+		if latest := latestVersion(t, database, spec).Number; latest != version {
+			t.Fatalf("the settlement after the upload left the spec of %s at version %d, want the upload's version %d", key, latest, version)
+		}
+		fine, late := blockAskID(t, handler, key, "q-owed"), blockAskID(t, handler, key, "q-late")
+		var named bool
+		if err := database.Pool.QueryRow(ctx, `select node_kind is not null from asks where id = $1::uuid`, late).Scan(&named); err != nil || !named {
+			t.Fatalf("the row of the ask %s names its node: %t, %v; want it named, so the read takes its answer off the node", late, named, err)
+		}
+		if _, err := database.Pool.Exec(ctx, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			values ($1, $2, $3, $4, 'next Tuesday', now(), '{"kind":"user","id":"alice"}'::jsonb, 0, true)
+		`, graphstore.KindAsk, late, graphstore.TupleAnsweredAt, graphstore.KindValue); err != nil {
+			t.Fatalf("state answered_at \"next Tuesday\" on the node of ask %s: %v", late, err)
+		}
+		if owed := readCoverage(t, handler, key).OwedDocuments; !slices.Contains(owed, model.OwedDocument{ArtifactID: spec, Version: version}) {
+			t.Fatalf("owed_documents of %s does not name the spec at version %d: %+v; the case reads a spec that owes its block index", key, version, owed)
+		}
+
+		view := readIssueDecisions(t, handler, key)
+		ids := []string{}
+		for _, question := range view.OpenQuestions {
+			ids = append(ids, question.ID)
+		}
+		if !slices.Equal(ids, []string{fine}) {
+			t.Errorf("while the spec of %s owes its block index, open_questions = %v, want the one ask whose node parses, %s", key, ids, fine)
+		}
+		if _, held := entriesByNode(view.Entries)[graphstore.KindAsk+":"+late]; held {
+			t.Errorf("the entries hold an entry for the ask %s, whose node holds a value that does not parse", late)
+		}
+	})
+}
+
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
 // spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
 // deadline (testwait.UntilPolling), and its failure prints the questions it last read.

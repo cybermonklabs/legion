@@ -215,6 +215,8 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return `Renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
     case "artifact.removed":
       return `Removed ${event.payload.artifact.name}`;
+    case "document.retired":
+      return `Retired ${event.payload.name}`;
     case "artifact.approved":
       return `Approved ${event.payload.name} v${event.payload.version}`;
     case "artifact.changes_requested":
