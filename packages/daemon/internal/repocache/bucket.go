@@ -32,10 +32,13 @@ import (
 )
 
 // signedLife is how long an address sign makes lets its holder download the object: 15 minutes,
-// the life the cache's /packs answer promises each address (spec R3). The cache deletes an object
-// no sooner than twice that after its listed set stopped naming it, so that a download already
-// under way keeps its object.
-const signedLife = 15 * time.Minute
+// the life the cache's /packs answer promises each address (spec R3). It is
+// workspace.BucketFetchTimeout, a fetch's whole attempt on the bucket, by definition rather than by
+// a second figure: the attempt's bound and the address's life are one value, so a fetch never
+// downloads past its addresses' life, and retireAfter, twice signedLife, which keeps an object no
+// set names for 30 minutes so that a download already under way keeps its object, rests on every
+// attempt ending within one life of the answer it began on.
+const signedLife = workspace.BucketFetchTimeout
 
 // expiresRounding is added to the expiry sign asks for so that the address states signedLife
 // whole. storage.SignedURL reads its own clock after the caller's, and states the life as the whole
@@ -94,8 +97,9 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 // several goroutines.
 //
 // The cache's Google identity needs these permissions, and this code grants none of them; the
-// deployment grants them to the account the cache pods alone run as
-// (runtime.kubernetes.repository_cache.service_account):
+// deployment grants them to the Google service account that the ServiceAccount the cache pods
+// alone run as (runtime.kubernetes.repository_cache.service_account) is bound to through Workload
+// Identity:
 //
 //   - on the bucket, storage.objects.list (list, by prefix), storage.objects.get (an object's
 //     metadata, which put reads before it takes an object already there for the local file),
@@ -103,6 +107,11 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 //     storage.objects.delete (delete, of a pack no set names any more);
 //   - on its own account, iam.serviceAccounts.signBlob (sign), which
 //     roles/iam.serviceAccountTokenCreator granted to the account on itself holds.
+//
+// The metadata server names that Google service account as the pod's account (openBucket), which
+// every address is signed as. A ServiceAccount bound to none holds only the pool's federated
+// principal, which has no email: the metadata server names the pool itself, IAM Credentials
+// refuses every signBlob as it, and /packs answers 503 for as long as that lasts.
 //
 // No reader of the packs holds any grant: an issue pod downloads each object through the address
 // the cache signed for it, which is its whole access, and holds no Google credential.

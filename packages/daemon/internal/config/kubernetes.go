@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // Kubernetes is the settled `runtime.kubernetes` block: where the Sandbox runtime runs its pods and
@@ -893,9 +894,10 @@ const defaultServiceAccount = "default"
 // write the bucket, and they write it as no other. A blank value is refused, as optionalString
 // refuses one, and so is one still holding a `${…}` placeholder (unfilledPlaceholder) and an
 // account that is no ServiceAccount's name (serviceAccountName). The bucket must have the shape
-// cloudStorageBucketName holds it to. The account must not be the one every other pod runs as:
-// podAccount, the file's runtime.kubernetes.pod.service_account, or defaultServiceAccount where the
-// file sets none, since the bucket's grant to that account would reach every pod of the deployment.
+// workspace.ValidBucketName holds it to, the one rule a fetch holds a /packs manifest's bucket to as
+// well. The account must not be the one every other pod runs as: podAccount, the file's
+// runtime.kubernetes.pod.service_account, or defaultServiceAccount where the file sets none, since
+// the bucket's grant to that account would reach every pod of the deployment.
 func readCacheBucket(fields map[string]*yaml.Node, key, podAccount string) (bucket, account string, err error) {
 	if bucket, err = optionalString(fields["bucket"], key+".bucket"); err != nil {
 		return "", "", err
@@ -919,7 +921,7 @@ func readCacheBucket(fields map[string]*yaml.Node, key, podAccount string) (buck
 		return "", "", fmt.Errorf("%s.bucket needs %s.service_account: the cache pods alone write the bucket, and they run as a ServiceAccount no other pod runs as to hold its grant alone", key, key)
 	case bucket == "":
 		return "", "", fmt.Errorf("%s.service_account needs %s.bucket: the cache pods run as a ServiceAccount of their own only to write the bucket", key, key)
-	case !cloudStorageBucketName(bucket):
+	case !workspace.ValidBucketName(bucket):
 		return "", "", fmt.Errorf("%s.bucket %q must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots", key, bucket)
 	case podAccount != "" && account == podAccount:
 		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.service_account, the account every other pod runs as: the bucket's grant to it would reach every pod", key, account, podKey)
@@ -928,28 +930,6 @@ func readCacheBucket(fields map[string]*yaml.Node, key, podAccount string) (buck
 			key, account, defaultServiceAccount, podKey)
 	}
 	return bucket, account, nil
-}
-
-// cloudStorageBucket is the characters of a Cloud Storage bucket's name and its two ends: lowercase
-// letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit
-// (https://cloud.google.com/storage/docs/buckets#naming).
-var cloudStorageBucket = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*[a-z0-9]$`)
-
-// cloudStorageBucketName reports whether name has a Cloud Storage bucket's shape: cloudStorageBucket's
-// characters, 3 to 222 of them, and 1 to 63 between two dots, so a name with no dot is 3 to 63
-// long. It holds the shape alone, which is what keeps an address (`gs://…`), a capital or a path
-// out of the configuration; the rest of Cloud Storage's rules (no `goog` prefix, no name that is an
-// IP address) are its own, which it applies where the bucket is made, before any cache reads it.
-func cloudStorageBucketName(name string) bool {
-	if len(name) < 3 || len(name) > 222 || !cloudStorageBucket.MatchString(name) {
-		return false
-	}
-	for part := range strings.SplitSeq(name, ".") {
-		if part == "" || len(part) > 63 {
-			return false
-		}
-	}
-	return true
 }
 
 // readIdleRelease reads `runtime.kubernetes.idle_release`, settled: each member the file sets and

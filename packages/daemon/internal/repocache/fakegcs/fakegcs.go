@@ -444,11 +444,12 @@ func objectPath(rest string) (bucket, name string, hasName, ok bool) {
 	return bucket, name, true, true
 }
 
-// validBucket reports whether name is a bucket name of Cloud Storage's form, the shape the daemon's
-// configuration holds the cache's bucket to (config's cloudStorageBucketName) and a fetch holds a
-// manifest's bucket to (workspace's validBucketName): 3 to 222 lower-case letters, digits, dashes,
-// underscores and dots, starting and ending with a letter or a digit, with 1 to 63 of them between
-// two dots. The double holds any bucket so named, making it on its first upload.
+// validBucket reports whether name is a bucket name of Cloud Storage's form, the shape
+// workspace.ValidBucketName holds the daemon's configured bucket and a /packs manifest's bucket to:
+// 3 to 222 lower-case letters, digits, dashes, underscores and dots, starting and ending with a
+// letter or a digit, with 1 to 63 of them between two dots. It is a copy of that rule rather than a
+// call of it, since the double's files import the standard library alone (the package's own
+// comment says why). The double holds any bucket so named, making it on its first upload.
 func validBucket(name string) bool {
 	if len(name) < 3 || len(name) > 222 {
 		return false

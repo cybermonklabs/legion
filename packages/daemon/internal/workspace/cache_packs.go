@@ -91,9 +91,11 @@ func PackFileName(file string) bool {
 
 // BucketFetchTimeout bounds a fetch's one attempt to fill a fresh feed from its repository cache's
 // bucket, all of it: the ask of the cache's GET /packs, every download from a signed address, and
-// the git verification of what those brought (FetchReport.fromBucket). It is the life of the
-// addresses the answer gives, 15 minutes, so the attempt never outlives what it was given, and it
-// is a bound of its own: an attempt that runs it out falls back to the cache's /tar, whose
+// the git verification of what those brought (FetchReport.fromBucket). It is also the life the
+// cache signs each address of its answer for (repocache's signedLife is this constant), 15
+// minutes, so the attempt never outlives what it was given, and the cache's retirement of an
+// object no set names any more, twice this after the switch that left it out, rests on it. It is a
+// bound of its own: an attempt that runs it out falls back to the cache's /tar, whose
 // verification and the delta from GitHub after it each keep their whole FetchTimeout, and
 // FetchBudget counts it beside them.
 const BucketFetchTimeout = 15 * time.Minute
@@ -298,15 +300,21 @@ func askPacks(ctx context.Context, request FetchRequest) (PackManifest, error) {
 	return manifest, nil
 }
 
-// bucketName is the characters and ends of a Cloud Storage bucket's name as the cache's bucket is
-// configured (config's cloudStorageBucketName), which validBucketName holds with its lengths.
+// bucketName is the characters and ends of a Cloud Storage bucket's name, which ValidBucketName
+// holds with its lengths.
 var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*[a-z0-9]$`)
 
-// validBucketName reports whether name is a Cloud Storage bucket's name as the cache's bucket is
-// configured (config's cloudStorageBucketName): 3 to 222 lower-case letters, digits, dashes,
-// underscores and dots, starting and ending with a letter or a digit, with 1 to 63 of them between
-// two dots, so it stands in an address's path as it is.
-func validBucketName(name string) bool {
+// ValidBucketName reports whether name has a Cloud Storage bucket's shape: 3 to 222 lower-case
+// letters, digits, dashes, underscores and dots, starting and ending with a letter or a digit, with
+// 1 to 63 of them between two dots, so a name with no dot is 3 to 63 long, and it stands in an
+// address's path as it is (https://cloud.google.com/storage/docs/buckets#naming). It is the one
+// rule of a bucket's name: the loader holds runtime.kubernetes.repository_cache.bucket to it, and a
+// fetch holds a /packs manifest's bucket to it (PackManifest.check), so the loader accepts no
+// bucket that every fetch then refuses, nor the reverse. It holds the shape alone, which is what
+// keeps an address (`gs://…`), a capital or a path out of the configuration; the rest of Cloud
+// Storage's rules (no `goog` prefix, no name that is an IP address) are its own, which it applies
+// where the bucket is made, before any cache reads it.
+func ValidBucketName(name string) bool {
 	if len(name) < 3 || len(name) > 222 || !bucketName.MatchString(name) {
 		return false
 	}
@@ -341,7 +349,7 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //
 // The refusal names the member, and never the address: that is a credential for its object.
 func (m PackManifest) check(request FetchRequest) error {
-	if !validBucketName(m.Bucket) {
+	if !ValidBucketName(m.Bucket) {
 		return fmt.Errorf("it names the bucket %q, which is no Cloud Storage bucket's name", m.Bucket)
 	}
 	if len(m.Refs) == 0 {
