@@ -51,14 +51,12 @@ func TestWorkerClaimRefusesARoleThatIsNoRole(t *testing.T) {
 	}
 }
 
-// Under the task key a phases row is one agent's (PhaseRow.Key), so a later entry of a task's step
-// for another agent writes a row of its own beside the earlier agent's, and the earlier row keeps
-// naming the task. A task runs one step at a time, so the row whose entry was raised last works it:
-// the claim of the role's worker is that row's claim, at the same place or a later one. The moment
-// an entry was raised orders two claims' rows, since each claim numbers its own entries: a later
-// agent's first entry, numbered below the earlier agent's, is still the later. Two tasks' steps of
-// the role worked by two agents at once name no one worker, and the read is refused so the caller
-// names the claim it means.
+// Of several rows of a role, as a later key of phases by step will hold, a task runs one step at a
+// time, so the row whose entry was raised last works it: the claim of the role's worker is that
+// row's claim, at the same place or a later one. The moment an entry was raised orders two claims'
+// rows, since each claim numbers its own entries: a later agent's first entry, numbered below the
+// earlier agent's, is still the later. Two tasks' steps of the role worked by two agents at once
+// name no one worker, and the read is refused so the caller names the claim it means.
 func TestWorkerClaimReadsEachTaskAtItsLatestEntry(t *testing.T) {
 	const keyed claim.Token = "legion-legion-infra-12-implementer"
 	const later claim.Token = "legion-legion-infra-12-reviewer"

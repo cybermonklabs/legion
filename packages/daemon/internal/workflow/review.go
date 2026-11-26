@@ -860,7 +860,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		return intake.Result{}, err
 	}
 	issue := &scope.issue
-	reviewer, err := e.stepRow(ctx, tx, *scope, claim.RoleReviewer)
+	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return intake.Result{}, err
 	}
