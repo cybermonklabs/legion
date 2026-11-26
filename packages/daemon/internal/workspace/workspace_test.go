@@ -113,8 +113,8 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 
 	actual := command
 	actual.Argv = append([]string(nil), command.Argv...)
-	// A clone from a pod's feed reaches it through the insteadOf its own environment names.
-	if isClone(actual.Argv) && !slices.Contains(command.Env, "GIT_ALLOW_PROTOCOL=file") {
+	// A Jujutsu clone reaches the fixture remote directly through the runner's rewritten argument.
+	if isClone(actual.Argv) {
 		actual.Argv[3] = r.remote
 	}
 	if actual.Argv[0] == "git" && slices.Contains(actual.Argv, "clone") {
@@ -124,7 +124,7 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 			}
 		}
 	}
-	// The fetch into a feed that already holds the repository, and its read of GitHub's HEAD, name
+	// A fetch into the repository cache's existing bare clone, and its read of GitHub's HEAD, name
 	// GitHub in their argv, too.
 	if len(actual.Argv) > 2 && actual.Argv[0] == "git" && (slices.Contains(actual.Argv, "fetch") || slices.Contains(actual.Argv, "ls-remote")) {
 		for i, arg := range actual.Argv {
@@ -284,10 +284,10 @@ func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
 }
 
 // A default branch whose name jj's own parser would read as syntax (`#`, `%`, `|`, `"`) names that
-// one branch and no other: on the host's path and on a pod's feed, provisioning starts at its head,
-// never at the decoy branch the bare name would select or fail on, both for the first workspace
-// and for one recreated after its directory and branch were lost, once the default branch has
-// moved on GitHub: the feed's fetch brings the branch by its exact name.
+// one branch and no other: on the host's path, provisioning starts at its head, never at the decoy
+// branch the bare name would select or fail on, both for the first workspace and for one recreated
+// after its directory and branch were lost, once the default branch has moved on GitHub: the direct
+// GitHub fetch brings the branch by its exact name.
 func TestProvisionStartsAtADefaultBranchWhoseNameJJWouldParse(t *testing.T) {
 	for _, tc := range []struct{ branch, decoy string }{
 		{"release#stable", "release"},

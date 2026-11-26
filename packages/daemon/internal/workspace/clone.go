@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -274,33 +275,31 @@ func (s gitHubSource) open(_ ghrepo.Repository, bookmark, defaultBranch string) 
 	return r, nil
 }
 
-// CacheRepository is where Fetch clones repository under a feed directory, and where a feed
-// Source clones and fetches it from: <feed>/<owner>/<name>.git, the layout the repository cache's
-// volume shares. The zero repository is refused, as Location refuses it: it names the feed's own
-// `.git`.
-func CacheRepository(feed string, repository ghrepo.Repository) (string, error) {
+// CacheRepository is where Fetch clones a repository under the repository cache's root:
+// <root>/<owner>/<name>.git, the layout the repository cache's volume shares. The zero repository
+// is refused, as Location refuses it: it could name the root's own `.git`.
+func CacheRepository(root string, repository ghrepo.Repository) (string, error) {
 	if repository.IsZero() {
 		return "", errors.New("workspace repository is required")
 	}
-	if feed == "" {
-		return "", errors.New("workspace feed directory is required")
+	if root == "" {
+		return "", errors.New("workspace cache root is required")
 	}
-	return filepath.Join(feed, repository.Owner(), repository.Name()+".git"), nil
+	return filepath.Join(root, repository.Owner(), repository.Name()+".git"), nil
 }
 
 // CacheEntry is whether name — a path inside a bare repository, slash-separated and relative to it,
-// a directory when dir is set — is one of the refs and packs the repository cache streams and a
-// feed takes from it: HEAD, packed-refs, what lies under refs/, and each pack of objects/pack/,
-// both its pack-<id>.pack and the pack-<id>.idx git reads it through. The index comes with the
-// pack because building it again costs every issue pod minutes of CPU on a large repository
-// (`git index-pack` inflates and hashes every object); the feed holds both to the checksums git
-// wrote into them and takes the index's names on the cache's word, which verifyCache states
-// exactly. Never a loose object, a
-// pack's reverse index or bitmap, a multi-pack index or a commit-graph, which git builds for
-// itself; never the repository's own configuration, hooks, info or description, which a feed makes
-// for itself, nor objects/info/alternates or http-alternates, which would point the feed at
-// objects elsewhere; and never a file or directory git is still writing (tmp_*, incoming-*,
-// *.lock).
+// a directory when dir is set — is one of the refs and packs the repository cache streams into an
+// issue pod's clone: HEAD, packed-refs, what lies under refs/, and each pack of objects/pack/, both
+// its pack-<id>.pack and the pack-<id>.idx git reads it through. The index comes with the pack
+// because building it again costs every issue pod minutes of CPU on a large repository (`git
+// index-pack` inflates and hashes every object); the clone holds both to the checksums git wrote
+// into them and takes the index's names on the cache's word, which verifyCache states exactly. Never
+// a loose object, a pack's reverse index or bitmap, a multi-pack index or a commit-graph, which git
+// builds for itself; never the repository's own configuration, hooks, info or description, which
+// the clone makes for itself, nor objects/info/alternates or http-alternates, which would point the
+// clone at objects elsewhere; and never a file or directory git is still writing (tmp_*,
+// incoming-*, *.lock).
 func CacheEntry(name string, dir bool) bool {
 	base := path.Base(name)
 	if strings.HasPrefix(base, "tmp_") || strings.HasPrefix(base, "incoming-") || strings.HasSuffix(base, ".lock") {
@@ -355,7 +354,7 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	if source.issue != nil {
 		temporary, err = stageBeside(cloneDir, source.issue.log)
 	} else {
-		temporary, err = os.MkdirTemp(filepath.Dir(cloneDir), filepath.Base(cloneDir)+".clone-")
+		temporary, err = os.MkdirTemp(filepath.Dir(cloneDir), filepath.Base(cloneDir)+cloneSuffix)
 	}
 	if err != nil {
 		return fmt.Errorf("create temporary clone directory: %w", err)
@@ -481,9 +480,8 @@ func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remo
 	if err != nil {
 		return 0, 0, "", err
 	}
-	argv := append(append([]string{}, feedGit...), "--git-dir="+gitDir, "fetch", "--no-tags", "--prune", "--quiet", GitHubURL(issue.repository))
-	argv = append(argv, fetchRefs...)
-	if _, err := transferWithRetries(ctx, run, request, feedTransfer{verb: "fetch", argv: argv, dir: cloneDir}, held, deadline); err != nil {
+	argv := slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir, "fetch", "--no-tags", "--prune", "--quiet", GitHubURL(issue.repository)}, fetchRefs)
+	if _, err := transferWithRetries(ctx, run, request, gitHubTransfer{verb: "fetch", argv: argv, dir: cloneDir}, held, deadline); err != nil {
 		return 0, 0, "", err
 	}
 	after, err := objectsSize(gitDir)
@@ -568,7 +566,7 @@ func setIssueHeads(ctx context.Context, run Runner, gitDir, current string, defa
 }
 
 func keepIssueRefs(ctx context.Context, run Runner, gitDir, current string, defaults []string, bookmark string) error {
-	refs, err := feedRefs(ctx, run, gitDir, true)
+	refs, err := repositoryRefs(ctx, run, gitDir, true)
 	if err != nil {
 		return err
 	}

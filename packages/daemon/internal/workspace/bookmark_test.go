@@ -451,9 +451,8 @@ func nothingProvisioned(t *testing.T, run *recordingRunner, before int, workspac
 
 // An issue branch another clone pushed before this workspace existed — a repository's fixture, or
 // the branch an earlier pod of the issue pushed before its disk went with it — is where the
-// workspace starts:
-// provisioning tracks legion/<KEY>@origin and adds the workspace at it, on the host's path and on
-// a pod's feed. The branch's commits are in the workspace, the local bookmark is the remote's, and
+// workspace starts: provisioning tracks legion/<KEY>@origin and adds the workspace at it, on the
+// host's path. The branch's commits are in the workspace, the local bookmark is the remote's, and
 // the issue's next push moves that branch.
 func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 	for _, path := range []string{"host"} {
@@ -493,10 +492,10 @@ func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 // branch — an integration branch, whose root commit is its own, which is what one consumer of
 // Legion has — is where the workspace starts, as any other branch only the remote has:
 // provisioning tracks legion/<KEY>@origin and adds the workspace at that commit, on the host's
-// path and on a pod's feed, so the workspace holds the branch's files and none of main's.
+// path, so the workspace holds the branch's files and none of main's.
 // TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas says nothing about this shape: its branch is
-// pushed from the remote's default branch, so its commit is a descendant of main, and a
-// provisioning that walked main's history instead would still reach it.
+// pushed from the remote's default branch, so its commit is a descendant of main, and a provisioning
+// that walked main's history instead would still reach it.
 func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T) {
 	for _, path := range []string{"host"} {
 		t.Run(path, func(t *testing.T) {

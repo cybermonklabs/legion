@@ -112,15 +112,15 @@ type Runner interface {
 // Request contains the credential and identity of the repository to provision. Repo is the
 // configured GitHub owner/repository name, for example "sjawhar/legion-smoke". DefaultBranch is
 // the repository's default branch as GitHub names it, a branch name used verbatim
-// (release/v7.1): the base an issue with no branch starts at, and the branch a pod's feed brings
-// beside the issue's own.
+// (release/v7.1): the base an issue with no branch starts at, and the branch an issue pod's clone
+// fetches beside the issue's own.
 type Request struct {
 	StateDir         string
 	Repo             ghrepo.Repository
 	Issue            string
 	DefaultBranch    string
 	CredentialHelper string
-	// Source is how the shared clone reaches the repository: FromFeed or FromGitHub.
+	// Source is how FromGitHub or ForIssuePod reaches the repository.
 	Source Source
 	// Log takes the one line provisioning logs: the commits it set aside when it started a merged
 	// issue's workspace at the default branch (createWorkspace).
@@ -225,9 +225,7 @@ var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}, {"gc.auto", "
 
 // transportEnvironment is set on every process provisioning starts before the command's own
 // environment: git reaches a remote over https alone, so a url.<base>.insteadOf the tree wrote
-// cannot turn a clone or fetch into an ext:: command, an ssh command, or a local path. A command
-// that reaches a local repository on purpose — the shared clone's, from a pod's feed — names the
-// file transport alone instead.
+// cannot turn a clone or fetch into an ext:: command, an ssh command, or a local path.
 var transportEnvironment = []string{"GIT_ALLOW_PROTOCOL=https"}
 
 type execRunner struct {
@@ -887,9 +885,7 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 	// The fetch takes no snapshot of the clone's working copy: a snapshot runs the working-copy
 	// filter, fsmonitor, and signing programs jj's configuration names, which a tree agent can set,
 	// and on the tmux runtime this fetch holds the one-shot credential. A failed fetch returns its
-	// own error. A pod's clone borrows the feed's objects through its alternates (feedClone), and no
-	// connectivity scan stands here to diagnose a clone whose borrowed history went: Fetch never
-	// removes or replaces a feed it finds present (ownFeedRepository), so that history does not go.
+	// own error.
 	fetch := []string{"git", "fetch"}
 	for _, branch := range source.branches {
 		fetch = append(fetch, "--branch", exactName(branch))
@@ -977,11 +973,12 @@ func configureRepositoryCredential(ctx context.Context, run Runner, cloneDir, cr
 
 // configureCloneReads sets core.warnAmbiguousRefs to false in the shared clone's own
 // configuration, which every workspace of the clone reads too (a git worktree reads its clone's
-// config). With the warning on, git looks up each revision argument as a ref name, to warn when
-// a ref of the same name exists. A leak check's `git rev-list` with about 4,970 `^<sha>`
-// arguments spent 13 s of a measured 78 s on those lookups. The setting turns only the warning
-// off: git resolves every revision the same way. The feed does not take it: Fetch checks the
-// feed's configuration key by key (feedConfigKeys), so an extra key there would be refused.
+// config). With the warning on, git looks up each revision argument as a ref name, to warn when a
+// ref of the same name exists. A leak check's `git rev-list` with about 4,970 `^<sha>` arguments
+// spent 13 s of a measured 78 s on those lookups. The setting turns only the warning off: git
+// resolves every revision the same way. The repository cache does not take it: Fetch checks the
+// cache configuration key by key (cacheConfigKeys), so an extra key makes the cache foreign and
+// triggers its replacement.
 func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error {
 	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
 	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
@@ -1019,9 +1016,9 @@ func configureIssueCloneMaintenance(ctx context.Context, run Runner, cloneDir st
 // places, each for gits the others miss: the role environment's GIT_CONFIG pairs (sandbox's
 // gitConfigPairs, through PackWindowConfig), for every role's git and the git jj runs for a push or
 // a fetch; the worker image's /etc/gitconfig (packages/daemon/docker/worker.Dockerfile), for
-// provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own
-// configuration (configurePackWindows), for the shared public leak check's git; and `-c` on the git
-// of Fetch, CacheGit, CacheGitWithin and CacheGitStdin (feedGit), which reads no system file (isolatedGitConfig).
+// provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's
+// own configuration (configurePackWindows), for the shared public leak check's git; and the
+// isolatedGit command prefix, which reads no system file (isolatedGitConfig).
 // The Dockerfile cannot read this list, so it writes the four values out twice: its `git config
 // --system` writes, and the smoke list its build holds /etc/gitconfig to. What holds both copies to
 // this list in CI is TestTheWorkerImageWritesPackWindowConfig (sharedclone_test.go), which reads
@@ -1051,7 +1048,7 @@ func PackWindowConfig() [][2]string { return slices.Clone(packWindowConfig) }
 // runtime too (the daemon's Provision with FromGitHub), where they only bound git's pack windows; a
 // clone made before the setting existed, or one whose file a role changed, takes it at its next
 // provision. --replace-all leaves one line of each key whatever the file held, a key a role set
-// twice included. The feed does not take them, for the reason configureCloneReads gives.
+// twice included. The repository cache does not take them, for the reason configureCloneReads gives.
 func configurePackWindows(ctx context.Context, run Runner, cloneDir string) error {
 	for _, pair := range packWindowConfig {
 		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
@@ -1080,7 +1077,7 @@ func configurePackWindows(ctx context.Context, run Runner, cloneDir string) erro
 // (--local), so a line of the global or system configuration cannot stop the write. Its exit is
 // the answer once the read answered (answered): exit 0, a gh-resolved line the clone holds, writes
 // nothing; exit 1, which git gives, printing nothing, where no key matches, writes the marker; and
-// any other answer fails the provision. The feed does not take the line, for the reason
+// any other answer fails the provision. The repository cache does not take the line, for the reason
 // configureCloneReads gives.
 func configureCloneDefaultRepository(ctx context.Context, run Runner, cloneDir string) error {
 	gitDir := cloneDir + "/.git"
