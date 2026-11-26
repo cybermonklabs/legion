@@ -298,7 +298,10 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     box: "margin-composer",
     covered: true,
     delivers: true,
-    files: ["packages/dispatch/web/src/features/margin/CommentsTab.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/margin/CommentsTab.tsx",
+      "packages/dispatch/web/src/features/issue-page/text-comments/SelectionComposer.tsx",
+    ],
     issueRows: true,
     reach: "Comment",
     write: "comment",

@@ -186,6 +186,7 @@ export function SelectionComposer({
   };
   return (
     <div className="flex min-w-0 flex-col gap-2" onKeyDownCapture={leaveOnEscape}>
+      {/* The selected words, as the server's plain text reads them: the reading list's `anchor-quote`. */}
       <blockquote className="border-l-2 pl-2 text-sm">{quoteLine(words.quote)}</blockquote>
       <MentionComposer
         autoFocus
