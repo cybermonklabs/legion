@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+    The worker image pins CodeGraph CLI 1.6.4 in place of 1.5.0. 1.5.0 reads only the `go.mod` at the
+    root of the indexed directory, so in this repository, whose Go modules sit below the root, its
+    `impact` and `callers` missed every Go call from another package: `callers ComposePrompt` named 1
+    caller where 1.6.4 names 8. The warm-up now rebuilds, once, an index that another CLI version
+    built, with the same lease and lock rules as the repair of a partial index: `status --json` of a
+    1.5.0 index opened by 1.6.4 reads `index.state: "complete"` and `index.reindexRecommended: false`,
+    so the warm-up compares `index.builtWithVersion` with the CLI's own `version`, and the rebuild
+    runs at most once per workspace per process and not again once the index names 1.6.4. A kept
+    volume's old index is therefore rebuilt at its first start under this release. On two CPUs and
+    8 GiB, with the image's Node, a build of this repository took 143 to 161 s and peaked at 2.6 to
+    2.7 GiB of resident memory on 1.5.0, and 227 to 248 s and 3.1 to 3.2 GiB on 1.6.4.
+time: 2026-11-26T23:04:40Z
+custom:
+    Issue: INFRA-4950

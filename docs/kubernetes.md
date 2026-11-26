@@ -6425,7 +6425,7 @@ the disk is the pod's own, or a kept volume that one pod mounts at a time, and n
 Each role's shim is started with `--warm-codegraph`:
 once its Oh My Pi has written its first frame
 — its extensions loaded, its RPC loop serving
-— the shim builds the workspace's CodeGraph index in the background (`codegraph init`, or `codegraph index` to repair one an earlier build left partial, as `codegraph status --json` decides).
+— the shim builds the workspace's CodeGraph index in the background (`codegraph init`, or `codegraph index` to repair one an earlier build left partial or one another CLI version built, as `codegraph status --json` decides from `index.state` and from `index.builtWithVersion` against the CLI's own `version`).
 Nothing waits on it: not the launch, not the role's registration, not a prompt.
 Six role shims share one workspace, so the warm-up holds a lease at `.codegraph/legion-warm.lock` for its run
 — an exclusive create whose holder refreshes its mtime every 10 s, taken over once it is 60 s stale, the takeover itself under a second exclusive create beside it so two shims that both read one stale lease never both build
@@ -6439,6 +6439,7 @@ it waits for that release at least 3 s and at most what the pod's `terminationGr
 The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
 A relaunch in a new pod finds no index and builds one, as the issue's first pod did, except on [a kept volume](#a-kept-volume-on-a-microvm-pod), where it finds the index that the earlier pod left.
+An index that an older CLI built on a kept volume is rebuilt once, by the first warm-up that finds its `index.builtWithVersion` is not the CLI's `version`, and by no later one.
 The roles' CodeGraph queries (`impact`, `callers`, `affected`, `explore`) answer once `codegraph status --json` reports `index.state: "complete"`;
 before that, or when an answer is empty, a role reads the source itself, as its prompt says.
 The init containers never call `codegraph`.
