@@ -44,32 +44,56 @@ var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prom
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary
 // (readIdleView, IssueReleaseStop), and, where it is a start, at the teardown (IssueRelease): a
-// row of one of those kinds, but two rows that a release under them takes nothing from.
+// row of one of those kinds, but three kinds of row that a release under them takes nothing from.
 //
-// A start queued for news of the approved design alone (record.SuperviseRequest.News, which its
-// payload writes as `"news": true`). Such a start reaches only a claim already given its phase's
-// entry, and the claim an idle release suspended is one: the start resumes it as any start does,
-// so a release under the start loses nothing, and the role comes back with its news. And such a
-// start can wait a long time. A merger's waits for its tree's design gate for the whole time the
-// gate stays closed (the daemon's mergerWaitsForTheDesignGate), and any one waits behind a task
-// its claim has not finished (supervise's queue). A pod held for it would stand idle for all that
-// time.
+// Two kinds of start that can wait a long time. Each reaches its role only when it runs, and the
+// claim an idle release suspended comes back when it does: the start resumes it as any start does.
+//
+//   - A start queued for news of the approved design alone (record.SuperviseRequest.News, which
+//     its payload writes as `"news": true`). Such a start reaches only a claim already given its
+//     phase's entry, and the claim an idle release suspended is one, so the role comes back with
+//     its news. A merger's waits for its tree's design gate for the whole time the gate stays
+//     closed (the daemon's mergerWaitsForTheDesignGate), and any one waits behind a task its claim
+//     has not finished (supervise's queue).
+//   - A worker start that waits for its issue's admission slot while no slot of the issue stands
+//     (slotWaitingStart). Its issue gave its slot back or had its work come back, and it waits in
+//     the admission line for as long as its blocker stays open or the line is ahead of it. Once
+//     the slot stands the start is due, and it holds the pod as any start does.
 //
 // A hook prompt (record.HookPrompt) or a phase-ended message (record.PhaseEnded) to a role that has
 // no claim on the issue, or whose claim failed, was retired or was suspended for any cause but an
-// idle release. Such a role comes back only by a start or a person's resume, and either brings a
-// pod of its own, so a release under the row loses it nothing: the row waits on and ends
-// undelivered once its hour has passed, a hook prompt with a message on the issue and a
-// phase-ended message with a log line (the daemon's keptRoleMessageEnded). A pod held for it
-// would stand idle for that hour. A claim that runs or is starting holds the pod, since its
-// session is in this pod or coming to it, and so does a claim an idle release suspended, since
-// the row's own first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on
-// either way, about one a minute on its backoff, and the Envoy listener answers each `404` with a
-// WARN request line, a refusal exception and a role wake report.
+// idle release (heldMessageForNoClaimThisPodAnswers). Such a role comes back only by a start or a
+// person's resume, and either brings a pod of its own, so a release under the row loses it
+// nothing: the row waits on and ends undelivered once its hour has passed, a hook prompt with a
+// message on the issue and a phase-ended message with a log line (the daemon's
+// keptRoleMessageEnded). A claim that runs or is starting holds the pod, since its session is in
+// this pod or coming to it, and so does a claim an idle release suspended, since the row's own
+// first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on either way,
+// about one a minute on its backoff, and the Envoy listener answers each `404` with a WARN request
+// line, a refusal exception and a role wake report.
+//
+// A pod held for any of them would stand idle for all that time.
 const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')
-	and not (kind in ('hook_prompt', 'phase_ended') and not exists (select 1 from claims c
-		where c.issue = outbox.issue and c.role = outbox.payload->>'role'
-			and (c.state not in ('suspended', 'failed', 'retired') or (c.state = 'suspended' and c.suspended_by = 'released'))))`
+	and not (` + slotWaitingStart + `)
+	and not (` + heldMessageForNoClaimThisPodAnswers + `)`
+
+// slotWaitingStart is the predicate, over an outbox row the statement names `outbox`, of a worker
+// start marked as waiting for its issue's admission slot (record.SuperviseRequest.NeedsSlot, which
+// its payload writes as `"needsSlot": true`) while no slot of that issue stands. It is record's
+// outboxInOrder rule for such a row, which holds it back until the slot comes, written out here as
+// the store writes every statement of its own; TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot
+// holds the two together. The idle rule leaves such a start out (idleWaitingRow); what it means
+// for a backstop is PodRecords.WaitsForItsSlot's to say.
+const slotWaitingStart = `kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'needsSlot', '') = 'true'
+	and not exists (select 1 from slots where slots.issue = outbox.issue)`
+
+// heldMessageForNoClaimThisPodAnswers is the predicate, over an outbox row the statement names
+// `outbox`, of a hook prompt or a phase-ended message whose role has no claim on the issue that
+// runs, is starting, or was suspended by an idle release. The idle rule leaves such a row out
+// (idleWaitingRow).
+const heldMessageForNoClaimThisPodAnswers = `kind in ('hook_prompt', 'phase_ended') and not exists (select 1 from claims c
+	where c.issue = outbox.issue and c.role = outbox.payload->>'role'
+		and (c.state not in ('suspended', 'failed', 'retired') or (c.state = 'suspended' and c.suspended_by = 'released')))`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the check of the workspace for unpushed

@@ -1,5 +1,6 @@
 /** The Inbox's reading column over one fixed list: the two shapes of card it draws, the keys
- *  and the address that drive the selection, and what the narrow widths and the drawer keep.
+ *  and the address that drive the selection, the row the narrow widths read in place of the
+ *  list, and the card the drawer keeps.
  *
  *  Each reads what the page draws, so each runs against a recording rather than against a
  *  harness (packages/dispatch/README.md, "The stubbed layer"). The rows that answer or approve,
@@ -7,8 +8,9 @@
  *  two that read a decision block out of the live document editor stayed in
  *  `inbox-reading-pane.e2e.ts`.
  */
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
+import { peekTrigger } from "./inbox-drawer";
 import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
 import {
   ADDED_WORD,
@@ -92,28 +94,64 @@ test("the arrow keys, j, k, Enter and ?item= drive the reading pane @pr", async 
   await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", scene.decisionAskId);
 });
 
-test("the Inbox keeps today's card below 1280 px and in the drawer @phone @pr", async ({
+test("below 1280 px the Inbox reads the row it opens in place of the list, and the drawer keeps the card @phone @pr", async ({
   page,
   scene,
 }) => {
-  // One pixel below the column's width the Inbox is the list of cards it has always been.
+  // One pixel below the column's width the Inbox lists the short rows it lists beside the
+  // column, with no card in them and no pane beside them.
   await page.setViewportSize({ height: 900, width: 1279 });
   await page.goto(INBOX);
   await expect(inboxList(page)).toBeVisible();
   await expect(inboxPane(page)).toHaveCount(0);
-  const decisionCard = page.getByTestId(`ask-${scene.decisionAskId}`);
-  await expect(decisionCard.locator("[data-ask-answer]")).toBeVisible();
-  await expect(decisionCard.getByRole("link", { name: "Open in document" })).toBeVisible();
+  await expect(page.getByTestId(`ask-${scene.plainAskId}`)).toHaveCount(0);
+  await expect(page).toHaveURL(INBOX);
 
-  // And so it is on a phone.
+  // The row the reader opens is read in place of the list, its card under the view's own Inbox
+  // control, which takes the reader back to the list at that row.
+  const row = page.locator(`[data-inbox-row="${scene.plainAskId}"]`);
+  await row.locator("time").first().click();
+  const view = page.getByTestId("inbox-reading-view");
+  await expect(view).toBeVisible();
+  await expect(inboxList(page)).toBeHidden();
+  await expect(
+    view.getByTestId(`ask-${scene.plainAskId}`).locator("[data-ask-answer]")
+  ).toBeVisible();
+  await expect(page).toHaveURL(inboxAt(scene.plainAskId));
+  await view.getByRole("button", { exact: true, name: "Back to the Inbox list" }).click();
+  await expect(view).toHaveCount(0);
+  await expect(row).toBeFocused();
+  await expect(page).toHaveURL(INBOX);
+
+  // And so it is on a phone, where the browser's Back leaves the view as the control does.
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto(INBOX);
-  await expect(inboxPane(page)).toHaveCount(0);
-  await expect(decisionCard.locator("[data-ask-answer]")).toBeVisible();
-  await expect(decisionCard.getByRole("link", { name: "Open in document" })).toBeVisible();
+  await row.locator("time").first().click();
+  await expect(
+    view.getByTestId(`ask-${scene.plainAskId}`).locator("[data-ask-answer]")
+  ).toBeVisible();
+  const widths = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(widths.scroll).toBe(widths.client);
+  await page.goBack();
+  await expect(view).toHaveCount(0);
+  await expect(row).toBeFocused();
 
-  // The approval card's own diff is the change view, with the same marks the column draws.
-  const approvalCard = page.getByTestId(`ask-${scene.approvalAskId}`);
+  // The drawer is a peek over the page it covers, so it keeps the card at every width - on a
+  // phone it opens from the compact top bar's Peek - and the approval card's own diff is the
+  // change view, with the same marks the column draws.
+  await page.goto(`/issues/${scene.decisionIssueKey}`);
+  await peekTrigger(page).click();
+  const drawer = page.getByRole("dialog", { name: "Inbox" });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByTestId("inbox-pane")).toHaveCount(0);
+  const drawerCard = drawer.getByTestId(`ask-${scene.decisionAskId}`);
+  await expect(drawerCard.locator("[data-ask-answer]")).toBeVisible();
+  await expect(drawerCard.getByRole("link", { name: "Open in document" })).toBeVisible();
+
+  const approvalCard = drawer.getByTestId(`ask-${scene.approvalAskId}`);
   await approvalCard.getByRole("button", { name: "Show diff" }).click();
   const diff = approvalCard.getByTestId("change-view");
   const changed = diff.locator('[data-change="changed"]');
@@ -133,18 +171,67 @@ test("the Inbox keeps today's card below 1280 px and in the drawer @phone @pr", 
   expect(blocks[at - 1]).toBe(SCOPE_ANCHOR);
   expect(blocks[at + 1]).toBe(WINDOW_ANCHOR);
   await expect(diff.locator('[data-change="removed"] del')).toHaveText([RETIRED_BLOCK]);
+});
 
-  // The drawer is a peek beside the page it covers, so it keeps the card at every width.
-  await page.setViewportSize({ height: 900, width: 1440 });
-  await page.goto(`/issues/${scene.decisionIssueKey}`);
-  await page
-    .getByRole("navigation", { name: "Navigation" })
-    .getByRole("button", { name: "Peek at the inbox without leaving this page" })
-    .click();
-  const drawer = page.getByRole("dialog", { name: "Inbox" });
-  await expect(drawer).toBeVisible();
-  await expect(drawer.getByTestId("inbox-pane")).toHaveCount(0);
-  const drawerCard = drawer.getByTestId(`ask-${scene.decisionAskId}`);
-  await expect(drawerCard.locator("[data-ask-answer]")).toBeVisible();
-  await expect(drawerCard.getByRole("link", { name: "Open in document" })).toBeVisible();
+/**
+ * How far a press on the short row's checkbox reaches: from the box's centre, the pixels along
+ * each axis where `elementFromPoint` finds the box's own label, and whether every point of a
+ * grid over the rectangle they span finds it too. A finger lands where the browser hit-tests, so
+ * this reads the press square the row draws rather than any box's size.
+ */
+async function markSquare(page: Page, askId: string) {
+  return page
+    .locator(`[data-inbox-row="${askId}"] input[type="checkbox"]`)
+    .evaluate((box: HTMLInputElement) => {
+      // `elementFromPoint` answers only inside the window, and on a phone the row can start
+      // below it.
+      box.scrollIntoView({ block: "center" });
+      const label = box.closest("label");
+      const rect = box.getBoundingClientRect();
+      const x = Math.round(rect.left + rect.width / 2);
+      const y = Math.round(rect.top + rect.height / 2);
+      const takes = (atX: number, atY: number) => {
+        const hit = document.elementFromPoint(atX, atY);
+        return hit !== null && label?.contains(hit) === true;
+      };
+      if (!takes(x, y)) return { covered: false, height: 0, width: 0 };
+      const reach = (dx: number, dy: number) => {
+        let step = 0;
+        while (step < 60 && takes(x + (step + 1) * dx, y + (step + 1) * dy)) step += 1;
+        return step;
+      };
+      const left = reach(-1, 0);
+      const right = reach(1, 0);
+      const up = reach(0, -1);
+      const down = reach(0, 1);
+      let covered = true;
+      for (let column = 0; column <= 4; column += 1) {
+        for (let line = 0; line <= 4; line += 1) {
+          const atX = x - left + ((left + right) * column) / 4;
+          const atY = y - up + ((up + down) * line) / 4;
+          covered &&= takes(Math.round(atX), Math.round(atY));
+        }
+      }
+      return { covered, height: up + down + 1, width: left + right + 1 };
+    });
+}
+
+test("a short row's checkbox takes a press anywhere in a 44 px square, beside the column and below it @phone @pr", async ({
+  page,
+  scene,
+}) => {
+  // The row opens on a press anywhere but its controls, so a finger aiming at the 16 px box has
+  // the 44 px every control gives it, at the column's width and on a phone alike.
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 844, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    await page.goto(INBOX);
+    await expect(page.locator(`[data-inbox-row="${scene.plainAskId}"]`)).toBeVisible();
+    const square = await markSquare(page, scene.plainAskId);
+    expect(square.width, `the square's width at ${size.width} px`).toBeGreaterThanOrEqual(44);
+    expect(square.height, `the square's height at ${size.width} px`).toBeGreaterThanOrEqual(44);
+    expect(square.covered, `every point of the square at ${size.width} px`).toBe(true);
+  }
 });

@@ -299,7 +299,7 @@ type PersonSignIns func(ctx context.Context, in PersonSignIn) error
 func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 	names := make([]string, 0, len(types))
 	for name := range types {
-		if name != oauthwire.ActorTokenTypeMachine {
+		if name != oauthwire.ActorTokenTypeMachine && name != oauthwire.TokenTypeProxyPlaceholder {
 			names = append(names, name)
 		}
 	}
@@ -318,6 +318,9 @@ func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	types := map[string]oauth2.RFC8693TokenType{
 		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
+		// The proxy placeholder, the one other type a caller may ask for: a person's sign-in
+		// traded for the approve capability (exchangeGrant, grantApprove). It is no subject type.
+		oauthwire.TokenTypeProxyPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeProxyPlaceholder},
 	}
 	if c.Kubernetes.configured() {
 		types[oauthwire.SubjectTokenTypeKubernetes] = &rfc8693.JWTType{
@@ -471,6 +474,13 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // all follow the holder's key. Its expiry is bounded by its subject's (subjectBound), and its
 // answer names no credential.
 //
+// A trade that asks for the approve capability's proxy placeholder (placeholderTrade) is answered
+// no token. It may not ask for oauthwire.ScopeRead, and one that does is refused before the
+// transaction, since a trade narrowed to reading approves nothing. The library builds nothing for
+// it: the approve grant is written in the transaction instead (grantApprove), and sets the expiry
+// the session name is claimed until. Both answers end the same way, with the claim, the commit and
+// the warning for a name the claim took (logSessionTaken), and then the answer is written.
+//
 // trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
 // the library has validated the request, before the exchange decides anything, and a *Refusal it
 // answers is written as that refusal. Nil runs nothing.
@@ -504,6 +514,16 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		}
 	}
 	read := oauthstore.NarrowedRequest(request)
+	placeholderTrade := request.GetRequestForm().Get(formRequestedTokenType) == oauthwire.TokenTypeProxyPlaceholder
+	if read && placeholderTrade {
+		// A trade narrowed to reading approves nothing, and the approve grant holds the scope
+		// approve alone, so a placeholder trade that asks for read - with a cut or a holder proof,
+		// which only such a trade may carry - is refused before its holder proof is read, before
+		// its claims are held to Dispatch and before the transaction: nothing of a grant or a token
+		// is written.
+		p.writeError(ctx, w, request, oauth2.ErrInvalidRequest.WithHintf(placeholderReadRefused, oauthwire.ScopeRead))
+		return
+	}
 	if read {
 		// Before anything below can move the session's access-token expiry, which for a machine
 		// login's token as the subject is that token's own, read back from its row.
@@ -583,12 +603,20 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		p.writeError(ctx, w, request, err)
 		return
 	}
-	if holder != "" {
-		// The token is the holder's: the library stores the session as it stands, answers its
-		// token type from this binding, and an introspection answers it as the token's jkt.
-		session.SetDPoPJWKThumbprint(holder)
+	var placeholderAnswer map[string]any
+	var resp oauth2.AccessResponder
+	if placeholderTrade {
+		// A person's sign-in alone, on a broker that serves the capability: the grant is written
+		// in this transaction, and the library mints nothing.
+		placeholderAnswer, err = p.grantApprove(txCtx, session, subjectTokenType, credentialID)
+	} else {
+		if holder != "" {
+			// The token is the holder's: the library stores the session as it stands, answers its
+			// token type from this binding, and an introspection answers it as the token's jkt.
+			session.SetDPoPJWKThumbprint(holder)
+		}
+		resp, err = p.oauth.NewAccessResponse(txCtx, request)
 	}
-	resp, err := p.oauth.NewAccessResponse(txCtx, request)
 	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return
@@ -603,26 +631,37 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		return
 	}
 	committed = true
+	logSessionTaken(session, taken, fixed)
+	if placeholderTrade {
+		writeOAuthJSON(w, http.StatusOK, placeholderAnswer)
+		return
+	}
 	if credentialID != "" {
 		// Named in the answer as the device login's own token answer names it, so one client
 		// reads a credential the same way whichever grant gave it one.
 		resp.SetExtra(oauthwire.ExtraCredentialID, credentialID)
 		resp.SetExtra(oauthwire.ExtraCredentialExpiresAt, credential.Expires.UTC().Format(time.RFC3339))
 	}
+	p.oauth.WriteAccessResponse(ctx, w, request, resp)
+}
+
+// logSessionTaken writes the warning for a session name claimSession took from another principal
+// (taken, "" for none), once the claim has committed: the two ways a principal loses a name it used
+// within the retention. exchangeGrant writes it for both of its answers, the access token and the
+// approve capability's placeholder, since both claim the name the same way.
+func logSessionTaken(session *oauthstore.ExchangeSession, taken string, fixed bool) {
 	switch {
 	case taken != "" && fixed:
-		// Logged once the claim has committed, because it is one of the two ways a principal
-		// loses a name it used within the retention: the configuration now fixes it for an entry.
+		// The configuration now fixes the name for an entry.
 		slog.Warn("broker: the token exchange took a session name the configuration fixes from its holder",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	case taken != "":
-		// The other way: a claim the configuration does not fix takes a live name only from an
-		// account paired with its own (oauthstore.Store.SetSessionPairs), as an operator moving a
-		// deployment's pods to another account does. Logged once it has committed, as the other.
+		// A claim the configuration does not fix takes a live name only from an account paired
+		// with its own (oauthstore.Store.SetSessionPairs), as an operator moving a deployment's
+		// pods to another account does.
 		slog.Warn("broker: the token exchange took a session name from the account paired with its own",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	}
-	p.oauth.WriteAccessResponse(ctx, w, request, resp)
 }
 
 // subjectBound writes onto a read trade's session what CreateAccessTokenSession bounds the
@@ -649,6 +688,11 @@ func (p *Provider) subjectBound(ctx context.Context, request oauth2.Requester, s
 // holderProofRefused is the refusal of a DPoP-Holder header that holds more than one proof, or a
 // proof that does not verify.
 const holderProofRefused = "The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before."
+
+// placeholderReadRefused is the refusal of a trade that asks for the approve capability's proxy
+// placeholder and for the scope read (its verb is the scope): such a trade is narrowed to reading,
+// and a session narrowed to reading approves nothing.
+const placeholderReadRefused = "A trade for the approve capability's proxy placeholder asks for the scope %s, and a trade narrowed to reading approves nothing: trade for the placeholder without the scope, a cut or a DPoP-Holder proof."
 
 // holderKey reads a trade's holder proof (oauthwire.HeaderDPoPHolder) and answers the thumbprint
 // of the key it proves, or "" for a trade that sends none. The proof is verified with the
@@ -1125,10 +1169,11 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 
 // claimSession claims the session name decide wrote onto session for the principal it decided,
 // until oauthstore.SessionRetention past the expiry the library has just set on the issued token,
-// in the transaction that stores that token: the claim can never end before the token it was made
-// for, and a token whose claim is refused is never stored. It answers the principal it took the
-// name from ("" for none) and whether the configuration fixed the claim, which is what tells
-// exchangeGrant's log a fixed claim's take from a pair's.
+// or grantApprove on the approve grant it wrote, in the transaction that stores that token or
+// grant: the claim can never end before what it was made for, and a token or grant whose claim is
+// refused is never stored. It answers the principal it took the name from ("" for none) and
+// whether the configuration fixed the claim, which is what tells exchangeGrant's log a fixed
+// claim's take from a pair's.
 //
 // It is where the configuration decides who a fixed name belongs to: when this provider's
 // configuration fixes the name for the principal asking (the entry's own caller), the claim holds
