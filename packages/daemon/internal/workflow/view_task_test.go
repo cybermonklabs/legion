@@ -116,18 +116,18 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: gatedRoot, Repo: "sjawhar/legion", Number: 42,
 				Branch: "legion/" + gatedRoot, HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 			complete("implement", intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RoleImplementer, Claim: "implement-claim",
-				Commit: "fix-1", HandoffRecord: "implement-1", HandoffVersion: 1})
+				Commit: headOne, HandoffRecord: "implement-1", HandoffVersion: 1})
 			tester := phaseStartTask(t, pool, claim.RoleTester, phase.Testing)
 			assertViewSentence(t, "the tester's task", tester, tc.view)
 
 			// The tester's completion names the head it tested and no verdict: the states of that
 			// head decide the move, so k1's pass there is applied first (checkstatetest.Tested).
-			tested, id := checkstatetest.Tested(t, pool, gatedRoot, "sjawhar/legion", "fix-1", true)
+			tested, id := checkstatetest.Tested(t, pool, gatedRoot, "sjawhar/legion", headOne, true)
 			if result := apply(id, tested); result.Refusal != nil {
 				t.Fatalf("the tested state was refused: %+v", *result.Refusal)
 			}
 			complete("test", intake.HandoffComplete{Generation: 1, Issue: gatedRoot, Role: claim.RoleTester, Claim: "test-claim",
-				Commit: "fix-1", StatesSerial: tested.Serial, HandoffRecord: "test-1", HandoffVersion: 1})
+				Commit: headOne, StatesSerial: tested.Serial, HandoffRecord: "test-1", HandoffVersion: 1})
 			reviewer := phaseStartTask(t, pool, claim.RoleReviewer, phase.Reviewing)
 			assertViewSentence(t, "the reviewer's task", reviewer, tc.view)
 			if !strings.Contains(reviewer, "Pull request: #42.") {
