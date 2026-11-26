@@ -353,7 +353,7 @@ page() {
 # job is named `<the caller's job> / <this job>`, with its matrix leg in brackets after it, and
 # the caller's own jobs are in the same list: `lint` and `dispatch-multiprocess`, which no
 # caller's prefix names. So are the jobs of ci.yaml's other caller of the workflow, which a pull
-# request labelled full-ci runs in the same run under the same job names.
+# request labelled full-ci runs in the same run under a different caller id.
 #
 # The seconds are a full lane of this file's shape, in round numbers rather than readings: the
 # eight jobs of run 43074443876 took binaries 171, shard (1) 577, shard (2) 705, alone 199,
@@ -364,9 +364,8 @@ page() {
 # job apart, sum to 1,750 s, which is inside the full lane's budget and over the pull-request
 # lane's, so one fixture drives both arms of the machine-time cases below. The caller's two jobs
 # carry 9,999 s each: a sum that held either of them would be past every budget this file has.
-# The other caller's shard (1) carries 800 s, inside the pull-request lane's budget: read into
-# dispatch-browser's sum it moves the 1,750 s those cases hold, and read under its own caller it
-# is that lane's whole sum.
+# The other caller's real and stub legs total 800 s, inside the pull-request lane's budget.
+# Neither belongs to the full lane's sum. The retired embedder job name is dropped.
 happy_page() {
   page "10|dispatch-browser / binaries|success|150" \
     "11|dispatch-browser / shard (1)|success|600" \
@@ -377,8 +376,10 @@ happy_page() {
     "16|lint|success|9999" \
     "17|dispatch-multiprocess|success|9999" \
     "18|dispatch-browser / visual|failure|100" \
-    "19|dispatch-browser-pr / shard (1)|failure|800" \
-    "20|dispatch-browser-pr / merge|null"
+    "19|dispatch-browser-pr / real|failure|500" \
+    "20|dispatch-browser-pr / merge|null" \
+    "27|dispatch-browser-pr / stub|success|300" \
+    "28|dispatch-browser-pr / embedder|failure|9999"
 }
 
 # lane_jobs <name>|<conclusion>[|<seconds>]...: a jobs file of the shape the `jobs` mode writes,
@@ -510,7 +511,7 @@ check "and keeps its conclusion, so reading three can name a build that failed" 
 check "the caller's own jobs are dropped" \
   "$(is "$(jq -r '[.[] | select(.id == 16 or .id == 17)] | length' "$work/out.json")" 0)"
 check "and so are the other caller's" \
-  "$(is "$(jq -r '[.[] | select(.id == 19 or .id == 20)] | length' "$work/out.json")" 0)"
+  "$(is "$(jq -r '[.[] | select(.id == 19 or .id == 20 or .id == 27 or .id == 28)] | length' "$work/out.json")" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 
 echo "case: the route is this run's attempt endpoint"
@@ -529,8 +530,10 @@ echo "case: the other caller's merge job reads its own jobs alone"
 fixture 0
 drive jobs "$work/out.json" dispatch-browser-pr
 check "exits 0" "$(is "$status" 0)"
-check "writes that caller's two jobs and no other" "$(is "$(entries)" 2)"
-check "its shard leg reads shard-1" "$(is "$(field 19 .leg)" shard-1)"
+check "writes that caller's three current jobs and no other" "$(is "$(entries)" 3)"
+check "its real job is the real leg" "$(is "$(field 19 .leg)" real)"
+check "its stub job is the stub leg" "$(is "$(field 27 .leg)" stub)"
+check "the retired embedder job is not kept" "$(is "$(field 28 .name)" "")"
 check "with its own conclusion" "$(is "$(field 19 .conclusion)" failure)"
 check "and the full lane's shard (1) is not in it" "$(is "$(jq -r '[.[] | select(.id == 11)] | length' "$work/out.json")" 0)"
 
@@ -942,7 +945,7 @@ echo "case: the lane's machine time is summed out of the file the jobs mode wrot
 # mode reads it, so the fields one writes and the other reads cannot drift apart. The page is
 # the happy one - binaries 150 s, shard (1) 600, shard (2) 700 (red), alone 200, visual 100
 # (red), multiprocess skipped, merge still running, the caller's two jobs at 9,999 s each and
-# the other caller's shard (1) at 800 s.
+# the other caller's real and stub legs at 500 and 300 s.
 fixture 0
 drive jobs "$work/out.json" "$caller"
 check "the jobs mode exits 0" "$(is "$status" 0)"
@@ -956,7 +959,7 @@ check "which it says is the committed ceiling less this job's own worst case" \
 check "and prints no ::error:: line" "$(is "$(errors)" 0)"
 # 1,750 s is binaries, both shards, alone and visual: a red leg cost its machine time like any
 # other and is in the sum, while the skipped job (-1 s), the merge job (still running), the
-# caller's two 9,999 s jobs and the other caller's 800 s shard are not. Any one of those six in
+# caller's two 9,999 s jobs and the other caller's 800 s of real and stub legs are not. Any job in
 # or out moves the figure above.
 
 echo "case: the same run on the pull-request lane is refused by the lower budget"
@@ -976,16 +979,16 @@ check "and says this is the suite costing more and not a failed row" \
 
 echo "case: the other caller's merge job holds its own lane to that lane's budget"
 # On a pull request labelled full-ci both callers run in one run, and each merge job's reading
-# five sums the jobs its own `jobs` read wrote: dispatch-browser-pr's 800 s shard, under the
-# pull-request lane's 846 s, with none of dispatch-browser's 1,750 s that the page also holds.
+# five sums the jobs its own `jobs` read wrote: dispatch-browser-pr's real and stub legs at 800 s,
+# under the pull-request lane's 846 s, with none of dispatch-browser's 1,750 s.
 fixture 0
 drive jobs "$work/out.json" dispatch-browser-pr
 check "the jobs mode exits 0" "$(is "$status" 0)"
 drive machine-time "$work/out.json" pull-request
 check "the pull-request lane passes under its budget" "$(is "$status" 0)"
-check "summing that caller's one concluded job against the pull-request lane's budget" \
+check "summing that caller's two concluded jobs against the pull-request lane's budget" \
   "$(contains "$(notice_line)" \
-    'the pull-request lane cost 800 s over 1 concluded jobs, this merge job apart, against a budget of 846 s')"
+    'the pull-request lane cost 800 s over 2 concluded jobs, this merge job apart, against a budget of 846 s')"
 check "and prints no ::error:: line" "$(is "$(errors)" 0)"
 
 echo "case: each budget bites at its own second"

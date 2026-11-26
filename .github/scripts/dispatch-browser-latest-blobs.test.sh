@@ -251,12 +251,15 @@ echo "case: the pull-request caller's artifacts read under its own id"
 # merge job reads dispatch-browser-pr-blob-<leg>-<attempt>.
 caller=dispatch-browser-pr
 root=$(fixture pr-caller)
-leg "$root" shard-1 1 first-attempt
-leg "$root" shard-1 2 second-attempt
+leg "$root" real 1 first-attempt
+leg "$root" real 2 second-attempt
+leg "$root" stub 1 stub-first
 run_select "$root"
 check "exits 0" "$(is "$status" 0)"
-check "the output holds attempt 2's blob" "$(is "$(held "$root" blob-report/report-shard-1.zip)" second-attempt)"
-check "says which attempt it took" "$(contains "$out" '^shard-1: attempt 2, passing over attempt(s) 1$')"
+check "the real leg's blob comes from attempt 2" "$(is "$(held "$root" blob-report/report-real.zip)" second-attempt)"
+check "says which attempt it took" "$(contains "$out" '^real: attempt 2, passing over attempt(s) 1$')"
+check "the stub leg keeps its earlier blob" "$(is "$(held "$root" blob-report/report-stub.zip)" stub-first)"
+check "the stub count travels with its blob" "$(is "$(held "$root" rows/stub.txt)" stub-first)"
 caller=dispatch-browser
 
 echo "case: the other caller's artifact is refused, never merged"

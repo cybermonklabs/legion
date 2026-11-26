@@ -1,12 +1,9 @@
 /** The budget the pull-request lane is held to, read from the config the lane runs.
  *
- *  `.github/workflows/dispatch-browser.yaml`'s shard job runs the pull-request lane as
- *  `--project=chromium --project=iphone --project=stub --project=stub-phone` with
- *  `--grep=(^|\s)@pr(\s|$)`, and the full lane as every project with no grep. This lists the
- *  config exactly that way - the grep is `tagged("pr")`'s own source, so the two readings of
- *  the lane cannot select different rows - and holds the lane to two numbers, so a row added
- *  without a thought about which lane answers it fails here rather than on the day the lane is
- *  ten minutes slower than it was.
+ *  The pull-request lane selects `chromium` and `iphone` on `real`, and `stub` and `stub-phone`
+ *  on `stub`. Both jobs use `--grep=(^|\s)@pr(\s|$)` from dispatch-browser-pr-suite.sh.
+ *  This lists the union using the same pattern, `tagged("pr")`'s source, and holds it to two
+ *  limits, so someone adding a row must decide which lane needs it.
  *
  *  The budget is dispatch://INFRA-1407's R1: 350. It was 330 for a while, twenty rows held for
  *  dispatch://INFRA-1410 and dispatch://INFRA-1511, and both of those are done.

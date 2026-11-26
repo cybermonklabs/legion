@@ -108,9 +108,8 @@ how_ended() {
 # ci.yaml's other callers of this workflow that share the run - dispatch-browser
 # beside dispatch-browser-pr on a pull request labelled full-ci, dispatch-references
 # beside dispatch-browser-pr on one that changes what the reference rows test - so
-# the script holds the name to `<caller> / ` and one of this workflow's seven -
-# binaries, shard, alone, multiprocess, embedder, visual and merge - with a shard
-# leg's number in brackets after it.
+# the script holds the name to this caller and the jobs of this workflow, and maps each
+# blob-producing job to its leg name (`real`, `stub`, `alone` or `shard-N`).
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:
@@ -146,16 +145,14 @@ how_ended() {
 # script's head says the rest.
 .github/scripts/dispatch-browser-run-reads.sh jobs "$jobs" "$caller"
 # The legs this lane owed, read from those jobs rather than written out a second time
-# here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
-# multiprocess jobs on the pull-request lane, and those two, the embedder job and the
-# visual job on the references lane - and owes nothing. A leg that failed before it
-# could upload is in the list and still owes its blob.
+# here. A job the lane skips by design owes nothing. A leg that failed before its blob
+# upload is in the list and still owes its blob.
 # A read that fails leaves the list empty, and the check below says so: `|| true` keeps
 # pipefail and `set -e` from ending the script on jq's status first.
 legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |
   sort) || true
 if [ -z "$legs" ]; then
-  echo "::error::this run's jobs hold no shard or alone leg, so there is nothing to" \
+  echo "::error::this run's jobs hold no browser leg that owes a blob, so there is nothing to" \
     "hold the merged report against"
   exit 1
 fi
@@ -318,9 +315,8 @@ fi
 # must have run on exactly one of them. The counts below cannot see a row no leg ran - it is
 # missing from the legs' count and from the merged report alike - nor a file two legs ran, which
 # both count twice. packages/dispatch/e2e/tools/leg-rows.ts says why and prints one line per
-# fault, naming the rows and legs; the alone legs are not sharded and write no list. It runs
-# before the counts so both readings print, and the step fails on either: each way out below
-# carries its status.
+# fault, naming the rows and legs. The unsharded `real`, `stub` and `alone` legs write no lists.
+# It runs before the counts so both readings print, and the step fails on either.
 mapfile -t shard_legs < <(grep -E '^shard-[0-9]+$' <<< "$legs" || true)
 lists=0
 if [ "${#shard_legs[@]}" -gt 0 ]; then

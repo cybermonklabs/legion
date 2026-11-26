@@ -26,7 +26,7 @@
 # callers that share a run are told apart by it: a pull request labelled full-ci runs
 # dispatch-browser beside dispatch-browser-pr, and one that changes what the reference rows test
 # runs dispatch-references beside dispatch-browser-pr (`dispatch-browser-blob-shard-1-1`,
-# `dispatch-browser-pr-blob-shard-1-1` and `dispatch-references-blob-shard-1-1`); the download
+# `dispatch-browser-pr-blob-real-1` and `dispatch-references-blob-shard-1-1`); the download
 # step's pattern already takes only this caller's.
 #
 # That directory comes in one of two layouts, and which one is the run's, not this job's: it is
@@ -35,7 +35,7 @@
 #
 # Several artifacts matched: each entry of <download-dir> must be a directory named
 # `<job>-blob-<leg>-<attempt>`, where <attempt> is the run of digits at the end and <leg> is
-# everything between the prefix and it (`shard-1`, `alone`). A name that does not read is a
+# everything between the prefix and it (`shard-1`, `real`, `stub`, `alone`). A name that does not read is a
 # failure, not a file passed over: a blob silently dropped is a merged report short of a leg's
 # rows, which reads as a shorter suite rather than as an error.
 #
@@ -173,8 +173,8 @@ fi
 # One leg per line, not `for leg in $(…)`: a leg name is an artifact name's tail, and reading it
 # with word splitting would read a name holding a space as two legs, neither with a blob or a row
 # count of its own. No leg this workflow uploads holds a space today - the names are
-# `shard-<N>` and `alone`, built from the matrix number and a literal
-# (.github/workflows/dispatch-browser.yaml) - so this is a defence and not a live case, kept
+# `shard-<N>`, `real`, `stub` and `alone` (.github/workflows/dispatch-browser.yaml) -
+# so this is a defence and not a live case, kept
 # because what it defends against is silent: a split name selects nothing and the merged report
 # comes out a leg short rather than red. A here-string rather
 # than a pipe only to match the merge job's own loop, where it is load-bearing because that loop

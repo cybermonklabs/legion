@@ -10,9 +10,8 @@
 # <shard> is this leg's number out of the job's two, the shard job's `${{ matrix.shard }}`: it
 # is the `--shard` numerator below, and it names the blob report this leg writes, the row count
 # file beside it and the title of the sampler's readings. <lane> is the run's lane, the
-# workflow's own `lane` input, `pull-request`, `full` or `references`: it decides which projects
-# run, whether the run is held to the `@pr` rows and whether it is held to the references lane's
-# spec files, and an unknown one ends this script below.
+# workflow's own `lane` input, `full` or `references`: it decides which projects and files run.
+# The pull-request lane runs unsharded in dispatch-browser-pr-suite.sh instead.
 # <connections> is the connection limit each stack's Postgres must allow, which a binaries job
 # reads and the shard job passes as `${{ inputs.connections || needs.binaries.outputs.connections }}`:
 # the pull-request lane's figure where the references lane takes that lane's build
@@ -41,7 +40,7 @@ set -euo pipefail
 usage() {
   echo "::error::dispatch-browser-shard-suite.sh takes this leg's shard number, the run's" \
     "lane and the stacks' connection limit: .github/scripts/dispatch-browser-shard-suite.sh" \
-    "<shard> <pull-request|full|references> <connections>. It was given: $*"
+    "<shard> <full|references> <connections>. It was given: $*"
   exit 1
 }
 
@@ -91,49 +90,14 @@ export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-$shard.zip"
 # selection that no leg ran or that two ran; the row count cannot, since it counts only what the
 # legs ran.
 export DISPATCH_E2E_LEG_ROWS_DIR="$RUNNER_TEMP/leg-report/rows"
-# The lane's projects, named rather than left to the config, and the one place each
-# lane's list is written. An unknown lane ends the step here rather than running the
-# default set under a name nobody meant, and this is the one place that refuses it now
-# that no install step reads the lane for engines.
-#
-# `stub` and `stub-phone` are in the pull-request and full lanes: a stubbed row is a
-# row of this suite like any other, and it runs here rather than in a leg of its own so
-# that neither the leg capture of the merge job's readings nor its row accounting has
-# to learn a new name.
-# They start no harness of their own either - this run starts one stack per worker
-# already, for the real-stack rows beside them - and the config starts their static
-# file server itself, for a run that names one of them (`packages/dispatch/e2e/playwright.config.ts#webServer`).
-#
-# `--grep '@pr'` on the pull-request lane alone is what holds that lane to the rows a
-# pull request is answered by: every stubbed row carries the tag, and so do the
-# real-stack rows of the journeys that must be seen on a pull request. Playwright
-# applies a command-line grep **on top of** a project's own, never in place of it -
-# measured at pull request #2902's base, 475d7609, where `iphone` listed 109 rows and 4 of
-# them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, at that pull request's
-# head, 23f2d137, where `iphone` listed 119 and the same 4, and `webkit` 40 and the
-# same 7, and again at pull request #3513's 58a10646, where `iphone` lists 123 and the
-# same 4, and `webkit` 46 and the same 7 - so the two tagged projects keep their own axis
-# and the command's grep selects the rows that carry both tags.
-# Every row without the tag runs on the full lane, which `ci.yaml` runs for every
-# merge group and the nightly runs daily, so `main` is gated exactly as it was and what
-# a displaced row loses is feedback on the pull request itself
-# (dispatch://INFRA-1407, departure 1). `e2e/__tests__/pull-request-lane.test.ts` holds
-# the lane to its budget by listing the config with this same grep.
+# The full lane runs the replay projects beside the real-stack projects. The config starts the
+# static file server for a run that names a replay project; those projects need no harness of
+# their own.
 case "$lane" in
-  pull-request)
-    projects="--project=chromium --project=iphone --project=stub --project=stub-phone"
-    # Anchored as `tagged("pr")` is (e2e/configurations.ts), which is what
-    # e2e/__tests__/pull-request-lane.test.ts lists this lane with: a bare `@pr`
-    # would also take a row titled `@prototype`, and the two readings of this lane
-    # must select the same rows or the budget test measures another lane.
-    lane_grep="--grep=(^|\\s)@pr(\\s|$)"
-    lane_files=""
-    ;;
   full)
     projects="--project=chromium --project=iphone --project=webkit --project=webkit-iphone
     --project=firefox --project=firefox-download-navigation --project=chromium-plain-http
     --project=chromium-plain-http-sign-out --project=stub --project=stub-phone"
-    lane_grep=""
     lane_files=""
     ;;
   references)
@@ -154,7 +118,6 @@ case "$lane" in
     # name runs on no pull request, so the walk's gate reads this arm the same way and
     # fails naming it (packages/dispatch/e2e/__tests__/reading-walk.test.ts).
     projects="--project=chromium"
-    lane_grep=""
     lane_files="e2e/bare-references.e2e.ts e2e/btw.e2e.ts e2e/mention-composer.e2e.ts
     e2e/mention-reference.e2e.ts e2e/reference-kinds.e2e.ts e2e/reference-naming.e2e.ts
     e2e/reference-picker.e2e.ts e2e/reference-titles.e2e.ts e2e/refetch-budget.e2e.ts
@@ -165,7 +128,7 @@ case "$lane" in
     e2e/parse-count.e2e.ts"
     ;;
   *)
-    echo "::error::lane must be pull-request, full or references, not '$lane'"
+    echo "::error::shard lane must be full or references, not '$lane'"
     exit 1
     ;;
 esac
@@ -178,8 +141,8 @@ esac
 # `filterProjects` reads `default` only where the command line named no project
 # (`projects.filter((project) => includeNonDefault || project.default)` at
 # Playwright 1.64.1's runner, lib/runner/index.js in its package, under its
-# `if (!projectNames)`), and every lane above names its own: four in
-# the pull-request lane, ten in the full one and one in the references one. The
+# (`if (!projectNames)`), and both lanes above name their own: ten in the full lane and one in
+# the references lane.
 # `default: false` each `-alone` project carries (the three entries of
 # `packages/dispatch/e2e/playwright.config.ts#aloneProjects`) is what keeps them out of a run
 # that names no project, which this is not. The alone job names them, all three on one machine.
@@ -217,7 +180,7 @@ esac
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
 rm -f "$RUNNER_TEMP/suite-status"
-{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep $lane_files --shard=$shard/2 --workers 4 \
+{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_files --shard=$shard/2 --workers 4 \
     --reporter=list,blob,./e2e/failure-reporter.ts,./e2e/shard-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0

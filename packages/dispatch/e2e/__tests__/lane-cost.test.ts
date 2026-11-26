@@ -4,7 +4,13 @@
  *  run. */
 import { expect, test } from "bun:test";
 
-import { type Job, laneReading, Refusal, type WorkflowRun } from "../tools/lane-cost";
+import {
+  hasSuccessfulFullLaneJobs,
+  type Job,
+  laneReading,
+  Refusal,
+  type WorkflowRun,
+} from "../tools/lane-cost";
 
 const run: WorkflowRun = {
   id: 45276453365,
@@ -36,12 +42,12 @@ function job(
 }
 
 /** The four jobs one caller's lane runs on the pull-request lane, with ids from `first`:
- *  binaries 120 s, shard (1) 480 s, shard (2) 420 s and merge 30 s, queued 5, 4, 6 and 4 s. */
+ *  binaries 120 s, real 480 s, stub 420 s and merge 30 s, queued 5, 4, 6 and 4 s. */
 function lane(caller: string, first: number): Job[] {
   return [
     job(first, caller, "binaries", ["22:00:00", "22:00:05", "22:02:05"]),
-    job(first + 1, caller, "shard (1)", ["22:02:06", "22:02:10", "22:10:10"]),
-    job(first + 2, caller, "shard (2)", ["22:02:06", "22:02:12", "22:09:12"]),
+    job(first + 1, caller, "real", ["22:02:06", "22:02:10", "22:10:10"]),
+    job(first + 2, caller, "stub", ["22:02:06", "22:02:12", "22:09:12"]),
     job(first + 3, caller, "merge", ["22:10:11", "22:10:15", "22:10:45"], "ubuntu-24.04-arm"),
   ];
 }
@@ -65,11 +71,11 @@ test("the jobs of one caller read as one lane, each under its name after the cal
     conclusion: "success",
     updated_at: "2026-11-23T22:12:00Z",
     jobs: 4,
-    per_job: { binaries: 120, "shard (1)": 480, "shard (2)": 420, merge: 30 },
+    per_job: { binaries: 120, real: 480, stub: 420, merge: 30 },
     all_success: true,
     // 120 + 480 + 420 + 30.
     cost: 1050,
-    // The binaries job, the slower shard leg and the merge job: 120 + 480 + 30.
+    // The binaries job, the slower browser leg and the merge job: 120 + 480 + 30.
     own: 630,
     // 22:00:05Z to 22:10:45Z.
     wall: 640,
@@ -88,4 +94,28 @@ test("a run whose jobs are of both callers is refused, naming them, and summed a
     "run 45276453365: its jobs are of 2 callers of dispatch-browser.yaml, dispatch-browser and " +
       "dispatch-browser-pr, and a reading reads one lane"
   );
+});
+
+test("the base floor accepts seven green full-lane jobs without dropping the historical embedder", () => {
+  const full = [
+    "binaries",
+    "shard (1)",
+    "shard (2)",
+    "alone",
+    "multiprocess",
+    "visual",
+    "merge",
+  ].map((name, index) =>
+    job(index, "dispatch-browser", name, ["22:00:00", "22:00:00", "22:01:00"])
+  );
+  const embedder = job(7, "dispatch-browser", "embedder", ["22:00:00", "22:00:00", "22:00:55"]);
+  const historical = [...full, embedder];
+  expect(hasSuccessfulFullLaneJobs(full)).toBe(true);
+  expect(hasSuccessfulFullLaneJobs(historical)).toBe(true);
+  expect(laneReading(run, historical).cost).toBe(475);
+  expect(hasSuccessfulFullLaneJobs(full.slice(1))).toBe(false);
+  expect(
+    hasSuccessfulFullLaneJobs([...full.slice(1), { ...embedder, conclusion: "skipped" }])
+  ).toBe(false);
+  expect(hasSuccessfulFullLaneJobs([...full, { ...embedder, conclusion: "failure" }])).toBe(false);
 });

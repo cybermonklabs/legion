@@ -282,36 +282,17 @@ case "$mode" in
     # run, ci.yaml's own and those of ci.yaml's other callers of this workflow that share the run -
     # dispatch-browser beside dispatch-browser-pr on a pull request labelled full-ci,
     # dispatch-references beside dispatch-browser-pr on one that changes what the reference rows
-    # test - whose legs carry the same names after a prefix of their own
-    # (`dispatch-browser / shard (1)` and `dispatch-browser-pr / shard (1)`). Read without the
-    # prefix, the pull-request lane's merge job would name the full lane's red legs as its own,
-    # and reading one would count rows no blob of this lane holds. After the prefix, the name
-    # must be one of this workflow's seven jobs, with a shard leg's number in brackets after it.
+    # test. The caller prefix keeps a different lane's failures and seconds out of this lane.
     #
-    # The leg is read from the name after that prefix, so both callers' jobs read the same leg:
-    # `shard (2)` becomes `shard-2`, and the `alone` job, which has no matrix and so no brackets,
-    # becomes `alone`. A leg absent from reading one's list is a leg whose missing blob nothing
-    # reports. A bare `alone` or `shard (1)`, with no caller's prefix, is no job of this lane, and
-    # a shard number is read whole (`shard (10)` becomes `shard-10`).
-    # `binaries`, `merge`, `multiprocess`, `embedder` and `visual` are this workflow's other five
-    # jobs: they pass the name filter and get a null leg, so reading one passes them over and
-    # reading three names them as holding no row. `binaries` is in that filter because every
-    # other job of the workflow needs it, so a build that failed leaves all five skipped and no
-    # blob report anywhere, and a run read without it is reported as legs that uploaded nothing
-    # rather than as the build that handed them nothing. `visual` is in it because a run whose
-    # only red job is that one must not read "every leg of this workflow concluded success": the
-    # verdict step fails ci-ok either way, so the gate held, but the summary a person reads was
-    # wrong. `embedder` is there for the same reason. ci.yaml's own jobs do not get a null leg -
-    # the prefix drops them first, which is what keeps them out of reading three, since that
-    # reading selects on conclusion alone: `dispatch-multiprocess` and `broker-multiprocess` are
-    # named under no caller.
+    # The two full or references shards get numbered legs (`shard (2)` becomes `shard-2`);
+    # `real`, `stub` and `alone` are unsharded, and their leg names match their job ids.
+    # A leg absent from reading one's list is a leg whose missing blob nothing reports.
     #
-    # The alone job ran a matrix of three projects until dispatch://INFRA-1109 put them on one
-    # machine, and its leg was read out of the brackets after the job name
-    # (`alone (webkit-alone)` -> `alone-webkit-alone`). There is one such job now and it writes
-    # one blob report, `report-alone.zip`, and one `rows/alone.txt`, so the leg is the bare word
-    # and nothing is parsed out of brackets for it. A leg name is still read one per line by
-    # both readings, so a name holding a space would be one leg rather than two.
+    # The other jobs have no blob but must still be counted. A failed build can leave every
+    # browser job skipped, and a failed `multiprocess` or `visual` still fails the lane.
+    # The embedder now has no job of its own: its seconds and verdict are part of `real`
+    # or `alone`. This name filter is only for the running workflow's own attempt, not for
+    # historical default-branch measurements (packages/dispatch/e2e/tools/lane-cost.ts).
     #
     # `started_at` and `completed_at` travel with those four because the `machine-time` mode
     # below sums them and the jobs answer already carries both: adding them to this filter
@@ -320,11 +301,11 @@ case "$mode" in
     # reader of jobs.json sees what GitHub said; `completed_at` is null for a job that is
     # still running, which this job itself is while it writes this file.
     jq --arg prefix "$caller / " '[.[].jobs[] | select(.name | startswith($prefix)
-          and (ltrimstr($prefix) | test("^(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)")))]
+          and (ltrimstr($prefix) | test("^(binaries|shard|real|stub|alone|multiprocess|visual|merge)( \\(|$)")))]
       | map({id, name, conclusion, started_at, completed_at,
           leg: ((.name | ltrimstr($prefix)) as $job
             | ($job | capture("^shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
-              // (if $job == "alone" then "alone" else null end))})' \
+              // (if $job == "alone" or $job == "real" or $job == "stub" then $job else null end))})' \
       "$pages" > "$out_file"
     ;;
   blobs-refused)

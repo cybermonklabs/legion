@@ -5,14 +5,13 @@
 #
 # Who runs it, and what it takes:
 #
-#   .github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <alone> <multiprocess> <embedder> <visual>
+#   .github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <real> <stub> <alone> <multiprocess> <visual>
 #
-# The six are the results of the six jobs the merge job needs, in that order:
-# `${{ needs.binaries.result }}`, `${{ needs.shard.result }}`, `${{ needs.alone.result }}`,
-# `${{ needs.multiprocess.result }}`, `${{ needs.embedder.result }}` and
-# `${{ needs.visual.result }}`; the embedder's joined the list with dispatch://INFRA-1109. Each
-# is `success`, `skipped`, `failure` or `cancelled`, and the last two are what this script fails
-# on, by job name.
+# These are the results of the seven jobs the merge job needs, in that order. Each is
+# `success`, `skipped`, `failure` or `cancelled`, and the last two fail this script by job name.
+#
+# The two counting-embedder rows do not write a blob report. Their failure is covered by the
+# result of the job that ran them (`real` or `alone`).
 #
 # They are arguments rather than keys of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
@@ -25,24 +24,23 @@
 # The runner sets $RUNNER_TEMP for every step.
 #
 # Run from anywhere, with $RUNNER_TEMP set:
-#   .github/scripts/dispatch-browser-verdict.sh success success skipped skipped success skipped
+#   .github/scripts/dispatch-browser-verdict.sh success skipped success success skipped skipped skipped
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Fail when a leg failed or the
 # merged report holds a failed row".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-verdict.sh takes the results of the six jobs it reports on:" \
-    ".github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <alone> <multiprocess>" \
-    "<embedder> <visual>. It was given: $*"
+  echo "::error::dispatch-browser-verdict.sh takes the results of the seven jobs it reports on:" \
+    ".github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <real> <stub> <alone>" \
+    "<multiprocess> <visual>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 6 ] || usage "$@"
+[ "$#" -eq 7 ] || usage "$@"
 
 failed=0
-for pair in "binaries:$1" "shard:$2" \
-  "alone:$3" "multiprocess:$4" \
-  "embedder:$5" "visual:$6"; do
+for pair in "binaries:$1" "shard:$2" "real:$3" "stub:$4" \
+  "alone:$5" "multiprocess:$6" "visual:$7"; do
   case "${pair#*:}" in
     success | skipped) ;;
     *)

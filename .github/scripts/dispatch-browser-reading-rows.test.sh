@@ -145,13 +145,20 @@ merged() {
 
 # two_callers <root>: the jobs of a run that runs two of ci.yaml's three callers of
 # dispatch-browser.yaml, the full and the pull-request lanes, as one of a pull request labelled
-# full-ci does. dispatch-browser-pr, the pull-request lane, has the fixture's legs under its own
-# name, its alone leg skipped; the full lane's alone leg ran, so dispatch-browser's jobs owe its
-# blob report.
+# full-ci does. The pull-request lane runs real and stub with no shards. The full lane's alone
+# leg ran too, so dispatch-browser's jobs owe its blob report.
 two_callers() {
   local scripts="$1/.github/scripts"
-  jq 'map(.name |= sub("^dispatch-browser / "; "dispatch-browser-pr / "))' \
-    "$scripts/jobs.dispatch-browser.json" > "$scripts/jobs.dispatch-browser-pr.json"
+  cat > "$scripts/jobs.dispatch-browser-pr.json" <<'JOBS'
+[
+  {"id": 20, "name": "dispatch-browser-pr / binaries", "conclusion": "success", "leg": null},
+  {"id": 21, "name": "dispatch-browser-pr / real", "conclusion": "success", "leg": "real"},
+  {"id": 22, "name": "dispatch-browser-pr / stub", "conclusion": "success", "leg": "stub"},
+  {"id": 23, "name": "dispatch-browser-pr / shard", "conclusion": "skipped", "leg": null},
+  {"id": 24, "name": "dispatch-browser-pr / alone", "conclusion": "skipped", "leg": "alone"},
+  {"id": 25, "name": "dispatch-browser-pr / merge", "conclusion": null, "leg": null}
+]
+JOBS
   jq 'map(if .leg == "alone-webkit-alone" then .conclusion = "success" else . end)' \
     "$scripts/jobs.dispatch-browser.json" > "$scripts/jobs.full-lane.json"
   mv "$scripts/jobs.full-lane.json" "$scripts/jobs.dispatch-browser.json"
@@ -437,32 +444,32 @@ check "and reads the shard legs' row lists once, from the selected rows, for the
 
 echo "case: the pull-request lane reads its own legs and none of the full lane's"
 # ci.yaml's dispatch-browser and dispatch-browser-pr jobs both call dispatch-browser.yaml, and a
-# pull request labelled full-ci runs both in one run, whose jobs read lists both lanes' legs under
-# the same leg names. The script hands that read its caller's id, and the read keeps that
-# caller's jobs alone. Here the full lane's alone leg ran, so a reading handed the full lane's
-# jobs would name that leg as having sent no blob report to this lane, which never ran it.
+# pull request labelled full-ci runs both in one run. The script hands the jobs read its caller's
+# id. The PR reading must not look for any of the full lane's shards or its alone leg.
 caller=dispatch-browser-pr
 root=$(fixture pr-caller)
 two_callers "$root"
-for each in 1 2 3 4; do leg "$root" "shard-$each" 30; done
+leg "$root" real 50
+leg "$root" stub 70
 merged "$root" 120 0 0 0
 run_rows "$root" success success
 check "exits 0" "$(is "$status" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "reads its jobs once, handing the read this caller's id" \
   "$(is "$(run_reads_calls "$root")" "jobs $root/temp/jobs.json dispatch-browser-pr")"
-check "the notice holds this lane's four shards and nothing else" \
-  "$(contains "$(notice_line)" 'holds 120 rows, against 120 printed by the legs (shard-1 30, shard-2 30, shard-3 30, shard-4 30)$')"
-check "and the full lane's alone leg is not named" "$(is "$(contains "$out" 'alone')" false)"
+check "the notice holds this lane's real and stub rows and nothing else" \
+  "$(contains "$(notice_line)" 'holds 120 rows, against 120 printed by the legs (real 50, stub 70)$')"
+check "the table marks both legs' blobs held" "$(is "$(table_rows "$root" '| yes |$')" 2)"
+check "no shard lists are read on this lane" "$(is "$(bun_calls "$root")" "")"
 caller=dispatch-browser
-# The control: the same blobs read as the full lane's merge job. Its jobs owe the alone leg's
-# blob, which this run never sent, so the fixture's two lanes are told apart by the caller alone.
+# The control: the same row total from the full lane's shards. Its jobs also owe the alone
+# leg's blob, which this run never sent.
 root=$(fixture full-caller)
 two_callers "$root"
 for each in 1 2 3 4; do leg "$root" "shard-$each" 30; done
 merged "$root" 120 0 0 0
 run_rows "$root" success success
-check "the full lane's reading of the same blobs fails" "$(is "$status" 1)"
+check "the full lane's reading fails when its alone blob is missing" "$(is "$status" 1)"
 check "naming the alone leg its own jobs owe" \
   "$(contains "$(error_line)" "::error::no blob report arrived from: alone-webkit-alone; the merged report is short of those legs' rows$")"
 check "having handed the read its own id" \

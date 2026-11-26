@@ -20,8 +20,9 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { type ListedRow, pullRequestLaneProjects, rowsOfListing, tagged } from "../configurations";
+import { type ListedRow, rowsOfListing } from "../configurations";
 import { legRowFaults } from "../leg-rows";
+import { referencesLaneFiles } from "../reference-lane";
 import {
   dependencyProjects,
   placeUnits,
@@ -178,8 +179,8 @@ async function listedLegs(selection: readonly string[]) {
 /** Both selections start here, before any test, so the file holds at most two listings at once. */
 const selections = {
   "the default selection": retained(listedLegs([])),
-  "the pull-request lane": retained(
-    listedLegs([...projectArguments(pullRequestLaneProjects), "--grep", tagged("pr").source])
+  "the references lane": retained(
+    listedLegs([...projectArguments(["chromium"]), ...referencesLaneFiles()])
   ),
 };
 

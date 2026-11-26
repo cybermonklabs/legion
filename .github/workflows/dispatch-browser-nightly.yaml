@@ -2,10 +2,10 @@ name: Dispatch browser nightly
 
 # Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
 # recordings. ci.yaml calls the same workflow from three jobs. Its dispatch-browser-pr job runs
-# the pull-request lane on a pull request, the rows a pull request is held to. Its
-# dispatch-browser job runs the full lane - every project the shard job's browser step names for
-# it (.github/scripts/dispatch-browser-shard-suite.sh), the three `-alone` ones and the
-# two-process job - wherever ci.yaml's dispatch_browser output selects it: in the merge queue,
+# the pull-request lane: tagged rows on the real-stack leg and the bare stub leg. Its
+# dispatch-browser job runs the full lane (two shards, alone, multiprocess and visual, with
+# the counting-embedder step on alone) wherever ci.yaml's dispatch_browser output selects it:
+# in the merge queue,
 # on a pull request labelled full-ci or lane:dispatch_browser, and on a workflow_dispatch of
 # ci.yaml, which selects every job on main or with its `every-job` input, and on any other
 # branch only the jobs that branch's diff from its merge base with main reaches. So the merge
@@ -15,9 +15,8 @@ name: Dispatch browser nightly
 # neither the pull-request lane's run nor the full lane's. The full lane's jobs are
 # dispatch-browser.yaml's, whose notes name them and the machines they take
 # (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
-# they are seven jobs on eight machines (full-lane run 44286153772, at c31857b8), where the
-# default branch's full lanes in the merge queue ran the same seven jobs on twelve machines on
-# 2026-11-24, and
+# the full lane uses seven runner jobs including binaries and merge. The default branch's
+# full lanes in the merge queue used twelve runner jobs on 2026-11-24, and
 # .github/ci-notes/dispatch-browser.md#what-the-job-set-costs-and-the-machine-time-ceiling-the-run-holds-it-to
 # measures what the pull-request and full lanes cost.
 # This run covers a day with no merge group, and is what runs the full lane on main's tip
@@ -219,10 +218,9 @@ jobs:
         # recordings.ts), and the comparison step below refuses the committed directory.
         run: |
           # The stack's Postgres, the pgvector copy in ghcr.io/cybermonklabs/legion/ci that the
-          # multiprocess, embedder and visual jobs of dispatch-browser.yaml also use. This job
-          # runs on the runner, whose own PostgreSQL has no `vector`, so it cannot take the
-          # shard and alone jobs' DISPATCH_E2E_PG_BIN, which names the PostgreSQL inside their
-          # image.
+          # multiprocess and visual jobs of dispatch-browser.yaml also use. This job runs
+          # on the host, whose PostgreSQL has no `vector`. The full lane's counting-embedder
+          # step instead uses the PostgreSQL binaries already in the alone job's container.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_STUB_RECORDINGS="$RUNNER_TEMP/fresh"
           DISPATCH_E2E_STUB_RECORD=1 bunx playwright test \

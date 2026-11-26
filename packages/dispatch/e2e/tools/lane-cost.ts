@@ -49,7 +49,7 @@
  *  merge_group and workflow_dispatch alone; a dispatch is either the bypass check's run at
  *  main's tip for a push the queue did not test, `main-bypass-check.yaml`, or a run started by
  *  hand, and neither is a run of the queue); concluded success; updated at or before `<until>`;
- *  at least 8 dispatch-browser jobs that were not skipped, every one of them successful; and a
+ *  at least 7 dispatch-browser jobs that were not skipped, every one of them successful; and a
  *  merged report of at least 1,000 rows. Each is printed with its run, event, head, cost, rows,
  *  jobs, own and updated_at.
  *
@@ -92,8 +92,9 @@ const LISTING_CAP = 1000;
 /** The event ci.yaml runs the default branch's full lane on: the merge queue's. */
 const EVENT = "merge_group";
 
-/** The fewest dispatch-browser jobs, not skipped, of a run of the full lane. */
-const FULL_LANE_JOBS = 8;
+/** Full now runs seven jobs, including both shards and merge. This is a floor, not a list of job
+ *  ids: older full lanes still count every job they ran, including a separate embedder job. */
+const FULL_LANE_JOBS = 7;
 
 /** The fewest rows the merged report of a run of the full lane holds. */
 const FULL_LANE_ROWS = 1000;
@@ -350,19 +351,21 @@ function byUpdatedAt(a: BaseRun, b: BaseRun): number {
   return a.updated_at > b.updated_at ? 1 : 0;
 }
 
+/** The jobs filter for the base set, before the log read checks the row floor. */
+export function hasSuccessfulFullLaneJobs(jobs: readonly Job[]): boolean {
+  const notSkipped = jobs.filter((job) => job.conclusion !== "skipped");
+  return (
+    notSkipped.length >= FULL_LANE_JOBS && notSkipped.every((job) => job.conclusion === "success")
+  );
+}
+
 /** The day's base set: its green default-branch full lanes updated at or before `until`. */
 function base(day: string, until: string): BaseRun[] {
   const picked: BaseRun[] = [];
   for (const run of dayRuns(day)) {
     if (run.updated_at > until) continue;
     const jobs = jobsOf(String(run.id));
-    const notSkipped = jobs.filter((job) => job.conclusion !== "skipped");
-    if (
-      notSkipped.length < FULL_LANE_JOBS ||
-      !notSkipped.every((job) => job.conclusion === "success")
-    ) {
-      continue;
-    }
+    if (!hasSuccessfulFullLaneJobs(jobs)) continue;
     const read = reading(run, jobs);
     if (read.rows === null || read.rows < FULL_LANE_ROWS) continue;
     picked.push({

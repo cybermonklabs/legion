@@ -45,3 +45,10 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 6. Nothing appears, hides or moves because of a state the reader cannot see or set. The reader sets the width and opens each disclosure.
 
 `bun run e2e:layout` checks points 3 and 4, and the cut text of point 2, at 360, 900, 1280, 1440 and 1920 px. A reviewer checks the other points.
+
+## Browser CI
+
+The pull-request lane runs the `@pr` rows on two legs: `real` starts the stack, and `stub`
+replays recordings against the downloaded dashboard without a stack. The counting-embedder
+rows run separately after `real` on pull requests and after the wall-clock rows on `full`.
+See [the browser CI notes](../../.github/ci-notes/dispatch-browser.md) for commands and budgets.

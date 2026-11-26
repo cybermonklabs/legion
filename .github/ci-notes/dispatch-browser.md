@@ -17,37 +17,25 @@ dispatch-browser with the full lane in the merge queue, on a dispatched run and 
 labelled `full-ci` or `lane:dispatch_browser`, and dispatch-references with the references lane
 on a pull request that changes what the reference rows test; the nightly workflow calls it with
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
-GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
+GitHub puts before every job name of this file (`dispatch-browser-pr / real`) and which
 starts every artifact name, so two callers of one run share no artifact but the one build the
 references lane takes from the pull-request lane
-([its section](#when-the-references-lane-takes-the-pull-request-lanes-build)). One machine builds
-every artefact the run executes, the shard job spreads the rows over the legs its `matrix`
-names, the three `-alone` projects share a machine of their own, the two-process job, the
-fake-embedder job and the containerised visual review take one each, and one merge job joins
-what the shard and alone legs wrote into a single report and publishes the run's flake rate.
-Full-lane run 44286153772 (2026-11-18, at c31857b8) ran that set as seven jobs on eight
-machines: the binaries job, the shard job's two legs and the alone, multiprocess, embedder,
-visual and merge jobs.
+([its section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
 
-Two lanes, one input. `pull-request` runs the projects a pull request is held to, which the shard
-job's browser step names for that lane (.github/scripts/dispatch-browser-shard-suite.sh), over
-the rows tagged `@pr` and no others, with the fake-embedder job, which holds a check of the pull
-request it is on; `full` runs every parallel project, the three `-alone` ones, the two-process
-job, the visual review and that same embedder job, over every row. So a pull request pays for
-the rows that answer it, and the merge queue, a labelled pull request, a workflow_dispatch and
-the nightly run pay for the rest, each of which has the wall time for them. A third lane,
-`references`, is a preview of the reference rows on a pull request that gates nothing
+`pull-request` runs four jobs: binaries, `real`, `stub` and merge. The two browser jobs run
+disjoint projects under the same `@pr` filter. `full` runs seven jobs: binaries, both shards,
+alone, multiprocess, visual and merge. The shards run the parallel projects with no `@pr`
+filter, and alone runs the three wall-clock projects. A separate step runs the two
+counting-embedder rows after the main browser step of `real` on pull requests and `alone` on
+full. The merge job joins the blobs into a single report and publishes the flake rate. The
+third lane, `references`, previews the reference rows and gates nothing
 ([its section](#the-third-lane-references)).
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 gives: `container:` and `services:` are job-level keys and a composite action's step keys do
-not include timeout-minutes, and this file needs both kinds. No job of it declares a
-`services:` any more - the two that did, the two-process and embedder jobs, start their
-stacks' Postgres through the harness now (dispatch://INFRA-1109, and pull request #4486 on the
-default branch) - but the shard and alone jobs' `container:` is the same job-level key and the
-same reason. That is also why the shard and alone jobs repeat
-their step lists rather than sharing one - they are kept textually identical where they are the
-same, so a reader can diff them.
+not include timeout-minutes. No job declares services: the harness starts the stacks'
+PostgreSQL. The shard, real and alone jobs use the same browser image. Their step lists are
+kept textually identical where they run the same commands, so a reader can diff them.
 
 That reason is a composite action's, and not a script's: a step that calls a script keeps its
 own timeout-minutes. So a body the shard and alone jobs really share is a script, written
@@ -96,8 +84,8 @@ report step skips there and no check is posted.
 `references` runs the `chromium` project over every row of the eleven spec files the
 reference framework's Verification document names and the nine of the reading list's walk,
 with main's parse-count walk beside them, on the binaries job, the shard job's two legs and the
-merge job alone - four jobs, where the full lane runs eight and the pull-request lane five, and
-three when it takes the pull-request lane's build - so
+merge job alone: four jobs, or three when it takes the pull-request lane's build. The full
+lane runs seven and the pull-request lane runs four. The references lane lists 147 rows, so
 a pull request that changes the reference framework gets those rows from CI at its head rather
 than from a run by hand. It gates nothing:
 .github/ci-notes/ci.md#the-reference-rows-preview-job
@@ -166,10 +154,9 @@ ci-filters job and workflow-files.yaml run, knows that context's outputs alone a
 result. ci.yaml's dispatch-references job is the one caller that fills the two inputs, both from
 dispatch-browser-pr's output, and when that output is empty it passes them empty and builds as
 it always did; .github/ci-notes/ci.md#the-reference-rows-preview-job says when each happens and
-what waiting for that call costs. The full and pull-request lanes pass neither input and run as
-they did. The alone, multiprocess, embedder and visual jobs keep their `needs: binaries` with no
-`!cancelled()`, and their downloads keep their own call's name: a lane that runs one of them
-builds for itself, which is why `build-job` is the references lane's alone.
+what waiting for that call costs. The full and pull-request lanes pass neither input. Their
+jobs download from their own binaries job, which is why `build-job` is the references lane's
+alone.
 
 ## What the job set costs, and the machine-time ceiling the run holds it to
 
@@ -190,6 +177,15 @@ figures. So the three attempts cost 0.707, 0.651 and 0.663 of that median, and s
 0.632 and 0.644 of its row's machine time. The pull-request lane at the same commit is run
 45306887784, read over three attempts the same way: 839, 725 and 857 s over five jobs for 290
 rows, in own times of 538, 451 and 541 s.
+
+The historical comparison still counts the jobs each run actually ran, including a separate
+embedder where one ran. `lane-cost.ts base` lowers the minimum from eight to seven successful
+jobs so it can admit the new full lane. It does not use the current workflow's job-name
+filter. On the fixed window `2026-11-24T00:00:00Z..2026-11-24T02:17:35Z` with cutoff
+`2026-11-24T02:17:35Z`, the two versions emitted identical JSON: runs 45300003979,
+45297497405 and 45306390541, each with twelve jobs, at 3,763, 3,816 and 3,740 s respectively.
+The median stayed 3,763 s. Reading five still uses the current run's job names and the same
+3,146 s and 846 s lane budgets.
 
 That cost is now held to a budget by the run itself, at the merge job's step "Reading five, the
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed
@@ -240,10 +236,9 @@ check.
 Everything this run's other jobs execute, built once here and handed to them in two
 artifacts: the Go commands the stacks run - the Dispatch server and the real broker's three,
 whose dev-oidc-issuer is also the issuer the two-process sign-in step serves - and the
-dashboard bundle every browser row reads. Five jobs download one or both - shard, alone,
-multiprocess, embedder and visual - which is six machines, because the shard job runs two
-legs (dispatch://INFRA-1109). None of the five builds a dashboard bundle or a Go command.
-Each of them builds `@legion/contracts` in its step `Build contracts for dispatch e2e`,
+dashboard bundle every browser row reads. The shard, real, alone, multiprocess and visual
+jobs take both artifacts; stub takes only the dashboard. None builds a dashboard bundle or a
+Go command. Each builds `@legion/contracts` in its step `Build contracts for dispatch e2e`,
 because Playwright's Node runner reads that package's `dist/` and the package is not in these
 artifacts (the shard job's step of that name says why). The merge job downloads neither
 artifact: what it takes from the run is the legs' blob reports.
@@ -496,8 +491,8 @@ which is a different directory on a lane that built no dist-b.
 
 The stacks' connection limit, which e2e/harness-postgres.ts would otherwise compile and
 print with `go run` (DISPATCH_E2E_PG_CONNECTIONS): read here, once for the run, and taken
-from this job's `connections` output by every job that starts stacks. The shard and alone
-jobs' containers have no Go, and the multiprocess, embedder and visual jobs set none up, so
+from this job's `connections` output by every job that starts stacks. The shard, real and alone
+jobs' containers have no Go, and the multiprocess and visual jobs set none up, so
 this is the one job of the file that runs it. The same figure is the file's `connections`
 output, by which the references lane's call takes it with the pull-request lane's build, and
 that call's shard job reads it through its `connections` input
@@ -885,7 +880,7 @@ over when it rounds the job's sum up to its `timeout-minutes` hold it.
 actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
 Both run-server.sh, in its check of DISPATCH_E2E_SERVER_BIN, and run-broker.sh refuse a path
 that is not executable, and that refusal would otherwise surface in a stack's own log, far
-from this cause. The multiprocess, embedder and visual jobs' steps of this name point here:
+from this cause. The real, multiprocess and visual jobs also make the downloaded commands executable:
 they download the same four binaries, which arrive at the same mode.
 
 ## Why every job that runs the suite builds contracts first
@@ -1141,6 +1136,38 @@ and the network comes from a local run of that row: set `snapshots: true` in the
 `--trace on` alone does not give one: it replaces the option's mode and keeps its
 `snapshots: false`.
 
+## The pull-request lane's real and stub jobs
+
+Both jobs call .github/scripts/dispatch-browser-pr-suite.sh with four workers and the same
+whole-token `@pr` grep as `tagged("pr")`. The `real` job runs `chromium` and `iphone` in the
+browser image and starts four stacks and the same file store as a full shard. The bare
+`ubuntu-24.04` `stub` job runs `stub` and `stub-phone` with `DISPATCH_E2E_STUB_ONLY=1`: the static
+server serves the downloaded `web/dist` and the rows replay their recordings. It downloads no
+Go binaries, builds only contracts and starts neither PostgreSQL nor SeaweedFS.
+
+Both stub projects launch Chromium, so the runner installs Chromium without `--with-deps`
+or apt. It checks that `fc-match sans-serif` selects the Book style of DejaVu Sans before
+running the rows, including the 35 layout-rule rows.
+
+Neither job passes `--shard`. Each writes a distinct blob and row count (`report-real.zip`
+and `rows/real.txt`, or `report-stub.zip` and `rows/stub.txt`). Their uploads include the
+caller and attempt, as the shards' do. Only the sharded lanes need selection and coverage
+lists to check that their split assigned each row exactly once.
+
+The browser step's 14 minutes are a hang guard, not a machine-time budget. Among 24 pairs of
+successful PR shards on #3513 listed from November 24 onward through run 45896666935, the
+largest sum of the two browser steps was 460 s (272 + 188 s in run 45771499770). Using the
+sum for either leg and the shard guard's slow-runner factor gives 460 × 1.75 = 805 s, rounded
+up to 14 minutes. This estimates rather than measures the new legs; there is no
+shard-placement drift to allow for.
+
+The real job borrows the shard job's two 120 s download attempts and 425 s for other steps.
+It adds the 4-minute embedder step and 4 s for its failure upload, giving 1,749 s, rounded up
+to 30 minutes. The stub job takes the 4-minute Chromium install and 103 s for the other
+steps: 94 s borrowed from the bare multiprocess job, plus 9 s for the font check and the
+record and blob uploads. That totals 1,183 s, rounded up to 20 minutes. The committed lane
+ceiling stays 900 machine-seconds including merge.
+
 ## The alone job, and what it keeps the same as the shard job
 
 The three projects whose rows are read from the wall clock, on one machine. They run one
@@ -1161,11 +1188,10 @@ and no longer whether it was quiet while each of them ran. A reading that shows 
 machine busy therefore names the step and not the project, and which project was measured
 against a loaded machine is read from the row times in the report beside it.
 
-Its steps are the shard job's, with three differences - one worker rather than four, the
-Playwright command of .github/scripts/dispatch-browser-alone-suite.sh, and no file store on the machine - and their commands are kept
-the same everywhere else, so the two can be diffed; the two bodies that are really shared
-are scripts both jobs call, the sampler and the PostgreSQL reading, which is part of what
-keeps them so. They are not one composite action for the reason this file's head gives.
+It shares its setup with the shard job, but starts one worker rather than four, runs the
+wall-clock projects through .github/scripts/dispatch-browser-alone-suite.sh, and needs no
+file store. The counting-embedder step runs only after the clock rows finish, so those rows
+still measure on a quiet runner. The sampler and PostgreSQL reading are shared scripts.
 The container, the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here
 too, and so do their reasons.
 
@@ -1231,10 +1257,9 @@ two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pu
 image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
 same budget and second attempt as there, and the pull is counted at that 355 s. The job's
 budget is the browser step's 240 s, the two download attempts' 120 s each, and the steps
-without a budget at 99 - 7 - 46 + 355 = 401 s: 881 s, 14 min 41 s, rounded up to the 15
-minutes of the alone job's `timeout-minutes`, whose 19 s left over hold the step that places
-the binaries (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
-The browser step's own budget is unchanged, and it still fires first.
+without a budget at 99 - 7 - 46 + 355 = 401 s. The second browser step adds 240 s and its failure
+upload adds 4 s, for 1,125 s total, rounded up to 19 minutes. The wall-clock browser
+step's 4-minute budget is unchanged.
 
 The readings these replace were taken at other shapes, and no number here rests on them
 now. The browser step's 8 minutes were derived from the sum of three legs' browser steps,
@@ -1603,8 +1628,7 @@ this job used to declare, for the reason and at the cost the job's head gives. T
 digest is a literal, as the visual job writes it: .github/scripts/check-ci-images.sh
 resolves a reference to a row of that file and cannot resolve one written as a workflow
 expression. Actions reads an expression inside a `run:` body even in a comment, so none is
-written in one. The sign-in step and the embedder job's browser step write the same digest
-for the same reason.
+written in one. The sign-in step writes the same digest for the same reason.
 
 ## What the sign-in row across two processes reads
 
@@ -1631,118 +1655,27 @@ shorter now.
 upload runs. The shard job's copy is `if: always()` because a retried row there can pass
 and leave the job green.
 
-## The embedder job, the lanes it runs on and its budgets
-
-The rows that read what the bar costs a model, which no other lane runs. The two tiers of
-the command bar are a claim about embeddings - a keystroke makes none and a pause makes
-exactly one - and the only thing that can read a count back is the fake embedder
-(e2e/fake-embedder.ts) the server calls as it calls Bedrock, under DISPATCH_E2E_EMBEDDER=fake
-(e2e/harness-embedder.ts). That switch is the server's, chosen before Playwright starts, so
-no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
-This job is where it runs.
-
-On the pull-request and full lanes, where the alone and multiprocess jobs run on `full`
-alone: this is one Chromium install and two rows, whose browser step took 35 s at most over the
-112 runs this job's budget note names, and it holds a check of the pull request it is on
-(check k2 of the embedding bar's issue, the bar's embedding count) rather than a clock reading
-or a second server shape. A lane that skipped it would leave the claim unread until the merge
-queue. Not on `references`, which its `if:` holds it off: that lane runs the spec files its arm
-of .github/scripts/dispatch-browser-shard-suite.sh names, and e2e/search-tiers.e2e.ts is none
-of them, and this job's check stays the pull-request lane's, which runs it.
-
-Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
-shard and alone legs, and this job's own conclusion is what the calling job (ci.yaml's
-dispatch-browser or dispatch-browser-pr) reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
-null leg and is passed over by reading one, exactly as multiprocess is.
-
-The embedder job's two step budgets were set before this job had runs of its own, so they are
-borrowed from the multiprocess job's measured steps, which are the same steps on the same
-machine: its install step's budget, and the same budget for a browser step that had no reading
-of its own yet. The job budget was those two plus that job's measured 135 s maximum for every
-step without one, rounded up: 4 + 4 min plus 135 s = 11 min.
-
-That 11 minutes stood through the change that took three steps out of this job -
-actions/setup-go, the go cache restore and the server build - and put three in: two
-actions/download-artifact and the chmod beside them, which take the shard job's maxima for the
-same steps in its four-leg table, 5 s a download and 1 s the chmod (the shard job's head names
-that table's 24 legs and five runs). The contracts build stays, as it does in every job that
-runs Playwright itself. The borrowed 135 s is now an over-estimate by the three steps it still
-carries, and 4 + 4 min plus 135 + 11 s is 10 min 26 s, which rounds up to the same 11 minutes.
-
-WHY THIS JOB HAS NO `postgres:` SERVICE. The multiprocess job's head
-(.github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets) says
-it, with the measurements both jobs are read from: a service container cost this job 22 s of
-`Initialize containers` and 3 s of `Stop containers` out of 68 s whole in run 43045412941,
-and the stacks now start their own Postgres from the same pgvector digest through
-e2e/harness-postgres.ts's image provider, which is the route the visual job already
-takes on the runner. The runner's own PostgreSQL 16 carries no `vector` extension, so the
-shard and alone jobs' DISPATCH_E2E_PG_BIN is no route here either.
-
-The budget, by the rule in this file's head: the two step budgets stay at 4 and 4 min - the
-browser step absorbs the provider's 8.3 to 10.4 s (the one sample behind that figure is the
-visual job of run 43045412941, which the multiprocess job's head says no later run splits
-out) inside a budget set for rows whose step took 16 to 26 s over the nine runs the shard
-job's head lists, and 35 s at most (job 132024655331, run 43465266476) over every run of this
-job at this shape on pull request #3513's branch, 112 of them from 2026-11-11T18:09Z to
-2026-11-16T06:37Z - and the borrowed maximum for the steps without one is the multiprocess
-job's 94 s, the 135 s with the downloads and the chmod added and the `Initialize containers`,
-setup-go and Go cache restore taken off, as that job's head says. 8 min plus 94 s is 9 min
-34 s, which rounds up to 10 minutes. This job's own steps without a budget read 51 s summed
-at their maxima over those 112 runs.
-
-This job now has runs of its own: the nine runs the shard job's head lists, read by that
-job's command, the first of them still with this job's `postgres:` service. Every step is
-inside the borrowed budgets: the install at most 14 s (job 131262996778, run 43240954914),
-the browser step at most 26 s (job 131300609558, run 43251567200) and the whole job at
-most 69 s (job 131282160430, run 43245766326). By the rule those maxima alone would give 2
-and 2 min. The budgets stay on the borrowed figures, which are larger, and no budget here
-was moved by these runs.
-
-Main's change to the harness's own Postgres (pull request #4486) put the image's pull before
-the browser step, which counts at 120 s, the multiprocess job's figure for the same pull; the
-connections read it added there is the binaries job's output here, as that job's head says.
-8 min plus 94 s and 120 s = 11 min 34 s -> 12 min, the embedder job's `timeout-minutes`.
-
-## What the embedder job downloads in place of its builds
-
-What the binaries job built, in place of this job's own actions/setup-go and its
-go-envoy restore, which are gone with the two builds that needed them: the browser step
-names this server on DISPATCH_E2E_SERVER_BIN and this directory on
-DISPATCH_E2E_BROKER_BIN_DIR, so e2e/run-server.sh and e2e/run-broker.sh execute what
-the run built rather than building it inside the browser step, and no step of this job
-starts a go command any more. The directory is the one run-broker.sh serves its three
-binaries from, as the shard job's step of this name says. Its chmod is the shard job's
-step of that name, for the reason that step gives.
-
-## The dashboard the embedder job serves
-
-The dashboard the binaries job built, into the directory `bun run build:web` writes:
-web/dist, which this job's server serves. On the full lane the archive carries
-web/dist-b beside it, which no row of this job reads; one artifact for both keeps one
-name for the dashboard of the run.
-
-## Why the embedder job builds contracts
-
-The shard job's step of this name, for the reason it gives: Playwright's Node runner
-reads `@legion/contracts` out of a build this checkout has to make before the config
-loads. It is the one build left in this job, which downloads everything else it runs.
-
 ## What the embedder's browser step runs against
 
-`e2e:embedder:run` and not `e2e:embedder`: that script builds the contracts and the
-dashboard before it runs, which is what a person's own command must still do, while
-this job makes the first in its contracts step and takes the second from the run
-(packages/dispatch/package.json). The two binaries
-the harness would otherwise build are named on the step's command line rather than in its
-`env:`, for the reason the shard job's head gives: the server e2e/run-server.sh executes
-(run-server.sh's build for a caller that names none makes one) and the directory
-e2e/run-broker.sh serves the broker's three commands from - this lane runs one
-process against the fake broker, which is what starts the real one
-(e2e/harness-real-broker.ts). This stack's Postgres is named the same way, and on the
-command line for the same reason: the pgvector digest, a literal for the reason
-.github/ci-notes/dispatch-browser.md#what-the-two-process-dashboard-step-runs-against gives,
-started per stack by e2e/harness-postgres.ts in place of the `postgres:` service this job
-used to declare.
+The command bar's two counting-embedder rows need a fake that counts the server's requests.
+The package script `e2e:embedder:run` selects those rows on Chromium under
+`DISPATCH_E2E_EMBEDDER=fake`. It starts no build. The separate Playwright invocation runs in
+`real` on pull requests and `alone` on full, reusing the binaries, dashboard, contracts and
+Chromium already present. It starts its own single-worker stack using PostgreSQL 18 from
+`/usr/lib/postgresql/18/bin` in the job container, not a Docker image or a service.
+
+It runs after the main browser step even when that step fails, unless the job is cancelled.
+The first invocation tears down its stacks when it exits. The embedder starts a fresh harness
+with its own temporary directory and OS-assigned ports, and it does not receive the first
+step's file-store environment. It uses the Playwright config's normal reporters, not the
+first step's blob reporter. `--output="$RUNNER_TEMP/embedder-test-results"` keeps Playwright's
+output-directory cleanup from removing the first step's `test-results`.
+
+The 4-minute step timeout is unchanged. A failure after Playwright's retries fails the
+containing job and the merge verdict, even with a green blob from the first step. The
+failure upload uses a separate attempt-qualified `<caller>-embedder-test-results-<attempt>`
+artifact. The two embedder rows did not contribute to the merged report before the move
+and still do not, so the merge row counts and flake rate have the same scope.
 
 ## The visual review, its docker run and its budgets
 
@@ -1993,11 +1926,10 @@ Delete it as unused and `test-results` moves to the top of the archive, off that
 
 ## What the merge job reports, and why it is never skipped
 
-What the legs together ran. It joins every shard's and every alone leg's blob report into one
-report, publishes five readings of it - the rows, the flake rate, the legs that did not
-succeed, the row durations and the lane's machine time - and is the one job of this workflow
-that reports ci-ok, so a run gets one verdict
-and not seven.
+What the blob-producing legs together ran. It joins the reports from `real` and `stub` on
+pull requests or both shards and `alone` on full (two shards only on references). It
+publishes the rows, the flake rate, the legs that did not succeed, the row durations and the
+lane's machine time. Each caller gets one verdict.
 
 This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
 `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It
@@ -2015,9 +1947,8 @@ thing and stay: a step's condition is about the steps before it, not about the r
 ## Why the merge job needs the binaries job
 
 Every job of this workflow, the binaries job among them: every other job of this file
-`needs: binaries`, so a build that failed leaves all five of them skipped and no blob
-report anywhere (dispatch://INFRA-1109 put the multiprocess, embedder and visual jobs on
-it too), and without it in this list the run would be reported as legs that uploaded
+`needs: binaries`, so a failed build leaves its dependents skipped and no blob report.
+Without the binaries job in this list the run would be reported as legs that uploaded
 nothing rather than as the build that never handed them anything. The verdict step, "Fail
 when a leg failed or the merged report holds a failed row", names it as it names the rest.
 In a call that takes another caller's build the binaries job is skipped, and that step reads
@@ -2259,8 +2190,8 @@ because a budget nothing fails on refuses nothing; and the ci-ok report after th
 merge-group run, on an input or a ci.yaml setting it cannot read, or a ci-ok check run it could
 not post (.github/scripts/ci-ok-report.sh and post-check-run.sh).
 
-The step's body is .github/scripts/dispatch-browser-verdict.sh, given the results of the six
-jobs the merge job needs, the embedder job's among them.
+The step's body is .github/scripts/dispatch-browser-verdict.sh, given the seven upstream
+job results in order: binaries, shard, real, stub, alone, multiprocess and visual.
 
 ## When the merge job posts ci-ok
 

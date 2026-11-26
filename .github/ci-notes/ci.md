@@ -711,9 +711,9 @@ Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 ## dispatch_browser_pr: The browser suite's pull-request lane reads what its full lane reads
 
 The dispatch-browser-pr job calls the same workflow as dispatch-browser, with the
-`pull-request` lane: its legs are the same jobs of that file over fewer projects and
-rows, so they read what the full lane's read: both gates are browser_gate of
-.github/scripts/ci_job_reads.py, so the two computed filters hold the same patterns, each
+`pull-request` lane: `real` and `stub` run disjoint subsets of the full lane's projects.
+Both gates use browser_gate of .github/scripts/ci_job_reads.py, so the computed filters hold
+the same patterns, each
 with its own generated `!` patterns and listed block. This output carries no hold term: the pull-request lane is the rule's one named
 exception (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 
@@ -1340,7 +1340,7 @@ fill on main, where it sets no `restore-keys`. The two check actions below fall 
 an entry of their own Go version. The Go refills use the Go version and a trailing `-` in
 their `restore-keys`, but the key's own prefix match can reach go1.27.30 for go1.27.3.
 Go does not reuse build objects compiled by that other toolchain. There is no Playwright
-download cache any more. dispatch-browser.yaml's shard and alone jobs run in the image this
+download cache any more. dispatch-browser.yaml's shard, real and alone jobs run in the image this
 repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 ~/.cache/ms-playwright restore would carry nothing they do not already have, and
 ci-caches.yaml's browsers job, the only writer of that entry, is gone with the restores
@@ -1761,9 +1761,9 @@ that selects every job, on a fall-open run and when changes did not succeed.
 ## Why the browser image's build carries no full-ci term
 
 The browser image's build. No `full-ci` term, and none is wanted: the image is what the
-shard and alone jobs of .github/workflows/dispatch-browser.yaml pin, so gating its build behind a label would leave a pull request that edits
-the Dockerfile writing a row whose digest the package does not hold, which the
-ci-images job then refuses.
+shard, real and alone jobs of .github/workflows/dispatch-browser.yaml pin. Gating the build
+behind a label would leave a pull request that edits the Dockerfile writing a row whose
+digest the package does not hold, which the ci-images job then refuses.
 
 ## The browser suite's two outputs, one per lane
 
@@ -1776,7 +1776,7 @@ request its paths select.
 dispatch_browser selects the dispatch-browser job, which runs the full lane, a slow suite held
 back as the others are, with its own label `lane:dispatch_browser`. A job runs whole or not at
 all, so the two lanes are two jobs, and their checks carry the caller's id:
-`dispatch-browser-pr / shard (1)` on a pull request, `dispatch-browser / shard (1)` in the merge
+`dispatch-browser-pr / real` on a pull request, `dispatch-browser / shard (1)` in the merge
 queue. .github/ci-notes/ci.md#what-the-lane-input-reads says what each lane runs. The third
 caller, dispatch-references, runs the `references` lane behind an output and a narrower filter
 of its own, and gates nothing
@@ -1820,9 +1820,9 @@ dispatch-browser-pr is the one exception the rule names: at 14.2 minutes it is a
 and it stays on the pull request, since its rows tagged `@pr` are the ones a change to the
 dashboard is held to (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane).
 Its 14.2 is main's figure, read off pull-request lanes of four shard legs that each built the
-dashboard themselves. dispatch://INFRA-1109's lane is a binaries job that builds it once and two
-shard legs (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows).
-Read the same way, its two attempt-1 runs took 7.9 and 9.7 minutes (runs 45261083852 and
+dashboard themselves. Before real and stub split by project, this branch built the dashboard
+once and ran the PR rows on two shards. Read the same way, its two attempt-1 runs took 7.9
+and 9.7 minutes (runs 45261083852 and
 45276453365, at that issue's heads e15ee5e4 and 4935c4af), which are too few runs for a 90th
 percentile.
 A job whose numbers cross the line moves class by the same rule. dispatch-references is in
@@ -2442,16 +2442,16 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 ## The browser suite jobs: their lanes, their inputs, and why the matrix is in the called file
 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml holds:
-the binaries job that builds the Go commands the lanes run and the dashboard bundles they serve,
-the shard legs, the `-alone` projects on a machine of their own, the two-process job, the
-fake-embedder job that runs on the pull-request and full lanes, the containerised visual review,
-and the merge job that joins the shard and alone reports into one and posts its caller's ci-ok
-report. Three jobs of this file call it.
+binaries builds the Go commands and dashboard bundles once. The `real` and `stub` jobs
+run the pull-request rows, the shards run the parallel full-lane and reference rows, and
+`alone` runs the full lane's wall-clock rows. The counting embedder runs as a second browser
+step in `real` and `alone`; the full lane also runs multiprocess and visual. The merge job
+joins the blobs and posts its caller's ci-ok report. Three jobs of this file call it.
 
 Two lanes, and which run pays for which. dispatch-browser-pr runs `pull-request` on a pull
-request: the projects a change is held to, which dispatch-browser.yaml's shard job names for
-that lane (.github/scripts/dispatch-browser-shard-suite.sh), over the `@pr` rows, so such a run
-proves those rows and no more - it is not the run that proves the suite before main.
+request: `real` runs the tagged Chromium and iPhone rows in the browser image while `stub`
+replays the tagged stub and stub-phone rows on bare `ubuntu-24.04`. Such a run is not the run
+that proves the full suite before main.
 dispatch-browser runs `full` - every project, the three `-alone` ones, the two-process job and
 the visual review - in the merge group, on a workflow_dispatch and on a pull request carrying
 `full-ci` or `lane:dispatch_browser`, where both jobs run. So the merge group is where a change
@@ -2465,12 +2465,10 @@ gates nothing
 Two inputs, each a literal of its caller's, and two more that dispatch-references alone passes,
 `build-job` and `connections`, to take dispatch-browser-pr's build
 (.github/ci-notes/ci.md#the-reference-rows-preview-job). `lane` decides the projects each job
-of the called workflow runs, so nothing here chooses them a second time; it picks no browser to
-install any more: the shard and alone jobs run in the image this repository builds, which
-carries all three engines (dispatch://INFRA-1443), and the two-process job installs Chromium
-whatever the lane.
+of the called workflow runs. The shard, real and alone jobs use the image that carries
+all three engines (dispatch://INFRA-1443); stub and multiprocess install only Chromium.
 `job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, so a
-pull request's browser checks are `dispatch-browser-pr / shard (1)` and the like, and a
+pull request's browser checks are `dispatch-browser-pr / real`, `dispatch-browser-pr / stub` and the like, and a
 `ci_check` naming `dispatch-browser / merge` finds no run of that name on a pull request
 without the label: the dispatch-browser job's own run concludes `skipped`, and no job of
 dispatch-browser.yaml starts under it. The merge job reads only the jobs named under its own
@@ -2512,11 +2510,10 @@ Which lane a run gets is which caller runs: dispatch-browser-pr and dispatch-ref
 pull request alone, and dispatch-browser wherever its `dispatch_browser` output is true, which
 a pull request gets only under `full-ci` or `lane:dispatch_browser`
 (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane). On the pull-request lane
-the alone, multiprocess and visual jobs of the called file are skipped by their own `if:`, as
-jobs of a lane it does not run, and on the references lane those three, the embedder job and
-the merge job's machine-time reading, which holds the pull-request and full lanes alone to a
-budget (.github/ci-notes/dispatch-browser.md#the-third-lane-references), and its binaries job
-too where it takes dispatch-browser-pr's build, below.
+`shard`, `alone`, `multiprocess` and `visual` skip. On the full lane only `real` and `stub`
+skip. On references only the shard legs and merge are required: binaries skips if the
+caller supplies a build and merge skips its machine-time reading
+(.github/ci-notes/dispatch-browser.md#the-third-lane-references).
 No other job of this file passes a lane: a job runs all its steps wherever it runs, and a job
 that held a slow suite beside steps a pull request runs is two jobs now
 (.github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push).
@@ -2542,7 +2539,7 @@ The reference rows' preview: every Chromium row of the eleven spec files
 the reference framework's Verification document names and the nine of the reading list's
 walk, through the `references` lane of dispatch-browser.yaml - its binaries job where it does
 not take dispatch-browser-pr's build (below), its two shard legs and its merge job, and none of
-its alone, two-process, embedder or visual jobs. The pull-request lane, the dispatch-browser-pr
+its real, stub, alone, two-process or visual jobs. The pull-request lane, the dispatch-browser-pr
 job, runs only the few of those rows that carry `@pr`, so without this job a change to the
 reference framework got the rest from a run by hand.
 
