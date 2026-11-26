@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { type OutcomeRecord, parseSkillUseFile } from "./heldout-case";
 import {
   type Answer,
   answerOf,
@@ -17,9 +25,12 @@ import {
   main,
   parseCases,
   parseRubric,
+  parseSkillUseRubric,
   type RunRecord,
+  readRuns,
   requestOf,
   sha256,
+  skillUseBatch,
 } from "./heldout-reader";
 
 const scratch = temporaryDirectory("heldout-reader", { real: true });
@@ -471,6 +482,22 @@ function io(fetch: (input: string, init: RequestInit) => Promise<Response>) {
   };
 }
 
+/** A 200 answer of the faked model whose text is `text`. */
+function modelAnswer(text: string): Response {
+  return new Response(
+    JSON.stringify({
+      id: "msg_fake",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-5-5-fake",
+      content: [{ type: "text", text }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 4000, output_tokens: 300 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
+}
+
 /** The faked model: it grades each item by its last words, as `byLastText` does. */
 function fakeModel(bodies: string[]) {
   return async (_url: string, init: RequestInit): Promise<Response> => {
@@ -490,27 +517,18 @@ function fakeModel(bodies: string[]) {
         })),
       })),
     });
-    return new Response(
-      JSON.stringify({
-        id: "msg_fake",
-        type: "message",
-        role: "assistant",
-        model: "claude-opus-5-5-fake",
-        content: [{ type: "text", text }],
-        stop_reason: "end_turn",
-        usage: { input_tokens: 4000, output_tokens: 300 },
-      }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
+    return modelAnswer(text);
   };
 }
 
-/** A --records directory of the example's runs, and the rubric file to read with it. */
+/** A --records directory of the example's runs, and the rubric file to read with it; `cases`, the
+ * case file, where it is not the example. */
 interface World {
   readonly root: string;
   readonly records: string;
   readonly rubric: string;
   readonly out: string;
+  readonly cases?: string;
 }
 
 function world(name: string, withEffects = true): World {
@@ -557,7 +575,7 @@ const flags = (w: World, ...more: string[]) => [
   "--rubric",
   w.rubric,
   "--cases",
-  EXAMPLE,
+  w.cases ?? EXAMPLE,
   "--records",
   w.records,
   "--out",
@@ -621,8 +639,13 @@ test("a run grades the records in one call, writes the labels and prints their s
   expect(log[0].model).toBe("claude-opus-5-5-fake");
   expect(log[0].usage).toEqual({ input_tokens: 4000, output_tokens: 300 });
   expect(Number.isNaN(Date.parse(log[0].at))).toBe(false);
+  // <out>.attempts.json: the attempt, on record before the call, under the call's own time.
+  expect(JSON.parse(readFileSync(`${w.out}.attempts.json`, "utf8"))).toEqual([
+    { at: log[0].at, seed: 7, request_sha256: log[0].request_sha256 },
+  ]);
   expect(readdirSync(path.dirname(w.out)).toSorted()).toEqual([
     "labels.json",
+    "labels.json.attempts.json",
     "labels.json.run.json",
   ]);
 
@@ -633,6 +656,7 @@ test("a run grades the records in one call, writes the labels and prints their s
   expect(twice).toHaveLength(2);
   expect(twice[0]).toEqual(log[0]);
   expect(twice[1].request_sha256).toBe(log[0].request_sha256);
+  expect(JSON.parse(readFileSync(`${w.out}.attempts.json`, "utf8"))).toHaveLength(2);
 });
 
 test("the gateway route posts to <gateway>/v1/messages with the key the key command prints", async () => {
@@ -689,7 +713,10 @@ test("a 429 is asked again with the same request, and a reply it cannot read is 
   expect(unreadable.stderr).toHaveLength(1);
   expect(unreadable.stderr[0]).toContain("holds no JSON object");
   expect(unreadable.stderr[0]).toContain(`${broken.out}.reply.txt`);
-  expect(readdirSync(path.dirname(broken.out))).toEqual(["labels.json.reply.txt"]);
+  expect(readdirSync(path.dirname(broken.out)).toSorted()).toEqual([
+    "labels.json.attempts.json",
+    "labels.json.reply.txt",
+  ]);
 });
 
 test("a run whose effects diverged from the daemon, or are another run's, is refused before any call", async () => {
@@ -708,6 +735,7 @@ test("a run whose effects diverged from the daemon, or are another run's, is ref
   writeFileSync(effectsOf(diverged), JSON.stringify(record));
   expect(await main(flags(diverged, "--key-file", key()), quiet.io)).toBe(2);
   expect(quiet.stderr[0]).toContain("DIVERGED");
+  expect(quiet.stderr[0]).toContain("a harness fault and no result; replace it before its batch");
 
   const foreign = world("foreign");
   const other = JSON.parse(readFileSync(effectsOf(foreign), "utf8"));
@@ -756,6 +784,395 @@ test("a bad argument, a missing rubric case, a skilluse file or a bad seed stops
     "the frozen rubric has no case P10"
   );
   expect(sent).toEqual([]);
+});
+
+// A skilluse set: the public example's need case P09 and a near miss made from it. A skilluse file
+// holds no traces, so its frozen rubric, in the case author's shape, holds each case's lines loaded
+// and finished and the good and bad control traces that check the reader. A run with the skill
+// withheld is a run of --records like any other, under a directory that names its arm.
+
+const skillUseExample = parseSkillUseFile(readFileSync(SKILL_USE_EXAMPLE, "utf8"));
+const P09 = skillUseExample.cases[0];
+if (P09 === undefined) throw new Error("the skilluse example holds P09");
+const { withheldControl: _withheldControl, ...p09Needless } = P09;
+/** A near miss: a run leaves the skill unread and still finishes. */
+const P09N = {
+  ...p09Needless,
+  id: "P09N",
+  kind: "near-miss" as const,
+  rubric: {
+    loaded: "The run leaves skill://legion-retro unread: the task does not need it.",
+    finished: P09.rubric.finished,
+  },
+};
+const SKILL_USE_CASES = JSON.stringify({ ...skillUseExample, cases: [P09, P09N] });
+
+/** UUID number `n`, which no example trace holds. */
+const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+/** A skilluse outcome under `id` whose last words are `lastText`: with a read of legion-retro
+ * before its first action that resolved or not, or with no read where `resolved` is undefined. */
+function skillOutcome(id: string, lastText: string, resolved?: boolean): OutcomeRecord {
+  const bytes = resolved ? 4096 : 0;
+  const read = { skill: "legion-retro", path: "SKILL.md", bytes, beforeFirstAction: true };
+  return {
+    id,
+    actions: [],
+    skillReads: resolved === undefined ? [] : [{ ...read, resolved }],
+    dispatchFirstInjected: true,
+    lastText,
+  };
+}
+
+/** The fake reader's rule: a line passes where the item's last words name it. */
+const byWords: Passes = (item, line) => item.outcome.lastText.includes(line);
+
+const linesOf = (each: { rubric: { loaded: string; finished: string } }) => [
+  { name: "loaded", text: each.rubric.loaded },
+  { name: "finished", text: each.rubric.finished },
+];
+/** The rubric's own reason for its verdicts, which no request may hold. */
+const VERDICT_REASON = "The author's reader passed the good trace and failed the bad one.";
+/** The frozen rubric of the skilluse set, in the case author's shape. */
+const SKILL_USE_RUBRIC = {
+  version: 1,
+  set: "skilluse",
+  frozen: true,
+  reader: { model: MODEL, calls: [] },
+  replaced: [],
+  sent_back: [],
+  cases: [
+    {
+      id: "P09",
+      scoreable: true,
+      rubric: linesOf(P09),
+      verdicts: { good: "pass", bad: "fail", withheld: "fail" },
+      reason: VERDICT_REASON,
+      controlTraces: {
+        good: skillOutcome(uuid(21), "loaded finished (P09 good)", true),
+        bad: skillOutcome(uuid(22), "loaded (P09 bad)", true),
+        withheld: skillOutcome(uuid(23), "withheld trace (P09)", false),
+      },
+    },
+    {
+      id: "P09N",
+      scoreable: true,
+      rubric: linesOf(P09N),
+      verdicts: { good: "pass", bad: "fail" },
+      reason: VERDICT_REASON,
+      controlTraces: {
+        good: skillOutcome(uuid(24), "loaded finished (P09N good)"),
+        bad: skillOutcome(uuid(25), "finished (P09N bad)", true),
+      },
+    },
+  ],
+};
+const SKILL_USE_RUBRIC_FILE = JSON.stringify(SKILL_USE_RUBRIC);
+
+/** The skilled run of P09, which passes both lines. */
+const SKILLED = skillOutcome(uuid(11), "loaded finished (run 11)", true);
+/** The skilluse records: each run's case, the directory that names its arm, and its outcome. No
+ * arm may reach the reader. */
+const SKILL_RUNS: readonly (readonly [string, string, OutcomeRecord])[] = [
+  ["P09", "arm-skilled", SKILLED],
+  ["P09", "arm-withheld", skillOutcome(uuid(12), "The read failed (run 12)", false)],
+  ["P09N", "arm-candidate", skillOutcome(uuid(13), "loaded finished (run 13)")],
+];
+
+/** A --records directory of SKILL_RUNS, with the skilluse case file and `rubric` beside it. */
+function skillWorld(name: string, rubric = SKILL_USE_RUBRIC_FILE): World {
+  const root = dir(name);
+  const records = path.join(root, "records");
+  for (const [caseId, arm, outcome] of SKILL_RUNS) {
+    mkdirSync(path.join(records, caseId, arm), { recursive: true });
+    writeFileSync(path.join(records, caseId, arm, "outcome.json"), JSON.stringify(outcome));
+  }
+  const cases = path.join(root, "skilluse-cases.json");
+  writeFileSync(cases, SKILL_USE_CASES);
+  writeFileSync(path.join(root, "rubric.json"), rubric);
+  return {
+    root,
+    records,
+    rubric: path.join(root, "rubric.json"),
+    out: path.join(root, "out", "labels.json"),
+    cases,
+  };
+}
+
+/** The faked reader of a skilluse batch: it grades each line as `byWords` does, and fails every
+ * line of an item whose last words hold `wrong`. */
+function fakeSkillModel(bodies: string[], wrong?: string) {
+  return async (_url: string, init: RequestInit): Promise<Response> => {
+    const request = String(init.body);
+    bodies.push(request);
+    const runs = itemsOf(request).map((item) => {
+      const words = item.outcome.lastText;
+      const wrongly = wrong !== undefined && words.includes(wrong);
+      return {
+        id: item.id,
+        lines: ["loaded", "finished"].map((name) => ({
+          name,
+          pass: words.includes(name) && !wrongly,
+          reason: "Decided by the last words.",
+        })),
+      };
+    });
+    return modelAnswer(JSON.stringify({ runs }));
+  };
+}
+
+test("a skilluse rubric gives each case its lines loaded and finished and its good and bad control traces", () => {
+  const frozen = parseSkillUseRubric(SKILL_USE_RUBRIC_FILE);
+  expect(frozen.map((each) => each.id)).toEqual(["P09", "P09N"]);
+  for (const each of frozen) {
+    expect(Object.keys(each)).toEqual(["id", "rubric", "traces"]);
+    expect(each.rubric.map((line) => line.name)).toEqual(["loaded", "finished"]);
+  }
+  // The rubric's own good and bad traces; its withheld trace is left unread.
+  expect(frozen[0]?.traces).toEqual({
+    good: SKILL_USE_RUBRIC.cases[0]?.controlTraces.good,
+    bad: SKILL_USE_RUBRIC.cases[0]?.controlTraces.bad,
+  });
+});
+
+test("a skilluse batch holds its run and its case's two frozen controls, and its request no verdict, world, control kind or arm", () => {
+  const batch = skillUseBatch(
+    parseSkillUseRubric(SKILL_USE_RUBRIC_FILE),
+    parseSkillUseFile(SKILL_USE_CASES),
+    [{ case: "P09", outcome: SKILLED, effects: null }],
+    7
+  );
+  expect(batch.items).toHaveLength(3);
+  expect([...batch.controls.values()].toSorted()).toEqual(["bad", "good"]);
+  expect(batch.rubric).toEqual([{ id: "P09", rubric: linesOf(P09) }]);
+
+  // The request of any batch: the reader's model, settings and instruction, and the two lines.
+  const request = requestOf(batch);
+  const body = JSON.parse(request);
+  expect(Object.keys(body).toSorted()).toEqual(["max_tokens", "messages", "model", "system"]);
+  expect([body.model, body.max_tokens, body.system]).toEqual([MODEL, MAX_TOKENS, INSTRUCTION]);
+  const rubricPart = /<rubric>\n([\s\S]*?)\n<\/rubric>/.exec(userMessage(request))?.[1];
+  const rubric = JSON.parse(rubricPart ?? "");
+  expect(rubric).toEqual([{ case: "P09", lines: linesOf(P09) }]);
+  // No key or text of the rubric's verdicts, of the case's world, task or withheld control, or of
+  // a control's kind or own id: the reader cannot tell a control from a run.
+  const hidden = [
+    "arm",
+    "trace",
+    "kind",
+    "verdicts",
+    "scoreable",
+    "reason",
+    "controlTraces",
+    "withheld",
+    "withheldControl",
+    "world",
+    "task",
+    "source",
+    "good",
+    "bad",
+  ];
+  const keys = [...keysOf(rubric), ...keysOf(itemsOf(request))];
+  expect(keys.filter((key) => hidden.includes(key))).toEqual([]);
+  for (const text of [VERDICT_REASON, P09.task, "withheld", uuid(21), uuid(22), uuid(23)]) {
+    expect(request).not.toContain(text);
+  }
+
+  // Each line is graded by itself. A frozen control graded wrong, or a grade the reply leaves out,
+  // gives no CONCLUSIVE labels.
+  const grade = (passes: Passes) => labelsOf(batch, answerWith(reply(batch, passes)), REQUEST);
+  const right = grade(byWords);
+  expect(right.batch).toBe("CONCLUSIVE");
+  const reason = "Decided by the actions.";
+  expect(right.records).toEqual([
+    {
+      id: SKILLED.id,
+      case: "P09",
+      pass: true,
+      lines: [
+        { name: "loaded", pass: true, reason },
+        { name: "finished", pass: true, reason },
+      ],
+    },
+  ]);
+  const graded = right.controls.map((each) => [each.trace, ...each.lines.map((line) => line.pass)]);
+  expect(graded.toSorted()).toEqual([
+    ["bad", true, false],
+    ["good", true, true],
+  ]);
+  const controlId = new Map([...batch.controls].map(([id, trace]) => [trace, id]));
+  const goodId = controlId.get("good");
+  const goodFailed = grade(
+    (item, line) => byWords(item, line) && (item.id !== goodId || line === "loaded")
+  );
+  expect(goodFailed.batch).toBe("INCONCLUSIVE");
+  const badPassed = grade((item, line) => item.id === controlId.get("bad") || byWords(item, line));
+  expect(badPassed.batch).toBe("INCONCLUSIVE");
+  const missing = JSON.parse(reply(batch, byWords));
+  missing.runs.find((run: { id: string }) => run.id === SKILLED.id).lines.shift();
+  expect(() => labelsOf(batch, answerWith(JSON.stringify(missing)), REQUEST)).toThrow(
+    `the reply does not grade ${SKILLED.id} on loaded`
+  );
+});
+
+test("a skilluse run grades need and near-miss records in one blind call, checked on each case's frozen controls", async () => {
+  const w = skillWorld("skilluse-run");
+  const bodies: string[] = [];
+  const run = io(fakeSkillModel(bodies));
+  expect(await main(flags(w, "--key-file", key()), run.io)).toBe(0);
+  expect(run.stderr).toEqual([]);
+  // The one request is the batch of the case file, the rubric and the records under the seed, and
+  // it holds no arm, no key and nothing of the rubric but its lines.
+  const frozen = parseSkillUseRubric(SKILL_USE_RUBRIC_FILE);
+  const file = parseSkillUseFile(SKILL_USE_CASES);
+  expect(bodies).toEqual([requestOf(skillUseBatch(frozen, file, readRuns(w.records), 7))]);
+  expect(itemsOf(bodies[0] ?? "")).toHaveLength(7);
+  for (const hidden of ["arm-", "skilled", "withheld", FILE_KEY, w.root, VERDICT_REASON]) {
+    expect(bodies[0]).not.toContain(hidden);
+  }
+
+  // Each record keeps both its judgments, and every frozen control was graded right.
+  const text = readFileSync(w.out, "utf8");
+  const labels = JSON.parse(text);
+  expect(labels.batch).toBe("CONCLUSIVE");
+  expect(labels.controls).toHaveLength(4);
+  type Label = { id: string; case: string; lines: { name: string; pass: boolean }[] };
+  const rows = labels.records.map((each: Label) => [
+    each.id,
+    [each.case, ...each.lines.map((line) => `${line.name} ${line.pass}`)],
+  ]);
+  expect(Object.fromEntries(rows)).toEqual({
+    [uuid(11)]: ["P09", "loaded true", "finished true"],
+    [uuid(12)]: ["P09", "loaded false", "finished false"],
+    [uuid(13)]: ["P09N", "loaded true", "finished true"],
+  });
+  expect(run.stdout).toContain("batch: CONCLUSIVE (4 of 4 controls graded right)");
+  // The labels know no arm: the join to arms comes after them.
+  expect(text).not.toMatch(/arm-|skilled|withheld/);
+
+  // A frozen control graded wrong leaves the batch INCONCLUSIVE, so none of its records can pass.
+  const wrong = skillWorld("skilluse-wrong-control");
+  const flipped = io(fakeSkillModel([], "(P09 good)"));
+  expect(await main(flags(wrong, "--key-file", key()), flipped.io)).toBe(0);
+  expect(flipped.stdout).toContain("batch: INCONCLUSIVE (3 of 4 controls graded right)");
+  expect(JSON.parse(readFileSync(wrong.out, "utf8")).batch).toBe("INCONCLUSIVE");
+});
+
+test("a skilluse run whose rubric lacks a control, a case or a line, or holds a bad one, stops before any call", async () => {
+  const sent: string[] = [];
+  const run = io(async (url) => {
+    sent.push(url);
+    return new Response("", { status: 500 });
+  });
+  const refuses = async (w: World, message: string) => {
+    expect(await main(flags(w, "--key-file", key()), run.io)).toBe(2);
+    expect(run.stderr.at(-1)).toContain("refused before any model call; nothing was sent");
+    expect(run.stderr.at(-1)).toContain(message);
+    // A refusal is no call: no attempt is on record.
+    expect(existsSync(`${w.out}.attempts.json`)).toBe(false);
+  };
+  const base = JSON.parse(SKILL_USE_RUBRIC_FILE);
+  const changed = (name: string, change: (rubric: typeof base) => unknown) => {
+    const rubric = structuredClone(base);
+    change(rubric);
+    return skillWorld(name, JSON.stringify(rubric));
+  };
+  const good = base.cases[0].controlTraces.good;
+  await refuses(
+    changed("no-bad-control", (r) => Object.assign(r.cases[0], { controlTraces: { good } })),
+    "cases[0].controlTraces.bad"
+  );
+  await refuses(
+    changed("bad-control", (r) => Object.assign(r.cases[1].controlTraces.good, { id: "P09N" })),
+    "cases[1].controlTraces.good.id"
+  );
+  await refuses(
+    changed("no-rubric-case", (r) => r.cases.pop()),
+    "the frozen rubric has no case P09N"
+  );
+  await refuses(
+    changed("no-finished-line", (r) => r.cases[0].rubric.pop()),
+    "no line finished"
+  );
+  await refuses(
+    changed("loaded-twice", (r) => r.cases[1].rubric.push(r.cases[1].rubric[0])),
+    "cases[1].rubric[2].name"
+  );
+  await refuses(
+    changed("other-line", (r) => Object.assign(r.cases[0].rubric[1], { name: "diagnosis" })),
+    "not a skilluse line"
+  );
+  await refuses(
+    changed("heldout-set", (r) => Object.assign(r, { set: "heldout" })),
+    'its set is "heldout", not skilluse'
+  );
+
+  // A run of a case that --cases does not hold.
+  const stray = skillWorld("skilluse-stray-case");
+  mkdirSync(path.join(stray.records, "P99", "arm-x"), { recursive: true });
+  writeFileSync(
+    path.join(stray.records, "P99", "arm-x", "outcome.json"),
+    JSON.stringify(skillOutcome(uuid(14), "loaded finished"))
+  );
+  await refuses(stray, "no case of --cases is P99");
+
+  // --capture grades a case file's own traces, and a skilluse file holds none.
+  const capture = ["--capture", dir("skilluse-capture"), "--cases", SKILL_USE_EXAMPLE];
+  expect(await main([...capture, "--seed", "7", "--key-file", key()], run.io)).toBe(2);
+  expect(run.stderr.at(-1)).toContain(
+    "a skilluse file holds no traces, so it gives the batch no control"
+  );
+  expect(sent).toEqual([]);
+});
+
+test("a call that gives no labels has its attempt on record before the send, keeps its reply apart and writes no labels", async () => {
+  const w = skillWorld("skilluse-no-labels");
+  const attemptsFile = `${w.out}.attempts.json`;
+  const sent: string[] = [];
+  const onRecord: unknown[] = [];
+  // The first answer refuses to grade; the repeat's answer misses each item's line finished.
+  const model = async (_url: string, init: RequestInit) => {
+    onRecord.push(JSON.parse(readFileSync(attemptsFile, "utf8")));
+    const request = String(init.body);
+    sent.push(request);
+    if (sent.length === 1) return modelAnswer("I will not grade these runs.");
+    const runs = itemsOf(request).map((item) => ({
+      id: item.id,
+      lines: [{ name: "loaded", pass: true, reason: "Read first." }],
+    }));
+    return modelAnswer(JSON.stringify({ runs }));
+  };
+  const first = io(model);
+  expect(await main(flags(w, "--key-file", key()), first.io)).toBe(1);
+  // At the send the attempt was on record: its time, seed and request sha256, and no grade and no
+  // byte of the request.
+  const attempt = { at: expect.any(String), seed: 7, request_sha256: sha256(sent[0] ?? "") };
+  expect(onRecord).toEqual([[attempt]]);
+  expect(first.stderr).toHaveLength(1);
+  expect(first.stderr[0]).toContain("no labels were written");
+  expect(first.stderr[0]).toContain("holds no JSON object");
+  expect(first.stderr[0]).not.toContain("nothing was sent");
+  // The reply is kept apart, and there are no labels and no record of any.
+  expect(readdirSync(path.dirname(w.out)).toSorted()).toEqual([
+    "labels.json.attempts.json",
+    "labels.json.reply.txt",
+  ]);
+  expect(readFileSync(`${w.out}.reply.txt`, "utf8")).toContain("I will not grade these runs.");
+
+  // The one repeat, at the same seed on the same records, sends the same request. An answer that
+  // misses a grade gives no labels either, and the first attempt stays on record.
+  const second = io(model);
+  expect(await main(flags(w, "--key-file", key()), second.io)).toBe(1);
+  expect(sent[1]).toBe(sent[0]);
+  expect(second.stderr[0]).toMatch(/the reply does not grade \S+ on finished/);
+  const attempts = JSON.parse(readFileSync(attemptsFile, "utf8"));
+  expect(onRecord[1]).toEqual(attempts);
+  expect(attempts).toEqual([attempt, attempt]);
+  expect(attempts[0]).toEqual((onRecord[0] as unknown[])[0]);
+  expect(readFileSync(attemptsFile, "utf8")).not.toContain(INSTRUCTION.slice(0, 60));
+  expect(readFileSync(`${w.out}.reply.txt`, "utf8")).toContain("Read first.");
+  expect(existsSync(w.out)).toBe(false);
+  expect(existsSync(`${w.out}.run.json`)).toBe(false);
 });
 
 // Fixture F4: the raw answer of the one real stateless call that `--capture` made on T0's example,

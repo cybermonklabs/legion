@@ -12,16 +12,25 @@
  * --rubric is the frozen rubric of the set, as a case author's reader writes it
  * (*-rubric-locked.json). The part this reads is its minimal shape:
  *   {"cases": [{"id": "<case id>", "rubric": [{"name": "<line>", "text": "<when it passes>"}]}]}
- * Every other key, at the top or in a case, is left unread.
- * --cases is a heldout or devcase file (heldout-case.ts's HeldoutFile). Only its cases' traces are
- * read: each case's known-good trace and, where it has one, its known-bad trace are the controls of
- * a batch that grades that case. A skilluse file holds no traces, so it gives no control and is
- * refused.
+ * and, with a skilluse file, its set and each case's two static control traces as well:
+ *   {"set": "skilluse", "cases": [{"id": "<case id>", "rubric": [<line loaded>, <line finished>],
+ *    "controlTraces": {"good": <outcome record>, "bad": <outcome record>}}]}
+ * A skilluse case is ruled on exactly the lines loaded and finished, once each, in any order, so
+ * the reader grades the skill's loading and the task's completion each by itself. Every other key,
+ * at the top or in a case, is left unread: a case's verdicts, its reason and its withheld trace
+ * among them.
+ * --cases is a heldout, devcase or skilluse file (heldout-case.ts's HeldoutFile or SkillUseFile).
+ * Only its case ids and traces are read. A heldout or devcase case's known-good trace and, where it
+ * has one, its known-bad trace are the controls of a batch that grades that case. A skilluse file
+ * holds no traces: the controls of a batch that grades its case are that case's good and bad
+ * control traces in the frozen rubric, which is then a skilluse rubric. A run with the skill
+ * withheld is a run of --records like any other, its arm known only to the join after the labels.
  * --records holds one directory per case, named by the case id, and in it one directory per run:
  * <records>/<case id>/<run>/outcome.json (heldout-case.ts's OutcomeRecord) and, where lane D
  * replayed the run, effects.json beside it (the effect record of t4-contracts.md, under the
  * outcome's own id). Nothing else of a run's directory is read, and no directory name reaches the
- * reader. A run whose effect record lists a divergence is DIVERGED, never a result: it is refused.
+ * reader. A run whose effect record lists a divergence is DIVERGED, a harness fault and never a
+ * result: it is refused, and is replaced before its batch is graded.
  * --seed is a whole number below 2^32. It draws the controls' fresh ids (UUIDs, as a run's id is)
  * and then the order of the batch (a Fisher-Yates walk of one mulberry32 stream).
  *
@@ -41,18 +50,24 @@
  * every control graded right makes it CONCLUSIVE. A batch with no control is refused before the
  * call.
  *
- * It appends {at, labels_sha256, request_sha256, model, usage} to <out>.run.json, a JSON array, then
- * writes --out (the labels: for each run, each line's pass and reason; for each control the same,
- * its trace and whether it was graded right; and the batch's verdict), and prints the labels'
- * sha256. request_sha256 is the sha256 of the request body as sent; model and usage are the
- * answer's own. A reply it cannot read is kept beside --out as <out>.reply.txt, and exit is 1.
+ * Before the call, a grading run appends {at, seed, request_sha256} to <out>.attempts.json, a JSON
+ * array: the attempt, on record whether or not the call gives labels. It is no grade and holds no
+ * byte of the request. After a reply it can read, it appends {at, labels_sha256, request_sha256,
+ * model, usage} to <out>.run.json, a JSON array, under the attempt's own `at`, then writes --out
+ * (the labels: for each run, each line's pass and reason; for each control the same, its trace and
+ * whether it was graded right; and the batch's verdict), and prints the labels' sha256.
+ * request_sha256 is the sha256 of the request body as sent; model and usage are the answer's own. A
+ * reply it cannot read, or one that misses a grade, is kept beside --out as <out>.reply.txt and
+ * never in the labels, and exit is 1.
  *
  * --capture makes one real call on the case file's own traces as the only items, its cases' own
  * rubric lines standing as the frozen rubric, and writes the raw answer body to
  * <dir>/heldout-reader-f4.txt (fixture F4) and the command that made it, its time and the request's
- * sha256 to <dir>/heldout-reader-f4.command. It names no gateway and no key.
+ * sha256 to <dir>/heldout-reader-f4.command. It names no gateway and no key. A skilluse file holds
+ * no traces, so it is refused.
  *
- * Exit 0 when written, 1 when the call or its reply failed, 2 when refused before any call.
+ * Exit 0 when written; 1 when the call or its reply failed; 2 when refused before any call, the
+ * error saying that nothing was sent.
  */
 import { createHash } from "node:crypto";
 import {
@@ -71,9 +86,11 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import {
   type HeldoutFile,
-  type OutcomeRecord,
+  OutcomeRecord,
   parseHeldoutFile,
   parseOutcome,
+  parseSkillUseFile,
+  type SkillUseFile,
 } from "./heldout-case";
 import { askModel, modelRoute } from "./model-call";
 import { type CliIo, parseInstant, processIo } from "./production-dispatch";
@@ -139,6 +156,41 @@ const RubricFile = z
     });
   });
 
+/** The lines of a skilluse case's frozen rubric: the skill's loading and the task's completion. */
+const SKILL_USE_LINES: readonly string[] = ["loaded", "finished"];
+
+/** A skilluse set's frozen rubric file: its cases' ids, their two lines and their good and bad
+ * control traces, every other key left unread. */
+const SkillUseRubricFile = z
+  .looseObject({
+    cases: z.array(
+      z.looseObject({
+        id: Name,
+        rubric: z.array(Line),
+        controlTraces: z.looseObject({ good: OutcomeRecord, bad: OutcomeRecord }),
+      })
+    ),
+  })
+  .superRefine((file, context) => {
+    const ids = new Set<string>();
+    file.cases.forEach((each, index) => {
+      const issue = (where: PropertyKey[], message: string) =>
+        context.addIssue({ code: "custom", path: ["cases", index, ...where], message });
+      if (ids.has(each.id)) issue(["id"], "a repeat");
+      ids.add(each.id);
+      const names = new Set<string>();
+      each.rubric.forEach((line, at) => {
+        if (!SKILL_USE_LINES.includes(line.name))
+          issue(["rubric", at, "name"], `not a skilluse line: ${SKILL_USE_LINES.join(" or ")}`);
+        else if (names.has(line.name)) issue(["rubric", at, "name"], "a repeat");
+        names.add(line.name);
+      });
+      for (const name of SKILL_USE_LINES) {
+        if (!names.has(name)) issue(["rubric"], `no line ${name}`);
+      }
+    });
+  });
+
 const Answered = z.strictObject({ status: z.number().int(), code: z.string().nullable() });
 
 /** One run's effect record, written by lane D's driver (t4-contracts.md, "The effect record"). */
@@ -176,6 +228,18 @@ export type EffectRecord = z.infer<typeof EffectRecord>;
 export interface CaseRubric {
   readonly id: string;
   readonly rubric: readonly { readonly name: string; readonly text: string }[];
+}
+
+/** A case as a batch reads it: its id, and its known traces, which the batch holds as controls. */
+export interface CaseTraces {
+  readonly id: string;
+  readonly traces: { readonly good?: OutcomeRecord; readonly bad?: OutcomeRecord };
+}
+
+/** One case of a skilluse set's frozen rubric: its lines loaded and finished, and the good and bad
+ * control traces that check the reader on it. */
+export interface SkillUseRubric extends CaseRubric {
+  readonly traces: { readonly good: OutcomeRecord; readonly bad: OutcomeRecord };
 }
 
 /** One run of --records: the case it is graded on, what it did, and what that did on the daemon. */
@@ -238,12 +302,12 @@ function withoutId<T extends { id: string }>(record: T): Omit<T, "id"> {
 
 /**
  * The batch of `runs`, with the controls of each case they name (with no run, of every case of
- * `cases`), each control under a fresh id, all of it in the order `seed` draws. Throws naming a
- * case with no frozen rubric or no traces, and a batch with no control.
+ * `cases`): each trace of the case, under a fresh id, all of it in the order `seed` draws. Throws
+ * naming a case with no frozen rubric or no traces, and a batch with no control.
  */
 export function buildBatch(
   rubric: readonly CaseRubric[],
-  cases: HeldoutFile,
+  cases: { readonly cases: readonly CaseTraces[] },
   runs: readonly RunRecord[],
   seed: number
 ): Batch {
@@ -296,6 +360,27 @@ export function buildBatch(
     items,
     controls,
   };
+}
+
+/**
+ * The batch of skilluse `runs`. A skilluse file holds no traces, so the controls of each case the
+ * runs name are that case's good and bad control traces in the frozen rubric `frozen`, and each run
+ * is graded on the rubric's two lines; it is built and shuffled as buildBatch builds any batch, and
+ * throws as it does.
+ */
+export function skillUseBatch(
+  frozen: readonly SkillUseRubric[],
+  cases: SkillUseFile,
+  runs: readonly RunRecord[],
+  seed: number
+): Batch {
+  const traces = new Map(frozen.map((each) => [each.id, each.traces]));
+  return buildBatch(
+    frozen.map(({ id, rubric }) => ({ id, rubric })),
+    { cases: cases.cases.map(({ id }) => ({ id, traces: traces.get(id) ?? {} })) },
+    runs,
+    seed
+  );
 }
 
 /** The user message of a batch: the rubric lines of its cases, then its items. */
@@ -510,12 +595,40 @@ export function parseRubric(text: string): CaseRubric[] {
   return parsed.data.cases.map(({ id, rubric }) => ({ id, rubric }));
 }
 
-/** A heldout or devcase file; a skilluse file is refused, since it holds no trace. */
+/**
+ * A skilluse set's frozen rubric cases, each with its two lines and its good and bad control
+ * traces. Throws where it is the rubric of another set, a case id repeats, a case lacks, repeats or
+ * adds a line, or a case holds no good or no bad control trace, or one that is no outcome record.
+ */
+export function parseSkillUseRubric(text: string): SkillUseRubric[] {
+  const raw: unknown = JSON.parse(text);
+  const set = (raw as { set?: unknown } | null)?.set;
+  if (set !== "skilluse")
+    throw new Error(
+      `its set is ${JSON.stringify(set)}, not skilluse: a skilluse file holds no traces, so a rubric of another set gives the batch no control`
+    );
+  const parsed = SkillUseRubricFile.safeParse(raw);
+  if (!parsed.success) throw new Error(z.prettifyError(parsed.error).replaceAll("\n", " "));
+  return parsed.data.cases.map(({ id, rubric, controlTraces }) => ({
+    id,
+    rubric,
+    traces: { good: controlTraces.good, bad: controlTraces.bad },
+  }));
+}
+
+/** A heldout or devcase file, whose own traces are its controls; a skilluse file is refused, since
+ * it holds no trace (a grading run takes its controls from its frozen rubric). */
 export function parseCases(text: string): HeldoutFile {
   const set = (JSON.parse(text) as { set?: unknown } | null)?.set;
   if (set === "skilluse")
     throw new Error("a skilluse file holds no traces, so it gives the batch no control");
   return parseHeldoutFile(text);
+}
+
+/** A grading run's case file: a heldout or devcase file, or a skilluse file. */
+function parseCaseFile(text: string): HeldoutFile | SkillUseFile {
+  const set = (JSON.parse(text) as { set?: unknown } | null)?.set;
+  return set === "skilluse" ? parseSkillUseFile(text) : parseCases(text);
 }
 
 /** Every run of a --records directory, each named by its case's directory. */
@@ -537,7 +650,7 @@ export function readRuns(dir: string): RunRecord[] {
         throw new Error(`${effectsFile} is the record of ${effects.id}, not of ${outcome.id}`);
       if (effects !== null && effects.diverged.length > 0)
         throw new Error(
-          `${effectsFile}: the run DIVERGED from the daemon, so it is no result; make it again`
+          `${effectsFile}: the run DIVERGED from the daemon, a harness fault and no result; replace it before its batch is graded`
         );
       runs.push({ case: caseId, outcome, effects });
     }
@@ -562,7 +675,8 @@ function writeWhole(file: string, text: string): void {
   }
 }
 
-/** The entries of <out>.run.json so far: none where it is absent. */
+/** The entries of a JSON array log beside --out (<out>.run.json, <out>.attempts.json) so far:
+ * none where it is absent. */
 function runLog(file: string): unknown[] {
   if (!existsSync(file)) return [];
   return read(file, (text) => {
@@ -654,11 +768,11 @@ function captureCommand(args: Arguments, at: string, request: string): string {
 /** The whole run. Returns the exit status: 0, 1 (the call or its reply failed) or 2 (refused). */
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
   const refuse = (why: string) => {
-    io.err(`heldout-reader: ${why}`);
+    io.err(`heldout-reader: refused before any model call; nothing was sent: ${why}`);
     return 2;
   };
   const fail = (why: string) => {
-    io.err(`heldout-reader: ${why}`);
+    io.err(`heldout-reader: no labels were written: ${why}`);
     return 1;
   };
   const args = parseArguments(argv);
@@ -671,18 +785,27 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 
   let batch: Batch;
   let log: unknown[] = [];
+  let attempts: unknown[] = [];
   let out = "";
   try {
-    const cases = read(path.resolve(args.cases ?? ""), parseCases);
+    const casesFile = path.resolve(args.cases ?? "");
     if (args.capture === undefined) {
       out = path.resolve(args.out ?? "");
-      const rubric = read(path.resolve(args.rubric ?? ""), parseRubric);
-      const runs = readRuns(path.resolve(args.records ?? ""));
-      batch = buildBatch(rubric, cases, runs, seed);
+      const cases = read(casesFile, parseCaseFile);
+      const rubricFile = path.resolve(args.rubric ?? "");
+      if (cases.set === "skilluse") {
+        const frozen = read(rubricFile, parseSkillUseRubric);
+        batch = skillUseBatch(frozen, cases, readRuns(path.resolve(args.records ?? "")), seed);
+      } else {
+        const rubric = read(rubricFile, parseRubric);
+        batch = buildBatch(rubric, cases, readRuns(path.resolve(args.records ?? "")), seed);
+      }
       // Read and made before the call, so a log or a directory that is not fit stops the run first.
       log = runLog(`${out}.run.json`);
+      attempts = runLog(`${out}.attempts.json`);
       mkdirSync(path.dirname(out), { recursive: true });
     } else {
+      const cases = read(casesFile, parseCases);
       batch = buildBatch(
         cases.cases.map(({ id, rubric }) => ({ id, rubric })),
         cases,
@@ -698,6 +821,16 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
   const request = requestOf(batch);
   const requestSha = sha256(request);
   const at = new Date().toISOString();
+  if (args.capture === undefined) {
+    // The attempt on record before the call, so a call that gives no labels is on record too: its
+    // time, seed and request sha256, and no grade and no byte of the request.
+    try {
+      const attempt = { at, seed, request_sha256: requestSha };
+      writeWhole(`${out}.attempts.json`, `${JSON.stringify([...attempts, attempt], null, 2)}\n`);
+    } catch (error) {
+      return refuse(messageFor(error));
+    }
+  }
   let body: string;
   try {
     body = await askModel(route, request, (text) => text, {
@@ -736,7 +869,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     try {
       const text = `${JSON.stringify(labels, null, 2)}\n`;
       const labelsSha = sha256(text);
-      // The record of the call first, so no call goes unrecorded; both before any join to arms.
+      // The record of the labels first, under the attempt's own time, so no labels go unrecorded;
+      // both before any join to arms.
       const entry = {
         at,
         labels_sha256: labelsSha,
