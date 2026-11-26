@@ -592,6 +592,20 @@ bound that the parallel tests' load could make it miss, which the comment names 
 one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
 comment runs alone for no reason, as 46 tests did by 2026-11-25.
 
+## A daemon test writes a file it then executes with `internal/execfile`
+
+In a package of the daemon module whose tests run beside each other (`cmd/legion`,
+`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
+(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+another test forks while the file is open for writing holds the write descriptor until its own
+exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
+reading from the open to the close, so no fork lands in between. Code a test runs that writes such
+a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
+`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+record) needs neither.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
