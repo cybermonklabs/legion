@@ -346,8 +346,8 @@ func TestARefusalOfAnAskOrACheckIsLoggedByItsClassWithoutItsText(t *testing.T) {
 	if reason == nil {
 		t.Fatal("an ask holding a code block after its question breaks no rule, want its content rule's refusal")
 	}
-	// A check proved by CI that carries a run breaks a rule read from its attributes alone, so the
-	// refusal reads no database and needs no transaction.
+	// A check proved by CI that carries a run breaks a rule read from its attributes alone
+	// (refuseCICheckText), so the refusal reads no database and needs no transaction.
 	check := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{{
 		Type:  "check",
 		Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: "c1", "ci_check": address, "run": "go test ./..."},
@@ -359,7 +359,7 @@ func TestARefusalOfAnAskOrACheckIsLoggedByItsClassWithoutItsText(t *testing.T) {
 	}{
 		{"an ask block breaking its content rule", &ErrInvalidAskBlock{Reason: reason}, "the write would leave an ask block unreadable"},
 		{"an ask block carrying the question otherwise", compareAskBlockText(askBlock{question: question}, AskBlockText{Question: "Should we review it?"}), "the ask block cannot carry the text unchanged"},
-		{"a check block whose ci_check breaks a rule", refuseCICheckBlocks(context.Background(), nil, "c1-document", check, nil), "the write leaves a check block whose ci_check breaks a rule"},
+		{"a check block whose ci_check breaks a rule", refuseCICheckText(introducedCIChecks(check, nil)), "the write leaves a check block whose ci_check breaks a rule"},
 	}
 	logs := &logtest.Recorder{}
 	logtest.SetDefault(t, logs)

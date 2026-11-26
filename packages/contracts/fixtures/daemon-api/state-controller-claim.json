@@ -8,6 +8,7 @@
   },
   "admission": {
     "cap": 2,
+    "p0Holders": 0,
     "active": [
       "LEGION-208"
     ],
@@ -51,6 +52,7 @@
       "phase": "admitted",
       "status": "in_progress",
       "tree": "LEGION-208",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -129,6 +131,7 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-210",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": null,
@@ -160,6 +163,7 @@
       "phase": "implementing",
       "status": "todo",
       "tree": "LEGION-211",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": null,

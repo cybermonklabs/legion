@@ -19,22 +19,76 @@ import (
 
 const requestTimeout = 10 * time.Second
 
-// HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
+// HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
+// transport it was made with (New). Every write names as its actor the session actor answers.
 type HTTPClient struct {
 	baseURL    string
-	token      string
 	timeout    time.Duration
 	httpClient *http.Client
+	// session is the session every write names as its actor (WritesAs). It is empty for a client
+	// made with no option, whose writes name the session of the key's project (DaemonSession).
+	session string
 }
 
-// New creates a client for one Dispatch server. The token is sent only as a bearer header.
-func New(baseURL, token string) *HTTPClient {
-	return &HTTPClient{
+// Option sets one thing of the client New makes.
+type Option func(*HTTPClient)
+
+// WritesAs makes every write of the client name session as its actor, on an issue of any project.
+// Under dispatch_token_broker the daemon passes the session its broker token proves, because
+// Dispatch refuses a write whose actor names another session (403 ACTOR_SESSION_MISMATCH).
+func WritesAs(session string) Option {
+	return func(c *HTTPClient) { c.session = session }
+}
+
+// New creates a client for one Dispatch server whose every request goes through transport, which
+// presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
+// under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
+// client sets no Authorization of its own. Each option sets one thing of the client (WritesAs).
+func New(baseURL string, transport http.RoundTripper, options ...Option) *HTTPClient {
+	c := &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		token:      token,
 		timeout:    requestTimeout,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: transport},
 	}
+	for _, option := range options {
+		option(c)
+	}
+	return c
+}
+
+// BearerTransport is a RoundTripper that sends each request through base (http.DefaultTransport
+// when nil) with `Authorization: Bearer <token>` and changes nothing else, so a request goes on the
+// wire as it did when the client set the header itself. A redirect to another host name than the
+// request was made to is sent without it, as Go's client sent no Authorization header its caller
+// set on such a redirect: the bearer reaches Dispatch's host and no other. Go's client also kept
+// it on a redirect to a subdomain of that host; this does not.
+func BearerTransport(token string, base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return bearerTransport{authorization: "Bearer " + token, base: base}
+}
+
+type bearerTransport struct {
+	authorization string
+	base          http.RoundTripper
+}
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	presented := r.Clone(r.Context())
+	if strings.EqualFold(r.URL.Hostname(), firstRequest(r).URL.Hostname()) {
+		presented.Header.Set("Authorization", b.authorization)
+	}
+	return b.base.RoundTrip(presented)
+}
+
+// firstRequest is the request the caller made that r is a redirect of, or r itself: Go's client
+// sets each redirect's Response to the answer that redirected it, whose Request is the one before.
+func firstRequest(r *http.Request) *http.Request {
+	for r.Response != nil && r.Response.Request != nil {
+		r = r.Response.Request
+	}
+	return r
 }
 
 // ListIssues reads GET /api/v1/issues?project=<project>. Dispatch accepts one status filter, so
@@ -67,6 +121,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
 			Priority:     issue.Priority,
+			Resolved:     resolvedPriority(issue.ResolvedPriority, issue.PriorityFrom),
 			HandedOver:   CarriesLegionLabel(issue.Labels),
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
@@ -117,7 +172,7 @@ func (c *HTTPClient) SetStatus(ctx context.Context, key, status string) (Issue, 
 	var response issueResponse
 	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(key), daemonWrite{
 		Status: status,
-		Actor:  daemonActor(key),
+		Actor:  c.actor(key),
 	}, &response); err != nil {
 		return Issue{}, err
 	}
@@ -135,7 +190,7 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(issue.Key), daemonWrite{
 		Status:           status,
 		ExpectedSequence: issue.LastSeq,
-		Actor:            daemonActor(issue.Key),
+		Actor:            c.actor(issue.Key),
 	}, &response); err != nil {
 		return Issue{}, err
 	}
@@ -150,7 +205,7 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 // this caller may not release the holder, and 409 CLAIM_CONTENDED when the holder changed twice
 // while the request ran, so nothing was applied.
 func (c *HTTPClient) ReleaseClaim(ctx context.Context, key string) error {
-	return c.request(ctx, http.MethodDelete, "/api/v1/issues/"+url.PathEscape(key)+"/claim", daemonWrite{Actor: daemonActor(key)}, nil)
+	return c.request(ctx, http.MethodDelete, "/api/v1/issues/"+url.PathEscape(key)+"/claim", daemonWrite{Actor: c.actor(key)}, nil)
 }
 
 // PutGatedSteps publishes the deployment's design-gate steps onto project's row through PUT
@@ -166,7 +221,7 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 	}
 	return c.request(ctx, http.MethodPut, "/api/v1/projects/"+url.PathEscape(project)+"/gated-steps", gatedStepsWrite{
 		Steps: steps,
-		Actor: daemonActor(project),
+		Actor: c.actor(project),
 	}, nil)
 }
 
@@ -192,39 +247,40 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 	}
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/design-gates", designGatesWrite{
 		Gates: gates,
-		Actor: daemonActor(key),
+		Actor: c.actor(key),
 	}, nil)
 }
 
 // PutRoleHolders publishes the session of each Legion role of the issue through PUT
-// /api/v1/issues/{key}/role-holders, as the daemon's own session, which is the one caller that
-// route takes. The write replaces the issue's whole set, appends no event and notifies nobody.
-// The list is always sent, empty for an issue where no session holds a role: Dispatch refuses a
-// body that names no list, and the empty list is the publication that removes every holder.
-// Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
-// an issue it does not know; a Dispatch older than the route answers its router's 404 (NoRoute),
-// which the outbox's row waits on until the server release that has it.
+// /api/v1/issues/{key}/role-holders, as the daemon's own session: the route takes a Legion
+// daemon's session alone. The write replaces the issue's whole set, appends no event and notifies
+// nobody. The list is always sent, empty for an issue where no session holds a role: Dispatch
+// refuses a body that names no list, and the empty list is the publication that removes every
+// holder. Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404
+// ISSUE_NOT_FOUND for an issue it does not know; a Dispatch older than the route answers its
+// router's 404 (NoRoute), which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
 	if holders == nil {
 		holders = []RoleHolder{}
 	}
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/role-holders", roleHoldersWrite{
 		Holders: holders,
-		Actor:   daemonActor(key),
+		Actor:   c.actor(key),
 	}, nil)
 }
 
 // PutStep writes one start or one end of a step onto Dispatch's record id of the issue key,
-// through PUT /api/v1/issues/{key}/steps/{id}, as the daemon's own session, the one session the
-// route takes a record of the issue from. The write appends no event and notifies nobody. Dispatch
-// answers 400 STEP_INPUT for a value it will not take, 403 STEP_WRITER for any other writer, 404
-// ISSUE_NOT_FOUND for an issue it does not know and 409 STEP_OTHER_ISSUE for an id that is a
-// record of another issue; a Dispatch older than the route answers its router's 404 (NoRoute),
-// which the outbox's row waits on until the server release that has it.
+// through PUT /api/v1/issues/{key}/steps/{id}, as the daemon's own session: the route takes a
+// record of the issue from a Legion daemon's session alone. The write appends no event and
+// notifies nobody. Dispatch answers 400 STEP_INPUT for a value it will not take, 403 STEP_WRITER
+// for any other writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409
+// STEP_OTHER_ISSUE for an id that is a record of another issue; a Dispatch older than the route
+// answers its router's 404 (NoRoute), which the outbox's row waits on until the server release
+// that has it.
 func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{
 		StepWrite: write,
-		Actor:     daemonActor(key),
+		Actor:     c.actor(key),
 	}, nil)
 }
 
@@ -240,24 +296,46 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/rating", stepRatingWrite{
 		StepWrite:  write,
 		PlanRating: rating,
-		Actor:      daemonActor(key),
+		Actor:      c.actor(key),
+	}, nil)
+}
+
+// PutStepExperiment writes the experiment and the variant of the record's issue onto the record id
+// of the issue key, through the record's experiment route, PUT
+// /api/v1/issues/{key}/steps/{id}/experiment, as the daemon's own session. The body is the run's
+// identity out of write, of which Dispatch sets each field the record does not hold yet and keeps
+// each it holds, and the pair, and no other field: the start, the end and the rating are the
+// record's own writes, which the outbox sends first (publishStepRecord), so a Dispatch older than
+// this route takes the record and only the pair waits. The pair has a route of its own because the
+// step route and the rating route ignore a member they do not declare, so a pair sent there would
+// be answered 200 and lost. Dispatch answers the step route's refusals, and 400 STEP_INPUT for a
+// pair off its rule; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on.
+func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error {
+	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/experiment", stepExperimentWrite{
+		StepWrite:      identity,
+		StepExperiment: experiment,
+		Actor:          c.actor(key),
 	}, nil)
 }
 
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
-// issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
-// the route takes a plan of the issue from. The write appends no event and notifies nobody. The
-// plan's source, document, version and tasks are one fact: a write whose version is above the
-// version Dispatch holds replaces all four, and a write at or below it changes nothing, a version
-// left out (the source default) counting as 0, so a plan sent again or late changes nothing.
-// Dispatch answers 400 PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other
-// writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id
-// that is a plan of another issue; a Dispatch older than the route answers its router's 404
-// (NoRoute), which the outbox's row waits on until the server release that has it.
+// issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session: the route takes
+// a plan of the issue from a Legion daemon's session alone. The write appends no event and
+// notifies nobody. The plan's source, document, version and tasks are one fact: a write whose
+// version is above the version Dispatch holds replaces all four, and a write at or below it
+// changes nothing, a version left out (the source default) counting as 0, so a plan sent again or
+// late changes nothing. Dispatch answers 400 PLAN_INPUT for a plan it will not take, 403
+// STEP_WRITER for any other writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409
+// PLAN_OTHER_ISSUE for an id that is a plan of another issue; a Dispatch older than the route
+// answers its router's 404 (NoRoute), which the outbox's row waits on until the server release
+// that has it.
 func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/plans/"+url.PathEscape(id), planWrite{
 		PlanWrite: plan,
-		Actor:     daemonActor(key),
+		Actor:     c.actor(key),
 	}, nil)
 }
 
@@ -268,7 +346,7 @@ func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite
 // cannot be lost), and the one event the write makes carries both. An issue a person already
 // labelled gets the status alone.
 func (c *HTTPClient) HandOver(ctx context.Context, issue Issue, status string) error {
-	write := daemonWrite{Status: status, ExpectedSequence: issue.LastSeq, Actor: daemonActor(issue.Key)}
+	write := daemonWrite{Status: status, ExpectedSequence: issue.LastSeq, Actor: c.actor(issue.Key)}
 	if !issue.HandedOver {
 		write.LabelsAdd = []string{LegionLabel}
 	}
@@ -280,25 +358,30 @@ func (c *HTTPClient) HandOver(ctx context.Context, issue Issue, status string) e
 func (c *HTTPClient) PostMessage(ctx context.Context, key, body string) error {
 	return c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/messages", daemonWrite{
 		Body:  body,
-		Actor: daemonActor(key),
+		Actor: c.actor(key),
 	}, nil)
 }
 
-// ArtifactSlugs reads GET /api/v1/issues/{key}/artifacts and returns the slug of every document
-// and file the issue holds. A caller that names its own document reads it before an upload, so
-// a retry finds the document its first attempt made rather than writing it a second version.
-func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
-	var artifacts []struct {
-		Slug string `json:"slug"`
-	}
-	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", nil, &artifacts); err != nil {
+// Artifacts reads GET /api/v1/issues/{key}/artifacts: every document and file the issue holds, in
+// the order Dispatch lists them, each with its id, its slug, its kind, its primary flag, its role
+// and its latest version, the newest of the versions Dispatch lists for it.
+func (c *HTTPClient) Artifacts(ctx context.Context, key string) ([]Artifact, error) {
+	var response []issueArtifactResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", nil, &response); err != nil {
 		return nil, err
 	}
-	slugs := make([]string, len(artifacts))
-	for i, artifact := range artifacts {
-		slugs[i] = artifact.Slug
+	artifacts := make([]Artifact, len(response))
+	for i, artifact := range response {
+		latest := 0
+		for _, version := range artifact.Versions {
+			latest = max(latest, version.Number)
+		}
+		artifacts[i] = Artifact{
+			ID: artifact.ID, Slug: artifact.Slug, Kind: artifact.Kind, Primary: artifact.Primary, Role: artifact.Role,
+			LatestVersion: latest,
+		}
 	}
-	return slugs, nil
+	return artifacts, nil
 }
 
 // UploadArtifact writes a markdown document on the issue through POST
@@ -319,7 +402,7 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 	if err := c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", artifactUpload{
 		Name:    name,
 		Content: content,
-		Actor:   daemonActor(key),
+		Actor:   c.actor(key),
 	}, &response); err != nil {
 		return "", err
 	}
@@ -516,6 +599,61 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
+// Ask reads GET /api/v1/asks/{id}: the ask's state and who closed it (the type Ask), the person
+// its answer names for an answered ask and the actor its resolution names for a resolved one. An
+// ask Dispatch does not have is its 404 NOT_FOUND (Missing), and an answer that names no state is
+// an error, never an ask read as open or closed.
+func (c *HTTPClient) Ask(ctx context.Context, id string) (Ask, error) {
+	var response askReadResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/asks/"+url.PathEscape(id), nil, &response); err != nil {
+		return Ask{}, err
+	}
+	if response.Ask.State == "" {
+		return Ask{}, fmt.Errorf("Dispatch ask %q answered no state", id)
+	}
+	read := Ask{State: response.Ask.State}
+	switch answer, resolution := response.Ask.Answer, response.Ask.Resolution; {
+	case read.State == "answered" && answer != nil && answer.User != "":
+		read.ClosedBy = Actor{Kind: "user", ID: answer.User}
+	case resolution != nil:
+		read.ClosedBy = Actor(resolution.Actor)
+	}
+	return read, nil
+}
+
+// Reviews reads GET /api/v1/artifacts/{id}/reviews: every review Dispatch keeps of the document,
+// newest first in the order their events committed, as Dispatch lists them.
+func (c *HTTPClient) Reviews(ctx context.Context, artifactID string) ([]Review, error) {
+	var response []reviewResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/reviews", nil, &response); err != nil {
+		return nil, err
+	}
+	reviews := make([]Review, len(response))
+	for i, review := range response {
+		reviews[i] = Review{Version: review.Version, State: review.State, Actor: Actor(review.Actor), At: review.CreatedAt.UTC(),
+			Reason: deref(review.Reason)}
+	}
+	return reviews, nil
+}
+
+// DocumentVersion reads GET /api/v1/artifacts/{id}/versions/{number} and returns the markdown that
+// version of the document holds, as Dispatch stored it. A version the document does not have is
+// Dispatch's 404 (Missing). It reads a document's version alone (Artifact.Document): Dispatch
+// answers a version of an image or a file with its bytes, which are no answer this reads, so such
+// a read is an error and never an empty document.
+func (c *HTTPClient) DocumentVersion(ctx context.Context, artifactID string, version int) (string, error) {
+	var response struct {
+		Markdown *string `json:"markdown"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/versions/"+strconv.Itoa(version), nil, &response); err != nil {
+		return "", err
+	}
+	if response.Markdown == nil {
+		return "", fmt.Errorf("Dispatch artifact %q version %d answered no markdown: it is no document", artifactID, version)
+	}
+	return *response.Markdown, nil
+}
+
 // PlanDocument reads one version of a document with its typed blocks: GET
 // /api/v1/artifacts/{id}/versions/{version}?blocks=true, whose blocks Dispatch reads from that
 // version's own text, then GET /api/v1/artifacts/{id} for the issue carrying it. Each block's
@@ -641,6 +779,16 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 	return response.handoff(), nil
 }
 
+// Whoami reads GET /api/v1/whoami: who Dispatch takes this client's credential for. The boot reads
+// it under dispatch_token_broker, to refuse a broker token whose writes Dispatch would refuse.
+func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
+	var caller Caller
+	if err := c.request(ctx, http.MethodGet, "/api/v1/whoami", nil, &caller); err != nil {
+		return Caller{}, err
+	}
+	return caller, nil
+}
+
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -658,7 +806,6 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -718,14 +865,23 @@ func transportFailure(err error) error {
 	return &TransientError{Err: err}
 }
 
-// DaemonSession is the session the daemon writes every Dispatch status and message of the issue key
-// under: legion-daemon:<PROJECT>, PROJECT being the key's.
+// DaemonSession is the session of the Legion daemon of the project it is given,
+// legion-daemon:<PROJECT>, PROJECT being key up to its first "-": a project key is its own project.
+// Every write of a client made with no option names the session of the key it is on, which is how
+// the daemon writes with dispatch_token_broker off. Under dispatch_token_broker the daemon makes its
+// client WritesAs the session of its own project, the one its broker token proves, and every write
+// names that session instead.
 func DaemonSession(key string) string {
 	project, _, _ := strings.Cut(key, "-")
 	return "legion-daemon:" + project
 }
 
-func daemonActor(key string) actor {
+// actor is the actor a write on key names: the session the client writes as (WritesAs), or, for a
+// client made with no option, the session of the key's project (DaemonSession).
+func (c *HTTPClient) actor(key string) actor {
+	if c.session != "" {
+		return actor{Kind: "session", ID: c.session}
+	}
 	return actor{Kind: "session", ID: DaemonSession(key)}
 }
 
@@ -741,223 +897,4 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 		response.Error = statusText
 	}
 	return &Error{Status: status, Code: response.Code, Message: response.Error}
-}
-
-type issueSummaryResponse struct {
-	Key          string         `json:"key"`
-	Title        string         `json:"title"`
-	Status       string         `json:"status"`
-	Parent       *string        `json:"parent"`
-	Rank         string         `json:"rank"`
-	Priority     *int           `json:"priority"`
-	Labels       []string       `json:"labels"`
-	LastSeq      int64          `json:"last_seq"`
-	ResolvedRepo *string        `json:"resolved_repo"`
-	BlockedBy    []string       `json:"blocked_by"`
-	Claim        *claimResponse `json:"claim"`
-}
-
-type issueResponse struct {
-	Key               string         `json:"key"`
-	Project           string         `json:"project"`
-	Title             string         `json:"title"`
-	Status            string         `json:"status"`
-	Parent            *string        `json:"parent"`
-	Rank              string         `json:"rank"`
-	Priority          *int           `json:"priority"`
-	Labels            []string       `json:"labels"`
-	PrimaryArtifactID string         `json:"primary_artifact_id"`
-	LastSeq           int64          `json:"last_seq"`
-	ResolvedRepo      *string        `json:"resolved_repo"`
-	BlockedBy         []string       `json:"blocked_by"`
-	Claim             *claimResponse `json:"claim"`
-}
-
-// issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
-func (r issueResponse) issue() Issue {
-	return Issue{
-		Key:               r.Key,
-		Project:           r.Project,
-		Title:             r.Title,
-		Status:            r.Status,
-		Parent:            r.Parent,
-		Rank:              r.Rank,
-		Priority:          r.Priority,
-		Labels:            r.Labels,
-		HandedOver:        CarriesLegionLabel(r.Labels),
-		PrimaryArtifactID: r.PrimaryArtifactID,
-		LastSeq:           r.LastSeq,
-		ResolvedRepo:      deref(r.ResolvedRepo),
-		BlockedBy:         r.BlockedBy,
-		Claim:             r.Claim.claim(),
-		ClaimUnread:       r.Claim.unread(),
-	}
-}
-
-// claimResponse is an issue's claim as Dispatch's issue reads serve it (null for none).
-type claimResponse struct {
-	Actor actor `json:"actor"`
-}
-
-// claim is the claim as Claim, nil for none or for one naming no actor (unread).
-func (c *claimResponse) claim() *Claim {
-	if c == nil || c.unread() {
-		return nil
-	}
-	return &Claim{Kind: c.Actor.Kind, ID: c.Actor.ID}
-}
-
-// unread says the read showed a claim that names no actor: not nobody, but a claim the daemon
-// cannot name, as intake's decoder takes the same claim on an issue event.
-func (c *claimResponse) unread() bool {
-	return c != nil && (c.Actor.Kind == "" || c.Actor.ID == "")
-}
-
-// holder is the claim as Claim.Holder writes it.
-func (c *claimResponse) holder() string {
-	return c.claim().Holder()
-}
-
-type issueEventResponse struct {
-	Seq       int64           `json:"seq"`
-	Type      string          `json:"type"`
-	CreatedAt time.Time       `json:"created_at"`
-	Payload   json.RawMessage `json:"payload"`
-}
-
-type artifactResponse struct {
-	IssueKey *string           `json:"issue_key"`
-	Slug     string            `json:"slug"`
-	Primary  bool              `json:"primary"`
-	Role     string            `json:"role"`
-	Approval *approvalResponse `json:"approval"`
-}
-
-// versionBlocksResponse is a document version as GET …/versions/{n}?blocks=true answers it: its
-// markdown, its number, and its typed blocks, nil when Dispatch sent no blocks key.
-type versionBlocksResponse struct {
-	Markdown string                `json:"markdown"`
-	Number   int                   `json:"number"`
-	Blocks   *[]versionBlockAnswer `json:"blocks"`
-}
-
-// versionBlockAnswer is one block of that answer: its id, type, byte range in the answer's
-// markdown and attributes, each a name and the value its opening line writes.
-type versionBlockAnswer struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	From       int    `json:"from"`
-	To         int    `json:"to"`
-	Attributes []struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
-	} `json:"attributes"`
-}
-
-type approvalResponse struct {
-	State         string  `json:"state"`
-	LatestVersion int     `json:"latest_version"`
-	Version       *int    `json:"version"`
-	Reason        *string `json:"reason"`
-	// AskID and WaitingOn name the open approval request and whose turn it waits on, sent while
-	// State is awaiting.
-	AskID     *string `json:"ask_id"`
-	WaitingOn string  `json:"waiting_on"`
-	// At is the latest review's created_at and Seq its event's sequence on the issue; a Dispatch
-	// that predates the sequence, or a review recorded before it kept one, sends no seq.
-	At  *string `json:"at"`
-	Seq *int64  `json:"seq"`
-	// By is who gave the review State shows, and is absent where Dispatch names nobody.
-	By *actor `json:"by"`
-}
-
-// handoffResponse is a handoff record as Dispatch answers it, its body left undecoded: Handoff's
-// callers hold a completion to who wrote which record, never to what it says.
-type handoffResponse struct {
-	ID       string `json:"id"`
-	IssueKey string `json:"issue_key"`
-	Phase    string `json:"phase"`
-	Version  int    `json:"version"`
-	Author   actor  `json:"author"`
-}
-
-// handoff is the record without its body.
-func (r handoffResponse) handoff() Handoff {
-	return Handoff{
-		ID:       r.ID,
-		IssueKey: r.IssueKey,
-		Phase:    r.Phase,
-		Version:  r.Version,
-		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
-	}
-}
-
-// reviewResponse is one review as GET /api/v1/artifacts/{id}/reviews serves it, read for the
-// version it was given on and its state (`approved` or `changes_requested`) alone.
-type reviewResponse struct {
-	Version int    `json:"version"`
-	State   string `json:"state"`
-}
-
-type actor struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
-}
-
-type daemonWrite struct {
-	Status           string   `json:"status,omitempty"`
-	Labels           []string `json:"labels,omitempty"`
-	LabelsAdd        []string `json:"labels_add,omitempty"`
-	ExpectedSequence int64    `json:"expected_sequence,omitempty"`
-	Body             string   `json:"body,omitempty"`
-	Actor            actor    `json:"actor"`
-}
-
-// artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,
-// all fields Dispatch's JSON upload reads.
-type artifactUpload struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Actor   actor  `json:"actor"`
-}
-
-// gatedStepsWrite is the body of the gated-steps publish: the list, never omitted, and the
-// daemon's actor.
-type gatedStepsWrite struct {
-	Steps []string `json:"steps"`
-	Actor actor    `json:"actor"`
-}
-
-// designGatesWrite is the body of the design-gates publish: the set, never omitted, and the
-// daemon's actor.
-type designGatesWrite struct {
-	Gates []DesignGateDocument `json:"gates"`
-	Actor actor                `json:"actor"`
-}
-
-// roleHoldersWrite is the body of the role-holder publication: the issue's whole set and the
-// daemon's actor.
-type roleHoldersWrite struct {
-	Holders []RoleHolder `json:"holders"`
-	Actor   actor        `json:"actor"`
-}
-
-// stepWrite is the body of a step record's write: the record's fields and the daemon's actor.
-type stepWrite struct {
-	StepWrite
-	Actor actor `json:"actor"`
-}
-
-// stepRatingWrite is the body of a rating's write: the record's fields, the rating and its reason,
-// and the daemon's actor.
-type stepRatingWrite struct {
-	StepWrite
-	PlanRating
-	Actor actor `json:"actor"`
-}
-
-// planWrite is the body of a plan's write: the plan's fields and the daemon's actor.
-type planWrite struct {
-	PlanWrite
-	Actor actor `json:"actor"`
 }

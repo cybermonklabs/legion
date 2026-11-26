@@ -113,9 +113,9 @@ func TestAFaultHoldingADocumentsTextIsLoggedByItsTypesSiteAndRoute(t *testing.T)
 			route := table[index]
 			// site is this handler's call of writeIDPrefixError, the line after the one that reads it.
 			var site string
-			route.Handler = func(w http.ResponseWriter, _ *http.Request) {
+			route.Handler = func(w http.ResponseWriter, r *http.Request) {
 				pc, _, line, _ := runtime.Caller(0)
-				served.writeIDPrefixError(w, failure)
+				served.writeIDPrefixError(w, r, failure)
 				site = path.Base(runtime.FuncForPC(pc).Name()) + ":" + strconv.Itoa(line+1)
 			}
 			// On a mux of its own, as register mounts it, so the path's values reach every layer.

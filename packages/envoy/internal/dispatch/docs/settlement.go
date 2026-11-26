@@ -57,11 +57,7 @@ type settlement struct {
 	ledger *Ledger
 	tx     pgx.Tx
 	owner  artifactOwner
-	latest struct {
-		model.Version
-		markdown         string
-		docUpdateVersion int64
-	}
+	latest latestVersionRow
 	// issueClosed is the document's issue row as this settlement's transaction read it under the
 	// issue's owner lock (lockArtifactOwner): true for a closed issue, false for an open one and
 	// for a document of no issue, so its zero value is open. A closed issue's document settles as
@@ -686,13 +682,14 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 // An ask event that names thread_logins has its insert read them (settlementEventLogins), after
 // the ask writes queued before it.
 //
-// caused holds, by an event's place in events, a write of the node and tuple store that event is
-// the cause of (graphstore.Uncaused): the version's block index, or the follow of an ask the
-// settlement opened. Its append is queued right after the event's and its stamp, naming the
-// event's id as the id sequence left it (graphstore.LatestEvent), so nothing between the two
-// appends another event. A held write is read when the step runs, in the write phase, so one an
-// earlier step fills then (createAskBlock) is read as that step left it.
-func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int]*graphstore.Uncaused) error {
+// caused holds, by an event's place in events, the writes of the node and tuple store that event
+// is the cause of (graphstore.Uncaused), in the order they are stated: the version's block index,
+// or the node of an ask the settlement opened and its author's follow. Their appends are queued
+// right after the event's and its stamp, naming the event's id as the id sequence left it
+// (graphstore.LatestEvent), so nothing between the two appends another event. A held write is
+// read when the step runs, in the write phase, so one an earlier step fills then (createAskBlock)
+// is read as that step left it.
+func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int][]*graphstore.Uncaused) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -705,7 +702,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 			if sourceKind, sourceID, ok := referenceSource(planned, st.room); ok {
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
-			if stated := caused[index]; stated != nil {
+			for _, stated := range caused[index] {
 				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 		}
@@ -785,16 +782,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// an agent had just written; carryApproval now carries that approval to such a version
 	// instead, an event nothing in the log would explain). Its tree writes - stamping block ids,
 	// restoring an ask block's server-owned attributes - move the stored Proof state and often
-	// render the same markdown,
-	// and a version for one of those would repeat the version before it too (LEGION-229
-	// requirement 2).
+	// render the same markdown, and a version for one of those would repeat the version before it
+	// too (LEGION-229 requirement 2).
 	// contentChanged stays the first half of the test: a version an older renderer wrote is not
-	// this settlement's to canonicalise when nothing has touched the document since.
+	// this settlement's to canonicalise when nothing has touched the document since. The second
+	// half is whether the latest version holds this rendering (latestVersionRow.holds): byte for
+	// byte, or, for a version another renderer version wrote or none stamped, as markdown that
+	// reads as it. So a renderer change leaves no version behind it either where an edit was made
+	// and undone since, which changed the content and changed it back: the version holds the
+	// same tree in the spelling its renderer wrote.
 	contentChanged, err := contentChangedSinceVersion(ctx, tx, room, st.latest.docUpdateVersion)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
-	versioning := contentChanged && markdown != st.latest.markdown
+	versioning := contentChanged && !st.latest.holds(markdown)
 	settledVersion := st.latest.Number
 	if versioning {
 		settledVersion++
@@ -887,12 +888,12 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// What this settlement's block index stated waits for that event: its id is the cause
 		// every node and tuple of the pass carries, and it exists only once the event's insert has
 		// run, so it is stated right after it (appendEvents).
-		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int]*graphstore.Uncaused{0: &result.blocks}); err != nil {
+		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
-	// The follows of the asks this settlement opened wait for those asks' ask.opened events, each
-	// stated right after its own (followsByEvent).
+	// The nodes and the follows of the asks this settlement opened wait for those asks' ask.opened
+	// events, each stated right after its own (followsByEvent).
 	follows, err := st.reconciliation.followsByEvent(st.reconciliation.events)
 	if err != nil {
 		return settleDone, st.abandon(err)

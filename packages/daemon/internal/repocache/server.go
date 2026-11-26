@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"maps"
 	"net"
 	"net/http"
@@ -51,8 +52,9 @@ const CacheTokenFileEnv = "LEGION_REPOSITORY_CACHE_TOKEN_FILE"
 // <Root>/<owner>/<repo>.git, workspace.FeedRepository's layout), the provisioning token's file, the
 // file holding the bearer token its clients present (read again for every request, so a token the
 // Secret's projection rewrote is the one taken), where each fetch's one-shot credential goes (the
-// container's TMPDIR), how long between fetches, the address it serves on, its log, and the runner
-// its git runs under.
+// container's TMPDIR), how long between fetches, the address it serves on, its log, the runner
+// its git runs under, and the logger its HTTP server writes the errors of a connection to (nil is
+// Go's standard logger).
 type Options struct {
 	Repo           ghrepo.Repository
 	Root           string
@@ -63,6 +65,7 @@ type Options struct {
 	Listen         string
 	Log            func(line string)
 	Run            workspace.Runner
+	ErrorLog       *log.Logger
 }
 
 // Health is what GET /healthz answers: whether the cache has a clone to serve, its repository, the
@@ -194,7 +197,7 @@ func Serve(ctx context.Context, opts Options) error {
 	c := newCache(opts, dir)
 	c.health.Store(&Health{Repo: opts.Repo.String()})
 	c.loadRepackFailure()
-	server := &http.Server{Handler: c.handler(), ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Handler: c.handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: opts.ErrorLog}
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
 	defer func() {
@@ -474,7 +477,10 @@ func (c *cache) readTime(name string) (time.Time, error) {
 // GitHub, so every stage of this fetch is clocked, with no stream from a cache among them: the
 // first clone gets workspace.CacheFetchTimeout rather than an issue pod's FetchTimeout, since it is
 // the repository's one full download; a fetch into the clone keeps FetchTimeout, since it holds
-// the lock every tar waits on and brings only what GitHub gained.
+// the lock every tar waits on and brings only what GitHub gained. No clone borrows objects from
+// the cache's, since an issue pod takes a tar of it, so a clone of the cache's that the fetch did
+// not write is removed and filled afresh (workspace.FetchRequest.ReplaceForeign), where an issue
+// pod's feed is kept and fails its fetch.
 func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -489,7 +495,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	if _, err := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
 		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Feed: c.opts.Root,
 		Token: func() (string, error) { return config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile) },
-		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound,
+		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound, ReplaceForeign: true,
 	}); err != nil {
 		return time.Time{}, !cloned, err
 	}

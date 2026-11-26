@@ -24,13 +24,15 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// storedKind is one kind of tuple a writer of the store appends: the kind of the node the tuple is
+// StoredKind is one kind of tuple a writer of the store appends: the kind of the node the tuple is
 // out of, and the tuple's own kind.
-type storedKind struct{ From, Kind string }
+type StoredKind struct{ From, Kind string }
 
-// storeDrive is one run of writers of the store whose tuples TestTheSizingCountsEveryTupleTheWritersAppend
-// reads off graph_tuples (writeTheStore).
-type storeDrive struct {
+// StoreDrive is one run of writers of the store whose tuples TestTheSizingCountsEveryTupleTheWritersAppend
+// reads off graph_tuples (writeTheStore). It is exported, with its fields, for this package's
+// external test (imported_drives_test.go), which drives the sites of the API and the document
+// service.
+type StoreDrive struct {
 	// Name is the drive as a failure names it: the site it drives, and what it drives that site
 	// over where the test drives one site twice.
 	Name string
@@ -47,13 +49,20 @@ type storeDrive struct {
 	Drive func(*testing.T)
 	// Counts is, for each kind of tuple the drive appends, the terms of the sizing that count it.
 	// Every kind the drive appends must be here, and every kind here must be one it appended.
-	Counts map[storedKind][]string
+	Counts map[StoredKind][]string
 }
+
+// ImportedDrives builds the drives this package's external test package runs on one rig: the
+// API's and the document service's. Its value is set by this package's external test package as
+// it starts (imported_drives_test.go), and writeTheStore runs the drives it builds beside its own;
+// while it is nil, every site only those drives run is listed and not driven, and the test fails
+// naming it.
+var ImportedDrives func(*testing.T) []StoreDrive
 
 // requireEveryListedSiteDriven fails on every site the register of the store's writers lists that
 // no drive runs, naming it, so a site added to the register is a site this test drives before it
 // passes; and on every site a drive says it runs that the register does not list.
-func requireEveryListedSiteDriven(t *testing.T, drives []storeDrive) {
+func requireEveryListedSiteDriven(t *testing.T, drives []StoreDrive) {
 	t.Helper()
 	listed := lockstep.StoreWriteCallSites()
 	driven := map[string][]string{}
@@ -100,7 +109,7 @@ const drivenReceipt = int64(9700001)
 // of their own: who wrote a comment a build before the store wrote, as "Dana", whose canonical
 // login is dana, so the write states the recorded_as alias beside the authored_by; a sent
 // attempt's session; a session a write records; and a person's node held for its cause.
-func graphstoreDrives(t *testing.T) []storeDrive {
+func graphstoreDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -121,7 +130,7 @@ func graphstoreDrives(t *testing.T) []storeDrive {
 	dana := model.Actor{Kind: "user", ID: "Dana"}
 	var comment string
 	var commented time.Time
-	return []storeDrive{{
+	return []StoreDrive{{
 		Name: authoredDrive, Sites: []string{"graphstore/people.go#QueueAuthored"},
 		Database: database,
 		Ready: func(t *testing.T) {
@@ -148,7 +157,7 @@ func graphstoreDrives(t *testing.T) []storeDrive {
 				})
 			})
 		},
-		Counts: map[storedKind][]string{
+		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:    {graphstore.TupleAuthoredBy},
 			{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
@@ -164,7 +173,7 @@ func graphstoreDrives(t *testing.T) []storeDrive {
 				})
 			})
 		},
-		Counts: map[storedKind][]string{
+		Counts: map[StoredKind][]string{
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
@@ -178,7 +187,7 @@ func graphstoreDrives(t *testing.T) []storeDrive {
 				})
 			})
 		},
-		Counts: map[storedKind][]string{
+		Counts: map[StoredKind][]string{
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
@@ -198,7 +207,7 @@ func graphstoreDrives(t *testing.T) []storeDrive {
 				return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
 			})
 		},
-		Counts: map[storedKind][]string{
+		Counts: map[StoredKind][]string{
 			{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
 		},
@@ -243,7 +252,7 @@ var seedStatementSpace = regexp.MustCompile(`\s+`)
 // writes its comments and the rest of its data set, which no other listed site writes, and exits:
 // what it appended since is writeComments'. A scale too small to reach one of the three would
 // leave that drive appending none of what its Counts say it does, and the test fails on it.
-func seedRunDrives(t *testing.T) []storeDrive {
+func seedRunDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -289,9 +298,10 @@ func seedRunDrives(t *testing.T) []storeDrive {
 				table, folded, statement)
 		}
 	}
-	return []storeDrive{{
+	return []StoreDrive{{
 		Name: seedDocumentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_docs.go#writeDocument", "refs/blocks.go#Queue", "graphstore/write.go#Caused"},
+		Sites: []string{"cmd/dispatch-seed/write_docs.go#writeDocument", "cmd/dispatch-seed/write_core.go#writeIssues",
+			"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
 		Ready: func(t *testing.T) {
 			t.Helper()
 			binary = cmdtest.BuildCommand(t, cmdtest.Command{Name: "dispatch-seed", Dir: "../../../cmd/dispatch-seed"})
@@ -303,18 +313,27 @@ func seedRunDrives(t *testing.T) []storeDrive {
 				"--database-url", database.Pool.Config().ConnString(), "--scale", seedScale, "--no-migrate"))
 			queuedAt(t, asks, "asks", "insert into asks")
 		},
-		// Each document's latest version, indexed as its first: the blocks it states afresh and
-		// the references they hold.
-		Counts: map[storedKind][]string{
-			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
-			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
-			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
-			{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
-			{refs.BlockNodeKind, "mentions"}:                     {"block_ref"},
+		// The issues' nodes, which the seed writes before their documents, each document's node,
+		// and each document's latest version, indexed as its first: the blocks it states afresh and
+		// the references they hold. Every node of the seed is in its project.
+		Counts: map[StoredKind][]string{
+			{graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
+			{graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:      {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:           {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:         {"block"},
+			{refs.BlockNodeKind, refs.TupleInDocument}:                {"block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:              {"block"},
+			{refs.BlockNodeKind, "mentions"}:                          {"block_ref"},
 		},
 	}, {
 		Name: seedFollowersDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "graphstore/write.go#Write"},
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "cmd/dispatch-seed/write_items.go#writeAsks",
+			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
 			if err := asks.Rollback(ctx); err != nil {
@@ -322,13 +341,19 @@ func seedRunDrives(t *testing.T) []storeDrive {
 			}
 			queuedAt(t, comments, "comments", "insert into comments")
 		},
-		Counts: map[storedKind][]string{
+		// The asks' nodes, which their batch writes before its rows, and the session nodes of
+		// their followers.
+		Counts: map[StoredKind][]string{
+			{graphstore.KindAsk, graphstore.AttributeVisibility}:     {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.AttributeState}:          {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.AttributeProject}:        {graphstore.KindAsk},
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
 	}, {
 		Name: seedCommentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "graphstore/write.go#Write"},
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeMessages",
+			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
 			if err := comments.Rollback(ctx); err != nil {
@@ -343,13 +368,18 @@ func seedRunDrives(t *testing.T) []storeDrive {
 				t.Fatalf("the seed exited %d; it wrote:\n%s", code, process.Output.String())
 			}
 		},
-		// The comments, as the comment path states one, and their one author's node.
-		Counts: map[storedKind][]string{
+		// The comments, as the comment path states one, in their project, their one author's
+		// node, and the messages' nodes, which the seed writes after its comments.
+		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
+			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeProject}:    {graphstore.KindMessage},
 			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
 		},

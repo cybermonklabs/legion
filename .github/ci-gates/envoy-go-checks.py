@@ -15,9 +15,15 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", reads=reads(
      "the vendored archive's sha256 and renders it"),
     # The helm the cluster suite's render runs, installed by its own step from the helm row.
     (".github/actions/install-helm/**", at("envoy-go-checks", "./.github/actions/install-helm")),
-    (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
-    (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
+    (".github/ci-tools.yaml", "`.github/actions/install-helm/action.yml#ci_tools_fetch` installs the tarball of the helm row"),
+    (".github/scripts/ci-tools.sh", "`.github/actions/install-helm/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads that row's two sources"),
+    # The scan tests of approve-check's session spawn `bun scripts/approve/scan.ts`, which loads
+    # node's builtins, scripts/approve/dispatch-env.ts beside it (read by the {ENVOY}/** row above)
+    # and cipher-client's DPoP key, and nothing else from outside packages/envoy.
+    ("packages/cipher-client/src/dpop.ts",
+     f"{at('envoy-go-checks', SCAN_TESTS_STEP)}: packages/envoy/scripts/approve/scan.ts imports "
+     "../../../cipher-client/src/dpop.ts (newDpopKey), which imports node:crypto and jose's JWK type alone"),
     # Every script harness step queues its harness through the pool, and the wait step is the
     # verdict on them, so a change to the pool must start this job.
     (".github/scripts/harness-pool.sh",

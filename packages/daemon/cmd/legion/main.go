@@ -105,28 +105,54 @@ func helpRequested(arg string) bool {
 	return arg == "-h" || arg == "-help" || arg == "--help"
 }
 
+// newVersionCommand is `legion version`: the version and the commit the binary was built from,
+// and the linked plugin pair where both are linked. With --contracts it prints the daemon API
+// contract of this build instead (printContracts).
 func newVersionCommand(stdout io.Writer) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "print the version and the commit the binary was built from",
 		Args:  noArguments,
-		RunE: runs(func(context.Context, []string) int {
-			version := "(devel)"
-			if release != "" {
-				version = release
-			} else if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
-				version = info.Main.Version
-			}
-			if revision != "" {
-				fmt.Fprintf(stdout, "legion %s commit %s\n", version, revision)
-			} else {
-				fmt.Fprintf(stdout, "legion %s\n", version)
-			}
-			if piLegionVersion != "" && piEnvoyVersion != "" {
-				fmt.Fprintf(stdout, "plugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s\n", piLegionVersion, piEnvoyVersion)
-			}
+	}
+	contracts := cmd.Flags().Bool("contracts", false, "print this build's daemon API contract, whether its entries are numbered in the order a stamp gives or by id, and each entry's id, number and slug")
+	cmd.RunE = runs(func(context.Context, []string) int {
+		if *contracts {
+			printContracts(stdout)
 			return 0
-		}),
+		}
+		version := "(devel)"
+		if release != "" {
+			version = release
+		} else if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+			version = info.Main.Version
+		}
+		if revision != "" {
+			fmt.Fprintf(stdout, "legion %s commit %s\n", version, revision)
+		} else {
+			fmt.Fprintf(stdout, "legion %s\n", version)
+		}
+		if piLegionVersion != "" && piEnvoyVersion != "" {
+			fmt.Fprintf(stdout, "plugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s\n", piLegionVersion, piEnvoyVersion)
+		}
+		return 0
+	})
+	return cmd
+}
+
+// printContracts is `legion version --contracts`: `contract <n>`, this build's own contract;
+// `order stamped` for a build whose entries are numbered in the merge order its stamp gives
+// (api.ContractOrderStamped), `order id` for one that ranks them by id; and then one line
+// `<id> <number> <slug>` for each entry, in the build's order. An operator reads an entry's
+// number in the build they run here, since no file holds it.
+func printContracts(stdout io.Writer) {
+	fmt.Fprintf(stdout, "contract %d\n", api.DaemonAPIVersion())
+	order := "id"
+	if api.ContractOrderStamped() {
+		order = "stamped"
+	}
+	fmt.Fprintf(stdout, "order %s\n", order)
+	for _, entry := range api.NumberedEntries() {
+		fmt.Fprintf(stdout, "%d %d %s\n", entry.ID, entry.Number, entry.Slug)
 	}
 }
 
@@ -222,10 +248,12 @@ func pluginsLine(cfg config.Config) string {
 // starts with, the daemon's own NATS nkey seed among them, then the store's refusals of a
 // postgres_dsn, which daemon.CheckStart lists), and nothing else: no store connection, no team, no
 // file written, and no process but `mise where <tool>` when a tmux configuration's omp_invocation
-// names a mise tool. Each refusal is written to stderr through printRefusal, as `legion start`
-// writes its own, so a URL a refusal quotes loses its query and its userinfo in both commands.
-// The OK line names the design-gate steps the file resolved to, in the order it named them
-// (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
+// names a mise tool. Under dispatch_token_broker it reads the transition token's file where the
+// file names one, and no identity variable: the trade at the secrets broker is boot's alone
+// (dispatch://INFRA-4425 R1). Each refusal is written to stderr through printRefusal, as `legion
+// start` writes its own, so a URL a refusal quotes loses its query and its userinfo in both
+// commands. The OK line names the design-gate steps the file resolved to, in the order it named
+// them (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
 // public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
@@ -257,8 +285,11 @@ func pluginsLine(cfg config.Config) string {
 // `resources:` line names those pods as Burstable (capabilities.Deployment.BurstableLine);
 // a file that sets no lower request prints none, its pods all Guaranteed. Then, when the image
 // probe's attempt budget is derived above slow_command_timeout_seconds (daemon.ProbeBudget), one
-// plain line names the derived bound and why; then one names the repository cache each repository
-// a live record names gets, as the file settles it;
+// plain line names the derived bound and why; then, when the file names
+// runtime.kubernetes.pod.controller_service_account, one names the ServiceAccount the controller's
+// pod runs as beside the one every other pod runs as (controllerAccountLine), and a file that names
+// none prints no such line, its controller running as every other pod does; then one names the
+// repository cache each repository a live record names gets, as the file settles it;
 // then a last plain line names the plugin pair this daemon would install for a stale-plugin
 // relaunch — the file's or the binary's — or, with neither, the gap, and, when worker_backends
 // runs any role on Claude Code, one sentence more saying that such a role's plugin is the image's
@@ -314,6 +345,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		if line, derived := daemon.ProbeBudgetLine(cfg); derived {
 			fmt.Fprintln(stdout, line)
 		}
+		if pod := cfg.Runtime.Kubernetes.Pod; pod.ControllerServiceAccount != "" {
+			fmt.Fprintln(stdout, controllerAccountLine(pod))
+		}
 		cache := cfg.Runtime.Kubernetes.RepositoryCache
 		fmt.Fprintf(stdout, "repository cache: a %s volume for each repository a live record names, fetched from GitHub every %d minutes, kept %d hours after no live record names it; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
 			cache.Volume, cache.RefreshMinutes, cache.RetainHours, reservedUnder(cache.Resources.CPURequest, cache.Resources.CPU),
@@ -344,6 +378,21 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// controllerAccountLine is `legion config check`'s line for runtime.kubernetes.pod.controller_service_account,
+// printed only when the file names one (which only `controller: daemon` may): the ServiceAccount the
+// controller's pod runs as, and the one every other pod runs as, the namespace's default when
+// service_account is unset. The two are named together because each is an identity of its own: a
+// secrets broker that grants the legion-daemon service's secrets by account grants them to the
+// controller only when it names the controller's account for that service too.
+func controllerAccountLine(pod config.PodConfig) string {
+	others := pod.ServiceAccount + " (runtime.kubernetes.pod.service_account)"
+	if pod.ServiceAccount == "" {
+		others = "the namespace's default (runtime.kubernetes.pod.service_account is unset)"
+	}
+	return "controller service account: the controller's pod runs as " + pod.ControllerServiceAccount +
+		" (runtime.kubernetes.pod.controller_service_account); every other pod runs as " + others
 }
 
 // defaultStepsLine is `legion config check`'s line for one project's `default_steps`: the steps
@@ -612,6 +661,11 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	// The P0 issues, which hold their slots outside the cap, and the bound they hold them under
+	// (the P0 start's contract entry); a state served below that entry carries neither, and says nothing of them.
+	if line := p0AdmissionLine(state.Admission); line != "" {
+		fmt.Fprintln(stdout, line)
+	}
 	// The project's pause: a paused line while it stands, a last-pause line while the project runs
 	// after one has ended, and neither before any pause, as the state carries one key at most.
 	for _, line := range []string{pausedSummary(state.Paused), lastPauseSummary(state.LastPause)} {

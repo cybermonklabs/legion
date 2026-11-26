@@ -90,7 +90,7 @@ func podClaims(contract int) []supervise.Claim {
 	return []supervise.Claim{
 		claimInPod("legion-legion-legion-208-planner", statePodUID, contract),
 		claimInPod("legion-legion-legion-208-implementer", statePodUID, contract),
-		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion),
+		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion()),
 	}
 }
 
@@ -428,6 +428,24 @@ func withoutHeldKey(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutDispatchCredentialKey is a state body with no `dispatchCredential`, which is what a
+// caller below dispatchCredentialContract is served of a state that carries it (api's
+// withoutDispatchCredential). It serves the table below as withoutQuietKeys does: a row's baseline
+// is the full state with exactly the keys that row's own contract holds back taken out of it.
+func withoutDispatchCredentialKey(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "dispatchCredential")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its Dispatch credential: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutIntakeGiveUpsKey is a state body with no `intakeGiveUps`, which is what a caller below
 // intakeGiveUpsContract is served (api's withoutIntakeGiveUps). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -534,6 +552,45 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// stripBasisKeys takes the keys gateBasisContract added off one issue of a decoded state body:
+// its `treeRuns`, and its `gatedSteps` whole where any step of them reads `open_on_basis` or
+// `pending_on_basis`, the two words that contract added, which are the steps that carry `basis`
+// (api's withoutGateBasis, and withoutUnadmittedStepStatuses beside it). It is the one statement
+// of that strip over a decoded body, read by withoutBasisKeys below and by the contract table of
+// memory_test.go, as stripAnswerKeys is.
+func stripBasisKeys(issue map[string]any) {
+	delete(issue, "treeRuns")
+	steps, _ := issue["gatedSteps"].([]any)
+	for _, step := range steps {
+		switch step.(map[string]any)["status"] {
+		case string(GatedStepOpenOnBasis), string(GatedStepPendingOnBasis):
+			delete(issue, "gatedSteps")
+			return
+		}
+	}
+}
+
+// withoutBasisKeys is a state body with no issue carrying `treeRuns` and no issue carrying gated
+// steps on an ancestor's basis, which is what a caller below gateBasisContract is served of a
+// state that carries them (api's withoutGateBasis and withoutUnadmittedStepStatuses). It serves
+// the table below as withoutQuietKeys does: a row's baseline is the full state with exactly the
+// keys that row's own contract holds back taken out of it.
+func withoutBasisKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		stripBasisKeys(issue.(map[string]any))
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its basis: %v", body, err)
+	}
+	return encoded
+}
+
 // withRepositoriesAt152 is a state body whose `repositories` block is written in the shape contract
 // 152 gave it from the body's own `live` entries and `caches`, which is what a caller below
 // repositoriesLiveContract is served of a state (api's withoutRepositoriesLive). It serves the
@@ -604,6 +661,7 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 // each issue's two entry numbers, the issues the record holds in the workflow, each issue's
 // tree quiet time, what each reviewing issue's round waits on from GitHub, each issue's
 // experiment assignments, the two times of each issue's entry task, each repository's `apps`, the
+// project's pause, each root's `treeRuns`, the gated steps of a root on an ancestor's basis, the
 // repository caches' word for the source of their capability row and the intake's give-ups among
 // the keys it is served without, and its repositories block in the shape contract 152 gave it,
 // since such a pod is below every row of stateNarrowings and of valueStrips. The measure of a tree
@@ -682,15 +740,21 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// `repositories.refused` (repositoryAppsContract, the contract that added it), so a pod
 		// at it or above is served the key and every older pod is not.
 		apps bool
+		// credential is whether the caller is served `dispatchCredential`, the daemon's Dispatch
+		// credential under dispatch_token_broker (dispatchCredentialContract, the contract that
+		// added it). No pod is placed at it, since a plugin at shapedAnswersContract or later states
+		// its contract (podContracts), so every pod the table places is served no object, and a
+		// caller served this daemon's own body is served it.
+		credential bool
 		// pause is whether the caller is served the project's pause, `paused` here
 		// (pauseContract, the contract that added it beside `lastPause`), so a pod at it or above
 		// is served the key and every older pod is not.
 		pause bool
-		// repos is whether the caller is served the repositories block this contract writes,
-		// `live` beside `caches` and `withoutWebhookApp` (repositoriesLiveContract), so a caller
-		// at it is served that block and every caller below it the block in contract 152's shape,
-		// from the same entries. No pod's claims place a caller at it (callerKind.reaches), so the
-		// rows served it are the three this daemon serves its own body.
+		// repos is whether the caller is served the repositories block repositoriesLiveContract
+		// writes, `live` beside `caches` and `withoutWebhookApp`, so a caller at it or above is
+		// served that block and every caller below it the block in contract 152's shape, from the
+		// same entries. No pod's claims place a caller at it (callerKind.reaches), so the rows
+		// served it are the three this daemon serves its own body.
 		repos bool
 		// plans is whether the caller is served each assignment's `plan` (assignmentPlanContract,
 		// the contract that added it), so a pod at it or above is served the key and every older
@@ -714,107 +778,125 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// (podContracts counts no such claim), and a caller that states a contract below
 		// intakeGiveUpsContract is not (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
 		giveUps bool
+		// basis is whether the caller is served what gateBasisContract added: every root's
+		// `treeRuns`, and the gated steps of a root one of whose steps stands open or pending on an
+		// ancestor's basis. No pod reading places a caller at that contract, since podContracts
+		// leaves out a claim at shapedAnswersContract or above, so of these rows only the ones
+		// served this daemon's own body are served it. The band (withoutGateBasis) and the strip of
+		// the two status words (withoutUnadmittedStepStatuses) leave together for every row here,
+		// so one column answers for both. The same contract also serves an older caller an issue
+		// in awaiting_children as `admitted` and that held word as `children_first`, which
+		// awaiting_children_narrow_test.go reads, since the state here holds no such issue.
+		basis bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		// The band from recordFieldsContract to below whyAndLineFieldsContract. What the caller is
-		// served is decided by its own recorded claim contract (podContracts) and never by the
-		// declared constant, which is why these rows name the contracts rather than the
-		// declaration. Such a pod stands below whyAndLineFieldsContract, leakCheckCauseContract,
-		// phaseEntriesContract, heldContract, quietTimeContract, mergeWaitContract,
-		// assignmentsContract, entryTimesContract, repositoryAppsContract, pauseContract,
-		// shapedAnswersContract, repositoriesLiveContract, assignmentPlanContract,
-		// intakeGiveUpsContract, podHoldContract and priorityContract, the sixteen bands above it
-		// that these rows compare, so the issues it is served carry no answer, no entry number, no
-		// tree quiet time, no `mergeWait`, no assignments (so no assignment's `plan` either), no
-		// entry times, no architect-stalled arms, no `podHold` and no `priority`, its claim views
-		// no leak check's cause and neither of the two keys contract 193 added, its admission block
-		// no held list, its repositories no `apps` and in contract 152's shape, and the state no
-		// pause and no `intakeGiveUps`.
+		// The band from recordFieldsContract to below whyAndLineFieldsContract. What the caller is served
+		// is decided by its own recorded claim contract (podContracts) and never by the declared
+		// constant, which is why these rows name the contracts rather than the declaration. Such a pod
+		// stands below whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract,
+		// heldContract, quietTimeContract, mergeWaitContract, assignmentsContract, entryTimesContract,
+		// repositoryAppsContract, pauseContract, shapedAnswersContract, repositoriesLiveContract,
+		// assignmentPlanContract, intakeGiveUpsContract, podHoldContract, priorityContract,
+		// dispatchCredentialContract and gateBasisContract, the eighteen bands above it that these rows
+		// compare, so the issues it is served carry no answer, no entry number, no tree quiet time, no
+		// `mergeWait`, no assignments (so no assignment's `plan` either), no entry times, no
+		// architect-stalled arms, no `podHold` and no `priority`, the state no `dispatchCredential`, its
+		// claim views no leak check's cause and neither of the two keys contract 193 added, its admission
+		// block no held list, its repositories no `apps` and in contract 152's shape, the state no pause
+		// and no `intakeGiveUps`, and its roots no `treeRuns` and no gated step on a basis.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, contract: recordFieldsContract},
-		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
-		// too, and the leak check's cause, the entry numbers, the held list, the tree quiet time,
-		// `mergeWait`, the assignments, the entry times, the repositories' `apps`, the pause, the
-		// claim views' keys of contract 193, the repositories block this daemon writes, each
-		// assignment's `plan`, the state's `intakeGiveUps`, each issue's `podHold` and each issue's
-		// `priority` are held back.
+		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served too, and
+		// the leak check's cause, the entry numbers, the held list, the tree quiet time, `mergeWait`, the
+		// assignments, the entry times, the repositories' `apps`, the pause, the claim views' keys of
+		// contract 193, the repositories block this daemon writes, each assignment's `plan`, the state's
+		// `intakeGiveUps`, each issue's `podHold`, each issue's `priority`, the state's
+		// `dispatchCredential` and the basis keys of gateBasisContract are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, contract: whyAndLineFieldsContract},
-		// The band at leakCheckCauseContract: the cause is served too, and the entry numbers, the
-		// held list, the tree quiet time, `mergeWait`, the assignments, the entry times, the
-		// repositories' `apps`, the pause, the claim views' keys of contract 193, the repositories
-		// block this daemon writes, each assignment's `plan`, the state's `intakeGiveUps`, each
-		// issue's `podHold` and each issue's `priority` are the fourteen bands left above it.
+		// The band at leakCheckCauseContract: the cause is served too, and the entry numbers, the held
+		// list, the tree quiet time, `mergeWait`, the assignments, the entry times, the repositories'
+		// `apps`, the pause, the claim views' keys of contract 193, the repositories block this daemon
+		// writes, each assignment's `plan`, the state's `intakeGiveUps`, each issue's `podHold`, each
+		// issue's `priority` and the state's `dispatchCredential` and the basis keys of gateBasisContract
+		// are the sixteen bands left above it.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, contract: leakCheckCauseContract},
-		// The band from phaseEntriesContract to below heldContract: the entry numbers are served
-		// too, and the held list, the tree quiet time, `mergeWait`, the assignments, the entry
-		// times, the repositories' `apps`, the pause, the claim views' keys of contract 193, the
-		// repositories block this daemon writes, each assignment's `plan`, the state's
-		// `intakeGiveUps`, each issue's `podHold` and each issue's `priority` are the thirteen
-		// bands left above it.
+		// The band from phaseEntriesContract to below heldContract: the entry numbers are served too, and
+		// the held list, the tree quiet time, `mergeWait`, the assignments, the entry times, the
+		// repositories' `apps`, the pause, the claim views' keys of contract 193, the repositories block
+		// this daemon writes, each assignment's `plan`, the state's `intakeGiveUps`, each issue's
+		// `podHold`, each issue's `priority` and the state's `dispatchCredential` and the basis keys of
+		// gateBasisContract are the fifteen bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, contract: phaseEntriesContract},
-		// The band from heldContract to below quietTimeContract: the held list is served too, and
-		// the tree quiet time, `mergeWait`, the assignments, the entry times, the repositories'
-		// `apps`, the pause, the claim views' keys of contract 193, the repositories block this
-		// daemon writes, each assignment's `plan`, the state's `intakeGiveUps`, each issue's
-		// `podHold` and each issue's `priority` are the twelve key-carrying bands left above it.
+		// The band from heldContract to below quietTimeContract: the held list is served too, and the
+		// tree quiet time, `mergeWait`, the assignments, the entry times, the repositories' `apps`, the
+		// pause, the claim views' keys of contract 193, the repositories block this daemon writes, each
+		// assignment's `plan`, the state's `intakeGiveUps`, each issue's `podHold`, each issue's
+		// `priority` and the state's `dispatchCredential` and the basis keys of gateBasisContract are the
+		// fourteen key-carrying bands left above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, contract: heldContract},
-		// The band from quietTimeContract to below mergeWaitContract: the tree quiet time is served
-		// too, and `mergeWait`, the assignments, the entry times, the repositories' `apps`, the
-		// pause, the claim views' keys of contract 193, the repositories block this daemon writes,
-		// each assignment's `plan`, the state's `intakeGiveUps`, each issue's `podHold` and each
-		// issue's `priority` are the eleven bands left above it. 123,
-		// INFRA-3146's contract, moves no shape of the state. The strip of 132 takes a word of
-		// the line's `kind` and no key, so it changes no column of this table;
+		// The band from quietTimeContract to below mergeWaitContract: the tree quiet time is served too,
+		// and `mergeWait`, the assignments, the entry times, the repositories' `apps`, the pause, the
+		// claim views' keys of contract 193, the repositories block this daemon writes, each assignment's
+		// `plan`, the state's `intakeGiveUps`, each issue's `podHold`, each issue's `priority` and the
+		// state's `dispatchCredential` and the basis keys of gateBasisContract are the thirteen bands
+		// left above it. 123, INFRA-3146's contract, moves no shape of the state. The strip of 132 takes
+		// a word of the line's `kind` and no key, so it changes no column of this table;
 		// waiting_on_issue_test.go reads that word.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: quietTimeContract},
-		// The band from mergeWaitContract to below assignmentsContract: `mergeWait` is served too,
-		// and the assignments, the entry times, the repositories' `apps`, the pause, the claim
-		// views' keys of contract 193, the repositories block this daemon writes, each assignment's
-		// `plan`, the state's `intakeGiveUps`, each issue's `podHold` and each issue's `priority`
-		// are the ten bands left above it.
+		// The band from mergeWaitContract to below assignmentsContract: `mergeWait` is served too, and
+		// the assignments, the entry times, the repositories' `apps`, the pause, the claim views' keys of
+		// contract 193, the repositories block this daemon writes, each assignment's `plan`, the state's
+		// `intakeGiveUps`, each issue's `podHold`, each issue's `priority` and the state's
+		// `dispatchCredential` and the basis keys of gateBasisContract are the twelve bands left above
+		// it.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: mergeWaitContract},
-		// The band from assignmentsContract to below entryTimesContract: the assignments are served
-		// too, without each assignment's `plan`, and the entry times and the architect-stalled
-		// arms, the repositories' `apps`, the pause, the claim views' keys of contract 193, the
-		// repositories block this daemon writes, each assignment's `plan`, the state's
-		// `intakeGiveUps`, each issue's `podHold` and each issue's `priority` are the nine bands
-		// left above it, at the band's foot and at its top alike.
+		// The band from assignmentsContract to below entryTimesContract: the assignments are served too,
+		// without each assignment's `plan`, and the entry times and the architect-stalled arms, the
+		// repositories' `apps`, the pause, the claim views' keys of contract 193, the repositories block
+		// this daemon writes, each assignment's `plan`, the state's `intakeGiveUps`, each issue's
+		// `podHold`, each issue's `priority` and the state's `dispatchCredential` and the basis keys of
+		// gateBasisContract are the eleven bands left above it, at the band's foot and at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: assignmentsContract, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: entryTimesContract - 1, assigned: true},
 		// The band from entryTimesContract to below repositoryAppsContract: the entry times and the
 		// architect-stalled arms are served too, and the repositories' `apps`, the pause, the claim
 		// views' keys of contract 193, the repositories block this daemon writes, each assignment's
-		// `plan`, the state's `intakeGiveUps`, each issue's `podHold` and each issue's `priority`
-		// are the eight bands left above it, at the band's foot and at its top alike.
+		// `plan`, the state's `intakeGiveUps`, each issue's `podHold`, each issue's `priority` and the
+		// state's `dispatchCredential` and the basis keys of gateBasisContract are the ten bands left
+		// above it, at the band's foot and at its top alike.
 		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: entryTimesContract, assigned: true, times: true},
 		{name: "a pod just below repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: repositoryAppsContract - 1, assigned: true, times: true},
 		// The band from repositoryAppsContract to below pauseContract: the repositories' `apps` are
-		// served too, and the pause, the claim views' keys of contract 193, the repositories block
-		// this daemon writes, each assignment's `plan`, the state's `intakeGiveUps`, each issue's
-		// `podHold` and each issue's `priority` are the seven bands left above it, at the band's
-		// foot and at its top alike.
+		// served too, and the pause, the claim views' keys of contract 193, the repositories block this
+		// daemon writes, each assignment's `plan`, the state's `intakeGiveUps`, each issue's `podHold`,
+		// each issue's `priority` and the state's `dispatchCredential` and the basis keys of
+		// gateBasisContract are the nine bands left above it, at the band's foot and at its top alike.
 		{name: "a pod at repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: repositoryAppsContract, assigned: true, times: true, apps: true},
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract - 1, assigned: true, times: true, apps: true},
-		// The band from pauseContract to below shapedAnswersContract: the project's pause is served
-		// too, and the claim views' keys of contract 193, the repositories block this daemon
-		// writes, which is served in contract 152's shape, each assignment's `plan`, the state's
-		// `intakeGiveUps` of contract 228, each issue's `podHold` and each issue's `priority` are
-		// the six bands left above it. The repository caches' row is served without its `source`
-		// here as in every band below, the value cachesSourceContract added.
+		// The band from pauseContract to below shapedAnswersContract: the project's pause is served too,
+		// and the claim views' keys of contract 193, the repositories block this daemon writes, which is
+		// served in contract 152's shape, each assignment's `plan`, the state's `intakeGiveUps` of
+		// contract 228, each issue's `podHold`, each issue's `priority` and the state's
+		// `dispatchCredential` and the basis keys of gateBasisContract are the eight bands left above it.
+		// The repository caches' row is served without its `source` here as in every band below, the
+		// value cachesSourceContract added.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
 		// A pod whose claims record shapedAnswersContract, from which every build states its
 		// contract in the header. Such a pod is in no pod reading: podContracts leaves out a claim
 		// at shapedAnswersContract or above, for that reason. So the reading falls through to the
 		// body this daemon writes, which carries every key and every value, the repositories block
 		// repositoriesLiveContract writes, each assignment's `plan`, the caches source,
-		// `intakeGiveUps`, each issue's `podHold` and each issue's and waiting member's `priority`
-		// among them, and the row names DaemonAPIVersion: a later contract than
-		// shapedAnswersContract has landed, so the two are no longer equal. A caller at 193 is
-		// served the state without `intakeGiveUps` where it states its contract in the header
-		// (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
+		// `intakeGiveUps`, each issue's `podHold`, each issue's and waiting member's `priority`,
+		// `dispatchCredential` and the basis keys of gateBasisContract among them, and the row names DaemonAPIVersion: a
+		// later contract than shapedAnswersContract has landed, so the two are no longer equal, and
+		// a pod reading places no caller at a contract from shapedAnswersContract up, so the bands
+		// above it reach only a caller that states its contract. A caller at 193 is served the
+		// state without `intakeGiveUps` where it states its contract in the header
+		// (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps), and a caller below
+		// gateBasisContract without the basis keys (gate_basis_wire_test.go reads one).
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, basis: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, basis: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, basis: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -833,42 +915,41 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if tc.refresh && count != fullCount {
 				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
-			// The mark of contract 75 and the fleet's lowest plugin contract are the two keys a
-			// full body and the baseline part on (withoutLowestContract): the baseline is asked
-			// from no pod and is told the daemon's number as its caller's, where a caller at a
-			// contract is told its own (TestANarrowedBodySaysSo), and the lowest contract reports
-			// the snapshot's claims, which are this row's own. The rest of the body is compared
-			// whole, against the baseline without the keys this row's own contract holds back: a
-			// pod at recordFieldsContract is served every claim view key the decided record added
-			// and neither the issues' answers, nor the leak check's cause, nor the entry numbers,
-			// nor the held list, nor the tree quiet time, nor `mergeWait`, nor the assignments, nor
-			// the entry times and the architect-stalled arms, nor the repositories' `apps`, nor the
-			// pause, nor the claim views' keys of contract 193, nor the repositories block this
-			// daemon writes, nor each assignment's `plan`, nor the state's `intakeGiveUps`, nor
-			// each issue's `podHold`, nor each issue's and waiting member's `priority`, the sixteen
-			// bands between it and this daemon's own that these rows compare; a pod at
-			// whyAndLineFieldsContract is served the answers and none of the other fifteen; a pod
-			// at leakCheckCauseContract is served the cause and none of the fourteen above it; a
-			// pod at phaseEntriesContract is served the entry numbers and none of the thirteen
-			// above it; a pod at heldContract is served the held list and none of the twelve above
-			// it; a pod at quietTimeContract is served the measure and none of `mergeWait`, the
-			// assignments, the entry times, the repositories' `apps`, the pause, the claim views'
-			// keys of contract 193, the repositories block, each assignment's `plan`,
-			// `intakeGiveUps`, `podHold` and `priority`; a pod at mergeWaitContract is served
-			// `mergeWait` and none of the other ten; a pod at assignmentsContract is served the
-			// assignments without their `plan` and none of the other nine; a pod at
-			// entryTimesContract is served the entry times and none of the other eight; a pod at
-			// repositoryAppsContract is served the repositories' `apps` and none of the pause,
-			// those keys, the repositories block, the `plan`, `intakeGiveUps`, `podHold` and
-			// `priority`; and a pod at pauseContract is served the pause and none of those keys,
-			// the repositories block, the `plan`, `intakeGiveUps`, `podHold` and `priority`. No
-			// pod's claims place a caller at assignmentPlanContract or priorityContract either, so
-			// only the three rows served this daemon's own body are served each assignment's `plan`
-			// and each issue's and waiting member's `priority`. Every row but the three served this
-			// daemon's own body is served the repositories block in contract 152's shape before any
-			// key of it is taken out (withRepositoriesAt152); those three are served the block this
-			// contract writes. No pod's claims place a caller at podHoldContract either, so only
-			// those three rows are served each issue's `podHold` (withoutPodHoldKey).
+			// The mark of contract 75 and the fleet's lowest plugin contract are the two keys a full body
+			// and the baseline part on (withoutLowestContract): the baseline is asked from no pod and is
+			// told the daemon's number as its caller's, where a caller at a contract is told its own
+			// (TestANarrowedBodySaysSo), and the lowest contract reports the snapshot's claims, which are
+			// this row's own. The rest of the body is compared whole, against the baseline without the keys
+			// this row's own contract holds back: a pod at recordFieldsContract is served every claim view
+			// key the decided record added and neither the issues' answers, nor the leak check's cause, nor
+			// the entry numbers, nor the held list, nor the tree quiet time, nor `mergeWait`, nor the
+			// assignments, nor the entry times and the architect-stalled arms, nor the repositories' `apps`,
+			// nor the pause, nor the claim views' keys of contract 193, nor the repositories block this
+			// daemon writes, nor each assignment's `plan`, nor the state's `intakeGiveUps`, nor each issue's
+			// `podHold`, nor each issue's and waiting member's `priority`, nor the state's
+			// `dispatchCredential`, nor the basis keys of gateBasisContract, the eighteen bands between it
+			// and this daemon's own that these rows compare; a pod at whyAndLineFieldsContract is served the
+			// answers and none of the other seventeen; a pod at leakCheckCauseContract is served the cause
+			// and none of the sixteen above it; a pod at phaseEntriesContract is served the entry numbers
+			// and none of the fifteen above it; a pod at heldContract is served the held list and none of
+			// the fourteen above it; a pod at quietTimeContract is served the measure and none of
+			// `mergeWait`, the assignments, the entry times, the repositories' `apps`, the pause, the claim
+			// views' keys of contract 193, the repositories block, each assignment's `plan`,
+			// `intakeGiveUps`, `podHold`, `priority`, `dispatchCredential` and the basis keys; a pod at
+			// mergeWaitContract is served `mergeWait` and none of the other twelve; a pod at
+			// assignmentsContract is served the assignments without their `plan` and none of the other
+			// eleven; a pod at entryTimesContract is served the entry times and none of the other ten; a pod
+			// at repositoryAppsContract is served the repositories' `apps` and none of the pause, those
+			// keys, the repositories block, the `plan`, `intakeGiveUps`, `podHold`, `priority`,
+			// `dispatchCredential` and the basis keys; and a pod at pauseContract is served the pause and
+			// none of those keys, the repositories block, the `plan`, `intakeGiveUps`, `podHold`,
+			// `priority`, `dispatchCredential` and the basis keys. No pod's claims place a caller at
+			// assignmentPlanContract, podHoldContract, priorityContract or gateBasisContract either, so only
+			// the three rows served this daemon's own body are served each assignment's `plan`, each issue's
+			// `podHold` (withoutPodHoldKey), each issue's and waiting member's `priority` and the basis
+			// keys. Every row but the three served this daemon's own body is served the repositories block
+			// in contract 152's shape before any key of it is taken out (withRepositoriesAt152); those three
+			// are served the block repositoriesLiveContract writes.
 			if tc.rounds && tc.stall {
 				want := full
 				if !tc.answers {
@@ -904,6 +985,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.pause {
 					want = withoutPausedKey(t, want)
 				}
+				if !tc.credential {
+					want = withoutDispatchCredentialKey(t, want)
+				}
 				if !tc.plans {
 					want = withoutAssignmentPlanKeys(t, want)
 				}
@@ -918,6 +1002,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				}
 				if tc.contract < podHoldContract {
 					want = withoutPodHoldKey(t, want)
+				}
+				if !tc.basis {
+					want = withoutBasisKeys(t, want)
 				}
 				want = servedAt(t, want, tc.contract)
 				if withoutLowestContract(t, body) != withoutLowestContract(t, want) {
@@ -967,12 +1054,15 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// repositoriesLiveContract replaced (withoutRepositoriesLive), with `apps` gone from
 			// every entry of `repositories.mapped` and `repositories.refused`, the key
 			// repositoryAppsContract added (withoutRepositoryApps), with the project's pause gone,
-			// the `paused` contract 178 added (withoutPause), and with the repository caches'
+			// the `paused` contract 178 added (withoutPause), with the repository caches'
 			// capability row without its `source`, the value cachesSourceContract added
-			// (withoutUnadmittedCapabilitySources, stripCachesSources above).
-			// Every row that reaches here is below all of them, so every one of them goes whatever
-			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
-			// this fixture stands no member of that kind.
+			// (withoutUnadmittedCapabilitySources, stripCachesSources above), and with every root's
+			// `treeRuns` gone, the key gateBasisContract added beside the gated steps of a root on an
+			// ancestor's basis, which go with `gatedSteps` itself for a caller this far back
+			// (withoutGateBasis), and with `dispatchCredential` gone, the key dispatchCredentialContract
+			// added (withoutDispatchCredential). Every row that reaches here is below all of them, so every one of
+			// them goes whatever the row is; contract 132's strip takes a word of the line's `kind`
+			// and no key, and this fixture stands no member of that kind.
 			var want, got map[string]any
 			if err := json.Unmarshal(withRepositoriesAt152(t, full), &want); err != nil {
 				t.Fatal(err)
@@ -988,6 +1078,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			delete(want, "intakeGiveUps")
 			delete(want, "contract")
 			delete(want, "paused")
+			delete(want, "dispatchCredential")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
@@ -1000,22 +1091,23 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
-				// Every row that reaches here is below phaseEntriesContract too, so the two
-				// entry numbers, the two times of their task, the architect-stalled arms and the
-				// pod's standing hold go whatever the row is, as the decided record's keys above do.
+				// Every row that reaches here is below phaseEntriesContract, quietTimeContract,
+				// entryTimesContract, podHoldContract and gateBasisContract too, so the two entry
+				// numbers, the two times of their task, the architect-stalled arms, the tree's quiet
+				// time, the pod's standing hold and `treeRuns` go whatever the row is, as the decided
+				// record's keys above do.
 				delete(issue, "phaseEntry")
 				delete(issue, "givenEntry")
 				delete(issue, "entryQueuedAt")
 				delete(issue, "entryConfirmedAt")
 				delete(issue, "architectStalls")
+				delete(issue, TreeMovedAtField)
+				delete(issue, QuietHoursField)
 				delete(issue, "podHold")
+				delete(issue, "treeRuns")
 				// Every row that reaches here is below priorityContract too, so neither the
 				// issue nor its waitingLine carries `priority`.
 				stripPriority(issue)
-				if !tc.quiet {
-					delete(issue, TreeMovedAtField)
-					delete(issue, QuietHoursField)
-				}
 				for _, worker := range issue["workers"].(map[string]any) {
 					if !tc.rounds {
 						delete(worker.(map[string]any), backwardMovesField)
@@ -1127,13 +1219,26 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 // 3 in the settings block (withFixAttempts, withMaxFixAttempts); a caller below
 // stateMachineContract is served the issue without the seven keys that contract added
 // (withoutStateMachineFields); and a caller below causeTimesContract is served each claim view
-// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes): every row of those tables
-// but the three served this daemon's own body is below it. Every other key of the settings block is
+// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes), and a caller below
+// p0BoundContract the admission without `p0Holders` and `p0Bound` (withoutP0Start): every row of
+// those tables but the three served this daemon's own body is below both. Every other key of the settings block is
 // served as this contract writes it, since no reader types it (answers.go's typedSettings). One
 // contract decides the stand-ins, because the two sides of a caller's shaping part only below
 // ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
+	if contract < entryNumber(p0BoundContract) {
+		if admission, carries := want["admission"].(map[string]any); carries {
+			delete(admission, "p0Holders")
+			delete(admission, "p0Bound")
+		}
+		if issues, carries := want["issues"].(map[string]any); carries {
+			for _, issue := range issues {
+				delete(issue.(map[string]any), "resolvedPriority")
+				delete(issue.(map[string]any), "priorityFrom")
+			}
+		}
+	}
 	if contract < fixAttemptsContract {
 		settings["max_fix_attempts"] = float64(3)
 	}
@@ -1246,7 +1351,7 @@ func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(retiredStrandedContract - 1)},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(retiredStrandedContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), retired: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), retired: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), retired: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(retiredStrandedContract - 1), retired: true},
 	} {
@@ -1277,9 +1382,9 @@ func TestTheRetiredStrandedContractIsTheContractThatAddedTheState(t *testing.T) 
 		t.Fatalf("retiredStrandedContract = %d, want %d, the contract whose entry in version.go added `retired` to a stranded claim's state",
 			retiredStrandedContract, addedRetiredStranded)
 	}
-	if retiredStrandedContract > DaemonAPIVersion {
+	if retiredStrandedContract > DaemonAPIVersion() {
 		t.Fatalf("retiredStrandedContract = %d, above DaemonAPIVersion %d: no caller could be served a retired claim",
-			retiredStrandedContract, DaemonAPIVersion)
+			retiredStrandedContract, DaemonAPIVersion())
 	}
 }
 
@@ -1416,7 +1521,7 @@ func TestTheRepositoriesBlockIsNarrowedBelowItsContract(t *testing.T) {
 		apps bool
 	}{
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1), stated: repositoriesLiveContract - 1, apps: true},
-		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: repositoriesLiveContract - 1, apps: true},
+		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: repositoriesLiveContract - 1, apps: true},
 		{name: "a pod at contract 152, whose schema of the block this one replaced", remote: statePodAddr + ":41000", claims: podClaims(152), apps: true},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod at 152 asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(152), apps: true},
@@ -1510,8 +1615,8 @@ func TestTheRepositoriesContractIsTheContractThatChangedTheBlock(t *testing.T) {
 		t.Fatalf("repositoriesLiveContract = %d, want %d, the contract whose entry in version.go made the block `live`, `caches` and `withoutWebhookApp`",
 			repositoriesLiveContract, changedTheBlock)
 	}
-	if repositoriesLiveContract > DaemonAPIVersion {
+	if repositoriesLiveContract > DaemonAPIVersion() {
 		t.Fatalf("repositoriesLiveContract = %d, above DaemonAPIVersion %d: no caller could be served `live`",
-			repositoriesLiveContract, DaemonAPIVersion)
+			repositoriesLiveContract, DaemonAPIVersion())
 	}
 }

@@ -13,6 +13,7 @@ package accesslog
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"io"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
@@ -36,7 +38,9 @@ const (
 	// KindService is a verified Kubernetes service-account token, by its subject.
 	KindService = "service"
 	// KindBrokerToken is an access token the secrets broker issued, presented under the DPoP
-	// scheme and proved against the key it is bound to, by the person its session acts for.
+	// scheme and proved against the key it is bound to, by the person its session acts for, or
+	// by `service:<service>` for a token that names no person (a machine's, or a job's, whose
+	// service is its entry's identity).
 	KindBrokerToken = "broker-token"
 	// KindSharedToken is the deployment's shared agent token with no session named: it proves
 	// no owner, so the line names none.
@@ -150,13 +154,22 @@ func (rec *recorder) Route() string { return rec.route }
 // (`/api/v1/issues/{key}`), mounted once, so the line groups a route's requests together whatever
 // ids their paths carry. A handler that panics (an artifact download whose store fails mid-stream
 // aborts with http.ErrAbortHandler) still writes its line, marked aborted=true, as the panic
-// passes on to net/http.
+// passes on to net/http. The time the line records is read on the real clock (HandlerOn).
 func Handler(route string, next http.Handler) http.Handler {
+	return HandlerOn(route, next, nil)
+}
+
+// HandlerOn is Handler timing each request on clk, nil being clock.Real(): a server that times
+// work of its own inside the request on a clock a test drives (api's Deps.Clock, which the answers
+// read's sessionanswers.Latency shares in a test) times the request's line on that clock too, so
+// the line and that work read one clock.
+func HandlerOn(route string, next http.Handler, clk clock.Clock) http.Handler {
+	clk = cmp.Or[clock.Clock](clk, clock.Real())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+		start := clk.Now()
 		rec := &recorder{ResponseWriter: w, route: route, kind: KindAnonymous}
 		completed := false
-		defer func() { rec.write(r, time.Since(start), !completed) }()
+		defer func() { rec.write(r, clk.Now().Sub(start), !completed) }()
 		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), callerKey{}, rec)))
 		completed = true
 	})
@@ -164,7 +177,12 @@ func Handler(route string, next http.Handler) http.Handler {
 
 // HandlerFunc is Handler for a handler function, which is how every Dispatch route is written.
 func HandlerFunc(route string, next http.HandlerFunc) http.HandlerFunc {
-	handler := Handler(route, next)
+	return HandlerFuncOn(route, next, nil)
+}
+
+// HandlerFuncOn is HandlerOn for a handler function.
+func HandlerFuncOn(route string, next http.HandlerFunc, clk clock.Clock) http.HandlerFunc {
+	handler := HandlerOn(route, next, clk)
 	return handler.ServeHTTP
 }
 
@@ -172,7 +190,8 @@ func HandlerFunc(route string, next http.HandlerFunc) http.HandlerFunc {
 // wherever it resolves a caller, and the last resolution wins: a bearer is noted by what its
 // token proved and then by the session it named, which is the caller a reader wants. A session
 // named after a credential of its own keeps that credential as the line's `credential`:
-// `token:<owner>`, `service:<subject>`, `broker-token:<person>` or `shared-token`. For the first
+// `token:<owner>`, `service:<subject>`, `broker-token:<person>` (`broker-token:service:<service>`
+// for a broker token that names no person) or `shared-token`. For the first
 // three that session is text the caller wrote, except under a broker-issued token, where the
 // token itself names it.
 func Note(ctx context.Context, kind, id string) {

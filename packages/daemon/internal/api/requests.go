@@ -30,18 +30,23 @@ type AcceptedField struct {
 	Ignoring string
 }
 
-// AcceptedByName is every field a request type keeps for an older plugin's body alone. The
-// request gate reads it three ways (request_shapes_test.go). A recorded field that this daemon's
-// request type no longer carries passes only with a row here whose LeftAt is above the record's
-// contract. Each row's field must still be a field of the route's request type, so that the
-// body the row is written for is read and not refused as an unknown member. And a field the
-// type reads that the record of this daemon's own contract does not hold must have a row here,
-// so a row deleted while its field stays in the type fails rather than losing its reason.
+// AcceptedByName is every field a request type keeps for an older plugin's body alone: the rows
+// of the numbered entries (frozenAcceptedByName) and then each entry's, in number order
+// (contracts.go). The request gate reads it three ways (request_shapes_test.go). A recorded field
+// that this daemon's request type no longer carries passes only with a row here whose LeftAt is
+// above the record's contract. Each row's field must still be a field of the route's request
+// type, so that the body the row is written for is read and not refused as an unknown member.
+// And a field the type reads that the record of this daemon's own contract does not hold must
+// have a row here, so a row deleted while its field stays in the type fails rather than losing
+// its reason.
 //
 // Each Go field a row names is in the request type, so it is in the type's walk. The record of
 // any contract at or above the row's LeftAt leaves the field out all the same, because that
 // contract's request does not carry it (request_shapes_test.go's requestShapesAt).
-var AcceptedByName = []AcceptedField{
+func AcceptedByName() []AcceptedField { return registry().acceptedByName }
+
+// frozenAcceptedByName is the rows of AcceptedByName that the numbered entries accepted.
+var frozenAcceptedByName = []AcceptedField{
 	// Contract 86 took `ready` out of HandoffCompleteRequest with READY and the daemon's merge.
 	{Route: "POST /legion/v1/handoff/complete", Field: "ready", LeftAt: stateMachineContract,
 		Ignoring: "a plugin from 46 to 85 sends ready on every handoff_complete: false, its default, " +
@@ -51,12 +56,12 @@ var AcceptedByName = []AcceptedField{
 
 // childRouteRemovedContract is the contract of version.go's entry for dispatch://INFRA-3178,
 // which removed the child route removedChildRoute now answers: the owning architect writes the
-// child's status in Dispatch instead. SupportedContracts names it, so a renumber of that entry at
-// a forward merge moves this constant and the list together.
+// child's status in Dispatch instead. frozenContracts names it, as the entry's constant.
 const childRouteRemovedContract = 205
 
 // RemovedRoutes is every route a recorded contract's plugin sends a body to that this daemon
-// reads no body at any more, with the first contract whose plugin does not call it. The daemon
+// reads no body at any more, with the first contract whose plugin does not call it: the rows of
+// the numbered entries (frozenRemovedRoutes) and then each entry's (contracts.go). The daemon
 // still registers each such route and answers every call with a refusal of its own that says what
 // the caller does instead, so a plugin below that contract is told why its call did nothing, where
 // an unregistered route would answer "no route". The route reads no body, so no body it is sent
@@ -65,8 +70,11 @@ const childRouteRemovedContract = 205
 // The request gate reads it (request_shapes_test.go). A record of a route that no row of
 // pluginRequests reads passes only where this table names the route at a contract above the
 // record's, so the record of this daemon's own contract never holds the route, and each route
-// here is held to routesReadingNoBody.
-var RemovedRoutes = map[string]int{
+// here is held to routesReadingNoBody. The map is the registry's own, which no caller writes to.
+func RemovedRoutes() map[string]int { return registry().removedRoutes }
+
+// frozenRemovedRoutes is the rows of RemovedRoutes that the numbered entries removed.
+var frozenRemovedRoutes = map[string]int{
 	// The child route removedChildRoute answers.
 	"POST /legion/v1/children/park": childRouteRemovedContract,
 }

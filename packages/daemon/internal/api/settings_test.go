@@ -57,12 +57,14 @@ var settingsEmitted = map[string]string{
 	"Config.StateDir":                                "state_dir",
 	"Config.Runtime":                                 "runtime",
 	"Config.AdmissionCap":                            "admission_cap",
+	"Config.AdmissionP0Bound":                        "admission_p0_bound",
 	"Config.DaemonURL":                               "daemon_url",
 	"Config.WorkerStreamPort":                        "worker_stream_port",
 	"Config.OmpInvocation":                           "omp_invocation",
 	"Config.OmpLaunchPrefix":                         "omp_launch_prefix",
 	"Config.ProviderKeys":                            "provider_keys (the variable names alone)",
 	"Config.InstructionsPath":                        "instructions",
+	"Config.PrivateNameRulesFile":                    "private_name_rules_file (the path alone, never the rules)",
 	"Config.WorkerBootTimeout":                       "worker_boot_timeout_seconds",
 	"Config.WorkerRPCTimeout":                        "worker_rpc_timeout_seconds",
 	"Config.WorkerStopTimeout":                       "worker_stop_timeout_seconds",
@@ -79,6 +81,7 @@ var settingsEmitted = map[string]string{
 	"Config.EnvoyURL":                                "envoy_url",
 	"Config.NatsURLs":                                "nats_urls",
 	"Config.DispatchURL":                             "dispatch_url",
+	"Config.DispatchTokenBroker":                     "dispatch_token_broker (absent while false)",
 	"Config.Projects":                                "projects",
 	"Config.Gates":                                   "gates",
 	"Config.GitHubApps":                              "github_apps",
@@ -206,39 +209,42 @@ var settingsEmitted = map[string]string{
 // credential, the source of one, the path of a file holding one, the operator's pod pieces, a
 // deployment's own repositories, or a derived value that is no setting.
 var settingsExcluded = map[string]string{
-	"Config.PostgresDSN":              "a credential: a DSN carries its password",
-	"GitHubApp.PrivateKey":            "a credential: Config holds the PEM resolved whatever the file's source",
-	"GitHubApp.PrivateKeyCommand":     "the source of a credential",
-	"GitHubApp.PrivateKeySecret":      "the source of a credential",
-	"GitHubApp.TokenCommand":          "the source of a credential: the command that prints the App's installation tokens",
-	"ProviderKey.Secret":              "the source of a credential: a secretsd key or a providers Secret key",
-	"ProviderKey.File":                "the path of a file holding a credential",
-	"Config.OperatorTokenFile":        "the path of a file holding a credential",
-	"Config.EnvoyTokenFile":           "the path of a file holding a credential",
-	"Config.NatsNkeySeedFile":         "the path of a file holding a credential",
-	"Config.NatsDaemonNkeySeedFile":   "the path of a file holding a credential",
-	"Config.DispatchTokenFile":        "the path of a file holding a credential",
-	"AgentSecretsConfig.TokenFile":    "the path of a file holding a credential: the daemon's own broker login token",
-	"Kubernetes.Kubeconfig":           "the daemon's cluster credential file",
-	"Kubernetes.Context":              "the context inside the daemon's cluster credential file",
-	"Kubernetes.Pod":                  "not a daemon setting: the operator's pod pieces, which every pod reads from its own spec and whose lists are Kubernetes API types with no legion.yaml-shaped rendering",
-	"PodConfig.Env":                   "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
-	"PodConfig.Volumes":               "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
-	"PodConfig.VolumeMounts":          "runtime.kubernetes.pod: Kubernetes API types",
-	"PodConfig.ServiceAccount":        "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
-	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
-	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
-	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
-	"Config.LeakCheck":                "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
-	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
-	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
-	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
-	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
-	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
-	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
-	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
-	"Config.Revision":                 "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
-	"Config.GitHubGraphQLShare":       "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
+	"Config.PostgresDSN":                 "a credential: a DSN carries its password",
+	"GitHubApp.PrivateKey":               "a credential: Config holds the PEM resolved whatever the file's source",
+	"GitHubApp.PrivateKeyCommand":        "the source of a credential",
+	"GitHubApp.PrivateKeySecret":         "the source of a credential",
+	"GitHubApp.TokenCommand":             "the source of a credential: the command that prints the App's installation tokens",
+	"ProviderKey.Secret":                 "the source of a credential: a secretsd key or a providers Secret key",
+	"ProviderKey.File":                   "the path of a file holding a credential",
+	"Config.OperatorTokenFile":           "the path of a file holding a credential",
+	"Config.EnvoyTokenFile":              "the path of a file holding a credential",
+	"Config.NatsNkeySeedFile":            "the path of a file holding a credential",
+	"Config.NatsDaemonNkeySeedFile":      "the path of a file holding a credential",
+	"Config.DispatchTokenFile":           "the path of a file holding a credential",
+	"Config.DispatchTokenTransitionFile": "the path of a file holding a credential: the shared Dispatch token a launch into a pod built before dispatch_token_broker gets",
+	"AgentSecretsConfig.TokenFile":       "the path of a file holding a credential: the daemon's own broker login token",
+	"Kubernetes.Kubeconfig":              "the daemon's cluster credential file",
+	"Kubernetes.Context":                 "the context inside the daemon's cluster credential file",
+	"Kubernetes.Pod":                     "not a daemon setting: the operator's pod pieces, which every pod reads from its own spec and whose lists are Kubernetes API types with no legion.yaml-shaped rendering",
+	"PodConfig.Env":                      "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
+	"PodConfig.Volumes":                  "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
+	"PodConfig.VolumeMounts":             "runtime.kubernetes.pod: Kubernetes API types",
+	"PodConfig.ServiceAccount":           "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
+	"PodConfig.ControllerServiceAccount": "runtime.kubernetes.pod: the operator's ServiceAccount the controller's pod runs as in place of service_account, which that pod reads from its own spec",
+	"Kubernetes.PluginsFromBinary":       "derived: where the settled plugins pair came from, not a setting",
+	"Config.Warnings":                    "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
+	"Project.CommitIssueTrailerRepos":    "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Config.LeakCheck":                   "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
+	"Config.StallLimits":                 "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
+	"Config.PrivateNameRulesNamedBy":     "derived: which of private_name_rules_file and LEGION_PRIVATE_NAME_RULES_FILE named the rule file, which a refusal of the file at boot names; the settings carry the path under private_name_rules_file either way",
+	"StallLimits.CallBound":              "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.CallGrace":              "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.Step":                   "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
+	"Hook.Prompt":                        "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
+	"Variant.ConfigFilesField":           "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
+	"Variant.MemoryBlock":                "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
+	"Config.Revision":                    "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
+	"Config.GitHubGraphQLShare":          "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -331,7 +337,7 @@ var settingsFixturePlanted = []string{
 // settingsForbiddenKeys are the legion.yaml keys that never appear in `settings`, at any depth.
 var settingsForbiddenKeys = []string{
 	"postgres_dsn", "private_key", "private_key_command", "private_key_secret", "token_command",
-	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account",
+	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account", "controller_service_account",
 	// A hook's own words, which the settings leave out whichever key the file writes them in.
 	"prompt",
 }
@@ -344,7 +350,8 @@ var settingsForbiddenKeys = []string{
 // carries each of these paths, which the rule below holds it to: an exemption no document
 // exercises is an exemption nobody has read.
 var settingsPathKeys = map[string]string{
-	"settings.hooks[].prompt_file": "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
+	"settings.hooks[].prompt_file":     "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
+	"settings.private_name_rules_file": "the deployment's private-name rule file, carried as a path alone and never its rules, exactly as `instructions` is",
 }
 
 // The maximal kubernetes file resolves to a settings block whose top-level, runtime.kubernetes and
@@ -360,8 +367,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	// (a) The top level: every key of the table, omp_invocation apart, which the loader refuses
 	// under runtime kubernetes.
 	wantTop := []string{
-		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "daemon_url",
-		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions",
+		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "admission_p0_bound", "daemon_url",
+		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions", "private_name_rules_file",
 		"worker_boot_timeout_seconds", "worker_rpc_timeout_seconds", "worker_stop_timeout_seconds",
 		"tree_stop_timeout_seconds", "slow_command_timeout_seconds", "probe_interval_seconds",
 		"controller_wake_interval_seconds", "worker_boot_registration_deadline_intervals",
@@ -668,6 +675,29 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+}
+
+// The deployment's private-name rule file reaches the settings by its path alone, under
+// private_name_rules_file, as `instructions` carries a path and never its text: the rules name the
+// deployment's private names, and the route that carries the settings authenticates nobody. A
+// file that names none carries no key at all, so the shapes the state golden pins do not move.
+func TestSettingsOfNamesThePrivateNameRuleFileByItsPathAlone(t *testing.T) {
+	const path = "/etc/legion/private-names.toml"
+	encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(keysOf(t, encoded)["private_name_rules_file"]), `"`+path+`"`; got != want {
+		t.Errorf("private_name_rules_file = %s, want %s", got, want)
+	}
+
+	none, err := json.Marshal(SettingsOf(minimalSettingsConfig(t)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if raw, present := keysOf(t, none)["private_name_rules_file"]; present {
+		t.Errorf("private_name_rules_file = %s for a file that names none, want absent", raw)
 	}
 }
 
@@ -1000,6 +1030,32 @@ func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
 			}
 			if string(encoded) != want {
 				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
+	}
+}
+
+// dispatch_token_broker reaches the settings as `true` where the file turns it on, a word about how
+// the daemon and its roles reach Dispatch and no credential, and is absent where it is off, so a
+// deployment that never set it reads byte for byte as before the key existed.
+func TestSettingsOfNamesTheDispatchTokenBrokerOnlyWhereItIsOn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		on   bool
+		want string
+	}{
+		"on":  {true, "true"},
+		"off": {false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := settingsFixtureConfig(t)
+			cfg.DispatchTokenBroker = tc.on
+			encoded, err := json.Marshal(SettingsOf(cfg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, present := keysOf(t, encoded)["dispatch_token_broker"]
+			if got := string(raw); present != (tc.want != "") || got != tc.want {
+				t.Fatalf("settings.dispatch_token_broker = %q (present %t), want %q", got, present, tc.want)
 			}
 		})
 	}

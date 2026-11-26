@@ -46,9 +46,7 @@ func secondRuntime(t *testing.T, g *rig, move func(*Options)) (restarted func() 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.start(g.ctx, g.clients); err != nil {
-		t.Fatal(err)
-	}
+	g.startWatched(func() error { return r.start(g.ctx, g.clients) })
 	return func() *Runtime {
 		g.r = r
 		return r
@@ -74,11 +72,11 @@ func readopt(t *testing.T, ctx context.Context, r *Runtime, locs ...runtime.Loca
 	if err != nil {
 		t.Fatal(err)
 	}
-	var seen []runtime.Observation
-	for range locs {
-		seen = append(seen, next(t, observations))
+	claims := make([]claim.Token, 0, len(locs))
+	for _, loc := range locs {
+		claims = append(claims, loc.Claim)
 	}
-	return seen
+	return firstOfEach(t, observations, claims...)
 }
 
 // observationOf is the one observation of seen about loc's claim.
@@ -133,6 +131,7 @@ func startEnv(start shimwire.LauncherStart) map[string]string {
 // role's saved session there; a sibling relaunched after it resumes into that same new pod
 // (LEGION-592).
 func TestAnIssuePodDialingAStaleStreamIsReplacedAndEveryRoleResumesIntoTheNewPod(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	tester, reviewer := workerSpec(t), testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	testerLoc, reviewerLoc := g.spawn(tester), g.spawn(reviewer)
@@ -195,6 +194,7 @@ func TestAnIssuePodDialingAStaleStreamIsReplacedAndEveryRoleResumesIntoTheNewPod
 // the value the generation was started with and the one a new generation is handed, and the
 // relaunch starts a new generation in the same pod, told the new URL (LEGION-592).
 func TestARoleToldAStaleDaemonURLGetsANewGenerationInTheSamePod(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -247,6 +247,7 @@ func TestARoleToldAStaleDaemonURLGetsANewGenerationInTheSamePod(t *testing.T) {
 // the round has ended the pod (ReplacePod), the next launch makes one mounting both for every
 // role, and a sibling resumes into that same new pod.
 func TestEnrollingWithTheSecretsBrokerDriftsAnIssuePodMadeWithoutIt(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	tester, reviewer := workerSpec(t), testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	testerLoc, reviewerLoc := g.spawn(tester), g.spawn(reviewer)
@@ -367,6 +368,7 @@ func ghItemsFor(owners ...string) []corev1.KeyToPath {
 // everything unpushed on it. Once the round has ended the pod (ReplacePod), the next launch makes
 // one projecting the new owner's files too, and that pod has drifted from nothing.
 func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	tester := workerSpec(t)
 	testerLoc := g.spawn(tester)
@@ -520,6 +522,7 @@ func projectGhItems(t *testing.T, g *rig, r *Runtime, name string, items []corev
 // an owner directory the pod lacks; the pod the round ends is replaced by one holding owner
 // directories alone, which has drifted from nothing.
 func TestAPodProjectingARepositoryDirectoryHasDrifted(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	tester := workerSpec(t)
 	testerLoc := g.spawn(tester)
@@ -642,6 +645,7 @@ func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 // names, not the one GitHub holds it under now, and that cache's token is minted for the owner
 // serving the repository now: the token and GH_CONFIG_DIR follow a rename, never an address.
 func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
+	t.Parallel()
 	stateA := []ghrepo.Repository{servingSmoke}
 	stateB := []ghrepo.Repository{servingSmoke, otherOfRecordedOwner}
 	for state, repos := range map[string][]ghrepo.Repository{"A": stateA, "B": stateB} {
@@ -765,6 +769,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 // by the daemon's own act (Displaced), never dead, and relaunched together, as the supervisor's
 // machines relaunch them, they move into one new pod that has drifted from nothing.
 func TestChangingTheBrokersAudienceDriftsEveryRoleOfThePodTogether(t *testing.T) {
+	t.Parallel()
 	before := AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	now := before
 	now.Audience = "agent-secrets-next"
@@ -789,7 +794,7 @@ func TestChangingTheBrokersAudienceDriftsEveryRoleOfThePodTogether(t *testing.T)
 		t.Fatal(err)
 	}
 	drift := (movedAddress{agentSecretsTokenVolume, enrollmentName(brokerTokenProjection(&before)), enrollmentName(brokerTokenProjection(&now))}).String()
-	seen := []runtime.Observation{next(t, observations), next(t, observations)}
+	seen := firstOfEach(t, observations, testerLoc.Claim, reviewerLoc.Claim)
 	for _, loc := range []runtime.Locator{testerLoc, reviewerLoc} {
 		obs := observationOf(t, seen, loc)
 		if obs.Kind != runtime.Alive || obs.Locator != loc {
@@ -883,6 +888,7 @@ func TestChangingTheBrokersAudienceDriftsEveryRoleOfThePodTogether(t *testing.T)
 // the pod and re-provision its workspace at every restart. Either way the relaunch keeps the live
 // pod: a drifted one is its round's to replace, never a launch's.
 func TestAPodEnrolledOtherwiseThanTheRuntimeIsNowHasDrifted(t *testing.T) {
+	t.Parallel()
 	broker := AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	carryingMore := func(pod *corev1.Pod) {
 		for i := range pod.Spec.Volumes {
@@ -968,6 +974,7 @@ func heldInPod(r *Runtime, pod *corev1.Pod, roles []claim.Role) []movedAddress {
 // URL to move (Runtime.enrollsIn). A role holding nothing moved and whose pod has drifted from
 // nothing is alive and its pod kept.
 func TestEvaluateReadsAPodStaleExactlyWhenRelaunchReplacesIt(t *testing.T) {
+	t.Parallel()
 	broker := AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	enrolled := func(edit func(*AgentSecrets)) func(*Options) {
 		return func(o *Options) {
@@ -1045,6 +1052,7 @@ func TestEvaluateReadsAPodStaleExactlyWhenRelaunchReplacesIt(t *testing.T) {
 // A role already running with every address the runtime hands now is left alone: Observe reports it
 // Alive, never StaleAddress, so nothing about it is ever replaced.
 func TestARoleAtTheCurrentAddressesIsNeverRepointed(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	if obs := readopt(t, g.ctx, g.r, loc)[0]; obs.Kind != runtime.Alive || obs.Locator != loc {
@@ -1057,6 +1065,7 @@ func TestARoleAtTheCurrentAddressesIsNeverRepointed(t *testing.T) {
 // no notion of registration at all, only of the pod it watches, so re-adoption catches a stale
 // stream whatever phase the supervisor's claim is in.
 func TestAClaimMidLaunchWithAStaleStreamIsReported(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false) // the pod the controller creates stays Pending
 	loc := g.spawn(workerSpec(t))
@@ -1073,6 +1082,7 @@ func TestAClaimMidLaunchWithAStaleStreamIsReported(t *testing.T) {
 // Recording a generation's addresses costs one API write per role start: a role started in a
 // running issue pod sends the Sandbox one patch, of that role's annotation alone, and nothing else.
 func TestARoleStartedInARunningPodWritesOnlyItsAddressRecord(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(rootSpec(t))
 	g.clearActions()

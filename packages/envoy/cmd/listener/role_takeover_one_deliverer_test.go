@@ -465,8 +465,8 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		eventID := rig.publishToRole(t, role, "while the claim cannot be read")
 		seq := rig.lastSeqOf(t, holder, eventID)
 		// Two refused reads: the frame was given back once and delivered to the relay again.
-		if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return rig.claimReads.Load() >= 2 }) {
-			t.Errorf("the session relay read role %s's claim %d times within 10s of the message's store, want at least two", role, rig.claimReads.Load())
+		if !testwait.Holds(listenerWaitBound(t), 20*time.Millisecond, func() bool { return rig.claimReads.Load() >= 2 }) {
+			t.Errorf("the session relay read role %s's claim %d times in time of the message's store, want at least two", role, rig.claimReads.Load())
 		}
 		requireNoneHeard(t, heard, "the holder "+holder+" while its role's claim could not be read", eventID)
 		if rig.ackedThrough(holder, seq) {
@@ -475,10 +475,10 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 
 		rig.refuseClaimRead.Store(false)
 		if !heard.await(30*time.Second, eventID) {
-			t.Errorf("the holder %s did not receive event %s within 30s of its role's claim answering again: it received %v", holder, eventID, heard.all())
+			t.Errorf("the holder %s did not receive event %s in time of its role's claim answering again: it received %v", holder, eventID, heard.all())
 		}
 		if !rig.awaitAckedThrough(holder, seq, 15*time.Second) {
-			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 15s of its delivery", holder, seq)
+			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d in time of its delivery", holder, seq)
 		}
 		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, holder, heard)
 	})
@@ -507,8 +507,8 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		rig.refuseCopy.Store(true)
 		late := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"late-forward-"+id.New())
 		seq := rig.storeOn(t, previous, late)
-		if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return rig.copies.Load() >= 2 }) {
-			t.Errorf("the session relay tried to copy the role message %d times within 10s of its store, want at least two", rig.copies.Load())
+		if !testwait.Holds(listenerWaitBound(t), 20*time.Millisecond, func() bool { return rig.copies.Load() >= 2 }) {
+			t.Errorf("the session relay tried to copy the role message %d times in time of its store, want at least two", rig.copies.Load())
 		}
 		requireNoneHeard(t, heardPrevious, "the previous holder "+previous+" while the copy could not be stored", late.EventID)
 		if rig.ackedThrough(previous, seq) {
@@ -520,7 +520,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 
 		rig.refuseCopy.Store(false)
 		if !rig.awaitAckedThrough(previous, seq, 30*time.Second) {
-			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 30s of the copy's publish answering again", previous, seq)
+			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d in time of the copy's publish answering again", previous, seq)
 		}
 		if copies := rig.keptCopies(t, role, late.EventID); copies != 1 {
 			t.Errorf("role %s's kept lane holds %d copies of event %s once the copy could be stored, want exactly one", role, copies, late.EventID)
@@ -807,6 +807,7 @@ func newRelayBench(b *testing.B) *relayBench {
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
+		consumerGrant:       &consumerGrantAnswer{},
 	})
 	delivery, err := connectSessionDelivery([]string{url},
 		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
@@ -815,6 +816,7 @@ func newRelayBench(b *testing.B) *relayBench {
 		b.Fatalf("open the session-consumer connection: %v", err)
 	}
 	b.Cleanup(delivery.close)
+	cfg.consumerGrant.set(delivery.holdsConsumerGrant)
 	relays, err := startSessionRelays(delivery, cfg)
 	if err != nil {
 		b.Fatalf("start the session relays: %v", err)

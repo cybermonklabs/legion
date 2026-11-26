@@ -25,6 +25,7 @@ const planRecordKindVersion = 20261117023932
 // would fail on it with the check's SQLSTATE if the list left that kind out. A kind that is none
 // is still refused, with the check's own SQLSTATE.
 func TestTheOutboxCheckTakesThePlanRecord(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, planRecordKindVersion-1)

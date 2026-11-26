@@ -37,14 +37,17 @@ import (
 // the runs tell the groups apart issue by issue: an issue that takes its owner's plan starts at
 // implementing, and one that runs the project's default steps starts at planning. Then each
 // issue's row of the experiment, the phase its first step started in and the source of the plan
-// its run walks are read from the daemon's database, and each issue is held to the run its own
-// recorded group sets (ranAsTheirGroups):
+// its run walks are read from the daemon's database, the variant each record of its steps names
+// is read from the real Dispatch (GET /api/v1/issues/{key}/steps), and each issue is held to the
+// run its own recorded group sets, its records naming that group's variant or, for an issue of no
+// group, none (ranAsTheirGroups). The children of the subtest children are recorded at todo and
+// run no step, so they hold no record to read:
 //
 //   - owner: mode on at the arm a, so ten rows a/owner; each issue's plan is taken at both sends
 //     and its run starts at implementing;
 //   - default: mode on at the arm b, so ten rows b/default; both sends of each owner's plan are
-//     answered 409 PLAN_NOT_TAKEN, since a refusal leaves the fact unspent, and each issue runs
-//     the default steps from planning;
+//     answered 409 PLAN_NOT_TAKEN, since the workflow judges every give of a plan whatever its
+//     id's mark (intake's factApplies), and each issue runs the default steps from planning;
 //   - shares: mode random, a and b of weight 1 each, so the ten recorded arms, in the order of
 //     creation, are the ten arms experiment.Draw gives over a fresh seeded(11), both arms are
 //     drawn, and each issue runs as its own arm says; its control swaps one issue's recorded
@@ -201,6 +204,18 @@ type drawnIssue struct {
 	// the source of the plan that run walks (record.PlanSourceOwner or record.PlanSourceDefault).
 	firstStep phase.Phase
 	source    string
+	// records is the variant each record of the issue's steps names in Dispatch, in the order the
+	// read lists them, as `<experiment>/<variant>`, or `none` for a record that names none.
+	records []string
+}
+
+// variantRecorded is what each record of issue's steps should name: `planning/<variant>` for an
+// issue whose row of planning sets how it is done, and `none` for one of no group.
+func variantRecorded(issue drawnIssue) string {
+	if issue.plan == "" {
+		return "none"
+	}
+	return "planning/" + issue.variant
 }
 
 // planAnswer is one answer of the daemon to register_plan: its status, and its code and sentence
@@ -235,6 +250,7 @@ func tenIssuesUnder(t *testing.T, experiments []config.Experiment) []drawnIssue 
 	}
 	for i := range issues {
 		r.readDrawn(&issues[i])
+		r.readRecords(&issues[i])
 	}
 	t.Logf("the ten issues came to %+v", issues)
 	return issues
@@ -256,7 +272,7 @@ func childrenUnder(t *testing.T, declared config.Experiment) []drawnIssue {
 	r.admit(root.Key)
 	issues := []drawnIssue{{key: root.Key}}
 	for _, title := range experimentTitles {
-		child := r.create(asSession, title, map[string]any{"labels": []string{"legion"}, "parent": root.Key})
+		child := r.create(asPerson, title, map[string]any{"labels": []string{"legion"}, "parent": root.Key})
 		r.setStatus(child.Key, "todo")
 		settled(t, r.d, "record the child "+child.Key, func(s api.State) bool {
 			recorded, ok := s.Issues[child.Key]
@@ -324,6 +340,42 @@ func (r *personHandoverRig) readGroup(issue *drawnIssue) {
 	}
 }
 
+// readRecords reads, from the real Dispatch, the variant each record of issue's steps names, into
+// issue.records, once the daemon's outbox holds no step_record row of the issue: the outbox writes
+// each record on a lane of its own and deletes its row only once Dispatch has taken the record and,
+// where the record names a pair, the pair after it, so from then on Dispatch holds every record the
+// issue's run has queued as it will stay.
+func (r *personHandoverRig) readRecords(issue *drawnIssue) {
+	r.t.Helper()
+	testwait.Eventually(r.t, "the outbox to write every step record of "+issue.key, func() bool {
+		var queued int
+		if err := r.pool.QueryRow(r.t.Context(), `select count(*) from outbox where issue = $1 and kind = $2`,
+			issue.key, string(record.OutboxKindStepRecord)).Scan(&queued); err != nil {
+			r.t.Fatalf("count the step record rows of %s: %v", issue.key, err)
+		}
+		return queued == 0
+	})
+	var read struct {
+		Tasks []struct {
+			Steps []struct {
+				Experiment *string `json:"experiment"`
+				Variant    *string `json:"variant"`
+			} `json:"steps"`
+		} `json:"tasks"`
+	}
+	dispatchCall(r.t, r.baseURL, http.MethodGet, "/api/v1/issues/"+issue.key+"/steps", nil, &read)
+	issue.records = nil
+	for _, task := range read.Tasks {
+		for _, step := range task.Steps {
+			named := "none"
+			if step.Experiment != nil && step.Variant != nil {
+				named = *step.Experiment + "/" + *step.Variant
+			}
+			issue.records = append(issue.records, named)
+		}
+	}
+}
+
 // drawnAsTheSeed is nil where the arm each issue recorded for declared, in the order of creation,
 // is the arm experiment.Draw gives over a fresh seeded(seed), and otherwise names the first issue
 // whose arm differs or which holds no row of declared.
@@ -349,7 +401,8 @@ func drawnAsTheSeed(issues []drawnIssue, declared config.Experiment, seed uint64
 // default runs the project's default steps, from planning, on a plan of the source default, and
 // its owner was answered PLAN_NOT_TAKEN at both sends. Any other issue, of the group owner or of
 // none, runs as with no experiment: its owner's plan is taken at both sends, and its run starts at
-// implementing on a plan of the source owner.
+// implementing on a plan of the source owner. Each issue's records of its steps, one at least, all
+// name its group's variant, or none for an issue of no group (variantRecorded).
 func ranAsTheirGroups(issues []drawnIssue) error {
 	for _, issue := range issues {
 		wantStep, wantSource := phase.Implementing, record.PlanSourceOwner
@@ -365,6 +418,10 @@ func ranAsTheirGroups(issues []drawnIssue) error {
 		}
 		if !slices.Equal(issue.answers, []planAnswer{want, want}) {
 			return fmt.Errorf("the two sends of the owner's plan of %s, of the group %q, were answered %+v; want %+v both times", issue.key, issue.plan, issue.answers, want)
+		}
+		recorded := variantRecorded(issue)
+		if len(issue.records) == 0 || slices.ContainsFunc(issue.records, func(named string) bool { return named != recorded }) {
+			return fmt.Errorf("the records of %s's steps, of the group %q, name %q in Dispatch; want each to name %s", issue.key, issue.plan, issue.records, recorded)
 		}
 	}
 	return nil

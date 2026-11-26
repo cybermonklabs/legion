@@ -159,12 +159,13 @@ var defaultRepositoryCache = RepositoryCacheConfig{
 func DefaultRepositoryCache() RepositoryCacheConfig { return defaultRepositoryCache }
 
 // IdleReleaseConfig is `runtime.kubernetes.idle_release`: the idle period an issue pod must pass
-// with no turn in progress and no turn due before the daemon saves its workspace's unpushed work,
-// suspends each live claim with the source `released` and deletes the pod, its disk and its
-// Sandbox (IdleMinutes), and how long after that release the backstop wakes each phase worker of
-// the pod whose phase is open (BackstopMinutes), standing in for a wait that raises no event of
-// its own. IdleMinutes zero turns release off, and the deployment's pods then live from an
-// issue's first role start to its close.
+// with no turn in progress and no turn due before the daemon suspends each live claim with the
+// source `released` and deletes the pod, its disk and its Sandbox (IdleMinutes), and how long
+// after that release the backstop wakes each phase worker of the pod whose phase is open
+// (BackstopMinutes), standing in for a wait that raises no event of its own. A release saves
+// nothing of the workspace: the workspace check holds a pod whose workspace holds work that no
+// branch or tag on origin holds. IdleMinutes zero turns release off, and the deployment's pods then
+// live from an issue's first role start to its close.
 type IdleReleaseConfig struct {
 	IdleMinutes     int
 	BackstopMinutes int
@@ -281,7 +282,8 @@ type PluginsConfig struct {
 	PiLegion, PiEnvoy string
 }
 
-// Scheduling is where the pods may run beyond the Legion pool, which the runtime selects itself.
+// Scheduling is where the pods may run on the cluster's general nodes, which they share: the node
+// labels every pod selects, the taints it tolerates and its priority class.
 type Scheduling struct {
 	NodeSelector  map[string]string
 	Tolerations   []Toleration
@@ -396,21 +398,24 @@ func below(request, limit string) bool {
 	return requested.Cmp(limited) < 0
 }
 
-// defaultResources is the two pods' reservations when the file sets none. An issue pod gets 3 CPU
-// and 19Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request. Under gVisor
-// every process of a pod uses whatever the pod has free, so the pod's peak must fit its one
-// number: an INFRA issue pod measured at 1-minute resolution used its whole 19Gi for minutes while
-// its reviewer ran a review (2026-10-21). The disk limit bounds what the pod writes to the node's
-// disk; the request, which the scheduler fits to the node's allocatable ephemeral storage — its
-// root volume, which nobody has sized for these pods — binds scheduling to little. An operator who
-// knows the root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no
-// main container requesting more than 10Gi of it and clamps each container's limit to its request,
-// so a deployment there sets both to at most 10Gi. The controller, which runs alone in its pod,
-// gets a pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
+// defaultResources is the two pods' reservations when the file sets none. An issue pod gets 2 CPU
+// and 8Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request: the size
+// INFRA's issue pods have run at since dispatch://INFRA-3504's roll (read 2026-11-25), with the
+// route and the guidance that take builds and whole test suites out of the pod in place
+// (dispatch://INFRA-1115, R1 to R4). Under gVisor every process of a pod uses whatever the pod has
+// free, so the pod's peak must fit its one number: an INFRA issue pod that still ran its own
+// builds, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran
+// a review (2026-10-21). The disk limit bounds what the pod writes to the node's disk; the
+// request, which the scheduler fits to the node's allocatable ephemeral storage — its root volume,
+// which nobody has sized for these pods — binds scheduling to little. An operator who knows the
+// root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no main
+// container requesting more than 10Gi of it and clamps each container's limit to its request, so a
+// deployment there sets both to at most 10Gi. The controller, which runs alone in its pod, gets a
+// pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
 // (internal/daemon/kubernetes.go, probeReservation), since it starts one Oh My Pi at a time and
 // runs no lane, and a probe sized as a pod could not boot on a full pool.
 var defaultResources = PodResources{
-	Issue:      Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
+	Issue:      Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
 	Controller: Reservation{CPU: "1", CPURequest: "1", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
 }
 
@@ -423,23 +428,30 @@ func DefaultResources() PodResources {
 // PodConfig is `runtime.kubernetes.pod`, what the operator adds to every pod Legion runs, the image
 // probe's included, in the API's own types: variables and volume mounts for the agent's container,
 // the volumes they mount (each a Secret, a ConfigMap, a projection of ServiceAccount tokens,
-// Secrets, and ConfigMaps, a PersistentVolumeClaim, or an NFS export), and the ServiceAccount the pods run as. It passes through as written:
-// the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of Legion's own
-// or the worker image's (sandbox.CheckPod), and the API server the rest when it creates the
-// image probe's pod, which carries it, at boot.
+// Secrets, and ConfigMaps, a PersistentVolumeClaim, or an NFS export), the ServiceAccount the pods
+// run as, and the one the daemon-launched controller's pod runs as in its place when the file names
+// one (controller_service_account, which only `controller: daemon` reads). It passes through as
+// written: the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of
+// Legion's own or the worker image's (sandbox.CheckPod), and the API server the rest when it
+// creates the image probe's pod at boot, which carries all of it but controller_service_account:
+// that pod runs as service_account (sandbox's probeManifest), so the API server would first read
+// the controller's account at the controller's launch, and the loader checks that name itself
+// (readPod). Its fields are sandbox.Pod's, one for one, since the daemon converts the one into the
+// other.
 type PodConfig struct {
-	Env            map[string]string
-	Volumes        []corev1.Volume
-	VolumeMounts   []corev1.VolumeMount
-	ServiceAccount string
+	Env                      map[string]string
+	Volumes                  []corev1.Volume
+	VolumeMounts             []corev1.VolumeMount
+	ServiceAccount           string
+	ControllerServiceAccount string
 }
 
 const (
 	kubernetesKey      = "runtime.kubernetes"
 	podKey             = kubernetesKey + ".pod"
 	defaultIssueVolume = "50Gi"
-	// poolLabel is the node label that selects the Legion pool. The runtime sets it on every pod,
-	// and the cluster's admission policy requires its value.
+	// poolLabel is the node label of the retired Legion pool, which set Legion's pods apart from
+	// the cluster's general nodes. Legion's pods share those nodes, so a selector may not name it.
 	poolLabel = "legion.dev/pool"
 )
 
@@ -1365,8 +1377,13 @@ func ReadPodFile(path string) (PodConfig, error) {
 }
 
 // readPod reads `runtime.kubernetes.pod`, refusing a shape no pod could carry, and a
-// ServiceAccount still holding a ${…} placeholder: nothing in Legion expands one, as the token
-// projection says, so the API server would refuse every pod for an account that does not exist.
+// ServiceAccount, the pods' or the controller's, still holding a ${…} placeholder: nothing in
+// Legion expands one, as the token projection says, so the API server would refuse every pod for
+// an account that does not exist. It refuses a controller_service_account that is no
+// ServiceAccount's name too, a DNS-1123 subdomain as the API server requires, as readClaimSource
+// refuses a claim's: no pod at boot runs as that account, so the API server would refuse the name
+// only at the controller's launch, after load, `legion config check` and boot had all passed it.
+// service_account needs no such check, since the image probe's pod runs as it at boot.
 func readPod(value *yaml.Node) (PodConfig, error) {
 	if value == nil {
 		return PodConfig{}, nil
@@ -1394,6 +1411,15 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 	}
 	if err := unfilledPlaceholder(podKey+".service_account", pod.ServiceAccount, "the ServiceAccount the pods run as"); err != nil {
 		return PodConfig{}, err
+	}
+	if pod.ControllerServiceAccount, err = optionalString(fields["controller_service_account"], podKey+".controller_service_account"); err != nil {
+		return PodConfig{}, err
+	}
+	if err := unfilledPlaceholder(podKey+".controller_service_account", pod.ControllerServiceAccount, "the ServiceAccount the controller's pod runs as"); err != nil {
+		return PodConfig{}, err
+	}
+	if name := pod.ControllerServiceAccount; name != "" && len(validation.IsDNS1123Subdomain(name)) != 0 {
+		return PodConfig{}, fmt.Errorf("%s.controller_service_account %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", podKey, name)
 	}
 	return pod, nil
 }
@@ -2153,8 +2179,9 @@ func readScheduling(value *yaml.Node) (Scheduling, error) {
 	return scheduling, nil
 }
 
-// readNodeSelector is a mapping of label to value, merged by the runtime over the Legion pool's own
-// label, which it may not name: the admission policy requires the pool's value.
+// readNodeSelector is a mapping of label to value, which the runtime gives every pod as written (a
+// microVM pod its own ComputeClass in place of any class this names), and which may not name the
+// Legion pool's label: Legion's pods share the cluster's general nodes.
 func readNodeSelector(value *yaml.Node, key string) (map[string]string, error) {
 	if value == nil {
 		return nil, nil
@@ -2171,7 +2198,7 @@ func readNodeSelector(value *yaml.Node, key string) (map[string]string, error) {
 			return nil, refusal
 		}
 		if label == poolLabel {
-			return nil, fmt.Errorf("%s must not set %s: the runtime selects the Legion pool itself, and the cluster's admission policy requires its value", key, poolLabel)
+			return nil, fmt.Errorf("%s must not set %s: Legion's pods share the cluster's general nodes, and the retired Legion pool's label would set them apart on nodes of their own", key, poolLabel)
 		}
 		if _, exists := selector[label]; exists {
 			return nil, fmt.Errorf("%s names %s twice", key, label)
@@ -2328,7 +2355,7 @@ func checkKubernetesKeys(file fileConfig) error {
 		{"operator_token_file", file.OperatorTokenFile == nil, "legion claims presents this token, as legion controller start does under controller: operator"},
 		{"dispatch_url", file.DispatchURL == nil, "the workflow is what launches every pod"},
 		{"github_apps", file.GitHubApps == nil, "every pod's workspace is cloned with the implement App's token"},
-		{"projects", file.Projects == nil, "every pod works one issue of a configured project"},
+		{"projects", file.Projects == nil, "every pod works one issue of one of the projects it names"},
 	} {
 		if rule.absent {
 			return fmt.Errorf("%s is required when runtime is kubernetes: %s", rule.key, rule.why)
