@@ -2,7 +2,7 @@ import type { Artifact } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
 import { documentOfNode } from "../issue-artifacts";
 import type { NodeChip, TreeNode } from "../issue-tree";
-import { BLOCK_ATTRIBUTE_LABELS } from "../page-words";
+import { BLOCK_ATTRIBUTE_LABELS, PLAN_WORDS } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 
 /**
@@ -22,17 +22,26 @@ import { blockNodeId } from "../tree-drafts";
  * of them after every task it needs, so they are one group, which the page draws as one line
  * that lists them. Everything that waits on a cycle keeps its place after it.
  *
- * Today's reads hold no position of their own. `needs` is a `block[]` attribute of the plan's
- * own blocks (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:123-127`), which the
- * tree draws as a chip on the task's row (`tree-drafts.ts`'s `placeBlocks`), and no read gives a
- * task its position. So the order is worked out here, from the edges the model does hold, and a
- * task whose `needs` names a task this plan does not hold waits on nothing: its row says the
- * target is gone or names an address nothing answers to (`NodeRow.tsx`'s `Chip`), and the order
- * is the plan's own.
+ * `needs` is a `block[]` attribute of the plan's own blocks
+ * (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`), which the tree draws as a chip
+ * on the task's row (`tree-drafts.ts`'s `placeBlocks`). The walk is worked out here from those
+ * chips, and a task whose `needs` names a task this plan does not hold waits on nothing: its row
+ * says the target is gone or names an address nothing answers to (`NodeRow.tsx`'s `Chip`), and
+ * the order is the plan's own.
  *
  * The plan's own order is the order its tasks are written in (`writtenOrder`), read off the
- * blocks the page already holds. The module is pure: it holds no React, reads no model of its
- * own and makes no request.
+ * blocks the page already holds.
+ *
+ * On an issue with issues under it, the Plan view's read answers the tasks of every issue under
+ * it beside the issue's own, each marked with its issue (`TreeNode.issue`), and the same walk
+ * places them all, from the `needs` each task's chips name: a task of an issue under this one
+ * waits on a task of its own issue as it does on that issue's own page. The plan's own order is
+ * then the issue's own tasks in the order they are written, then each issue under it in the
+ * tree's order, each issue's tasks in the order its own document writes them, which is the order
+ * the Plan view hands them over in (`presets.ts`' `heldFilterView`). So a chain of an issue under
+ * this one reads in this issue's plan as it does on that issue's own page.
+ *
+ * The module is pure: it holds no React, reads no model of its own and makes no request.
  */
 
 /** One step of the plan: a task the order puts after every task in its `needs`. */
@@ -73,6 +82,11 @@ function documentOf(id: string): string {
  * named twice by its raw value alone (`pmdoc/schema.go`), so `…#b-<id>@v1` and `…#b-<id>` can
  * stand in one `needs`, and they name one task, which the chart then names and joins by one
  * curve once.
+ *
+ * A task of another issue (`TreeNode.issue`), which the Plan view of an issue above it draws, is
+ * drawn by its block id alone, as every node of another issue is (`tree-read/tree-nodes.ts`'
+ * `treeIdOfNode`), so a pointer of it names the task of that block id where the reference is of
+ * the task's own issue, and nothing where it names another.
  */
 function neededIds(task: TreeNode): readonly string[] {
   return [
@@ -91,7 +105,9 @@ function neededId(task: TreeNode, chip: NodeChip): string | undefined {
   if (task.type !== "plan_task" || chip.label !== BLOCK_ATTRIBUTE_LABELS.needs) return undefined;
   const route = parseNodeReference(chip.ref);
   const block = route !== undefined && "block" in route ? route.block : undefined;
-  return block === undefined ? undefined : blockNodeId(documentOf(task.id), block.id);
+  if (block === undefined) return undefined;
+  if (task.issue === undefined) return blockNodeId(documentOf(task.id), block.id);
+  return route !== undefined && "key" in route && route.key === task.issue ? block.id : undefined;
 }
 
 /**
@@ -125,7 +141,8 @@ export function taskDocumentIds(
  * reads them under the same key, so the view sends no request of its own). The documents stand
  * in the map's own order, and a document whose read has not answered is not in it: a task the
  * page holds no place for - its document unread or not the issue's, its block not in the list -
- * keeps the place `tasks` gives it, after the rest.
+ * keeps the place `tasks` gives it, after the rest. A task of an issue under this one is such a
+ * task, and the Plan view hands those over in their issues' written order (`planOrder`).
  */
 export function writtenOrder(
   tasks: readonly TreeNode[],
@@ -253,11 +270,28 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   return entries;
 }
 
-/** One bar of the chart of time: one step and the unit it starts at. Every bar is one unit
- *  long, because the model holds no size for a task, and a task with no size is a short bar
- *  marked No size. */
+/**
+ * A size in the words a person reads it in: minutes below an hour ("45 min"), and from an hour
+ * on whole hours and the minutes left ("1 h", "1 h 30 min", "10 h"). `minutes` is a whole number
+ * of minutes, as the read answers a task's size (`TreeNode.size`). Every size the page draws, a
+ * step's and a line of the chart's axis, is written by this one function.
+ */
+export function sizeWords(minutes: number): string {
+  if (minutes < 60) return `${minutes} ${PLAN_WORDS.minutes}`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0
+    ? `${hours} ${PLAN_WORDS.hours}`
+    : `${hours} ${PLAN_WORDS.hours} ${rest} ${PLAN_WORDS.minutes}`;
+}
+
+/** One bar of the chart of time: one step, the unit it starts at and how many units long it is:
+ *  its task's size where the task holds one, and one unit of the axis (`PlanAxis.step`) for a
+ *  task with no size, which is a short bar marked No size. */
 export interface PlanBar {
   readonly kind: "bar";
+  /** How many of the chart's units it is long. */
+  readonly length: number;
   /** The tasks drawn above it that it needs, steps and tasks of a cycle alike. */
   readonly needs: readonly TreeNode[];
   /** Where it starts: after every task it needs has ended. */
@@ -268,23 +302,56 @@ export interface PlanBar {
 /** One row of the chart, in the plan's order. */
 export type PlanChartRow = PlanBar | PlanCycle;
 
+/** The chart's one scale, which its axis draws as lines. Where a task of the chart holds a
+ *  size, a unit is a minute and the lines stand a whole number of minutes apart; where none
+ *  does, a unit is one task, as long as each bar is, and a line stands at each. */
+export interface PlanAxis {
+  /** Whether each line carries the time it stands at (`sizeWords`): only where every task of
+   *  the chart holds a size, since a line past a task with no size would put a number on a
+   *  length nobody wrote. */
+  readonly numbered: boolean;
+  /** How many units the chart's width spans: where the last bar ends, and with sizes that
+   *  rounded up to the next line, so the last line stands at the right edge. */
+  readonly span: number;
+  /** How many units stand between two lines, which is also the one unit a task with no size,
+   *  and a cycle, is drawn as. */
+  readonly step: number;
+}
+
 /** The chart of time, as `planChart` answers it. */
 export interface PlanChart {
-  /** Where the last bar ends, which is how many units the chart's axis spans. */
+  readonly axis: PlanAxis;
+  /** Where the last bar ends, in the chart's units. */
   readonly end: number;
   readonly rows: readonly PlanChartRow[];
 }
 
+/** The most lines the axis draws past its first where the tasks hold sizes, so the time each
+ *  carries has room beside the next at the narrowest column the chart draws an axis in. */
+const AXIS_LINES = 6;
+
+/** The minutes two lines of a sized axis may stand apart, from the shortest up; past the last,
+ *  each step is twice the one before it. */
+const AXIS_STEPS = [5, 10, 15, 30, 60, 120, 180, 240, 480, 720, 1440];
+
+/** The shortest step of `AXIS_STEPS` (or past it) that spans `minutes` in `AXIS_LINES` lines. */
+function axisStep(minutes: number): number {
+  const fits = (step: number): boolean => Math.ceil(minutes / step) <= AXIS_LINES;
+  let step = AXIS_STEPS.find(fits) ?? AXIS_STEPS.at(-1) ?? 1440;
+  while (!fits(step)) step *= 2;
+  return step;
+}
+
 /**
- * The chart of time over the plan's order: one bar per step, starting after every task it
- * needs has ended, and one line per cycle at its place in the order.
- *
- * Where a bar starts is worked out here from the `needs` the plan holds, since the reads give
- * no position, and every bar is one unit long, since they give no size. A cycle takes one unit
- * after whatever its tasks need from outside it, since the order cannot say more of tasks that
- * need each other.
+ * The chart's rows over `entries`: each step's bar, starting where every task it needs has ended
+ * and as long as `lengthOf` its task, and each cycle `cycleLength` long after whatever its tasks
+ * need from outside it, since the order cannot say more of tasks that need each other.
  */
-export function planChart(entries: readonly PlanEntry[]): PlanChart {
+function placeBars(
+  entries: readonly PlanEntry[],
+  lengthOf: (task: TreeNode) => number,
+  cycleLength: number
+): { readonly end: number; readonly rows: readonly PlanChartRow[] } {
   const ends = new Map<string, number>();
   const tasks = new Map<string, TreeNode>();
   const endOf = (ids: readonly string[]): number =>
@@ -296,7 +363,7 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
         entry.tasks.flatMap((task) => neededIds(task).filter((id) => !inside.has(id)))
       );
       for (const task of entry.tasks) {
-        ends.set(task.id, start + 1);
+        ends.set(task.id, start + cycleLength);
         tasks.set(task.id, task);
       }
       return entry;
@@ -306,11 +373,38 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
       return needed === undefined ? [] : [needed];
     });
     const start = endOf(needs.map((needed) => needed.id));
-    ends.set(entry.task.id, start + 1);
+    const length = lengthOf(entry.task);
+    ends.set(entry.task.id, start + length);
     tasks.set(entry.task.id, entry.task);
-    return { kind: "bar", needs, start, task: entry.task };
+    return { kind: "bar", length, needs, start, task: entry.task };
   });
-  return { end: Math.max(1, ...ends.values()), rows };
+  return { end: Math.max(0, ...ends.values()), rows };
+}
+
+/**
+ * The chart of time over the plan's order: one bar per step, starting after every task it
+ * needs has ended, and one line per cycle at its place in the order.
+ *
+ * Where a bar starts is worked out here from the `needs` its task's chips name (`neededIds`), and
+ * how long it is from its task's size (`TreeNode.size`), on one scale for the whole chart
+ * (`PlanAxis`). Where no task holds a size, a unit is one task and every bar is one unit long, as
+ * is every cycle. Where any task holds one, a unit is a minute: a bar is as long as its task's
+ * size, and a task with no size and a cycle are each one line of the axis long, the line's step
+ * chosen from the sizes alone (`axisStep`) so the tasks with no size do not stretch it; each
+ * counts as that long for the bars after it.
+ */
+export function planChart(entries: readonly PlanEntry[]): PlanChart {
+  const all = entries.flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks));
+  const sized = all.filter((task) => task.size !== undefined).length;
+  if (sized === 0) {
+    const { end, rows } = placeBars(entries, () => 1, 1);
+    const span = Math.max(1, end);
+    return { axis: { numbered: false, span, step: 1 }, end: span, rows };
+  }
+  const step = axisStep(placeBars(entries, (task) => task.size ?? 0, 0).end);
+  const { end, rows } = placeBars(entries, (task) => task.size ?? step, step);
+  const span = Math.max(step, Math.ceil(end / step) * step);
+  return { axis: { numbered: sized === all.length, span, step }, end, rows };
 }
 
 /**

@@ -4,7 +4,7 @@ import type { Artifact } from "../../../api/types";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS, type NodeType } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
-import { type PlanEntry, planChart, planOrder, writtenOrder } from "./plan-order";
+import { type PlanEntry, planChart, planOrder, sizeWords, writtenOrder } from "./plan-order";
 
 /**
  * The plan's order, read off the edges today's model holds.
@@ -61,6 +61,25 @@ function task(
   };
 }
 
+/** `one` holding a size of `minutes`, as the Plan view's read answers it (`TreeNode.size`). */
+function sized(one: TreeNode, minutes: number): TreeNode {
+  return { ...one, size: minutes };
+}
+
+/** A plan task of the issue `issue` under this one, by its block id, as this issue's Plan view
+ *  draws it: by its block id alone (`tree-read/tree-nodes.ts`' `treeIdOfNode`), marked with its
+ *  issue, each `needs` pointer addressed in that issue's own plan. */
+function otherTask(issue: string, blockId: string, needs: readonly string[] = []): TreeNode {
+  const address = (id: string) => `dispatch://${issue}/artifact/${PLAN}#b-${id}`;
+  return {
+    ...task(blockId),
+    chips: needs.map((id) => ({ ...chip(address(id), id), label: BLOCK_ATTRIBUTE_LABELS.needs })),
+    id: blockId,
+    issue,
+    reference: address(blockId),
+  };
+}
+
 /** What the order draws, in order: a step by its block id, a cycle by the block ids in it. */
 function drawn(entries: readonly PlanEntry[]): string[] {
   return entries.map((entry) =>
@@ -70,8 +89,11 @@ function drawn(entries: readonly PlanEntry[]): string[] {
   );
 }
 
+/** The block id a node of the plan is drawn by: the part of its id after `#b-`, and the whole id
+ *  of a task of another issue, which its block id alone is. */
 function blockOf(id: string): string {
-  return id.slice(id.lastIndexOf("#b-") + 3);
+  const at = id.lastIndexOf("#b-");
+  return at === -1 ? id : id.slice(at + 3);
 }
 
 test("a task stands after every task in its needs, wherever the plan writes it", () => {
@@ -228,8 +250,7 @@ test("a plan with no tasks draws nothing", () => {
 });
 
 // The chart of time: one bar per task, starting after every task it needs has ended, and a task
-// with no size a short bar marked No size. Today's model holds no size, so each bar is one unit
-// long.
+// with no size a short bar marked No size. Where no task holds a size each bar is one unit long.
 test("a bar starts where every task it needs has ended", () => {
   const chart = planChart(
     planOrder([task("t1"), task("t2", ["t1"]), task("t3", ["t1"]), task("t4", ["t2", "t3"])])
@@ -243,6 +264,7 @@ test("a bar starts where every task it needs has ended", () => {
     ["t4", 2],
   ]);
   expect(chart.end).toBe(3);
+  expect(chart.axis).toEqual({ numbered: false, span: 3, step: 1 });
   // Each bar names the tasks it needs, which is what the lines between them are drawn from.
   expect(
     chart.rows.map((row) => (row.kind === "bar" ? row.needs.map((one) => blockOf(one.id)) : []))
@@ -277,5 +299,79 @@ test("a cycle is one row of the chart at its place, and what waits on it starts 
 });
 
 test("a plan with no tasks is a chart with no rows", () => {
-  expect(planChart([])).toEqual({ end: 1, rows: [] });
+  expect(planChart([])).toEqual({ axis: { numbered: false, span: 1, step: 1 }, end: 1, rows: [] });
+});
+
+// Every size the page draws is written by one function: minutes below an hour, and from an hour
+// on whole hours and the minutes left.
+test("a size reads in minutes below an hour, and in hours and minutes from there", () => {
+  expect([5, 45, 60, 90, 600].map(sizeWords)).toEqual([
+    "5 min",
+    "45 min",
+    "1 h",
+    "1 h 30 min",
+    "10 h",
+  ]);
+});
+
+// R26: a bar is as long as its task's size, on one scale for the whole chart, and starts where
+// every task it needs has ended, which their sizes decide. A task with no size is one line of the
+// axis long, the line's step chosen from the sizes alone (here 60 minutes, so 195 minutes take
+// four lines), and it counts as that long for the bars after it. The axis carries the time at
+// each line only where every task holds a size.
+test("a bar is as long as its task's size and starts where the tasks it needs end", () => {
+  const chart = planChart(
+    planOrder([
+      sized(task("t1"), 90),
+      sized(task("t2", ["t1"]), 45),
+      task("t3", ["t1"]),
+      sized(task("t4", ["t2", "t3"]), 60),
+    ])
+  );
+  expect(
+    chart.rows.map((row) =>
+      row.kind === "bar" ? [blockOf(row.task.id), row.start, row.length] : ["cycle"]
+    )
+  ).toEqual([
+    ["t1", 0, 90],
+    ["t2", 90, 45],
+    ["t3", 90, 60],
+    ["t4", 150, 60],
+  ]);
+  expect(chart.end).toBe(210);
+  expect(chart.axis).toEqual({ numbered: false, span: 240, step: 60 });
+  const whole = planChart(planOrder([sized(task("t1"), 90), sized(task("t2", ["t1"]), 45)]));
+  expect(whole.axis).toEqual({ numbered: true, span: 150, step: 30 });
+});
+
+// R19 and R26: on an issue with issues under it the read answers their tasks beside the issue's
+// own, and the page's one walk places them all, from the written order: the issue's own tasks as
+// its document writes them, then each issue under it, its tasks as its own document writes them,
+// which is how the Plan view hands them over. So a chain of a child reads in its parent's plan as
+// on its own page. Here each issue writes `a`, `b`, `c` and `c` needs `a`: the walk keeps `a`
+// beside `c`, on the child's own page and inside the parent's plan, where the read's order (among
+// the tasks whose needs are placed, the first by address) gives `a`, `b`, `c`.
+test("a parent's own tasks and its children's stand in part K's walk, as on each issue's own page", () => {
+  const artifacts = new Map<string, Artifact>([
+    [PLAN, { id: "artifact-plan", slug: PLAN } as Artifact],
+  ]);
+  const written: ReadonlyMap<string, readonly string[]> = new Map([
+    ["artifact-plan", ["a", "b", "c"]],
+  ]);
+  const walk = (tasks: readonly TreeNode[]) =>
+    drawn(planOrder(writtenOrder(tasks, artifacts, written)));
+  const own = [task("a"), task("b"), task("c", ["a"])];
+  expect(walk(own)).toEqual(["b", "a", "c"]);
+  const childsPage = [task("xa"), task("xb"), task("xc", ["xa"])];
+  expect(walk(childsPage)).toEqual(["xb", "xa", "xc"]);
+  const parent = [
+    ...own,
+    otherTask("CORE-2", "xa"),
+    otherTask("CORE-2", "xb"),
+    otherTask("CORE-2", "xc", ["xa"]),
+  ];
+  expect(walk(parent)).toEqual(["b", "a", "c", "xb", "xa", "xc"]);
+  // A task of another issue starts where the task of its own issue it needs ends.
+  const bars = planChart(planOrder(writtenOrder(parent, artifacts, written))).rows;
+  expect(bars.map((row) => (row.kind === "bar" ? row.start : -1))).toEqual([0, 0, 1, 0, 0, 1]);
 });

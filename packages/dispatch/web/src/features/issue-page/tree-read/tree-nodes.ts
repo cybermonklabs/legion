@@ -83,8 +83,9 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  * criterion, a lens and its kind, a finding, a risk, a constraint, an interaction - reaches no
  * step of this part's, makes no draft and stays in the answer, which the page keeps whole (R7);
  * a later part draws a kind of its own with one line in that list, and adds a member to another
- * step's draft with one line in `treeDraftMarks`. A check or a plan task of an issue under this
- * one is out of this part's scope and makes no draft either.
+ * step's draft with one line in `treeDraftMarks`. A check of an issue under this one makes no
+ * draft either, nor does its plan task but where the read answers its place in the plan
+ * (`draftServing`), as the Plan view's read does.
  *
  * `buildIssueTree` builds the tree from these drafts, so this module imports no code of
  * `issue-tree.ts`, which would close an import cycle (`biome.json`'s `noImportCycles`): the word
@@ -522,9 +523,14 @@ function draftServing(
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
+  // A plan task of an issue under this one is drafted where the read answers its place in the
+  // plan (`plan`), which only the Plan view's read does: that view draws it as a step, marked
+  // with its issue (`presets.ts`' `heldFilterView`). Every other node of another issue makes no
+  // draft here.
+  const foreign = isForeign(node, context.key);
   if (
     (node.supertag !== "check" && node.supertag !== "plan_task") ||
-    isForeign(node, context.key)
+    (foreign && (node.supertag !== "plan_task" || node.plan === undefined))
   ) {
     return undefined;
   }
@@ -555,7 +561,10 @@ function draftServing(
   if (served.some((target) => !isStatementNode(target, context))) {
     draft.gaps.push("serves_not_requirement");
   }
+  // What a task of another issue serves is that issue's statements, which its own page says it
+  // lacks, so it carries no gap here.
   if (
+    !foreign &&
     node.supertag === "plan_task" &&
     !namesAny(node, "serves", context) &&
     !namesAny(node, "attempts", context)

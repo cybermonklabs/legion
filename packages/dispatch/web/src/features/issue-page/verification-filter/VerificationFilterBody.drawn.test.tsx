@@ -2592,8 +2592,8 @@ test("a check under two statements names the other by its words with no mark of 
 // A check drawn from the Verification view's own tree names the other statement it serves by that
 // statement's line. The outline's read holds the issue alone and the names read answers nothing,
 // so the view read alone holds the second statement's words: the view names the statement by them
-// (`PresetView.parents`) and the slot publishes that reading to the names store
-// (`slots/view-parents.ts`). The check's row under the first statement draws "Also under" with
+// (`PresetView.readings`) and the slot publishes that reading to the names store
+// (`slots/view-readings.ts`). The check's row under the first statement draws "Also under" with
 // the second statement's words, and neither an empty chip nor the statement's address.
 test("a row drawn from a view's own tree names its other parent by that parent's line", async () => {
   const stubs = stubReads();

@@ -2200,3 +2200,53 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
     expect(offTree, `${filter} read off the tree`).not.toContain("p1");
   }
 });
+
+// R19: on an issue with issues under it the Plan view's read answers each plan task of an issue
+// under it, as context marked with its issue, with its place in the plan (`plan`) and its size in
+// whole minutes. Built from that answer, the tree drafts the task by its block id alone, addressed
+// in its own issue, with a chip for the task of its issue it needs and no gap of its own; the Plan
+// view draws it as a row in the walk's order after the issue's own task, with its size and its
+// issue. The outline's answer, which carries no `plan`, drafts no task of another issue.
+test("a plan task's size and issue come from the plan view's answer", () => {
+  const place = (size: string | null) => ({ cycle: false, needs: [], position: 0, size });
+  const childPlan = { artifact_id: "artifact-child-plan", slug: "plan-md" };
+  const child = (id: string, position: number, size: string | null) =>
+    node(id, "plan_task", "CORE-2", {
+      document: { ...childPlan, position },
+      issue: "CORE-2",
+      plan: place(size),
+      role: "context",
+      text: `Task ${id} of the child.`,
+    });
+  const plan = answer(
+    [
+      node("CORE-2", "issue", KEY, { role: "context", text: "A child of the issue" }),
+      child("x2", 1, "45"),
+      child("x1", 0, "90"),
+      block("t1", "plan_task", KEY, PLAN, 0, { plan: place("30"), role: "query" }),
+    ],
+    [tuple("needs", "x2", "x1")],
+    { view: "plan" }
+  );
+  const { drafts, root } = drawn(plan);
+  expect(
+    ["x1", "x2"].map((id) => {
+      const draft = drafts.get(id);
+      return [draft?.reference, draft?.chips.map((one) => one.ref), draft?.gaps];
+    })
+  ).toEqual([
+    ["dispatch://CORE-2/artifact/plan-md#b-x1", [], []],
+    ["dispatch://CORE-2/artifact/plan-md#b-x2", ["dispatch://CORE-2/artifact/plan-md#b-x1"], []],
+  ]);
+  const view = presetView({ ...root, views: { plan, trees: { plan: root } } }, "plan", "");
+  expect(view.root.children.map((row) => [row.id, row.size, row.issue])).toEqual([
+    [blockNodeId("plan-md", "t1"), 30, undefined],
+    ["x1", 90, "CORE-2"],
+    ["x2", 45, "CORE-2"],
+  ]);
+  const outline = answer([
+    node("CORE-2", "issue", KEY, { role: "context", text: "A child of the issue" }),
+    node("x1", "plan_task", "CORE-2", { document: { ...childPlan, position: 0 }, issue: "CORE-2" }),
+  ]);
+  expect(drawn(outline).drafts.has("x1")).toBe(false);
+});
