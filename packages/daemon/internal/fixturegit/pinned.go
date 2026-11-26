@@ -26,9 +26,11 @@ var pinnedJJRows = map[string]string{"amd64": "jj", "arm64": "jj-aarch64"}
 // what the pinned jj does: the first jj on the test process's PATH whose bytes have the pin's
 // sha256, wherever it stands on PATH, so another jj in front of it (a dev box's own build, a
 // fork) changes nothing about which binary the test runs. On CI the install-jj action puts the
-// pinned binary at ~/.local/bin/jj. The test logs the binary's path and its --version, and fails,
-// naming the pin and each jj on PATH with its digest, when PATH holds none: a machine without the
-// pinned jj fails the test by name rather than testing another binary.
+// pinned binary at ~/.local/bin/jj. A relative PATH entry is taken against the test's working
+// directory at the lookup, so the path PinnedJJ answers is absolute and runs from any directory.
+// The test logs the binary's path and its --version, and fails, naming the pin and each jj on PATH
+// with its digest, when PATH holds none: a machine without the pinned jj fails the test by name
+// rather than testing another binary.
 func PinnedJJ(tb testing.TB) string {
 	tb.Helper()
 	row, ok := pinnedJJRows[runtime.GOARCH]
@@ -42,23 +44,30 @@ func PinnedJJ(tb testing.TB) string {
 	found, _ := lookpath.Others(os.Getenv("PATH"), "jj", "")
 	passed := make([]string, 0, len(found))
 	for _, each := range found {
-		sum, err := fileSHA256(each.Path)
+		// lookpath.Others keeps a relative entry as a shell does; exec.Cmd would take such a path
+		// against its Dir, and the caller runs jj from directories of its own.
+		path, err := filepath.Abs(each.Path)
 		if err != nil {
 			passed = append(passed, fmt.Sprintf("%s (%v)", each.Path, err))
 			continue
 		}
-		if sum != digest {
-			passed = append(passed, fmt.Sprintf("%s (sha256 %s)", each.Path, sum))
+		sum, err := fileSHA256(path)
+		if err != nil {
+			passed = append(passed, fmt.Sprintf("%s (%v)", path, err))
 			continue
 		}
-		command := exec.Command(each.Path, "--version")
+		if sum != digest {
+			passed = append(passed, fmt.Sprintf("%s (sha256 %s)", path, sum))
+			continue
+		}
+		command := exec.Command(path, "--version")
 		command.Dir, command.Env = tb.TempDir(), fixtureenv.Isolated(tb.TempDir())
 		out, err := command.Output()
 		if err != nil {
-			tb.Fatalf("the pinned jj %s at %s: --version: %v", version, each.Path, err)
+			tb.Fatalf("the pinned jj %s at %s: --version: %v", version, path, err)
 		}
-		tb.Logf("the pinned jj %s (.github/ci-tools.yaml row %s, sha256 %s) is %s: %s", version, row, digest, each.Path, strings.TrimSpace(string(out)))
-		return each.Path
+		tb.Logf("the pinned jj %s (.github/ci-tools.yaml row %s, sha256 %s) is %s: %s", version, row, digest, path, strings.TrimSpace(string(out)))
+		return path
 	}
 	if len(passed) == 0 {
 		passed = append(passed, "none")
