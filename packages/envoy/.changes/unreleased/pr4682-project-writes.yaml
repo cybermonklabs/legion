@@ -28,12 +28,13 @@ body: |-
   `409 CHECK_AMBIGUOUS` names no issue of it, and a retraction asks about the check's issue
   before it reads the body. A question asked of such a project, or of a project that does not
   exist, is now `404 PROJECT_NOT_FOUND` to a token that names a project. A status change leaves
-  out of its cascade each issue of such a project, does not name it in its answer or its dry run,
-  and still judges it by the parent status rule. The `issues` of a `409 PARENT_STATUS_CONFLICT`
-  leave out each issue of a private project that the request's token does not name, on every
-  route that answers it, and so do the `issues` and the message of the `409 FOREIGN_CHILD_OPEN`
-  of an acceptance write, which is still refused while such a child is open. A target that
-  resolves to no project or to nothing is still refused
+  out of its cascade each issue of such a project, and each issue that it reaches only through
+  such an issue (a descendant below it, or an ancestor above it), does not name them in its answer
+  or its dry run, and still judges an issue of such a project by the parent status rule. The
+  `issues` of a `409 PARENT_STATUS_CONFLICT` leave out each issue of a private project that the
+  request's token does not name, on every route that answers it, and so do the `issues` and the
+  message of the `409 FOREIGN_CHILD_OPEN` of an acceptance write, which is still refused while
+  such a child is open. A target that resolves to no project or to nothing is still refused
   `403 PROJECT_SCOPE`, a write of the deployment's is still refused `403 PROJECT_SCOPE_DEPLOYMENT`,
   and the session and person checks stay. The Legion daemon of another project, whose broker token
   proves its session `legion-daemon:<P>`, now writes the step records, step ratings, plans and role

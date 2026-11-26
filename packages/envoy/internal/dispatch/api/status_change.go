@@ -347,19 +347,59 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 	return steps
 }
 
+// walked is the key of the issue the call names and of every issue that the cascade over read
+// walks from it: its ancestors and the issues under it. It holds the issue of each step.
+func (read statusChangeRead) walked() []string {
+	keys := make([]string, 0, 1+len(read.ancestors)+len(read.descendants))
+	keys = append(keys, read.named.key)
+	for _, ancestor := range read.ancestors {
+		keys = append(keys, ancestor.key)
+	}
+	for _, descendant := range read.descendants {
+		keys = append(keys, descendant.Key)
+	}
+	return keys
+}
+
+// leftOut is the issues of read (walked) that a status change leaves out of its plan, where hidden
+// reports each issue in a private project that the request's credential does not name: each such
+// issue, and each issue that the cascade reaches only through one, an ancestor above it or a
+// descendant below it. The ancestors come parent first and the descendants nearest first, so each
+// issue is judged after the issue the cascade reaches it through.
+func (read statusChangeRead) leftOut(hidden func(key string) bool) map[string]bool {
+	out := map[string]bool{}
+	judge := func(key string, through bool) {
+		if through || hidden(key) {
+			out[key] = true
+		}
+	}
+	judge(read.named.key, false)
+	below := read.named.key
+	for _, ancestor := range read.ancestors {
+		judge(ancestor.key, out[below])
+		below = ancestor.key
+	}
+	for _, descendant := range read.descendants {
+		judge(descendant.Key, out[descendant.Parent])
+	}
+	return out
+}
+
 // planStatusChange is the plan of change on the issue key, checked under its owner locks before
 // any step writes. It reads the plan with plain reads, then, in a transaction of its own that
 // writes nothing, takes the owner locks of every step's issue and of each step's current and
 // new parent in one store.LockOwners call. Under them it loads the issue the call names and
 // decides expected_sequence first (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has
 // it (409 ISSUE_CLOSED), and reads the plan again. Where the request's credential names one
-// project, writer.callerProject, it asks access.CredentialCovers about each step's issue, and
-// leaves out of the plan each step whose issue is in a private project that the credential does
-// not name. Then it checks the whole plan (refuseIssueWritePlan). A plan whose issues moved
-// between the two reads, so that it needs a lock the transaction does not hold, starts over with
-// what the second read found, as lockPatchOwnersAndParent does, and a plan that moves at every
-// attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back before the
-// first step, and each step takes its own locks in its own transaction.
+// project, writer.callerProject, it asks access.CredentialCovers about each issue that the cascade
+// walks, and leaves out of the plan each step whose issue is in a private project that the
+// credential does not name, and each step whose issue the cascade reaches only through such an
+// issue: a descendant below it, or an ancestor above it (statusChangeRead.leftOut). Then it checks
+// the whole plan (refuseIssueWritePlan). A plan whose issues moved between the two reads, so that
+// it needs a lock the transaction does not hold, starts over with what the second read found, as
+// lockPatchOwnersAndParent does, and a plan that moves at every attempt is 409 PARENT_CONTENDED
+// with nothing applied. The transaction rolls back before the first step, and each step takes its
+// own locks in its own transaction.
 //
 // resumed is the recovery point of an earlier attempt that this attempt resumes, nil for a first
 // attempt: it changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
@@ -433,33 +473,49 @@ func (s *server) planStatusChangeUnderLocks(
 	if !locksHeld(held, steps) {
 		return statusChangePlan{}, &again, nil
 	}
-	keys := make([]string, 0, len(steps))
-	for _, step := range steps {
-		keys = append(keys, step.key)
+	// A credential that names one project writes, in a step, an issue of every project that
+	// access.CredentialCovers covers. The route's pre-handler check reads only the project of the
+	// issue the path names (project_scope.go), and a parent may be an issue of another project
+	// (validateIssueParent), so an ancestor that include_parent moves and a descendant that
+	// include_children moves or unlink_children unlinks can each belong to another. Each issue
+	// that the cascade walks is asked about here, as this transaction read it under the owner
+	// locks, before the first step and for a dry run as well: each step's issue, and each issue
+	// that the cascade passes on its way to one, which need not be a step's. A step whose issue is
+	// in a private project that the credential does not name is left out of the plan, and so is
+	// each step whose issue the cascade reaches only through such an issue: a descendant below it,
+	// or an ancestor above it (statusChangeRead.leftOut). The call does not move or unlink those
+	// issues, and neither its answer nor its dry run names them. The parent status rule still
+	// judges each pair that the plan changes, a left-out issue's included (parentStatusConflictOf
+	// reads it as it stands).
+	callerProject := writer.callerProject
+	var keys []string
+	if callerProject != "" {
+		keys = again.walked()
+	} else {
+		keys = make([]string, 0, len(steps))
+		for _, step := range steps {
+			keys = append(keys, step.key)
+		}
 	}
 	rows, err := readIssueWriteRows(ctx, tx, keys)
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
+	var leftOut map[string]bool
+	if callerProject != "" {
+		credential := access.Credential{Listed: []string{callerProject}}
+		leftOut = again.leftOut(func(key string) bool {
+			row := rows[key]
+			return !access.CredentialCovers(credential, row.project, row.private)
+		})
+	}
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), options: change.statusChangeOptions}
-	callerProject := writer.callerProject
 	planned := steps[:0]
 	for _, step := range steps {
-		row := rows[step.key]
-		// A credential that names one project writes, in a step, an issue of every project that
-		// access.CredentialCovers covers. The route's pre-handler check reads only the project of
-		// the issue the path names (project_scope.go), and a parent may be an issue of another
-		// project (validateIssueParent), so an ancestor that include_parent moves and a descendant
-		// that include_children moves or unlink_children unlinks can each belong to another. Each
-		// step's issue is asked about here, as its row and its project's visibility were read
-		// under the owner locks, before the first step and for a dry run as well. A step whose
-		// issue is in a private project that the credential does not name is left out of the
-		// plan: the call does not move or unlink that issue, and neither its answer nor its dry
-		// run names it. The parent status rule still judges each pair that the plan changes, that
-		// issue's included (parentStatusConflictOf reads it as it stands).
-		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, row.project, row.private) {
+		if leftOut[step.key] {
 			continue
 		}
+		row := rows[step.key]
 		step.title, step.project, step.lastSeq = row.title, row.project, row.lastSeq
 		planned = append(planned, step)
 		writes.steps = append(writes.steps, step.issueWriteStep)
