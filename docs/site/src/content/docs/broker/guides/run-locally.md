@@ -271,10 +271,10 @@ $ agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- sh -c 'ech
 
 Every line about a secret names where it came from: the broker this stack runs, and the kind of
 store that broker reads. The local stack's store is the memory one, which
-`BROKER_SECRETS_STORE=memory` and `BROKER_MEMORY_SECRETS_FILE` name. No session's line names the
-broker's host or the store's account or region,
-since an agent's output is often quoted; `agent-secrets secret show` names the account and region
-its key ARN carries.
+`BROKER_SECRETS_STORE=memory` and `BROKER_MEMORY_SECRETS_FILE` name, and whose kind the lines
+call `memory`. No session's line names the broker's host or the store's account, region or
+file, since an agent's output is often quoted; `agent-secrets secret show` names the store in full:
+the file here, the account and region a key ARN carries on AWS, the project on GCP.
 
 The last command waits for approval, and names who approves it and where (`waiting for
 ada@example.com to approve it on the secrets broker: <broker>/approve/<record>`). Open that
@@ -360,10 +360,40 @@ process of your user, so such a process can also enroll a box and read your agen
 ## Write a secret and see it served
 
 The broker reads the memory secrets file again each time it lists the secrets, describes one or
-reads a value, so an edit to the file is what a write to the store is in production, where a
-person writes with `agent-secrets secret` ([manage a secret](/legion/broker/guides/manage-a-secret/));
-that CLI writes the cloud store a deployment runs on, not this file. Add a secret of
-`ada@example.com`'s to it, here with `jq`:
+reads a value, so a write to the file is what a write to the store is in production.
+`agent-secrets secret` writes this file on this stack as it writes the cloud store a deployment runs
+on ([manage a secret](/legion/broker/guides/manage-a-secret/)): the broker's settings name the file
+(`memory_secrets_file`), and the memory store takes no sign-in, so the owner is named outright
+(`--owner me` names no person there and is refused, exit 2). From the first shell's exports:
+
+```console
+$ printf 'demo-cli-token-value\n' | agent-secrets secret create DEMO_CLI_TOKEN --owner ada@example.com --tier agent
+agent-secrets secret create: using memory store: /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json
+created DEMO_CLI_TOKEN in memory file /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json (owner=ada@example.com, tier=agent)
+broker: rereading DEMO_CLI_TOKEN from memory file /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json
+...
+$ agent-secrets secret list
+agent-secrets secret list: using memory store: /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json
+NAME                       OWNER            TIER   TYPE        PROJECT  PROJECT_CHANNELS  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_API_KEY               ada@example.com  human  -           -        -                 -          -              yes    -        -
+DEMO_CLI_TOKEN             ada@example.com  agent  -           -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP            legion-daemon    agent  github-app  -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP_CASE_PAIR  legion-daemon    agent  github-app  -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP_HUMAN      ada@example.com  human  github-app  -        -                 -          -              yes    -        -
+DEMO_READ_TOKEN            ada@example.com  agent  -           -        -                 -          -              yes    -        -
+DEMO_SERVICE_TOKEN         legion-daemon    agent  -           -        -                 -          -              yes    -        -
+Every row is a secret in memory file /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json.
+```
+
+The path is this run's `$DEV_BROKER_DIR/memory-secrets.json`. This create ran in a shell outside
+the session registered above, so its reread was not signed by a session of the stack and the line
+says `rereading`; the line it printed after (`...`) says the broker's view was not checked, and
+why. Inside that session the reread is signed and the line says `serving`. Every form, in order,
+against a fresh stack of its own: `packages/envoy/scripts/store-forms-check.sh --store memory`
+([scripts/README.md](https://github.com/cybermonklabs/legion/blob/main/packages/envoy/scripts/README.md#store-forms-checksh)).
+
+An edit of the file by hand is a write too. Add a secret of `ada@example.com`'s to it, here with
+`jq`:
 
 ```sh
 jq '.secrets += [{"name": "example/agent-secrets/demo-new-token",
