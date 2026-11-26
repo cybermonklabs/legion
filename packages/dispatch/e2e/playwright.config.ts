@@ -422,6 +422,13 @@ const parallelProjects = [
   // return shows its landing whole by the least scroll: on the Inbox after Dismiss with the row
   // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%,
   // and at 390 on the List after Take out of epic with the rows marked last far below the view.
+  // The rows INFRA-3135's round-29 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refilling from the start the project List still says the list is
+  // refilling while a poll is out five minutes on; that a `j` while the selection bar's landing is
+  // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; that
+  // after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
+  // nothing; that the project List's box keeps its frame after Take out of epic lands; and that with
+  // Take out of epic's writes held and both marks unticked the List keeps the focus on the list.
   // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
   // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
   // one drag row, which drags a row of the priorities table by its grip and reads the order back.
@@ -541,6 +548,13 @@ const parallelProjects = [
   // return shows its landing whole by the least scroll: on the Inbox after Dismiss with the row
   // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%,
   // and at 390 on the List after Take out of epic with the rows marked last far below the view.
+  // The rows INFRA-3135's round-29 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refilling from the start the project List still says the list is
+  // refilling while a poll is out five minutes on; that a `j` while the selection bar's landing is
+  // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; that
+  // after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
+  // nothing; that the project List's box keeps its frame after Take out of epic lands; and that with
+  // Take out of epic's writes held and both marks unticked the List keeps the focus on the list.
   // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the
   // grip writes the id it moves into the drag: `priorities`' one drag row, which drags a row of the
   // priorities table by its grip and reads the order back.
