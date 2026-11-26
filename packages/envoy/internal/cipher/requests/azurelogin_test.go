@@ -33,7 +33,7 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 		Minters: map[string]Minter{policy.TypeAzureLogin: (secrets.AzureLogin{TokenFile: file}).Mint},
 	}
 	secret := set.Secrets["AZURE_LOGIN"]
-	value, err := machine.release(t.Context(), requestedSecret{name: secret.Name, source: secret.Source, decision: policy.Approval}, secret)
+	value, _, err := machine.release(t.Context(), requestedSecret{name: secret.Name, source: secret.Source, decision: policy.Approval}, secret)
 	if value.Value != "" || !errors.Is(err, ErrMintFailed) || secrets.MintErrorClass(err) != "refused" {
 		t.Fatalf("release returned class %s, value present %t; want refused mint and no token", secrets.MintErrorClass(err), value.Value != "")
 	}
@@ -94,7 +94,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 				Secrets: policytest.Store(local),
 				Minters: map[string]Minter{policy.TypeAzureLogin: (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint},
 			}
-			value, err := machine.release(t.Context(), granted, secret)
+			value, _, err := machine.release(t.Context(), granted, secret)
 			if row.allowed {
 				var got map[string]string
 				if err != nil || json.Unmarshal([]byte(value.Value), &got) != nil || got["federated_token"] != token {
@@ -125,7 +125,7 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	split, err := airlockSplitOf(proxyrules.KindAzure, policy.TypeAzureLogin, "", minted.Value)
+	split, err := airlockSplitOf(proxyrules.WayExchange, policy.TypeAzureLogin, "", minted.Value)
 	if err != nil {
 		t.Fatalf("airlockSplitOf: %v", err)
 	}
@@ -149,15 +149,15 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 	}
 
 	for _, other := range []struct {
-		name      string
-		entryKind string
-		kind      string
-		value     string
+		name  string
+		way   string
+		kind  string
+		value string
 	}{
-		{"a stored value", "", "", "a-stored-value"},
-		{"a stored AWS key pair", proxyrules.KindAWS, "", `{"access_key_id":"AKIAEXAMPLE","secret_access_key":"not-a-secret"}`},
+		{"a stored value", proxyrules.WaySwap, "", "a-stored-value"},
+		{"a stored AWS key pair", proxyrules.WaySign, "", `{"access_key_id":"AKIAEXAMPLE","secret_access_key":"not-a-secret"}`},
 	} {
-		split, err := airlockSplitOf(other.entryKind, other.kind, "", other.value)
+		split, err := airlockSplitOf(other.way, other.kind, "", other.value)
 		if err != nil || split.azure != (secrets.AzureLoginValue{}) {
 			t.Errorf("%s split as %+v, %v; want no application or tenant", other.name, split.azure, err)
 		}
@@ -178,7 +178,7 @@ func TestAnAzureLoginThatNamesNoApplicationOrTenantIsReleasedNowhere(t *testing.
 		{"a client_id that is no string", `{"tenant_id":"the-tenant","client_id":["the-application"],"federated_token":"the-federated-token"}`, "client_id"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			_, err := airlockSplitOf(proxyrules.KindAzure, policy.TypeAzureLogin, "", row.value)
+			_, err := airlockSplitOf(proxyrules.WayExchange, policy.TypeAzureLogin, "", row.value)
 			if !errors.Is(err, ErrAirlockValueShape) {
 				t.Fatalf("airlockSplitOf = %v; want ErrAirlockValueShape", err)
 			}

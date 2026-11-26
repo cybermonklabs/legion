@@ -36,13 +36,13 @@ func TestAJudgedRowIsWrittenWhenTheLandedReadLosesItsConnection(t *testing.T) {
 		// a transaction there cut other tests' transactions.
 		return m.Store.Pool.QueryRow(t.Context(), `select pg_terminate_backend($1)`, int64(backend)).Scan(&ended)
 	}
-	wrote, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": lost.Error()})
+	res, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": lost.Error()})
 	m.testLandedRead = nil
 	if !ended {
 		t.Fatal("the hook ended no backend, so this run did not lose the landed read's connection and proves nothing")
 	}
-	if err != nil || wrote != JudgedAppliedUnknown {
-		t.Errorf("LogJudged(applied false) whose landed read lost its connection = %q, %v; want %q and the row written", wrote, err, JudgedAppliedUnknown)
+	if err != nil || res.Write != JudgedAppliedUnknown {
+		t.Errorf("LogJudged(applied false) whose landed read lost its connection = %q, %v; want %q and the row written", res.Write, err, JudgedAppliedUnknown)
 	}
 	if judged := readJudged(t, m, *req.RecordID); len(judged) != 1 || judged[0].applied != AppliedUnknown {
 		t.Errorf("request.judged rows = %+v; want one, applied %q: a run that asked the model keeps its row", judged, AppliedUnknown)
