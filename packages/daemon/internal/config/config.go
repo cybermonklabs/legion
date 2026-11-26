@@ -88,9 +88,10 @@ type Config struct {
 	Runtime       Runtime
 	AdmissionCap  int
 	// AdmissionP0Bound is `admission_p0_bound`: how many P0 issues may hold a slot at once outside
-	// the cap (R10 of dispatch://INFRA-3199), at least 1, or nil where the file gives none, which is
-	// no bound. It is the bound the daemon boots with; the controller or the operator sets another
-	// while the daemon runs, which stands until it is cleared (store.EffectiveP0Bound).
+	// the cap (R10 of dispatch://INFRA-3199), a whole number from 1 to 2147483647 (the most the
+	// store's integer column holds), or nil where the file gives none, which is no bound. It is the
+	// bound the daemon boots with; the controller or the operator sets another while the daemon
+	// runs, which stands until it is cleared (store.EffectiveP0Bound).
 	AdmissionP0Bound *int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
@@ -1188,6 +1189,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.AdmissionP0Bound != nil {
 		if *file.AdmissionP0Bound < 1 {
 			return Config{}, errors.New("admission_p0_bound must be a positive integer, or left out for no bound")
+		}
+		if *file.AdmissionP0Bound > math.MaxInt32 {
+			return Config{}, fmt.Errorf("admission_p0_bound must be a positive integer of at most %d, or left out for no bound", math.MaxInt32)
 		}
 		cfg.AdmissionP0Bound = new(*file.AdmissionP0Bound)
 	}

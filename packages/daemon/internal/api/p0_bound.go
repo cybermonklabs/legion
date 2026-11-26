@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -19,13 +20,13 @@ import (
 // set_p0_bound and clear_p0_bound), and the operator's, under the operator's bearer (`legion
 // project set-p0-bound` and `clear-p0-bound`). None names a project: the daemon changes its own. A
 // P0 issue starts outside the admission cap, and the bound limits how many P0 issues may hold a
-// slot at once. A set names a number, at least 1, or none, which is no bound whatever legion.yaml
-// says; a clear takes the live value away, which returns the project to legion.yaml's
+// slot at once. A set names a number, from 1 to 2147483647, or none, which is no bound whatever
+// legion.yaml says; a clear takes the live value away, which returns the project to legion.yaml's
 // admission_p0_bound.
 
 // ProjectP0BoundRequest is the controller's POST /legion/v1/project/p0-bound: its grant, the bound
-// to set, either `bound`, a whole number of at least 1, or `unbounded`, true for no bound, exactly
-// one of the two, and why.
+// to set, either `bound`, a whole number from 1 to 2147483647, or `unbounded`, true for no bound,
+// exactly one of the two, and why.
 type ProjectP0BoundRequest struct {
 	GrantID   string `json:"grantId"`
 	Bound     *int   `json:"bound,omitempty"`
@@ -78,7 +79,8 @@ type P0BoundLiveView struct {
 
 // The codes of the P0 bound routes' own refusals. Each changes nothing.
 const (
-	// invalidP0Bound is a set that names neither a bound nor none, both, or a bound below 1.
+	// invalidP0Bound is a set that names neither a bound nor none, both, or a bound below 1 or above
+	// 2147483647 (math.MaxInt32), which the store's integer column holds.
 	invalidP0Bound = "INVALID_P0_BOUND"
 	// p0BoundReasonRequired is a change that says nothing of why it is made.
 	p0BoundReasonRequired = "P0_BOUND_REASON_REQUIRED"
@@ -143,8 +145,8 @@ func (s *server) operatorProjectP0BoundClear(w http.ResponseWriter, r *http.Requ
 		intake.P0BoundSet{Mode: store.P0BoundCleared, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: req.Reason})
 }
 
-// setP0Bound refuses a set that names neither a bound nor none, both, or a bound below 1, and
-// otherwise changes the bound to the one it names (changeP0Bound).
+// setP0Bound refuses a set that names neither a bound nor none, both, or a bound below 1 or above
+// 2147483647, and otherwise changes the bound to the one it names (changeP0Bound).
 func (s *server) setP0Bound(w http.ResponseWriter, r *http.Request, answer AnswerID, route string, bound *int, unbounded bool,
 	by store.PauseActor, why string,
 ) {
@@ -160,6 +162,9 @@ func (s *server) setP0Bound(w http.ResponseWriter, r *http.Request, answer Answe
 	case *bound < 1:
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound, fmt.Sprintf(
 			"bound is how many P0 issues may hold a slot at once, a whole number of at least 1, and %d is not; unbounded sets no bound; nothing changed", *bound))
+	case *bound > math.MaxInt32:
+		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound, fmt.Sprintf(
+			"bound is how many P0 issues may hold a slot at once, a whole number of at most %d, and %d is not; unbounded sets no bound; nothing changed", math.MaxInt32, *bound))
 	default:
 		s.changeP0Bound(w, r, answer, route, intake.P0BoundSet{Mode: store.P0BoundSet, Bound: *bound, By: by, Reason: why})
 	}

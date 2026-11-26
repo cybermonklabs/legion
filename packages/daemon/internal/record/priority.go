@@ -149,14 +149,18 @@ type SlotHolders struct {
 // promotion, its free-slot reading, the stall measure and the state — so all of them count the same
 // holders of one record.
 func HoldersOf(issues []Issue, slots []Slot) SlotHolders {
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
+	startsNow := make(map[string]bool, len(issues))
+	for i := range issues {
+		startsNow[issues[i].Key] = issues[i].StartsNow()
 	}
 	var held SlotHolders
 	for _, slot := range slots {
-		if issue, known := byKey[slot.Issue]; known {
-			held.Add(issue)
+		if p0, known := startsNow[slot.Issue]; known {
+			if p0 {
+				held.P0++
+			} else {
+				held.Capped++
+			}
 		}
 	}
 	return held

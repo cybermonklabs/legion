@@ -2,10 +2,8 @@ package admit
 
 import (
 	"bytes"
-	"encoding/json"
 	"log/slog"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,13 +18,10 @@ import (
 // dispatch://INFRA-3199): an issue is P0 when its own Dispatch priority is P0, the cap counts only
 // the holders that are not P0, and every other hold on a start stays. Each case below stands at a
 // cap its holders that are not P0 fill, so a candidate that takes a slot took it outside the cap.
-// Every priority a case reads is taken from the lists below, never a sample of them.
+// Every priority a case reads is taken from p0Priorities, never a sample of it.
 
 // p0Priorities is every priority an issue can carry, P0 first.
 var p0Priorities = []record.Priority{record.P0, record.P1, record.P2, record.P3, record.NoPriority}
-
-// belowP0 is every priority that is not P0, none included.
-var belowP0 = []record.Priority{record.P1, record.P2, record.P3, record.NoPriority}
 
 // p0Holder records key as a started root of its own tree at priority, holding one of the cap's
 // slots, as seedSlotted does.
@@ -355,16 +350,7 @@ func TestAP0StartIsLoggedWithTheHoldersAndTheCap(t *testing.T) {
 
 	tick(t, pool, admission, "tick")
 
-	var starts []map[string]any
-	for line := range strings.Lines(logged.String()) {
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("read the log line %q: %v", line, err)
-		}
-		if entry["msg"] == p0StartMessage {
-			starts = append(starts, entry)
-		}
-	}
+	starts := loggedAs(t, &logged, p0StartMessage)
 	if len(starts) != 1 {
 		t.Fatalf("the pass logged %d lines %q, want one for LEGION-9; the log:\n%s", len(starts), p0StartMessage, logged.String())
 	}

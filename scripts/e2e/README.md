@@ -708,7 +708,8 @@ the latch is one-way and the booting process's own, so every start begins unlatc
 
 After the first boot, the run also reads `legion state`'s `P0:` line and requires `admission_p0_bound: 3` from its `legion.yaml` as the bound in force and in `legion.yaml`, with none set while the daemon runs.
 It then runs `legion project set-p0-bound --bound 0 --reason …` and requires exit 1 with the daemon's 400 refusal, and reads `400` `INVALID_P0_BOUND` off the same operator route.
-Stage 1's daemon has no `dispatch_url`, so it runs no workflow and refuses every live change `P0_BOUND_UNAVAILABLE`; this step proves the configured bound and the floor of 1 on the real binary.
+Stage 1's daemon has no `dispatch_url`, so it runs no workflow and refuses every valid live change `P0_BOUND_UNAVAILABLE`, and an invalid bound `INVALID_P0_BOUND` first;
+this step proves the configured bound and the floor of 1 on the real binary.
 
 After any exit — pass, failure, or an interrupt
 — the `EXIT` trap removes the container and signals the daemon, the proxy and the keepers;

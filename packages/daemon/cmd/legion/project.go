@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -179,7 +180,7 @@ func boundCount(bound *int) string {
 	if bound == nil {
 		return "none"
 	}
-	return fmt.Sprint(*bound)
+	return strconv.Itoa(*bound)
 }
 
 // p0AdmissionLine is `legion state`'s line for the P0 issues (C4 and C3 of dispatch://INFRA-5636):

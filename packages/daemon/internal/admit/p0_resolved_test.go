@@ -67,7 +67,7 @@ func resolvedEvent(t *testing.T, key, status, rank string, seq int64, resolved r
 	}
 	payload := fmt.Sprintf(`{"key":%q,"status":%q,"title":%q,"parent":null,"rank":%q,"priority":null%s,"labels":[%q],"resolved_repo":"acme/widgets","blocked_by":[],"claim":null,"changed":%s}`,
 		key, status, key, rank, resolvedPayload(resolved), dispatch.LegionLabel, names)
-	event := fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"actor":{"kind":"user","id":"sami"},"notify":true,"type":"issue.updated","created_at":"2026-09-23T11:00:00Z","payload":%s}`,
+	event := fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"actor":{"kind":"user","id":"human"},"notify":true,"type":"issue.updated","created_at":"2026-09-23T11:00:00Z","payload":%s}`,
 		seq, key, seq, payload)
 	fact, unread, err := intake.DecodeDispatchEvent(testProject, key, []byte(event))
 	if err != nil || len(unread) != 0 {

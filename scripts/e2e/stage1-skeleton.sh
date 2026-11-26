@@ -490,10 +490,12 @@ jq -e '.settings.review_round_cap == 5
 # The configured P0 bound (INFRA-5636, C3): `legion state`'s `P0:` line names 3 as the bound in
 # force and in legion.yaml with none set while the daemon runs, and `legion project set-p0-bound
 # --bound 0` is refused by the daemon with 400 INVALID_P0_BOUND (exiting 1, not a CLI usage exit 2).
-# Stage 1's daemon has no dispatch_url, so it runs no workflow and refuses every live change
-# P0_BOUND_UNAVAILABLE; this step proves the configured bound and the floor of 1 on the real binary.
+# Stage 1's daemon has no dispatch_url, so it runs no workflow and refuses every valid live change
+# P0_BOUND_UNAVAILABLE, and a bound of no whole number from 1 to 2147483647 INVALID_P0_BOUND first;
+# this step proves the configured bound and the floor of 1 on the real binary.
 want_p0_line="P0: 0 of the 0 issues holding a slot are P0 and hold it outside the cap of 4; P0 bound 3 in force, 3 in legion.yaml; none set while the daemon runs"
-p0_line=$("$work/legion" state --port "$port" | grep '^P0: ' || true)
+p0_state=$("$work/legion" state --port "$port") || fail "legion state --port $port exited $?, want 0"
+p0_line=$(grep '^P0: ' <<<"$p0_state" || true)
 [ "$p0_line" = "$want_p0_line" ] ||
   fail "legion state printed P0 line '$p0_line', want '$want_p0_line'"
 p0_rc=0

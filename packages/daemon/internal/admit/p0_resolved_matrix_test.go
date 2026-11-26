@@ -906,12 +906,11 @@ func TestAMissingResolvedPriorityReplacesAKnownOne(t *testing.T) {
 	})
 }
 
-// The defect this matrix found: the boot listing's todo echo of a member a live tree runs, at the
-// record's own sequence, keeps the status and the Dispatch status the record holds, as it always
-// did, and still takes the priorities Dispatch now gives the member, so the first boot after
-// Dispatch resolves priorities reads a member's newly resolved P0 with no edit of its own. The pass
-// of that listing counts the member as a P0 holder, which gives the cap's one slot to the root
-// below P0 that waits.
+// A boot listing's todo echo of a running tree's member, at the record's own sequence, keeps the
+// status and the Dispatch status the record holds, as it always did, and still takes the
+// priorities Dispatch now gives the member, so the first boot after Dispatch resolves priorities
+// reads a member's newly resolved P0 with no edit of its own. The pass of that listing counts the
+// member as a P0 holder, which gives the cap's one slot to the root below P0 that waits.
 func TestAnEqualSequenceTodoEchoOfARunningMemberRefreshesItsPriorityAndKeepsItsStatus(t *testing.T) {
 	const root, member = "LEGION-A", "LEGION-A1"
 	for _, tc := range []struct {

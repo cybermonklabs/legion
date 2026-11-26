@@ -1436,6 +1436,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  P0: 0 of the 3 issues holding a slot are P0 and hold it outside the cap of 4; P0 bound none in force, none in legion.yaml; none set while the daemon runs
   waiting line: 2
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back, and it takes the free slots before the issues at P1 that have not started.
     WIDGETS-15 2 of 2, starting: It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank, and 1 issue at P1 whose work came back stands ahead of all of them.
@@ -1459,7 +1460,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
   ```
 
-  The `admission` line counts the issues that hold a slot, a root or a child, against the cap.
+  The `admission` line counts every issue that holds a slot, a root or a child, beside the cap.
   An issue takes a slot when the daemon starts it and gives it back as the admission rule says
   ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
   A tree of four issues holding a slot holds four of them, and `live trees` counts the trees that

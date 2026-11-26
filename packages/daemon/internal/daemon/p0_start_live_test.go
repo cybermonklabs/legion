@@ -31,6 +31,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -178,11 +179,15 @@ func (r *p0StartLive) handOver(n int, parent string, priority liveDispatchPriori
 	return key
 }
 
-// quoted is GET /legion/v1/state now, with its `admission` member printed under the step as the
-// route served it and one line per root of the run naming the fields the step turns on. Every
-// assertion of this proof reads the value it returns, so what the run prints is the answer the
-// step was judged on.
-func (r *p0StartLive) quoted(what string) api.State {
+// stateAnswer is one answer of GET /legion/v1/state: the state it decodes to, and its `admission`
+// member as the route served it.
+type stateAnswer struct {
+	state     api.State
+	admission json.RawMessage
+}
+
+// fetchState is GET /legion/v1/state now.
+func (r *p0StartLive) fetchState() *stateAnswer {
 	t := r.t
 	t.Helper()
 	status, body := r.d.request(http.MethodGet, "/legion/v1/state", nil, false)
@@ -195,13 +200,19 @@ func (r *p0StartLive) quoted(what string) api.State {
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	var state api.State
-	if err := json.Unmarshal(body, &state); err != nil {
+	answer := &stateAnswer{admission: served.Admission}
+	if err := json.Unmarshal(body, &answer.state); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	r.note("%s: admission %s", what, served.Admission)
+	return answer
+}
+
+// quote prints answer under the step's heading what: its `admission` member as the route served it
+// and one line per root of the run naming the fields the step turns on.
+func (r *p0StartLive) quote(what string, answer *stateAnswer) {
+	r.note("%s: admission %s", what, answer.admission)
 	for _, key := range r.roots {
-		issue, recorded := state.Issues[key]
+		issue, recorded := answer.state.Issues[key]
 		if !recorded {
 			r.note("   issues.%s: the state records no such issue", key)
 			continue
@@ -213,23 +224,38 @@ func (r *p0StartLive) quoted(what string) api.State {
 		r.note("   issues.%s: phase %s, slot %s, priority %s, resolvedPriority %s, priorityFrom %q, waitingLine %s",
 			key, issue.Phase, slotOf(issue), priorityText(issue.Priority), priorityText(issue.ResolvedPriority), issue.PriorityFrom, line)
 	}
-	return state
 }
 
-// waitForState polls GET /legion/v1/state until want holds of it, then prints and returns that
-// answer under the step's heading. A wait that gives up prints the answer it last had, since that
-// is what the step was judged on either way.
+// quoted is GET /legion/v1/state now, printed under the step as quote prints it. Every assertion of
+// this proof reads the value it returns, so what the run prints is the answer the step was judged
+// on.
+func (r *p0StartLive) quoted(what string) api.State {
+	r.t.Helper()
+	answer := r.fetchState()
+	r.quote(what, answer)
+	return answer.state
+}
+
+// waitForState polls GET /legion/v1/state until want holds of an answer, then prints that answer
+// under the step's heading and returns its state: the one answer judged, never a second read. A
+// wait that gives up prints the last answer it judged, since that is what the step was judged on
+// either way.
 func (r *p0StartLive) waitForState(what string, want func(api.State) bool) api.State {
 	r.t.Helper()
+	var judged *stateAnswer
 	held := false
 	defer func() {
-		if !held {
-			r.quoted("the last answer before the wait for " + what + " gave up")
+		if !held && judged != nil {
+			r.quote("the last answer before the wait for "+what+" gave up", judged)
 		}
 	}()
-	testwait.Eventually(r.t, what, func() bool { return want(r.d.state()) })
+	testwait.Eventually(r.t, what, func() bool {
+		judged = r.fetchState()
+		return want(judged.state)
+	})
 	held = true
-	return r.quoted(what)
+	r.quote(what, judged)
+	return judged.state
 }
 
 // holdsSlot says whether the state shows key holding an admission slot: in `admission.active`, with
@@ -259,7 +285,7 @@ func boundText(bound *int) string {
 	if bound == nil {
 		return "none"
 	}
-	return fmt.Sprint(*bound)
+	return strconv.Itoa(*bound)
 }
 
 // requireHolders fails the step unless the state's `admission.active` is want, sorted, and its
@@ -326,11 +352,11 @@ func (r *p0StartLive) requireStarts(keys ...string) {
 	}
 }
 
-// p0BoundReads is step (f) of the plan, made at every reading of the bound: view, the state's
-// `admission.p0Bound` or a change's answer, gives inForce as the bound in force, legion.yaml's
-// bound as the configured one, and the live value that stands where live names one (its bound,
-// who set it and why), set no earlier than since and no later than now. A nil live is no live
-// value: the boot's, and a clear's.
+// p0BoundReads reads every reading of the bound: view, the state's `admission.p0Bound` or a
+// change's answer, gives inForce as the bound in force, legion.yaml's bound as the configured one,
+// and the live value that stands where live names one (its bound, who set it and why), set no
+// earlier than since and no later than now. A nil live is no live value: the boot's, and a
+// clear's.
 func (r *p0StartLive) p0BoundReads(what string, view *api.P0BoundView, inForce *int, live *api.P0BoundLiveView, since time.Time) {
 	t := r.t
 	t.Helper()

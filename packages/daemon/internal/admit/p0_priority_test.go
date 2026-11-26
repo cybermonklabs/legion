@@ -1,15 +1,10 @@
 package admit
 
 import (
-	"context"
-	"encoding/json"
 	"testing"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -105,29 +100,12 @@ func TestTheStateGivesEachPriorityAndTheNumberOfP0Holders(t *testing.T) {
 	for i, priority := range p0Priorities {
 		key := "LEGION-" + string(rune('1'+i))
 		p0Holder(t, pool, key, string(rune('A'+i)), priority)
-		if l := priority.Level(); l != nil {
-			want[key] = float64(*l)
-		} else {
-			want[key] = nil
-		}
+		want[key] = levelOf(priority)
 	}
 	p0Queued(t, pool, "LEGION-9", "Z", record.P0, nil)
-	want["LEGION-9"] = float64(0)
+	want["LEGION-9"] = levelOf(record.P0)
 
-	var body map[string]any
-	inTx(t, pool, func(tx pgx.Tx) {
-		state, err := projection.Project(context.Background(), projection.Inputs{Tx: tx, Store: record.NewStore(), Project: testProject, Now: fixedNow})
-		if err != nil {
-			t.Fatalf("project the state: %v", err)
-		}
-		raw, err := json.Marshal(state)
-		if err != nil {
-			t.Fatalf("write the state: %v", err)
-		}
-		if err := json.Unmarshal(raw, &body); err != nil {
-			t.Fatalf("read the state back: %v", err)
-		}
-	})
+	body := stateBody(t, pool)
 	issues := body["issues"].(map[string]any)
 	for key, priority := range want {
 		view := issues[key].(map[string]any)

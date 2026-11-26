@@ -3,12 +3,9 @@ package admit
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"log/slog"
-	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -55,19 +52,7 @@ func p0Line(t *testing.T, pool *pgxpool.Pool, held, waiting int) []string {
 // p0HoldersNow counts the P0 issues holding a slot.
 func p0HoldersNow(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
-	var held int
-	inTx(t, pool, func(tx pgx.Tx) {
-		issues, err := record.NewStore().LiveIssues(context.Background(), tx, testProject)
-		if err != nil {
-			t.Fatalf("list issues: %v", err)
-		}
-		all, err := record.NewStore().Slots(context.Background(), tx)
-		if err != nil {
-			t.Fatalf("list slots: %v", err)
-		}
-		held = record.HoldersOf(issues, all).P0
-	})
-	return held
+	return holdersNow(t, pool).P0
 }
 
 // With no bound in legion.yaml and none set, every P0 issue that waits only for a slot starts,
@@ -110,16 +95,7 @@ func TestAtTheBoundAP0IssueWaitsFirstInTheLineAndTheRefusalIsLogged(t *testing.T
 	if line := waitingLine(t, pool, testProject, nil); len(line) == 0 || line[0] != waiting[0] {
 		t.Fatalf("the waiting line is %v, want %s first: a P0 issue at the bound waits first in the line", line, waiting[0])
 	}
-	var refusals []map[string]any
-	for line := range strings.Lines(logged.String()) {
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("read the log line %q: %v", line, err)
-		}
-		if entry["msg"] == p0BoundRefusalMessage {
-			refusals = append(refusals, entry)
-		}
-	}
+	refusals := loggedAs(t, &logged, p0BoundRefusalMessage)
 	if len(refusals) != 1 || refusals[0]["issue"] != waiting[0] || refusals[0]["p0_bound"] != float64(2) || refusals[0]["p0_holders"] != float64(2) {
 		t.Fatalf("the refusals logged = %v, want one naming %s, p0_bound 2 and p0_holders 2; the log:\n%s", refusals, waiting[0], logged.String())
 	}
