@@ -671,6 +671,7 @@ with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
     import ci_filter_coverage
     ci_filter_coverage.OPENED = opened
+    ci_filter_coverage.TREE_FILES = sorted(before) if isinstance(before, dict) else None
     if os.environ["CI_FILTERS_MODE"] == "generate":
         import ci_ts_listing
         ci_ts_listing.COMPILER = "tsgo"

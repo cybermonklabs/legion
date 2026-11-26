@@ -941,9 +941,19 @@ def module_trees_and_go_files(files: list) -> list:
 
 
 # ---------------------------------------------------------------- files and filters
+# The files git listed under the repository before the engine was imported (check-ci-filters.sh's
+# first reading of the tree), or None where nothing read them first.
+TREE_FILES: list | None = None
+
+
 def repo_files() -> list:
     """Tracked files and untracked ones git does not ignore, so an uncommitted new file counts
-    and a build output, which no diff ever carries, does not."""
+    and a build output, which no diff ever carries, does not. They are the ones git listed before
+    the engine was imported (TREE_FILES), where check-ci-filters.sh read them: go commands run while
+    the table loads (start_early), and a file one of them wrote, which that run then fails for,
+    would otherwise count among them. Where nothing read them first, git lists them now."""
+    if TREE_FILES is not None:
+        return sorted({f for f in TREE_FILES if f and (REPO / f).is_file()})
     out = []
     for extra in ([], ["--others", "--exclude-standard"]):
         result = subprocess.run(["git", "ls-files", "-z", *extra], cwd=REPO, capture_output=True)

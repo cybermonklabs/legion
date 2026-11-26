@@ -18,7 +18,7 @@
 #
 # This check lists with tsc, the compiler every typecheck job runs, and the changes job's
 # generation lists with tsgo, the native compiler pinned in the root package.json, which it runs
-# for speed (.github/scripts/ci_ts_listing.py#COMPILER). So this check is also the cross-check of
+# for speed (`.github/scripts/ci_ts_listing.py#COMPILER`). So this check is also the cross-check of
 # that compiler: a listed block the generation wrote from tsgo's answer that is not exactly the
 # files tsc lists fails here, on the pull request whose tree makes the two differ, naming the file,
 # as a bump of the pinned tsgo that changes a listing does.
