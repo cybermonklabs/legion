@@ -543,27 +543,33 @@ func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing
 	// on its own, while the package's parallel tests wait for the serial ones to end.
 	rows, drives := drivenRows(t, readWritesNothing)
 	worlds := driveWorldsFor(len(rows))
-	for first := range worlds {
-		t.Run(fmt.Sprintf("world %d of %d", first+1, worlds), func(t *testing.T) {
-			t.Parallel()
-			world := newDriveWorld(t)
-			world.calibrate(t)
-			world.precheck(t)
-			tally := driveTally{writes: map[string]int{}}
-			for at := first; at < len(rows); at += worlds {
-				name := rows[at]
-				t.Run(name, func(t *testing.T) {
-					world.driveRead(t, name, drives[name], &tally)
-				})
-			}
-			writes := make([]string, 0, len(tally.writes))
-			for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
-				writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
-			}
-			t.Logf("drove %d read rows in %d read-only windows holding %d statements; their writes: %s; the rows whose read-only request stored a tree: %v",
-				tally.rows, tally.windows, tally.statements, strings.Join(writes, ", "), tally.treesStored)
-		})
-	}
+	// The worlds run inside one subtest, which ends only once every world has: go test stops a
+	// test's clock when its function returns, before its parallel subtests start, so worlds run
+	// straight under the test would leave its time (go test -json's Elapsed, which CI's legs are
+	// dealt by) near zero.
+	t.Run("worlds", func(t *testing.T) {
+		for first := range worlds {
+			t.Run(fmt.Sprintf("world %d of %d", first+1, worlds), func(t *testing.T) {
+				t.Parallel()
+				world := newDriveWorld(t)
+				world.calibrate(t)
+				world.precheck(t)
+				tally := driveTally{writes: map[string]int{}}
+				for at := first; at < len(rows); at += worlds {
+					name := rows[at]
+					t.Run(name, func(t *testing.T) {
+						world.driveRead(t, name, drives[name], &tally)
+					})
+				}
+				writes := make([]string, 0, len(tally.writes))
+				for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
+					writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
+				}
+				t.Logf("drove %d read rows in %d read-only windows holding %d statements; their writes: %s; the rows whose read-only request stored a tree: %v",
+					tally.rows, tally.windows, tally.statements, strings.Join(writes, ", "), tally.treesStored)
+			})
+		}
+	})
 }
 
 // driveWorldsFor is how many worlds the read drive deals its rows to: one for each test go test
