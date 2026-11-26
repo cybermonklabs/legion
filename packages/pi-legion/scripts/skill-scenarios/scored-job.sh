@@ -14,6 +14,8 @@
 #             (rig.sh label-tree): forms D and E. ctl-d's tree must differ from its commit in the
 #             lines of D's patch alone (rig.sh unpatch-holds), or the Job stops before any run
 #   strict    ctl-d-strict, the tree of controls/owner-walk-D-strict.txt: form D
+# A Job builds the trees and profiles of its cases' labels alone: a Job of form E's cases builds no
+# ctl-d, so it runs at a label checkout where D's patch does not apply.
 # --case <kind>-<form>-<family> runs one case, of a form of the group; without it, every case of
 # the group's forms of the family SKILL_SCENARIOS_FAMILY names (claude or gpt). --count is each
 # case's scored runs, by default its form's runs (owner-walk.ts cases). Each case runs as rig.sh
@@ -27,8 +29,8 @@
 # the batch starts no container, and its Oh My Pi (LEGION_TEST_OMP) as SKILL_SCENARIOS_OMP, each
 # unless the variable of the rig's own is set; the capture of a real plans read at the label
 # checkout (rig.sh plans-capture), whose answer every run's proxy serves, its keys mapped to the
-# run's; each label's tree and profile; each case's batch; then the rows, the reach lines and the
-# cells.
+# run's; each label's tree, a control tree's `bun install --frozen-lockfile`, and its profile; each
+# case's batch; then the rows, the reach lines and the cells.
 #
 # The model: SKILL_SCENARIOS_MODEL=standin runs every turn on the model stand-in (model-standin.ts).
 # Without it, the gateway, on the family's block of a provider file the Job writes: `gateway`
@@ -157,13 +159,27 @@ say "bun install --frozen-lockfile"
 bash "$rig" plans-capture "$checkout" "$SKILL_SCENARIOS_WORK/plans"
 export SKILL_SCENARIOS_PLANS_ANSWER=$SKILL_SCENARIOS_WORK/plans
 
-# Each label: its tree (a control's), and its profile.
+# Each label of the Job's cases, in the group's order: its tree (a control's), and its profile.
+# The profile packs the label's plugins from that tree, and a pack builds through the tree's own
+# node_modules (scripts/e2e/lib/pack-plugin.sh), which a new control tree has none of.
+used=()
 for label in "${labels[@]}"; do
+  for name in "${selected[@]}"; do
+    IFS=- read -r _ form _ <<<"$name"
+    if [ "$(label_of "$form")" = "$label" ]; then
+      used+=("$label")
+      break
+    fi
+  done
+done
+for label in "${used[@]}"; do
   tree=$checkout
   if [ "$label" != head ]; then
     bash "$rig" label-tree "$label" "$commit" "$(manifest_of "$label")"
     tree=$SKILL_SCENARIOS_WORK/label-trees/$label/tree
     [ "$label" != ctl-d ] || bash "$rig" unpatch-holds ctl-d "$here/controls/patches/owner-walk-D.patch"
+    (cd "$tree" && bun install --frozen-lockfile) >>"$SKILL_SCENARIOS_WORK/bun-install.log" 2>&1 ||
+      refuse "bun install --frozen-lockfile in the label tree $label failed; see $SKILL_SCENARIOS_WORK/bun-install.log"
   fi
   bash "$rig" profile "$label" "$tree"
 done

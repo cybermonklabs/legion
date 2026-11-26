@@ -4042,6 +4042,7 @@ batch-scored)
   echo '{"outcome":"rig-error"}' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/row.json"
   echo 'the planted daemon line' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/logs/daemon.log"
   ;;
+label-tree) mkdir -p "$work/label-trees/$2/tree" ;;
 rows) echo 'row {"outcome":"scored","run":"owner-walk-root-B-claude-head-1"}' && echo 'reach owner-walk-root-B-claude-head-1: bash names storage.googleapis.com (session s, message 1)' ;;
 cell) echo "cell owner-walk head root-B-claude: 2 runs, 1 scored, 1 rig errors, count $5; each clause: read 0 of 1; runs passed 0 of 1; verdict fail" ;;
 esac
@@ -4055,28 +4056,23 @@ esac
       path.join(bin, "bun"),
       String.raw`#!/bin/sh
 case "$1 $2" in
-"install --frozen-lockfile") exit 0 ;;
-*"/owner-walk.ts cases") printf 'root-A-claude 3\nroot-B-claude 3\nchild-B-claude 3\n' ;;
+"install --frozen-lockfile") printf 'install %s\n' "$PWD" >>"$SKILL_SCENARIOS_WORK/bun-calls" ;;
+*"/owner-walk.ts cases") printf 'root-A-claude 3\nroot-B-claude 3\nchild-B-claude 3\nroot-D-claude 3\nroot-E-claude 3\n' ;;
 *) echo "the planted bun has no answer to $*" >&2; exit 9 ;;
 esac
 `,
       { mode: 0o755 }
     );
     const work = freshDir("job-work");
-    const run = (env: Record<string, string>) => {
-      const result = childSpawn(
-        [
-          "bash",
-          path.join(here, "scored-job.sh"),
-          "owner-walk",
-          "head",
-          "--case",
-          "root-B-claude",
-          "--count",
-          "1",
-        ],
-        { PATH: `${bin}:${callerPath}`, SKILL_SCENARIOS_WORK: work, ...env }
-      );
+    const run = (
+      env: Record<string, string>,
+      args = ["owner-walk", "head", "--case", "root-B-claude", "--count", "1"]
+    ) => {
+      const result = childSpawn(["bash", path.join(here, "scored-job.sh"), ...args], {
+        PATH: `${bin}:${callerPath}`,
+        SKILL_SCENARIOS_WORK: work,
+        ...env,
+      });
       const read = (file: string) =>
         existsSync(path.join(work, file)) ? readFileSync(path.join(work, file), "utf8") : "";
       return {
@@ -4085,6 +4081,7 @@ esac
         stderr: result.stderr.toString(),
         calls: read("rig-calls"),
         env: read("rig-env"),
+        installs: read("bun-calls"),
       };
     };
     return { repo: realpathSync(repo), work, run };
@@ -4127,6 +4124,59 @@ esac
     expect(lines.at(-1)).toBe(
       "scored-job owner-walk head root-B-claude, label head: 2 runs, 1 scored, 1 rig errors, count 1; each clause: read 0 of 1; runs passed 0 of 1; verdict fail"
     );
+  });
+
+  // Catches: a Job that builds a label its cases do not run on, so a form-E Job stops on ctl-d's
+  // tree wherever D's patch does not apply; and a control tree profiled with no packages installed,
+  // whose plugin pack cannot build. Each control Job builds its own case's label alone.
+  test("scored-job.sh controls --case builds that case's label alone: its tree, its packages and its profile", () => {
+    const standin = { ...pod, SKILL_SCENARIOS_MODEL: "standin" };
+    const builds = (form: string) => {
+      const { repo, work, run } = plantedJob();
+      const job = run(standin, [
+        "owner-walk",
+        "controls",
+        "--case",
+        `root-${form}-claude`,
+        "--count",
+        "1",
+      ]);
+      return {
+        code: job.code,
+        stderr: job.stderr,
+        calls: job.calls
+          .split("\n")
+          .filter((call) => /^(label-tree|unpatch-holds|profile|batch-scored) /.test(call)),
+        installs: job.installs.trim().split("\n"),
+        repo,
+        commit: git(repo, "rev-parse", "HEAD").trim(),
+        controls: path.join(repo, "packages/pi-legion/scripts/skill-scenarios/controls"),
+        trees: path.join(work, "label-trees"),
+      };
+    };
+    const e = builds("E");
+    expect({ code: e.code, stderr: e.stderr, calls: e.calls, installs: e.installs }).toEqual({
+      code: 0,
+      stderr: "",
+      calls: [
+        `label-tree ctl-e ${e.commit} ${e.controls}/owner-walk-E.txt`,
+        `profile ctl-e ${e.trees}/ctl-e/tree`,
+        "batch-scored owner-walk 1 ctl-e",
+      ],
+      installs: [`install ${e.repo}`, `install ${e.trees}/ctl-e/tree`],
+    });
+    const d = builds("D");
+    expect({ code: d.code, stderr: d.stderr, calls: d.calls, installs: d.installs }).toEqual({
+      code: 0,
+      stderr: "",
+      calls: [
+        `label-tree ctl-d ${d.commit} ${d.controls}/owner-walk-D.txt`,
+        `unpatch-holds ctl-d ${d.controls}/patches/owner-walk-D.patch`,
+        `profile ctl-d ${d.trees}/ctl-d/tree`,
+        "batch-scored owner-walk 1 ctl-d",
+      ],
+      installs: [`install ${d.repo}`, `install ${d.trees}/ctl-d/tree`],
+    });
   });
 
   // Catches: a Job with no stand-in that runs on whatever route the pod gives, or with no gateway
