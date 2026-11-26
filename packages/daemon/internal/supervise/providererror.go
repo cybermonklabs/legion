@@ -445,8 +445,9 @@ func (m *Machine) waitsForProviderError(delivery string) bool {
 // hands: that task's agent_start would confirm the task that replaced it, and the turn's end
 // would retire that one unsent, with the outbox row that gave it already recorded as delivered.
 // The relaunch's delivery is held to the same rule by its outstanding prompt, which that
-// acknowledgement records (acked) and which stands until Oh My Pi answers that prompt or the
-// turn it ran is over for the machine (Machine.outstanding).
+// acknowledgement records (acked), or a send the compaction held keeps (keepHeldPrompt), and which
+// stands until Oh My Pi answers that prompt or the turn it ran is over for the machine
+// (Machine.outstanding).
 func (m *Machine) replaceable(p *Delivery) bool {
 	if !p.ConfirmedAt.IsZero() || m.send != nil {
 		return false
