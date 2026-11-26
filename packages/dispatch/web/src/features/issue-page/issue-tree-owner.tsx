@@ -61,5 +61,5 @@ export function useOwnedIssueTree(issue: IssueDetails): IssueTreeView {
   const owned = useContext(IssueTreeOwner);
   if (owned !== undefined && owned.key === issue.key) return owned.tree;
   // biome-ignore lint/correctness/useHookAtTopLevel: whether an owner of this issue's tree stands above is fixed for a mounted reader's life. The page mounts the owner once, with its slots, under the issue's key (`IssueOutlinePage.tsx`), and hands it and every slot the one issue, so a reader cannot move into or out of it, or to another issue under it, without mounting again.
-  return useIssueTree(issue);
+  return useIssueTree(issue, true);
 }

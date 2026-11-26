@@ -6,7 +6,7 @@ import { focusVisibleRing, pageLineBorder, pageQuietText } from "../../../theme/
 import { useContentsChosen } from "../contents-chosen";
 import { producingMessages } from "../contents-entries";
 import { ContentsList } from "../IssueContents";
-import { briefCounts, IssueThreeThings } from "../IssueThreeThings";
+import { IssueThreeThings, useDeferredBriefCounts } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { useIssueNames } from "../one-line";
@@ -46,16 +46,13 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug ?? "";
   const address = issueAddress(route, search, hash, specSlug);
-  const { namesHeld, readsHeld, root } = useOutlineReads(issue);
+  const { namesHeld, readsHeld, root, warm } = useOutlineReads(issue);
   // The sentences are drawn from the summary node's reading (`TreeNode.tree`), which the tree
   // read carries with the spec's blocks, so until it answers "In short" draws its heading and the
   // labels of its two rows, with nothing under them. The rows count over the same tree and the
   // same words filter as the view row does, once it may be counted (`briefCounts`).
   const memo = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
-  const counts = useMemo(
-    () => briefCounts({ namesHeld, readsHeld, root }, address.filter),
-    [address.filter, namesHeld, readsHeld, root]
-  );
+  const counts = useDeferredBriefCounts({ namesHeld, readsHeld, root, warm }, address.filter);
   const view = useMemo(
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
     [address.filter, memo, root]

@@ -1,5 +1,5 @@
 import { type QueryObserverResult, useQueries, useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 
 import {
   issueAskThreadsQuery,
@@ -87,6 +87,8 @@ export interface OutlineReads {
    *  line that nothing holds a words filter's words waits on (`slots/body.tsx`), as it waits on
    *  the reads the tree is built from (`readsHeld`). */
   readonly namesHeld: boolean;
+  /** The opening filter's answer still needs to be built before the filter can draw. */
+  readonly openingViewPending: boolean;
   /** Whether every read that can place a row of the tree, or say which row the page's first
    *  focus goes to, has answered, with its data or with its failure: the tree read
    *  (`TreeRead.pending`), the decisions, the asks and the comments, each of which can draw a
@@ -130,6 +132,10 @@ export interface OutlineReads {
   readonly refused: readonly RefusedLine[];
   /** The whole tree (`useIssueTree`). */
   readonly root: TreeNode;
+  /** The outline is still being read or built. Its current root cannot yet decide absence. */
+  readonly treePending: boolean;
+  /** Whether this reader is a standalone slot that mounted on an already-cached tree answer. */
+  readonly warm: boolean;
 }
 
 /** A line as a view tells the stage by it (`OutlineReads.refused`): its key, and whether rows come
@@ -288,12 +294,15 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   const {
     blocksHeld,
     blocksOf,
+    building,
     failed: treeFailed,
     namesFailure,
     namesHeld,
+    openingViewPending,
     pending,
     published,
     root,
+    warm,
   } = useOwnedIssueTree(issue);
   const key = issue.key;
   const six = sixReads(key);
@@ -332,9 +341,13 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   // reader, so the first drawing of the rows waits on it (`placesSettled`).
   const viewerOut = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).isPending;
   const names = useNamesLine(namesFailure);
+  // Keep a failed line or empty coverage slot until the model built from its answer draws.
+  const rowReads = useRef(own);
+  if (!building) rowReads.current = own;
+  const rowFailures = rowReads.current.failed;
   const failed = useMemo(
-    () => (own.failed.length + names.length === 0 ? NO_FAILED_READS : [...own.failed, ...names]),
-    [names, own.failed]
+    () => (rowFailures.length + names.length === 0 ? NO_FAILED_READS : [...rowFailures, ...names]),
+    [names, rowFailures]
   );
   // The tree read's line while the read stands refused, which `TreeReadFailed` draws over the
   // outline: rows come from it (`OutlineReads.refused`).
@@ -345,16 +358,19 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   );
   return {
     blocksOf,
-    coverageOut: own.coverageOut,
+    coverageOut: rowReads.current.coverageOut,
     failed,
     names,
     namesHeld,
+    openingViewPending,
     placesSettled: own.placed && !pending && !viewerOut,
     published,
     reads: own.reads,
-    readsHeld: own.reads.held && blocksHeld,
-    readsSettled: own.settled && !pending,
+    readsHeld: own.reads.held && blocksHeld && !openingViewPending,
+    readsSettled: own.settled && !pending && !openingViewPending,
     refused,
     root,
+    treePending: pending,
+    warm,
   };
 }

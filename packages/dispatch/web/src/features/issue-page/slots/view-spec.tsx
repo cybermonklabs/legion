@@ -7,7 +7,7 @@ import { whoAmIQuery } from "../../../api/queries";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { useOutlineEditing } from "../IssuePresetPanels";
-import { briefCounts } from "../IssueThreeThings";
+import { useDeferredBriefCounts } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { blocksKey, type ReadKey, useOutlineReads } from "../outline-reads";
@@ -44,14 +44,11 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   // render that draws them, so a reference the page asks for is read once and not again by a
   // row. The body lands on the node the address names only once every read the tree's rows
   // come from has settled (`readsSettled`), for the one reason `SpecFilterBody` gives.
-  const { names, namesHeld, published, readsHeld, readsSettled, refused, root } =
+  const { names, namesHeld, published, readsHeld, readsSettled, refused, root, warm } =
     useOutlineReads(issue);
   // What the first group's two rows count, over the whole tree and under the same words filter as
   // the view row's signals, once the tree may be counted (`briefCounts`).
-  const counts = useMemo(
-    () => briefCounts({ namesHeld, readsHeld, root }, address.filter),
-    [address.filter, namesHeld, readsHeld, root]
-  );
+  const counts = useDeferredBriefCounts({ namesHeld, readsHeld, root, warm }, address.filter);
   // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads
   // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
   // `staleTime` the view opened later would ask for it again.

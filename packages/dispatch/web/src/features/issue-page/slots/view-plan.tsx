@@ -47,6 +47,7 @@ export function ViewPlanSlot({
   const {
     blocksOf,
     names,
+    openingViewPending,
     published,
     readsSettled: outlineSettled,
     refused: refusedLines,
@@ -188,7 +189,7 @@ export function ViewPlanSlot({
           onEditing={onEditing}
           plan={plan}
           published={published}
-          reads={reads}
+          reads={openingViewPending && reads.state === "answered" ? { state: "waiting" } : reads}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}
           root={view.root}

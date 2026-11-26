@@ -588,9 +588,9 @@ export function treeWordsOf(reads: IssueTreeReads): TreeWords {
  * issue's node says so (`TreeNode.moreToRead`), so each count over the tree carries "+".
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
-  const words = treeWordsOf(reads);
   const tree = reads.tree;
-  if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
+  if (tree === undefined) return issueRoot(reads.issue, []);
+  const words = treeWordsOf(reads);
   const drafts = treeDraftsFrom(tree, reads, words);
   addDecisions(drafts, reads, words, () => askNodeIds(drafts, tree, reads));
   const root = assemble(reads.issue, [...drafts.values()], words.chipOf);
@@ -755,7 +755,11 @@ export function assemble(
       waiting: draft.waiting,
     };
   };
-  const children = childrenOf(key, [key]);
+  return issueRoot(issue, childrenOf(key, [key]));
+}
+
+/** The issue's node before any rows arrive, or with the built list of its children. */
+export function issueRoot(issue: IssueDetails, children: readonly TreeNode[]): TreeNode {
   return {
     alsoUnder: [],
     at: issue.created_at,
@@ -765,7 +769,7 @@ export function assemble(
     facts: [],
     gaps: [],
     held: heldBy(children),
-    id: key,
+    id: issue.key,
     question: false,
     replaced: false,
     // How Dispatch names an issue everywhere: its key and then its title, which the node holds

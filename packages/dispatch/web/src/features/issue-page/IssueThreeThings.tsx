@@ -10,6 +10,7 @@ import {
   pageStateText,
 } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
+import { useCountsAfterDrawing } from "./counts-after-drawing";
 import { drawnLine, firstLineOf, firstSentenceLength, LEADING_LABEL } from "./first-line";
 import { presetPath } from "./issue-address";
 import { isCheck, type TreeNode } from "./issue-tree";
@@ -106,6 +107,31 @@ export function briefCounts(
           },
     plan: plan.count === 0 && !filtered ? undefined : plan,
   };
+}
+
+/**
+ * `briefCounts` computed in a task of its own after the first drawing (`askForTask`), rather than
+ * synchronously inside the render that draws the first screen: `briefCounts` walks the
+ * Verification and Plan views (and builds any held view tree they read), which otherwise ran
+ * beside the first screen's rows (R1). Each "In short" row already holds its counts' line height
+ * from the first drawing (`BriefRow`), so the counts arriving a task later move nothing.
+ */
+export function useDeferredBriefCounts(
+  reads: {
+    readonly namesHeld: boolean;
+    readonly readsHeld: boolean;
+    readonly root: TreeNode;
+    readonly warm?: boolean;
+  },
+  query: string
+): BriefCounts | undefined {
+  const { namesHeld, readsHeld, root, warm } = reads;
+  const ready = readsHeld && (!queryTyped(query) || namesHeld);
+  const count = useMemo(
+    () => (ready ? () => briefCounts({ namesHeld, readsHeld, root }, query) : undefined),
+    [namesHeld, query, readsHeld, ready, root]
+  );
+  return useCountsAfterDrawing(root, count, warm);
 }
 
 /**

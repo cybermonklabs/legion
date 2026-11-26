@@ -495,7 +495,7 @@ function isTaskScheduler(value: unknown): value is TaskScheduler {
 
 /** Asks for `run` as a task of its own: of `scheduler.postTask` where the browser has it, else of
  *  `setTimeout(0)`. Answers how to call it off. */
-function askForTask(run: () => void): () => void {
+export function askForTask(run: () => void): () => void {
   const scheduler: unknown = Reflect.get(globalThis, "scheduler");
   if (isTaskScheduler(scheduler)) {
     const calledOff = new AbortController();

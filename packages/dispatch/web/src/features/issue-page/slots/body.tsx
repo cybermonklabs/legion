@@ -91,6 +91,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
     readsHeld,
     readsSettled,
     root,
+    treePending,
   } = useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
@@ -110,6 +111,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // outline's last row reads it again - the landing waits on it still, so the address keeps its
   // node and its zoom, while the outline takes its first focus as the reads settle.
   const unloaded =
+    !treePending &&
     address.document === undefined &&
     ((address.target !== undefined && addressed.reveal === undefined) ||
       (address.zoom !== undefined && zoomed === undefined));

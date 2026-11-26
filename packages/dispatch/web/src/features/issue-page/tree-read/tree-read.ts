@@ -522,6 +522,9 @@ export interface TreeBlocksRead {
 
 /** The tree read, and how far it has got. */
 export interface TreeRead {
+  /** The cache key of the outline answer. Tree construction watches this answer separately
+   *  from its React observers, so it can be scheduled directly when a read changes. */
+  readonly queryKey: QueryKey;
   /** The pages read merged: the first, from the load on, and each next page the reader's press
    *  or an address read since (`readNextTreePage`). */
   readonly answer: TreeAnswer | undefined;
@@ -551,6 +554,8 @@ export interface TreeRead {
    *  A refetch that fails over a held answer is no such failure, since the page still draws what
    *  it holds. */
   readonly failed: boolean;
+  /** The filter whose view answer supplies the active role's blocks. */
+  readonly filter: TreeFilter | undefined;
   /** Whether the read holds no answer and has not settled since its last read began: its first
    *  read is out, or a read asked again after a refusal is, while `failed` holds too. It is what
    *  holds back a read that waits on every other read of the page, as the batched name read does
@@ -588,6 +593,10 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     refetch,
   } = read;
   const sent = choice.outline !== undefined && (choice.sends || fetchStatus !== "idle");
+  const queryKey = useMemo(
+    () => outlineKey(choice.outline ?? "conversation", issue.key),
+    [choice.outline, issue.key]
+  );
   const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
   const viewAnswer = filter === undefined ? undefined : view.data;
   const blocks = useMemo(
@@ -619,10 +628,12 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
       blocksRead: isSuccess,
       blocksOf,
       failed: answer === undefined && errorUpdateCount > 0,
+      filter,
       pending: sent && isPending,
+      queryKey,
       refetch,
     }),
-    [answer, blocksOf, errorUpdateCount, isPending, isSuccess, refetch, sent]
+    [answer, blocksOf, errorUpdateCount, filter, isPending, isSuccess, queryKey, refetch, sent]
   );
 }
 

@@ -15,7 +15,7 @@ import {
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { useDialog, useMediaQuery } from "../shell/useDialog";
 import { ContentsChosen } from "./contents-chosen";
-import { briefCounts, IssueThreeThings } from "./IssueThreeThings";
+import { IssueThreeThings, useDeferredBriefCounts } from "./IssueThreeThings";
 import { issueAddress, presetOf } from "./issue-address";
 import { useIssueNames } from "./one-line";
 import { useOutlineReads } from "./outline-reads";
@@ -193,12 +193,9 @@ function ThreeThingsOf({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug ?? "";
   const { filter } = issueAddress(route, search, hash, specSlug);
-  const { namesHeld, readsHeld, root } = useOutlineReads(issue);
+  const { namesHeld, readsHeld, root, warm } = useOutlineReads(issue);
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
-  const counts = useMemo(
-    () => briefCounts({ namesHeld, readsHeld, root }, filter),
-    [filter, namesHeld, readsHeld, root]
-  );
+  const counts = useDeferredBriefCounts({ namesHeld, readsHeld, root, warm }, filter);
   const lineNames = useIssueNames(issue.key);
   return (
     <IssueThreeThings
