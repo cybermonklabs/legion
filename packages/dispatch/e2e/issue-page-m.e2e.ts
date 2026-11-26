@@ -137,8 +137,9 @@ import { withIssuePage } from "./issue-page-option";
 import { viewportAt } from "./issue-page-p";
 import { tabWalk } from "./issue-page-v";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
-import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
+import { navigateInApp } from "./sends";
 import {
   type Browser,
   type BrowserContext,
@@ -3549,7 +3550,7 @@ test("a pin's link to an agents' turn lands the outline on its nearest drawn anc
 // with a copy of a large real issue whose Blocked by names five issues: `t o` and three loads of
 // `/collaborators` each left the focused Collaborators control at 1,135 px, under Details' view
 // (53 to 900 px) at 1440 px, once the five titles landed and the row grew from 181 px to 481 px.
-// Here the titles' read is held back 1.5 s, as a slow answer is, so it lands after the focus.
+// Here the titles' read is held back until the focus has landed, as a slow answer is, so it lands after the focus.
 test("t o and a load of /collaborators keep the focused Collaborators control in Details' view when a row above it grows", async ({
   browser,
 }) => {
@@ -3568,11 +3569,12 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
   }
   await patchIssue(issue.key, { blocked_by: blockers });
   const context = await reader(browser, "alice");
+  let titles = Promise.withResolvers<void>();
   try {
     const page = await context.newPage();
     await page.setViewportSize(DESKTOP);
     await page.route("**/api/v1/reference-targets?**", async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await titles.promise;
       await route.continue();
     });
     const collaborators = marginShell(page)
@@ -3583,6 +3585,7 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
     const focusedPlace = async (how: string) => {
       await expect(collaborators, `${how} did not focus the Collaborators control`).toBeFocused();
       const before = (await blockedBy.boundingBox())?.height ?? 0;
+      titles.resolve();
       await expect(blockedBy, "the blockers' titles never landed").toContainText("Blocker 4:");
       // Half a second for whatever the page does about the taller row to finish: a landing that
       // scrolls again, or a keeper that puts the control back, has done so well within it.
@@ -3631,9 +3634,11 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
     await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/collaborators$`));
     await focusedPlace("t o");
 
+    titles = Promise.withResolvers<void>();
     await gotoIssue(page, `/issues/${issue.key}/collaborators`);
     await focusedPlace("a load of /collaborators");
   } finally {
+    titles.resolve();
     await context.close();
   }
 });
