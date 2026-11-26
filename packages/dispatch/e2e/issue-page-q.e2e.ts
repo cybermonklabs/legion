@@ -143,7 +143,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     // The foot's order is no rule of the view's, so its rows are read as a set.
     const squeezed = (text: string) => text.replace(/\s+/gu, "");
     const headings = {
-      agents: squeezed(`4 ${DECISIONS_WORDS.agents_many}`),
+      agents: squeezed(`3 ${DECISIONS_WORDS.agents_many}`),
       open_questions: squeezed(`${DECISIONS_WORDS.parts.open_questions} 1`),
       review: squeezed(`${DECISIONS_WORDS.parts.review} 2`),
       yours: squeezed(`${DECISIONS_WORDS.parts.yours} 4`),
@@ -172,10 +172,10 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
           rows: [D(4), seeded.declinedAskId, seeded.optionedAskId, answered],
         },
         {
-          count: "4",
+          count: "3",
           heading: headings.agents,
           part: "agents",
-          rows: [D(1), D(2), D(3), D(6)].sort(),
+          rows: [D(2), D(3), D(6)].sort(),
         },
       ]);
       await expectIssuePageDrawn(page);
@@ -251,11 +251,11 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       );
 
       // The person's decision owns the three ties. The agent's decision that settles it
-      // has one row in the foot and no shaping links of its own.
+      // restates the person's answer (INFRA-1196's decision 513): it draws no row, in the foot
+      // or anywhere in the view.
       expect(await nodeRow(page, answered).count()).toBe(1);
-      expect(await decisionsPartRows(page, "agents")).toContain(D(1));
-      expect(await nodeRow(page, D(1)).count(), `the settling decision's rows ${at}`).toBe(1);
-      await expect(nodeRow(page, D(1)).locator("[data-decision-statement] a")).toHaveCount(0);
+      expect(await decisionsPartRows(page, "agents")).not.toContain(D(1));
+      expect(await nodeRow(page, D(1)).count(), `the settling decision's rows ${at}`).toBe(0);
       await expect(nodeRow(page, answered).locator("[data-decision-statement] a")).toHaveCount(3);
       await expect(nodeRow(page, D(0)).locator("[data-decision-statement] a")).toHaveCount(2);
 
@@ -275,8 +275,8 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
 
     // The same three words wherever a decision is drawn: with no filter on too. The tree is
     // drawn with the issue alone and the decisions and the asks arrive after it, so the facts are
-    // read again until the reads are in. Where the decision that settles the person's answer
-    // stands is the owed row's below.
+    // read again until the reads are in. That the decision that settles the person's answer draws
+    // no row there either is the owed row's below.
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
@@ -304,9 +304,13 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
 
 // c-decisions' decision under the question it settles, with no filter on: the model stores
 // the decision under that question, and the page invents no parent, so the row is guarded by
-// `decisionUnderAskGate` on a base whose tree read answers no such parent.
-// SLOW(>=2s): a seeded issue loaded once with its branches unfolded.
-test("the Decisions filter draws its four parts and quotes the person's answer, and with no filter on a decision stands under the question it settles", async ({
+// `decisionUnderAskGate` on a base whose tree read answers no such parent. A person answered
+// that question, and the decision's `from_ask` names it, so the decision restates the person's
+// answer, whose decision is the question itself (INFRA-1196's decision 513): the page draws no
+// row for it, and an address naming its block lands on the question's row, focused (root R20).
+// SLOW(>=2s): a seeded issue loaded once with its branches unfolded, then loaded again at the
+// decision's address.
+test("the Decisions filter draws its four parts and quotes the person's answer, and with no filter on a decision that restates the answer to the question it settles draws no row and its address lands on that question", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -326,14 +330,17 @@ test("the Decisions filter draws its four parts and quotes the person's answer, 
         seeded.answeredAskId
       )
     );
+    await unfoldEveryBranch(page);
+    await expect(
+      nodeRow(page, blockNodeId(specSlug, decision)),
+      "with no filter on, the decision that restates the person's answer draws a row"
+    ).toHaveCount(0);
+    await gotoIssue(page, `/issues/${seeded.key}#b-${decision}`);
+    await expectOpeningLanded(page);
     await expect
-      .poll(
-        async () => {
-          await unfoldEveryBranch(page);
-          return parentOfRow(page, blockNodeId(specSlug, decision));
-        },
-        { message: "with no filter on, the decision that answers the ask is not drawn under it" }
-      )
+      .poll(() => focusedNodeId(page), {
+        message: "the decision's address does not land on the ask it answers",
+      })
       .toBe(blockNodeId(specSlug, ANSWERED_QUESTION_BLOCK_ID));
   });
 });
