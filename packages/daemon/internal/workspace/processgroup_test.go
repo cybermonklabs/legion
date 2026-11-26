@@ -44,11 +44,12 @@ func trustHangingServerCA(t *testing.T, server *httptest.Server) {
 	t.Setenv("GIT_SSL_CAINFO", caFile)
 }
 
-// shortTimeoutRunner retargets the fetch's clone at a local server and cuts Fetch's real
-// FetchTimeout (30 minutes, never practical to wait out) down to timeout, so the test proves
+// shortTimeoutRunner retargets the cache's first fill's fetch at a local server and cuts Fetch's
+// real FetchTimeout (30 minutes, never practical to wait out) down to timeout, so the test proves
 // execRunner.Run's own process-group kill without waiting real minutes: the production Fetch
 // through NewRunner, against a local TLS server that accepts a connection and never answers, with
-// the timeout cut to a few seconds.
+// the timeout cut to a few seconds. The fill's read of GitHub's HEAD before it reaches the local
+// remote as run has it.
 type shortTimeoutRunner struct {
 	remote  string
 	timeout time.Duration
@@ -58,7 +59,7 @@ type shortTimeoutRunner struct {
 func (r *shortTimeoutRunner) Timeout() time.Duration { return r.run.Timeout() }
 
 func (r *shortTimeoutRunner) Run(ctx context.Context, command Command) (Result, error) {
-	if command.Argv[0] == "git" && slices.Contains(command.Argv, "clone") && slices.Contains(command.Argv, "https://github.com/acme/widgets") {
+	if command.Argv[0] == "git" && slices.Contains(command.Argv, "fetch") && slices.Contains(command.Argv, "https://github.com/acme/widgets") {
 		rewritten := append([]string(nil), command.Argv...)
 		for i, arg := range rewritten {
 			if arg == "https://github.com/acme/widgets" {
@@ -75,7 +76,7 @@ func (r *shortTimeoutRunner) Run(ctx context.Context, command Command) (Result, 
 // the git process exec.CommandContext starts directly: killing only that direct child when the
 // deadline fires leaves the helper, now reparented, holding the pipe open, and Wait (so Run, so
 // Fetch) never returns. Against a server that accepts the connection and never answers, with the
-// clone's timeout cut to 3 s, Fetch must still return within a few seconds of that deadline, with
+// fetch's timeout cut to 3 s, Fetch must still return within a few seconds of that deadline, with
 // an error naming the timeout, and no git process of this test still running.
 func TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires(t *testing.T) {
 	run := newLocalRunner(t)
@@ -85,7 +86,7 @@ func TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires(t *testing.T) {
 	timeout := 3 * time.Second
 
 	start := time.Now()
-	_, err := Fetch(context.Background(), &shortTimeoutRunner{remote: server.URL + "/widgets.git", timeout: timeout, run: run}, req)
+	err := Fetch(context.Background(), &shortTimeoutRunner{remote: server.URL + "/widgets.git", timeout: timeout, run: run}, req)
 	elapsed := time.Since(start)
 
 	if err == nil {

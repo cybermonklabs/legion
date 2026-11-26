@@ -169,11 +169,12 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 
 // `cache` exits 1 for every failure, a failure from GitHub too: the fetch's exit 3 for a cause
 // outside an issue's volume (workspace.InitExitOutsideVolume) is an issue pod's alone. Here GitHub
-// answers the cache's first clone with a 403, and the cache, with no clone to serve, ends.
+// answers the fetch of the cache's first fill with a 403, and the cache, with no clone to serve,
+// ends.
 func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	attempts := v.failClones(t, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
+	attempts := v.failFetches(t, 128, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
 	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
 	v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -192,16 +193,15 @@ func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) 
 	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
 		t.Fatalf("cache did not end after GitHub refused its first clone, before the test binary's deadline: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
-	if got := cloneAttempts(t, attempts); got != 1 {
-		t.Fatalf("git cloned %d times, want 1", got)
+	if got := fetchAttempts(t, attempts); got != 1 {
+		t.Fatalf("git fetched %d times, want 1", got)
 	}
 }
 
-// `cache` serves the repository's cache until its context ends: it says where it listens, clones
-// the repository onto its root with the provisioning token handed to git as a one-shot credential
-// under its TMPDIR, answers /healthz ready at the remote's head to a request carrying no token,
-// holds no token on the volume, and
-// exits 0 once stopped.
+// `cache` serves the repository's cache until its context ends: it says where it listens, fills
+// its clone of the repository onto its root with the provisioning token handed to git as a one-shot
+// credential under its TMPDIR, answers /healthz ready at the remote's head to a request carrying no
+// token, holds no token on the volume, and exits 0 once stopped.
 func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
@@ -257,13 +257,16 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	if main := v.git(t, "--git-dir="+filepath.Join(v.root, "acme", "widgets.git"), "log", "-1", "--format=%s", "refs/heads/main"); main != "seed" {
 		t.Fatalf("the cache's main is %q, want the remote's", main)
 	}
-	credential, err := os.ReadFile(v.credentialLog)
-	if err != nil {
-		t.Fatalf("the clone recorded no credential: %v", err)
+	// The first fill reads GitHub's HEAD and then fetches its branch, each with the credential; a
+	// refresh the cache began since does the same.
+	credential := logLines(t, v.credentialLog)
+	if len(credential) < 2 {
+		t.Fatalf("GitHub was reached with %q, want at least the first fill's read of GitHub's HEAD and its fetch", credential)
 	}
-	tokenFile, held, _ := strings.Cut(strings.TrimSpace(string(credential)), " ")
-	if held != "ghs_test" || !strings.HasPrefix(tokenFile, v.tmp+string(filepath.Separator)) {
-		t.Fatalf("the clone was handed %s holding %q, want the provisioning token under TMPDIR %s", tokenFile, held, v.tmp)
+	for _, line := range credential {
+		if tokenFile, held, _ := strings.Cut(line, " "); held != "ghs_test" || !strings.HasPrefix(tokenFile, v.tmp+string(filepath.Separator)) {
+			t.Fatalf("the first fill was handed %s holding %q, want the provisioning token under TMPDIR %s", tokenFile, held, v.tmp)
+		}
 	}
 	holdsNoToken(t, v.root, "while the cache serves")
 

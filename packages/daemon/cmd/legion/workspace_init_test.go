@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -58,37 +59,32 @@ fi
 PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 `
 
-// fakeGit maps GitHub to the fixture remote while recording the one-shot provisioning credential.
-// A fetch from GitHub first sleeps WINIT_FETCH_SLEEP seconds when that is set.
+// fakeGit maps GitHub to the fixture remote while recording the one-shot provisioning credential:
+// a fetch from github.com/acme/widgets into a repository — an issue pod's fill's, or the repository
+// cache's first fill's and refresh's — and a read of its HEAD (`ls-remote --symref`) each reach the
+// local bare remote instead, whose file transport joins the https the runner allows, after
+// appending the token file's path and what it held to WINIT_CREDENTIAL_LOG. A fetch first sleeps
+// WINIT_FETCH_SLEEP seconds when that is set. With WINIT_FETCH_FAILURES set (failFetches), a fetch
+// then counts itself in that directory's `attempts`, and an attempt whose number names a file there
+// fails as git does: it writes the file to stderr with @TOKEN@ replaced by the token it was handed,
+// and exits with the status the directory's `status` file holds. Every other invocation is the real
+// git's.
 const fakeGit = `#!/bin/sh
 while [ "$1" = "-c" ]; do
 	shift 2
 done
-if [ "$1" = clone ]; then
-	for arg in "$@"; do
-		if [ "$arg" = https://github.com/acme/widgets ]; then github=1; fi
-		destination=$arg
-	done
-	if [ -n "$github" ]; then
-		printf '%s %s\n' "$LEGION_PROVISIONING_TOKEN_FILE" "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")" >> "$WINIT_CREDENTIAL_LOG"
-		if [ -n "$WINIT_CLONE_FAILURES" ]; then
-			attempt=$(( $(cat "$WINIT_CLONE_FAILURES/attempts" 2>/dev/null || echo 0) + 1 ))
-			echo "$attempt" > "$WINIT_CLONE_FAILURES/attempts"
-			if [ -f "$WINIT_CLONE_FAILURES/$attempt" ]; then
-				mkdir -p "$destination" && echo partial > "$destination/partial"
-				sed "s/@TOKEN@/$(cat "$LEGION_PROVISIONING_TOKEN_FILE")/g" "$WINIT_CLONE_FAILURES/$attempt" >&2
-				exit 128
-			fi
-		fi
-		while [ "$1" != https://github.com/acme/widgets ]; do shift; done
-		shift
-		GIT_ALLOW_PROTOCOL="$GIT_ALLOW_PROTOCOL:file" exec "$WINIT_REAL_GIT" clone --bare --single-branch --no-tags --quiet "$WINIT_REMOTE" "$@"
-	fi
-fi
 if [ "$2" = fetch ]; then
 	printf '%s %s\n' "$LEGION_PROVISIONING_TOKEN_FILE" "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")" >> "$WINIT_CREDENTIAL_LOG"
 	if [ -n "$WINIT_FETCH_SLEEP" ]; then
 		sleep "$WINIT_FETCH_SLEEP"
+	fi
+	if [ -n "$WINIT_FETCH_FAILURES" ]; then
+		attempt=$(( $(cat "$WINIT_FETCH_FAILURES/attempts" 2>/dev/null || echo 0) + 1 ))
+		echo "$attempt" > "$WINIT_FETCH_FAILURES/attempts"
+		if [ -f "$WINIT_FETCH_FAILURES/$attempt" ]; then
+			sed "s/@TOKEN@/$(cat "$LEGION_PROVISIONING_TOKEN_FILE")/g" "$WINIT_FETCH_FAILURES/$attempt" >&2
+			exit "$(cat "$WINIT_FETCH_FAILURES/status")"
+		fi
 	fi
 	first="$1"
 	shift 2
@@ -175,7 +171,7 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_REMOTE":         filepath.Join(dir, "no-remote.git"),
 		"WINIT_JJ_LOG":         v.jjLog,
 		"WINIT_CREDENTIAL_LOG": v.credentialLog,
-		"WINIT_CLONE_FAILURES": "",
+		"WINIT_FETCH_FAILURES": "",
 		"WINIT_FETCH_SLEEP":    "",
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
@@ -187,23 +183,31 @@ func newIssueVolume(t *testing.T) *issueVolume {
 	return v
 }
 
-func (v *issueVolume) failClones(t *testing.T, stderr ...string) string {
+// failFetches has the volume's git fail its first fetches from github.com/acme/widgets, one per
+// entry of stderr, in order, each exiting status (fakeGit), and returns the file that counts every
+// fetch attempt.
+func (v *issueVolume) failFetches(t *testing.T, status int, stderr ...string) string {
 	t.Helper()
 	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "status"), []byte(strconv.Itoa(status)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for attempt, text := range stderr {
 		if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(attempt+1)), []byte(text), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	v.env["WINIT_CLONE_FAILURES"] = dir
+	v.env["WINIT_FETCH_FAILURES"] = dir
 	return filepath.Join(dir, "attempts")
 }
 
-func cloneAttempts(t *testing.T, attempts string) int {
+// fetchAttempts is how many fetches from github.com/acme/widgets the volume's git counted in
+// attempts, the file failFetches returned.
+func fetchAttempts(t *testing.T, attempts string) int {
 	t.Helper()
 	body, err := os.ReadFile(attempts)
 	if err != nil {
-		t.Fatalf("git ran no clone: %v", err)
+		t.Fatalf("git ran no fetch from GitHub: %v", err)
 	}
 	count, err := strconv.Atoi(strings.TrimSpace(string(body)))
 	if err != nil {
@@ -226,15 +230,31 @@ func printedBytes(t *testing.T, value string) int64 {
 
 // narrowedCacheTarServer serves the default-branch-only tar a current repository cache publishes.
 func (v *issueVolume) narrowedCacheTarServer(t *testing.T) (string, int) {
-	return v.narrowedCacheTarServerAfterFirstHealth(t, nil)
+	return v.cacheTarServer(t, cacheFault{})
 }
 
-func (v *issueVolume) narrowedCacheTarServerAfterFirstHealth(t *testing.T, after func()) (string, int) {
+// cacheFault is what a test's repository cache does wrong, nothing when it is zero.
+// afterFirstHealth runs as the first /healthz is asked, which answers ready without
+// defaultBranchOnly, as an earlier release's cache does. notReady answers every /healthz 503, as a
+// cache with no clone yet does. damagedPack flips one byte in the middle of the tar's pack, so the
+// pack fails its checksum. fullPack puts a symbolic link to /dev/full at the path of the tar's pack
+// in the git directory of the clone provision is filling, once the /tar request's token is checked
+// and before the tar streams: the open of the pack follows the link, so the write of the pack to
+// the volume fails inside its copy.
+type cacheFault struct {
+	afterFirstHealth                func()
+	notReady, damagedPack, fullPack bool
+}
+
+// cacheTarServer serves, as the repository cache's GET /healthz and GET /tar, a ready cache of the
+// volume's remote's default branch, with fault, and returns its address and the tar's length.
+func (v *issueVolume) cacheTarServer(t *testing.T, fault cacheFault) (string, int) {
 	t.Helper()
 	cache := filepath.Join(t.TempDir(), "widgets.git")
 	if output, err := v.runner(t).Try(filepath.Dir(cache), v.env["WINIT_REAL_GIT"], "clone", "--bare", "--single-branch", "--no-tags", "--quiet", "--no-local", v.env["WINIT_REMOTE"], cache); err != nil {
 		t.Fatalf("clone cache: %v\n%s", err, output)
 	}
+	pack := ""
 	var stream bytes.Buffer
 	archive := tar.NewWriter(&stream)
 	err := filepath.WalkDir(cache, func(path string, entry os.DirEntry, err error) error {
@@ -269,6 +289,12 @@ func (v *issueVolume) narrowedCacheTarServerAfterFirstHealth(t *testing.T, after
 		if err != nil {
 			return err
 		}
+		if strings.HasSuffix(name, ".pack") {
+			pack = name
+			if fault.damagedPack {
+				body[len(body)/2] ^= 0xff
+			}
+		}
 		if err := archive.WriteHeader(header); err != nil {
 			return err
 		}
@@ -281,15 +307,22 @@ func (v *issueVolume) narrowedCacheTarServerAfterFirstHealth(t *testing.T, after
 	if err != nil {
 		t.Fatal(err)
 	}
+	if pack == "" {
+		t.Fatalf("the cache %s holds no pack", cache)
+	}
 	body := stream.Bytes()
 	waited := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(workspace.CacheRepositoryHeader, winitRepo)
 		switch r.URL.Path {
 		case "/healthz":
-			if !waited && after != nil {
+			if fault.notReady {
+				http.Error(w, "the repository cache holds no clone yet", http.StatusServiceUnavailable)
+				return
+			}
+			if !waited && fault.afterFirstHealth != nil {
 				waited = true
-				after()
+				fault.afterFirstHealth()
 				_, _ = w.Write([]byte(`{"ready":true}`))
 				return
 			}
@@ -300,6 +333,13 @@ func (v *issueVolume) narrowedCacheTarServerAfterFirstHealth(t *testing.T, after
 				http.Error(w, "the repository cache token is required", http.StatusUnauthorized)
 				return
 			}
+			if fault.fullPack {
+				if err := v.linkToDevFull(pack); err != nil {
+					t.Errorf("put /dev/full at the clone's pack: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
 			_, _ = w.Write(body)
 		default:
 			http.NotFound(w, r)
@@ -307,6 +347,23 @@ func (v *issueVolume) narrowedCacheTarServerAfterFirstHealth(t *testing.T, after
 	}))
 	t.Cleanup(server.Close)
 	return server.URL, len(body)
+}
+
+// linkToDevFull puts a symbolic link to /dev/full at entry, a path inside the git directory of the
+// one temporary sibling of the volume's clone provision is filling (<clone>.clone-*).
+func (v *issueVolume) linkToDevFull(entry string) error {
+	staging, err := filepath.Glob(v.clone() + ".clone-*")
+	if err != nil {
+		return err
+	}
+	if len(staging) != 1 {
+		return fmt.Errorf("the clone's directory holds %d temporary siblings %q, want provision's one", len(staging), staging)
+	}
+	link := filepath.Join(staging[0], ".git", filepath.FromSlash(entry))
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		return err
+	}
+	return os.Symlink("/dev/full", link)
 }
 
 // runner runs one of the volume's own fixture commands — a git or jj that builds its remote or
@@ -1567,11 +1624,11 @@ func TestWorkspaceInitProvisionRenewsTheTokenAfterWaitingForTheCache(t *testing.
 	if err := os.WriteFile(v.token, []byte(oldToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cache, _ := v.narrowedCacheTarServerAfterFirstHealth(t, func() {
+	cache, _ := v.cacheTarServer(t, cacheFault{afterFirstHealth: func() {
 		if err := os.WriteFile(v.token, []byte(newToken+"\n"), 0o600); err != nil {
 			panic(err)
 		}
-	})
+	}})
 	v.provisionEnv()
 	v.env[cacheURLEnv] = cache
 	v.env[repocache.CacheTokenFileEnv] = writeCacheToken(t, cmdCacheToken)
@@ -1693,21 +1750,115 @@ func TestWorkspaceInitProvisionWritesNoURLCredentials(t *testing.T) {
 	}
 }
 
-// Each clocked stage of the fill gets the bound of the volume's process (issueVolume.proc's
-// fetchBound; workspace.FetchTimeout in production): a transfer from GitHub that runs past it is
-// stopped, and the provision fails naming the command that ran out of its time, exit 3, a cause
-// outside the issue's volume.
-func TestWorkspaceInitProvisionStopsATransferAtItsBound(t *testing.T) {
+// The two transient failures a production fetch met from GitHub, as git prints them: an HTTP/2
+// stream GitHub cancelled mid-pack, and a 408 on the pack request.
+const (
+	curl92Failure = "error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n" +
+		"fatal: early EOF\n" +
+		"fatal: fetch-pack: invalid index-pack output\n"
+	http408Failure = "error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\n" +
+		"fatal: expected 'packfile'\n"
+)
+
+// A fetch from GitHub that fails transiently is run again after a backoff wait on the clock of the
+// volume's process (issueVolume.proc), each failure logged on stdout as one line, until one
+// succeeds and fills the clone.
+func TestWorkspaceInitProvisionRetriesATransientFetchFailure(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
+	attempts := v.failFetches(t, 128, curl92Failure, http408Failure)
+	clock := v.instantClock()
 	v.provisionEnv()
-	// The fetch from GitHub sleeps past any test binary's deadline, so only the bound's stop ends
-	// it: a stop a loaded machine makes late still comes before the sleep ends.
-	v.env["WINIT_FETCH_SLEEP"] = "86400"
-	v.proc.fetchBound = time.Second
-	v.instantClock()
 
-	code, stdout, stderr := v.answered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
+	code, stdout, stderr := v.run(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
+	}
+	want := "workspace-init: fetch attempt 1 failed; retrying in 5s: error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8) | fatal: early EOF | fatal: fetch-pack: invalid index-pack output\n" +
+		"workspace-init: fetch attempt 2 failed; retrying in 15s: error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408 | fatal: expected 'packfile'\n"
+	rest, retried := strings.CutPrefix(stdout, want)
+	if !retried || !strings.HasPrefix(rest, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
+		t.Fatalf("stdout %q, want %q then the fill from GitHub", stdout, want)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr %q, want nothing", stderr)
+	}
+	if got := fetchAttempts(t, attempts); got != 3 {
+		t.Fatalf("git fetched %d times, want 3", got)
+	}
+	if waits := clock.waits; !slices.Equal(waits, []time.Duration{5 * time.Second, 15 * time.Second}) {
+		t.Fatalf("provision waited %v, want 5s then 15s", waits)
+	}
+	if main := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "log", "-1", "--format=%s", "refs/heads/main"); main != "seed" {
+		t.Fatalf("the clone's main is %q, want the remote's", main)
+	}
+	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
+		t.Fatalf("TMPDIR holds %v (%v) after provision returned, want its credential gone", entries, err)
+	}
+}
+
+// Neither a retried attempt's log line nor the final failure carries the provisioning token, even
+// where git echoes it: in a URL the userinfo that carries it is removed whole (the URL rule,
+// redact.Writer), and anywhere else the token says *** in its place.
+func TestWorkspaceInitProvisionLogsNoToken(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	v.failFetches(t, 128,
+		"fatal: unable to access 'https://x-access-token:@TOKEN@@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n",
+		"remote: Invalid username or token @TOKEN@.\nfatal: Authentication failed for 'https://x-access-token:@TOKEN@@github.com/acme/widgets/'\n",
+	)
+	v.instantClock()
+	v.provisionEnv()
+
+	code, stdout, stderr := v.run(v.args("LEGION-42"))
+	if code != workspace.InitExitOutsideVolume {
+		t.Fatalf("exit %d, stderr %q; want %d", code, stderr, workspace.InitExitOutsideVolume)
+	}
+	if strings.Contains(stdout+stderr, "ghs_test") {
+		t.Fatalf("provision logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
+	}
+	if want := "workspace-init: fetch attempt 1 failed; retrying in 5s: fatal: unable to access 'https://github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
+		t.Fatalf("stdout %q, want %q", stdout, want)
+	}
+	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://github.com/acme/widgets/'"} {
+		if !strings.Contains(stderr, says) {
+			t.Fatalf("stderr %q, want it to name %q", stderr, says)
+		}
+	}
+}
+
+// `provision` exits 3 (workspace.InitExitOutsideVolume) for a cause outside the issue's volume,
+// which a new volume does not cure, and 1 for every other failure: the runtime keeps a kept volume
+// for the first and replaces it for the second. Each failing git prints git's own output, the
+// lines internal/workspace reads in gitFailures.
+//
+// The fill's fetch from GitHub exits 3 when it fails with an HTTP status, a host that did not
+// resolve, a pack stream cut with no cause line, a credential GitHub refused or a repository GitHub
+// did not find, when a read of the provisioning token before a retry fails, and when it runs past
+// the bound of its stage, the bound of the volume's process (issueVolume.proc's fetchBound;
+// workspace.FetchTimeout in production). It exits 1 for curl 23, a write to the volume that
+// failed, and for a bad object in the clone. A repository cache that is never ready, or that
+// refuses the /tar request, exits 3. A cache tar whose write to the volume fails inside the copy,
+// or whose pack fails its checksum, exits 1. The refusals before the volume, a bad flag among them,
+// are TestWorkspaceInitRefusesBeforeTouchingTheVolume's.
+func TestWorkspaceInitProvisionExitsThreeForAFailureOutsideTheVolume(t *testing.T) {
+	t.Parallel()
+	const access = "fatal: unable to access 'https://github.com/acme/widgets/': "
+	// failing has every fetch from GitHub fail with stderr and status.
+	failing := func(status int, stderr string) func(*testing.T, *issueVolume, *instantClock) {
+		return func(t *testing.T, v *issueVolume, _ *instantClock) {
+			v.failFetches(t, status, slices.Repeat([]string{stderr}, 6)...)
+		}
+	}
+	// fromCache is a fill from a repository cache of the volume's remote with fault, to which the
+	// fill presents token for the tar.
+	fromCache := func(fault cacheFault, token string) func(*testing.T, *issueVolume, *instantClock) {
+		return func(t *testing.T, v *issueVolume, _ *instantClock) {
+			cache, _ := v.cacheTarServer(t, fault)
+			v.env[cacheURLEnv] = cache
+			v.env[repocache.CacheTokenFileEnv] = writeCacheToken(t, token)
+		}
+	}
 	// timedOut is how the error of a transfer that ran out of its time begins: its git command,
 	// whose first flags are the four pack settings (workspace.PackWindowConfig) as `-c` pairs.
 	timedOut := "command timed out: git"
@@ -1715,7 +1866,80 @@ func TestWorkspaceInitProvisionStopsATransferAtItsBound(t *testing.T) {
 		timedOut += " -c " + pair[0] + "=" + pair[1]
 	}
 	timedOut += " --git-dir="
-	if code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, timedOut) {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want %d naming %q", code, stdout, stderr, workspace.InitExitOutsideVolume, timedOut)
+	for _, tc := range []struct {
+		name string
+		// prepare sets up the volume's git, its cache, the clock and the bound.
+		prepare func(t *testing.T, v *issueVolume, clock *instantClock)
+		code    int
+		says    string
+		// then, when set, checks what provision left.
+		then func(t *testing.T, v *issueVolume)
+	}{
+		{name: "a 403", prepare: failing(128, "remote: Write access to repository not granted.\n"+access+"The requested URL returned error: 403\n"),
+			code: 3, says: "The requested URL returned error: 403"},
+		{name: "a host that did not resolve", prepare: failing(128, access+"Could not resolve host: github.com\n"),
+			code: 3, says: "fetch attempt 5 failed, and the fetch retries a fetch at most 4 times"},
+		{name: "a pack stream cut with no cause line", prepare: failing(128, "fetch-pack: unexpected disconnect while reading sideband packet\nfatal: early EOF\nfatal: fetch-pack: invalid index-pack output\n"),
+			code: 3, says: "fatal: early EOF"},
+		{name: "a credential GitHub refused", prepare: failing(128, "remote: Invalid username or token. Password authentication is not supported for Git operations.\nfatal: Authentication failed for 'https://github.com/acme/widgets/'\n"),
+			code: 3, says: "fatal: Authentication failed for 'https://github.com/acme/widgets/'"},
+		{name: "a repository GitHub did not find", prepare: failing(128, "remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n"),
+			code: 3, says: "remote: Repository not found."},
+		{name: "a write of received data that failed", prepare: failing(128, "error: RPC failed; curl 23 Failed writing received data to disk/application\n"),
+			code: 1, says: "curl 23 Failed writing received data to disk/application"},
+		{name: "a bad object in the clone", prepare: func(t *testing.T, v *issueVolume, clock *instantClock) {
+			failing(1, "fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111\nerror: file://"+v.env["WINIT_REMOTE"]+" did not send all necessary objects\n")(t, v, clock)
+		}, code: 1, says: "fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111"},
+		{name: "an attempt that runs out of its time", prepare: func(t *testing.T, v *issueVolume, _ *instantClock) {
+			// The fetch from GitHub sleeps past any test binary's deadline, so only the bound's
+			// stop ends it: a stop a loaded machine makes late still comes before the sleep ends.
+			v.env["WINIT_FETCH_SLEEP"] = "86400"
+			v.proc.fetchBound = time.Second
+		}, code: 3, says: timedOut},
+		{name: "a read of the provisioning token before a retry that fails", prepare: func(t *testing.T, v *issueVolume, clock *instantClock) {
+			failing(128, http408Failure)(t, v, clock)
+			clock.atFirstWait = func() {
+				if err := os.Remove(v.token); err != nil {
+					t.Error(err)
+				}
+			}
+		}, code: 3, says: "fetch attempt 2: read the provisioning token: "},
+		{name: "a repository cache that is never ready", prepare: fromCache(cacheFault{notReady: true}, cmdCacheToken),
+			code: 3, says: "was not ready within " + workspace.CacheWaitTimeout.String()},
+		{name: "a repository cache that refuses the tar", prepare: fromCache(cacheFault{}, "another-cache's-token"),
+			code: 3, says: "/tar answered 401 Unauthorized"},
+		{name: "a cache entry whose write fails inside the copy", prepare: func(t *testing.T, v *issueVolume, clock *instantClock) {
+			if info, err := os.Stat("/dev/full"); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+				t.Skipf("this case writes a cache entry to Linux's /dev/full, which this system does not have (%v)", err)
+			}
+			fromCache(cacheFault{fullPack: true}, cmdCacheToken)(t, v, clock)
+		}, code: 1, says: "no space left on device", then: func(t *testing.T, v *issueVolume) {
+			if info, err := os.Stat("/dev/full"); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+				t.Errorf("/dev/full is %v (%v) after provision, want the device the link named", info, err)
+			}
+			if staging, err := filepath.Glob(v.clone() + ".clone-*"); err != nil || len(staging) != 0 {
+				t.Errorf("provision left %q (%v) beside the clone", staging, err)
+			}
+		}},
+		{name: "a pack that fails its checksum", prepare: fromCache(cacheFault{damagedPack: true}, cmdCacheToken),
+			code: 1, says: "which does not verify"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v := newIssueVolume(t).withRemote(t, "main")
+			clock := v.instantClock()
+			tc.prepare(t, v, clock)
+			v.provisionEnv()
+			code, stdout, stderr := v.answered(t, "workspace-init provision ("+tc.name+")", v.args("LEGION-42"))
+			if code != tc.code || !strings.Contains(stderr, tc.says) {
+				t.Fatalf("exit %d, stderr %q, stdout %q; want %d naming %q", code, stderr, stdout, tc.code, tc.says)
+			}
+			if _, err := os.Stat(filepath.Join(v.clone(), ".jj")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the failed provision left a clone in place (%v)", err)
+			}
+			if tc.then != nil {
+				tc.then(t, v)
+			}
+		})
 	}
 }

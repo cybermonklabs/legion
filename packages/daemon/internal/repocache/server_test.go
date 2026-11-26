@@ -176,6 +176,16 @@ func (r *testRunner) transfers() []string {
 	return seen
 }
 
+// inStaging is whether transfer, one of transfers', is verb (ls-remote or fetch) run on the
+// temporary sibling of the cache's clone at dir (<dir>.clone-*): the cache's first fill reads
+// GitHub's HEAD and fetches the default branch there, then renames it into place
+// (workspace.Fetch). No git clone runs.
+func inStaging(transfer, dir, verb string) bool {
+	gitDir, ran, ok := strings.Cut(transfer, " ")
+	suffix, staged := strings.CutPrefix(gitDir, "--git-dir="+dir+".clone-")
+	return ok && staged && suffix != "" && !strings.Contains(suffix, "/") && ran == verb
+}
+
 func (r *testRunner) seenTokens() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -449,8 +459,8 @@ func TestHealthzIsUnavailableUntilTheFirstCloneFinishes(t *testing.T) {
 	if logged(c.log.all(), "narrowed "+c.dir()+" ") {
 		t.Errorf("the first default-only clone logged a narrowing: %q", c.log.all())
 	}
-	if transfers := run.transfers(); len(transfers) != 1 || transfers[0] != "clone --bare" {
-		t.Errorf("the cache ran %q, want one clone", transfers)
+	if transfers := run.transfers(); len(transfers) != 2 || !inStaging(transfers[0], c.dir(), "ls-remote") || !inStaging(transfers[1], c.dir(), "fetch") {
+		t.Errorf("the cache ran %q, want its first fill's read of GitHub's HEAD and its fetch into %s.clone-*", transfers, c.dir())
 	}
 }
 
@@ -816,8 +826,10 @@ func TestARestartOnAVolumeThatHoldsTheCloneFetchesIntoIt(t *testing.T) {
 	if health := again.ready(t); health.Head != moved {
 		t.Errorf("the restarted cache serves %s, want what its fetch brought, %s", health.Head, moved)
 	}
-	if transfers := run.transfers(); !slices.Equal(transfers, []string{"clone --bare", "--git-dir=" + again.dir() + " ls-remote", "--git-dir=" + again.dir() + " fetch", "--git-dir=" + again.dir() + " ls-remote"}) {
-		t.Errorf("the cache ran %q, want a clone, then the restart's read of GitHub's HEAD, fetch and final read", transfers)
+	transfers := run.transfers()
+	if len(transfers) != 5 || !inStaging(transfers[0], again.dir(), "ls-remote") || !inStaging(transfers[1], again.dir(), "fetch") ||
+		!slices.Equal(transfers[2:], []string{"--git-dir=" + again.dir() + " ls-remote", "--git-dir=" + again.dir() + " fetch", "--git-dir=" + again.dir() + " ls-remote"}) {
+		t.Errorf("the cache ran %q, want a first fill, then the restart's read of GitHub's HEAD, fetch and final read", transfers)
 	}
 	again.cancel()
 	if err := <-again.done; err != nil {
@@ -894,8 +906,8 @@ func TestARestartedCacheReplacesACloneItsFetchDidNotWrite(t *testing.T) {
 	if _, err := os.Stat(grafts); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the planted info/grafts after the restart: %v, want it gone with the clone", err)
 	}
-	if clones := slices.DeleteFunc(run.transfers(), func(transfer string) bool { return transfer != "clone --bare" }); len(clones) != 2 {
-		t.Errorf("the cache ran %q, want a clone at the first start and a clone afresh at the restart", run.transfers())
+	if fills := slices.DeleteFunc(run.transfers(), func(transfer string) bool { return !inStaging(transfer, again.dir(), "fetch") }); len(fills) != 2 {
+		t.Errorf("the cache ran %q, want a first fill at the first start and a fill afresh at the restart", run.transfers())
 	}
 }
 
@@ -1054,8 +1066,12 @@ func TestAnIssuePodsWorkspaceInitStreamsItsCloneFromTheCache(t *testing.T) {
 		t.Errorf("the streamed clone's main is %s, want the cache's %s", got, want)
 	}
 	git(t, gitDir, "--git-dir="+gitDir, "fsck", "--connectivity-only")
-	for _, transfer := range run.transfers()[1:] {
-		if strings.HasPrefix(transfer, "clone ") || strings.HasSuffix(transfer, " fetch") {
+	for _, transfer := range run.transfers() {
+		if inStaging(transfer, c.dir(), "ls-remote") || inStaging(transfer, c.dir(), "fetch") {
+			// The cache's own first fill, before it served.
+			continue
+		}
+		if strings.HasSuffix(transfer, " fetch") {
 			t.Errorf("workspace-init fetched from GitHub after streaming the cache: %q", transfer)
 		}
 	}
@@ -1353,13 +1369,14 @@ func TestARestartedCacheRemovesThePartialPacksAKilledRepackLeft(t *testing.T) {
 	}
 }
 
-// The cache's own first clone gets the repository-sized bound, workspace.CacheFetchTimeout, not an
-// issue pod's FetchTimeout, and a fetch into the clone keeps FetchTimeout.
+// The cache's own first fill gets the repository-sized bound, workspace.CacheFetchTimeout, not an
+// issue pod's FetchTimeout, and a fetch into the clone keeps FetchTimeout. The first fill is a
+// fetch too, into the clone's temporary sibling (inStaging), and the first fetch the runner sees.
 func TestTheCachesCloneTakesTheRepositorysBound(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
 	bound := make(chan time.Duration, 1)
-	run.instead("clone", func(ctx context.Context, command workspace.Command) (workspace.Result, error) {
+	run.instead("fetch", func(ctx context.Context, command workspace.Command) (workspace.Result, error) {
 		bound <- command.Timeout
 		return run.runner.Run(ctx, command)
 	})
@@ -1370,10 +1387,10 @@ func TestTheCachesCloneTakesTheRepositorysBound(t *testing.T) {
 	select {
 	case got := <-bound:
 		if got <= workspace.FetchTimeout || got > workspace.CacheFetchTimeout {
-			t.Errorf("the cache's clone ran within %s, want past FetchTimeout %s and within CacheFetchTimeout %s", got, workspace.FetchTimeout, workspace.CacheFetchTimeout)
+			t.Errorf("the cache's first fill ran within %s, want past FetchTimeout %s and within CacheFetchTimeout %s", got, workspace.FetchTimeout, workspace.CacheFetchTimeout)
 		}
 	default:
-		t.Fatal("the cache cloned with no command the runner saw")
+		t.Fatal("the cache filled its clone with no fetch the runner saw")
 	}
 	refreshed := make(chan time.Duration, 1)
 	run.instead("fetch", func(ctx context.Context, command workspace.Command) (workspace.Result, error) {
@@ -2265,8 +2282,8 @@ func TestCacheKeepsANarrowedVolumeWithoutAnotherRepack(t *testing.T) {
 	if logged(log.all(), "narrowed "+first.dir()+" ") {
 		t.Errorf("a no-op refresh logged another narrowing: %q", log.all())
 	}
-	if slices.Contains(run.transfers(), "clone --bare") {
-		t.Errorf("the cache cloned after the old volume was laid down, want none: %q", run.transfers())
+	if slices.ContainsFunc(run.transfers(), func(transfer string) bool { return inStaging(transfer, first.dir(), "fetch") }) {
+		t.Errorf("the cache filled its clone afresh after the old volume was laid down, want no first fill: %q", run.transfers())
 	}
 }
 
@@ -2640,8 +2657,8 @@ func TestCacheRemovesAnOldVolumeWhenNarrowingRunsOutOfSpace(t *testing.T) {
 			if got := run.repacks(); got != 1 {
 				t.Errorf("the cache ran %d repacks, want only the failed narrowing repack", got)
 			}
-			if !slices.Contains(run.transfers(), "clone --bare") {
-				t.Errorf("the cache did not clone after removing the old volume: %q", run.transfers())
+			if !slices.ContainsFunc(run.transfers(), func(transfer string) bool { return inStaging(transfer, c.dir, "fetch") }) {
+				t.Errorf("the cache did not fill its clone afresh after removing the old volume: %q", run.transfers())
 			}
 		})
 	}

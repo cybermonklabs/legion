@@ -67,9 +67,10 @@ func setupEnvironment() []string {
 }
 
 // recordingRunner runs every command through the production runner, NewRunner, with the real jj
-// and git, but replaces the GitHub clone URL with the local bare remote. That keeps
-// provisioning's argv and credential environment observable, and what the runner adds to every
-// process in force, while the fixture never reaches a network.
+// and git, but replaces the GitHub clone URL with the local bare remote, a git transfer's as a
+// file:// URL, so git talks to it over its transport as it does to GitHub rather than copying a
+// local repository's files. That keeps provisioning's argv and credential environment observable,
+// and what the runner adds to every process in force, while the fixture never reaches a network.
 type recordingRunner struct {
 	t       *testing.T
 	remote  string
@@ -120,16 +121,16 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 	if actual.Argv[0] == "git" && slices.Contains(actual.Argv, "clone") {
 		for i, arg := range actual.Argv {
 			if arg == "https://github.com/acme/widgets" {
-				actual.Argv[i] = r.remote
+				actual.Argv[i] = "file://" + r.remote
 			}
 		}
 	}
-	// A fetch into the repository cache's existing bare clone, and its read of GitHub's HEAD, name
-	// GitHub in their argv, too.
+	// A fetch into the repository cache's bare clone or an issue pod's clone, and its read of
+	// GitHub's HEAD, name GitHub in their argv, too.
 	if len(actual.Argv) > 2 && actual.Argv[0] == "git" && (slices.Contains(actual.Argv, "fetch") || slices.Contains(actual.Argv, "ls-remote")) {
 		for i, arg := range actual.Argv {
 			if arg == "https://github.com/acme/widgets" {
-				actual.Argv[i] = r.remote
+				actual.Argv[i] = "file://" + r.remote
 			}
 		}
 	}
@@ -1403,7 +1404,7 @@ func TestAZeroRepositoryNeverReachesTheVolume(t *testing.T) {
 	}
 	fetch := fetchRequest(t)
 	fetch.Root, fetch.Repo = state, ghrepo.Repository{}
-	if _, err := Fetch(context.Background(), run, fetch); err == nil || err.Error() != "workspace repository is required" {
+	if err := Fetch(context.Background(), run, fetch); err == nil || err.Error() != "workspace repository is required" {
 		t.Errorf("Fetch with the zero Repository = %v, want it refused", err)
 	}
 	if calls := run.Calls(); len(calls) != 0 {
