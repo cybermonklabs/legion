@@ -508,7 +508,7 @@ func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
 	w := privateRecord(t)
 	at := func(minute int) time.Time { return time.Date(2026, time.March, 2, 10, minute, 0, 0, time.UTC) }
 	pod := "legion-nimbus-nimbus-412"
-	limit, source := int64(6000000), "gateway-log"
+	limit, source := int64(6000000), "deployment-log"
 	w.DefaultAssignee = privateEmail
 	w.Signals = map[string][]Span{SignalKills: {{From: at(0), To: at(30)}}, SignalQueue: {{From: at(0), To: at(30)}}}
 	w.Launcher = []LauncherLine{

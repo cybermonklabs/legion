@@ -86,11 +86,13 @@ type NeutralMap struct {
 // merge queue's events their GitHub accounts (login, numeric id, node id and links), the
 // repository of their file and the repository their url names, the url keeping its form, the
 // project's settings events as Dispatch's events (a token's name and a source's last error among
-// them), and the default assignee as a person. It changes values alone: every member, JSON type
-// and list length of every line is the record's, so the neutral
-// window is read by the same readers. The daemon's msgs, document names, ranks, statuses and times
-// are kept, and so are the daemon's own words in its lines, their names renamed. It writes the map
-// to cfg.Map and returns it. It refuses a map
+// them), and the default assignee as a person. A git input keeps its paths and commits but for the
+// issue keys of the window's projects that its paths spell and its deny words, and its missing
+// inputs' details are renamed as the daemon's lines are; its file takes its repository's neutral
+// name. It changes values alone: every member, JSON type and list length of every line is the
+// record's, so the neutral window is read by the same readers. The daemon's msgs, document names,
+// ranks, statuses and times are kept, and so are the daemon's own words in its lines, their names
+// renamed. It writes the map to cfg.Map and returns it. It refuses a map
 // inside cfg.Out or already there, an Out that is In or holds files, a deny word that is part of
 // withheld, the word every deny word is replaced with, whose replacement would put it back, a
 // window holding more IPv4 addresses than the documentation ranges hold, and a neutral window that
@@ -123,6 +125,10 @@ func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 	}
 	for _, repo := range slices.Sorted(maps.Keys(w.Queue)) {
 		n.addRepo(repo)
+	}
+	for _, repo := range slices.Sorted(maps.Keys(w.Git)) {
+		n.addRepo(repo)
+		n.registerGit(w.Git[repo])
 	}
 	n.number(w.Project)
 
@@ -181,6 +187,12 @@ func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 			if out.Queue[n.repo(repo)], err = n.rewriteAll(parsed.queue[repo], sourceQueue); err != nil {
 				return NeutralMap{}, err
 			}
+		}
+	}
+	if w.Git != nil {
+		out.Git = make(map[string]GitInput, len(w.Git))
+		for _, repo := range slices.Sorted(maps.Keys(w.Git)) {
+			out.Git[n.repo(repo)] = n.gitInput(w.Git[repo])
 		}
 	}
 	if n.err != nil {
@@ -440,8 +452,9 @@ type neutralizer struct {
 	// logins is every person's login the first walk met (a Dispatch login that is no email, a
 	// GitHub account's), which a pod's name or a pull request's branch can spell (renameLogins).
 	logins map[string]bool
-	// names is the matcher of every name a string can hold anywhere (rename), built by number.
-	names *regexp.Regexp
+	// names is the matcher of every name a string can hold anywhere (rename), and keyNames of the
+	// keys of the registered projects alone (renameKeys), each built by number.
+	names, keyNames *regexp.Regexp
 	// counters is the next number of each kind of neutral name.
 	counters map[string]int
 	// documented is each address of a documentation range the window holds, which it keeps and so
@@ -672,7 +685,7 @@ func (n *neutralizer) addRepo(repo string) {
 // project the configured one and each other OTHERA, OTHERB, … in the order met; each project's
 // keys 1, 2, … in the order of their numbers, so the neutral keys sort as the record's did within
 // a project. It finds the documentation addresses the window holds, which no neutral address may
-// be, and builds the matcher rename finds names with.
+// be, and builds the matchers rename and renameKeys find names with.
 func (n *neutralizer) number(own string) {
 	n.addProject(own)
 	n.collectKeys()
@@ -697,7 +710,7 @@ func (n *neutralizer) number(own string) {
 		n.m.Repos[repo] = fmt.Sprintf("acme/repo-%d", i+1)
 	}
 	n.m.Repos[keptRepository] = keptRepository
-	n.names = n.namesPattern()
+	n.names, n.keyNames = n.namesPattern(), n.keysPattern()
 }
 
 // collectKeys registers every key of a registered project that stands in a string anywhere in
@@ -746,14 +759,11 @@ func letters(n int) string {
 // a machine's legion-<project token>-, a key of a registered project in either case, and a
 // registered project's own key standing alone.
 func (n *neutralizer) namesPattern() *regexp.Regexp {
-	var repos, upper, lower []string
+	var repos []string
 	for _, repo := range slices.SortedFunc(slices.Values(n.repos), func(a, b string) int { return len(b) - len(a) }) {
 		repos = append(repos, regexp.QuoteMeta(repo))
 	}
-	for _, project := range n.sourceProjects {
-		upper = append(upper, regexp.QuoteMeta(project))
-		lower = append(lower, regexp.QuoteMeta(strings.ToLower(project)))
-	}
+	upper, lower := n.projectWords()
 	alternatives := []string{
 		`(?P<link>https?://[^\s"'<>(){}\[\]]+)`,
 		`(?P<email>[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})`,
@@ -774,6 +784,25 @@ func (n *neutralizer) namesPattern() *regexp.Regexp {
 	return regexp.MustCompile(strings.Join(alternatives, "|"))
 }
 
+// projectWords is each registered project's key as a matcher reads it, in upper and in lower case.
+func (n *neutralizer) projectWords() (upper, lower []string) {
+	for _, project := range n.sourceProjects {
+		upper = append(upper, regexp.QuoteMeta(project))
+		lower = append(lower, regexp.QuoteMeta(strings.ToLower(project)))
+	}
+	return upper, lower
+}
+
+// keysPattern is the matcher of a key of a registered project in either case, as namesPattern
+// finds one, and of no other name; nil where no project is registered.
+func (n *neutralizer) keysPattern() *regexp.Regexp {
+	upper, lower := n.projectWords()
+	if len(upper) == 0 {
+		return nil
+	}
+	return regexp.MustCompile(`\b(?:` + strings.Join(upper, "|") + `|` + strings.Join(lower, "|") + `)-[0-9]+\b`)
+}
+
 // visit is s, standing at f, with its names renamed: by the rule of f's member where one names
 // it, and otherwise by rename; then every deny word in it replaced. A kept member's value is the
 // daemon's or Dispatch's own word and is never changed, a deny word in it included, which
@@ -782,11 +811,91 @@ func (n *neutralizer) visit(s string, f field) string {
 	if s == "" || keptMembers[f.key] {
 		return s
 	}
-	renamed := n.byMember(s, f)
+	return n.withhold(n.byMember(s, f))
+}
+
+// withhold is s with every deny word in it replaced with withheld.
+func (n *neutralizer) withhold(s string) string {
 	for _, word := range n.deny {
-		renamed = word.ReplaceAllString(renamed, withheld)
+		s = word.ReplaceAllString(s, withheld)
 	}
-	return renamed
+	return s
+}
+
+// renameKeys is s with each key of a registered project in it renamed (keysPattern), and nothing
+// else of it.
+func (n *neutralizer) renameKeys(s string) string {
+	if n.keyNames == nil {
+		return s
+	}
+	return n.keyNames.ReplaceAllStringFunc(s, n.key)
+}
+
+// registerGit takes from in, a git input, what the first walk registers of it: the strings in
+// which collectKeys finds the keys of the registered projects, its paths, and the repositories,
+// keys and links its missing inputs' details name, as a daemon line's text.
+func (n *neutralizer) registerGit(in GitInput) {
+	for _, commit := range in.Commits {
+		n.values = append(n.values, commit.Paths...)
+	}
+	for _, pull := range in.Pulls {
+		for _, head := range pull.Heads {
+			n.values = append(n.values, head.Paths...)
+			for _, verdict := range head.Verdicts {
+				n.values = append(n.values, verdict.Paths...)
+			}
+		}
+	}
+	for _, missing := range in.Missing {
+		n.register(missing.Detail, field{source: sourceLog, key: "detail"})
+	}
+}
+
+// gitInput is in, a git input, neutral: each path with the keys of the registered projects in it
+// renamed (renameKeys) and its deny words withheld, the same path the same in every line, so the
+// paths a head and a commit share stay shared, each list sorted again and a path two deny words
+// made one held once; each missing input's detail renamed as a daemon line's text is; its commits,
+// pull requests, times, sources and reasons kept.
+func (n *neutralizer) gitInput(in GitInput) GitInput {
+	paths := func(paths []string) []string {
+		if paths == nil {
+			return nil
+		}
+		out := make([]string, len(paths))
+		for i, p := range paths {
+			out[i] = n.withhold(n.renameKeys(p))
+		}
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	out := GitInput{Commits: make([]GitCommit, len(in.Commits)), Pulls: make([]GitPull, len(in.Pulls)), Missing: make([]GitMissing, len(in.Missing))}
+	for i, commit := range in.Commits {
+		out.Commits[i] = GitCommit{SHA: commit.SHA, Paths: paths(commit.Paths)}
+	}
+	for i, pull := range in.Pulls {
+		heads := make([]GitHead, len(pull.Heads))
+		for j, head := range pull.Heads {
+			head.Paths = paths(head.Paths)
+			verdicts := make([]GitVerdict, len(head.Verdicts))
+			for k, verdict := range head.Verdicts {
+				verdict.Paths = paths(verdict.Paths)
+				verdicts[k] = verdict
+			}
+			if head.Verdicts == nil {
+				verdicts = nil
+			}
+			head.Verdicts = verdicts
+			heads[j] = head
+		}
+		out.Pulls[i] = GitPull{Number: pull.Number, Merge: pull.Merge, Heads: heads}
+	}
+	for i, missing := range in.Missing {
+		missing.Detail = n.withhold(n.rename(missing.Detail))
+		out.Missing[i] = missing
+	}
+	slices.SortFunc(out.Missing, compareGitMissing)
+	out.Missing = slices.CompactFunc(out.Missing, func(a, b GitMissing) bool { return compareGitMissing(a, b) == 0 })
+	return out
 }
 
 // byMember renames s by the rule of the member it is the value of (the field rules above).

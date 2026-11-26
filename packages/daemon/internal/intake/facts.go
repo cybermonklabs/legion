@@ -895,7 +895,7 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // BaseSHA is the base commit GitHub's answer names: the same answer's `base.sha` on a GET
 // /pulls/{number}, and `baseRefOid` on a base's batch query, empty where GitHub names none. It
 // decides nothing and is recorded nowhere; the engine logs it with the read (workflow's
-// mergeStateReadLine), so a window collected later can name the base of each read. It is the
+// MergeStateReadLine), so a window collected later can name the base of each read. It is the
 // commit the answer names and no more: GitHub does not say it is the base commit its
 // mergeability was computed against (record.ConflictRead).
 //

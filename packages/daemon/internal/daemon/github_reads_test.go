@@ -332,9 +332,9 @@ func mergeabilityFacts(facts *outboxFactHandler) []intake.PullRequestMergeabilit
 }
 
 // A read of a pull request carries the base commit GitHub's answer names, which the workflow logs
-// with the read (workflow's mergeStateReadLine, dispatch://INFRA-3199/spec R9): the per-issue
-// read's GET /pulls/{number} applies its `base.sha` on the mergeability fact beside the base
-// branch, whatever GitHub answered - clean, conflicting, or not computed yet. A REST answer of a
+// with the read (workflow.MergeStateReadLine): the per-issue read's GET /pulls/{number} applies its
+// `base.sha` on the mergeability fact beside the base branch, whatever GitHub answered - clean,
+// conflicting, or not computed yet. A REST answer of a
 // `blocked`, MERGEABLE head is replaced by the GraphQL answer the read asks next
 // (readWholeAnswer), so its fact carries that answer's `baseRefOid`, here a newer base commit than
 // the REST answer named.

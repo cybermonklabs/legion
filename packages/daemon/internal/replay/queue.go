@@ -14,8 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/backoff"
 )
 
 // QueueConfig is one read of a repository's merge queue events into a window (CollectQueue).
@@ -32,6 +30,11 @@ type QueueConfig struct {
 	// Wait is how a read GitHub refused for now waits before it is tried again; nil waits on a
 	// timer (backoff.Sleep).
 	Wait func(ctx context.Context, d time.Duration) error
+	// Reserve and Rate are the reader's share of the GitHub quota the daemon and the other roles
+	// share (githubReader): the requests it leaves them, and the most requests a second it sends;
+	// 0 turns either off.
+	Reserve int
+	Rate    float64
 }
 
 // QueueCollected is what a collect-queue read and wrote.
@@ -70,7 +73,8 @@ type QueueCollected struct {
 // names is cfg.Repo's, as the attribution says, and a 404 of it fails the read. It sends GET
 // alone: a read GitHub refuses for now (a 5xx, no answer) is tried again with a growing wait, and
 // one GitHub's rate limit refuses is tried again after the wait GitHub names, each such wait told
-// on stderr and bounded (githubReader.read); any other refusal fails the read. It writes nothing
+// on stderr and bounded (githubReader.read), and it leaves the quota it shares with the daemon its
+// reserve and paces its requests (githubReader); any other refusal fails the read. It writes nothing
 // where a read fails.
 //
 // It reads the window once, a line at a time (walkWindow), and refuses every window ReadWindow
@@ -85,6 +89,9 @@ func CollectQueue(ctx context.Context, cfg QueueConfig) (QueueCollected, error) 
 		return QueueCollected{}, fmt.Errorf("replay: collect-queue: %q is no owner/name of a repository", cfg.Repo)
 	case cfg.Token == "":
 		return QueueCollected{}, errors.New("replay: collect-queue: no GitHub token is given")
+	}
+	if err := CheckGitHubShare(cfg.Reserve, cfg.Rate); err != nil {
+		return QueueCollected{}, fmt.Errorf("replay: collect-queue: %w", err)
 	}
 	api, err := url.Parse(strings.TrimRight(cmp.Or(cfg.API, DefaultGitHubAPI), "/"))
 	if err != nil || (api.Scheme != "https" && api.Scheme != "http") || api.Host == "" {
@@ -102,10 +109,7 @@ func CollectQueue(ctx context.Context, cfg QueueConfig) (QueueCollected, error) 
 	if err != nil {
 		return QueueCollected{}, fmt.Errorf("replay: collect-queue: %w", err)
 	}
-	reader := githubReader{api: api, token: cfg.Token, client: &http.Client{Timeout: time.Minute}, wait: cfg.Wait}
-	if reader.wait == nil {
-		reader.wait = backoff.Sleep
-	}
+	reader := newGitHubReader(api, cfg.Token, cfg.Wait, cfg.Reserve, cfg.Rate)
 	lines := []json.RawMessage{}
 	var collected, notFound []int
 	for _, number := range numbers {

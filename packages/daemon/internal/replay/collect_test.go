@@ -368,14 +368,19 @@ func compactJSON(t *testing.T, data []byte) json.RawMessage {
 }
 
 // The lines a collect finds only in the kubectl capture, beside the captured ones: a slot taken
-// two days before the captured cap, under another cap, an issue that waits on another, and a pull
-// request of ACME-29 that left the merge queue; the first two name an issue no captured line
-// names. The first is written with --prefix as well as --timestamps.
+// two days before the captured cap, under another cap, an issue that waits on another, a pull
+// request of ACME-29 that left the merge queue, and a read of that pull request's merge state; the
+// first two name an issue no captured line names. The first is written with --prefix as well as
+// --timestamps.
 const (
 	collectSlotTaken = `{"time":"2026-11-19T00:00:00.5Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-58","slots":150,"cap":150}`
 	collectWaitsOn   = `{"time":"2026-11-19T01:00:00Z","level":"INFO","msg":"admission waits for what this issue waits on","issue":"ACME-27","blockers":["ACME-42"]}`
 	collectQueueLeft = `{"time":"2026-11-19T04:00:00Z","level":"INFO","msg":"workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once",` +
 		`"issue":"ACME-29","pullRequest":4910,"head":"0123456789abcdef0123456789abcdef01234567"}`
+	collectMergeStateRead = `{"time":"2026-11-19T05:00:00Z","level":"INFO","msg":"workflow: GitHub's merge state of a pull request was read",` +
+		`"issue":"ACME-29","repo":"cybermonklabs/legion","pullRequest":4910,"head":"0123456789abcdef0123456789abcdef01234567",` +
+		`"recordedHead":"0123456789abcdef0123456789abcdef01234567","base":"main","baseSha":"89abcdef0123456789abcdef0123456789abcdef",` +
+		`"mergeable":"CONFLICTING","mergeState":"dirty","readAt":"2026-11-19T04:59:59.5Z"}`
 )
 
 // collectAttributions are the issue.pull_request_attribution_changed events of ACME-29 that
@@ -424,7 +429,7 @@ var collectIssues = []string{"ACME-27", "ACME-29", "ACME-32", "ACME-55", "ACME-5
 // hour objects alone.
 const (
 	collectManifest     = "0000000000000000000000000000000000000000000000000000000000000000  2026-11-20/00.jsonl\n"
-	collectProviderHead = `{"minute": "2026-11-15T23:59:00Z", "uncached": 1, "limit": 6000000, "limit_source": "gateway-log", "limit_scope": "Claude", "own": 0, "provider": 0}` + "\n" +
+	collectProviderHead = `{"minute": "2026-11-15T23:59:00Z", "uncached": 1, "limit": 6000000, "limit_source": "deployment-log", "limit_scope": "Claude", "own": 0, "provider": 0}` + "\n" +
 		`{"minute": "2026-11-16T14:29:00Z", "uncached": 10, "limit": null, "limit_source": null, "limit_scope": null, "own": 0, "provider": 0}` + "\n"
 	collectGuardEnded   = `launcher: memory guard: ended pid=41 role=tester size=1048576 reading=7000000000 counter=7100000000 shmem=0 limit=8589934592 executable="go"`
 	collectGuardStarted = "launcher: memory guard: started act_percent=85 floor_percent=10 wait=5s interval=100ms limit=8589934592 reading=23052288"
@@ -510,7 +515,7 @@ type collectRun struct {
 // answering the captured timelines of #4910, in two pages, and of #5150. The export holds every
 // captured line, a row with no jsonPayload and a line of a kind the trace does not read; the
 // array a line before the span and one at its end; the kubectl output every captured line again
-// (its attributes in the daemon's own order), the three lines of its own, a line of other output
+// (its attributes in the daemon's own order), the four lines of its own, a line of other output
 // and a line of a kind the trace does not read. Dispatch also answers a child.added event of
 // ACME-32 naming the child ACME-60, the attributions of ACME-29 (collectAttributions), an event of
 // ACME-29 after the span, and ACME-77's events; it refuses the first read of the event log and of
@@ -536,6 +541,7 @@ func collectCaptured(t *testing.T) collectRun {
 	fmt.Fprintf(&kubectl, "[pod/legion-acme-daemon-0/legion] 2026-11-19T00:00:00.6Z %s\n", collectSlotTaken)
 	fmt.Fprintf(&kubectl, "2026-11-19T01:00:00.1Z %s\n", collectWaitsOn)
 	fmt.Fprintf(&kubectl, "2026-11-19T04:00:00.1Z %s\n", collectQueueLeft)
+	fmt.Fprintf(&kubectl, "2026-11-19T05:00:00.1Z %s\n", collectMergeStateRead)
 	fmt.Fprintln(&kubectl, "2026-11-19T02:00:00Z goroutine dump follows: this is no JSON line")
 	fmt.Fprintln(&kubectl, `2026-11-19T03:00:00Z {"time":"2026-11-19T03:00:00Z","level":"INFO","msg":"legion workflow boot stage done elsewhere"}`)
 	array := `[
@@ -674,9 +680,10 @@ func collectCaptured(t *testing.T) collectRun {
 
 // A collect of the captured samples writes a window whose every file reads back through
 // ReadWindow as written: the log holds each captured line written in the collect's reach once, as
-// Cloud Logging kept it, with the kubectl capture's own three lines, in time order, and no line
+// Cloud Logging kept it, with the kubectl capture's own four lines, in time order, and no line
 // before the reach (two captured lines among them), at the span's end, of a kind the trace does
-// not read, or that is no daemon line; window.json holds the project, the
+// not read, or that is no daemon line, and the trace reads the read of ACME-29's merge state back
+// on ACME-29, its head, base commit and read time with it; window.json holds the project, the
 // span, the reach, the cap of each change (the earlier line's 150, then the daemon's start line's
 // 157), the kinds the log holds, the settings, the part, the collector and the default assignee;
 // the events are each captured issue's that a line names, up to the span's end, the blockers those
@@ -743,6 +750,7 @@ func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 	add([]byte(collectSlotTaken))
 	add([]byte(collectWaitsOn))
 	add([]byte(collectQueueLeft))
+	add([]byte(collectMergeStateRead))
 	slices.SortFunc(want, func(a, b timed) int { return a.at.Compare(b.at) })
 	if len(read.Log) != len(want) {
 		t.Errorf("the log holds %d lines, want %d", len(read.Log), len(want))
@@ -763,9 +771,20 @@ func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 	if got, wantKinds := read.Lines, slices.Sorted(maps.Keys(kinds)); !slices.Equal(got, wantKinds) {
 		t.Errorf("window.json's lines are %q, want %q", got, wantKinds)
 	}
-	if c := run.collected; c.Kept != len(want) || c.Duplicates != inReach || c.NotLines != 2 || c.Read != 2*len(run.captured)+7 {
+	if c := run.collected; c.Kept != len(want) || c.Duplicates != inReach || c.NotLines != 2 || c.Read != 2*len(run.captured)+8 {
 		t.Errorf("the collect read %d lines, kept %d, left %d out as read twice and %d as no daemon line; want %d, %d, %d and 2",
-			c.Read, c.Kept, c.Duplicates, c.NotLines, 2*len(run.captured)+7, len(want), inReach)
+			c.Read, c.Kept, c.Duplicates, c.NotLines, 2*len(run.captured)+8, len(want), inReach)
+	}
+	trace, err := BuildTrace(read)
+	if err != nil {
+		t.Fatalf("BuildTrace of the collected window: %v", err)
+	}
+	wantRead := MergeStateRead{LineHead: LineHead{Msg: mergeStateReadLine, Time: capturedTime(t, "2026-11-19T05:00:00Z")}, Issue: "ACME-29",
+		Repo: "cybermonklabs/legion", PullRequest: 4910, HeadSHA: "0123456789abcdef0123456789abcdef01234567",
+		RecordedHead: "0123456789abcdef0123456789abcdef01234567", Base: "main", BaseSHA: "89abcdef0123456789abcdef0123456789abcdef",
+		Mergeable: "CONFLICTING", MergeState: "dirty", ReadAt: capturedTime(t, "2026-11-19T04:59:59.5Z")}
+	if iss := trace.Issues["ACME-29"]; iss == nil || !sameReading(iss.MergeStateReads, []MergeStateRead{wantRead}) {
+		t.Errorf("the trace holds ACME-29's reads of a merge state as %+v, want %+v", iss, wantRead)
 	}
 
 	wantCaps := []CapAt{{At: time.Date(2026, time.November, 19, 0, 0, 0, 5e8, time.UTC), Cap: 150},

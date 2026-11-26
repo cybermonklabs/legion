@@ -119,6 +119,7 @@ on:
       - 'packages/daemon/internal/sessionproxy/**'
       - 'packages/daemon/internal/shim/**'
       - 'packages/daemon/internal/shimwire/**'
+      - 'packages/daemon/internal/signals/**'
       - 'packages/daemon/internal/store/*'
       - 'packages/daemon/internal/store/migrations/**'
       - 'packages/daemon/internal/store/storetext/**'

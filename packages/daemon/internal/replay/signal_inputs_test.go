@@ -111,18 +111,18 @@ func TestEachSignalInputReaderReadsItsCapturedShape(t *testing.T) {
 	minute := func(at string, uncached int64, limitIn *int64, source, scope *string, own, provider int64) ProviderMinute {
 		return ProviderMinute{Minute: capturedTime(t, at), Uncached: uncached, Limit: limitIn, LimitSource: source, LimitScope: scope, Own: own, Provider: provider}
 	}
-	opus, claude, gatewayLog, recorded := text("claude-opus-5-5"), text("Claude"), text("gateway-log"), text("dispatch")
+	opus, claude, deploymentLog, recorded := text("claude-opus-5-5"), text("Claude"), text("deployment-log"), text("dispatch")
 	minutes := []ProviderMinute{
-		minute("2026-11-16T14:30:00Z", 2825036, limit(5500000), gatewayLog, opus, 23, 0),
-		minute("2026-11-16T14:31:00Z", 2408497, limit(5500000), gatewayLog, opus, 0, 0),
-		minute("2026-11-16T14:32:00Z", 4331774, limit(5500000), gatewayLog, opus, 16, 0),
+		minute("2026-11-16T14:30:00Z", 2825036, limit(5500000), deploymentLog, opus, 23, 0),
+		minute("2026-11-16T14:31:00Z", 2408497, limit(5500000), deploymentLog, opus, 0, 0),
+		minute("2026-11-16T14:32:00Z", 4331774, limit(5500000), deploymentLog, opus, 16, 0),
 		minute("2026-11-17T17:46:00Z", 2716348, limit(0), recorded, nil, 0, 0),
 		minute("2026-11-17T17:47:00Z", 9908111, limit(0), recorded, nil, 0, 0),
 		minute("2026-11-17T17:48:00Z", -3935516, limit(0), recorded, nil, 0, 0),
 		minute("2026-11-17T17:49:00Z", 2497361, limit(0), recorded, nil, 0, 0),
-		minute("2026-11-23T16:28:00Z", 5089823, limit(6000000), gatewayLog, claude, 0, 70),
-		minute("2026-11-23T16:29:00Z", 7979594, limit(6000000), gatewayLog, claude, 14, 55),
-		minute("2026-11-23T16:30:00Z", 5224805, limit(6000000), gatewayLog, claude, 127, 53),
+		minute("2026-11-23T16:28:00Z", 5089823, limit(6000000), deploymentLog, claude, 0, 70),
+		minute("2026-11-23T16:29:00Z", 7979594, limit(6000000), deploymentLog, claude, 14, 55),
+		minute("2026-11-23T16:30:00Z", 5224805, limit(6000000), deploymentLog, claude, 127, 53),
 	}
 
 	read := []string{"launcher/memory-guard.json", "dispatch/settings-events.json", "dispatch/attribution-events.json", "provider/minutes.jsonl"}

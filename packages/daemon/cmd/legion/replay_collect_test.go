@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -60,5 +61,60 @@ func TestReplayCollectPrintsEachAncestorDispatchDoesNotShow(t *testing.T) {
 	want := "legion replay collect: window.json names the ancestors on a Dispatch parent chain that Dispatch does not show (missingAncestors): ACMEAUX-2\n"
 	if code != 0 || !strings.Contains(stdout, want) {
 		t.Errorf("legion replay collect = %d, stderr %q, stdout:\n%s\nwant 0 and the line\n%s", code, stderr, stdout, want)
+	}
+}
+
+// `legion replay collect-git` refuses, as a usage error that reads and writes nothing, the GitHub
+// phase alone with the git phase alone, the git phase alone with a GitHub token's variable or
+// GitHub's API, both phases with no token's variable, and a memory cap of no bytes.
+func TestReplayCollectGitRefusesThePhasesFlagsThatExcludeEachOther(t *testing.T) {
+	t.Parallel()
+	window := t.TempDir()
+	base := []string{"replay", "collect-git", "--repo", "acme/widgets", "--branch", "main", "--out", window}
+	for _, tc := range []struct {
+		args   []string
+		stderr string
+	}{
+		{[]string{"--github-token-env", "GITHUB_TOKEN", "--github-only", "--git-only"}, "--github-only and --git-only exclude each other"},
+		{[]string{"--git-only", "--github-token-env", "GITHUB_TOKEN"}, "--git-only reads no GitHub API"},
+		{[]string{"--git-only", "--github-api", "https://api.github.com"}, "--git-only reads no GitHub API"},
+		{[]string{"--git-only", "--github-reserve", "10"}, "--git-only reads no GitHub API"},
+		{[]string{"--git-only", "--github-rate", "1"}, "--git-only reads no GitHub API"},
+		{nil, "--github-token-env is required but with --git-only"},
+		{[]string{"--git-only", "--memory-cap", "0"}, "--memory-cap 0"},
+	} {
+		args := append(slices.Clone(base), tc.args...)
+		code, stdout, stderr := legionRun(t, args...)
+		if code != 2 || stdout != "" || !strings.Contains(stderr, tc.stderr) {
+			t.Errorf("legion %s = %d, stdout %q, stderr %q; want 2 and stderr holding %q", strings.Join(args, " "), code, stdout, stderr, tc.stderr)
+		}
+	}
+	if entries, err := os.ReadDir(window); err != nil || len(entries) != 0 {
+		t.Errorf("the refused runs left %v in the window (%v), want nothing", entries, err)
+	}
+}
+
+// Each command that reads GitHub refuses, as a usage error that reads and writes nothing, a share
+// of the quota no reader takes: a reserve below zero, a rate below zero, and a rate slower than one
+// request an hour.
+func TestReplayGitHubCommandsRefuseAShareOfTheQuotaNoReaderTakes(t *testing.T) {
+	t.Parallel()
+	window := t.TempDir()
+	for _, command := range [][]string{
+		{"replay", "collect-merges", "--repo", "acme/widgets", "--branch", "main", "--from", "2001-03-05T09:00:00Z", "--to", "2001-03-05T10:00:00Z",
+			"--github-token-env", "GITHUB_TOKEN", "--out", window},
+		{"replay", "collect-queue", "--repo", "acme/widgets", "--github-token-env", "GITHUB_TOKEN", "--out", window},
+		{"replay", "collect-git", "--repo", "acme/widgets", "--branch", "main", "--github-token-env", "GITHUB_TOKEN", "--out", window},
+	} {
+		for _, share := range [][]string{{"--github-reserve", "-1"}, {"--github-rate", "-0.5"}, {"--github-rate", "0.0001"}} {
+			args := append(slices.Clone(command), share...)
+			code, stdout, stderr := legionRun(t, args...)
+			if code != 2 || stdout != "" || !strings.Contains(stderr, "--github-reserve") {
+				t.Errorf("legion %s = %d, stdout %q, stderr %q; want 2 and stderr naming the share refused", strings.Join(args, " "), code, stdout, stderr)
+			}
+		}
+	}
+	if entries, err := os.ReadDir(window); err != nil || len(entries) != 0 {
+		t.Errorf("the refused runs left %v in the window (%v), want nothing", entries, err)
 	}
 }

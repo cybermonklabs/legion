@@ -137,9 +137,10 @@ type Admission struct {
 	// replay registers one, from its window's P0 bounds.
 	p0Bound func() *int
 
-	// signalRead is the signals a pass admits below P0 by (UseSignals, gateFor): nil in the
-	// daemon until a person turns admission by signals on, when every pass admits under the cap.
-	signalRead func(at time.Time) (signals.Snapshot, bool)
+	// signalRead is the signals a pass admits below P0 by (UseSignals, gateFor), read through the
+	// pass's own transaction: nil in the daemon until a person turns admission by signals on, when
+	// every pass admits under the cap.
+	signalRead func(ctx context.Context, tx pgx.Tx, at time.Time) (signals.Snapshot, bool, error)
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -2156,7 +2157,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	// The P0 bound and the signals are read once for the pass, beside the pause (gateFor), and the
 	// stall measure and the promotion below judge under them (capHold).
-	gate := a.gateFor(kind)
+	gate, err := a.gateFor(ctx, tx, kind)
+	if err != nil {
+		return 0, nil, err
+	}
 	p0Bound := gate.p0Bound
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {

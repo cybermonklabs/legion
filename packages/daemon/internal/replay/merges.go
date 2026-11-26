@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
@@ -57,6 +59,11 @@ type MergesConfig struct {
 	// Wait is how a read GitHub refused for now waits before it is tried again; nil waits on a
 	// timer (backoff.Sleep).
 	Wait func(ctx context.Context, d time.Duration) error
+	// Reserve and Rate are the reader's share of the GitHub quota the daemon and the other roles
+	// share (githubReader): the requests it leaves them, and the most requests a second it sends;
+	// 0 turns either off.
+	Reserve int
+	Rate    float64
 }
 
 // CollectMerges reads cfg.Branch's first-parent history in [cfg.From, cfg.To) from GitHub and
@@ -92,7 +99,9 @@ type MergesConfig struct {
 // with a growing wait, and one GitHub's rate limit refuses is tried again after the wait GitHub
 // names, each such wait told on stderr and bounded (githubReader.read); any other refusal but the
 // 404 of a pull request a subject names, or an answer that is no commit or pull request, fails
-// the read, and nothing is written. It returns the branch's commits as written, oldest first.
+// the read, and nothing is written. It leaves the daemon and the other roles that share GitHub's
+// quota cfg.Reserve requests of it and sends at most cfg.Rate requests a second (githubReader). It
+// returns the branch's commits as written, oldest first.
 //
 // It reads the window once, a line at a time (walkWindow), and refuses every window ReadWindow
 // refuses, before any read of GitHub. Of the window it holds its window.json and the lines of
@@ -110,6 +119,9 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 		return nil, fmt.Errorf("replay: collect-merges: the span [%s, %s) is empty", cfg.From.Format(time.RFC3339), cfg.To.Format(time.RFC3339))
 	case cfg.Token == "":
 		return nil, errors.New("replay: collect-merges: no GitHub token is given")
+	}
+	if err := CheckGitHubShare(cfg.Reserve, cfg.Rate); err != nil {
+		return nil, fmt.Errorf("replay: collect-merges: %w", err)
 	}
 	api, err := url.Parse(strings.TrimRight(cmp.Or(cfg.API, DefaultGitHubAPI), "/"))
 	if err != nil || (api.Scheme != "https" && api.Scheme != "http") || api.Host == "" {
@@ -129,10 +141,7 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	if err != nil {
 		return nil, fmt.Errorf("replay: collect-merges: %w", err)
 	}
-	reader := githubReader{api: api, token: cfg.Token, client: &http.Client{Timeout: time.Minute}, wait: cfg.Wait}
-	if reader.wait == nil {
-		reader.wait = backoff.Sleep
-	}
+	reader := newGitHubReader(api, cfg.Token, cfg.Wait, cfg.Reserve, cfg.Rate)
 	since := cfg.From.Add(-mergesMargin).UTC().Truncate(time.Second)
 	query := url.Values{}
 	query.Set("sha", cfg.Branch)
@@ -183,15 +192,168 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	return merges, nil
 }
 
+// The share of the GitHub quota a collector takes by default (githubReader): it leaves the daemon
+// and the other roles that share the installation's quota DefaultGitHubReserve requests, and sends
+// at most DefaultGitHubRate requests a second.
+const (
+	DefaultGitHubReserve = 3000
+	DefaultGitHubRate    = 0.6
+)
+
+// githubSlowestRate is the slowest pace a reader takes, one request an hour: a slower one is no
+// pace a collect could finish under.
+const githubSlowestRate = 1.0 / 3600
+
+// CheckGitHubShare refuses a share of the GitHub quota no reader takes (githubReader): a reserve
+// below zero, and a rate below zero, not a number, or above zero and slower than
+// githubSlowestRate.
+func CheckGitHubShare(reserve int, rate float64) error {
+	switch {
+	case reserve < 0:
+		return fmt.Errorf("the GitHub reserve %d is below zero", reserve)
+	case math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 || (rate > 0 && rate < githubSlowestRate):
+		return fmt.Errorf("the GitHub rate %v is no number of requests a second from one an hour up, nor 0 for no pacing", rate)
+	}
+	return nil
+}
+
 // githubReader reads GitHub's REST API with a token: the pages of one listing, a commit and a pull
 // request. It waits with wait, and tells each wait for GitHub's rate limit on stderr, os.Stderr
-// where nil.
+// where nil, reading the time from now, time.Now where nil.
+//
+// The installation's quota is shared with the daemon and the other roles, so where share is set
+// (newGitHubReader) the reader leaves them part of it and spaces its own requests: after any
+// answer whose x-ratelimit-remaining is at or below reserve, it sends no request before that
+// answer's x-ratelimit-reset and rateLimitMargin after it, telling the wait on stderr as it tells a
+// rate limit's, and refusing a wait past rateLimitLongestWait as it refuses one of those; and it
+// sends at most rate requests a second. A reserve of 0 and a rate of 0 each turn their rule off.
+// Every copy of the reader, from any goroutine, keeps the one count and the one pace of its share.
 type githubReader struct {
-	api    *url.URL
-	token  string
-	client *http.Client
-	wait   func(ctx context.Context, d time.Duration) error
-	stderr io.Writer
+	api     *url.URL
+	token   string
+	client  *http.Client
+	wait    func(ctx context.Context, d time.Duration) error
+	stderr  io.Writer
+	now     func() time.Time
+	reserve int
+	rate    float64
+	share   *githubShare
+}
+
+// githubShare is what a reader's copies share of its use of the quota, under mu: the moment the
+// reserve holds the next request until, with the answer that set it, and the moment the pace lets
+// the next request go.
+type githubShare struct {
+	mu               sync.Mutex
+	heldUntil        time.Time
+	remaining, limit string
+	next             time.Time
+}
+
+// newGitHubReader is the reader collect-merges, collect-queue and collect-git read api with: with
+// token, a minute's timeout on each answer, wait (backoff.Sleep where nil), and its share of the
+// quota, reserve and rate (githubReader).
+func newGitHubReader(api *url.URL, token string, wait func(ctx context.Context, d time.Duration) error, reserve int, rate float64) githubReader {
+	if wait == nil {
+		wait = backoff.Sleep
+	}
+	return githubReader{api: api, token: token, client: &http.Client{Timeout: time.Minute}, wait: wait, reserve: reserve, rate: rate,
+		share: &githubShare{}}
+}
+
+// clock is the reader's time now.
+func (r githubReader) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+// told is where the reader tells its waits.
+func (r githubReader) told() io.Writer {
+	if r.stderr != nil {
+		return r.stderr
+	}
+	return os.Stderr
+}
+
+// hold waits, before page is requested, while the reserve holds the next request, telling each
+// such wait on stderr, then until the pace lets the request go, taking its place in the pace; a
+// reader with no share waits for neither. The lock is never held across a wait.
+func (r githubReader) hold(ctx context.Context, page *url.URL) error {
+	s := r.share
+	if s == nil {
+		return nil
+	}
+	for {
+		s.mu.Lock()
+		now, until, remaining, limit := r.clock(), s.heldUntil, s.remaining, s.limit
+		s.mu.Unlock()
+		if !now.Before(until) {
+			break
+		}
+		wait := until.Sub(now)
+		if wait > rateLimitLongestWait {
+			return fmt.Errorf("GitHub's quota left %s requests, at or below the reserve of %d, until %s, %s from now, past the %s one wait lasts at most",
+				remaining, r.reserve, until.UTC().Format(time.RFC3339), wait.Round(time.Second), rateLimitLongestWait)
+		}
+		fmt.Fprintf(r.told(), "replay: GitHub's quota left %s of its %s requests, at or below the reserve of %d this collector leaves the daemon "+
+			"and the other roles that share it; waiting %s, until %s, %s past its reset, before GET %s\n", remaining, cmp.Or(limit, "?"),
+			r.reserve, wait.Round(time.Second), until.UTC().Format(time.RFC3339), rateLimitMargin, page.Redacted())
+		if err := r.wait(ctx, wait); err != nil {
+			return err
+		}
+		// The hold waited for is over; one a later answer set holds on.
+		r.release(until)
+	}
+	if r.rate <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	now := r.clock()
+	slot := now
+	if slot.Before(s.next) {
+		slot = s.next
+	}
+	s.next = slot.Add(time.Duration(float64(time.Second) / r.rate))
+	s.mu.Unlock()
+	if !slot.After(now) {
+		return nil
+	}
+	return r.wait(ctx, slot.Sub(now))
+}
+
+// release ends the reserve's hold where it ends by until: the reader waited for it otherwise, as
+// for a rate limit's reset.
+func (r githubReader) release(until time.Time) {
+	if s := r.share; s != nil {
+		s.mu.Lock()
+		if !s.heldUntil.After(until) {
+			s.heldUntil = time.Time{}
+		}
+		s.mu.Unlock()
+	}
+}
+
+// spent reads an answer's headers for the quota left: one at or below the reserve holds the next
+// request until the answer's reset and rateLimitMargin after it (hold).
+func (r githubReader) spent(header http.Header) {
+	if r.share == nil || r.reserve <= 0 {
+		return
+	}
+	remaining, err := strconv.Atoi(header.Get("X-RateLimit-Remaining"))
+	if err != nil || remaining > r.reserve {
+		return
+	}
+	reset, err := strconv.ParseInt(header.Get("X-RateLimit-Reset"), 10, 64)
+	if err != nil {
+		return
+	}
+	r.share.mu.Lock()
+	defer r.share.mu.Unlock()
+	if until := time.Unix(reset, 0).Add(rateLimitMargin); until.After(r.share.heldUntil) {
+		r.share.heldUntil, r.share.remaining, r.share.limit = until, header.Get("X-RateLimit-Remaining"), header.Get("X-RateLimit-Limit")
+	}
 }
 
 // nextPage is the next page's URL in a Link header GitHub writes on a listing's page.
@@ -360,7 +522,7 @@ func (r githubReader) read(ctx context.Context, page *url.URL) ([]byte, string, 
 		if !errors.As(err, &refusal) || !refusal.limited {
 			return body, link, err
 		}
-		now := time.Now()
+		now := r.clock()
 		at, wait := refusal.rateLimitWait(now, waited)
 		switch {
 		case waited == rateLimitWaits:
@@ -370,20 +532,22 @@ func (r githubReader) read(ctx context.Context, page *url.URL) ([]byte, string, 
 			return nil, "", fmt.Errorf("GitHub's rate limit refuses the read until %s, %s from now, past the %s one wait lasts at most: %w",
 				at.UTC().Format(time.RFC3339), at.Sub(now).Round(time.Second), rateLimitLongestWait, err)
 		}
-		stderr := r.stderr
-		if stderr == nil {
-			stderr = os.Stderr
-		}
-		fmt.Fprintf(stderr, "replay: GitHub's rate limit refused GET %s (%v); waiting %s, until %s, wait %d of at most %d for this read\n",
+		fmt.Fprintf(r.told(), "replay: GitHub's rate limit refused GET %s (%v); waiting %s, until %s, wait %d of at most %d for this read\n",
 			page.Redacted(), err, wait.Round(time.Second), now.Add(wait).UTC().Format(time.RFC3339), waited+1, rateLimitWaits)
 		if err := r.wait(ctx, wait); err != nil {
 			return nil, "", err
 		}
+		// The wait for the rate limit's reset is the reserve's wait too, which is not made twice.
+		r.release(now.Add(wait))
 	}
 }
 
-// get reads one page: its body and its Link header.
+// get reads one page: its body and its Link header. It sends the request once the reader's share
+// of the quota lets it (hold), and reads the quota the answer leaves (spent).
 func (r githubReader) get(ctx context.Context, page *url.URL) ([]byte, string, error) {
+	if err := r.hold(ctx, page); err != nil {
+		return nil, "", err
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, page.String(), nil)
 	if err != nil {
 		return nil, "", err
@@ -396,6 +560,7 @@ func (r githubReader) get(ctx context.Context, page *url.URL) ([]byte, string, e
 		return nil, "", &githubUnanswered{err: err}
 	}
 	defer response.Body.Close()
+	r.spent(response.Header)
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, "", &githubUnanswered{err: err}
