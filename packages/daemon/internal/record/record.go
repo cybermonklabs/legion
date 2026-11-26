@@ -2687,8 +2687,8 @@ type Store interface {
 	// runs on the tree's generation, which a next change does not raise. No other issue's row is
 	// touched, and nothing of the gate is published.
 	ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
-	// PutMergeSnapshot records merge as issue's newest merge (Issue.Merge) and the issue's merge
-	// history as ANSWERED, in this transaction. It is the one writer of the snapshot. It replaces a
+	// PutMergeSnapshot records merge as issue's newest merge (Issue.Merge), in this transaction. It
+	// is the one writer of the snapshot. It replaces a
 	// snapshot only with a later merge: where one stands, merge replaces it only if its merged_at
 	// is known and later than the stored one, or the stored one is unknown. It answers whether the
 	// snapshot was written. A merge that names no pull request is refused.

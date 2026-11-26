@@ -50,7 +50,7 @@ func githubEventEnvelope(t *testing.T, id string, fields map[string]any) []byte 
 // decode, each failing where its handling can fail, is terminated at the bound once a given-up
 // record of it has committed. Each fails in the handler; a review and a checks settlement name a
 // pull request the daemon records, since one of any other is acknowledged with no transaction.
-// The count at the end holds the table to the 19 distinct fact types decode.go returns today; it
+// The count at the end holds the table to the 20 distinct fact types decode.go returns today; it
 // counts the table, not decode.go, so a fact type decode.go returns later is added to the table,
 // and to the count, by hand.
 func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
