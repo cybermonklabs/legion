@@ -71,6 +71,9 @@ const CensusLongTransaction = time.Minute
 // and a read that outlasts it refuses that table, like one that waits out LockTimeout.
 const CensusStatementTimeout = time.Minute
 
+// censusStatementTimeoutSetting is CensusStatementTimeout as statement_timeout takes it.
+var censusStatementTimeoutSetting = strconv.FormatInt(CensusStatementTimeout.Milliseconds(), 10) + "ms"
+
 // The SQLSTATEs the census tells apart, beside lock.go's lockNotAvailable.
 const (
 	undefinedTable  = "42P01"
@@ -87,10 +90,11 @@ type CensusOptions struct {
 	LongTransaction time.Duration
 	// TableReadTimeout is the statement timeout of the two reads of a touched table, its size and
 	// its row count (censusTable), past which the census refuses the table. It bounds those two
-	// reads and, after a read that answered, the rollback that ends their savepoint. Every other
-	// statement of the census, a catalog read, a migration's census or a holder's diagnosis, runs
-	// under CensusStatementTimeout whatever this is, so a test that shortens it to time out a read
-	// it holds puts none of them under its shorter bound.
+	// reads and, after a read that answered, the one statement that sets CensusStatementTimeout
+	// back (restoreCensusBound). Every other statement of the census, a catalog read, a
+	// migration's census, a holder's diagnosis or the end of the reads' savepoint, runs under
+	// CensusStatementTimeout whatever this is, so a test that shortens it to time out a read it
+	// holds puts none of them under its shorter bound.
 	TableReadTimeout time.Duration
 	// reviewedTriggers are the enabled triggers boundedWrites admits a table above the limit
 	// beside; nil takes the package's reviewedTriggers. A test that reviews its own fixture's
@@ -262,7 +266,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// The text settings (textSettings says why each matters) make Postgres read the census's text
 	// as Load's check read it (censusTokens).
 	set, args := setConfig(true, withTextSettings(
-		setting{"statement_timeout", strconv.FormatInt(CensusStatementTimeout.Milliseconds(), 10) + "ms"},
+		setting{"statement_timeout", censusStatementTimeoutSetting},
 		setting{"lock_timeout", lockTimeoutSetting},
 	))
 	if _, err := tx.Exec(ctx, set, args...); err != nil {
@@ -668,9 +672,8 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 	}
 	// The two reads of the table run under TableReadTimeout, which set_config sets for their
 	// savepoint alone. A read that fails aborts the savepoint, and PostgreSQL gives the transaction
-	// back CensusStatementTimeout at once. After a read that answered, the rollback that ends the
-	// savepoint starts under TableReadTimeout and gives it back. No other statement of the census
-	// runs under the reads' bound.
+	// back CensusStatementTimeout at once. After a read that answered, restoreCensusBound sets it
+	// back before anything else runs, the savepoint's own end included.
 	nested, err := tx.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("census: savepoint: %w", err)
@@ -682,12 +685,12 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 	err = nested.QueryRow(ctx, "select pg_total_relation_size($1::oid)", oid).Scan(&table.Bytes)
 	if err == nil && touched.Through == "" {
 		if table.Bytes > options.TableLimit {
+			// The size read answered, and no count follows: the census's own bound comes back
+			// before boundedWrites reads the catalog and before the savepoint ends.
+			if err := restoreCensusBound(ctx, nested, name); err != nil {
+				return err
+			}
 			if entry.TableSizeExemption == "" && !entry.ConcurrentIndex {
-				// boundedWrites reads the catalog and not the table's rows, so the savepoint ends
-				// first and those reads run under the census's own bound.
-				if err := nested.Rollback(ctx); err != nil {
-					return fmt.Errorf("census: end the savepoint of the reads of %s: %w", name, err)
-				}
 				verdict, err := writes.boundedWrites(ctx, name, oid)
 				if err != nil {
 					return fmt.Errorf("census: read the writes of %s: %w", name, err)
@@ -716,7 +719,7 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 	var pgErr *pgconn.PgError
 	switch {
 	case err == nil:
-		return nil
+		return restoreCensusBound(ctx, nested, name)
 	case errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable:
 		_ = nested.Rollback(ctx)
 		table.Unread = fmt.Sprintf("its lock was not granted within %s", LockTimeout)
@@ -729,6 +732,22 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 		return nil
 	}
 	return fmt.Errorf("census: read %s: %w", name, err)
+}
+
+// restoreCensusBound sets CensusStatementTimeout back in the savepoint of a touched table's reads,
+// after a read that answered, so that the statement that ends the savepoint, and every statement
+// after it, starts under the census's own bound. It is a statement of its own, and so the one
+// statement of the census besides the reads that starts under TableReadTimeout: PostgreSQL arms
+// each statement's timer from the setting in force when the statement starts. A set_config inside
+// the read would spare it that, and would make the row count parallel-unsafe. It costs one round
+// trip for each table the census reads. A restore that outlasts TableReadTimeout fails the census
+// with this error, where a savepoint rollback that did would leave the savepoint aborted, its
+// error dropped by the deferred call that sent it, and the next statement failing with 25P02.
+func restoreCensusBound(ctx context.Context, nested pgx.Tx, name string) error {
+	if _, err := nested.Exec(ctx, "select set_config('statement_timeout', $1, true)", censusStatementTimeoutSetting); err != nil {
+		return fmt.Errorf("census: set the statement timeout back to %s after the reads of %s: %w", CensusStatementTimeout, name, err)
+	}
+	return nil
 }
 
 // tableQuery finds a touched table by name: its oid; its name as the row count names it; and
