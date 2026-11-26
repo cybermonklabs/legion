@@ -443,12 +443,13 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 		return nil
 	}
 	written := verdictTarget{repository: target.repository, number: target.number, head: target.head}
-	decided, err := w.decideHead(ctx, entry, target, written)
+	writes := &headWrites{}
+	decided, err := w.decideHead(ctx, entry, target, written, writes)
 	if err != nil {
 		return err
 	}
 	decided = w.boundUnanswered(target, decided)
-	changed, err := w.writeDecidedChanged(ctx, written, decided, target.overForeign)
+	changed, err := w.writeDecidedChanged(ctx, written, decided, target.overForeign, writes)
 	if err != nil {
 		return err
 	}
@@ -466,7 +467,7 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 // decideHead is what writeVerdictOver writes on target's head, written being that head of target's
 // pull request: the pull request's decision (decideVerdict), made over every open pull request at
 // the head unless the sweep found the pull request alone there (atHead), and failure where that is
-// none and the daemon wrote a run or status there (newestWrite): a success stands only while the
+// none and the daemon wrote a run or status there (wroteAt): a success stands only while the
 // head's verdict does, and a failure's output is written again for the head as it is now, so a
 // failure for a commit with no reader no longer says each check reads yes once one does not. A
 // failure is made over the others too, for the head's output alone (headOutput): its conclusion
@@ -474,8 +475,8 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 // request's own failure stands, as its no decision yet does, which writes no run of the daemon's own
 // and counts toward the bound. A store failure deciding the others is no answer of GitHub's: it
 // fails the write, which the writers' sweep makes again. The write reads the open pull requests at
-// the head once (headPulls).
-func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRepository, target, written verdictTarget) (verdictDecision, error) {
+// the head once (headPulls), and what the store records there once (writes).
+func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRepository, target, written verdictTarget, writes *headWrites) (verdictDecision, error) {
 	pulls := &headPulls{}
 	decided, err := w.decideVerdict(ctx, entry, target.repository, target.number, target.head, pulls)
 	if err != nil {
@@ -483,7 +484,7 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 	}
 	standing, read := false, false
 	if decided.conclusion == verdict.None && !target.overForeign {
-		if standing, err = w.wroteAt(ctx, written); err != nil || !standing {
+		if standing, err = w.wroteAt(ctx, written, writes); err != nil || !standing {
 			return decided, err
 		}
 		read = true
@@ -499,7 +500,7 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 	}
 	if decided.conclusion == verdict.None && !target.overForeign && !read {
 		// Another pull request at the head turned the pull request's own verdict to none there.
-		if standing, err = w.wroteAt(ctx, written); err != nil {
+		if standing, err = w.wroteAt(ctx, written, writes); err != nil {
 			return verdictDecision{}, err
 		}
 	}
@@ -510,10 +511,10 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 }
 
 // wroteAt is whether the store records a run or a status the daemon wrote on target's head
-// (newestWrite).
-func (w *workflowRuntime) wroteAt(ctx context.Context, target verdictTarget) (bool, error) {
-	newest, err := w.newestWrite(ctx, target)
-	return newest != verdict.None, err
+// (recordedVerdictWrites), read once in the write writes is of.
+func (w *workflowRuntime) wroteAt(ctx context.Context, target verdictTarget, writes *headWrites) (bool, error) {
+	recorded, err := w.recordedVerdictWrites(ctx, target, writes)
+	return recorded.newest != verdict.None, err
 }
 
 // boundUnanswered is decided, the decision of target's head, with no answer bounded (readCommits):

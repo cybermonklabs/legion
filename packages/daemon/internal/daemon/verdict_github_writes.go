@@ -15,33 +15,53 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/verdict"
 )
 
-// wroteSuccess is whether the newest check run or the newest commit status the store records the
-// daemon wrote on target's head concluded success.
-func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget) (bool, error) {
-	var newest map[store.VerdictWriteKind]store.VerdictConclusion
-	err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
-		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
-		newest = map[store.VerdictWriteKind]store.VerdictConclusion{}
-		for _, written := range writes {
-			newest[written.Kind] = written.Conclusion
-		}
-		return err
-	})
-	return newest[store.VerdictWriteCheckRun] == store.VerdictConclusionSuccess || newest[store.VerdictWriteStatus] == store.VerdictConclusionSuccess, err
+// verdictWritesAt is what the store records the daemon wrote on one head: the GitHub id of each
+// check run and of each commit status, and the conclusion of the newest write, the last the store
+// records there, verdict.None where it records none. It is the writer's one reading of the daemon's
+// newest write at a head.
+type verdictWritesAt struct {
+	runs, statuses map[int64]bool
+	newest         verdict.Conclusion
 }
 
-// newestWrite is the conclusion of the newest check run or commit status the store records the
-// daemon wrote on target's head, verdict.None where it records none.
-func (w *workflowRuntime) newestWrite(ctx context.Context, target verdictTarget) (verdict.Conclusion, error) {
-	newest := verdict.None
+// headWrites is one write's reading of what the store records on the head it writes
+// (recordedVerdictWrites), which the head's decision and the write both ask for, read once. The zero
+// value has read nothing.
+type headWrites struct {
+	at   verdictWritesAt
+	read bool
+}
+
+// recordedVerdictWrites is what the store records the daemon wrote on target's head, read once in
+// the write once is of, or read alone where once is nil.
+func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verdictTarget, once *headWrites) (verdictWritesAt, error) {
+	if once != nil && once.read {
+		return once.at, nil
+	}
+	at := verdictWritesAt{runs: map[int64]bool{}, statuses: map[int64]bool{}, newest: verdict.None}
 	err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
-		if len(writes) > 0 {
-			newest = writes[len(writes)-1].Conclusion
+		for _, written := range writes {
+			if written.Kind == store.VerdictWriteCheckRun {
+				at.runs[written.GitHubID] = true
+			} else {
+				at.statuses[written.GitHubID] = true
+			}
+			at.newest = written.Conclusion
 		}
 		return err
 	})
-	return newest, err
+	if err == nil && once != nil {
+		once.at, once.read = at, true
+	}
+	return at, err
+}
+
+// wroteSuccess is whether the daemon's newest write on target's head concluded success
+// (recordedVerdictWrites).
+func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget) (bool, error) {
+	at, err := w.recordedVerdictWrites(ctx, target, nil)
+	return at.newest == verdict.Success, err
 }
 
 // listedCheckRun is one check run as GitHub lists a commit's (GET /commits/{ref}/check-runs): its
@@ -105,7 +125,7 @@ type listedStatus struct {
 // built says why (newVerdictWriter). One goroutine makes every write (writeVerdicts), so no two
 // writes of one head read its runs together and each create one.
 func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) error {
-	_, err := w.writeDecidedChanged(ctx, target, decided, overForeign)
+	_, err := w.writeDecidedChanged(ctx, target, decided, overForeign, nil)
 	return err
 }
 
@@ -114,8 +134,9 @@ func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget
 // by one more merge-state read (writeVerdictOver), and a pass that finds it written is not. Its test
 // of verdict.Undecided is the writer's one: every write of legion-verdict, a head's
 // (writeVerdictOver) and a merge group's (writeMergeGroup), reaches GitHub only through here, and
-// each hands its decision on as it is, so no caller needs a test of its own.
-func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) (bool, error) {
+// each hands its decision on as it is, so no caller needs a test of its own. once is the write's
+// reading of the store at the head, nil for one of its own (recordedVerdictWrites).
+func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool, once *headWrites) (bool, error) {
 	undecided := decided.conclusion == verdict.Undecided
 	if (decided.conclusion == verdict.None || undecided) && !overForeign || w.verdicts.appID == 0 {
 		return false, nil
@@ -132,19 +153,20 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
 	call, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
-	ownRuns, ownStatuses, newest, err := w.recordedVerdictWrites(ctx, target)
+	recorded, err := w.recordedVerdictWrites(ctx, target, once)
 	if err != nil {
 		return false, err
 	}
+	ownRuns, ownStatuses := recorded.runs, recorded.statuses
 	runs, err := githubrest.GetListPages[listedCheckRun](call, client, "/commits/"+target.head+"/check-runs?check_name="+verdict.CheckName+"&filter=all", "check_runs")
 	if err != nil {
 		return false, fmt.Errorf("list the legion-verdict runs of %s at %s: %w", serving, target.head, err)
 	}
 	over := decided.conclusion
 	switch {
-	case undecided && newest != verdict.None:
-		over = newest
-	case over == verdict.None || undecided:
+	case undecided:
+		over = undecidedOver(recorded, runs)
+	case over == verdict.None:
 		over = verdict.Failure
 	}
 	output := verdictOutput(decided, over)
@@ -193,24 +215,31 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 	return changed, nil
 }
 
-// recordedVerdictWrites is the GitHub id of each check run and of each commit status the store
-// records the daemon wrote on target's head, and the conclusion of the newest of them, verdict.None
-// where it records none.
-func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verdictTarget) (runs, statuses map[int64]bool, newest verdict.Conclusion, err error) {
-	runs, statuses = map[int64]bool{}, map[int64]bool{}
-	err = store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
-		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
-		for _, written := range writes {
-			if written.Kind == store.VerdictWriteCheckRun {
-				runs[written.GitHubID] = true
-			} else {
-				statuses[written.GitHubID] = true
-			}
-			newest = written.Conclusion
+// undecidedOver is the conclusion the writers' sweep puts over the runs and statuses that show
+// another on a head with no decision yet (writeDecided): success only where the daemon's newest
+// write there is success and GitHub shows each run the store holds there at success too; failure
+// otherwise. The store alone can hold a success the daemon no longer shows: a row lost after its
+// write, or a point-in-time restore, drops the later failure, and a success written from that store
+// would stand where no verdict does (R4). A run of the daemon's own that another token turned to
+// failure makes it failure too, which fails safe.
+func undecidedOver(recorded verdictWritesAt, runs []listedCheckRun) verdict.Conclusion {
+	if recorded.newest != verdict.Success || len(recorded.runs) == 0 {
+		return verdict.Failure
+	}
+	shown := 0
+	for _, run := range runs {
+		if !recorded.runs[run.ID] {
+			continue
 		}
-		return err
-	})
-	return runs, statuses, newest, err
+		if run.Conclusion != string(verdict.Success) {
+			return verdict.Failure
+		}
+		shown++
+	}
+	if shown < len(recorded.runs) {
+		return verdict.Failure
+	}
+	return verdict.Success
 }
 
 // The output of a legion-verdict run that concludes failure on a Legion head where each check reads

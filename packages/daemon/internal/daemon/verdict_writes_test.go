@@ -2441,6 +2441,47 @@ func TestLegionVerdictARecordedRunAnotherTokenTurnedIsCorrectedWhileNoDecisionSt
 	}
 }
 
+// R4 while no decision stands: the writers' sweep writes success over a head only where the store's
+// newest write there is success and GitHub shows every run the store holds at success too, never
+// from the store alone. Here the owner's acceptance writes success at code, the reviewer's commit
+// then has no reader, and the fact's write turns run 1001 to failure and records it. Where that
+// newest row is lost, as a lost insert or a point-in-time restore loses it, the store's newest is the
+// success; GitHub then gives no answer to the read of the change, and one sweep must leave run 1001
+// at failure. The row kept is the control.
+func TestLegionVerdictNoStaleSuccessIsWrittenWhileNoDecisionStands(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		lost bool
+	}{
+		{"the store holds the failure", false},
+		{"the store lost the failure", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit, openCapture)
+			run := rig.acceptedAndWritten(t)
+			rig.github.mu.Lock()
+			rig.github.messages["code"] = commitOf(captureReviewerSession)
+			rig.github.mu.Unlock()
+			rig.checkState(t, "code", "k1", verdict.StateYes)
+			rig.written(t)
+			rig.noReader(t, "code", wantNoReaderOpening, "code")
+			if tc.lost {
+				inStore(t, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+					_, err := tx.Exec(ctx, `delete from verdict_writes where id = (select max(id) from verdict_writes where head = 'code')`)
+					return err
+				})
+			}
+			rig.github.mu.Lock()
+			rig.github.compareStatus = http.StatusBadGateway
+			rig.github.mu.Unlock()
+			rig.swept(t)
+			if again := rig.soleRun(t, "code", "failure"); again.ID != run.ID {
+				t.Fatalf("the run at code is %+v, want run %d left at failure: no success stands from the store alone", again, run.ID)
+			}
+		})
+	}
+}
+
 // A store failure is no answer of GitHub's: where deciding another pull request at the head fails
 // in the store, the write fails and is logged for the writers' sweep, which writes the head again,
 // rather than writing the pull request's own failure in its place or counting the head as one
