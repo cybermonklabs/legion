@@ -1498,12 +1498,13 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 
 // workspaceRead is what the read of an issue's workspace before one of a round's replacements
 // answered (readPodWorkspace): the round it was made for, who makes the replacement (by,
-// roundReplacer), the role whose process made it ("" for the pod's launcher), the moment it began
-// (at), which the last word weighs a later turn against (replacementDue), and what it found or
-// the error it failed with.
+// roundReplacer), the claim whose process made it and the agent that claim ends in ("" for the
+// pod's launcher), the moment it began (at), which the last word weighs a later turn against
+// (replacementDue), and what it found or the error it failed with.
 type workspaceRead struct {
 	round string
 	by    roundReplacer
+	claim claim.Token
 	role  claim.Role
 	at    time.Time
 	work  runtime.WorkspaceWork
@@ -1544,6 +1545,7 @@ func (s *supervision) readPodWorkspace(ctx context.Context, issue, round string,
 	defer done()
 	if process != (runtime.Known{}) {
 		reader, ok := s.runtime.(runtime.WorkspaceWorkReader)
+		read.claim = process.Claim
 		_, agent, named := process.Claim.Cut()
 		switch {
 		case !ok:
@@ -1568,13 +1570,13 @@ func (s *supervision) readPodWorkspace(ctx context.Context, issue, round string,
 	return read
 }
 
-// attrs is the read as the replacement's line names it (replacePodForRound): who made it, the role
+// attrs is the read as the replacement's line names it (replacePodForRound): who made it, the claim
 // or the pod's launcher, and what it found — the working-copy commit, whether it held a change,
 // the first work commits and how many there are in all — or the error it failed with.
 func (r workspaceRead) attrs() []any {
 	by := "launcher"
-	if r.role != "" {
-		by = string(r.role)
+	if r.claim != "" {
+		by = string(r.claim)
 	}
 	if r.err != nil {
 		return []any{"workspaceRead", "failed", "workspaceReadBy", by, "workspaceReadError", r.err.Error()}
