@@ -121,19 +121,38 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
   now.current = { composer, issue, view };
   const find = useCallback(() => selectedIn(now.current.view, now.current.issue), []);
 
-  // The selection is read again at most once in an animation frame, however often it changes.
+  // The selection is read again at most once in an animation frame, however often it changes, and
+  // not while a pointer button is down: the control is a later element of the page than the rows,
+  // fixed a few pixels right of the selection's end, so a drag that goes on past that end meets it
+  // and takes every word from the row to it (measured in a browser: "th", then the rest of the
+  // page). A press hides it, and the release reads the selection the drag made.
   useEffect(() => {
     let frame: number | undefined;
+    let pressed = false;
     const changed = () => {
       if (frame !== undefined) return;
       frame = requestAnimationFrame(() => {
         frame = undefined;
-        setSelected(find());
+        setSelected(pressed ? null : find());
       });
     };
+    const press = () => {
+      pressed = true;
+      changed();
+    };
+    const release = () => {
+      pressed = false;
+      changed();
+    };
     document.addEventListener("selectionchange", changed);
+    document.addEventListener("pointerdown", press, true);
+    document.addEventListener("pointerup", release, true);
+    document.addEventListener("pointercancel", release, true);
     return () => {
       document.removeEventListener("selectionchange", changed);
+      document.removeEventListener("pointerdown", press, true);
+      document.removeEventListener("pointerup", release, true);
+      document.removeEventListener("pointercancel", release, true);
       if (frame !== undefined) cancelAnimationFrame(frame);
     };
   }, [find]);

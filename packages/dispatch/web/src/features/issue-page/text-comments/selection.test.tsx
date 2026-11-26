@@ -168,6 +168,28 @@ test("no selection, a selection inside the words of one row: the control is draw
   }
 });
 
+test("no selection, a selection made by a drag: no control while the button is down, the control once it is released", async () => {
+  const { client, row, view } = await drawn({ threads: [] });
+  try {
+    const user = userEvent.setup();
+    rangeEndsAt(rectOf(100, 200, 80, 20));
+    // The button goes down on the words and the selection grows under the pointer: the control
+    // would stand where the drag goes on, so it waits for the release.
+    await user.pointer({ keys: "[MouseLeft>]", target: row });
+    selectWords(row, "page");
+    await controlGone(view, "the control is drawn while the button is down");
+    await user.pointer({ keys: "[/MouseLeft]", target: row });
+    const control = await controlDrawn(view, "the released drag's selection draws no control");
+    expect(
+      placeOf(control).left,
+      "the control is left of the selection's end"
+    ).toBeGreaterThanOrEqual(180);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
 test("no selection, a selection across two rows, two blocks of one item, or into the row's margin: no control", async () => {
   stubs = answerSeededReads({ threads: [] });
   const client = newClient();
