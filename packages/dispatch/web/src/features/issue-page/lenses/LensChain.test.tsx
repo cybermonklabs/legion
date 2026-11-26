@@ -1005,6 +1005,22 @@ const WARNING_ROW = {
   risk: "d4000000-0000-4000-8000-000000000004",
 } as const;
 
+/** The row of the risk of `WARNING_ROW`, drawn from the tree read (`buildIssueTree`), whose early
+ *  warning is `earlyWarning`, under its lens, with `cited`, the node the warning may cite. */
+function earlyWarningRow(earlyWarning: string, cited: TreeAnswerNode): TreeNode {
+  const { lens, risk } = WARNING_ROW;
+  return drawnRow(
+    [
+      treeNode(lens, "lens", KEY),
+      treeNode(risk, "risk", lens, {
+        attributes: { early_warning: earlyWarning, heading: "Replies break the HTTP rule" },
+      }),
+      cited,
+    ],
+    [lens, risk]
+  );
+}
+
 /** Draws a risk row from the tree read (`buildIssueTree`) whose early warning is `earlyWarning`,
  *  and waits until its line draws `expected`: its author's words, and each link in it as its
  *  words and its address. */
@@ -1012,16 +1028,9 @@ async function expectEarlyWarningDrawn(
   earlyWarning: string,
   expected: [string, [string, string][]]
 ): Promise<void> {
-  const { constraint, lens, risk } = WARNING_ROW;
-  const drawn = drawnRow(
-    [
-      treeNode(lens, "lens", KEY),
-      treeNode(risk, "risk", lens, {
-        attributes: { early_warning: earlyWarning, heading: "Replies break the HTTP rule" },
-      }),
-      treeNode(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
-    ],
-    [lens, risk]
+  const drawn = earlyWarningRow(
+    earlyWarning,
+    treeNode(WARNING_ROW.constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } })
   );
   const view = renderOnIssue(<LensRow drawn={drawn} />);
   try {
@@ -1297,22 +1306,6 @@ test("a risk row draws a code span in its heading as code and parses no undersco
   }
 });
 
-// A lens's verdict carries a one-line reading of its plain words, so escaped emphasis stays as
-// asterisks rather than being parsed again in the page into an `em` element.
-test("a lens row draws escaped emphasis in its verdict as plain words", async () => {
-  const { lens } = WARNING_ROW;
-  const { paragraph, unmount } = await drawnRowParagraph(
-    [treeNode(lens, "lens", KEY, { attributes: { verdict: "Retry \\*all\\* jobs" } })],
-    [lens]
-  );
-  try {
-    expect(paragraph.textContent).toBe("Retry *all* jobs");
-    expect(paragraph.querySelector("em")).toBeNull();
-  } finally {
-    unmount();
-  }
-});
-
 // A constraint's standard carries a one-line reading that keeps code alone, so `<T>` in backticks
 // is drawn as text in a `code` element rather than parsed again in the page into an HTML node.
 test("a constraint row draws angle brackets in code as text in code with no HTML node", async () => {
@@ -1495,17 +1488,7 @@ const STORED_KINDS: readonly (readonly [string, StoredKind])[] = [
     {
       code: false,
       draw: async (words) => {
-        const drawn = drawnRow(
-          [
-            treeNode(WARNING_ROW.lens, "lens", KEY),
-            treeNode(WARNING_ROW.risk, "risk", WARNING_ROW.lens, {
-              attributes: { early_warning: words, heading: "Replies break the HTTP rule" },
-            }),
-            citedRisk(),
-          ],
-          [WARNING_ROW.lens, WARNING_ROW.risk]
-        );
-        const view = renderOnIssue(<LensRow drawn={drawn} />);
+        const view = renderOnIssue(<LensRow drawn={earlyWarningRow(words, citedRisk())} />);
         return {
           unmount: () => view.unmount(),
           words: () =>
@@ -1529,7 +1512,7 @@ const STORED_SHAPES: readonly (readonly [string, string, StoredDrawn])[] = [
   ["plain words", "Retry the jobs", { anchors: [], code: [], text: "Retry the jobs" }],
   ["a code span", "`__init__` runs", { anchors: [], code: ["__init__"], text: "__init__ runs" }],
   ["bold and emphasis", "**all** of *it*", { anchors: [], code: [], text: "all of it" }],
-  ["an escape", "Retry \\* jobs", { anchors: [], code: [], text: "Retry * jobs" }],
+  ["an escape", "Retry \\*all\\* jobs", { anchors: [], code: [], text: "Retry *all* jobs" }],
   ["a raw tag", "<T> leaks", { anchors: [], code: [], text: "leaks" }],
   [
     "an author's link to a node the read holds",
