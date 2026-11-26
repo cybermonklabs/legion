@@ -10,7 +10,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { useMarkdownHeadline } from "../refs/markdown-engine";
+import { PlainText } from "../refs/plain-text";
 import { Timestamp } from "../refs/Timestamp";
 import { PriorityDescription } from "./PriorityDescription";
 import {
@@ -180,17 +180,11 @@ function TitleCell({ item }: { item: PriorityItem }) {
   // it is open or not.
   const whole = open || keptDescription.length > 0;
   // A closed row's excerpt: the description's start, in plain words on one line - its paragraphs
-  // run together, its markdown read rather than shown, and a `dispatch://` reference written as
-  // its short form - which the projection every plain-text place takes of a stored text gives
-  // (`useMarkdownHeadline`). Its words are those of the tree the server read the description into
-  // (`description_tree`), so no reader's browser parses it, and its markdown's where the answer
-  // carries no tree. It is drawn once the projection has answered.
-  const excerpted = !whole && description !== "";
-  const excerpt = useMarkdownHeadline(
-    excerpted ? descriptionTree : undefined,
-    EXCERPT_MAX,
-    excerpted ? description : undefined
-  );
+  // run together, its markdown read rather than shown - read by the one reader every plain-text
+  // place reads a stored text by (`PlainText`), so a reference in it reads as every other
+  // one-line projection of stored text reads it. Its words are those of the tree the server read
+  // the description into (`description_tree`), so no reader's browser parses it, and its
+  // markdown's where the answer carries no tree. It is drawn once the projection has answered.
   return (
     <div className="min-w-0 space-y-1">
       {/* The title is read here and renamed on the priority's own page, which it opens: a
@@ -215,12 +209,26 @@ function TitleCell({ item }: { item: PriorityItem }) {
           onKeptChange={(texts) => actions.onKeep(id, texts)}
           onSave={(next, from, on) => actions.onDescribe(item, next, from, on)}
         />
-      ) : excerpt === undefined || excerpt.text === "" ? null : (
-        // Muted, in at most two lines that end in '…' where it runs on; the whole excerpt is its
-        // tooltip, and the open row shows the whole description in its editor.
-        <p className={`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`} title={excerpt.text}>
-          {excerpt.text}
-        </p>
+      ) : description === "" ? null : (
+        <PlainText
+          markdown={description}
+          max={EXCERPT_MAX}
+          surface="priority-description"
+          tree={descriptionTree}
+        >
+          {(excerpt) =>
+            excerpt === undefined || excerpt === "" ? null : (
+              // Muted, in at most two lines that end in '…' where it runs on; the whole excerpt
+              // is its tooltip, and the open row shows the whole description in its editor.
+              <p
+                className={`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`}
+                title={excerpt}
+              >
+                {excerpt}
+              </p>
+            )
+          }
+        </PlainText>
       )}
       {actions.compact ? <PhoneLine item={item} /> : null}
     </div>

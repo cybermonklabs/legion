@@ -162,7 +162,7 @@ func requireNotCounted(t *testing.T, check liveCheckAnswer, id, reason string) {
 	t.Fatalf("the route omitted result %s", id)
 }
 
-func TestACheckOfAProgramCountsOnlyResultsOfItsCurrentDeploy(t *testing.T) {
+func TestAGraphCheckReadsTheCurrentDeployAsProductionDoes(t *testing.T) {
 	for _, subject := range []string{"production", "graph"} {
 		t.Run(subject, func(t *testing.T) {
 			rig := newAfterMergeRig(t)

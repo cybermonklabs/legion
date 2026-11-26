@@ -232,6 +232,7 @@ func (s rollBackStore) assertRollForwardEnd(place string, end record.StepRecord,
 // second run of the way back, before any roll forward, keeps the witness and the moment of the
 // first, which the earlier release has moved since.
 func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := newRollBackStore(t)
 	s.issue("LEGION-201", "LEGION-201", "testing", "", 1)
@@ -327,6 +328,7 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 // the promotion started the merger again, the run the row held is over, and its record gets its
 // end.
 func TestTheRollForwardKeepsAMembersMergeOpenUntilItsMergerStartsAgain(t *testing.T) {
+	t.Parallel()
 	s := newRollBackStore(t)
 	for _, tree := range []struct {
 		root, member, held string
@@ -381,6 +383,7 @@ func TestTheRollForwardKeepsAMembersMergeOpenUntilItsMergerStartsAgain(t *testin
 // merge it may have reached since read uncounted, and so does every place an architect's move
 // back may have run again.
 func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *testing.T) {
+	t.Parallel()
 	s := newRollBackStore(t)
 	for _, key := range []string{"LEGION-280", "LEGION-281", "LEGION-282"} {
 		s.issue(key, key, "accepting", "", 1)
@@ -444,6 +447,7 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 // pull request is open, which the close leaves open for its merge. A second rollback and roll
 // forward write no second end.
 func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
+	t.Parallel()
 	s := newRollBackStore(t)
 	// lingerAt is where a tree's linger stands: due, its deadline passed and no close applied;
 	// running, its deadline not passed; closedEarlier, its close applied by the earlier release
@@ -551,6 +555,7 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 // moved, every place of it reads as one that release may have started again, as it reads where no
 // entry says otherwise.
 func TestTheRollForwardReadsNoEntryARollbackPastTheEntriesNumberedAgain(t *testing.T) {
+	t.Parallel()
 	s := newRollBackStore(t)
 	s.issue("LEGION-361", "LEGION-361", "testing", "", 1)
 	s.entry("LEGION-361", "tester")
@@ -583,6 +588,7 @@ func TestTheRollForwardReadsNoEntryARollbackPastTheEntriesNumberedAgain(t *testi
 // schema row it deletes is the roll forward's. Run twice, as a second rollback would before any roll
 // forward, it leaves the same store.
 func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {

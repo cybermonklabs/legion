@@ -17,14 +17,6 @@
 -- deletes. A field nobody read stays null, and a snapshot is a pull request's number first: every
 -- other field is null where the number is.
 --
--- merge_history is the evidence the record holds of an issue's merges: ANSWERED, PARTIAL or NONE
--- (record.MergeHistoryClass). It is added with no default, so every row the upgrade finds reads
--- null, unclassified, until an evidence pass reads what the row's surviving facts prove: no
--- generation, no repository name and no count of rows grants ANSWERED here. Its insertion default
--- is then NONE, so a row a later insert writes starts at NONE, the class of a record that holds
--- nothing of its merges, and never at a claim that its work never merged. PutMergeSnapshot writes
--- ANSWERED with the snapshot, and PutIssue and every clear leave the mark.
---
 -- The wait's own columns are the record's (record.Issue): close_wait_since, since when the close
 -- waits; close_wait, the stored wait that close-wait.md renders, an object of each item with its
 -- state and since when it stands, the newest entry into verifying and the close's time;
@@ -148,7 +140,7 @@
 -- drop function if exists design_news_current(text, text, bigint, bigint);
 -- drop table if exists close_reads;
 -- drop table if exists defects;
--- alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists merge_history, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
+-- alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
 -- alter table production_checks drop column if exists relook_seq, drop column if exists generation;
 -- alter table pending_task_deliveries drop column if exists start_at;
 -- alter table outbox drop constraint if exists outbox_kind_check;
@@ -169,7 +161,6 @@ alter table issues
   add column merge_base text,
   add column merge_repo text,
   add column merged_at timestamptz,
-  add column merge_history text constraint issues_merge_history_check check (merge_history in ('ANSWERED', 'PARTIAL', 'NONE')),
   add column close_wait_since timestamptz,
   add column close_wait jsonb constraint issues_close_wait_check check (jsonb_typeof(close_wait) = 'object'),
   add column closed_on_checks_at timestamptz,
@@ -181,7 +172,6 @@ alter table issues
   -- A snapshot is a pull request's number first: no other field of it stands without one.
   add constraint issues_merge_snapshot_check check (merge_number is not null
     or (merge_head is null and merge_sha is null and merge_base is null and merge_repo is null and merged_at is null));
-alter table issues alter column merge_history set default 'NONE';
 update issues set tree_generation = generation;
 alter table issues alter column tree_generation set not null, alter column tree_generation set default 1;
 

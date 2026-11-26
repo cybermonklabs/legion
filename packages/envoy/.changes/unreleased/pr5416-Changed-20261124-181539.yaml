@@ -1,5 +1,5 @@
 kind: Changed
-body: 'A before-merge check''s state is its state at each open head.'
+body: 'Before-merge checks require all open heads globally, or only the last merged head when none is open.'
 time: 2026-11-24T18:15:39Z
 custom:
     Issue: pr5416

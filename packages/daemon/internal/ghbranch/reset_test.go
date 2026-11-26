@@ -5,12 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // The commits of a next change's branch: mergedCommit is the head the last pull request merged
@@ -25,11 +25,12 @@ const (
 
 const resetBranch = "legion/ACME-1"
 
-// reset is Reset of legion/ACME-1 on acme/widgets from base, with fallback, from the merged head.
+// reset is Reset of legion/ACME-1 on acme/widgets from base, with fallback, from the merged head,
+// with no private-name rules.
 func (g *github) reset(t *testing.T, base, fallback string) (Result, error) {
 	t.Helper()
 	api := g.serve(t)
-	return Reset(context.Background(), widgets(api), graphQL(api), ghrepo.MustParse("acme/widgets"), resetBranch, base, fallback, mergedCommit)
+	return Reset(context.Background(), widgets(api), graphQL(api), ghrepo.MustParse("acme/widgets"), resetBranch, base, fallback, mergedCommit, nil)
 }
 
 // graphQL is GitHub's GraphQL endpoint under api, called with the installation token.
@@ -204,15 +205,19 @@ func TestResetFallsBackToTheDefaultBranchForAGoneBase(t *testing.T) {
 	}
 }
 
-// A branch name this repository's own private-name rules match is refused before anything is sent,
-// as Create refuses it.
+// A branch name the deployment's rules match is refused before anything is sent, as Create
+// refuses it.
 func TestResetRefusesABranchNameTheRulesMatch(t *testing.T) {
+	rules, err := leakguard.LoadRules([]byte(leakguardtest.Rules))
+	if err != nil {
+		t.Fatalf("compile the fixture rules: %v", err)
+	}
 	g := &github{refs: map[string]string{"main": baseHead}}
 	api := g.serve(t)
-	_, err := Reset(context.Background(), widgets(api), graphQL(api), ghrepo.MustParse("acme/widgets"), "legion/"+theHost, "main", "main", mergedCommit)
+	_, err = Reset(context.Background(), widgets(api), graphQL(api), ghrepo.MustParse("acme/widgets"), "legion/"+leakguardtest.RulesHost, "main", "main", mergedCommit, rules)
 	var refused *leakguard.Refusal
-	if !errors.As(err, &refused) || strings.Contains(err.Error(), theHost) {
-		t.Fatalf("Reset of a branch naming a host = %v, want a leak guard refusal that does not carry the name", err)
+	if !errors.As(err, &refused) {
+		t.Fatalf("Reset of a branch the rules match = %v, want a leak guard refusal", err)
 	}
 	if len(g.reads()) != 0 {
 		t.Fatalf("GitHub was asked for %v, want nothing", g.reads())

@@ -70,9 +70,9 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // issues.memory_* columns are no part of it: what a unit was drawn is an assignment row of its own
 // (AssignmentsOf, AssignmentsFor), and nothing this release's daemon runs reads the columns but
 // the back-fill of 20261111045636_experiment_assignments. The merge snapshot reads as the empty
-// Merge where none stands, and an unclassified merge history as the empty class.
+// Merge where none stands.
 const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, members_owed, priority, ` +
-	`coalesce(merge_number, 0), coalesce(merge_head, ''), coalesce(merge_sha, ''), coalesce(merge_base, ''), coalesce(merge_repo, ''), merged_at, coalesce(merge_history, ''), ` +
+	`coalesce(merge_number, 0), coalesce(merge_head, ''), coalesce(merge_sha, ''), coalesce(merge_base, ''), coalesce(merge_repo, ''), merged_at, ` +
 	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), next_changes, merger_completion_owed, standing_told_at, tree_generation`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
@@ -275,17 +275,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// written as Dispatch's own level, the record's Priority.Level, null for NoPriority, as
 	// issueColumns reads it back.
 	// The merge snapshot (merge_number, merge_head, merge_sha, merge_base, merge_repo, merged_at)
-	// is PutMergeSnapshot's alone, and merge_history PutMergeSnapshot's and the evidence pass's, so
-	// neither half names them: a whole new record of a merged issue, a re-entered child's among
-	// them, keeps its merge, and an inserted row takes merge_history's default, NONE. The wait's
-	// columns (close_wait_since to standing_told_at) are the record's own, written whole from the
-	// copy as every other field is. tree_generation is the tree's run (Issue.TreeGeneration): an
-	// insert writes the record's, or its generation where it gives none, and an update writes it
-	// only where the write moves the issue to another tree, which takes the issue's generation: a
-	// root that a hand-over or an orphan's re-admission made starts its tree's run at its own
-	// generation, and the tree it left keeps its own. Every other update leaves it, so a root's next
-	// change, which raises the root's generation, leaves the tree's run, and only a rerun of the
-	// whole tree raises it (ClearTreeGeneration).
+	// is PutMergeSnapshot's alone, so neither half names it: a whole new record of a merged issue,
+	// a re-entered child's among them, keeps its merge. The wait's columns (close_wait_since to
+	// standing_told_at) are the record's own, written whole from the copy as every other field
+	// is. tree_generation is the tree's run (Issue.TreeGeneration): an insert writes the record's,
+	// or its generation where it gives none, and an update writes it only where the write moves
+	// the issue to another tree, which takes the issue's generation: a root that a hand-over or an
+	// orphan's re-admission made starts its tree's run at its own generation, and the tree it left
+	// keeps its own. Every other update leaves it, so a root's next change, which raises the root's
+	// generation, leaves the tree's run, and only a rerun of the whole tree raises it
+	// (ClearTreeGeneration).
 	var closeWait any
 	if len(issue.CloseWait) > 0 {
 		closeWait = []byte(issue.CloseWait)
@@ -535,7 +534,6 @@ func scanIssue(row scanner) (*Issue, error) {
 	var since, declaredAt, treeStalledToldAt, releasedForWaitAt *time.Time
 	var priority *int
 	var mergedAt, closeWaitSince, closedOnChecksAt, standingToldAt *time.Time
-	var mergeHistory string
 	var closeWait []byte
 	var nextChange, treeGeneration int64
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
@@ -543,13 +541,12 @@ func scanIssue(row scanner) (*Issue, error) {
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.MembersOwed, &priority,
-		&issue.Merge.Number, &issue.Merge.Head, &issue.Merge.SHA, &issue.Merge.Base, &issue.Merge.Repo, &mergedAt, &mergeHistory,
+		&issue.Merge.Number, &issue.Merge.Head, &issue.Merge.SHA, &issue.Merge.Base, &issue.Merge.Repo, &mergedAt,
 		&closeWaitSince, &closeWait, &closedOnChecksAt, &nextChange, &issue.NextChanges, &issue.MergerCompletionOwed, &standingToldAt,
 		&treeGeneration); err != nil {
 		return nil, err
 	}
 	issue.Merge.MergedAt = utcOrZero(mergedAt)
-	issue.MergeHistory = MergeHistoryClass(mergeHistory)
 	issue.CloseWaitSince, issue.ClosedOnChecksAt, issue.StandingToldAt = utcOrNil(closeWaitSince), utcOrNil(closedOnChecksAt), utcOrNil(standingToldAt)
 	if len(closeWait) > 0 {
 		issue.CloseWait = json.RawMessage(closeWait)
@@ -615,8 +612,8 @@ func utcOrNil(at *time.Time) *time.Time {
 // PutMergeSnapshot writes merge on issue's row where no snapshot stands or merge is the later one,
 // in one statement that reads the stored snapshot under the row's lock: a known merged_at later
 // than the stored one, or than a stored one nobody read, replaces it, and an older or an unknown
-// one never replaces a snapshot that stands. The merge history is ANSWERED whatever the snapshot
-// does, since merge is positive evidence of a merge either way.
+// one never replaces a snapshot that stands. It answers whether it wrote the snapshot, and refuses
+// an issue with no record.
 func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string, merge Merge) (bool, error) {
 	if !merge.Merged() {
 		return false, fmt.Errorf("record the merge of %s: a merge names the pull request that merged", issue)
@@ -627,7 +624,7 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 		mergedAt = merge.MergedAt
 	}
 	tag, err := tx.Exec(ctx, `update issues set merge_number = $2, merge_head = nullif($3::text, ''), merge_sha = nullif($4::text, ''),
-		merge_base = nullif($5::text, ''), merge_repo = nullif($6::text, ''), merged_at = $7::timestamptz, merge_history = 'ANSWERED'
+		merge_base = nullif($5::text, ''), merge_repo = nullif($6::text, ''), merged_at = $7::timestamptz
 		where key = $1 and (merge_number is null or ($7::timestamptz is not null and (merged_at is null or merged_at < $7::timestamptz)))`,
 		issue, merge.Number, merge.Head, merge.SHA, merge.Base, merge.Repo, mergedAt)
 	if err != nil {
@@ -636,11 +633,11 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 	if tag.RowsAffected() == 1 {
 		return true, nil
 	}
-	answered, err := tx.Exec(ctx, `update issues set merge_history = 'ANSWERED' where key = $1`, issue)
-	if err != nil {
-		return false, fmt.Errorf("record the merge history of %s: %w", issue, err)
+	var recorded bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issues where key = $1)`, issue).Scan(&recorded); err != nil {
+		return false, fmt.Errorf("record the merge of %s: %w", issue, err)
 	}
-	if answered.RowsAffected() == 0 {
+	if !recorded {
 		return false, fmt.Errorf("record the merge of %s: the issue has no record", issue)
 	}
 	return false, nil
@@ -792,7 +789,9 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
 	generation, snapshot, statuses, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward`
+	checked_head, mergeability, merge_state, reviews_requested, head_checks, null_mergeable_reads, null_mergeable_since,
+	evidence_read_at, state_read_at,
+	conflicting_head, merge_sha, conflict_read, merge_forward`
 
 // PullRequest, PullRequestByBranch and PullRequestByNumber each read one pull request whole, with
 // what it remembers of its settled heads (loadSettledHeads), so each record they answer is one a
@@ -1084,10 +1083,11 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	// and need not be named at all, being nullable or defaulted (migrations 0013, 0028, 0029).
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, statuses, pushes, head_moves,
-		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha,
-		conflict_read, merge_forward, fix_attempts, blocked_attempts, head_counted)
+		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, reviews_requested, head_checks,
+		null_mergeable_reads, null_mergeable_since, evidence_read_at, state_read_at, conflicting_head, merge_sha, conflict_read,
+		merge_forward, fix_attempts, blocked_attempts, head_counted)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, 0, 0, '')
+		$27, $28, $29, $30, $31, $32, $33, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
@@ -1096,14 +1096,19 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		pushes = excluded.pushes, head_moves = excluded.head_moves, head_run = excluded.head_run,
 		review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
-		mergeability = excluded.mergeability, merge_state = excluded.merge_state, state_read_at = excluded.state_read_at,
+		mergeability = excluded.mergeability, merge_state = excluded.merge_state, reviews_requested = excluded.reviews_requested,
+		head_checks = excluded.head_checks, null_mergeable_reads = excluded.null_mergeable_reads,
+		null_mergeable_since = excluded.null_mergeable_since, evidence_read_at = excluded.evidence_read_at,
+		state_read_at = excluded.state_read_at,
 		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha,
 		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, statuses, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward,
+		pr.Mergeability, pr.MergeState, pr.ReviewsRequested, pr.HeadChecks, pr.NullMergeableReads, pr.NullMergeableSince, pr.EvidenceReadAt,
+		pr.StateReadAt,
+		pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1648,7 +1653,8 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 // the counters of one still open, its design gate, what its holders took of the approved design
 // and its recorded handoffs. now is when the publication a cleared gate queues is due.
 func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
-	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
+	return s.clearGeneration(ctx, tx, "issue = $2 and state <> 'open'", "issue = $1", "key = $1", issue,
+		fmt.Sprintf("clear the generation of %s", issue), now)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
@@ -1662,29 +1668,38 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 	if _, err := tx.Exec(ctx, `update issues set tree_generation = generation where key = $1 and tree = key`, tree); err != nil {
 		return fmt.Errorf("%s: raise its tree generation: %w", describe, err)
 	}
-	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree, describe, now)
+	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $2) and state <> 'open'",
+		"issue in (select key from issues where tree = $1)", "tree = $1", tree, describe, now)
 }
 
 // ClearChangeGeneration empties one issue's facts of the generation a next change leaves: its
-// merged pull request, with its clock kept, the counters of one still open, and its recorded
-// handoffs (clearRun), as ClearGeneration empties them. It keeps the design gate and what each
-// holder took of it (design_news_told), so the change asks no person for a new approval and owes
-// nobody news of a design that did not change. For a tree root it keeps the tree's architect's
-// phases row whole too: the tree's architect runs on the tree's generation, which a next change
-// leaves, so its entry's task and its counts are of a run that goes on. It touches no other
-// issue's rows.
+// merged pull request, with its clock kept (clearPullRequests), the counters of one still open, and
+// its recorded handoffs (clearRun), as ClearGeneration empties them. It keeps the design gate and
+// what each holder took of it (design_news_told), so the change asks no person for a new approval
+// and owes nobody news of a design that did not change. For a tree root it keeps the tree's
+// architect's phases row whole too: the tree's architect runs on the tree's generation, which a
+// next change leaves, so its entry's task and its counts are of a run that goes on. It touches no
+// other issue's rows.
 func (s *Postgres) ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+	describe := fmt.Sprintf("clear the generation of %s for its next change", issue)
+	if err := s.clearPullRequests(ctx, tx, now, "issue = $2 and state <> 'open'", issue); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
 	return clearRun(ctx, tx, "issue = $1",
 		"issue = $1 and not (role = '"+string(claim.RoleArchitect)+"' and exists (select 1 from issues root where root.key = $1 and root.tree = root.key))",
-		issue, fmt.Sprintf("clear the generation of %s for its next change", issue), now)
+		issue, describe)
 }
 
-// clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
-// their issue column, and issues selects the same issues in the issues table. The run's facts go
-// first (clearRun). The design gates go with them, in a statement of their own (clearGates), and
-// the rows of what each issue's holders took of those gates go beside them.
-func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
-	if err := clearRun(ctx, tx, where, where, key, describe, now); err != nil {
+// clearGeneration deletes the pull requests pullRequests selects, with key as $2
+// (clearPullRequests), and runs each other statement with key as $1: where selects the cleared
+// issues' rows by their issue column, and issues selects the same issues in the issues table. The
+// run's facts go first (clearRun). The design gates go with them, in a statement of their own
+// (clearGates), and the rows of what each issue's holders took of those gates go beside them.
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, pullRequests, where, issues, key, describe string, now time.Time) error {
+	if err := s.clearPullRequests(ctx, tx, now, pullRequests, key); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if err := clearRun(ctx, tx, where, where, key, describe); err != nil {
 		return err
 	}
 	// What each holder took of the approved design goes with the gate it was taken from: the
@@ -1709,31 +1724,41 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 	return s.clearGates(ctx, tx, where, key, describe, now)
 }
 
-// clearRun empties the facts one run of the issues where selects owns, with key as $1: a pull
-// request that is not open, the last run's reading of one still open, and the handoffs, rounds
-// and counts of the phases rows phases selects.
+// clearPullRequests deletes the pull request rows where selects, and keeps each deleted row's
+// clock, in one statement. It binds now as $1, and where names its own arguments, args, from $2.
+// It is the one writer of a clear's clocks: each clear calls it with its whole predicate, which
+// takes only the rows that are not open (state <> 'open'), so the clock of a deleted row is
+// recorded one way whichever clear deleted it.
 //
-// A pull request that is not open goes, and its clock — the updated_at of the newest lifecycle
-// event it applied — is kept in cleared_pull_requests at its repository and number, the latest of
-// every clear's, with the issue whose row the latest clear deleted: GitHub can deliver an opened
-// or a reopen of it after the clear, late or replayed from a message the intake gave up on,
-// however late, and the workflow records such an event only when it is newer than that clock
-// (workflow's pullRequestOpened, ClearedPullRequestClock). The row is never deleted: a pull
-// request recorded again is fenced by its own row from then on. The one-time rename pass moves it
-// to a configured rename's new name with the issue's other rows, and where it merges the moved row
-// into one the new name already holds, that row names the moved row's issue
-// (RenameIssueRepository). The issue's merge snapshot is on its own row (Issue.Merge), which no
-// clear touches, so the merge outlives the row this deletes.
-func clearRun(ctx context.Context, tx pgx.Tx, where, phases, key, describe string, now time.Time) error {
+// The clock — the updated_at of the newest lifecycle event the row applied — is kept in
+// cleared_pull_requests at its repository and number, the latest of every clear's, with the issue
+// whose row the latest clear deleted: GitHub can deliver an opened or a reopen of the pull request
+// after the clear, late or replayed from a message the intake gave up on, however late, and the
+// workflow records such an event only when it is newer than that clock (workflow's
+// pullRequestOpened, ClearedPullRequestClock). The row is never deleted: a pull request recorded
+// again is fenced by its own row from then on. The one-time rename pass moves it to a configured
+// rename's new name with the issue's other rows, and where it merges the moved row into one the
+// new name already holds, that row names the moved row's issue (RenameIssueRepository). The
+// issue's merge snapshot is on its own row (Issue.Merge), which no clear touches, so the merge
+// outlives the row this deletes.
+func (s *Postgres) clearPullRequests(ctx context.Context, tx pgx.Tx, now time.Time, where string, args ...any) error {
 	if _, err := tx.Exec(ctx, `with cleared as (
-			delete from pull_requests where `+where+` and state <> 'open' returning issue, repo, number, head_updated_at)
+			delete from pull_requests where `+where+` returning issue, repo, number, head_updated_at)
 		insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
-		select distinct on (repo, number) repo, number, issue, head_updated_at, $2::timestamptz from cleared order by repo, number, head_updated_at desc
+		select distinct on (repo, number) repo, number, issue, head_updated_at, $1::timestamptz from cleared order by repo, number, head_updated_at desc
 		on conflict (repo, number) do update set issue = excluded.issue,
 			head_updated_at = greatest(cleared_pull_requests.head_updated_at, excluded.head_updated_at), cleared_at = excluded.cleared_at`,
-		key, now); err != nil {
-		return fmt.Errorf("%s: %w", describe, err)
+		append([]any{now}, args...)...); err != nil {
+		return fmt.Errorf("delete the pull requests and keep their clocks: %w", err)
 	}
+	return nil
+}
+
+// clearRun empties the facts one run of the issues where selects owns, with key as $1: the last
+// run's reading of a pull request still open, and the handoffs, rounds and counts of the phases
+// rows phases selects. A pull request that is not open is the clear's to delete first
+// (clearPullRequests).
+func clearRun(ctx context.Context, tx pgx.Tx, where, phases, key, describe string) error {
 	for _, statement := range []string{
 		// An open pull request is kept across a new generation, but the last one's reading of it is
 		// not: its checks settlement is of a head nobody has judged since, and the
@@ -1822,7 +1847,9 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot, &statuses,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
-		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA,
+		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.ReviewsRequested, &pr.HeadChecks, &pr.NullMergeableReads,
+		&pr.NullMergeableSince, &pr.EvidenceReadAt,
+		&pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA,
 		&conflictRead, &mergeForward); err != nil {
 		return nil, err
 	}

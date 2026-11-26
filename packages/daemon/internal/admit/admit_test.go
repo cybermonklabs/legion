@@ -116,10 +116,8 @@ func TestApplyFactLeavesEngineRecordedChildWithoutSlotOrEffects(t *testing.T) {
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	seedSlotted(t, pool, "LEGION-ROOT", "A")
 	parent := "LEGION-ROOT"
-	// It reads back as PutIssue's insert writes it: its tree generation from its generation, and
-	// merge_history at its default, NONE.
-	child := record.Issue{Key: "LEGION-CHILD", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "child", Parent: &parent, Tree: "LEGION-ROOT", Phase: phase.Admitted, Generation: 1, TreeGeneration: 1, Status: "todo", Rank: "B", LastDispatchSeq: 1,
-		MergeHistory: record.MergeHistoryNone}
+	// It reads back as PutIssue's insert writes it: its tree generation from its generation.
+	child := record.Issue{Key: "LEGION-CHILD", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "child", Parent: &parent, Tree: "LEGION-ROOT", Phase: phase.Admitted, Generation: 1, TreeGeneration: 1, Status: "todo", Rank: "B", LastDispatchSeq: 1}
 
 	apply(t, pool, admission, "child-todo", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: child.Title, Parent: parent, Rank: child.Rank}, engineStub{store: record.NewStore(), recordChild: &child})
 	if got := issue(t, pool, child.Key); !reflect.DeepEqual(withoutMovement(got), child) {

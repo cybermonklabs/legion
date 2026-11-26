@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -105,7 +106,8 @@ type outbox struct {
 	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}) and answers the
 	// implement App's client of its repository with it; applyMergeability applies what that read
 	// says about merging the head, reading the base's rules with that client on a conflicting
-	// answer, under the event id it is handed; and mergeStateWait is how long a read row waits
+	// answer, under the event id it is handed, and answers the fact it applied, which can be a
+	// later GraphQL answer than the read's; and mergeStateWait is how long a read row waits
 	// before it reads again. The two rows that read a pull request use them: the merge-queue read
 	// (mergeQueueRead) and the second read of a conflicting head (conflictConfirm), whose every
 	// read is bounded by issueRead. queueMergeStateFollow hands an issue's pull request, as the
@@ -120,7 +122,7 @@ type outbox struct {
 	// outbox by hand leaves them nil, and a read row then fails with an error that names the
 	// missing read.
 	readPullRequest       func(context.Context, record.PullRequest) (githubrest.Client, githubPullRequest, error)
-	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error
+	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) (intake.PullRequestMergeability, error)
 	mergeStateWait        func() time.Duration
 	queueMergeStateFollow func(issue string, follow *record.PullRequest)
 	// podEnded is what the end of an issue's pod runs, for the issues whose pod ended: the drop of
@@ -170,6 +172,12 @@ type outbox struct {
 	// it makes (serving). Nil in a test that configures neither, where a recorded repository is
 	// served under its own name.
 	repositories *repositories
+	// privateNameRules is the deployment's private-name rule file as boot compiled it
+	// (plan.privateNameRules), which every issue branch's create runs over the ref name before it
+	// writes (ghbranch.Create), set by attach after newOutbox. Nil where the deployment names no
+	// rule file, and in a test that builds the outbox by hand: the create then runs no
+	// private-name rule.
+	privateNameRules *leakguard.RuleSet
 	// limits is every GitHub rate limit a row met, by the budget it exhausted, held until its
 	// deadline: a row that spends one of those budgets waits for the latest deadline among them
 	// (standingLimit) rather than meet a limit again. The lanes run rows on many goroutines, so
@@ -4540,7 +4548,8 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 // write an issue branch (appauth.AppRoleFor), and the one workspace provisioning clones with.
 // The create is a REST write, so a tree recorded before a transfer gets its branch on the
 // repository as GitHub holds it today rather than a write to an owner whose installation has
-// lost it.
+// lost it. The ref name passes the deployment's private-name rules first, the ones boot compiled
+// (privateNameRules), so the create runs the same file every role runs.
 func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	ctx, cancel := context.WithTimeout(ctx, issueBranchTimeout)
 	defer cancel()
@@ -4548,7 +4557,7 @@ func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	if err != nil {
 		return err
 	}
-	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
+	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch, r.privateNameRules)
 }
 
 // branchClient is the implement App's client for the repository GitHub holds issue's under now
@@ -4588,7 +4597,7 @@ func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, is
 		return err
 	}
 	graphql := githubrest.Client{Token: github.Token, API: githubrest.GraphQLEndpoint(r.githubAPI)}
-	result, err := ghbranch.Reset(moving, github, graphql, repo, workspace.Bookmark(issue.Key), base, issue.DefaultBranch, from.MergedHead)
+	result, err := ghbranch.Reset(moving, github, graphql, repo, workspace.Bookmark(issue.Key), base, issue.DefaultBranch, from.MergedHead, r.privateNameRules)
 	if err != nil {
 		return fmt.Errorf("move the branch of %s to %s for its next change, which its roles' starts wait for: %w", issue.Key, base, err)
 	}

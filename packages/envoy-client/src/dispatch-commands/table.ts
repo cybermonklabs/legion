@@ -19,6 +19,7 @@ import {
   sendToAgentCommand,
   suggestCommand,
 } from "./conversation";
+import { deployCommand, deploysCommand } from "./deploy";
 import {
   artifactCommand,
   docEditCommand,
@@ -26,7 +27,6 @@ import {
   planApproveCommand,
   requestApprovalCommand,
 } from "./documents";
-import { deployCommand, deploysCommand } from "./deploy";
 import { handoffReadCommand, handoffWriteCommand } from "./handoffs";
 import {
   claimCommand,

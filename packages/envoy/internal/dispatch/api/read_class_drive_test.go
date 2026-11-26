@@ -150,6 +150,7 @@ var readRowDrives = map[string]rowDrive{
 		volatile: []volatileMember{
 			{"checks.*.compared_with.*.learned_at.at", "the moment the read learned a pull request's head from GitHub, its own clock: the read-only read stores nothing and keeps nothing after its request, so its writer's read asks GitHub again"},
 			{"checks.*.results.*.commit_stands.basis.learned_at.at", "the same moment, on the basis each result stands at"},
+			{"checks.*.pass_stands.subjects.*.basis.learned_at.at", "the same moment, on the basis each subject's pass stands at"},
 		}},
 	"GET /api/v1/issues/{key}/coverage":      {target: "/api/v1/issues/$issue/coverage", statement: statementOf(`\bt\.type\s*=\s*'requirement'`)},
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},
@@ -183,8 +184,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/near-copy-checks/{id}":                {target: "/api/v1/near-copy-checks/$nearCopy", statement: statementOf(`\bfrom\s+near_copy_checks\b`)},
 	"GET /api/v1/going/capability":                     {target: "/api/v1/going/capability", fromMemory: "it answers whether the deployment configured a model"},
 	"GET /api/v1/agents":                               {target: "/api/v1/agents", statement: statementOf(`\ba\.author->>'kind'\s*=\s*'session'`)},
+	"GET /api/v1/agents/known":                         {target: "/api/v1/agents/known?id=$session", statement: statementOf(`\bfrom\s+unnest\(\$1::text\[\]\)\s+with\s+ordinality\s+as\s+asked\b`)},
 	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+reached\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/messages":         {target: "/api/v1/agents/$session/messages", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
+	"GET /api/v1/agents/{session_id}/artifacts":        {target: "/api/v1/agents/$session/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+session_id\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {target: "/api/v1/agents/$session/artifacts/$fileSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {target: "/api/v1/agents/$session/artifacts/$fileSlug/versions/1",
 		statement: statementOf(`\bselect\s+content,\s*mime,\s*sha256,\s*size\s+from\s+artifact_versions\b`)},
