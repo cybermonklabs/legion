@@ -1,6 +1,6 @@
 /** the history reads the issue's event log and its live stream, the people rows read the fake
  *  listener's subscriptions and Legion's record, and every row signs in for real with the new
- *  page turned on by that login's stored preference */
+ *  page turned on, by that login's stored preference or by the issue's own address */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -82,6 +82,8 @@ import { requirementText } from "./issue-layout-seed-text";
 import {
   closeDetails,
   gotoIssue,
+  iconRail,
+  issuePage,
   issueRead,
   marginShell,
   openDetails,
@@ -6406,4 +6408,76 @@ test("a reference in a question the history quotes is drawn in the words' ink, n
       );
     }
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The address that opens the new page for one issue, with the reader's setting off.
+// ---------------------------------------------------------------------------------------------
+
+// alice has never turned the new page on, and opens an issue's address that carries
+// `?issue_page=new`: the shell draws the new page's frame, its icon rail, and the new page in it.
+// A view's control moves through the router, so the view's address keeps the parameter, and a
+// reload and Back open the new page again. The same issue's address without the parameter is
+// today's page, with its tabs, and Settings' control is still off: the address stored nothing.
+// SLOW(>=2s): an issue written, a sign-in, two loads of the issue, a reload, a move back and a load
+// of Settings.
+test("an issue address with ?issue_page=new opens the new page with the setting off, keeps it through a view, a reload and Back, and stores nothing", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Opened by its address" });
+  const opened = `/issues/${issue.key}?issue_page=new`;
+  const view = `/issues/${issue.key}/spec?issue_page=new`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(DESKTOP);
+    await page.goto(opened);
+    await expectIssuePageDrawn(page);
+    await expect(iconRail(page), "the new page's frame draws no icon rail").toHaveCount(1);
+    await issueRead(page);
+
+    await presetToggle(page, "spec").click();
+    await expect(page).toHaveURL(view);
+    await expect(presetToggle(page, "spec")).toHaveAttribute("aria-pressed", "true");
+    await expect(issuePage(page), "the view's address drew today's page").toHaveCount(1);
+    await expect(iconRail(page)).toHaveCount(1);
+
+    await page.reload();
+    await expect(page).toHaveURL(view);
+    await expect(issuePage(page), "a reload of the view's address drew today's page").toHaveCount(
+      1
+    );
+    await expect(presetToggle(page, "spec")).toHaveAttribute("aria-pressed", "true");
+    await expect(iconRail(page)).toHaveCount(1);
+
+    await page.goBack();
+    await expect(page).toHaveURL(opened);
+    await expectIssuePageDrawn(page);
+    await expect(iconRail(page)).toHaveCount(1);
+
+    await page.goto(`/issues/${issue.key}`);
+    await expect(
+      page.getByRole("tab", { exact: true, name: "Spec" }),
+      "the address without the parameter drew no tab of today's page"
+    ).toBeVisible();
+    await expect(
+      issuePage(page),
+      "the address without the parameter drew the new page"
+    ).toHaveCount(0);
+    await expect(iconRail(page)).toHaveCount(0);
+
+    await page.goto("/settings");
+    await expect(
+      page
+        .getByRole("region", { name: "Preview" })
+        .getByRole("checkbox", { exact: true, name: "New issue page" })
+    ).not.toBeChecked();
+    expect(
+      await page.evaluate(() => window.localStorage.getItem("dispatch.issue.page:alice")),
+      "the address stored a choice"
+    ).toBeNull();
+  } finally {
+    await alice.close();
+  }
 });
