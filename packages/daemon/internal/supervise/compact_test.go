@@ -969,3 +969,53 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 		t.Fatalf("the claim holds %+v, want the task %s kept unconfirmed until a turn of it starts", got, owed)
 	}
 }
+
+// The same restart, and the agent does not answer the question: its get_state fails, so the
+// restored claim stays working with the question armed. Then a turn starts that names no delivery
+// — an Envoy follow-up, say — and ends. That start is no sign that the owed task reached the agent.
+// This daemon reads the turn's start and end itself, so the start answers the restart's question,
+// and only a start that names the pending delivery confirms it. The task stays pending and
+// unconfirmed through the turn, and the turn's end sends it. The control: with the restart's
+// question left standing at that start (turnStartedWhileBusy's beginTurn), the start confirms the
+// task, the end retires it as served, and no prompt ever carries it.
+func TestARestartWhileASessionIsBeingCompactedKeepsTheOwedTaskThroughATurnThatNamesNoDelivery(t *testing.T) {
+	h := restartedMidCompaction(t)
+	owed := h.pending().ID
+	h.conn.FailGetState(errors.New("the shim did not answer get_state in time"))
+
+	h.connect()
+	h.wantState(StateWorking)
+	h.wantPrompts(ladderSends)
+
+	h.must(StreamTurnStart{Claim: h.token})
+	if got := h.claim().Pending; got == nil || got.ID != owed || !got.ConfirmedAt.IsZero() {
+		t.Fatalf("after a start that names no delivery the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
+	}
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+	if got := h.claim().Pending; got == nil || got.ID != owed {
+		t.Fatalf("after that turn's end the claim holds %+v, want the task %s still owed", got, owed)
+	}
+	prompts := h.wantPrompts(ladderSends + 1)
+	if prompts[ladderSends].DeliveryID != owed {
+		t.Fatalf("the send after that turn carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
+	}
+}
+
+// The same restart with the question unanswered, and the turn that starts names the owed task: the
+// turn Oh My Pi starts for that task's prompt once the handoff is over. That start confirms the
+// task, as a start naming the pending delivery does in any claim.
+func TestARestartWhileASessionIsBeingCompactedConfirmsTheOwedTaskAtAStartThatNamesIt(t *testing.T) {
+	h := restartedMidCompaction(t)
+	owed := h.pending().ID
+	h.conn.FailGetState(errors.New("the shim did not answer get_state in time"))
+
+	h.connect()
+	h.wantState(StateWorking)
+
+	h.must(StreamTurnStart{Claim: h.token, DeliveryID: owed})
+	if got := h.claim().Pending; got == nil || got.ID != owed || got.ConfirmedAt.IsZero() {
+		t.Fatalf("after a start that names the owed task the claim holds %+v, want the task %s confirmed", got, owed)
+	}
+	h.wantPrompts(ladderSends)
+}

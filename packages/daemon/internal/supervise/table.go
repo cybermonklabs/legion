@@ -2182,14 +2182,14 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // beginTurn is what a turn's start decides and records, in a claim the start has just put in
-// working (turnStarted) or one a busy answer already recorded working (turnStartedWhileBusy):
-// whether it is the pending delivery's turn — which confirms that delivery — the durable write,
-// and the turn's step. dateStart dates the turn (Claim.LastTurnStart) and writes the line that
-// names the delivery the start confirms, "" for a start that confirms none: startTurn, which
-// writes the turn's start line, or busyTurnBegun, which writes the line of the agent_start of a
-// turn a busy answer recorded, in place of the start line recordBusyTurn already wrote. A
-// callback that only wrote a line would leave the turn timed from the busy answer, or from the
-// turn before it.
+// working (turnStarted), one a busy answer already recorded working, or one working for a
+// compaction, this daemon's own or one a restart restored (turnStartedWhileBusy): whether it is
+// the pending delivery's turn — which confirms that delivery — the durable write, and the turn's
+// step. dateStart dates the turn (Claim.LastTurnStart) and writes the line that names the
+// delivery the start confirms, "" for a start that confirms none: startTurn, which writes the
+// turn's start line, or busyTurnBegun, which writes the line of the agent_start of a turn a busy
+// answer recorded, in place of the start line recordBusyTurn already wrote. A callback that only
+// wrote a line would leave the turn timed from the busy answer, or from the turn before it.
 func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, dateStart func(delivery string)) error {
 	p := m.claim.Pending
 	news, inFlight := m.turnAnswers()
@@ -2302,19 +2302,24 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // parked until the handoff ended — is decided and recorded as any start is (beginTurn, startTurn):
 // it is dated, and its start line is written here, because its end writes the end line
 // (turnEnded), and an operator reads an end with no start as a turn the daemon never saw begin.
-// The claim is written at once, as compactStart writes it, so a daemon restarted while this turn
-// runs reads its date from the store, and the controller keeper ends it past its bound rather than
-// reading it as no turn (dispatch://INFRA-2045 R2). A start that is the task's — a prompt of it
-// still outstanding, a send of it in flight (turnAnswers) — confirms the task, as a start of a
-// ready claim does: the worker calls the daemon inside that turn, and the entry it serves is the
-// confirmed task's (Claim.ServingEntry), so a confirmation that waited for the prompt's result
-// would come after the calls it is needed for. A turn of Oh My Pi's own confirms nothing and its
-// line names no delivery; a start taken for the task's that was another input's is corrected by
-// the prompt's own result, as it is outside a compaction (promptResulted). Under this daemon's own
-// compaction the turn is recorded on the compaction too: its end would otherwise reach an idle
-// claim, where it means nothing, and the compaction's end would send the owed task into a running
-// agent (compactEnded). A restored claim whose times show a turn open is in the turn an earlier
-// daemon saw start, and a start read again changes nothing.
+// beginTurn's durable write stores that date, so a daemon restarted while this turn runs reads it
+// from the store, and the controller keeper ends it past its bound rather than reading it as no
+// turn (dispatch://INFRA-2045 R2). Under this daemon's own compaction a start that is the task's —
+// a prompt of it still outstanding, a send of it in flight (turnAnswers) — confirms the task, as
+// a start of a ready claim does: the worker calls the daemon inside that turn, and the entry it
+// serves is the confirmed task's (Claim.ServingEntry), so a confirmation that waited for the
+// prompt's result would come after the calls it is needed for. A turn of Oh My Pi's own confirms
+// nothing and its line names no delivery; a start taken for the task's that was another input's
+// is corrected by the prompt's own result, as it is outside a compaction (promptResulted). In a
+// claim a restart restored, this daemon reads the turn's start and end itself, which answers the
+// question the restart left (askFirst), as the agent's answer that it is streaming does
+// (askTurnOver), so the question goes before the decision: only a start that names the pending
+// delivery confirms it. Left standing, the question would take a start that names no delivery —
+// an Envoy follow-up — for the owed task's turn, and the turn's end would retire the task unsent
+// (settle). Under this daemon's own compaction the turn is recorded on the compaction too: its
+// end would otherwise reach an idle claim, where it means nothing, and the compaction's end would
+// send the owed task into a running agent (compactEnded). A restored claim whose times show a
+// turn open is in the turn an earlier daemon saw start, and a start read again changes nothing.
 //
 // A busy answer and a compaction never meet: a compaction is taken only from a ready or idle claim
 // (compactStart), and a busy answer records only a ready or idle one.
@@ -2328,6 +2333,8 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 	}
 	if m.compacting != nil {
 		m.compacting.inTurn, m.compacting.back = true, StateIdle
+	} else {
+		m.askFirst = false
 	}
 	m.log.Info("supervise: a turn started while this claim works for a compaction; the claim is left working for it",
 		"generation", m.claim.Generation, "compactionKnown", m.compacting != nil)
