@@ -4158,6 +4158,48 @@ test("i on a row collapsed with its picker open goes back into the picker's sele
   }
 });
 
+// Enter on a row opens it and puts the focus in its composer a frame on, once the row's details
+// are drawn. A reader who acts before that frame - a press in the search box, and words typed
+// there - has put the focus where they want it, and a late frame that took it into the row's
+// composer would leave the rest of their words there. Here that frame is held until the reader
+// has typed, as a loaded machine holds it.
+test("a reader who moves to the search box before Enter's frame keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+  const held: FrameRequestCallback[] = [];
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    const search = within(region).getByRole<HTMLInputElement>("searchbox", {
+      name: "Search agents",
+    });
+    act(() => {
+      planner.focus();
+    });
+    const frames = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      held.push(callback);
+      return held.length;
+    });
+    try {
+      await user.keyboard("{Enter}");
+      expect(within(planner).getByRole("textbox", { name: "Comment" })).toBeTruthy();
+      await user.click(search);
+      await user.keyboard("pl");
+    } finally {
+      frames.mockRestore();
+    }
+    act(() => {
+      for (const callback of held.splice(0)) callback(performance.now());
+    });
+    expect(document.activeElement, "Enter's frame took the focus from the search box").toBe(search);
+    expect(search.value).toBe("pl");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // One failed poll of the registry is not the agents leaving: each row keeps what it holds - here
 // a draft - and the page says the list could not be refreshed.
 test("a registry poll that fails keeps every row and what it holds, and says so", async () => {

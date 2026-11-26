@@ -102,6 +102,7 @@ import {
   useMarginSlotFill,
 } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
+import { framesByHand } from "./outline-fixtures";
 import { MARGIN_SECTION_NAMES, PROPERTY_LABELS } from "./page-structure";
 import {
   ANSWER_LINES,
@@ -4901,6 +4902,55 @@ test("Add's Assignee closes an open Details, then puts the focus on the header's
       expect(assignee, "Add's Assignee put no focus on the header's select").toHaveFocus()
     );
   } finally {
+    header.remove();
+    unmount();
+    getReferences.mockRestore();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// Add's Assignee reaches the header's select two frames on, once Details has closed. A reader who
+// acts in those frames - a press in another field, and words typed there - has put the focus
+// where they want it, and a late frame that took it to the select would leave the rest of their
+// keys there. Here both frames are held until the reader has typed, as a loaded machine holds
+// them.
+test("a reader who moves to another field before Add's Assignee reaches the header keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  // Open, Details reads what waits on the issue.
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  getIssue.mockResolvedValue(assigneeOnly);
+  const { assignee, header } = assigneeHeader();
+  const elsewhere = document.createElement("input");
+  elsewhere.setAttribute("aria-label", "Elsewhere");
+  document.body.append(header, elsewhere);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    const frames = framesByHand();
+    try {
+      await user.click(screen.getByRole("menuitem", { name: PROPERTY_LABELS.assignee }));
+      await user.click(elsewhere);
+      await user.keyboard("ab");
+      // The first frame only asks for the second.
+      await frames.run();
+      await frames.run();
+    } finally {
+      frames.restore();
+    }
+    expect(document.activeElement, "Add's frames took the focus from the other field").toBe(
+      elsewhere
+    );
+    expect(elsewhere.value).toBe("ab");
+    expect(assignee).not.toHaveFocus();
+  } finally {
+    elsewhere.remove();
     header.remove();
     unmount();
     getReferences.mockRestore();

@@ -1,10 +1,13 @@
 import { beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { OutlineWriterProvider } from "./outline-writer";
+import { framesByHand } from "./outline-fixtures";
+import { OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -58,6 +61,60 @@ test("a window focus more than 30 s after the load reads the writer's asks, comm
   } finally {
     focusManager.setFocused(undefined);
     setSystemTime();
+    for (const read of reads) read.mockRestore();
+    client.clear();
+  }
+});
+
+/** A control that sets the line to write on the issue, as the issue's own Reply does
+ *  (`NodeRow.tsx`), which puts the focus in the line a frame on. */
+function WriteOnIssue(): ReactNode {
+  const writer = useOutlineWriter();
+  return (
+    <button onClick={() => writer?.writeOnIssue()} type="button">
+      Write on the issue
+    </button>
+  );
+}
+
+// A Reply, an Answer or an option's press puts the focus in the line a frame on, once the line is
+// drawn. A reader who acts before that frame - a press in another field, and words typed there -
+// has put the focus where they want it, and a late frame that took it into the line would leave
+// the rest of their words there. Here that frame is held until the reader has typed, as a loaded
+// machine holds it.
+test("a reader who moves to another field before the line's frame keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const reads = [
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+  ];
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <OutlineWriterProvider issueKey="CORE-1">
+        <WriteOnIssue />
+        <div data-testid="issue-composer">
+          <textarea aria-label="Comment" />
+        </div>
+        <input aria-label="Elsewhere" />
+      </OutlineWriterProvider>
+    </QueryClientProvider>
+  );
+  const frames = framesByHand();
+  try {
+    await user.click(screen.getByRole("button", { name: "Write on the issue" }));
+    const elsewhere = screen.getByRole<HTMLInputElement>("textbox", { name: "Elsewhere" });
+    await user.click(elsewhere);
+    await user.keyboard("ab");
+    await frames.run();
+    expect(document.activeElement, "the line's frame took the focus from the other field").toBe(
+      elsewhere
+    );
+    expect(elsewhere.value).toBe("ab");
+  } finally {
+    frames.restore();
+    view.unmount();
     for (const read of reads) read.mockRestore();
     client.clear();
   }

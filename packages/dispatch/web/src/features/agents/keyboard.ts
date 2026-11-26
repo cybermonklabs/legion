@@ -6,6 +6,7 @@
  */
 import type { RefObject } from "react";
 
+import { abortOnReaderAct } from "../../lib/reader-acts";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching } from "../shell/roving";
 
@@ -136,13 +137,21 @@ export function useAgentsKeymap(
     if (next !== null) navigation.focusRow(next);
   };
   // Both actions that live inside a row's details open it first; the details render in the click's
-  // own commit, so the control they want exists on the next frame.
+  // own commit, so the control they want exists on the next frame. A reader who acts before that
+  // frame (`READER_ACTS`) - `j` to the next row, or a press in the search box and words typed
+  // there - has put the focus where they want it, so the frame does nothing then. The key that
+  // asked for the row reached the window before the guard is made, so it does not end it.
   const inOpenRow = (act: (row: HTMLElement) => void) => {
     const row = focusedAgentRow();
     if (row === null) return;
     const toggle = row.querySelector<HTMLElement>("[data-agent-toggle]");
     if (toggle?.getAttribute("aria-expanded") === "false") toggle.click();
-    requestAnimationFrame(() => act(row));
+    const acted = abortOnReaderAct();
+    requestAnimationFrame(() => {
+      if (acted.signal.aborted) return;
+      acted.abort();
+      act(row);
+    });
   };
   useKeymapScope("agents");
   useKeymap("agents", [

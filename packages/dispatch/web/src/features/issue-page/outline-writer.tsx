@@ -3,6 +3,7 @@ import { createContext, type ReactNode, useCallback, useContext, useMemo, useSta
 
 import { ownerAsksQuery, ownerCommentsQuery } from "../../api/queries";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
+import { abortOnReaderAct } from "../../lib/reader-acts";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
@@ -42,7 +43,7 @@ export interface OutlineWriter {
   readonly landed: () => void;
   /** Where the outline is asked to take the reader after a write; undefined once it has. */
   readonly landing: Landing | undefined;
-  /** Puts the caret in the line, once it is drawn. */
+  /** Puts the caret in the line, once it is drawn, unless the reader acts first (`READER_ACTS`). */
   readonly focus: () => void;
   /** What the line writes with no reply set: a comment, or a question. */
   readonly kind: WriterKind;
@@ -166,17 +167,25 @@ export function OutlineWriterProvider({
   const comments = useQuery({ ...ownerCommentsQuery({ issue: issueKey }), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   const focus = useCallback(() => {
+    // A reader who acts before the line takes the focus (`READER_ACTS`) - a key the outline's
+    // keymap reads, or a press in another field and words typed there - has put the focus where
+    // they want it, so the frames that wait for the line do nothing then. The press or the key
+    // that asked for the line reached the window before the guard is made, so it does not end it.
+    const acted = abortOnReaderAct();
     // The field that is drawn: the line keeps its write field mounted, hidden, while it answers
     // a question or edits a comment (`IssueComposer.tsx`), and a hidden field takes no caret.
     const place = (left: number) => {
+      if (acted.signal.aborted) return;
       const field = [...document.querySelectorAll<HTMLTextAreaElement>(COMPOSER_FIELD)].find(
         (one) => one.closest("[hidden]") === null
       );
       if (field !== undefined) {
+        acted.abort();
         field.focus({ preventScroll: true });
         return;
       }
       if (left > 0) requestAnimationFrame(() => place(left - 1));
+      else acted.abort();
     };
     requestAnimationFrame(() => place(DRAWING_FRAMES));
   }, []);
