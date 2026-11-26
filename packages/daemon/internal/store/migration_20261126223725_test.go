@@ -510,3 +510,73 @@ func TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase(t *testing.T) {
 		t.Fatalf("the database main migrated, upgraded, is not a fresh database of this release:\nit holds besides: %q\nit lacks: %q", extra, missing)
 	}
 }
+
+// A kind list that leaves out the kind of a waiting row fails its migration. A database main
+// migrated through 20261126110259 can hold a waiting merge_holds_changed row, and ADD CONSTRAINT …
+// CHECK validates every row the table holds, so this migration's list, which it writes whole, must
+// name that kind. A copy of the migration with merge_holds_changed cut from its list, which this
+// test crafts and never ships, fails Migrate over that row with SQLSTATE 23514 on
+// outbox_kind_check and records no version. Two controls hold the cause to the waiting row's kind:
+// the migration as it ships applies over the same row and keeps it, and the cut copy applies over
+// the same database without the row.
+func TestAKindListWithoutTheKindOfAWaitingRowFailsItsMigration(t *testing.T) {
+	ctx := context.Background()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	index := slices.IndexFunc(all, func(migration migrations.Migration) bool { return migration.Version == doneByChecksVersion })
+	if index < 0 {
+		t.Fatalf("no embedded migration is %d", doneByChecksVersion)
+	}
+	// The kind as the migration's list names it, with the comma before the next kind: block B of
+	// the header names it last in its list, with no comma, so the cut can reach the list alone.
+	const named = "'merge_holds_changed', "
+	if count := strings.Count(all[index].SQL, named); count != 1 {
+		t.Fatalf("the migration holds %q %d times, want once, in its kind list", named, count)
+	}
+	for _, tc := range []struct {
+		name         string
+		cut, waiting bool
+	}{
+		{"the list as it ships, over a waiting merge_holds_changed row", false, true},
+		{"the list without merge_holds_changed, over no such row", true, false},
+		{"the list without merge_holds_changed, over a waiting merge_holds_changed row", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := emptyStore(t)
+			migrateAllBut(t, store, doneByChecksVersion)
+			if tc.waiting {
+				execAll(t, store, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+					values ('merge_holds_changed', 'LEGION-208', '{}', 0, now(), '')`)
+			}
+			set := slices.Clone(all)
+			if tc.cut {
+				set[index].SQL = strings.Replace(set[index].SQL, named, "", 1)
+			}
+			_, err := store.migrate(ctx, set)
+			recorded := rowsAsText(t, store, fmt.Sprintf(`select count(*)::text from schema_version where version = %d`, doneByChecksVersion))
+			if !tc.cut || !tc.waiting {
+				if err != nil {
+					t.Fatalf("migrate = %v, want the migration applied", err)
+				}
+				if !reflect.DeepEqual(recorded, []string{"1"}) {
+					t.Fatalf("the migration's version rows = %v, want one", recorded)
+				}
+				want := map[bool]string{false: "0", true: "1"}[tc.waiting]
+				if got := rowsAsText(t, store, `select count(*)::text from outbox where kind = 'merge_holds_changed'`); !reflect.DeepEqual(got, []string{want}) {
+					t.Fatalf("the merge_holds_changed rows after the migration = %v, want the %s the database held", got, want)
+				}
+				return
+			}
+			var refused *pgconn.PgError
+			if !errors.As(err, &refused) || refused.Code != "23514" || refused.ConstraintName != "outbox_kind_check" {
+				t.Fatalf("migrate = %v, want SQLSTATE 23514 on outbox_kind_check: the list leaves out the waiting row's kind", err)
+			}
+			if !reflect.DeepEqual(recorded, []string{"0"}) {
+				t.Fatalf("the migration's version rows after the refused migration = %v, want none", recorded)
+			}
+			t.Logf("the list without merge_holds_changed is refused over the waiting row: %v", err)
+		})
+	}
+}
