@@ -8,61 +8,70 @@ import (
 	"time"
 )
 
-// TestTheItemsRowsCarryTheStoredFactsOfEachIssue: the rows an eval's issue list serves are one
-// per stored row, each keyed by its issue, of kind `issue`, carrying the stored facts as columns,
-// measured at the issue's close where it closed and at the moment its reader closed it where it is
-// open, with
-// the computation as the source and the issue's own address as the link (R5). The columns are
-// compared field by field against the row they came from, so a column that carried another
-// issue's number, or the moment of the call in place of the moment the facts were measured,
-// fails here. The repo column is the repository the caller resolved for the issue, not the
-// stored row's: each issue is handed one no stored row holds, so a column read from the row
-// fails.
+// TestTheItemsRowsCarryTheStoredFactsOfEachIssue: the rows an eval's issue list serves are built
+// from what the items route reads of what the facts pass stored: the rows of the issues closed in
+// the range (ReadClosedIn) and the filings made in it (ReadFilingsIn). A closed issue's row is
+// keyed by its issue, of kind `issue`, carries the stored facts as columns and is measured at the
+// issue's close (R24); a filing's row is keyed by the filed issue, carries the filing's columns
+// and is measured when it was filed; each names the computation as its source and the issue's own
+// address as its link. Both are compared field by field against what the computation answered
+// before the write, so a column that carried another issue's number, the moment of the call in
+// place of the moment the facts were measured, or a fact the write or the read lost, fails here.
+// The repo column is the repository the caller resolved for the issue, not the stored row's: each
+// issue is handed one no stored row holds, so a column read from the row fails.
 func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	seeded := seed(t, 4)
-	project := seeded.fixture.Project
+	ctx, pool, project := t.Context(), seeded.database.Pool, seeded.fixture.Project
 
-	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, filings, err := ComputeProject(ctx, pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
+	if _, err := WriteProject(ctx, pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
+		t.Fatalf("write the facts: %v", err)
+	}
+	if err := WriteFilings(ctx, pool, FilingsWrite{Project: project, Filings: filings, Whole: true}); err != nil {
+		t.Fatalf("write the filings: %v", err)
+	}
+	// The range holds the whole history, read an hour after its end, as the route reads a range's
+	// rows as of the request (Row.At).
+	from, to := seeded.fixture.From, seeded.now.Add(time.Hour)
+	readAt := to
+	closedRows, err := ReadClosedIn(ctx, pool, project, from, to, readAt)
+	if err != nil {
+		t.Fatalf("read the closed issues' facts: %v", err)
+	}
+	storedFilings, err := ReadFilingsIn(ctx, pool, project, from, to)
+	if err != nil {
+		t.Fatalf("read the filings: %v", err)
+	}
+
+	closed := map[string]Row{}
 	repos := map[string]string{}
 	for _, row := range rows {
+		if row.ClosedAt != nil {
+			closed[row.Issue] = row.At(readAt)
+		}
 		repos[row.Issue] = "example/resolved-" + row.Issue
 	}
-	// The rows as a reader closes them, an hour after the history's end (Row.At, which
-	// ReadClosedIn makes): an open row's facts stand at that moment.
-	readAt := seeded.now.Add(time.Hour)
-	for index := range rows {
-		rows[index] = rows[index].At(readAt)
+	items := ItemRows(closedRows, repos)
+	if len(items) != len(closed) {
+		t.Fatalf("the %d closed issues the computation answered read as %d items, want one item each", len(closed), len(items))
 	}
-	items := ItemRows(rows, repos)
-
-	if len(items) != len(rows) {
-		t.Fatalf("%d rows made %d items, want one item per row", len(rows), len(items))
-	}
-	withHours, withoutHours, closed, open := 0, 0, 0, 0
-	for index, item := range items {
-		row := rows[index]
-		if item.RowKey != row.Issue || item.RowKind != ItemRowKind || item.Project != row.Project {
-			t.Errorf("row %s answered key %q, kind %q, project %q, want %q, %q, %q",
-				row.Issue, item.RowKey, item.RowKind, item.Project, row.Issue, ItemRowKind, row.Project)
+	withHours, withoutHours := 0, 0
+	for _, item := range items {
+		row, computed := closed[item.RowKey]
+		if !computed {
+			t.Errorf("an item is keyed %q, which the computation answered no closed row for", item.RowKey)
+			continue
 		}
-		want := readAt
-		if row.ClosedAt != nil {
-			want, closed = *row.ClosedAt, closed+1
-		} else {
-			open++
+		if item.RowKind != ItemRowKind || item.Project != row.Project {
+			t.Errorf("%s answered kind %q, project %q, want %q, %q", row.Issue, item.RowKind, item.Project, ItemRowKind, row.Project)
 		}
-		if !item.MeasuredAt.Equal(want) {
-			t.Errorf("%s was measured at %s, want %s, its close or, open, its row's own time", row.Issue, item.MeasuredAt, want)
+		if !item.MeasuredAt.Equal(*row.ClosedAt) {
+			t.Errorf("%s was measured at %s, want its close %s", row.Issue, item.MeasuredAt, row.ClosedAt)
 		}
-		if item.Source != ItemSource {
-			t.Errorf("%s names the source %q, want %q", row.Issue, item.Source, ItemSource)
-		}
-		if want := "/issues/" + row.Issue; item.Href != want {
-			t.Errorf("%s links to %q, want the issue's own address %q", row.Issue, item.Href, want)
-		}
+		compareItemLink(t, item)
 		if len(row.PhaseHours) == 0 {
 			withoutHours++
 		} else {
@@ -72,13 +81,59 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	}
 	// Both shapes are in the answer, so the columns above were read over an issue whose work
 	// took measured time and over one whose work took none.
-	if withHours == 0 || withoutHours == 0 || closed == 0 || open == 0 {
-		t.Fatalf("%d rows carry phase hours and %d carry none, %d closed and %d open, want both shapes of each in the answer",
-			withHours, withoutHours, closed, open)
+	if withHours == 0 || withoutHours == 0 {
+		t.Fatalf("%d closed rows carry phase hours and %d carry none, want both shapes in the answer", withHours, withoutHours)
 	}
-	t.Logf("%d items rows built for %d stored rows (%d closed, measured at their close; %d open); scope project %s, window %s to %s; %d rows carry phase hours, %d carry none",
-		len(items), len(rows), closed, open, project, seeded.fixture.From.Format(time.RFC3339),
-		seeded.fixture.To.Format(time.RFC3339), withHours, withoutHours)
+
+	computedFilings := map[string]Filing{}
+	for _, filing := range filings {
+		computedFilings[filing.Key] = filing
+	}
+	filed := FilingItemRows(storedFilings)
+	if len(filed) == 0 || len(filed) != len(computedFilings) {
+		t.Fatalf("the %d filings the computation answered read as %d items, want one item each and at least one", len(computedFilings), len(filed))
+	}
+	for _, item := range filed {
+		filing, computed := computedFilings[item.RowKey]
+		if !computed {
+			t.Errorf("a filing's item is keyed %q, which the computation answered no filing for", item.RowKey)
+			continue
+		}
+		if item.RowKind != ItemRowKind || item.Project != project {
+			t.Errorf("the filing of %s answered kind %q, project %q, want %q, %q", filing.Key, item.RowKind, item.Project, ItemRowKind, project)
+		}
+		if !item.MeasuredAt.Equal(filing.At) {
+			t.Errorf("the filing of %s was measured at %s, want its filing %s", filing.Key, item.MeasuredAt, filing.At)
+		}
+		compareItemLink(t, item)
+		want := map[string]any{
+			ColumnFiledAt: filing.At, ColumnFilerRole: filing.Filer, ColumnFilerIssue: filing.FilerIssue,
+			ColumnFilerPhase: filing.FilerPhase, ColumnClass: filing.Class, ColumnRootKey: filing.Root,
+		}
+		if names := slices.Sorted(maps.Keys(item.Columns)); !slices.Equal(names, slices.Sorted(maps.Keys(want))) {
+			t.Errorf("the filing of %s carries the columns %v, want %v", filing.Key, names, slices.Sorted(maps.Keys(want)))
+			continue
+		}
+		for _, name := range slices.Sorted(maps.Keys(want)) {
+			if !sameColumn(item.Columns[name], want[name]) {
+				t.Errorf("the filing of %s carries %s = %s, want the computed %s", filing.Key, name,
+					showColumn(item.Columns[name]), showColumn(want[name]))
+			}
+		}
+	}
+	t.Logf("%d items rows built for the %d stored rows of issues closed from %s to %s (%d carry phase hours, %d carry none), and %d for the filings made then",
+		len(items), len(closedRows), from.Format(time.RFC3339), to.Format(time.RFC3339), withHours, withoutHours, len(filed))
+}
+
+// compareItemLink reads an item's source and link: the computation, and the issue's own address.
+func compareItemLink(t *testing.T, item ItemRow) {
+	t.Helper()
+	if item.Source != ItemSource {
+		t.Errorf("%s names the source %q, want %q", item.RowKey, item.Source, ItemSource)
+	}
+	if want := "/issues/" + item.RowKey; item.Href != want {
+		t.Errorf("%s links to %q, want the issue's own address %q", item.RowKey, item.Href, want)
+	}
 }
 
 // compareItemColumns reads each column of one row against the stored value it comes from, and

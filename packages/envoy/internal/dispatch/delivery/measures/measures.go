@@ -1,11 +1,14 @@
 // Package measures is the delivery measures' pure computation (LEGION-567 slice 2): deploys a day,
 // lead time, change failure rate, time to restore, rework share, deploy-run success and their
-// per-UTC-day series, judged against Sami's KPI targets. It ports the prototype's
-// web/src/lib/dora.ts formula by formula, and each function cites the prototype lines it ports. It
-// reads no settings, applies no facet and filters no window: the caller hands it the population
-// PRs that survived the facets and the deploy runs its store query selected, and Compute counts
-// exactly those. Each measure is a day builder and a fold over day parts (parts.go), which the
-// eval routes call over stored parts too.
+// per-UTC-day series. It ports the prototype's web/src/lib/dora.ts formula by formula, and each
+// function cites the prototype lines it ports. It judges nothing: the targets a delivery answer
+// states (Targets) are those of the evals of the deploy repository's project
+// (evals.Store.DeployRepoEvals), its verdicts (Status) are evals.VerdictOf's, and DefaultTargets
+// is what the eval catalogue seeds those targets from. It reads no database, applies no facet and
+// filters no window: the caller hands it the population PRs that survived the facets, the deploy
+// runs its store query selected and the delivery settings the deploy cards follow (DeployCards),
+// and Compute counts exactly those. Each measure is a day builder and a fold over day parts
+// (parts.go), which the eval routes call over stored parts too.
 package measures
 
 import (
@@ -92,7 +95,8 @@ type DailyPoint struct {
 }
 
 // FlagCounts is the change failure rate's flags by state, counted against PRs or against deploys.
-// Rate is nil, and every count 0, while no failure source exists.
+// Rate is Confirmed over Total, nil where Total is 0, as it is, with every count 0, while no
+// failure source exists.
 type FlagCounts struct {
 	Confirmed int      `json:"confirmed"`
 	Pending   int      `json:"pending"`
@@ -200,13 +204,13 @@ type Targets struct {
 	UnownedP0                  *Target `json:"unowned_p0"`                     // unowned-p0's
 }
 
-// DefaultTargets are Sami's engineering targets (the prototype's KPI_TARGETS, web/src/lib/dora.ts
-// 11-18, CONTRACT.md "KPI targets", set 2026-09-28), which the catalogue seeds each delivery eval's
-// target from: at least 20 deploys a day and 90% run success, under 5% failures per deploy, 45
-// minutes for every change to reach production and a 60-minute median from open to merge, and no
-// more than 0 unowned P0 issues. Each holds its value and inclusiveness alone: the catalogue
-// states each eval's direction and judges once, beside the target it seeds from here, and a
-// delivery answer's target takes them from the eval.
+// DefaultTargets are the engineering targets the prototype states (its KPI_TARGETS,
+// web/src/lib/dora.ts 11-18, CONTRACT.md "KPI targets", set 2026-09-28), which the catalogue seeds
+// each delivery eval's target from: at least 20 deploys a day and 90% run success, under 5%
+// failures per deploy, 45 minutes for every change to reach production and a 60-minute median from
+// open to merge, and no more than 0 unowned P0 issues. Each holds its value and inclusiveness
+// alone: the catalogue states each eval's direction and judges once, beside the target it seeds
+// from here, and a delivery answer's target takes them from the eval.
 var DefaultTargets = Targets{
 	DeploysPerDay:              &Target{Value: 20, Inclusive: true},
 	ChangeFailureRate:          &Target{Value: 0.05},
@@ -217,13 +221,13 @@ var DefaultTargets = Targets{
 }
 
 // Status is whether each KPI meets its target, its eval's verdict of the answer's figures
-// (evals.VerdictOf), null where the eval's target is off or no figure it judges has a value. Each
-// is its eval's verdict over every statistic its target judges (MergeToProduction
-// merge-to-production's, of the longest change and the median as the catalogue judges it), but
-// MergeToProductionMedian and ChangeFailureRateUpperBound, each the verdict of one statistic of an
-// eval (the median merge to production, the failure rate's upper bound) against that eval's
-// target, and null as well where that eval's target judges no such statistic: the catalogue's
-// judges give the median a verdict and the upper bound none.
+// (evals.VerdictOf), null where the eval's target is off, and where no figure it judges misses the
+// target and one of them has no value. Each is its eval's verdict over every statistic its target
+// judges (MergeToProduction merge-to-production's, of the longest change and the median as the
+// catalogue judges it), but MergeToProductionMedian and ChangeFailureRateUpperBound, each the
+// verdict of one statistic of an eval (the median merge to production, the failure rate's upper
+// bound) against that eval's target, and null as well where that eval's target judges no such
+// statistic: the catalogue's judges give the median a verdict and the upper bound none.
 type Status struct {
 	DeploysPerDay               *bool `json:"deploys_per_day"`
 	ChangeFailureRate           *bool `json:"change_failure_rate"`
@@ -577,9 +581,10 @@ func FoldReworkShare(parts []DayPart) *float64 {
 }
 
 // FoldChangeFailureRate is change-fail-rate over parts: the flags counted against pull requests
-// and against deploys, each rate its summed numerator over its summed denominator, 0 when that
-// denominator is, so a measured 0 stays 0; the zero ChangeFailureRate, every rate nil, when parts
-// hold none of its three series.
+// and against deploys, each rate its summed numerator over its summed denominator, nil where that
+// denominator is 0, since a window with no pull request or no deploy measured no rate of them and
+// a 0 there would be judged met; the zero ChangeFailureRate, every rate nil, when parts hold none
+// of its three series.
 func FoldChangeFailureRate(parts []DayPart) ChangeFailureRate {
 	perDeploy := FoldSeries(parts, SeriesPerDeploy)
 	upperBound := FoldSeries(parts, SeriesUpperBound)
@@ -595,7 +600,7 @@ func FoldChangeFailureRate(parts []DayPart) ChangeFailureRate {
 			Rejected:  int(perPR.Counts[CountRejected]),
 			Reverts:   reverts,
 			Total:     int(perPR.Den),
-			Rate:      new(ValueOrZero(perPR.share())),
+			Rate:      perPR.share(),
 		},
 		PerDeploy: DeployFlagCounts{
 			FlagCounts: FlagCounts{
@@ -604,10 +609,10 @@ func FoldChangeFailureRate(parts []DayPart) ChangeFailureRate {
 				Rejected:  int(perDeploy.Counts[CountRejected]),
 				Reverts:   reverts,
 				Total:     int(perDeploy.Den),
-				Rate:      new(ValueOrZero(perDeploy.share())),
+				Rate:      perDeploy.share(),
 			},
 			ConfirmedOrPending: int(upperBound.Num),
-			UpperBoundRate:     new(ValueOrZero(upperBound.share())),
+			UpperBoundRate:     upperBound.share(),
 		},
 	}
 }
@@ -697,7 +702,8 @@ func deliveryDays(prs []PR, runs []Run, flags []Flag, window Window) []*delivery
 // change-fail-rate or failed-deploy-recovery is built, as no day row of either is stored, so the
 // two read no value through their folds (every failure rate nil and no median to restore),
 // exactly as their evals read them; a source that holds no flag (an empty, non-nil list) measures
-// a rate of 0.
+// a rate of 0 over a window with pull requests and deploys, and no value of a denominator the
+// window holds none of (FoldChangeFailureRate).
 func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 	var frequency, success, mergeToProduction, firstCommitToProduction, openedToProduction, openedToMerge, rework, changeFailure, restore []DayPart
 	for _, rows := range deliveryDays(prs, runs, flags, window) {

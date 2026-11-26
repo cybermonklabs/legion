@@ -41,7 +41,10 @@ var storeWriteCallSites = map[string]string{
 	// event, an issue's spec, the eval registry's write of a project's evals-md, the block-index
 	// tick and the seed's documents. A settlement's version states it right after its event
 	// (appendEvents, above). The API's test drives the registry's write through a register write,
-	// the route that reaches it with one connection the test can watch.
+	// the route that reaches it with one connection the test can watch, on both of its branches:
+	// an edit of the evals-md a project's create seeded, and the create of one, holding the eval's
+	// section, in a project made by SQL, which holds none (QueueNewArtifact), the branch every
+	// project's create runs.
 	"api/artifacts.go#commitArtifactVersionEvent":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/artifacts.go#storeArtifact":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/new_document.go#QueueNewArtifact":         "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",

@@ -592,16 +592,17 @@ func TestAnUpdateThatMovesADayRowsDayLogsBothDays(t *testing.T) {
 	}
 }
 
-// TestTheTablesARewriteUpdatesKeepTheirSize: eval_days, eval_range_figures and eval_day_figures
-// are created with fillfactor 80 (migrations 20261117100006 and 20261120072042). A rewrite after
-// a change of the delivery settings updates each row it sends whose values moved (the upserts'
-// `is distinct from` leaves the rest) and moves no column an index holds, so the fifth of each
-// page left free keeps each update on its page (HOT), writing no index entry; at the default of
-// 100 almost none is, and each table grows with every pass until a vacuum. eval_days is also
-// vacuumed after every 1,000 inserts, with its index pass, since a rewrite deletes and inserts
+// TestTheTablesARewriteUpdatesHoldTheOptionsThatKeepTheirSize: eval_days, eval_range_figures and
+// eval_day_figures are created with fillfactor 80 (migrations 20261117100006 and 20261120072042).
+// A rewrite after a change of the delivery settings updates each row it sends whose values moved
+// (the upserts' `is distinct from` leaves the rest) and moves no column an index holds, so the
+// fifth of each page left free keeps each update on its page (HOT), writing no index entry; at the
+// default of 100 almost none is, and each table grows with every pass until a vacuum. eval_days is
+// also vacuumed after every 1,000 inserts, with its index pass, since a rewrite deletes and inserts
 // rows of it too and an insert reuses a deleted row's space only after a vacuum records it: at
-// autovacuum's defaults the table grew with every pass and was never vacuumed.
-func TestTheTablesARewriteUpdatesKeepTheirSize(t *testing.T) {
+// autovacuum's defaults the table grew with every pass and was never vacuumed. The test reads the
+// options each table holds, not its size.
+func TestTheTablesARewriteUpdatesHoldTheOptionsThatKeepTheirSize(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEmptyStore(t)
 	want := map[string][]string{
