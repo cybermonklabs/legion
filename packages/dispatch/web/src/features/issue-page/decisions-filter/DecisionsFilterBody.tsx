@@ -13,7 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact, IssueDetails } from "../../../api/types";
-import { abortOnReaderAct } from "../../../lib/reader-acts";
+import { abortOnReaderAct, claimUnacted } from "../../../lib/reader-acts";
 import { textMutedOnCanvas } from "../../../theme/classes";
 import {
   focusVisibleRing,
@@ -442,8 +442,7 @@ export function DecisionsFilterBody({
     if (row === null) return;
     taken.current = reveal;
     const acted = revealActs.current;
-    if (acted === undefined || acted.signal.aborted) return;
-    acted.abort();
+    if (acted === undefined || !claimUnacted(acted)) return;
     row.focus();
   }, [drawn, partOf, reveal, writeUps]);
   // Whether the list draws the node the address names, which the page is told

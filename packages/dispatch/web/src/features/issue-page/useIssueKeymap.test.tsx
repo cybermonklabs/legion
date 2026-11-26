@@ -49,8 +49,8 @@ test("a reader who moves to another field before the chord's frames keeps the fo
     const elsewhere = screen.getByRole<HTMLInputElement>("textbox", { name: "Elsewhere" });
     await user.click(elsewhere);
     await user.keyboard("ab");
-    // The chord's first frame, and each frame it looks again in.
-    for (let frame = 0; frame <= 20; frame += 1) await frames.run();
+    // The chord's frame: the outline is drawn already, so the part is found in it.
+    await frames.run();
     expect(document.activeElement, "the chord's frames took the focus from the other field").toBe(
       elsewhere
     );

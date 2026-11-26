@@ -6,7 +6,7 @@
  */
 import type { RefObject } from "react";
 
-import { abortOnReaderAct } from "../../lib/reader-acts";
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching } from "../shell/roving";
 
@@ -148,8 +148,7 @@ export function useAgentsKeymap(
     if (toggle?.getAttribute("aria-expanded") === "false") toggle.click();
     const acted = abortOnReaderAct();
     requestAnimationFrame(() => {
-      if (acted.signal.aborted) return;
-      acted.abort();
+      if (!claimUnacted(acted)) return;
       act(row);
     });
   };

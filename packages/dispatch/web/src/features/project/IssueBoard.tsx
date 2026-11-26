@@ -23,7 +23,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { copyText } from "../../lib/clipboard";
-import { abortOnReaderAct } from "../../lib/reader-acts";
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
 import {
   cardHoverBorder,
   selectedCardBorder,
@@ -474,8 +474,7 @@ export function IssueBoard({
       return;
     }
     focusAfterMove.current = null;
-    if (pending.acted.signal.aborted) return;
-    pending.acted.abort();
+    if (!claimUnacted(pending.acted)) return;
     (
       boardNode(`[data-board-card="${pending.key}"]`) ??
       boardNode(laneColumnSelector(pending.status, pending.laneId))

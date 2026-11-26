@@ -1908,7 +1908,7 @@ test("a reader who moves to another field before the address's reads answer keep
     });
     // The read's answer is drawn.
     await waitInAct(20);
-    expect(view.client.getQueryData(["asks", KEY])).toEqual([]);
+    expect(view.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([]);
     expect(document.activeElement, "the address's row took the focus from the other field").toBe(
       elsewhere
     );

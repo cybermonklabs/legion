@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 
-import { abortOnReaderAct } from "../../lib/reader-acts";
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { freeze } from "./page-structure";
 import { firstUsable, firstUsableIn } from "./usable-control";
@@ -80,8 +80,7 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
       const acted = abortOnReaderAct();
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
-          if (acted.signal.aborted) return;
-          acted.abort();
+          if (!claimUnacted(acted)) return;
           const found = document.querySelector<HTMLElement>(
             `${drawer === undefined ? "" : `aside[${DETAILS_ATTRIBUTE}] `}[${DETAILS_ROW_ATTRIBUTE}="${row}"]`
           );

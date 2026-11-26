@@ -2596,7 +2596,11 @@ merge job. In run 45850342764, attempt 1, dispatch-browser-pr's call ran 565 s (
 machine-seconds, the binaries job's 215 s gone, and at that run's figures its reading would have
 ended about 565 + 235 = 800 s after the two calls started, some 350 s later than the 450 s it
 took. Nothing that gates waits for it: ci-ok does not need this job, and neither of the checks
-main's ruleset requires reads it. The run itself stays in progress until it ends.
+main's ruleset requires reads it. The run itself stays in progress until it ends. Since this
+job needs dispatch-browser-pr, a re-run of failed jobs that re-runs a red pull-request lane
+re-runs this job's shard and merge jobs too, even where they passed; they still take the build,
+since dispatch-browser-pr's binaries job keeps its outputs. That is about 373 machine-seconds
+again by the figures above, accepted as the cost of sharing the build.
 
 Pull requests alone: the merge queue's full lane already runs these rows, so a merge group
 would pay for them twice. The merge-group attempt term is the one every job of ci.yaml but

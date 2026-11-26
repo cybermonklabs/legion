@@ -1572,8 +1572,11 @@ const childIssues: IssueSummary[] = [
 
 // A keyboard move whose question's Move them with it lands moves the card's open child with it.
 // The board says the card's place once the card lands, and the child is in the cell by then: the
-// count holds it, and the card's rank PATCH names it as the card's neighbour there.
-test("Shift+H of a card with an open child, its question's Move them with it landed, announces the count with the child in the cell", async () => {
+// count holds it, and the card's rank PATCH names it as the card's neighbour there. The press in
+// the question asks for the move again, and focus follows the card from that press once the
+// choice lands and the card is placed, though the reader's presses in the question came after the
+// move's own key.
+test("Shift+H of a card with an open child, its question's Move them with it landed, announces the count with the child in the cell and puts the focus on the moved card", async () => {
   const user = userEvent.setup();
   const statusChanges = answerTheQuestion(async () => ({
     changed: [
@@ -1603,38 +1606,6 @@ test("Shift+H of a card with an open child, its question's Move them with it lan
         .getAllByRole("article")
         .map((node) => node.textContent)
     ).toEqual([expect.stringContaining("Parent"), expect.stringContaining("Child")]);
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-    statusChanges.mockRestore();
-  }
-});
-
-// The question a keyboard move asks is answered by a press in it, which asks for the move again:
-// focus follows the card from that press once the choice lands and the card is placed, though the
-// reader's presses in the question came after the move's own key.
-test("Shift+H of a card with an open child, its question's Move them with it landed, puts the focus on the moved card", async () => {
-  const user = userEvent.setup();
-  const statusChanges = answerTheQuestion(async () => ({
-    changed: [
-      { key: "CORE-2", parent: "CORE-1", previous_last_seq: 1, status: "backlog" },
-      { key: "CORE-1", parent: null, previous_last_seq: 1, status: "backlog" },
-    ],
-    issue: { ...patched, status: "backlog" },
-  }));
-  const patchIssue = patchInFlight();
-  const { cleanup } = renderBoard({}, undefined, childIssues);
-  try {
-    const shown = await screen.findByRole("region", { name: "Project board" });
-    const status = within(shown).getByRole("status", { name: "Board announcements" });
-    act(() => within(shown).getByRole("article", { name: "CORE-1 Parent" }).focus());
-    await user.keyboard("{Shift>}H{/Shift}");
-    const question = await screen.findByRole("dialog", { name: "Move CORE-1 to Backlog?" });
-    const moveThem = within(question).getByRole("button", { name: "Move them with it" });
-    await waitFor(() => expect(moveThem).toBeEnabled());
-
-    await user.click(moveThem);
-    await waitFor(() => expect(status.textContent).toBe("CORE-1 → Backlog, position 1 of 2"));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const backlog = within(shown).getByRole("region", { name: "Backlog" });
     await waitFor(() =>

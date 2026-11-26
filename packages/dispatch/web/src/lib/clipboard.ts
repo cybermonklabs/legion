@@ -1,4 +1,4 @@
-import { abortOnReaderAct } from "./reader-acts";
+import { abortOnReaderAct, claimUnacted } from "./reader-acts";
 
 export async function copyText(text: string): Promise<boolean> {
   if (typeof navigator !== "undefined" && navigator.clipboard !== undefined) {
@@ -18,8 +18,7 @@ export async function copyText(text: string): Promise<boolean> {
     } catch {
       // Fall through to the legacy path, which also works on non-secure origins.
     }
-    if (acted.signal.aborted) return false;
-    acted.abort();
+    if (!claimUnacted(acted)) return false;
   }
 
   const textarea = document.createElement("textarea");

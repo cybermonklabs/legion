@@ -41,3 +41,11 @@ export function abortOnReaderAct(then?: () => void): AbortController {
   }
   return acts;
 }
+
+/** True when the reader has not acted since `abortOnReaderAct` made `acted`. It stops the watch
+ *  either way. */
+export function claimUnacted(acted: AbortController): boolean {
+  const unacted = !acted.signal.aborted;
+  acted.abort();
+  return unacted;
+}

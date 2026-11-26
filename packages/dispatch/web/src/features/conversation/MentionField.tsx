@@ -15,7 +15,7 @@ import {
   useState,
 } from "react";
 
-import { abortOnReaderAct } from "../../lib/reader-acts";
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
 import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   inputClasses,
@@ -228,8 +228,7 @@ export function MentionField({
     // click on its row - reached the window before the guard is made, so it does not end it.
     const acted = abortOnReaderAct();
     requestAnimationFrame(() => {
-      if (acted.signal.aborted) return;
-      acted.abort();
+      if (!claimUnacted(acted)) return;
       element.current?.focus();
       element.current?.setSelectionRange(after.caret, after.caret);
     });

@@ -9,7 +9,7 @@ import {
 } from "react";
 
 import type { IssueDetails } from "../../api/types";
-import { abortOnReaderAct } from "../../lib/reader-acts";
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
 import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
@@ -306,8 +306,7 @@ export function IssueAddMenu({
             const acted = abortOnReaderAct();
             requestAnimationFrame(() =>
               requestAnimationFrame(() => {
-                if (acted.signal.aborted) return;
-                acted.abort();
+                if (!claimUnacted(acted)) return;
                 reach();
               })
             );

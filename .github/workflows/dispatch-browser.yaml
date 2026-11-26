@@ -13,7 +13,8 @@ on:
           project, the `-alone` ones and the two-process job among them, over every row; or
           `references` for `chromium` alone, over every row of the twenty-one spec files the
           `references)` arm of .github/scripts/dispatch-browser-shard-suite.sh names, with the
-          binaries, shard and merge jobs alone. Each caller passes it as a literal: ci.yaml's
+          shard and merge jobs alone, and the binaries job where it builds rather than takes
+          dispatch-browser-pr's build (build-job). Each caller passes it as a literal: ci.yaml's
           dispatch-browser-pr job `pull-request`, its dispatch-browser job and the nightly's
           `full`, and its dispatch-references job `references`. The shard job reads it for the
           projects it runs, and the binaries job reads it for whether to build the second
