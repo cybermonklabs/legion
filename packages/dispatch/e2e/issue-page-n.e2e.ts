@@ -194,7 +194,6 @@ import {
   INVENTORY_PARENT_ROWS,
   INVENTORY_RENAMES,
   INVENTORY_ROWS,
-  type InventoryEntry,
   identityBlock,
   logFocusMoves,
   nodeMenuButton,
@@ -249,6 +248,7 @@ import {
 import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { settledScrollTop } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import type { InventoryEntry } from "./page-inventory";
 import { sql } from "./psql";
 import {
   ANCHOR,

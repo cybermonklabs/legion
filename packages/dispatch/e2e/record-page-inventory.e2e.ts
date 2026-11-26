@@ -16,7 +16,7 @@ import {
   mergeInventory,
   recordInventory,
   recordScopeInventory,
-} from "./issue-page-n";
+} from "./page-inventory";
 import { resetDatabase } from "./seed";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
