@@ -3,6 +3,7 @@ import {
   type MouseEvent,
   type ReactNode,
   type RefObject,
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -41,6 +42,7 @@ import { parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
+import { useDrawnInSlices } from "../drawn-in-slices";
 import { chipName } from "../first-line";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
@@ -384,10 +386,58 @@ export function VerificationFilterBody({
     if (keyMovedIn !== following && !acted) setRovingId(addressRow);
   }
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
-  // An address that names a row puts the focus on it once every read the page's tree is built
-  // from has settled, as the Spec view's does (`useAddressLanding`).
+  // The rows are drawn a screen around the anchor first, and the others in slices after it
+  // (`drawn-in-slices.ts`), a unit at a time: a statement with the checks under it, a check that
+  // serves no statement, and each other row. The issue's row, which holds the summary and the
+  // chips, is drawn at once. The anchor is the unit of the row the address names, else the first;
+  // the unit of the row the address lands on is drawn in the render that names it, with every
+  // unit between the anchor and it, and the keys draw the unit of the row they move to first
+  // (`keyDown`).
   const tree = useRef<HTMLDivElement>(null);
-  useAddressLanding({ acts: addressActs, drawn: rows.join(" "), id: addressRow, tree });
+  const { units, unitOf } = useMemo(() => {
+    const unitOf = new Map<string, string>();
+    if (answered && holds) {
+      for (const statement of shown) {
+        unitOf.set(statement.node.id, statement.node.id);
+        for (const check of statement.checks) {
+          unitOf.set(checkRowId(statement.node.id, check.node.id), statement.node.id);
+        }
+      }
+      for (const check of loose) unitOf.set(check.node.id, check.node.id);
+      for (const one of others) unitOf.set(one.id, one.id);
+    }
+    return { unitOf, units: [...new Set(unitOf.values())] };
+  }, [answered, holds, loose, others, shown]);
+  const slicesMeasure = useCallback(
+    (unit: string) =>
+      tree.current
+        ?.querySelector<HTMLElement>(`[data-verification-row="${CSS.escape(unit)}"]`)
+        ?.getBoundingClientRect().top,
+    []
+  );
+  const addressUnit = addressRow === undefined ? undefined : unitOf.get(addressRow);
+  const drawing = useDrawnInSlices({
+    anchor: reveal === undefined ? undefined : unitOf.get(reveal),
+    focused: unitOf.get(rovingId),
+    keyOf: (unit: string) => unit,
+    measure: slicesMeasure,
+    needed: addressUnit === undefined ? NO_ROWS : [addressUnit],
+    rows: units,
+  });
+  const drawnUnits = new Set(drawing.drawn);
+  const allDrawn = drawing.drawn === units;
+  const drawnShown = allDrawn ? shown : shown.filter(({ node }) => drawnUnits.has(node.id));
+  const drawnLoose = allDrawn ? loose : loose.filter(({ node }) => drawnUnits.has(node.id));
+  const drawnOthers = allDrawn ? others : others.filter(({ id }) => drawnUnits.has(id));
+  // An address that names a row puts the focus on it once every read the page's tree is built
+  // from has settled, as the Spec view's does (`useAddressLanding`), looking again each time the
+  // units drawn change.
+  useAddressLanding({
+    acts: addressActs,
+    drawn: drawing.drawn.join(" "),
+    id: addressRow,
+    tree,
+  });
   // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
   // open, false where they pressed them shut while the focus held them open, and no entry where
   // the focus alone decides. It is held here rather than in each check so the tree's keys and a
@@ -466,7 +516,18 @@ export function VerificationFilterBody({
     const row = target.closest<HTMLElement>(TREE_ROW);
     const at = row === null ? -1 : elements.indexOf(row);
     if (row === null || at === -1) return;
-    const to = moveTarget(key, row, elements, at);
+    // The next row or the one before, the first or the last, are the tree's rows, drawn or still
+    // to be drawn (`rows`): the unit that holds the one a key moves to is drawn first.
+    const along = rows.indexOf(row.dataset.verificationRow ?? "");
+    const toId = along === -1 ? undefined : stepTarget(key, rows, along);
+    const toUnit = toId === undefined ? undefined : unitOf.get(toId);
+    if (toUnit !== undefined) drawing.slices.drawUpTo(toUnit);
+    const to =
+      toId === undefined
+        ? moveTarget(key, row)
+        : event.currentTarget.querySelector<HTMLElement>(
+            `[data-verification-row="${CSS.escape(toId)}"]`
+          );
     if (to != null) {
       event.preventDefault();
       // The row the focus moves to takes the tree's one tab stop, so Tab back into the tree
@@ -545,7 +606,7 @@ export function VerificationFilterBody({
             </div>
             <div className={TABLE} data-verification-table="">
               <Headings />
-              {shown.map((statement) => (
+              {drawnShown.map((statement) => (
                 <Statement
                   context={context.has(statement.node.id)}
                   key={statement.node.id}
@@ -573,7 +634,7 @@ export function VerificationFilterBody({
                   {matched ? EMPTY_STATE_LINES.verification_none : EMPTY_STATE_LINES.no_match}
                 </p>
               ) : null}
-              {loose.map((check) => (
+              {drawnLoose.map((check) => (
                 <Check
                   check={check}
                   kept={table.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
@@ -586,7 +647,7 @@ export function VerificationFilterBody({
                   tabIndex={tabIndexFor(check.node.id)}
                 />
               ))}
-              {others.map((node) => (
+              {drawnOthers.map((node) => (
                 <OtherRow key={node.id} node={node} tabIndex={tabIndexFor(node.id)} />
               ))}
             </div>
@@ -880,26 +941,29 @@ const TREE_KEYS: ReadonlySet<string> = new Set([
   "o",
 ]);
 
-/** Where a key moves the focus from `row`, the `at`th of the tree's rows (`elements`): the next
- *  row or the one before, the first or the last, a statement's first check, or the statement a
- *  check is drawn under. Right and Left go nowhere from any other row, and no other key moves. */
-function moveTarget(
-  key: string,
-  row: HTMLElement,
-  elements: readonly HTMLElement[],
-  at: number
-): HTMLElement | null | undefined {
+/** Where a key moves the focus along the tree's rows, by their ids in `rows`, from the `at`th:
+ *  the next row or the one before, the first or the last. Undefined for every other key. */
+function stepTarget(key: string, rows: readonly string[], at: number): string | undefined {
   switch (key) {
     case "j":
     case "ArrowDown":
-      return elements[Math.min(at + 1, elements.length - 1)];
+      return rows[Math.min(at + 1, rows.length - 1)];
     case "k":
     case "ArrowUp":
-      return elements[Math.max(at - 1, 0)];
+      return rows[Math.max(at - 1, 0)];
     case "Home":
-      return elements[0];
+      return rows[0];
     case "End":
-      return elements.at(-1);
+      return rows.at(-1);
+    default:
+      return undefined;
+  }
+}
+
+/** Where Right and Left move the focus from `row`: a statement's first check, or the statement a
+ *  check is drawn under. They go nowhere from any other row, and no other key moves here. */
+function moveTarget(key: string, row: HTMLElement): HTMLElement | null | undefined {
+  switch (key) {
     case "ArrowRight":
       return row.matches(STATEMENT_ROW) ? row.querySelector<HTMLElement>(CHECK_ROW) : undefined;
     case "ArrowLeft":

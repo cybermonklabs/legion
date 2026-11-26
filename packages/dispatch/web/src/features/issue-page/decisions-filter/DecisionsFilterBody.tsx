@@ -28,6 +28,7 @@ import {
 } from "../../refs/reference-names";
 import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
+import { useDrawnInSlices } from "../drawn-in-slices";
 import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
@@ -283,6 +284,37 @@ export function DecisionsFilterBody({
     const trail = [view.id];
     return drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail }));
   }, [drawn, view.id]);
+  // The entries are drawn a screen around the anchor first, and the others in slices after it
+  // (`drawn-in-slices.ts`). The anchor is the entry the address lands on, else the first; that
+  // entry and the one a key or the page takes the reader to (`wanted`) are drawn in the render
+  // that names them, with every entry between the anchor and them, and the keys draw the row they
+  // move to first (`useTreeKeymap`'s `drawUpTo`). The foot's decisions, once its control unfolds
+  // them, are drawn the first screen of them at once and the rest in slices. A part's heading is
+  // drawn with its first entry drawn, and counts every entry of the part.
+  const landsOn = useMemo(() => {
+    if (reveal === undefined) return undefined;
+    const restated = writeUps?.get(reveal);
+    return (
+      restated === undefined
+        ? drawn.find((each) => each.node.id === reveal)
+        : drawn.find((each) => restated.has(each.node.id))
+    )?.node.id;
+  }, [drawn, reveal, writeUps]);
+  const slicesMeasure = useCallback(
+    (id: string) => rowOf(body.current, id)?.getBoundingClientRect().top,
+    []
+  );
+  const drawing = useDrawnInSlices({
+    anchor: landsOn,
+    focused,
+    keyOf: entryKey,
+    measure: slicesMeasure,
+    needed: [landsOn, wanted].filter((id): id is string => id !== undefined),
+    rows: drawn,
+  });
+  const slices = drawing.slices;
+  const drawnIds = new Set(drawing.drawn.map((entry) => entry.node.id));
+  const isShown = (entry: DecisionsEntry | NamedEntry): boolean => drawnIds.has(entry.node.id);
 
   // The decision the reader last pressed Keep on, or sent a Change on, on its row here. A press
   // of Keep or a send of Change arms it, and only these let it go: a move to another row, the
@@ -697,10 +729,14 @@ export function DecisionsFilterBody({
 
   useTreeKeymap({
     container: body,
+    drawUpTo: (row) => {
+      if (row.kind === "node") slices.drawUpTo(row.node.id);
+    },
     // The view edits no row: Enter opens the node in the conversation (`onEdit`), so no row's
     // caret is ever held for the editing to end.
     editing: false,
     holdsEscape,
+    isDrawn: (row) => row.kind !== "node" || slices.isDrawn(row.node.id),
     onCycle: () => {
       // Folding the foot takes its rows away, and a focus on one of them would drop to the
       // page: it goes to the foot's control, which stays where the rows were.
@@ -844,10 +880,10 @@ export function DecisionsFilterBody({
         {/* The node the address names where it is neither a question nor a decision stands
             first, at the tree's first level, under no heading and in no part: the address
             outranks the view, and the parts stay four (R1, R6). */}
-        {parts.named.map((entry) => rowFor(entry, "named"))}
+        {parts.named.filter(isShown).map((entry) => rowFor(entry, "named"))}
         {HEADED.map((part) => {
           const entries: readonly DecisionsEntry[] = parts[part];
-          if (entries.length === 0) return null;
+          if (!entries.some(isShown)) return null;
           return (
             // biome-ignore lint/a11y/useSemanticElements: a tree owns only its rows and groups of rows; a fieldset is neither.
             <div
@@ -879,7 +915,7 @@ export function DecisionsFilterBody({
                   {entries.length}
                 </span>
               </div>
-              {entries.map((entry) => rowFor(entry, part))}
+              {entries.filter(isShown).map((entry) => rowFor(entry, part))}
             </div>
           );
         })}
@@ -930,7 +966,7 @@ export function DecisionsFilterBody({
               onKeyDown={footRowLeft}
               role="group"
             >
-              {parts.agents.map((entry) => rowFor(entry, "agents"))}
+              {parts.agents.filter(isShown).map((entry) => rowFor(entry, "agents"))}
             </div>
           ) : null}
         </div>
@@ -972,6 +1008,12 @@ function FoldMark({ open }: { open: boolean }): ReactNode {
       <path d={open ? "M4.5 6.5h7L8 10.5z" : "M6.5 4.5v7L10.5 8z"} fill="currentColor" />
     </svg>
   );
+}
+
+/** The key an entry is drawn in slices by (`drawn-in-slices.ts`): its node's id, which no other
+ *  entry of the list holds. */
+function entryKey(entry: DecisionsEntry | NamedEntry): string {
+  return entry.node.id;
 }
 
 /** The row of node `id` inside `container`, or null where it draws none. */
