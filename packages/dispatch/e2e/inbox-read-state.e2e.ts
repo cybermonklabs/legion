@@ -1,5 +1,6 @@
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, listMyReplies, markThreadRead } from "./api";
+import { peekTrigger } from "./inbox-drawer";
 import { inboxRow, selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
 import { hasReadingPane } from "./reading-pane";
@@ -127,9 +128,14 @@ async function routeBoundReads(page: Page, matches: (url: URL) => boolean): Prom
 // read on the second card begins a new read of the list and takes nothing away from the line the
 // first Mark read left for the read before it. At c3b536cc the first card still says "Could not
 // load your inbox. Dispatch did not answer within 30 seconds." for the whole 15 s the row waits
-// after the second mark landed. Measured in Chromium and Firefox, twice each.
-// SLOW(>=2s): two threads seeded and marked read, one Inbox page open at card width, two marks
-// written and the page's clock moved once past the 30 s bound.
+// after the second mark landed. Measured in Chromium and Firefox, twice each. Those lines are
+// c3b536cc's: since fec0003c the list owns the one bound (`useListReadBound`, Inbox.tsx:1279) and
+// hands every card its hold (ThreadRowCard.tsx:53-66), and a Mark read's read of the list is at
+// ThreadRowCard.tsx:91. Since cybermonklabs/legion#5223 the Inbox page lists short rows at every
+// width and only the Peek drawer draws these cards, the same `ThreadRowCard` (Inbox.tsx:787), so
+// the row presses Mark read in the drawer over a project page.
+// SLOW(>=2s): two threads seeded and marked read, the Peek drawer open over a project page, two
+// marks written and the page's clock moved once past the 30 s bound.
 // @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
 // each engine runs.
 test("a Mark read on a second thread card takes away the line the first Mark read left for the Inbox read that had not settled @firefox", async ({
@@ -157,7 +163,8 @@ test("a Mark read on a second thread card takes away the line the first Mark rea
   const listReads = await routeBoundReads(page, (url) => url.pathname === "/api/v1/me/replies");
   await page.setViewportSize({ height: 900, width: 1024 });
   await page.clock.install();
-  await page.goto("/");
+  await page.goto("/projects/CORE");
+  await peekTrigger(page).click();
   const markOf = (thread: string) =>
     inboxRow(page, replyRowId(thread)).locator('[data-inbox-action="mark-read"]');
   await expect(markOf(firstThread), step("the first thread's card draws Mark read.")).toHaveText(

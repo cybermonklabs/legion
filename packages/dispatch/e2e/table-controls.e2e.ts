@@ -8422,9 +8422,10 @@ test("a thread's Dismiss in the Inbox's list hands the focus to the next row, an
     // One read of the order: the wait above found three thread rows drawn, newest first.
     const target = (await dismissable.first().getAttribute("data-inbox-row")) ?? "";
     const row = page.locator(`[data-inbox-row="${target}"]`);
-    // The first thread is the item in hand: selected beside the reading column, as every row is
-    // below its width.
-    await selectRow(page, target);
+    // The first thread is the item in hand: selected beside the reading column. Below its width
+    // every short row's own Dismiss is the item in hand's, and a pick of the row would open its
+    // reading view in the list's place (cybermonklabs/legion#5223), so the row is not picked.
+    if (hasReadingPane(page)) await selectRow(page, target);
     // One read is the answer: the list is drawn, and nothing moves its rows before the press.
     const next = await row.evaluate(
       (node) => node.nextElementSibling?.getAttribute("data-inbox-row") ?? "no row"

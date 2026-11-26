@@ -10249,15 +10249,19 @@ test("k-phone: in the Inbox's reading view, right after a tap on P1 in its head'
 // W9 of round 17 (R15): on a phone, right after a tap on P1 moves a card, a tap on the page beside
 // the cards lets that card go and moves the page nowhere. At 99f90b1e the tap takes the focus out
 // of the card to the page's `main`, the Inbox lets the card go inside that move, and the view
-// follows the card up into the P1 band, 1,711 px.
-/** k-phone after a pick that moves a card, then a tap on no card: six asks at P2 on a phone. Twice,
- *  a tap on P1 in the fourth card's priority menu, which moves that card into the P1 band once the
- *  focus leaves it, the level the finger taps scrolled to the middle of the screen, then a tap on
- *  the page's margin: the first time level with the gap between that card and the card after it,
- *  which stays where the finger saw it, the second time level with the card's middle, where the
- *  card before it stays. Each time the card goes to the P1 band and the tap opens nothing. The
- *  taps are in the margin and not in the 12 px gap itself, since Chromium moves a tap that close
- *  to a card onto that card's link. */
+// follows the card up into the P1 band, 1,711 px. Since cybermonklabs/legion#5223 the cards stand
+// in the Peek drawer alone at a phone's width (as for the row above), so the row taps in the
+// drawer: its list is banded by priority, scrolls in the drawer, which the list's viewport anchor
+// holds (`InboxDrawer`'s `scroller`), and a tap on the drawer beside the cards takes the focus out
+// of the card to the drawer itself, as a tap on the page took it to `main`.
+/** k-phone after a pick that moves a card, then a tap on no card: six asks at P2 on a phone, in
+ *  the drawer. Twice, a tap on P1 in the fourth card's priority menu, which moves that card into
+ *  the P1 band once the focus leaves it, the level the finger taps scrolled to the middle of the
+ *  screen, then a tap on the drawer's margin: the first time level with the gap between that card
+ *  and the card after it, which stays where the finger saw it, the second time level with the
+ *  card's middle, where the card before it stays. Each time the card goes to the P1 band and the
+ *  tap opens nothing. The taps are in the margin and not in the 12 px gap itself, since Chromium
+ *  moves a tap that close to a card onto that card's link. */
 // SLOW(>=2s): six asks on a phone, two priorities picked by taps, and the page beside them tapped.
 test("k-phone: right after a tap on P1 moves a card, a tap on the page beside the cards lets the card go and leaves the cards beside the tap where they stood @phone @phone-only", async ({
   page,
@@ -10274,9 +10278,9 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
     );
     issueOf.set(ask.id, issue.key);
   }
-  await page.goto("/");
-  const rows = page.locator("[data-inbox-row]");
-  await expect(rows).toHaveCount(6);
+  const peek = await tapOpenDrawer(page, 6);
+  const rows = peek.locator("[data-inbox-row]");
+  const cardOf = (id: string) => peek.locator(`[data-inbox-row="${id}"]`);
   // Every read of the Inbox, with when it went out and when it was answered (`logReads`).
   const inboxReads = logReads(page, inboxRead);
   for (const level of ["the gap after it", "its middle"] as const) {
@@ -10295,7 +10299,7 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
     ) {
       throw new Error("the Inbox lists other asks than the six seeded");
     }
-    const card = inboxRow(page, moved);
+    const card = cardOf(moved);
     const writes = issueWrites(page, movedKey);
     // The moment the runner hears the server's answer to the pick's write, noted in that event,
     // before the page can act on the answer: each Inbox read the landing makes goes out after it.
@@ -10309,9 +10313,10 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
     });
     const priority = priorityTrigger(card, movedKey);
     await priority.evaluate((node) => {
-      window.scrollBy(0, node.getBoundingClientRect().top - innerHeight * 0.8);
+      const box = node.closest('[data-testid="inbox-drawer"]');
+      if (box !== null) box.scrollTop += node.getBoundingClientRect().top - innerHeight * 0.8;
     });
-    await settledScrollTop(page, 5);
+    await settledScrollTop(peek, 5);
     await priority.tap();
     await expect(
       listOf(priority),
@@ -10342,29 +10347,31 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
       level === "the gap after it"
         ? (cardAt.y + cardAt.height + afterAt.y) / 2
         : cardAt.y + cardAt.height / 2;
-    // The level the finger taps goes to the middle of the screen. An ask's card here, with its
-    // answer box and that box's hint, stands taller than the window (682 px of 664 at 85f13ed5),
-    // so with the card's own middle there the gap after it would be below the window.
-    const [cardAt, afterAt] = await Promise.all([
-      card.boundingBox(),
-      inboxRow(page, after).boundingBox(),
-    ]);
+    // The level the finger taps goes to the middle of the screen, which the drawer covers from its
+    // top. An ask's card here, with its answer box and that box's hint, stands taller than the
+    // window (682 px of 664 at 85f13ed5), so with the card's own middle there the gap after it
+    // would be below the window.
+    const [cardAt, afterAt] = await Promise.all([card.boundingBox(), cardOf(after).boundingBox()]);
     if (cardAt === null || afterAt === null) throw new Error("k-phone: a card has no box");
-    await page.evaluate(
-      (at) => window.scrollBy(0, at - innerHeight / 2),
+    await peek.evaluate(
+      (box, at) => {
+        box.scrollTop += at - innerHeight / 2;
+      },
       tapLevel(cardAt, afterAt)
     );
-    await settledScrollTop(page, 5);
+    await settledScrollTop(peek, 5);
     const kept = level === "the gap after it" ? after : before;
     const [cardBox, afterBox, keptBox] = await Promise.all([
       card.boundingBox(),
-      inboxRow(page, after).boundingBox(),
-      inboxRow(page, kept).boundingBox(),
+      cardOf(after).boundingBox(),
+      cardOf(kept).boundingBox(),
     ]);
     if (cardBox === null || afterBox === null || keptBox === null) {
       throw new Error("k-phone: a card has no box");
     }
-    // The page's margin, 24 px wide beside the cards, farther from them than a tap is moved.
+    // The drawer's margin beside the cards, its own 16 px padding from the screen's edge, where
+    // the drawer stands on a phone: 3 px in from that edge is 13 px from the cards, the farthest a
+    // finger can stand from them inside the drawer (the page's margin left 21 px).
     const x = 3;
     const y = tapLevel(cardBox, afterBox);
     const onNothing = await page.evaluate(
@@ -10384,8 +10391,8 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
       "data-inbox-group",
       "P1"
     );
-    await settledScrollTop(page, 10);
-    const now = (await inboxRow(page, kept).boundingBox())?.y;
+    await settledScrollTop(peek, 10);
+    const now = (await cardOf(kept).boundingBox())?.y;
     expect(
       Math.abs((now ?? Number.NaN) - keptBox.y),
       step(
