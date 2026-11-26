@@ -171,11 +171,14 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 }
 
 // mayHandOff reports whether handOffToLegion can hand target off at all, before any read: this
-// listener has a hand-off, the body did not opt out with "handoff": false, and the source is not
-// envoy. A caller that pays a read of its own before a hand-off asks it first, so a message that
-// can never be handed off pays nothing (roleSend.noHolder).
+// listener has a hand-off, the body did not opt out with "handoff": false, the source is not
+// envoy, and a role token is a Legion workflow role's (legionagents.ValidateRoleToken), since the
+// registry names no session for any other. A caller that pays a read of its own before a
+// hand-off asks it first, so a message that can never be handed off, a plain Envoy role's among
+// them, pays nothing (roleSend.noHolder).
 func (h *legionHandoff) mayHandOff(target legionHandoffTarget) bool {
-	return h != nil && !target.optedOut && target.envelope.Source != "envoy"
+	return h != nil && !target.optedOut && target.envelope.Source != "envoy" &&
+		(target.roleToken == "" || legionagents.ValidateRoleToken(target.roleToken) == nil)
 }
 
 // answerHandedOff makes *item, the envelope a route built for its request, the answer of handed,
@@ -234,10 +237,10 @@ func (r handoffCopies) NextStoredMessage(ctx context.Context, subject string, se
 }
 
 // answeringAgent is the registry's entry for target whose project last said it answers, nil when
-// the registry names no session for it (a role token that is not a Legion workflow role's, or a
-// session id the registry would not hold, included), when its project said otherwise, and while
-// the registry's bucket is not open, which the routes answer 503 and this answers as it answers a
-// registry naming no session.
+// the registry names no session for it (a session id the registry would not hold included), when
+// its project said otherwise, and while the registry's bucket is not open, which the routes
+// answer 503 and this answers as it answers a registry naming no session. A role token that is
+// not a Legion workflow role's never reaches it (mayHandOff).
 //
 // A role token is answered for by its newest entry, whether that entry's issue has left the
 // workflow or not: a worker that failed, or that the workflow, an operator or an idle release
@@ -262,9 +265,6 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 	defer cancel()
 	var entry legionagents.Entry
 	if target.roleToken != "" {
-		if legionagents.ValidateRoleToken(target.roleToken) != nil {
-			return nil, nil
-		}
 		held, err := agents.ByRoleToken(ctx, target.roleToken)
 		if err != nil {
 			return nil, err

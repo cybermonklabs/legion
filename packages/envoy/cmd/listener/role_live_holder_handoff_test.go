@@ -2,14 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
-	"sync/atomic"
 	"testing"
-
-	natsgo "github.com/nats-io/nats.go"
-
-	"github.com/sjawhar/envoy/internal/session"
 )
 
 // A send Dispatch marks with a finished Legion role, aimed at the role's stopped newest session,
@@ -116,30 +110,4 @@ func TestAMarkedSendToAFinishedRoleWhoseHolderLookupFailsIsRefusedAndNotHandedOf
 		t.Fatalf("the stream holds %d hand-offs for %s, want none: the lookup of %s did not answer", count, agent, holder)
 	}
 	assertNothingKept(t, client, role)
-}
-
-// failFirstGetOfKV is failFirstGetKV for one key: its first read of key does not answer, and every
-// other read answers.
-type failFirstGetOfKV struct {
-	natsgo.KeyValue
-	key    string
-	failed *atomic.Bool
-}
-
-func (kv failFirstGetOfKV) Get(key string) (natsgo.KeyValueEntry, error) {
-	if key == kv.key && kv.failed.CompareAndSwap(false, true) {
-		return nil, errors.New("the session bucket's read did not answer")
-	}
-	return kv.KeyValue.Get(key)
-}
-
-// failTheNextSessionReadOf is failTheNextSessionRead for the one session key: the next bucket read
-// of key fails, and the flag it returns reports whether a read of key took the failure.
-func failTheNextSessionReadOf(t *testing.T, sessions *session.SessionRegistry, key string) *atomic.Bool {
-	t.Helper()
-	failed := &atomic.Bool{}
-	swapSessionBucket(t, sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
-		return failFirstGetOfKV{KeyValue: kv, key: key, failed: failed}
-	})
-	return failed
 }

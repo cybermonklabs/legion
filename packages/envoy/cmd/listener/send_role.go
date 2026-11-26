@@ -108,13 +108,15 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 // session, or none - rather than the target the send names. A claim naming a session is resolved
 // first with the resolution every role route makes (roles.ResolveHolder, within the send's
 // window), its claim read from the role bucket stream's leader (leaderRoleClaims), as
-// answerRoleSend's own read is and as the publish route's confirmation of a miss is
-// (roleSend.missConfirmed): on a replicated bucket a direct get can answer the claim as it stood
-// before a takeover, naming the previous holder, which is not live, and the message would be
-// handed to that holder's daemon while the session that took the role never receives it. A
-// resolution that failed is answered as a claim read that failed is (refuseRoleClaimRead), with
-// no wake reported and nothing handed off or kept, and the answers below name the holder the
-// resolution read.
+// answerRoleSend's own read is, and its holder's session record from the session bucket stream's
+// leader where this listener's cache does not show it live (leaderHolderSessions), as the publish
+// route's confirmation of a miss reads both (roleSend.missConfirmed): on a replicated bucket a
+// direct get can answer the claim as it stood before a takeover, naming the previous holder,
+// which is not live, or answer that the session that took the role has no record yet, and either
+// way the message would be handed to the daemon of the role's stopped agent while the session
+// that took the role never receives it. A resolution that failed is answered as a claim read that
+// failed is (refuseRoleClaimRead), with no wake reported and nothing handed off or kept, and the
+// answers below name the holder the resolution read.
 //
 // A role that a session holds live is that holder's, whether its issue is finished or not: the
 // session that took the role over - a person's resumed or forked session among them (#4387's
@@ -146,7 +148,7 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target, holder string) {
 	live := false
 	if holder != "" {
-		resolved, err := roles.ResolveHolder(ctx, leaderRoleClaims{d.registry}, roleHolderSessions{d.sessions}, item.Role)
+		resolved, err := roles.ResolveHolder(ctx, leaderRoleClaims{d.registry}, leaderHolderSessions{d.sessions}, item.Role)
 		if err != nil {
 			refuseRoleClaimRead(w, record, item.Role, err)
 			return

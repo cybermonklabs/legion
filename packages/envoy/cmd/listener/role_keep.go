@@ -856,18 +856,19 @@ type keptRoleHandover struct {
 //
 // Each pass opens by reading the role's kept lane and its drain cursor (readKeptLaneHead) within
 // roleKeepDrainWindow, resolves the role's holder as every other read of this build does
-// (roles.ResolveHolder) within roleKeepHolderWindow only when that lane holds copies its cursor
-// has not reached, and walks the lane for the holder it found, handing that walk the head it
-// read (walkKeptRole). The lane is read before the holder, so a pass that finds the lane empty
-// ends the handover with no resolution at all: every claim the claim route grants starts a
-// handover, as do that route's refresh of a claimant it read not live and every registration that
-// makes a holder live again, for each role of that session, and most roles have nothing kept for
-// them, which would otherwise cost each of those starts a claim read and a session read, made from
-// a goroutine its own answer has already outlived. The resolution is taken after the pause the walk
-// before it earned rather than before it: a holder resolved before that pause can have released
-// the role while it ran, and a walk started for it would find that out only at its first read of
-// the role's claim record (roleKeepDrainHolds), ending as a walk that forwarded nothing and
-// spending one of the handover's idle walks.
+// (roles.ResolveHolder), with the claim and the holder's session record read from the buckets'
+// stream leaders (leaderRoleClaims, leaderHolderSessions), within roleKeepHolderWindow only when
+// that lane holds copies its cursor has not reached, and walks the lane for the holder it found,
+// handing that walk the head it read (walkKeptRole). The lane is read before the holder, so a pass
+// that finds the lane empty ends the handover with no resolution at all: every claim the claim
+// route grants starts a handover, as do that route's refresh of a claimant it read not live and
+// every registration that makes a holder live again, for each role of that session, and most roles
+// have nothing kept for them, which would otherwise cost each of those starts a claim read and a
+// session read, made from a goroutine its own answer has already outlived. The resolution is taken
+// after the pause the walk before it earned rather than before it: a holder resolved before that
+// pause can have released the role while it ran, and a walk started for it would find that out
+// only at its first read of the role's claim record (roleKeepDrainHolds), ending as a walk that
+// forwarded nothing and spending one of the handover's idle walks.
 //
 // A resolution that finds no live holder - roles.Unclaimed, or roles.Lapsed - walks the lane with
 // no holder instead: the walk ends each copy whose hour ended, and a copy under a dead-letter claim
@@ -1024,7 +1025,7 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			return ended()
 		}
 		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, leaderRoleClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, leaderRoleClaims{cfg.registry}, leaderHolderSessions{cfg.sessions}, role)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1445,7 +1446,9 @@ func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 //
 // On a stale claim, each of the last two would find the previous holder, which is not live, and
 // hand the message to that holder's daemon, while the session that took the role never receives
-// it.
+// it. For the same reasons all three read the holder's session record from the session bucket
+// stream's leader as well (leaderHolderSessions): a copy of that bucket that has not applied the
+// registration of a session that took the role answers it absent, a holder that is not live.
 type leaderRoleClaims struct{ registry *store.Registry }
 
 func (c leaderRoleClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
