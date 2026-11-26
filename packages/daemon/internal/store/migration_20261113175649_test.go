@@ -33,7 +33,7 @@ const taskNumbersVersion = 20261113175649
 const (
 	taskNumbersFile              = "internal/store/migrations/20261113175649_task_numbers.up.sql"
 	taskNumbersGuide             = "docs/kubernetes.md"
-	taskNumbersHeredoc           = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	taskNumbersHeredoc           = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	taskNumbersTerminator        = "SQL"
 	taskNumbersWayBackStatements = 22
 )
