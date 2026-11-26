@@ -259,31 +259,61 @@ func (r *settlementReconciliation) causedByEvent(events []model.Event) (map[int]
 // document's block index holds once this settlement's own indexing is written (heldBlockIndex,
 // refs.BlockIndex.NodeOf), the copied_from of that node: the source ask where copiedAskSources
 // resolved one, and none where it resolved none, so a block that stopped being a copy - its source
-// retracted, its wording changed, its own ask opened - retracts the copied_from it held. It
-// answers the step that states them under cause, nil where there is none to state. Each is a
-// claim (graphstore.WriteArms), which appends only where the node holds another far end or none,
-// so a settlement that moved no copy appends nothing. It runs once the version's blocks are
-// planned, so a copy pasted in this version has its node, and the caller queues the step under
-// that version's event, right after it (graphstore.LatestEvent), or under graphstore.NoEvent for
-// a settlement that writes no version. The copy's source document is not stated here: a reader
-// takes it from the source ask's own part_of (graphstore.AskFacts).
+// retracted, its wording changed, its own ask opened - retracts the copied_from it held. It reads
+// once which blocks of the document hold a copied_from now (refs.DocumentCopiedFrom), from the
+// block index as it stood before this settlement, and retracts the relation from each block that
+// is no longer an ask block - one a person retyped, or one this settlement's version drops - on
+// the node that read names, so a settlement of a document that holds no ask block now still
+// retracts the copied_from of a block that was a copy (R3). It answers the step that states them
+// under cause, nil where there is none to state. Each is a claim (graphstore.WriteArms), which
+// appends only where the node holds another far end or none, so a settlement that moved no copy
+// appends nothing. It runs once the version's blocks are planned, so a copy pasted in this version
+// has its node, and the caller queues the step under that version's event, right after it
+// (graphstore.LatestEvent), or under graphstore.NoEvent for a settlement that writes no version.
+// The copy's source document is not stated here: a reader takes it from the source ask's own
+// part_of (graphstore.AskFacts).
 func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, artifactID string, who model.Actor, at time.Time) (func(b *store.WriteBatch, cause int64) error, error) {
-	if len(r.copiedFrom) == 0 {
+	standing, err := refs.DocumentCopiedFrom(ctx, tx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the copies the blocks of %s hold: %w", artifactID, err)
+	}
+	if len(r.copiedFrom) == 0 && len(standing) == 0 {
 		return nil, nil
 	}
-	index, err := heldBlockIndex(ctx, tx, artifactID)
-	if err != nil {
-		return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+	// Only an ask block is claimed on the node the block index holds for it. A block that holds a
+	// copied_from has the node the standing read named, so its retraction needs no index.
+	var index refs.BlockIndex
+	if len(r.copiedFrom) > 0 {
+		if index, err = heldBlockIndex(ctx, tx, artifactID); err != nil {
+			return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+		}
 	}
+	blocks := make([]string, 0, len(r.copiedFrom)+len(standing))
+	for blockID := range r.copiedFrom {
+		blocks = append(blocks, blockID)
+	}
+	for blockID := range standing {
+		if _, asked := r.copiedFrom[blockID]; !asked {
+			blocks = append(blocks, blockID)
+		}
+	}
+	slices.Sort(blocks)
 	var claims []graphstore.Claim
-	for _, blockID := range slices.Sorted(maps.Keys(r.copiedFrom)) {
-		node, named := index.NodeOf(blockID)
-		if !named {
-			continue
+	for _, blockID := range blocks {
+		// A block that is no longer an ask block has no source, so its claim retracts, on the node
+		// the standing read named.
+		node := standing[blockID].Node
+		source, asked := r.copiedFrom[blockID]
+		if asked {
+			held, named := index.NodeOf(blockID)
+			if !named {
+				continue
+			}
+			node = held
 		}
 		claims = append(claims, graphstore.Claim{
 			FromKind: refs.BlockNodeKind, FromID: node, Kind: graphstore.TupleCopiedFrom,
-			ToKind: graphstore.KindAsk, ToID: r.copiedFrom[blockID],
+			ToKind: graphstore.KindAsk, ToID: source,
 			At: at, Who: who,
 		})
 	}
