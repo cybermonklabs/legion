@@ -179,6 +179,7 @@ func snippetRuns(t *testing.T, tree []byte) []snippetRun {
 // the browser still reads it as a reference, and the sentinels in it start and stop nothing, so
 // the words after the link stay plain.
 func TestASnippetMarksALinksWordsAndNeverItsAddress(t *testing.T) {
+	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
 	marked := start + "CORE" + stop
 	for _, test := range []struct {
@@ -234,6 +235,7 @@ func TestASnippetMarksALinksWordsAndNeverItsAddress(t *testing.T) {
 // language, inline HTML, a footnote's label - is shown the reader as something other than marked
 // words, so the highlight is taken out of it rather than drawn.
 func TestNoSentinelReachesASnippetsAttributes(t *testing.T) {
+	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
 	marked := start + "CORE" + stop
 	for _, markdown := range []string{

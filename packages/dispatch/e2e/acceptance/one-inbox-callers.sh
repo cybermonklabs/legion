@@ -875,19 +875,27 @@ readonly name_kinds="handler shape operation contract-type client-method query q
 names_of() {
   local path="$2" api="$1/packages/envoy/internal/dispatch/api" contract operation type method
   local generated="$1/packages/contracts/src/dispatch-api.generated.ts" web="$1/packages/dispatch/web/src/api"
+  # The generated contract is rendered at install (packages/contracts/scripts/gen-api.ts), so its
+  # indentation is the renderer's: a block is found by its opening line with the indentation
+  # trimmed (trimmed), and it ends at the first closing brace at the indentation it opened at
+  # (opened, closes).
+  local block='function trimmed() {t = $0; sub(/^ */, "", t); return t}
+    function opened() {f = 1; match($0, /^ */); indent = RLENGTH}
+    function closes() {match($0, /^ */); return RLENGTH == indent && $0 ~ /^ *};?$/}'
   printf 'path %s\n' "$path"
   grep -F "{http.MethodGet, \"$path\"," "$api/routes_table.go" | sed -nE 's/.*s\.([A-Za-z0-9_]+)\},?[[:space:]]*$/handler \1/p'
   grep -F "\"GET $path\":" "$api/routes_shapes.go" | grep -oE '(Response|Params): *(\[\])?[A-Za-z0-9_]+' |
     sed -E 's/^[A-Za-z]+: *(\[\])?/shape /'
-  operation="$(awk -v p="  \"$path\": {" '$0 == p {f = 1; next} f && /get: operations\["/ {sub(/.*get: operations\["/, ""); sub(/"\].*/, ""); print; exit} f && /^  };?$/ {exit}' "$generated")"
+  operation="$(awk -v p="\"$path\": {" "$block"' !f && trimmed() == p {opened(); next}
+      f && /get: operations\["/ {sub(/.*get: operations\["/, ""); sub(/"\].*/, ""); print; exit} f && closes() {exit}' "$generated")"
   [[ -z "$operation" ]] || printf 'operation %s\n' "$operation"
-  contract="$(awk -v o="  $operation: {" '$0 == o {f = 1; next} f && /^  };?$/ {exit}
+  contract="$(awk -v o="$operation: {" "$block"' !f && trimmed() == o {opened(); next} f && closes() {exit}
       f && /^ *200: \{/ {ok = 1; next} f && ok && /^ *(default|[0-9][0-9][0-9]): \{/ {exit}
       f && ok {while (match($0, /components\["schemas"\]\["[A-Za-z0-9_]+"\]/)) {
         s = substr($0, RSTART + 23, RLENGTH - 25); print s; $0 = substr($0, RSTART + RLENGTH)}}' "$generated" | sort -u)"
   for type in $contract; do
     printf 'contract-type %s\n' "$type"
-    awk -v t="    $type: {" '$0 == t {f = 1; next} f && /^    };?$/ {exit}
+    awk -v t="$type: {" "$block"' !f && trimmed() == t {opened(); next} f && closes() {exit}
         f {while (match($0, /components\["schemas"\]\["[A-Za-z0-9_]+"\]/)) {
           s = substr($0, RSTART + 23, RLENGTH - 25); print "contract-type " s; $0 = substr($0, RSTART + RLENGTH)}}' "$generated"
   done | sort -u

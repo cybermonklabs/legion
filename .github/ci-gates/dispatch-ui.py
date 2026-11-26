@@ -8,8 +8,9 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     # what its two tsc programs list, so the changes job lists them into the filter's listed block
     # and check-ts-filters.sh holds the block to them (ci_ts_programs.py, LISTED).
     # why: .github/ci-notes/ci.md#dispatch_ui-the-script-whose-references-arm-lists-the-references-lanes-spec-files
-    (".github/scripts/dispatch-browser-shard-suite.sh", f"`packages/dispatch/e2e/__tests__/reading-walk.test.ts#LANE_SCRIPT` reads it at a new URL, and `packages/dispatch/e2e/__tests__/reading-walk.test.ts#referencesLaneFiles` reads the spec files of the references lane out of its references) arm, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
-    (".github/ci-gates/dispatch-references.py", f"`packages/dispatch/web/src/features/refs/surface-lists.test.ts#referenceFilter` reads the dispatch_references filter's hand-kept patterns out of its excluded(...) call, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
+    (".github/scripts/dispatch-browser-shard-suite.sh", f"`packages/dispatch/e2e/reference-lane.ts#referencesLaneFiles` reads the spec files out of its `references)` arm, at the URL of `packages/dispatch/e2e/reference-lane.ts#LANE_SCRIPT`, for the reading walk and surface list tests that {at('dispatch-ui', 'Test dispatch dashboard')} runs"),
+    # why: .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
+    (".github/ci-gates/dispatch-references.py", f"`packages/dispatch/web/src/features/refs/surface-lists.test.ts#referenceFilter` reads the dispatch_references filter's hand-kept patterns out of it, at the path `packages/dispatch/web/src/features/refs/surface-lists.test.ts#REFERENCE_GATE` names, patterns every covered box's file must match, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
     (f"{FIX}/live/**", "`packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts#fixtures/live/` and `packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts#fixtures/live/` import the frames under it"),
     (f"{FIX}/decision-blocks/**", "`packages/dispatch/web/src/features/doc/decision-blocks.test.ts#fixture` and `packages/dispatch/web/src/features/inbox/AskCard.test.tsx#decisionBlockFixture` read the fixtures under it"),
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "`packages/dispatch/web/src/features/doc/schema.ts#manifest`, `packages/dispatch/web/src/features/refs/markdown-engine.test.ts#manifest` and `packages/dispatch/web/src/features/doc/ProofDocument.admission.test.tsx#manifest` import blocks.json, and `packages/proof-editor/tests/manifest-schema.test.ts#manifest`, `packages/proof-editor/tests/block-schema-fixture.ts#serverBlockSchema` and `packages/proof-editor/tests/nested-directive.test.ts#serverBlockSchema` read it; `packages/proof-editor/tests/ask-concurrent-edit.test.ts#serverBlockNodeTypes` reads block-node-types.json of the same directory"),
@@ -42,7 +43,7 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
                      "above import, and `packages/dispatch/e2e/read-token-live.ts#brokerCredential` imports "
                      "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
                      "(check-ts-filters.sh measures it)")
-  + bun_job("dispatch-ui"))
+  + dispatch_api_types(at("dispatch-ui", "Typecheck dispatch dashboard")) + bun_job("dispatch-ui"))
 GATE = with_reads(GATE, [
     Read('packages/envoy-client/test/**', "filter dispatch_ui held packages/envoy-client/test/** by hand before the filters were computed: it selected 10 file(s) no other read of this gate declares"),
 ])

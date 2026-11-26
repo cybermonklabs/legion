@@ -11,8 +11,8 @@ package main
 // packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
 //ci:reads packages/envoy/internal/dispatch/pmdoc/schema/blocks.json documentSides readManifest (os.ReadFile) of the current build's block manifest
 //ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md documentSides the current build's corpus: corpusFiles os.ReadDir, and requireCorpusCrossesBuilds os.ReadFile of each .md file it lists
-//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json documentSides the current build's reference fixtures, read by referencesMarkdown through readFixture os.ReadFile
-//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json documentSides the current build's reference fixtures, read by referencesMarkdown and hrefsReadApart through hrefTable and readFixture os.ReadFile
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json documentSides the current build's reference fixtures, read by referencesMarkdown and readsTabAddresses through readReferenceTables and readFixture os.ReadFile
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json documentSides the current build's reference fixtures, read by referencesMarkdown through readReferenceTables and by hrefsReadApart, each through hrefTable and readFixture os.ReadFile
 
 import (
 	"bytes"
@@ -748,7 +748,6 @@ type referenceTables struct {
 	hrefs []hrefRow
 }
 
-// readReferenceTables reads a build's two reference tables of text/testdata.
 func readReferenceTables(t *testing.T, fixtures string) referenceTables {
 	t.Helper()
 	var tables referenceTables
@@ -1049,16 +1048,16 @@ func awaitReferencesSettled(t *testing.T, builds *twoBuilds, artifactID string) 
 	}
 }
 
-// referencesSettle is how long the rows of the forms only the writer reads wait after an edit
-// before they read the refs rows again: past the default two-second settle delay, so a settlement
-// that rewrites the document after the edit has rewritten it too.
+// referencesSettle is how long a row waits after Y's edit before it reads the refs rows again:
+// past the default two-second settle delay, so a settlement that rewrites the document after the
+// edit has rewritten it too.
 const referencesSettle = 4 * time.Second
 
 // requireReferencesKeptAcrossBuilds creates the reference forms of X's text/testdata on X as two
 // bodies, split by Y's own tables (referencesMarkdown), appends a paragraph to each on Y, and
 // checks each body's refs rows:
 //   - the forms Y's tables hold too, after the rewrite and after every pass it owed has rewritten
-//     them (awaitReferencesSettled), as this row always has (requireRefsKept);
+//     them, as this row always has (awaitReferencesSettled, requireRefsKept);
 //   - the forms only X's table holds, every row X wrote, its blocks' edges included, back within
 //     two block-index intervals of Y's rewrite (requireWriterOnlyReferencesBack), where Y may drop
 //     the rows of those forms on its rewrite. When Y's tables hold every form of X's, as the

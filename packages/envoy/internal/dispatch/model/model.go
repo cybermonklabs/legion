@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -24,10 +25,27 @@ const (
 	ScopeApprove = "approve"
 )
 
-// Scopes is every OAuth scope this deployment knows, in the order a credential holding both
-// carries them: the whole set a person's own credential holds, and the set a mint gives a token
-// when its body names none. Read it, never write it — every such credential shares this one
-// slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
+// ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
+// DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs it or ScopePerson to write a Legion
+// issue's status, to take the legion label off an issue, or to move a Legion issue out from
+// under every labelled issue, but for the status write of the architect of an issue above
+// (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
+// Dispatch reads it from the broker's answer (brokerTokenActor).
+//
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
+// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
+// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
+// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
+// is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
+// one string.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
+// Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
+// in the order a credential holding both carries them: the whole set a person's own credential
+// holds, and the set a mint gives a token when its body names none. Read it, never write it —
+// every such credential shares this one slice, as every surface shares DISPATCH_SCOPES in
+// @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
 // ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
@@ -41,7 +59,8 @@ const ScopeRead = "read"
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
-// scopes that credential holds. A browser's cookie is the person themselves acting, so it names
+// scopes of Scopes that credential holds (api's actScopes: a Legion daemon's ScopeLegionStatus is
+// never recorded). A browser's cookie is the person themselves acting, so it names
 // no agent and carries none of this.
 //
 // Scopes is a snapshot of the credential as it stood at the act, and is never read back from the
@@ -73,6 +92,9 @@ func (a *ActorAct) Holds(scope string) bool {
 // which this package's callers and its tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
+	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
+	// alone where the broker granted it, which the broker does for a Legion daemon's own token
+	// only (brokerTokenActor). No credential holds ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.

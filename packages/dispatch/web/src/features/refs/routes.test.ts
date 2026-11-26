@@ -694,9 +694,9 @@ test("the plan tab owns its path, its reference and its short form", () => {
 });
 
 // The eight forms a tab was once written as - `dispatch://CORE-1/verification` and its seven
-// siblings - are no reference the server reads: only `spec`, `decisions`, `artifact/<slug>`,
-// `ask/<id>`, `comment/<id>` and `message/<id>` follow an issue key in the grammar both readers
-// read. A tab is written as the issue it is a view of, which is what it resolves to anyway.
+// siblings - are no reference the server reads: only `spec`, `artifact/<slug>`, `ask/<id>`,
+// `comment/<id>` and `message/<id>` follow an issue key in the grammar both readers read. A tab
+// is written as the issue it is a view of, which is what it resolves to anyway.
 test.each([
   "verification",
   "plan",
@@ -714,15 +714,15 @@ test("the conversation, read as `log` and `conversation` alike, is written as it
 });
 
 // The Decisions tab reads the issue's decision nodes: its page is the tab's own route, and the
-// reference it names, `dispatch://CORE-1/decisions`, is the issue's Decisions page, whatever its
-// fragment. No reader names a decisions document.
+// reference `dispatch://CORE-1/decisions` reads as that page, whatever its fragment. As every tab,
+// it is written as the issue it is a view of. No reader names a decisions document.
 test("the decisions tab owns its path and its reference names the issue's Decisions page", () => {
   const route = { key: "CORE-1", kind: "decisions" as const };
 
   expect(parseIssuePath("/issues/CORE-1/decisions")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/decisions"));
   expect(issueTabForRoute(route, undefined)).toBe("decisions");
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/decisions");
+  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1");
   expect(parseDispatchReference("dispatch://CORE-1/decisions")).toEqual(route);
   expect(buildReferencePath(route)).toBe(browserPath("issues/CORE-1/decisions"));
   expect(shortForm(route)).toBe("CORE-1 decisions");

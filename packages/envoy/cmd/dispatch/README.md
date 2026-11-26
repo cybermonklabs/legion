@@ -280,6 +280,15 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
+A Legion daemon's own broker token holds the OAuth scope `legion-status` and no other.
+The broker grants that scope only to the token of an account entry whose fixed session is `legion-daemon:<PROJECT>` of the entry's own project, and Dispatch reads it only on a token scoped to one project.
+No other credential holds it: a personal token cannot (`400 TOKEN_SCOPES_INPUT`), and no credential holds it beside `person`.
+With `DISPATCH_LEGION_STATUS_SCOPE` on, a write of a Legion issue's status, the removal of its `legion` label, and a move after which it is no longer a Legion issue need `legion-status` or `person` (`/api/v1/issues/{key}` (PATCH), Routes below, and `/api/v1/issues/{key}/status-change` (POST)).
+The daemon passes with its own broker token.
+The shared token, a personal token without `person`, a project's other broker tokens and a pod's Kubernetes token hold neither scope, so with the setting on Dispatch refuses them these writes, whatever session the request body names, but for one.
+An architect of an issue above writes a Legion issue's status `done`, `backlog`, `icebox` or `triage` once its claim is ready: its broker token proves its session, and the daemon's own token has published that session as the architect of an issue above the Legion issue, of the Legion issue's own project, before the call and after it (`internal/dispatch/api/legion_status_scope.go`).
+With `include_children` it writes `backlog`, `icebox` or `triage` only, with `unlink_children` or `include_parent` nothing, and its removal of the `legion` label and its move out from under every labelled issue stay refused.
+
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
 a `GET` row declares nothing), in four classes:
@@ -2935,6 +2944,14 @@ The `role` check names the six Legion roles, and a row goes with its issue.
 A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
 A new table: the foreign key holds `issues` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so an issue write waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261125002856_issue_role_holders_daemon_proven` adds `issue_role_holders.daemon_proven`, `boolean not null default false`: whether the credential that wrote a pair proved the session `legion-daemon:<project>` of the issue's project and held `legion-status`, which only the daemon's own broker token does.
+`PUT /api/v1/issues/{key}/role-holders` writes it on each pair that a publication stores, a pair that it keeps unchanged included, with `DISPATCH_LEGION_STATUS_SCOPE` on or off (Routes below).
+A row stored before the migration reads unmarked (`false`), and the next publication of its issue from the daemon's own token marks it.
+With `DISPATCH_LEGION_STATUS_SCOPE` on, R26 lets the write of a Legion issue's status by the architect that owns the issue through only where a marked pair names that architect.
+The constant default rewrites no row, so the ALTER holds `issue_role_holders` `ACCESS EXCLUSIVE` for the catalog write alone.
+The previous release neither reads nor writes the column: a pair that its publication inserts takes the default, unmarked.
+The migration's census answers `0`.
+
 Migration `20261120131444_parent_status_fix` creates `parent_status_fix`, the record that the one-time parent status fix ran on this database (Running more than one process, above).
 It holds one row at most: `id` is always true, which its primary key and its check hold it to.
 `ran_at` is when the fix wrote the row, by the database's clock.
@@ -5296,6 +5313,7 @@ Each item below names a path with its method and identity, then its purpose.
   `sign_in_required` is true where Dispatch refuses every write of the credential `403 SIGN_IN_REQUIRED` until a person signs in on its machine, which is a machine's broker-issued token, and false for every other credential, an exchange entry's account token and every read-only credential among them; it is the decision the sign-in check makes, and an older Dispatch omits it).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, with `read` after them for a read-only credential, and every caller is answered it.
   A read-only token that carries a cut is answered here, and refused `403 AS_OF_TOKEN_NOT_SERVED` on every other read.
+  A Legion daemon's own broker token answers `["legion-status"]`: with `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential make the three writes of a Legion issue that `/api/v1/issues/{key}` (PATCH) and `/api/v1/issues/{key}/status-change` (POST) refuse to any other, but for the owning architect's status write (`/api/v1/issues/{key}` (PATCH), below).
 
 - `/api/v1/dashboard/builds` (GET; cookie, trusted header, or bearer)
 
@@ -5521,10 +5539,19 @@ Each item below names a path with its method and identity, then its purpose.
   a parent of another project passes on no repository, components or `legion` label, as on creation.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
-  With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it.
-  The `PATCH` judges only the pairs it changes: a new status judges the issue with its parent and with each direct child, and a new parent judges the issue with that parent.
-  A status the issue already has changes no pair, so it is not judged.
-  The `PATCH` takes none of that route's options: it ignores them as members it does not declare.
+
+  - With `DISPATCH_LEGION_STATUS_SCOPE` on, three writes of a Legion issue need a credential that holds the `person` scope or `legion-status`: a status write, the removal of its `legion` label, and a move after which it is no longer a Legion issue.
+    A Legion issue carries the `legion` label, in any letter case, or is under an issue of its own project that carries it, and Dispatch judges the issue before the call and after it.
+    Any other credential is `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`, and the call writes no field of the issue and no event of it.
+    The one exception is the owning architect's status write: a broker-issued token whose session the Legion daemon's own token published as the architect of an issue above the issue, of the issue's own project, before the call and after it, writes the status `done`, `backlog`, `icebox` or `triage`.
+    The same call's removal of the `legion` label and its move out from under every labelled issue stay refused to it.
+    A refused close (`status: done`) can still settle the issue's documents: the `PATCH` settles them before its transaction (`settleIssueBeforeClose`), and Dispatch judges the write after that.
+    A Legion daemon's own broker token holds `legion-status`, and the shared token, a personal token without `person` and a project's other broker tokens hold neither scope.
+
+  - With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it.
+    The `PATCH` judges only the pairs it changes: a new status judges the issue with its parent and with each direct child, and a new parent judges the issue with that parent.
+    A status the issue already has changes no pair, so it is not judged.
+    The `PATCH` takes none of that route's options: it ignores them as members it does not declare.
 
   - On an issue Legion runs, a close, a reopen and a `labels` or `parent` write that takes the issue out of Legion are each `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
 
@@ -5580,12 +5607,14 @@ Each item below names a path with its method and identity, then its purpose.
   That order is the ancestors that `include_parent` moves, highest first, then the children that `unlink_children` removes, then the issue itself.
   `include_children` moves the issues under it before the issue itself, deepest first, for a status that is `done` or not started, and after it, highest first, for a status in work.
   Each write decides what it writes from what it reads under its own lock, so a write that another writer made unneeded writes nothing and has no entry in `changed`.
-  The answer is `200 {issue, changed}`, and `issue` is the issue as the `PATCH` answers it.
-  The answer's `issue` is read at the issue's own write, so later events of the same call can follow it on the stored issue: a `child.status` for each direct child that `include_children` moves after it, for a status in work, and the `comment.created` of the comment on the issue the call names.
-  So the stored `last_seq` can be past the answer's, and a client that sends the answer's `last_seq` as `expected_sequence` can get `409 ISSUE_CHANGED`: it reads the issue again before a write that the sequence fences.
-  `changed` has one entry `{key, status, parent, previous_last_seq, issue}` for each issue whose status or parent the call changed, the issue itself included, in the order of the writes.
-  `status` and `parent` are what the call left, `previous_last_seq` is the issue's `last_seq` as its own write read it under its lock, and `issue` is that issue as its write answered it.
-  With `dry_run` the call writes no issue, event or comment, and answers the same shape: each entry holds the status and the parent that the call would leave and the issue's `last_seq` now, and no `issue`.
+
+  - The answer is `200 {issue, changed}`, and `issue` is the issue as the `PATCH` answers it.
+    The answer's `issue` is read at the issue's own write, so later events of the same call can follow it on the stored issue: a `child.status` for each direct child that `include_children` moves after it, for a status in work, and the `comment.created` of the comment on the issue the call names.
+    So the stored `last_seq` can be past the answer's, and a client that sends the answer's `last_seq` as `expected_sequence` can get `409 ISSUE_CHANGED`: it reads the issue again before a write that the sequence fences.
+    `changed` has one entry `{key, status, parent, previous_last_seq, issue}` for each issue whose status or parent the call changed, the issue itself included, in the order of the writes.
+    `status` and `parent` are what the call left, `previous_last_seq` is the issue's `last_seq` as its own write read it under its lock, and `issue` is that issue as its write answered it.
+    With `dry_run` the call writes no issue, event or comment, and answers the same shape: each entry holds the status and the parent that the call would leave and the issue's `last_seq` now, and no `issue`.
+
   A keyed call keeps its progress in its request key's recovery point, so a repeat finishes what its first attempt left (Keyed writes, above).
   A refused write stops the call, and no later write runs.
   Each refusal that the route answers carries `changed` beside its `code` and `error`: the entries of the writes that committed before it, `[]` when none did.
@@ -5601,6 +5630,11 @@ Each item below names a path with its method and identity, then its purpose.
     Each entry of `issues` is `{key, title, status, relation}`: an issue that holds the rule against the write, with its status as the write would leave it, and `relation` `parent` or `child`.
     `error` names each of them with its status, so a client that reads no `issues` still shows them.
     The route refuses this with `DISPATCH_PARENT_STATUS_RULE` on, and refuses a dry run of it whatever the setting.
+
+  - `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`: with `DISPATCH_LEGION_STATUS_SCOPE` on, a step writes the status of a Legion issue or moves one out from under every labelled issue, and the request's credential holds neither the `person` scope nor `legion-status`.
+    The one exception is the owning architect's status write: a broker-issued token whose session the Legion daemon's own token published as the architect of an issue above each issue whose status the call writes, of that issue's own project, before the call and after it, writes `done`, `backlog`, `icebox` or `triage`, with neither `unlink_children` nor `include_parent`, and not `done` with `include_children`.
+    The route decides this before the first write, also for a dry run, and before `PARENT_STATUS_CONFLICT`.
+    Each step's write decides it again, so a step whose issue another caller made a Legion issue after the plan stops the call there, after the steps before it.
 
   - `403 BROWSER_SIGN_IN_REQUIRED`: `include_children` with `done` from a request that presents a token, whatever the setting.
     Only a person who is signed in at a browser closes the open issues under an issue together with it.
@@ -6012,7 +6046,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The phase's newest handoff with its body, byte for byte as written; `404 HANDOFF_NOT_FOUND` when it has none.
 
-- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; the actor must be the Legion daemon's session)
+- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only the Legion daemon's own broker token; with it off, the actor must be the Legion daemon's session)
 
   Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
   The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
@@ -6020,12 +6054,16 @@ Each item below names a path with its method and identity, then its purpose.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
   A pair that did not change keeps its `recorded_at`.
-  The actor must be the session `legion-daemon:<project>`, the key up to its first `-`, which is the session that the daemon of the issue's project writes as.
-  Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
-  Dispatch takes the session that a bearer caller names as the caller names it.
-  So any caller whose Dispatch credential proves no session of its own can name the daemon's session and write the set: the deployment's shared token, and a person's own agent token whatever its scopes.
-  A project's proven-sessions setting closes that case for the project: while `proven_sessions` is on (`/api/v1/projects/{key}/proven-sessions`, above), the route takes a write only on a credential that proves the session `legion-daemon:<project>`, a broker token of that session, and answers every other `403 ROLE_HOLDER_NOT_PROVEN`, after its `400` and `404` refusals.
-  While the setting is off, the case stays open.
+  The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
+  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that proves this session and holds `legion-status` can publish.
+  Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon.
+  With the setting off, any actor other than the daemon's session is `403 ROLE_HOLDER_FORBIDDEN`.
+  A bearer with no proven session can name the daemon in its body, but the project's `proven_sessions` setting can refuse it.
+  With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove the daemon's session is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
+  Each stored pair carries a mark that says whether the daemon's own token wrote it (`issue_role_holders.daemon_proven`, Database migrations above).
+  Each publication sets the mark on every pair it stores or keeps, regardless of either setting.
+  Only a marked pair identifies an architect who can write a Legion issue's status under the status guard.
+  The answer does not carry the mark.
   A body without `holders`, a role that is not one of the six, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue, appends no issue event and notifies nobody.

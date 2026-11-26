@@ -444,11 +444,13 @@ the leg retransmitted during it, so the next stall says whether the connection w
 slow. Its first read stays actions/download-artifact, which reads in seconds on all but about
 one leg in a thousand. The script runs in the step's 2 minutes, with the same directory of
 its own as the action's attempt, and reads the artifact the action reads, `<job>-binaries`,
-given the calling job's id (`${{ inputs.job }}`): a pull request labelled full-ci runs both
-callers in one run, and each reads only its own build's binaries. A re-run uploads them again
-under the same name, and the action takes the highest id of the run's artifacts of that name
-(run 45306887784 held three by its attempt 3, and the highest id was not the newest by
-`created_at`), so the script takes that same one and reads its address, size and digest from it.
+given the calling job's id (`${{ inputs.job }}`): callers that share a run - a pull request
+labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that changes what the
+reference rows test runs dispatch-references beside it - each read only their own build's
+binaries. A re-run uploads them again under the same name, and the action takes the highest id
+of the run's artifacts of that name (run 45306887784 held three by its attempt 3, and the highest
+id was not the newest by `created_at`), so the script takes that same one and reads its address,
+size and digest from it.
 
 ## What the shard job places, and what its budget leaves for it
 
@@ -1078,7 +1080,7 @@ This job is where it runs.
 
 On the pull-request and full lanes, where the alone and multiprocess jobs run on `full`
 alone: this is one Chromium install and two rows of about 90 s, and it holds a check of the
-pull request it is on (check k2 of dispatch://INFRA-1042, the bar's embedding count) rather
+pull request it is on (check k2 of the embedding bar's issue, the bar's embedding count) rather
 than a clock reading or a second server shape. A lane that skipped it would leave the claim
 unread until the merge queue. Not on `references`, which its `if:` holds it off: that lane
 runs the spec files its arm of .github/scripts/dispatch-browser-shard-suite.sh names, and

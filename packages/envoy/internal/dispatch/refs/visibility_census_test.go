@@ -480,7 +480,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
 	located := text.ExtractAt(markdown, "https://dispatch.example")
-	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, TypedFacts{}, "")
+	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}

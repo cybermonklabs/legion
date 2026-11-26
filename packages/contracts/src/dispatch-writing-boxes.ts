@@ -538,10 +538,10 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
   // A priority's description, written where it is read: on the priority's own page and on the
   // open row of the priorities table, which both draw it in the documents' editor
   // (`PriorityDescription`), whose picker the editor hosts as a document's body does
-  // (`DocumentRefPicker`, mounted in `editor.ts`) under this row. The priority write resolves no
-  // party out of it and indexes nothing from it, so a party picked here is a reference for a
-  // reader and nobody is told. A priority belongs to no issue, so the picker lists everyone who
-  // has signed in.
+  // (`DocumentRefPicker`, which `PriorityDescription` mounts over the editor `editor.ts` creates)
+  // under this row. The priority write resolves no party out of it and indexes nothing from it,
+  // so a party picked here is a reference for a reader and nobody is told. A priority belongs to
+  // no issue, so the picker lists everyone who has signed in.
   {
     box: "priority-description",
     covered: true,

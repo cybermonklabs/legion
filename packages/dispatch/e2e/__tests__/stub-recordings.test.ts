@@ -422,7 +422,6 @@ describe("every committed recording answers the display tree of every stored tex
       "CommentWriteResponse.body",
       "Decision.text",
       "DecisionEntry.answer",
-      "DecisionEntry.selected",
       "DecisionEntry.text",
       "GraphExcerptWithTrees.text",
       "GraphNodeRead.text",

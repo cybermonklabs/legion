@@ -175,9 +175,9 @@ function treeReferences(root: TreeNode, asks: readonly TreeAsk[] = []): string[]
   return [...refs];
 }
 
-/** What the page publishes of the batched name read until it answers: no target read, and no
- *  post marked edited or deleted, and the same empty value on every render, so no surface beside
- *  the tree draws again for a read that names nothing. */
+/** What the page publishes of the batched name read until it answers: no target read, and the
+ *  same empty value on every render, so no surface beside the tree draws again for a read that
+ *  names nothing. */
 const NO_TARGET_NAMING: Omit<PublishedReferences, "asked"> = {
   ambiguous: new Set(),
   deleted: new Map(),
@@ -517,9 +517,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // read to name, the answer it gave before is dropped, as the set it answered last becomes none,
   // which holds no answer: its query is disabled and never answers again, so that answer would
   // have the page publish for good a name for an address no read asks for any more. A link
-  // beside the tree draws a published name in place of the one it reads of its own, and the feed
-  // refreshes a names read only for an address its key holds (`referenceNameTargets`), so no
-  // event would ever move that name.
+  // beside the tree draws a published name in place of the one it reads of its own, and the
+  // feed refreshes a names read only for an address its key holds (`referenceNameTargets`), so
+  // no event would ever move that name.
   const moreAnswered = extra.length === 0 || more.data !== undefined;
   const moreAnsweredSet = useLastAnswered(extra, moreAnswered);
   const moreHeld = useQuery({
@@ -581,19 +581,18 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // a link in a document, in a decision's card or in a comment's preview shows, a row's in-place
   // chip and every one line of a node too (`refs/reference-names.tsx`, R20). The page publishes
   // how each target is named, by the one rule a chip of the tree is named by (`targetNaming`),
-  // and the store projects each once, so every one of them draws a target in the same words,
-  // each the words alone. Beside the readings go the references the read answered ambiguous and
-  // those it answered gone, read by that same rule, each of which a surface draws as its author
-  // wrote it rather than reading it itself; those it answered with nothing to name them by, which
-  // a surface reads itself, as a link to one does; the references whose post its author edited,
-  // which a surface marks ` · edited` after it cuts the name to its own length, so no cut takes
-  // the mark, and those whose post its author deleted, by the delete, which a row's words draw as
-  // the deleted line with its actor named as the page names an author; and every reference the
-  // page asks the read for, which a surface waits on the page's answer for rather than reading it
-  // itself, from before the first answer on. A chip's reading is read from the issue, the
-  // documents' blocks and the names alone (`treeContext`), so it is built from those and nothing
-  // else: an answer of any other read - an ask, a comment, the coverage, the reader's login -
-  // names nothing new.
+  // and the store projects each once, so every one of them draws a target in the same words.
+  // Beside the readings go the references the read answered ambiguous and those it answered
+  // gone, read by that same rule, each of which a surface draws as its author wrote it rather
+  // than reading it itself; those it answered with nothing to name them by, which a surface reads
+  // itself, as a link to one does; the references whose post its author edited, which a link
+  // marks ` · edited` after it cuts the name to its own length, so no cut takes the mark, and
+  // those whose post its author deleted, by the delete, which a row's words draw as the deleted
+  // line with its actor named as the page names an author; and every reference the page asks the
+  // read for, which a surface waits on the page's answer for rather than reading it itself, from
+  // before the first answer on. A chip's reading is read from the issue, the documents' blocks
+  // and the names alone (`treeContext`), so it is built from those and nothing else: an answer of
+  // any other read - an ask, a comment, the coverage, the reader's login - names nothing new.
   const naming = useMemo(
     () =>
       named === undefined

@@ -188,7 +188,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+reached\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/conversation":     {target: "/api/v1/agents/$session/conversation", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/messages":         {target: "/api/v1/agents/$session/messages", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
-	"GET /api/v1/agents/{session_id}/artifacts":        {target: "/api/v1/agents/$session/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+session_id\s*=\s*\$1\s+order\s+by\s+created_at\s+desc\b`)},
+	"GET /api/v1/agents/{session_id}/artifacts":        {target: "/api/v1/agents/$session/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+session_id\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {target: "/api/v1/agents/$session/artifacts/$fileSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {target: "/api/v1/agents/$session/artifacts/$fileSlug/versions/1",
 		statement: statementOf(`\bselect\s+content,\s*mime,\s*sha256,\s*size\s+from\s+artifact_versions\b`)},

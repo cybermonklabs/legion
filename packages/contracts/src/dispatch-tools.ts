@@ -1249,7 +1249,13 @@ export const dispatchToolSpecs = [
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
       "Legion the daemon moves it. labels_add adds labels and keeps every label the issue holds; " +
       "labels replaces the whole set, so a label it does not name is removed, and the two never " +
-      "go together. A non-empty external_links is " +
+      "go together. On a Legion issue, where Dispatch runs with " +
+      "DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write, the removal of the legion label, " +
+      "and a move out from under every labelled issue (403 LEGION_STATUS_SCOPE_REQUIRED) unless the " +
+      "credential holds the person or legion-status scope. The one exception is an architect of an " +
+      "issue above, once its claim is ready: its own broker token writes the status done, backlog, " +
+      "icebox or triage (not done with include_children, and with neither unlink_children nor " +
+      "include_parent). A non-empty external_links is " +
       "merged into the issue's existing links by URL, so linking the pull request you just opened " +
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
@@ -1430,8 +1436,13 @@ export const dispatchToolSpecs = [
       "the issue and decide again. A claim whose session is no longer running may be " +
       "taken: the takeover is recorded on the issue and the session that lost it is told. A claim is not the " +
       "issue's status — claiming moves nothing, and the result names who moves the status: you, with " +
-      "dispatch issue-update, or Legion's daemon on an issue it runs, where a status written by anyone " +
-      "else is undone. A claim is released by its holder or any human, and by " +
+      "dispatch issue-update, or Legion's daemon on an issue it runs. On such an issue, where " +
+      "Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write from a " +
+      "credential that holds neither the person nor the legion-status scope " +
+      "(403 LEGION_STATUS_SCOPE_REQUIRED), but an architect of an issue above writes done, backlog, " +
+      "icebox or triage with its own broker token once its claim is ready. Otherwise the daemon " +
+      "undoes a status that anyone else " +
+      "writes. A claim is released by its holder or any human, and by " +
       "any agent once the holder's session is no longer running. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
@@ -1673,7 +1684,7 @@ export const dispatchToolSpecs = [
     description:
       "Add review feedback to an issue or project document quote, or reply to a question asked with dispatch ask. " +
       "Do not use it for an exact replacement; use " +
-      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. A party reference in the body delivers this comment to that party: dispatch://agent/<session id> for an agent session, dispatch://role/<token> for a role. This tool sends no delivery mode, so Dispatch steers that party. Write that reference in backticks or in a code block to name nobody. dispatch://person/<login> names a person, and Dispatch delivers nothing to a person. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
+      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. A party reference in the body delivers this comment to that party: dispatch://agent/<session id> for an agent session, dispatch://role/<token> for a role. This tool sends no delivery mode, so Dispatch steers that party. A session ID that cannot be used as a delivery target, such as one with a dot or a colon, is refused with 400 MENTION_INPUT. Write that reference in backticks or in a code block to name nobody. dispatch://person/<login> names a person, and Dispatch delivers nothing to a person. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),

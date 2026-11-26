@@ -1,7 +1,7 @@
 export interface ReferenceSpan {
   start: number;
-  /** Where the span the pattern matched ends, before `trimReference` cut what trails it in
-   *  prose: the gap a bare key or `#id` may stand in starts here (the dashboard's
+  /** Where the span the pattern matched ends, before `spanReference` cut it to the reference it
+   *  holds: the gap a bare key or `#id` may stand in starts here (the dashboard's
    *  `text-references.ts`), as the server's `Mentions` reads the gaps between the same matches. */
   end: number;
   value: string;
@@ -10,22 +10,22 @@ export interface ReferenceSpan {
 /**
  * The reference-shaped spans in text: `dispatch://` references and `http(s)://` URLs, each ending
  * at whitespace (Unicode space separators included), an angle or square bracket, a quote, a
- * backtick or a pipe, then trimmed by `trimReference`. The one bracket a span may hold is a
- * bracketed IPv6 host right after `http(s)://`, so a server at an IPv6 literal keeps its dashboard
- * URLs as references. The whitespace is spelled out rather than written `\s`, which in JavaScript
- * also matches a vertical tab and U+FEFF, where Go's `\s` matches neither. It is the rule the
- * server's `text.ExtractAt` indexes mentions by, and `DISPATCH_TEXT_REFERENCES` in
- * `@legion/contracts` is the table both are tested against.
+ * backtick or a pipe, then cut to the reference it holds by `spanReference`. The one bracket a
+ * span may hold is a bracketed IPv6 host right after `http(s)://`, so a server at an IPv6 literal
+ * keeps its dashboard URLs as references. The whitespace is spelled out rather than written `\s`,
+ * which in JavaScript also matches a vertical tab and U+FEFF, where Go's `\s` matches neither. It
+ * is the rule the server's `text.ExtractAt` indexes mentions by, and `DISPATCH_TEXT_REFERENCES`
+ * in `@legion/contracts` is the table both are tested against.
  */
 const referencePattern =
   /(?:dispatch:\/\/|https?:\/\/(?:\[[0-9A-Fa-f:.]+\])?)[^\t\n\f\r \p{Z}<>"'`[\]|]+/gu;
 
 /**
- * Every reference span in text that starts with `prefix`, trimmed; a span starting otherwise is
- * omitted from the result. The spans are the same whatever the prefix, so a `dispatch://` inside a
- * URL is never a span of its own, as the server reads it. The `dispatch://` spans are the
- * addresses the document engine keeps whole (`@legion/proof-editor`'s `whole-addresses.ts`), as
- * the server's `text.DispatchSpans` reads them.
+ * Every reference span in text that starts with `prefix`, cut by `spanReference`; a span starting
+ * otherwise is omitted from the result. The spans are the same whatever the prefix, so a
+ * `dispatch://` inside a URL is never a span of its own, as the server reads it. The
+ * `dispatch://` spans are the addresses the document engine keeps whole (`@legion/proof-editor`'s
+ * `whole-addresses.ts`), as the server's `text.DispatchSpans` reads them.
  */
 export function referenceSpans(text: string, prefix = ""): ReferenceSpan[] {
   const spans: ReferenceSpan[] = [];
@@ -34,11 +34,41 @@ export function referenceSpans(text: string, prefix = ""): ReferenceSpan[] {
       spans.push({
         end: match.index + match[0].length,
         start: match.index,
-        value: trimReference(match[0]),
+        value: spanReference(text, match.index, match.index + match[0].length),
       });
     }
   }
   return spans;
+}
+
+/**
+ * The reference `text` writes at `[start, end)`, one span the pattern matched, as the server's
+ * `text.spanReference` reads it. A span that stands as an inline link's or a picture's address -
+ * it starts right after the `](` of `[words](` or `![caption](` - ends at the link's own `)`, the
+ * first in it that no `(` in it opened, as CommonMark reads a link's address (`linkAddress`): a
+ * word written straight after the link, `[@Bob](dispatch://agent/abc)hello`, is the link's next
+ * word to every renderer, never more of its address. What is left of a span is trimmed as any
+ * span is (`trimReference`), so `[w](dispatch://CORE-1.)` reads CORE-1 as
+ * `(see dispatch://CORE-1.)` does.
+ */
+function spanReference(text: string, start: number, end: number): string {
+  const value = text.slice(start, end);
+  return trimReference(start >= 2 && text.startsWith("](", start - 2) ? linkAddress(value) : value);
+}
+
+/** `value` up to its first `)` that no `(` before it in `value` opened, or all of it where every
+ *  `)` closes one: a link's address read from the first character after its `(`. */
+function linkAddress(value: string): string {
+  let depth = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value.charAt(index);
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      if (depth === 0) return value.slice(0, index);
+      depth -= 1;
+    }
+  }
+  return value;
 }
 
 /**

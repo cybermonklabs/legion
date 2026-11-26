@@ -17,7 +17,7 @@ import {
   pinnedEventIds,
 } from "../issue/pins";
 import { EditedMark } from "../refs/PostMarks";
-import { type DeletablePost, postDeletion } from "../refs/post-marks";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
@@ -53,11 +53,11 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * is drawn as the deleted line (`node-line.tsx`'s `DeletedLine`), from the delete and never from
  * its words, its actor named as the page names an author, and stays a link to the post; one its
  * author edited says ` · edited` after its line (`EditedMark`), as a parent line in the outline
- * says it (`node-line.tsx`'s `ParentLink`). A line of the history whose post its author edited
- * since says ` · edited` after the line (`EventEditedMark`), as the margin's Pinned tab says it;
- * the line of a deleted post's event already says who deleted it (`eventDescription`). Both
- * marks are the page's own words (`CONTROL_LABELS.post_deleted_by`,
- * `CONTROL_LABELS.post_edited`), marked as its chrome.
+ * says it (`ParentLink`). A line of the history whose post its author edited since says
+ * ` · edited` after the line (`EventEditedMark`), as the margin's Pinned tab says it; the line
+ * of a deleted post's event already says who deleted it (`eventDescription`). Both marks are the
+ * page's own words (`CONTROL_LABELS.post_deleted_by`, `CONTROL_LABELS.post_edited`), marked as
+ * its chrome.
  */
 export function IssuePins({
   dismissed,
@@ -82,15 +82,17 @@ export function IssuePins({
     queryKey: ["events", issueKey],
   });
   const events = eventPins.length === 0 ? [] : (log.data?.pages.flat() ?? []);
-  /** The record a pin names, as the read that holds it answered it: its text as stored and the
-   *  server's reading of it, and for a comment or a message the post itself, whose author's
-   *  corrections of it (`edited_at`, `deleted_at`, `deleted_by`) its line is marked by. None
-   *  where that read has not answered or holds no such record, and for a handoff, whose words no
-   *  read here holds. */
+  /** The record a pin names, as the read that holds it answered it: its text as stored, the
+   *  server's reading of it, and for a comment or a message its author's corrections of it
+   *  (`edited_at`, `deleted_at`, `deleted_by`), which its line is marked by. None where that read
+   *  has not answered or holds no such record, and for a handoff, whose words no read here
+   *  holds. */
   const pinRecord = (kind: ConversationPinKind, id: string): PinnedRecord | undefined => {
     if (kind === "ask") {
       const ask = asks.data?.find((one) => one.id === id);
-      return ask === undefined ? undefined : { text: ask.question, tree: ask.question_tree };
+      return ask === undefined
+        ? undefined
+        : { deleted: null, edited: null, text: ask.question, tree: ask.question_tree };
     }
     const post =
       kind === "comment"
@@ -100,7 +102,14 @@ export function IssuePins({
               .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
               .find((one) => one.id === id)
           : undefined;
-    return post === undefined ? undefined : { post, text: post.body, tree: post.body_tree };
+    return post === undefined
+      ? undefined
+      : {
+          deleted: postDeletion(post),
+          edited: post.edited_at,
+          text: post.body,
+          tree: post.body_tree,
+        };
   };
   const list = useRef<HTMLUListElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -138,7 +147,6 @@ export function IssuePins({
           {pins.map((pin) => {
             const id = conversationItemId(pin.kind, pin.id);
             const record = pinRecord(pin.kind, pin.id);
-            const deleted = postDeletion(record?.post);
             return (
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 <Link
@@ -151,14 +159,16 @@ export function IssuePins({
                 >
                   {/* Where no read holds the record - its read has not answered or has failed,
                       or it is a handoff, whose words no read here holds - there are no words to
-                      wait on, so the pin is drawn by the page's word for its kind at once. A
-                      deleted post is its deleted line, from the delete and never its words. */}
-                  {record === undefined ? (
+                      wait on, so the pin is drawn by the page's word for its kind at once. */}
+                  {record?.deleted != null ? (
+                    <DeletedLine deleted={record.deleted} />
+                  ) : record === undefined ? (
                     <span {...pageChrome}>{NODE_TYPE_NAMES[pin.kind]}</span>
-                  ) : deleted !== null ? (
-                    <DeletedLine deleted={deleted} />
                   ) : (
-                    <PinLine id={pin.id} issueKey={issueKey} kind={pin.kind} record={record} />
+                    <>
+                      <PinLine id={pin.id} issueKey={issueKey} kind={pin.kind} record={record} />
+                      <EditedMark at={record.edited} marks={pageChrome} />
+                    </>
                   )}
                 </Link>
                 <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
@@ -200,11 +210,12 @@ export function IssuePins({
   );
 }
 
-/** A pinned record's text as stored, and the server's reading of it where the read sent one,
- *  with the post itself for a comment or a message: its author's corrections of it, which its
- *  line is marked by. */
+/** A pinned record's text as stored, the server's reading of it where the read sent one, and a
+ *  comment's or a message's corrections: its delete and when it was last edited, none for an
+ *  ask. */
 interface PinnedRecord {
-  readonly post?: DeletablePost & { readonly edited_at: string | null };
+  readonly deleted: PostDeletion | null;
+  readonly edited: string | null | undefined;
   readonly text: string;
   readonly tree: DisplayTree | undefined;
 }
@@ -214,10 +225,8 @@ interface PinnedRecord {
  *  read sent one and from its text as stored otherwise, each reference in it read as its
  *  target's name, and cut by R1's first-line rule - with the record as the source its references
  *  are read against. Nothing of it until the projection has answered, and the page's word for
- *  the pin's kind where the line holds no words. A line of a post its author edited says
- *  ` · edited` after it (`EditedMark`), and none before there are words for it to follow. A pin
- *  no read holds the record of, or whose post its author deleted, is drawn by `IssuePins`
- *  itself, so the projection runs only for a record there are words of. */
+ *  the pin's kind where the line holds no words. A pin no read holds the record of is drawn by
+ *  `IssuePins` itself, so the projection runs only for a record there is. */
 function PinLine({
   id,
   issueKey,
@@ -243,9 +252,6 @@ function PinLine({
     <>
       {reads}
       <span {...(line === "" ? pageChrome : authorText)}>{lineOrKindWord(line, kind)}</span>
-      {line === undefined || line === "" ? null : (
-        <EditedMark at={record.post?.edited_at} marks={pageChrome} />
-      )}
     </>
   );
 }

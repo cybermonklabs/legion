@@ -11,6 +11,7 @@ import { approvalGateSteps } from "./gated-steps";
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
+
 const verificationDoc: Artifact = {
   ...specArtifact,
   id: "artifact-3",

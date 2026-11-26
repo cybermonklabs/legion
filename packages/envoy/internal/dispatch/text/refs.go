@@ -178,7 +178,7 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Locate
 		return base
 	}
 	for _, span := range spans {
-		raw := trimReference(body[span[0]:span[1]])
+		raw := spanReference(body, span[0], span[1])
 		if raw == "" {
 			continue
 		}
@@ -189,7 +189,7 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Locate
 	return refs, code
 }
 
-// locateSpan is what raw, one reference span as trimReference leaves it, names as Extract reads
+// locateSpan is what raw, one reference span as spanReference leaves it, names as Extract reads
 // it: a `dispatch://` address that parses, held to the bounds the index keys when bounded
 // (inBound), else nothing; a page of the dashboard at base (parseServer), held to the bounds
 // when bounded (pageInBound); and any other URL as itself, Kind "url", so a post never loses an
@@ -228,6 +228,42 @@ func pageInBound(ref Ref) (Ref, bool) {
 	return ref, targetFits(ref)
 }
 
+// spanReference is the reference body writes at [start, end), one reference span
+// (referencePattern), as text reads it. A span that stands as an inline link's or a picture's
+// address - it starts right after the `](` of `[words](` or `![caption](` - ends at the link's
+// own `)`, the first in it that no `(` in it opened, as CommonMark reads a link's address
+// (linkAddress): a word written straight after the link, `[@Bob](dispatch://agent/abc)hello`,
+// is the link's next word to every renderer, never more of its address. What is left of a span
+// is trimmed as any span is (trimReference), so `[w](dispatch://CORE-1.)` reads CORE-1 as
+// `(see dispatch://CORE-1.)` does. Every reader of a span reads it here: Extract and Mentions,
+// the head cuts (cutReferences) and the address spans pmdoc keeps whole (DispatchSpans). Its twin
+// is `spanReference` in @legion/contracts' `reference-spans.ts`.
+func spanReference(body string, start, end int) string {
+	raw := body[start:end]
+	if strings.HasSuffix(body[:start], "](") {
+		raw = linkAddress(raw)
+	}
+	return trimReference(raw)
+}
+
+// linkAddress is raw up to its first `)` that no `(` before it in raw opened, or all of raw where
+// every `)` closes one: a link's address read from the first byte after its `(`.
+func linkAddress(raw string) string {
+	depth := 0
+	for at := range len(raw) {
+		switch raw[at] {
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return raw[:at]
+			}
+			depth--
+		}
+	}
+	return raw
+}
+
 // trimReference drops what trails a reference in prose: sentence punctuation, the `*`, `_` and `~`
 // that close emphasis and strikethrough around it (GFM's autolinks drop the same characters,
 // keeping them inside a link), and a closing parenthesis that opens nowhere in the reference. It
@@ -252,7 +288,7 @@ func trimReference(raw string) string {
 
 // DispatchSpans is where each `dispatch://` address stands in value, as text reads one: each
 // reference span (referencePattern) that starts with `dispatch://`, from its first byte to the end
-// of what trimReference leaves of it, in order, whether or not the address names anything. It is
+// of what spanReference leaves of it, in order, whether or not the address names anything. It is
 // the span pmdoc keeps an address whole over, so no email or URL autolink starts inside it. Its
 // twin is `referenceSpans(text, "dispatch://")` in @legion/contracts, the span the browser
 // editor's engine keeps whole, read by the same rule.
@@ -262,8 +298,8 @@ func DispatchSpans(value string) [][2]int {
 	}
 	var spans [][2]int
 	for _, span := range referencePattern.FindAllStringIndex(value, -1) {
-		if raw := value[span[0]:span[1]]; strings.HasPrefix(raw, "dispatch://") {
-			spans = append(spans, [2]int{span[0], span[0] + len(trimReference(raw))})
+		if strings.HasPrefix(value[span[0]:span[1]], "dispatch://") {
+			spans = append(spans, [2]int{span[0], span[0] + len(spanReference(value, span[0], span[1]))})
 		}
 	}
 	return spans

@@ -23,6 +23,7 @@ const volumeNoticesVersion = 20261111090000
 // a restarted roles container's count over — and a read of the pod's newest notice whatever line
 // wrote it, which is what the hour between one pod's notices is measured from.
 func TestTheVolumeNoticeCountsArriveWith20261111090000(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, volumeNoticesVersion-1)

@@ -636,7 +636,7 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 	ref, ok := text.ParseRef(raw, serverURL)
 	if !ok {
 		if pinsAMessageBlock(raw, serverURL) {
-			return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+			return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which records no revisions; name the block without @v<N>", raw)
 		}
 		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
 	}
@@ -800,12 +800,12 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			Via:      closureMember.Via,
 		})
 	}
+	// Each row's name reaches a caller that sent Dispatch-Trees: 1 with its tree, read where it
+	// stands (newIssueReferencesRead). The answer is encoded once, exactly as WriteJSON writes it,
+	// trailing newline and all, so the token hashes the bytes it validates and those are the bytes
+	// written; the token names the reading and the parser that read the trees too
+	// (referencesETag), so a validator given for one reading never answers the other.
 	trees := wantsDisplayTrees(r)
-	// The answer is encoded once, exactly as WriteJSON writes it, trailing newline and all, so
-	// the token hashes the bytes it validates and those are the bytes written. Each row's name
-	// reaches a caller that sent Dispatch-Trees: 1 with its tree, read where it stands
-	// (newIssueReferencesRead), and the token names that reading and the parser that read the
-	// trees (referencesETag), so a validator given for one reading never answers the other.
 	var answer bytes.Buffer
 	if err := json.NewEncoder(&answer).Encode(newIssueReferencesRead(model.IssueReferences{
 		Members:    members,
@@ -959,7 +959,8 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 // version and the two answers are the same bytes; the full answer hashes no such line, and no
 // answer's bytes begin with it, as each begins with `{`. The hash is closed as the lists' are
 // (listETag), with whether the caller asked for the rows' name trees, the display parser version
-// and the build commit, for the reasons listETag gives.
+// and the build commit, for the reasons listETag gives: an issue with no row answers the same
+// bytes to either reading.
 //
 // It hashes the answer rather than what the answer is made of because a member moves without
 // anything this issue holds moving with it. A member is a document of another owner (no member

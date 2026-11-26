@@ -61,6 +61,8 @@ export const SEARCH_DEBOUNCE_MS = 150;
 export interface RefPickerOptions {
   readonly text: string;
   readonly caret: number;
+  /** A new comment that delivers can pick only parties the server can route. */
+  readonly delivers?: boolean;
   /** The issue the box writes on, when it has one: its collaborators are the people this box
    *  offers. A box with none offers everyone who has signed in. */
   readonly issueKey?: string;
@@ -168,10 +170,11 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
  *  session itself, or the one holding the role - which the list draws with its running state. A
  *  session's row opens its conversation's documents, as a node's opens its blocks; a role holds
  *  none of its own. */
-function partyRow(option: MentionOption): RefPickerRow {
+function partyRow(option: MentionOption, delivers: boolean): RefPickerRow | undefined {
   // A `role:<token>` option names a role; a `session:` one names a session, which is the pair
   // `partyOfAddress` reads an address by (`routes.ts`).
   const party = partyOfAddress(option.target);
+  if (delivers && party === undefined) return undefined;
   // A session option's holder is its own name, which is its row's label.
   const agent: RefPickerAgent = {
     sessionId: option.sessionId,
@@ -294,6 +297,7 @@ function partiesState(live: {
  */
 export function useRefPicker({
   caret,
+  delivers = false,
   enabled = true,
   issueKey,
   links = "markdown",
@@ -359,7 +363,11 @@ export function useRefPicker({
     const stopped = live.current
       ? stoppedRoleOptions(live.agents, collaborators.data?.agents ?? [], agentText)
       : [];
-    const parties = [...mentionOptions(live.agents, agentText), ...stopped].map(partyRow);
+    const parties: RefPickerRow[] = [];
+    for (const option of [...mentionOptions(live.agents, agentText), ...stopped]) {
+      const row = partyRow(option, delivers);
+      if (row !== undefined) parties.push(row);
+    }
     const logins =
       issueKey === undefined
         ? (users.data ?? []).map((user) => user.login)
@@ -393,6 +401,7 @@ export function useRefPicker({
     architecture.data,
     collaborators.data,
     componentProject,
+    delivers,
     issueKey,
     live.agents,
     live.current,

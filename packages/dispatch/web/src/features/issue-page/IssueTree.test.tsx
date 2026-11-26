@@ -1161,7 +1161,7 @@ test("a press outside the outline that leaves the focus on no control keeps the 
 // keymap presses - Change answer, Copy reference, a command's Copy - in the row's order, and the
 // last stop comes back round to the first. Enter on the one it stopped on follows it or presses
 // it. The link to CORE-7 reads as that issue's key and title, which its own read gives, since
-// the tree is drawn here with no batched read beside it (INFRA-1196 decision 350: a reference
+// the tree is drawn here with no batched read beside it (issue page decision 350: a reference
 // reads as its name, the short form gone).
 test("f steps through a row's chips, links and then the controls no key presses", async () => {
   setViewport(1440);
@@ -8778,7 +8778,7 @@ test("a crumb of a node with no words is its kind's word, not its id", async () 
   expect(crumbs[1]?.textContent).toBe(NODE_TYPE_NAMES.plan_task);
 });
 
-// R8 and INFRA-1196 decision 350: a reference reads as its target's name, the short form gone. A
+// R8 and issue page decision 350: a reference reads as its target's name, the short form gone. A
 // crumb draws one line for a node as every place that names a node by one does (`useNodeLine`):
 // a reference in it reads as the words its author wrote while the page's batched read has not
 // answered for it, and as its target's current name once it has, and it reads none itself. The
@@ -8833,7 +8833,7 @@ test("a crumb reads a reference in its node's line as its target's name, and as 
   }
 });
 
-// R8 and INFRA-1196 decision 350 over the outline's rows: the page hands the rows what it
+// R8 and issue page decision 350 over the outline's rows: the page hands the rows what it
 // publishes of its batched names read in the render that draws them (`IssueTree`'s
 // `published`), so a reference the page asks the read for waits on the page's answer from a
 // row's first render, drawn as its author wrote it meanwhile, and is never read by the row. The

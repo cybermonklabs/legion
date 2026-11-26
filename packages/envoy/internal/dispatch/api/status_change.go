@@ -131,10 +131,10 @@ type statusChangeConflict struct {
 
 // statusChange is a status change's body as the route checked it.
 type statusChange struct {
-	status                                         string
-	includeChildren, unlinkChildren, includeParent bool
-	dryRun                                         bool
-	expectedSeq                                    *int64
+	status string
+	statusChangeOptions
+	dryRun      bool
+	expectedSeq *int64
 }
 
 // parseStatusChange checks the body: a status of the lifecycle, and at most one of the two
@@ -152,12 +152,14 @@ func parseStatusChange(input statusChangeInput) (statusChange, error) {
 			"include_children and unlink_children cannot both be set: pick what happens to the open issues under the issue")
 	}
 	return statusChange{
-		status:          status,
-		includeChildren: input.IncludeChildren,
-		unlinkChildren:  input.UnlinkChildren,
-		includeParent:   input.IncludeParent,
-		dryRun:          input.DryRun,
-		expectedSeq:     input.ExpectedSeq,
+		status: status,
+		statusChangeOptions: statusChangeOptions{
+			includeChildren: input.IncludeChildren,
+			unlinkChildren:  input.UnlinkChildren,
+			includeParent:   input.IncludeParent,
+		},
+		dryRun:      input.DryRun,
+		expectedSeq: input.ExpectedSeq,
 	}, nil
 }
 
@@ -437,7 +439,7 @@ func (s *server) planStatusChangeUnderLocks(
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
-	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), includeChildren: change.includeChildren}
+	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), options: change.statusChangeOptions}
 	for index := range steps {
 		row := rows[steps[index].key]
 		steps[index].title, steps[index].project, steps[index].lastSeq = row.title, row.project, row.lastSeq
@@ -780,7 +782,9 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, 
 		callerProject: run.callerProject,
 		outliving:     run.outliving,
 		adviceRoute:   statusChangeRoute,
-		step:          &issueWriteCallStep{named: run.key, fence: fence, claim: claim, sweepsLater: step.key == run.key},
+		step: &issueWriteCallStep{
+			named: run.key, fence: fence, claim: claim, sweepsLater: step.key == run.key, options: run.change.statusChangeOptions,
+		},
 	}
 	if step.reparent {
 		call.unlinkFrom(run.key)

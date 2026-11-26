@@ -168,10 +168,10 @@
     ]
   },
   {
-    "body": "The decisions: dispatch://CORE-49/decisions and https://dispatch.test/issues/CORE-55/decisions.",
+    "body": "The decisions: dispatch://CORE-55/decisions and https://dispatch.test/issues/CORE-56/decisions.",
     "refs": [
-      "dispatch://CORE-49/decisions",
-      "dispatch://CORE-55/decisions"
+      "dispatch://CORE-55",
+      "dispatch://CORE-56"
     ]
   },
   {
@@ -397,6 +397,40 @@
     "refs": [
       "dispatch://LEGION-1/artifact/shot-png@v1"
     ]
+  },
+  {
+    "body": "[@Bob](dispatch://agent/abc)hello",
+    "refs": [
+      "dispatch://agent/abc"
+    ]
+  },
+  {
+    "body": "[w](dispatch://CORE-24)word",
+    "refs": [
+      "dispatch://CORE-24"
+    ]
+  },
+  {
+    "body": "![shot](dispatch://LEGION-1/artifact/shot-png)word",
+    "refs": [
+      "dispatch://LEGION-1/artifact/shot-png"
+    ]
+  },
+  {
+    "body": "[w](dispatch://agent/a(b)c)tail",
+    "refs": [
+      "dispatch://agent/a(b)c"
+    ]
+  },
+  {
+    "body": "(see dispatch://CORE-1)",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "dispatch://CORE-1)word",
+    "refs": []
   },
   {
     "body": "see dispatch://CORE-1/spec#b-d%C3%A9cision%3A1.",

@@ -109,7 +109,7 @@ function kindOf(node: TreeNode): NodeType | undefined {
  *  post its author deleted holds none: its text is the deleted line as the model writes it
  *  (`tree-drafts.ts`'s `deletedPostLine`), naming the actor by a short id and the time as stored,
  *  and its row draws the page's own deleted line in its place (`node-line.tsx`'s `DeletedLine`),
- *  so no word typed finds it (INFRA-1523, R3). */
+ *  so no word typed finds it (deleted-post R3). */
 function holds(node: TreeNode, wanted: string): boolean {
   return (
     wanted === "" ||
@@ -217,8 +217,7 @@ function filterView(
     // its id, which is no name a reader reads (R22). The line carries the node's own address,
     // which makes it the link a reader follows to it (R18, and R26: a step's row reaches the
     // statement it serves), and a comment's or a message's marks, which its child's row draws
-    // with the line (INFRA-1523, R2 and R3, `parentLineOf`). A drawn child's own rows are the
-    // child alone.
+    // with the line (deleted-post R2 and R3). A drawn child's own rows are the child alone.
     const line = drawn || !parts.some((part) => part.drawn) ? undefined : parentLineOf(node);
     const below = parts.flatMap((part) =>
       part.drawn && line !== undefined

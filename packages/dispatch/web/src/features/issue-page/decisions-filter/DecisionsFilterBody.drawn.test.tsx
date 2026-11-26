@@ -2026,7 +2026,7 @@ test("an edited message an address named draws its words and says · edited afte
 });
 
 // R2 and R3 of dispatch://INFRA-1523: an entry's parent line is the outline's own
-// (`node-line.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
+// (`NodeRow.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
 // deleted is drawn as its deleted line, its actor named as the page names an author and never as
 // the model's line holds it, and it stays the link to the comment, out of the tab order as
 // everything inside a row is.

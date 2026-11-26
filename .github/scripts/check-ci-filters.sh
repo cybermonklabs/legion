@@ -496,7 +496,7 @@
 # EXCLUDED leaves worker_image and browser_image to check-image-trigger-paths.sh, which proves
 # each covers every file its image build reads; each is a file of .github/ci-gates holding its
 # patterns. It holds dispatch_references, a file of .github/ci-gates too, to no job's reads (rule
-# 23 holds it to the references lane's spec files alone): that filter gates ci.yaml's
+# 24 holds it to the references lane's spec files alone): that filter gates ci.yaml's
 # dispatch-references job, a pull-request preview of the reference rows that ci-ok does not need
 # (CI_OK_EXEMPT), and it names less than the job reads on purpose, since the dispatch_browser
 # gate's job runs those rows on the merge queue's full lane and that filter is computed from every

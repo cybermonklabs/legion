@@ -776,26 +776,15 @@ func askAnswerWithTree(answer *model.AskAnswer) *model.AskAnswerWithTree {
 //
 // Every answer a read gives carries the list, the ask's own current answer too, so a reader of an
 // answer is never handed a chosen label without its tree. With no reader the list stays nil and
-// is left out, so a caller that asked for no trees reads the bytes it read before.
-func registerChosenLabels(reader *displayTreeReader, answer *model.AskAnswerWithTree) {
-	if answer == nil {
-		return
-	}
-	answer.SelectedTrees = chosenLabelTrees(reader, answer.Selected)
-}
-
-// chosenLabelTrees registers each of labels with reader and answers the list each fills, the tree
-// of each label at that label's own index: an answer's SelectedTrees (registerChosenLabels) and a
-// Decisions entry's (decisionEntries). It answers nil with no reader or no label. The list is made
+// is left out, so a caller that asked for no trees reads the bytes it read before; it is made
 // whole before any entry is registered, because each entry must stand where it will stand when
 // the reader resolves.
-func chosenLabelTrees(reader *displayTreeReader, labels []string) []model.DisplayTree {
-	if reader == nil || len(labels) == 0 {
-		return nil
+func registerChosenLabels(reader *displayTreeReader, answer *model.AskAnswerWithTree) {
+	if reader == nil || answer == nil || len(answer.Selected) == 0 {
+		return
 	}
-	trees := make([]model.DisplayTree, len(labels))
-	for index, label := range labels {
-		reader.text(&trees[index], label)
+	answer.SelectedTrees = make([]model.DisplayTree, len(answer.Selected))
+	for index, label := range answer.Selected {
+		reader.text(&answer.SelectedTrees[index], label)
 	}
-	return trees
 }

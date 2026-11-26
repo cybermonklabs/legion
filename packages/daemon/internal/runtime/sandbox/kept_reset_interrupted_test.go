@@ -21,6 +21,7 @@ import (
 // can go on, as after ReplacePod or the release. R6: a fault on a kept volume that fails an init
 // container does not reach a second pod. So the next launch resets the volume.
 func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
 	old := g.spawn(workerSpec(t))

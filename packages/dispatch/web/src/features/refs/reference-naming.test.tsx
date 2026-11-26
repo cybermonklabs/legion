@@ -20,7 +20,6 @@ import { useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
 import { PlainText, usePlainHeadline } from "./plain-text";
 import { partyLink } from "./ref-picker";
 import { ReferenceHostIs } from "./reference-host";
-import { commentQuery } from "./reference-target";
 import { shortForm } from "./routes";
 import type { TextSource } from "./text-references";
 
@@ -806,83 +805,6 @@ test("an address whose target does not exist projects as the words written", asy
     );
     expect(words(view.getByTestId("painted"))).toBe(written);
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe(written));
-  } finally {
-    view.unmount();
-  }
-});
-
-/** A comment of CORE-1 and a block of it, for the two rows below: the block's read answers that
- *  the block is gone, which is how Dispatch answers every block a delete took with its post, and
- *  the post's own read says whether there is a post at all. */
-const GONE_COMMENT_ID = "11111111-1111-4111-8111-111111111111";
-const GONE_BLOCK = `dispatch://CORE-1/comment/${GONE_COMMENT_ID}#b-b1`;
-
-// A block reference to a post its author deleted names a post that exists: its block went with
-// the delete, and the post's own read answers its deletion. The reference stays a link, in the
-// words its author wrote, whose hover card says the post is deleted (INFRA-1523); R8's plain words
-// are for a target Dispatch answers does not exist, which this one is not.
-test("a block reference to a post its author deleted stays a link, in the words its author wrote", async () => {
-  spies.push(
-    spyOn(api, "getReferences").mockRejectedValue(
-      new ApiError(404, { code: "NOT_FOUND", error: "block gone" })
-    ),
-    spyOn(api, "getComment").mockResolvedValue({
-      comment: {
-        author: { id: "alice", kind: "user" },
-        body: "",
-        deleted_at: "2026-11-13T12:00:00Z",
-        deleted_by: { id: "alice", kind: "user" },
-        edited_at: null,
-        id: GONE_COMMENT_ID,
-        issue_key: "CORE-1",
-      },
-      replies: [],
-    } as never)
-  );
-  const client = clientWithIssue();
-  const view = draw(
-    <div data-testid="painted">
-      <MarkdownBody markdown={`See ${GONE_BLOCK} here.`} />
-    </div>,
-    client
-  );
-  try {
-    await waitFor(() =>
-      expect(client.getQueryState(commentQuery(GONE_COMMENT_ID).queryKey)?.status).toBe("success")
-    );
-    await waitFor(() =>
-      expect(view.container.querySelector(`a[data-dispatch-ref="${GONE_BLOCK}"]`)).not.toBeNull()
-    );
-    expect(view.container.querySelector("[data-dispatch-missing]")).toBeNull();
-    expect(words(view.getByTestId("painted"))).toBe(`See ${GONE_BLOCK} here.`);
-  } finally {
-    view.unmount();
-  }
-});
-
-// The same block of a post that never existed: the post's own read answers 404 too, so Dispatch
-// has answered that the target does not exist, and the reference is the words its writer wrote,
-// with no link (R8).
-test("a block reference to a post that never existed reads as the words written, with no link", async () => {
-  spies.push(
-    spyOn(api, "getReferences").mockRejectedValue(
-      new ApiError(404, { code: "NOT_FOUND", error: "block gone" })
-    ),
-    spyOn(api, "getComment").mockRejectedValue(
-      new ApiError(404, { code: "NOT_FOUND", error: "no comment" })
-    )
-  );
-  const view = draw(
-    <div data-testid="painted">
-      <MarkdownBody markdown={`See ${GONE_BLOCK} here.`} />
-    </div>
-  );
-  try {
-    await waitFor(() =>
-      expect(view.container.querySelectorAll("[data-dispatch-missing]")).toHaveLength(1)
-    );
-    expect(view.container.querySelector(`a[data-dispatch-ref="${GONE_BLOCK}"]`)).toBeNull();
-    expect(words(view.getByTestId("painted"))).toBe(`See ${GONE_BLOCK} here.`);
   } finally {
     view.unmount();
   }

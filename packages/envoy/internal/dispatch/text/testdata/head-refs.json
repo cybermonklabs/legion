@@ -518,6 +518,14 @@
     "note": "The cut in [the spec] moves back to its [. With the ellipsis after it, the address inside the first link's address no longer reads (dispatch://CORE-1))… names nothing), but the key CORE-1 at the same place names the same issue, so the head reads at that place what the text does, and the cut stays: a reference is told apart by what it names, not by how it is written."
   },
   {
+    "name": "a link whose address ends in sentence punctuation crossing the cut",
+    "text": "see [w](dispatch://CORE-1.) now",
+    "limit": 24,
+    "ellipsis": "…",
+    "head": "see…",
+    "note": "The link names CORE-1: its address is read as any span is, the period after the key dropped, as readTextReferences and text.Extract read it. The cut falls in that address, so it moves back to the link's [, as it does for the same link without the period. A copy that read the link's address as the parser's whole destination, the period kept, would find no reference there and cut it by length."
+  },
+  {
     "name": "a title in parentheses that opens another is no title, so the link inside it is one of its own",
     "text": "see [x](a (T [y](dispatch://CORE-1)) now",
     "limit": 20,

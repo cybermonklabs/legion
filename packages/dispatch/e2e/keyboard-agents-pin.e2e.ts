@@ -206,7 +206,7 @@ test.describe("agents page pins", () => {
       await issueOption(silentRow, "CORE-1").click();
       await field.click();
       await page.keyboard.press("End");
-      await page.keyboard.type(" can you take this");
+      await page.keyboard.type("can you take this");
       await expect(field).toHaveValue(`${silentMention} can you take this`);
 
       await pinFromRow(silentRow, "Silent");
@@ -389,7 +389,7 @@ test.describe("agents page pins", () => {
       await page.keyboard.press("Enter");
       await silentRow.getByRole("button", { name: "Choose issue" }).click();
       await issueOption(silentRow, "CORE-1").click();
-      await expect(field).toHaveValue(silentMention);
+      await expect(field).toHaveValue(`${silentMention} `);
       await pasteFile(field, "notes.md", "# Notes\n");
       const uploading = silentRow.getByRole("button", { name: "Uploading file…" });
       await expect(uploading).toBeDisabled();

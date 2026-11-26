@@ -295,7 +295,7 @@ function linkedCheckNode(block: CheckBlock): TreeNode {
 }
 
 /** CORE-2 as its summary answers it: the name a reference to it in a stored text reads as, which
- *  the row reads itself where no batched read beside the body names it (R8, INFRA-1196 decision
+ *  the row reads itself where no batched read beside the body names it (R8, issue page decision
  *  350: a reference reads as its target's name, the short form gone). */
 const CORE_2 = {
   documents: [],
@@ -902,7 +902,7 @@ function deletedComment(id: string, children: readonly TreeNode[] = []): TreeNod
 }
 
 // R2 and R3 of dispatch://INFRA-1523: a statement's parent line is the outline's own
-// (`node-line.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
+// (`NodeRow.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
 // deleted is drawn as its deleted line, its actor named as the page names an author and never as
 // the model's line holds it, with the time as stored; one its author edited says ` · edited`
 // after its line. Either stays the link to the comment, and a tab stop.
@@ -2229,7 +2229,7 @@ test("an agent that recorded a result is named by its role's word", async () => 
 
 // A check's words are drawn whole through `RowText` from the results read's reading of them
 // (`text_tree`), so a link in them is a link and a reference is named by its target's name,
-// never spelled as its address (R8, INFRA-1196 decision 350). The words are no button, so no
+// never spelled as its address (R8, issue page decision 350). The words are no button, so no
 // control holds a link, and a press on a link is the link's own: it neither opens nor shuts the
 // check's facts.
 test("a check's words draw their links from the results read's tree", async () => {
@@ -2266,7 +2266,7 @@ test("a check's words draw their links from the results read's tree", async () =
   }
 });
 
-// R8 and INFRA-1196 decision 350 over a statement's parent line, which the view draws as the
+// R8 and issue page decision 350 over a statement's parent line, which the view draws as the
 // outline draws a parent line (`node-line.tsx`'s `NodeParentLine`): a reference in the parent's
 // words reads as the words its author wrote while the page's batched read has not answered for
 // it, and as its target's name once it has, and the line reads none itself.
@@ -2486,7 +2486,7 @@ test("a check under two statements names the other by its words with no mark of 
       { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
     ]);
     // The statement's own words name CORE-2 by its read, as every reference in a row's words is
-    // named (INFRA-1196 decision 350), and spell no address.
+    // named (issue page decision 350), and spell no address.
     await waitFor(() =>
       expect(
         view.container.querySelector("[data-verification-body]")?.textContent ?? ""

@@ -50,7 +50,7 @@ func (d parentDocument) indexWhole(t *testing.T, number int, version typedVersio
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, version.markdown, version.blocks, version.located, version.pointers, facts, "")
+		_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, version.markdown, version.blocks, version.located, version.pointers, "", facts)
 		if err == nil && !won {
 			err = fmt.Errorf("version %d of %s lost the revision fence", number, d.refKey)
 		}

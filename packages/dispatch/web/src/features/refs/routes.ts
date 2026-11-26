@@ -159,22 +159,22 @@ export type IssueTab =
   | "decisions"
   | "collaborators";
 
-/** The issue tabs whose whole route is the tab itself: no block, no slug, no id - each one of
- *  `@legion/contracts`'s `PLAIN_ISSUE_TABS`, which the server reads the same way, and the
- *  Decisions tab. Each one is parsed from the segment of its own name, built as `<issue>/<kind>`,
+/** An issue tab whose whole route is the tab itself: each tab of `@legion/contracts`'s
+ *  `PLAIN_ISSUE_TABS`, which the server reads the same way, and the Decisions tab. No block, no
+ *  slug, no id. Each one is parsed from the segment of its own name, built as `<issue>/<kind>`,
  *  shown as `<KEY> <kind>` and is the tab of its own name, so the chains below hold the eight in
- *  one arm rather than one apiece and a ninth tab is this list. The spec and the conversation
- *  stay out of it: a spec route carries a block, and the conversation is written `log` in a
- *  reference and `conversation` in a path. The Decisions tab reads the issue's decision nodes, so
- *  its page and its reference `dispatch://<KEY>/decisions` name the issue, as the server's `text`
- *  reads both. */
-const ROUTE_ISSUE_TABS = [...PLAIN_ISSUE_TABS, "decisions"] as const;
+ *  one arm rather than one apiece and a ninth tab is that list. The spec and the conversation stay
+ *  out of it: a spec route carries a block, and the conversation is written `log` in a reference
+ *  and `conversation` in a path. The Decisions tab reads the issue's decision nodes, so its page
+ *  and its reference `dispatch://<KEY>/decisions` name the issue, as the server's `text` reads
+ *  both, and its reference is written as the issue, as every tab's is (`buildDispatchReference`). */
+const ISSUE_TAB_ROUTES = [...PLAIN_ISSUE_TABS, "decisions"] as const;
 
-type PlainIssueTab = (typeof ROUTE_ISSUE_TABS)[number];
+type PlainIssueTab = (typeof ISSUE_TAB_ROUTES)[number];
 
 /** The plain tab a path segment names, or `undefined` for anything else. */
 function plainIssueTab(value: string): PlainIssueTab | undefined {
-  return ROUTE_ISSUE_TABS.find((tab) => tab === value);
+  return ISSUE_TAB_ROUTES.find((tab) => tab === value);
 }
 
 type PlainIssueRoute = Extract<IssueRoute, { kind: PlainIssueTab }>;
@@ -184,7 +184,7 @@ type PlainIssueRoute = Extract<IssueRoute, { kind: PlainIssueTab }>;
 function isPlainIssueRoute(
   route: DispatchRoute | DispatchReferenceRoute
 ): route is PlainIssueRoute {
-  return ROUTE_ISSUE_TABS.some((tab) => tab === route.kind);
+  return ISSUE_TAB_ROUTES.some((tab) => tab === route.kind);
 }
 
 const projectKeyPattern = "[A-Z][A-Z0-9]{1,9}";
@@ -711,16 +711,11 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   if (route.kind === "spec") {
     return `${issue}/spec${block}`;
   }
-  // The Decisions tab reads the issue's decision nodes, and the grammar reads its reference,
-  // `dispatch://<KEY>/decisions`, as the issue (`text.parseDispatch`), so it is written as it is
-  // read.
-  if (route.kind === "decisions") {
-    return `${issue}/decisions`;
-  }
   // An issue's tabs are the issue: the grammar lets only `spec`, `artifact/…`, `ask/…`,
   // `comment/…` and `message/…` follow an issue key, so the eight forms this once wrote -
   // verification, plan, steps, activity, children, artifacts, collaborators and the
-  // conversation's `log` - were references the server refused to read.
+  // conversation's `log` - were references the server refused to read. The Decisions tab, whose
+  // `decisions` the server reads as the issue, is written as the issue too.
   if (isPlainIssueRoute(route) || route.kind === "conversation") {
     return issue;
   }

@@ -17,6 +17,7 @@ import { type KnownReferences, useKnownReferences } from "./reference-names";
 import {
   questionReferences,
   questionsQuery,
+  useReferenceLabel,
   useReferenceQuery,
   useReferenceTarget,
 } from "./reference-target";
@@ -71,7 +72,11 @@ function OwnNameRead({
   onName: NameReport;
   route: DispatchReferenceRoute;
 }): ReactNode {
-  const { known, missing, title } = useReferenceTarget(route, { text: false });
+  const target = useReferenceTarget(route, { text: false });
+  const { known, missing } = target;
+  // The projection names an address standing in a line: a deleted post by the deleted line, an
+  // edited one with its mark, as a link to it is named (`useReferenceLabel`).
+  const { text: title } = useReferenceLabel(route, target);
   const answer = referenceAnswer(route, { known, missing, title });
   const name = answer?.name;
   const mention = answer?.mention;

@@ -22,7 +22,7 @@ import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { PostPreview } from "./PostBody";
-import { DeletedBody, EditedMark } from "./PostMarks";
+import { EditedMark } from "./PostMarks";
 import { type PostDeletion, postDeletion } from "./post-marks";
 import * as previewCard from "./ref-preview-card";
 import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
@@ -383,9 +383,6 @@ function HeadingEdited({
   return <EditedMark at={at} className={`font-normal ${textMutedOnSurface}`} deleted={deleted} />;
 }
 
-/** The classes of the card's body, which the deleted line takes where it stands in its place. */
-const bodyClassName = `mt-1 ${textSecondaryOnSurface}`;
-
 /** The card's body: three rendered lines of what the target says, formatted, then cut, or the
  *  deleted line where the target is a post its author withdrew. A `#id` in it names a question
  *  block of `source`, the document the target's own text belongs to. */
@@ -402,7 +399,7 @@ function Body({
 }): ReactNode {
   return (
     <PostPreview
-      className={bodyClassName}
+      className={`mt-1 ${textSecondaryOnSurface}`}
       deleted={deleted}
       lines={3}
       markdown={markdown}
@@ -539,12 +536,16 @@ const BLOCK_HOLDER_LABELS: Record<BlockItemKind, string> = {
  *  block's is. A block of a post its author edited carries the post's ` · edited`; a block of a
  *  post its author deleted has no text left to show, and its card says the post is deleted
  *  (`blockDeletion`): the block read answers 404 and the post's own read carries the mark, and
- *  a node that carried the mark itself would read the same. That card draws the deleted line in
- *  the body's place and mounts no renderer, since it has no text to hand one. */
+ *  a node that carried the mark itself would read the same. */
 function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const { block, blockDeletion } = useReferenceData(route, { text: false });
   const artifact = useBlockDocument(route);
   const item = itemOfBlock(route);
+  // The post a block of a comment or message is of, whose delete the card says in its place.
+  const post =
+    item === undefined
+      ? undefined
+      : textSourceOf(item.kind, item.id, "key" in route ? route.key : undefined);
   const holder = item === undefined ? artifact?.name : BLOCK_HOLDER_LABELS[item.kind];
   if (holder !== undefined && block === undefined && blockDeletion !== null) {
     return (
@@ -553,7 +554,7 @@ function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
           <span className={`font-normal ${textMutedOnSurface}`}>{documentOwner(route)} · </span>
           {holder}
         </Heading>
-        <DeletedBody className={bodyClassName} deleted={blockDeletion} />
+        <Body deleted={blockDeletion} markdown="" source={post} tree={undefined} />
       </>
     );
   }
@@ -594,7 +595,7 @@ function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
         </span>
       )}
       {blockDeletion !== null ? (
-        <DeletedBody className={bodyClassName} deleted={blockDeletion} />
+        <Body deleted={blockDeletion} markdown="" source={post} tree={undefined} />
       ) : text === undefined || text.trim() === "" ? null : (
         <Body
           markdown={text}

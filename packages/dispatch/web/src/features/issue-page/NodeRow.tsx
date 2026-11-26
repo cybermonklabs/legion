@@ -241,7 +241,7 @@ export function NodeRow({
   // A reference in the words takes its name after they are first drawn - the page's batched
   // read answers last, and a party's own read after it - and its words can run longer or shorter
   // than the words written: the row measures its cut again, as for words of another value
-  // (`useClamp`), so no word is cut short of the room or drawn past it (INFRA-1196 decision 350).
+  // (`useClamp`), so no word is cut short of the room or drawn past it (issue page decision 350).
   const redrawn = useCallback(() => {
     const element = words.current;
     if (cuttable && element !== null) clampRedrawn(element);
@@ -1241,8 +1241,9 @@ export function NodeEdges({
  * A comment's or a message's chip names a post its author deleted by the deleted line without
  * its time, in the deleted line's italic, as a link to the post does (`RefLink`), the actor named
  * as the row names it (`DeletedLine`), where the published name holds it as no registry knows
- * it; and a post its author edited by its name cut to the chip's length, then ` · edited`
- * (`EditedMark`), drawn after the cut, so no cut takes the mark (INFRA-1523, R2 and R3).
+ * it, so such a chip reads nothing; and a post its author edited by its words cut to the chip's
+ * length, then ` · edited` (`EditedMark`), drawn after the cut, so no cut takes the mark
+ * (deleted-post R2 and R3).
  */
 function NodeReference({
   chip,
@@ -1267,35 +1268,42 @@ function NodeReference({
   // the node's record is on: that issue's spec as the Spec, and another issue's as a document.
   const anyDocument = ambiguous ? undefined : documentWord(target, issue);
   const word = anyDocument === undefined ? undefined : (chip.reading?.chipWord ?? anyDocument);
-  // A deleted comment or message by its deleted line, the actor named as the row names it, where
-  // the read named it (`NodeChip.reading`); a block of one is gone. Such a chip reads nothing.
-  const agentText = useAgentText();
-  const deleted = postDeletion({ deleted_at: chip.deletedAt, deleted_by: chip.deletedBy });
-  const deletedName = deleted !== null && chip.reading !== undefined;
   // A block by its first block of words, the line the store projected from the reading the page
   // published for it, which the chip carries: such a chip waits on that line and reads nothing.
   const { lines } = useKnownReferences();
   const blockLine = !ambiguous && !gone && namesBlockByLine(target, chip.reading);
   const line = blockLine ? lines.get(chip.ref) : undefined;
+  // A deleted comment or message by its deleted line, named from the delete as its row names
+  // the actor; a block of one is gone, and the model names it by nothing.
+  const agentText = useAgentText();
+  const deleted = postDeletion({ deleted_at: chip.deletedAt, deleted_by: chip.deletedBy });
+  const deletedLine =
+    ambiguous || gone || deleted === null || chip.reading === undefined
+      ? undefined
+      : deletedLineText(deleted, { label: agentText.author });
   // The address as one text run, which the projection reads as the reference it is.
   const address = useMemo(() => titleReading(chip.ref), [chip.ref]);
   const { reads, text } = usePlainHeadline(
-    ambiguous || gone || word !== undefined || blockLine || deletedName ? undefined : address,
+    ambiguous || gone || word !== undefined || blockLine || deletedLine !== undefined
+      ? undefined
+      : address,
     undefined,
     { issue, surface: "node-row-chip" }
   );
   // Named only where the projection wrote its target's name in place of the address, which a
   // chip never draws (`MarkdownHeadline.named`).
   const named = text !== undefined && text.named.length > 0;
-  const name = deletedName
-    ? chipName(target, deletedLineText(deleted, { label: agentText.author }))
-    : line !== undefined
-      ? chipName(target, line)
-      : text !== undefined && named
-        ? chipName(target, text.text)
-        : "";
-  const edited = chip.editedAt !== undefined && name !== "";
+  const name =
+    deletedLine !== undefined
+      ? chipName(target, deletedLine)
+      : line !== undefined
+        ? chipName(target, line)
+        : text !== undefined && named
+          ? chipName(target, text.text)
+          : "";
   const words = ambiguous ? chip.ref : (word ?? name);
+  if (!gone && words === "") return reads;
+  const href = chip.gone || target === undefined ? undefined : referenceHref(target);
   // A target's name is its author's words, but for the page's own in it: the deleted line's
   // opening and the edited mark, marked as the page's chrome (INFRA-1523, R3).
   const opening =
@@ -1304,15 +1312,17 @@ function NodeReference({
       : deleted.by === null
         ? CONTROL_LABELS.post_deleted
         : CONTROL_LABELS.post_deleted_by;
-  const mark = edited ? <EditedMark at={chip.editedAt} marks={pageChrome} /> : null;
+  const mark =
+    chip.editedAt === undefined || name === "" ? null : (
+      <EditedMark at={chip.editedAt} marks={pageChrome} />
+    );
   const shown =
     ambiguous || word !== undefined ? (
       words
-    ) : deletedName ? (
+    ) : deletedLine !== undefined ? (
       <span className="italic" data-post-deleted="" {...pageChrome}>
         {opening}
         {name === opening ? null : <span {...authorText}>{name.slice(opening.length)}</span>}
-        {mark}
       </span>
     ) : (
       <>
@@ -1320,8 +1330,6 @@ function NodeReference({
         {mark}
       </>
     );
-  if (!gone && words === "") return reads;
-  const href = chip.gone || target === undefined ? undefined : referenceHref(target);
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (

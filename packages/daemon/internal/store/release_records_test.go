@@ -63,6 +63,7 @@ func unfinishedResumes(ctx context.Context, st *Store, project string, before ti
 // the same reason after any of those opens a streak of its own, with its own first pass, so a
 // window's rows are the holds of that window.
 func TestAPodsHoldStreakEndsWhenItIsReleasedOrItsReasonChanges(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -132,6 +133,7 @@ func TestAPodsHoldStreakEndsWhenItIsReleasedOrItsReasonChanges(t *testing.T) {
 // release was recorded. The stuck pass, which warns about a wake once whatever came after it,
 // keeps reading every unfinished wake.
 func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)

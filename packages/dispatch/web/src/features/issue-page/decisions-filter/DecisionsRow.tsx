@@ -16,6 +16,7 @@ import { useAgentText } from "../../refs/AgentName";
 import { EditedMark } from "../../refs/PostMarks";
 import { postDeletion } from "../../refs/post-marks";
 import { DecisionActions, rowActionSelector } from "../DecisionActions";
+import type { ParentLine } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import {
   AskAnswer,
@@ -30,7 +31,7 @@ import {
   useClamp,
   useRowOnScreen,
 } from "../NodeRow";
-import { DeletedLine, NodeParentLine } from "../node-line";
+import { DeletedLine, lineOrKindWord, NodeParentLine, useNodeLine } from "../node-line";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -42,6 +43,7 @@ import {
   DECISIONS_WORDS,
   GLYPH_TOKENS,
   isReader,
+  NODE_TYPE_NAMES,
 } from "../page-words";
 import { RowText } from "../RowText";
 import type { AskDeclined, DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
@@ -271,19 +273,7 @@ export function DecisionsRow({
           {entry.kind !== "decision" || entry.change === undefined ? null : (
             <Changed by={person(entry.change.by)} change={entry.change} focused={focused} />
           )}
-          {/* The node's parent in the conversation, as one line: its kind's word and its one
-              line (R2, R1's first-line rule), drawn by the outline's own parent line
-              (`node-line.tsx`'s `NodeParentLine`): its line is the link a reader follows to the
-              parent where the model gives it an address, out of the tab order as everything
-              inside a row is, which the row's own keys reach. A parent its author deleted is
-              drawn as the deleted line, and one its author edited says ` · edited` after its
-              line, as the outline's parent line draws them (INFRA-1523, R2 and R3). A parent
-              with no words of its own is named by its kind's word once, as plain text with no
-              link, which is the line G gives it, and never by its id (R7); an edited one says
-              ` · edited` after that word (`kindOnce`). */}
-          {entry.parent === undefined ? null : (
-            <NodeParentLine kindOnce line={entry.parent} tabStops={false} />
-          )}
+          {entry.parent === undefined ? null : <EntryParentLine parent={entry.parent} />}
           {statements.length === 0 ? null : (
             <p
               className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
@@ -490,13 +480,48 @@ function Declined({
 }
 
 /**
+ * The node's parent in the conversation, as one line (R2, R1's first-line rule): its kind's word
+ * and its one line, as every one line of a node is drawn (`node-line.tsx`'s `useNodeLine`, the
+ * reading list's `node-row-parent-line`). A parent with words is drawn by the outline's own parent
+ * line (`NodeParentLine`): its line is the link a reader follows to the parent where the model
+ * gives it an address, out of the tab order as everything inside a row is, which the row's own
+ * keys reach; a parent its author deleted is drawn as the deleted line, and one its author edited
+ * says ` · edited` after its line (deleted-post R2 and R3). A parent with no words of its own is
+ * named by its kind's word once, as plain text with no link, which is the line G gives it
+ * (`lineOrKindWord`), and never by its id (R7); an edited one says ` · edited` after that word.
+ * Nothing follows the word until the projection answers, one pre-paint commit on a page whose
+ * engine is loaded.
+ */
+function EntryParentLine({ parent }: { parent: ParentLine }): ReactNode {
+  const { line, reads } = useNodeLine(parent, { surface: "node-row-parent-line" });
+  const words = lineOrKindWord(line, parent.type);
+  if (words !== "" && words !== NODE_TYPE_NAMES[parent.type]) {
+    return <NodeParentLine line={parent} tabStops={false} />;
+  }
+  return (
+    <p
+      className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
+      data-node-parent-line=""
+      data-parent-id={parent.id}
+      data-parent-type={parent.type}
+    >
+      <span className="shrink-0" {...pageChrome}>
+        {NODE_TYPE_NAMES[parent.type]}
+        <EditedMark at={parent.editedAt} />
+      </span>
+      {reads}
+    </p>
+  );
+}
+
+/**
  * The change a person asked of this decision, under its words (the tester's F6: "the change
  * must be drawn under, or tied to, the decision it changes"): who asked and when, as every
  * author is drawn (R9), what they wrote, and a link to it in the conversation, where it is
  * replied to. What they wrote is drawn as a person's answer under an ask is (`NodeRow.tsx`'s
  * `AskAnswer`), by the row's own reader (`RowText`): from the server's reading of it, and where
  * the read sent none from the page's own parse of it. The reader's own words carry the ink rule
- * (R34). A change its author edited says ` · edited` after the words (`EditedMark`, INFRA-1523,
+ * (R34). A change its author edited says ` · edited` after the words (`EditedMark`, deleted-post
  * R2), in the page's own words; a deleted one is no change of the decision (`decisionChanges`)
  * and is not drawn here.
  */

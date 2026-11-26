@@ -136,8 +136,6 @@ func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err := write(ctx, tx, decisions.Queue); err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	// The blocks are left to the block-index reconciliation, so the document stays owed to the forms
-	// queue until that pass indexes them (blocksIndexed false).
 	reader := refs.NewReader(ctx, tx, record.Writer, "artifact", artifactID, s.serverURL)
 	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), decisions.Moved(), nil, false)
 	return changes, decisions.Stated(), err
@@ -219,6 +217,13 @@ func offsetBlocks(offsets []pmdoc.BlockOffset) []model.ArtifactBlock {
 // caller appends under that same event (graphstore.QueueCaused): the pass writes the block nodes
 // itself, because the foreign key on the projection rows needs them, and holds its tuples back
 // because on the request path the event does not exist yet.
+//
+// Whether the block pass won the revision fence (refs.BlockIndexing.Won) decides what its
+// reconciliation settles: only a pass that won writes the version's blocks, so only its
+// reconciliation settles the document's row of the forms queue (replaceVersionRefs'
+// blocksIndexed). A pass that lost - a newer version's
+// blocks already stand - writes no block, and it leaves that row owed for the next pass, as it
+// leaves the block index's own mark (refs.BlockIndexing.Queue writes nothing for it).
 func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	record, err := indexedVersionOf(ctx, tx, artifactID, version)
 	if err != nil {
@@ -237,7 +242,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	moved, indexBlocks, stated, won, err := planBlockIndex(ctx, tx, s.markingRule, refs.VersionBlocks{
 		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
 		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
-		Typed: facts, Beside: removalsOf(ctx, artifactID), ServerURL: s.serverURL,
+		ServerURL: s.serverURL, Typed: facts, Beside: removalsOf(ctx, artifactID),
 	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
@@ -245,9 +250,6 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err := write(ctx, tx, indexBlocks); err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	// The version's blocks are indexed in this transaction only where its pass won the revision
-	// fence: a pass that lost it writes no block, so the reconciliation leaves the document owed to
-	// the forms queue for the pass that wrote them to settle (blocksIndexed).
 	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.serverURL), won)
 	return changes, stated, err
 }
@@ -347,11 +349,11 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, versi
 // own write made (removalsOf) - planned into it. It returns the targets it moves, the cited blocks
 // it changes included (refs.BlockIndexing.Cited), the step that writes it, what it states in the
 // node and tuple store, held for the event the caller appends for the version
-// (refs.BlockIndexing.Stated), and whether it won the revision fence, without which it writes no
-// block (refs.BlockIndexing.Won). It plans against what the index holds (heldBlockIndex), and
-// records what this one leaves for a later indexing of the same document (recordBlockIndex). Each
-// block's excerpt is cut in the plan, around the dashboard URLs of the deployment at
-// version.ServerURL.
+// (refs.BlockIndexing.Stated), and whether it won the revision fence (refs.BlockIndexing.Won):
+// the step of a pass that lost writes nothing. It plans against what the index holds
+// (heldBlockIndex), and records what this one leaves for a later indexing of the same document
+// (recordBlockIndex). Each block's excerpt is cut in the plan, around the dashboard URLs of the
+// deployment at version.ServerURL.
 func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.VersionBlocks) ([]refs.Target, WriteStep, graphstore.Uncaused, bool, error) {
 	index, err := heldBlockIndex(ctx, tx, version.ArtifactID)
 	if err != nil {

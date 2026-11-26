@@ -82,8 +82,9 @@ func TestTheTmuxBlockTakesOverKubernetesOnlyWhenTheKeySaysSo(t *testing.T) {
 
 // A take_over naming anything but kubernetes is refused at load, naming the key and the value; so
 // is a pane variable that places the session a resume reads, one the runtime sets on a Claude Code
-// pane or on a resumed Oh My Pi pane, a launch secret's pointer, and a value that is a URL carrying
-// a password — each named with why, never with its value.
+// pane or on a resumed Oh My Pi pane, a launch secret's pointer, the table of every role's identity
+// each launch sets, and a value that is a URL carrying a password — each named with why, never
+// with its value.
 func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T) {
 	const password = "hunter2-load"
 	for _, tc := range []struct {
@@ -104,6 +105,8 @@ func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T)
 			"runtime.tmux.pane_env names OMP_SESSION_EXCLUSIVE: the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"},
 		{"the Envoy bearer's pointer", "runtime: {tmux: {pane_env: {ENVOY_TOKEN_FILE: /etc/acme/envoy}}}\n",
 			"runtime.tmux.pane_env names ENVOY_TOKEN_FILE: it points at the launch secret ENVOY_TOKEN, which the runtime hands every launch as a file of the launch's own"},
+		{"the identities of the issue's roles", "runtime: {tmux: {pane_env: {LEGION_ROLE_IDENTITIES: '{\"implementer\":{\"name\":\"x\",\"email\":\"x@example.invalid\"}}'}}}\n",
+			"runtime.tmux.pane_env names LEGION_ROLE_IDENTITIES: every launch sets it (the identities of the issue's roles, which the push step reads)"},
 		{"a URL with a password", "runtime: {tmux: {pane_env: {WIDGETS_DATABASE_URL: \"postgres://acme:" + password + "@db.internal.example/widgets\"}}}\n",
 			"runtime.tmux.pane_env names WIDGETS_DATABASE_URL: its value is a URL carrying a password: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line"},
 	} {

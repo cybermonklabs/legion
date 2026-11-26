@@ -307,19 +307,19 @@ export function coverageStatements(
  *   the shape of the server's (`storedReading`), whose words are the server's for every text that
  *   holds none of three things (`STORED_TEXT_PARSE`): an HTML comment an agent's comment ends
  *   with is no word of it. A comment or a message the read marks deleted
- *   (`ReferenceTarget.deleted_at`) is named by the deleted line's words (`deletedLineText`), as
- *   words no writer wrote, never by the emptied body, which is no words at all, as a link to it
- *   is (`reference-target.ts`'s `useReferenceLabel`); the model reads no agent registry, so the
+ *   (`ReferenceTarget.deleted_at`) is named by the deleted line's words (`deletedLineText`),
+ *   never by the emptied body, which is no words at all, as a link to it is
+ *   (`reference-target.ts`'s `useReferenceLabel`); the model reads no agent registry, so the
  *   line names the actor as `AgentName` does before the registry answers (`actorLabelText`),
  *   where a link names a listed session by its registry title. A component's name is a title,
  *   which is no markdown, and is drawn as the read gives it.
  *
  * A chip carries the marks the read answers for a post (`NodeChip.deletedAt`, `deletedBy`,
  * `editedAt`), and its reading is of the words alone: a place that draws the name of an edited
- * one, a comment, a message or a block of either, cuts the words to its own length and marks
- * what the cut left, so no cut takes the mark. The row's chip draws the mark as an element of
- * its own (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the post in one
- * string writes it with `editedName`.
+ * one, a comment, a message or a block of either, cuts the words to its own length and marks what
+ * the cut left, so no cut takes the mark. The row's chip draws the mark as an element of its own
+ * (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the post in one string
+ * writes it with `editedName`.
  */
 export function treeContext(reads: IssueTreeReads): TreeContext {
   const key = reads.issue.key;
@@ -472,12 +472,12 @@ function documentReading(
 /**
  * The page's word for one document of the issue, which a chip naming the whole document draws
  * (`documentReading`): the name of the filter that draws what it holds (`PRESET_NAMES`) for the
- * spec and for the plan and Verification documents, and the page's word for a
- * document (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`),
- * since another issue's document plays no part of this one. A link and every line read a
- * document by its own name, which is its file name, `spec.md` (R8); a chip never draws it
- * (decision 39). A chip the page has given no word yet draws this rule as far as an address and
- * the row's issue say it (`node-row-chip.ts`'s `documentWord`).
+ * spec and for the plan and Verification documents, and the page's word for a document
+ * (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`), since
+ * another issue's document plays no part of this one. A link and every line read a document by
+ * its own name, which is its file name, `spec.md` (R8); a chip never draws it (decision 39). A
+ * chip the page has given no word yet draws this rule as far as an address and the row's issue
+ * say it (`node-row-chip.ts`'s `documentWord`).
  *
  * Which document plays which part is the issue read's answer and nothing else: the id it names
  * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`), read by
@@ -916,7 +916,7 @@ const ACTOR: Pick<AgentText, "label"> = { label: actorLabelText };
 
 /**
  * The line a deleted comment's or message's node holds in place of its body: the words
- * `DeletedBody` (`refs/PostMarks.tsx`) prints where the body was, `Deleted by <who> · <when>`, or
+ * `DeletedBody` (`refs/PostBody.tsx`) prints where the body was, `Deleted by <who> · <when>`, or
  * `Deleted · <when>` for a delete whose read names nobody (`deletedLineText`). The model is pure
  * and reads no agent registry and no clock, so `<who>` is the actor as `AgentName` names one
  * before the registry answers (`actorLabelText`: a person's login, a session's stamped title

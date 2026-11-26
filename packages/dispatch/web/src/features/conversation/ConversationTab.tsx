@@ -17,7 +17,7 @@ import type {
 } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
-import { useFootInset } from "../../hooks/useFootInset";
+import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -1619,7 +1619,7 @@ export function ConversationTab({
                 }
                 agents={agents}
                 issueArtifacts={issueArtifacts}
-                composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${FOOT_COMPOSER_FRAME_BOUND} ${card} ${borderDefault}`}
                 current={phoneThread.id === focus?.id}
                 currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
                 viewerLogin={viewer.data?.login ?? ""}
@@ -1653,7 +1653,7 @@ export function ConversationTab({
               <MentionComposer
                 box="phone-thread-composer"
                 closed={isClosed}
-                frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${FOOT_COMPOSER_FRAME_BOUND} ${card} ${borderDefault}`}
                 // The hint line stays for assistive technology alone on a narrow or short screen,
                 // as the issue page's hint line does (INFRA-3949's R7): drawn, its six lines make
                 // the fixed frame taller than the foot rule can set the connection pill above.

@@ -96,7 +96,7 @@ func indexDocumentVersion(t *testing.T, tx pgx.Tx, document string, number int, 
 		t.Fatalf("write version %d of %s: %v", number, document, err)
 	}
 	located := NewReader(ctx, tx, model.Actor{}, "artifact", document, refsGrammarServer).Mentions(markdown)
-	if _, _, _, err := IndexBlocks(ctx, tx, document, number, versionAt, markdown, blocks, located, nil, TypedFacts{}, refsGrammarServer); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, document, number, versionAt, markdown, blocks, located, nil, refsGrammarServer, TypedFacts{}); err != nil {
 		t.Fatalf("index the blocks of version %d of %s: %v", number, document, err)
 	}
 	replaceDocumentVersion(t, tx, document, number, versionAt, located, MentionExcerpts(markdown, blocks, located, refsGrammarServer), true)

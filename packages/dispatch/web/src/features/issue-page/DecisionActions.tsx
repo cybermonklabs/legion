@@ -30,7 +30,7 @@ import {
 } from "../../theme/classes";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import { decisionName, ownTree, wordsOf } from "../issue/decision-text";
+import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { type TextSource, textSourceOf } from "../refs/text-references";
@@ -177,18 +177,6 @@ export function DecisionActions({
   );
 }
 
-/** The reading of the block a decision is named by (`decisionName`): the first block of its own
- *  content that holds any words, alone in its tree, as the margin's card reads an agent's
- *  decision's (`DecisionCard.tsx`). None for an answer that carried no reading, whose name is
- *  then parsed. */
-function nameTreeOf(decision: Pick<DecisionEntry, "text_tree">): DisplayTree | undefined {
-  const tree = ownTree(decision.text_tree);
-  const content = tree?.content;
-  if (tree === undefined || !Array.isArray(content)) return undefined;
-  const named = (content as DisplayTree[]).find((node) => wordsOf(node).trim() !== "");
-  return named === undefined ? undefined : { ...tree, content: [named] };
-}
-
 function DecisionControls({
   blockId,
   decision,
@@ -219,24 +207,16 @@ function DecisionControls({
     else drafts?.delete(decision.ref);
   };
   // Read once per answer of the decisions read, which is when the decision is a new object: the
-  // block a Change is anchored to, and its words, which the write anchors to; and the decision's
-  // name as the server's read names it, with the reading those words are of.
+  // block a Change is anchored to, and its words, which the write anchors to.
   const block = useMemo(() => anchorBlock(decision), [decision]);
   const quote = useMemo(() => anchorQuote(decision), [decision]);
-  const heading = useMemo(() => decisionName(decision.text_tree, decision.text), [decision]);
-  const headingTree = useMemo(() => nameTreeOf(decision), [decision]);
   const source = useMemo(
     () => textSourceOf("artifact", documentId, issueKey),
     [documentId, issueKey]
   );
-  // The name as plain words, which Keep and Change are named after: a write's label and a form's
-  // name hold no markup (the reading list's `decision-heading-words`). Until the engine has
-  // answered, the name as the read gives it, which is the load state that row accepts.
-  const { reads, text: headingWords } = usePlainHeadline(headingTree, heading, {
-    source,
-    surface: "decision-heading-words",
-  });
-  const name = headingWords?.text ?? heading;
+  // The heading as plain words, which Keep and Change are named after: a write's label and a
+  // form's name hold no markup (the reading list's `decision-heading-words`).
+  const { reads, words: name } = useDecisionHeadingWords(decision, source);
   const keep = useKeyedWrite({
     inline: true,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
@@ -349,14 +329,14 @@ function ChangeComposer({
    *  form, and not when the form comes back with its row's body. */
   focusField: boolean;
   issueKey: string;
-  /** The decision's name as plain words (`decisionName`, through the plain-text projection),
-   *  which the form's label and its send's are written with. */
+  /** The decision's heading as plain words (`useDecisionHeadingWords`), which the form and its
+   *  write are named after. */
   name: string;
   onDone: () => void;
-  /** The words of `block` as the document holds them, which the change is anchored to
-   *  (`anchorQuote`). */
+  /** The words of `block` as the document the decision's block stands in holds them, which the
+   *  change is anchored to (`anchorQuote`). */
   quote: string;
-  /** The document the decision's block stands in, the record the quote is a passage of. */
+  /** That document, the record the quote is a passage of. */
   source: TextSource | undefined;
 }): ReactNode {
   // The quote as the reader reads the decision: the block's plain-text projection, so a

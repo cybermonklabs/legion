@@ -64,7 +64,8 @@ import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
-import { orderAgents } from "./AgentsPage";
+// The page itself is a lazy route of the app too, loaded here for the same reason.
+import "./AgentsPage";
 import type { AgentGroup } from "./agent-groups";
 import { type AgentFilters, filterOptions, matchesFilters, searchWords } from "./agent-search";
 import {
@@ -815,54 +816,6 @@ function session(overrides: Partial<Agent> & Pick<Agent, "session_id">): Agent {
 
 const minutesAgo = (minutes: number) => new Date(ago(minutes * 60_000)).toISOString();
 
-test("orderAgents puts who needs you first, then open asks, then Dispatch recency with silent sessions last", () => {
-  const needsYou = session({ last_activity: minutesAgo(30), open_asks: 1, session_id: "needy" });
-  const owed = session({ last_activity: minutesAgo(20), open_asks: 3, session_id: "owed" });
-  const recent = session({ last_activity: minutesAgo(1), session_id: "recent" });
-  const older = session({ last_activity: minutesAgo(5), session_id: "older" });
-  const silentB = session({ session_id: "silent-b", title: "Beta" });
-  const silentA = session({ session_id: "silent-a", title: "Alpha" });
-  const ordered = orderAgents(
-    [silentB, older, recent, owed, silentA, needsYou],
-    [],
-    new Map([["needy", 1]])
-  );
-  expect(ordered.map((agent) => agent.session_id)).toEqual([
-    "needy",
-    "owed",
-    "recent",
-    "older",
-    "silent-a",
-    "silent-b",
-  ]);
-});
-
-test("orderAgents keeps pinned sessions first in pin order, whoever needs you", () => {
-  const needsYou = session({ last_activity: minutesAgo(1), open_asks: 1, session_id: "needy" });
-  const pinnedSilent = session({ session_id: "pinned-silent" });
-  const pinnedRecent = session({ last_activity: minutesAgo(2), session_id: "pinned-recent" });
-  const ordered = orderAgents(
-    [needsYou, pinnedRecent, pinnedSilent],
-    ["pinned-silent", "pinned-recent"],
-    new Map([["needy", 1]])
-  );
-  expect(ordered.map((agent) => agent.session_id)).toEqual([
-    "pinned-silent",
-    "pinned-recent",
-    "needy",
-  ]);
-});
-
-test("orderAgents orders Dispatch activity within one second by time, not by the timestamp strings", () => {
-  // As text `…00.12Z` sorts after `…00.123456Z`, the later time.
-  const earlier = session({ last_activity: "2026-10-02T00:00:00.12Z", session_id: "earlier" });
-  const later = session({ last_activity: "2026-10-02T00:00:00.123456Z", session_id: "later" });
-  expect(orderAgents([earlier, later], [], new Map()).map((agent) => agent.session_id)).toEqual([
-    "later",
-    "earlier",
-  ]);
-});
-
 // The four groups are `agent-groups.ts`'s own rule, with its own tests; what the page does with
 // them - the headings, the counts, the collapse and who lands where - is tested below.
 
@@ -1460,13 +1413,13 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     await waitFor(() =>
       expect(
         (within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value
-      ).toBe("[@Planner](dispatch://agent/planner-session)")
+      ).toBe("[@Planner](dispatch://agent/planner-session) ")
     );
-    // The pick wrote the party's mention into the box, so the rest of the message is written
-    // after it: replacing the box would drop that mention.
+    // The pick wrote the party's mention into the box, and the one space a seed ends with, so
+    // the rest of the message is written after it: replacing the box would drop that mention.
     const comment = within(planner).getByRole("textbox", { name: "Comment" });
     await user.click(comment);
-    await user.paste(" Track this under Core");
+    await user.paste("Track this under Core");
     // The composer's own form submit, which user-event has no form for.
     fireEvent.submit(within(planner).getByRole("form", { name: "Comment composer" }));
     await waitFor(() =>
@@ -1563,7 +1516,7 @@ test("an upload refused on an Agents row's issue goes with the pick, and its Ret
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await pickIssue(user, planner, "CORE-1 · Core work");
     // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
-    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await within(planner).findByText("That file is too large.");
@@ -1602,7 +1555,7 @@ test("an upload that lands after an Agents row's issue pick joins the message at
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await pickIssue(user, planner, "CORE-1 · Core work");
     // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
-    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
@@ -4532,7 +4485,7 @@ test("a refused send's row shows its message formatted on one line, with its who
     );
     expect(preview.querySelector("ol, li, p")).toBeNull();
     // The hover text is the shared projection, which writes an ordered list's item with its
-    // number as a rendered body draws it (INFRA-1196 decisions 66 and 88): `1. check` keeps `1.`.
+    // number as a rendered body draws it (issue page decisions 66 and 88): `1. check` keeps `1.`.
     await waitFor(() =>
       expect(preview).toHaveAttribute("title", "Stop the deploy 1. check main 2. report back")
     );

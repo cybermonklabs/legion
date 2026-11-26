@@ -1701,11 +1701,11 @@ test("a comment's Reply names its session author's mention as the picker does", 
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
     await waitFor(() =>
-      expect(field.value).toBe(`[@session:01234567…](dispatch://agent/${untitled})`)
+      expect(field.value).toBe(`[@session:01234567…](dispatch://agent/${untitled}) `)
     );
     await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
     await user.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
   } finally {
     view.unmount();
     stub.restore();

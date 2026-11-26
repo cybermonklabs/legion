@@ -262,8 +262,7 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "issues advances": "the issues advancing a priority",
   "issues pinned": "the reader's pinned issues",
   "issues project": "a project's issue list",
-  "known-session":
-    "whether Dispatch holds a record of a session id, and the title its registry gives it (`known-sessions.ts`)",
+  "known-session": "whether Dispatch holds any record of a session, and its title: no post",
   "legion-daemon": "a project's Legion daemon setting",
   "machine-logins": "the reader's machine logins",
   "new-issue-settings": "the label and session a new issue from the bar takes",

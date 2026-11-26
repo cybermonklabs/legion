@@ -33,7 +33,6 @@ import { agentsQuery } from "../refs/agent-registry";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import * as markdownEngine from "../refs/markdown-engine";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
-import type { PostDeletion } from "../refs/post-marks";
 import {
   NOTHING_PUBLISHED,
   PublishedReferenceNames,
@@ -43,8 +42,8 @@ import {
 } from "../refs/reference-names";
 import { measureNearWords } from "./clamp-fixtures";
 import {
+  AGENT,
   artifact,
-  AGENT as DECIDING_AGENT,
   decision,
   decisionsRead,
   issueDetails,
@@ -397,7 +396,7 @@ test("an agent's decision draws the session its entry names as its decider, by t
     machine_id: "host",
     open_asks: 0,
     roles: [],
-    session_id: DECIDING_AGENT.id,
+    session_id: AGENT.id,
     state: "live",
     title,
   };
@@ -573,7 +572,7 @@ test("an edited message's row says edited after its time, whole or folded, outsi
 // parent is no row draws the parent as one line, and a parent its author deleted is drawn as the
 // deleted line, its actor named as the page names an author, as the parent's own row draws it,
 // never as the model's line holds it; one its author edited says ` · edited` after its line.
-test("a parent line draws a deleted parent as its deleted line, and an edited one with its mark", async () => {
+test("a parent line draws a deleted parent as its deleted line, and an edited one with its mark", () => {
   const under = (line: ParentLine) =>
     renderRow(
       node({
@@ -610,11 +609,8 @@ test("a parent line draws a deleted parent as its deleted line, and an edited on
     type: "message",
   });
   try {
-    // The line is projected from the parent's words, which answers after the first commit.
-    await waitFor(() =>
-      expect(edited.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
-        "Ship it. · edited"
-      )
+    expect(edited.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+      "Ship it. · edited"
     );
   } finally {
     edited.unmount();
@@ -646,7 +642,7 @@ function wordsByMark(region: Element | null | undefined) {
 // words, so each carries the page-chrome mark and is declared in `page-words.ts`, as its rule says;
 // the actor's name, and the time, stay its author's. That holds of the row's words whole and
 // folded, of its margin, of a parent line, and of a chip.
-test("a row's deleted line and edited mark are the page's own words, and the actor's name stays the author's", async () => {
+test("a row's deleted line and edited mark are the page's own words, and the actor's name stays the author's", () => {
   const chrome = (region: Element | null | undefined) => {
     const { author, chrome: own, unmarked } = wordsByMark(region);
     return {
@@ -723,14 +719,11 @@ test("a row's deleted line and edited mark are the page's own words, and the act
     type: "message",
   });
   try {
-    // The line is projected from the parent's words, which answers after the first commit.
-    const link = () => editedParent.container.querySelector("[data-node-parent-line] a");
-    await waitFor(() => expect(link()?.textContent).toBe("Ship it. · edited"));
-    shown.editedParent = chrome(link());
+    shown.editedParent = chrome(editedParent.container.querySelector("[data-node-parent-line] a"));
   } finally {
     editedParent.unmount();
   }
-  const named: NodeChip[] = [
+  const markedChips: NodeChip[] = [
     {
       answered: true,
       deletedAt: DELETED_AT,
@@ -748,14 +741,11 @@ test("a row's deleted line and edited mark are the page's own words, and the act
     },
   ];
   const chips = renderRow(
-    node({ chips: named, id: "comment-9", text: "Read these.", type: "comment" }),
-    { body: false, published: publishedChips(named) }
+    node({ chips: markedChips, id: "comment-9", text: "Read these.", type: "comment" }),
+    { body: false, published: publishedChips(markedChips) }
   );
   try {
-    const names = () => [...chips.container.querySelectorAll("[data-chip-name]")];
-    // The edited chip is named by the name the page published for it, which the store projects.
-    await waitFor(() => expect(names()[1]?.textContent).toBe("Ship it. · edited"));
-    const [deletedChip, editedChip] = names();
+    const [deletedChip, editedChip] = [...chips.container.querySelectorAll("[data-chip-name]")];
     shown.deletedChip = chrome(deletedChip);
     shown.editedChip = chrome(editedChip);
   } finally {
@@ -982,7 +972,7 @@ function readsOf(view: { queryClient: QueryClient }, reference: string): unknown
     .filter((key) => JSON.stringify(key).includes(id.split("/")[0] ?? id));
 }
 
-// INFRA-1196 decision 350, which replaces decision 95's short form: a folded branch's one line
+// issue page decision 350, which replaces decision 95's short form: a folded branch's one line
 // reads a reference in its words as the shared projection reads one (`usePlainHeadline`), the
 // way the row's own words read it (`RowText.tsx`): as the words its author wrote while the
 // page's batched read has not named it - with no read of its own made for a reference the page
@@ -1010,7 +1000,7 @@ test("a folded branch's line reads a reference as its target's name, and as its 
   }
 });
 
-// R1 over INFRA-1196 decision 350: a folded branch's one line is cut by R1's first-line rule
+// R1 over issue page decision 350: a folded branch's one line is cut by R1's first-line rule
 // over the words the projection draws, so a name that lands after the line was first drawn cuts
 // it again. A first sentence that fits the line with its address as written runs past R1's limit
 // with its target's name in its place - a name the page cuts to a chip's 32 characters - and is
@@ -1223,17 +1213,17 @@ test("a two-paragraph block reads alike in a plain line and a link, and its chip
 // reads the document as a link to it does, whatever word the batched read or the page has for
 // it. Every chip keeps the page's word for the document, the word for the part it plays, since a
 // chip never draws a document's file name (decision 39): a tie's, and one in place in a node's
-// words, which the names store feeds. A decisions document plays no part of its own since
-// decisions are blocks of the spec, so its chip reads the word for any document. All of it is
-// read from the one batched read's answer, through the page's own code.
+// words, which the names store feeds. All of it is read from the one batched read's answer,
+// through the page's own code.
 test("a whole document reads alike in a plain line and a link, and by the page's word in every chip", async () => {
   const spec = `dispatch://${KEY}/spec`;
   const notes = `dispatch://${KEY}/artifact/notes-md`;
-  const decisionsDocument = artifact("artifact-decisions", "decisions-md");
-  const decisions = `dispatch://${KEY}/artifact/${decisionsDocument.slug}`;
+  const decisions = `dispatch://${KEY}/artifact/decisions-md`;
   const title = "Draw one ordered body";
   const notesFile = { ...artifact("artifact-notes", "notes-md"), name: "notes.md" };
-  const decisionsFile = { ...decisionsDocument, name: "decisions.md" };
+  // A decisions document an earlier release stored plays no part of the issue: it is another
+  // document, named by the page's word for one.
+  const decisionsFile = { ...artifact("artifact-decisions", "decisions-md"), name: "decisions.md" };
   const issue = issueDetails();
   const held = (issue.artifacts ?? []).filter((one) => one.id !== decisionsFile.id);
   const reads = {
@@ -1473,7 +1463,7 @@ test("before the page's read answers, a chip names another issue's spec as a doc
   }
 });
 
-// R2 and INFRA-1196 decision 350: a filter's row names a parent it draws no row for by the
+// R2 and issue page decision 350: a filter's row names a parent it draws no row for by the
 // parent's own first line, projected from its words as every one line of a node is: a
 // reference in it reads as its target's name once the page names it. A parent whose words hold
 // none is named by the page's word for its kind (R22).
@@ -1965,9 +1955,9 @@ test("out of the tab order, a focused row's code block and table keep their tab 
   }
 });
 
-// Part G's R4, the tester's F20: a decision's text holds the source of a typed block its section
-// quotes, and the row draws the block's words but none of its source lines, whether it draws the
-// text from the page's parse or from its reading.
+// Part G's R4, the tester's F20: a decision's text holds the source of a typed block inside its
+// own block, and the row draws the block's words but none of its source lines, whether it draws
+// the text from the page's parse or from its reading.
 test("a decision whose text quotes a typed block draws none of its source lines", async () => {
   const text = "It names the statement.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::";
   for (const tree of [undefined, displayTree(text)]) {
@@ -2091,26 +2081,13 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   }
 });
 
-/** A live session a chip names, and the path of its live view. */
-const AGENT_SESSION = "7c0f3a52-5d0e-4b8e-9a51-2f4d6c8e1b90";
-const AGENT_CHIP: NodeChip = {
-  answered: true,
-  gone: false,
-  ref: `dispatch://agent/${AGENT_SESSION}`,
-};
-
-/** The live session `AGENT_CHIP` names, as the registry lists it. */
-const AGENT = { roles: [], session_id: AGENT_SESSION, title: "Planner" } as unknown as Agent;
-
-/** The address a reference to a person is written as: no page shows one (R5). */
-const PERSON_REFERENCE = "dispatch://person/alice@example.com";
-
 // R2 and R3 of dispatch://INFRA-1523 on a tie's chip, and INFRA-1196's decision 342: a chip
 // naming a comment its author deleted names it by the deleted line without its time, in the
 // deleted line's italic, its actor named as the page names an author and not as the published
-// name holds it; a chip naming a message its author edited names it by its name cut to the chip's
-// 32 characters, then ` · edited`, so no cut takes the mark.
+// name holds it; a chip naming a message its author edited names it by its words cut to the
+// chip's 32 characters, then ` · edited`, so no cut takes the mark.
 test("a chip names a deleted post by its deleted line, and an edited one by its cut words then edited", async () => {
+  await warmMarkdownRenderer();
   const words = "Hold the deploy until the plan lands and the reviewer signs off";
   const chips: NodeChip[] = [
     {
@@ -2134,15 +2111,17 @@ test("a chip names a deleted post by its deleted line, and an edited one by its 
     published: publishedChips(chips),
   });
   try {
-    const drawn = () => [...view.container.querySelectorAll("[data-node-chip]")];
+    const drawn = () =>
+      [...view.container.querySelectorAll("[data-node-chip]")].map((chip) => chip.textContent);
     await waitFor(() =>
-      expect(drawn().map((chip) => chip.textContent)).toEqual([
+      expect(drawn()).toEqual([
         `Deleted by ${CONTROL_LABELS.unnamed_author}`,
         `${nodeRowChip.chipWords(words)} · edited`,
       ])
     );
-    expect(drawn()[0]?.querySelector("a [data-post-deleted]")?.className).toContain("italic");
-    expect(drawn()[1]?.querySelector("[data-post-deleted]")).toBeNull();
+    const drawnChips = [...view.container.querySelectorAll("[data-node-chip]")];
+    expect(drawnChips[0]?.querySelector("a [data-post-deleted]")?.className).toContain("italic");
+    expect(drawnChips[1]?.querySelector("[data-post-deleted]")).toBeNull();
   } finally {
     view.unmount();
   }
@@ -2152,7 +2131,8 @@ test("a chip names a deleted post by its deleted line, and an edited one by its 
 // short: a deleted post's chip whose actor is named by one long word is cut right after "Deleted
 // by" (`chipWords`), and that cut still draws the deleted line, in its italic, its opening marked
 // as the page's own words and none of it as the author's.
-test("a deleted post's chip cut right after Deleted by keeps the deleted line's italic and its page-chrome mark", () => {
+test("a deleted post's chip cut right after Deleted by keeps the deleted line's italic and its page-chrome mark", async () => {
+  await warmMarkdownRenderer();
   const title = "legion-infra-1523-implementer";
   const by: Actor = {
     id: "2b3c4d5e-1111-4222-8333-444455556666",
@@ -2161,25 +2141,24 @@ test("a deleted post's chip cut right after Deleted by keeps the deleted line's 
   };
   // The title's one word runs past the chip's room, so the cut ends at the space before it.
   expect(nodeRowChip.chipWords(`Deleted by ${title}`)).toBe("Deleted by…");
-  const view = renderRow(
-    node({
-      chips: [
-        {
-          answered: true,
-          deletedAt: DELETED_AT,
-          deletedBy: by,
-          gone: false,
-          reading: { words: `Deleted by ${actorLabelText(by)}` },
-          ref: "dispatch://CORE-1/comment/c-deleted",
-        },
-      ],
-      id: "comment-9",
-      text: "Read these.",
-      type: "comment",
-    }),
-    { body: false }
-  );
+  const chips: NodeChip[] = [
+    {
+      answered: true,
+      deletedAt: DELETED_AT,
+      deletedBy: by,
+      gone: false,
+      reading: { words: `Deleted by ${actorLabelText(by)}` },
+      ref: "dispatch://CORE-1/comment/c-deleted",
+    },
+  ];
+  const view = renderRow(node({ chips, id: "comment-9", text: "Read these.", type: "comment" }), {
+    body: false,
+    published: publishedChips(chips),
+  });
   try {
+    await waitFor(() =>
+      expect(view.container.querySelector("[data-chip-name] [data-post-deleted]")).not.toBeNull()
+    );
     const name = view.container.querySelector("[data-chip-name]");
     const line = name?.querySelector("[data-post-deleted]");
     expect({
@@ -2196,6 +2175,20 @@ test("a deleted post's chip cut right after Deleted by keeps the deleted line's 
   }
 });
 
+/** A live session a chip names, and the path of its live view. */
+const AGENT_SESSION = "7c0f3a52-5d0e-4b8e-9a51-2f4d6c8e1b90";
+const AGENT_CHIP: NodeChip = {
+  answered: true,
+  gone: false,
+  ref: `dispatch://agent/${AGENT_SESSION}`,
+};
+
+/** The live session `AGENT_CHIP` names, as the registry lists it. */
+const PLANNER = { roles: [], session_id: AGENT_SESSION, title: "Planner" } as unknown as Agent;
+
+/** The address a reference to a person is written as: no page shows one (R5). */
+const PERSON_REFERENCE = "dispatch://person/alice@example.com";
+
 // R5: no page shows a person, so a chip that names one draws its login as text with no link, as
 // a chip whose target nothing answers to does; an agent's chip beside it is the link to that
 // agent's live view, named by its session's title. A party is never asked of the page's batched
@@ -2208,7 +2201,7 @@ test("a chip naming a person draws its words with no link, beside an agent's chi
       text: "Keep one reading.",
       type: "decision",
     }),
-    { body: false, parties: { login: "alice@example.com", session: AGENT } }
+    { body: false, parties: { login: "alice@example.com", session: PLANNER } }
   );
   try {
     await waitFor(() =>
@@ -2241,7 +2234,7 @@ test("a parent line naming a person draws its words with no link, beside an agen
       text: "Keep one reading.",
       type: "comment",
     }),
-    { body: false, parties: { session: AGENT } }
+    { body: false, parties: { session: PLANNER } }
   );
   try {
     const parent = view.container.querySelector("[data-node-parent-line]");
@@ -2269,6 +2262,8 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
   const published: PublishedReferences = {
     ambiguous: new Set(),
     asked: new Set([target]),
+    deleted: new Map(),
+    edited: new Set(),
     gone: new Set(),
     readings: new Map([[target, { tree: readingOf("1. Stand the harness up and read the rows") }]]),
     unnamed: new Set(),
@@ -2329,6 +2324,8 @@ test("the read's names are named as chips once per answer, not once per row", as
   const published: PublishedReferences = {
     ambiguous: new Set(),
     asked: new Set(readings.keys()),
+    deleted: new Map(),
+    edited: new Set(),
     gone: new Set(),
     readings,
     unnamed: new Set(),
@@ -2370,7 +2367,7 @@ test("the read's names are named as chips once per answer, not once per row", as
 // the page publishes it as ambiguous, apart from its names, and a node's words draw it as its
 // author wrote it, with no link, never as a target that is gone. A reference the read answered
 // gone keeps its link, and reads as the words its author wrote rather than as its short form
-// (INFRA-1196 decision 350, which replaces decision 95). Both the words drawn from their reading
+// (issue page decision 350, which replaces decision 95). Both the words drawn from their reading
 // and the words drawn from the page's parse are read.
 test("an ambiguous short reference in a node's words is drawn as written with no link, and a gone one keeps its link", async () => {
   const written = "dispatch://CORE-1/spec#b-1a2b3c4d";
@@ -2426,11 +2423,8 @@ test("a node's words name an edited post with its mark, and a deleted one by its
     [edited, editedWords],
     [deleted, `Deleted by ${actorLabelText(UNTITLED)}`],
   ]);
-  const published: PublishedReferences = {
-    ...publishedNames(names),
-    deleted: new Map<string, PostDeletion>([[deleted, { at: DELETED_AT, by: UNTITLED }]]),
-    edited: new Set([edited]),
-  };
+  const deletions = new Map([[deleted, { at: DELETED_AT, by: UNTITLED }]]);
+  const marked = new Set([edited]);
   for (const tree of [displayTree(text), undefined]) {
     const drawn = tree === undefined ? "as stored" : "from their reading";
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -2439,7 +2433,7 @@ test("a node's words name an edited post with its mark, and a deleted one by its
         <MemoryRouter>
           <NoTooltips>
             <ReferenceNamesProvider>
-              <Named published={published}>
+              <Named published={publishedNames(names, { deleted: deletions, edited: marked })}>
                 <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
               </Named>
             </ReferenceNamesProvider>
@@ -2600,7 +2594,7 @@ test("a link in a row's words to the address the reader is at replaces it", asyn
   }
 });
 
-// R5, R8 and INFRA-1196 decision 350: a party - here a role - is never asked of the batched
+// R5, R8 and issue page decision 350: a party - here a role - is never asked of the batched
 // read, so a row names it by its own read, as every surface of Dispatch does: a role by its
 // token, once a session the registry lists holds it, never as its address. Words whose read sent
 // no reading of them, which the page parses, draw it the same way, and link it to the agents list
@@ -2823,7 +2817,7 @@ test("a row held whole in view stays whole when a later read draws the same word
   expect(drawn.maxHeight).toBe("");
 });
 
-// INFRA-1196 decision 350 and G's clamp: a reference in a row's words takes its name after the
+// issue page decision 350 and G's clamp: a reference in a row's words takes its name after the
 // row was first drawn and measured - the page's batched read answers last - and its name can run
 // the words longer or shorter than the words its author wrote. The row measures its cut again,
 // as it does for words of another value (`useClamp`), in the commit the name lands in, before the

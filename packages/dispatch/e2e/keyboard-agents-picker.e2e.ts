@@ -86,7 +86,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
 
       // Escape after an arrow picks nothing: the issue picked stays. (The field is emptied first,
       // since Escape over a written composer is its own discard prompt.)
@@ -219,7 +219,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
     } finally {
       await context.close();
     }
@@ -275,7 +275,7 @@ test.describe("agents page", () => {
       await toggle.click();
       await issueOption(row, "CORE-1").click();
       await expect(toggle).toContainText("CORE-1");
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
       expect(send.posts()).toBe(1);
     } finally {
       await context.close();
@@ -390,7 +390,7 @@ test.describe("agents page", () => {
       await expect(picker).toBeFocused();
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
       // A reply to a direct exchange is a direct message, whatever issue is picked.
       await row.getByRole("button", { name: "Reply" }).first().click();
       await field.fill("Yes");
@@ -597,7 +597,7 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await toggle.click();
       await issueOption(row, "CORE-1").click();
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
       await toggle.click();
       const option = await issueOption(row, "CORE-2").elementHandle();
       await row.evaluate((node, pick) => {
@@ -862,12 +862,12 @@ test.describe("agents page", () => {
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText(issueKey);
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
 
-      await send(" first");
-      await expect(field).toHaveValue(plannerMention);
-      await send(" second");
-      await expect(field).toHaveValue(plannerMention);
+      await send("first");
+      await expect(field).toHaveValue(`${plannerMention} `);
+      await send("second");
+      await expect(field).toHaveValue(`${plannerMention} `);
 
       await toggle.click();
       await issueOption(row, "").click();

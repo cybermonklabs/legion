@@ -2759,7 +2759,7 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
 
 
 # ---------------------------------------------------------------- the references lane's spec files
-# The `.github/workflows/dispatch-browser.yaml#references` lane runs the spec files that one shell variable of the
+# The `references` lane of dispatch-browser.yaml runs the spec files that one shell variable of the
 # script its shard job's browser step runs lists, and the dispatch_references filter, an EXCLUDED
 # one whose patterns its file of .github/ci-gates keeps by hand, is what starts the job calling
 # that lane. The arm is read from that script with comments and blank lines aside (script_lines),
@@ -2792,7 +2792,7 @@ def runs_lane_script(holder: dict, job: dict, step: dict) -> bool:
 
 
 def check_references_lane(data, quantifier: str, problems: list[Annotation]) -> list:
-    """Rule 23: every spec file the references lane runs is one the dispatch_references filter
+    """Rule 24: every spec file the references lane runs is one the dispatch_references filter
     matches. That filter names less than its job reads on purpose (EXCLUDED holds it to no gate's
     reads), but the lane's own spec files are the least it must name: a spec file it misses is a
     change to the lane's own rows that starts no run of the lane, and nothing fails. The entries
@@ -3743,7 +3743,7 @@ def check() -> int:
     report += check_push_workflows(data, filters, mode, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, gate_files, Selection(filters, quantifiers, files),
                              listed, problems)
-    # Rule 23: the references lane's spec files are ones its EXCLUDED filter matches.
+    # Rule 24: the references lane's spec files are ones its EXCLUDED filter matches.
     report += check_references_lane(data, quantifier, problems)
     report.append(f"{GENERATED_FILE}: {len(computed)} filters, {sum(len(c.positives) for c in computed.values())} "
                   f"patterns and {sum(len(c.negations) for c in computed.values())} `!` patterns")
