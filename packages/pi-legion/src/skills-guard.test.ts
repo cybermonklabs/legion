@@ -1003,7 +1003,9 @@ test("the architect skill names the reviewer's verdict past review as its review
 // review that carries its findings and decides nothing.
 test("the reviewer's references name its verdict and its COMMENT review", () => {
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
-  expect(mergeGate).toContain("Your role prompt gives the verdict, the `COMMENT` review, its footer,");
+  expect(mergeGate).toContain(
+    "Your role prompt gives the verdict, the `COMMENT` review, its footer,"
+  );
   const threads = collapsed(path.join(staged, "legion-worker", "references", "review-threads.md"));
   expect(threads).toContain(
     "(on the implementer's role topic, or in the body of its `COMMENT` review)"
