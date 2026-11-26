@@ -95,9 +95,11 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		count := func() { waits.Add(1) }
 		w.connectionWaitEntered.Store(&count)
 		answers := make(chan error, 2)
-		// No span of its own: each first send waits for a connection until the test binary's
-		// deadline less testwait's margin, and the hold's release gives it one.
-		wait := testwait.Remaining(t, 30*time.Second)
+		// No span of its own: each first send waits for a connection until 15 s before the test
+		// binary's deadline, and the hold's release gives it one. That outlasts the row's own
+		// wait below, which gives up 30 s before the deadline, so a defect run fails there, on
+		// the line that names the cause, and not on a pin that ran out first.
+		wait := testwait.Remaining(t, 15*time.Second)
 		for range 2 {
 			go func() { answers <- w.pin(wait) }()
 		}

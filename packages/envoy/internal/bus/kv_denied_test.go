@@ -343,9 +343,13 @@ func TestAStreamEnsureTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 // The grant covers every subject a start of this bucket publishes to, so nothing the call sends
 // is refused, and the relay drops every send of the lookup, so the call draws no answer at all.
 // The refusal the row plants beside it is of the delete of the bucket's stream, which no step of
-// EnsureKeyValue publishes to. The row reads that record itself before it reads the call's
-// error, because a row that never saw the refusal recorded would pass whatever refusedBy read, and
-// requires it recorded before the call ended, since one recorded after could not have answered it.
+// EnsureKeyValue publishes to, so it is the only refusal the connection can record: any
+// ErrPublishDenied the call ends with is that refusal, read by a step that did not earn it, and the
+// row names that first. Only then does it require the record itself, because a row that never saw
+// the refusal recorded would pass whatever refusedBy read, and requires it recorded before the
+// call ended, since one recorded after could not have answered it. The wait for that record ends
+// when the call does (awaitRefusal), so a step that took the refusal is named within seconds of
+// its start, not at the test binary's deadline.
 func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	const bucket = "envoy_denied_other_subject"
 	// The delete of the bucket's own stream: a subject no step of this call publishes to, and
@@ -369,22 +373,24 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	// send a read waited for up to its read limit (readAgain), sent again after it.
 	relay.arm(1 << 30)
 	recorded := make(chan refusalSeen, 1)
+	callEnded := make(chan struct{})
 	go func() {
-		denial := refusalOfAnotherSubject(t, relay, owner, conn, deleteSubject)
+		denial := refusalOfAnotherSubject(t, relay, owner, conn, deleteSubject, callEnded)
 		recorded <- refusalSeen{denial: denial, at: time.Now()}
 	}()
 	_, err := ensureKeyValue(context.Background(), slog.Default(), refusalGuard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	ended := time.Now()
+	close(callEnded)
 	seen := <-recorded
 	denial := seen.denial
 
+	if errors.Is(err, ErrPublishDenied) {
+		t.Fatalf("a start whose lookup nothing answered ended after %d sends with %v, want no ErrPublishDenied: the refusal beside it, of %s, is of a subject the lookup never published to",
+			relay.sent(), err, deleteSubject)
+	}
 	if denial == nil || !seen.at.Before(ended) {
 		t.Fatalf("the connection recorded no refusal of %s while the lookup was in flight (%v), so the start met none and this row holds nothing",
 			deleteSubject, denial)
-	}
-	if errors.Is(err, ErrPublishDenied) {
-		t.Fatalf("a start whose lookup nothing answered ended after %d sends with %v, want no ErrPublishDenied: the refusal beside it, %v, is of a subject the lookup never published to",
-			relay.sent(), err, denial)
 	}
 	if err == nil || !strings.Contains(err.Error(), lookup) || !errors.Is(err, errHangGuard) {
 		t.Fatalf("a start whose lookup nothing answered = %v, want %q and the start's hang guard: a send another subject's refusal does not answer ends on the wait it held",
@@ -413,36 +419,52 @@ const (
 )
 
 // refusalRecordSpare is what a wait of this file's on the relay's count or on the connection's
-// record leaves of the test binary's deadline: more than the margin testwait's own waits leave, so
-// such a wait gives up, and hands the row its answer, before a wait of the row's own does.
+// record leaves of the test binary's deadline when the call under test does not end first: more
+// than the margin testwait's own waits leave, so such a wait gives up, and hands the row its
+// answer, before a wait of the row's own does.
 const refusalRecordSpare = 45 * time.Second
 
-// awaitRefusal polls done until it reports true and reports whether it did. Both readings it
-// serves are written by another goroutine: the relay counts a send on the connection it filters,
-// and the record is written where nats.go hands the server's report over (onAsyncError). It runs
-// on a goroutine beside the call under test, where t.Fatal is the test goroutine's to call, so it
-// fails nothing itself: its one bound is the test binary's deadline less refusalRecordSpare
-// (testwait.Left), and a wait that begins with no more than that left says so with t.Error.
-func awaitRefusal(t *testing.T, done func() bool) bool {
+// awaitRefusal polls done until it reports true, or until callEnded is closed, and reports whether
+// done held. Both readings it serves are written by another goroutine: the relay counts a send on
+// the connection it filters, and the record is written where nats.go hands the server's report
+// over (onAsyncError). Neither can come once the call under test has returned, since the step that
+// sends is over and a refusal recorded then could not have answered it, so the call's end ends the
+// wait: a step that took a refusal it did not earn ends the call at once, and the row then names
+// that within seconds rather than at the test binary's deadline. It runs on a goroutine beside the
+// call, where t.Fatal is the test goroutine's to call, so it fails nothing itself: its bound when
+// the call does not end is the test binary's deadline less refusalRecordSpare (testwait.Left), and
+// a wait that begins with no more than that left says so with t.Error.
+func awaitRefusal(t *testing.T, callEnded <-chan struct{}, done func() bool) bool {
 	bound, err := testwait.Left(t, refusalRecordSpare)
 	if err != nil {
 		t.Error(err)
 		return false
 	}
-	return testwait.Holds(bound, refusalRecordPoll, done)
+	testwait.Holds(bound, refusalRecordPoll, func() bool {
+		if done() {
+			return true
+		}
+		select {
+		case <-callEnded:
+			return true
+		default:
+			return false
+		}
+	})
+	return done()
 }
 
 // refusalOfAnotherSubject has the connection earn the server's refusal of subject, which its
 // grant does not cover, while the step under test waits for an answer, and returns the refusal
-// the client recorded of it, nil when none was recorded in time. Its caller reads that answer
-// before it judges the step: a refusal that was never recorded is one the step could not have
-// read either.
-func refusalOfAnotherSubject(t *testing.T, relay *unansweredRelay, owner *Client, conn *nats.Conn, subject string) error {
+// the client recorded of it, nil when none was recorded before the call ended (callEnded) or in
+// time. Its caller reads that answer once it has judged the step's own error: a refusal that was
+// never recorded is one the step could not have read either.
+func refusalOfAnotherSubject(t *testing.T, relay *unansweredRelay, owner *Client, conn *nats.Conn, subject string, callEnded <-chan struct{}) error {
 	t.Helper()
 	// The refusal is published once the step's first send is on the wire, so it is recorded at
 	// or after the moment that send began and deniedPublish's sentAt guard cannot skip it as an
 	// earlier publish's.
-	if !awaitRefusal(t, func() bool { return relay.sent() >= 1 }) {
+	if !awaitRefusal(t, callEnded, func() bool { return relay.sent() >= 1 }) {
 		return nil
 	}
 	sentAt := time.Now()
@@ -465,7 +487,7 @@ func refusalOfAnotherSubject(t *testing.T, relay *unansweredRelay, owner *Client
 	// client's error handler on its own callback goroutine (nc.ach), so the flush above can return
 	// with the second refusal not yet recorded. A row that judged the record then would read the
 	// missing refusal as one the step took (besideRefusal's requireLeft); it did, under load, in CI.
-	awaitRefusal(t, func() bool { return owner.recordedDenials(subject, sentAt) >= 2 })
+	awaitRefusal(t, callEnded, func() bool { return owner.recordedDenials(subject, sentAt) >= 2 })
 	return owner.deniedPublish(subject, sentAt)
 }
 

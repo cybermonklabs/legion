@@ -79,7 +79,7 @@ func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 	if err := client.Publish(roleEnvelope(grantedRole)); err != nil {
 		t.Fatalf("granted publish after a denial returned %v", err)
 	}
-	if _, err := received.NextMsg(5 * time.Second); err != nil {
+	if _, err := received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("granted publish was not delivered: %v", err)
 	}
 }

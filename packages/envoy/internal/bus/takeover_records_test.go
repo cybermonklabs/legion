@@ -20,6 +20,7 @@ import (
 // reads are read off the wire from a second connection, up to a mark the client publishes after
 // each read of the records.
 func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
 	if err != nil {

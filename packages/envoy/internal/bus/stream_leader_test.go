@@ -272,23 +272,30 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		}(abandoned)
 	}
 	send()
-	tries := 1
-	testwait.Until(t, "the other start's create to go out, without which this row holds nothing (the last read is how many tries were made)", func() (int, bool) {
+	// The reading is how many tries were made and how the last one that ended ended, so a try
+	// that always fails before its create goes out names its error when the wait gives up.
+	type createTries struct {
+		Tries   int
+		LastErr error
+	}
+	read := createTries{Tries: 1}
+	testwait.Until(t, "the other start's create to go out, without which this row holds nothing (the last read is how many tries were made and the last ended one's error)", func() (createTries, bool) {
 		_, err := creates.NextMsg(testwait.Poll)
 		if err == nil {
-			return tries, true
+			return read, true
 		}
 		if !errors.Is(err, nats.ErrTimeout) {
 			t.Fatalf("read the other start's create: %v", err)
 		}
 		select {
-		case <-abandoned:
+		case ended := <-abandoned:
+			read.LastErr = ended
 			abandon()
 			send()
-			tries++
+			read.Tries++
 		default:
 		}
-		return tries, false
+		return read, false
 	})
 	abandon()
 	<-abandoned

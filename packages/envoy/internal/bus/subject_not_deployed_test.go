@@ -155,7 +155,7 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 		if _, err := client.PublishAckWithin(context.Background(), envelope(topic, "control-"+topic)); err != nil {
 			t.Fatalf("the control publish of %s: %v", topic, err)
 		}
-		msg, err := received.NextMsg(5 * time.Second)
+		msg, err := received.NextMsgWithContext(testwait.Context(t))
 		if err != nil {
 			t.Fatalf("the subscriber received nothing of the control publish of %s: %v", topic, err)
 		}

@@ -50,7 +50,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	// storedOn is how many messages the stream holds on topic.
+	// storedOn is how many messages the stream holds on topic: one StreamInfo request, so a wait
+	// on it polls every storedOnPoll, not every millisecond.
 	storedOn := func(t *testing.T, topic string) uint64 {
 		t.Helper()
 		info, err := client.JS().StreamInfo(bus.Stream, &nats.StreamInfoRequest{SubjectsFilter: topic})
@@ -59,6 +60,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}
 		return info.State.Subjects[topic]
 	}
+	const storedOnPoll = 10 * time.Millisecond
 
 	t.Run("a publish under a context that has already ended sends nothing and is no ErrUnacknowledged", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_ended")
@@ -175,7 +177,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			ack, err := reconnecting.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
 			answered <- answer{ack, err}
 		}()
-		testwait.UntilPolling(t, time.Millisecond, "the publish to reach the server before reconnecting", func() (string, bool) {
+		testwait.UntilPolling(t, storedOnPoll, "the publish to reach the server before reconnecting", func() (string, bool) {
 			sent := reconnecting.Connection().Stats().OutMsgs - before
 			if sent == 0 {
 				return "nothing sent", false
@@ -231,7 +233,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			_, err := reconnecting.PublishCursorAt(ctx, subject, body, 0)
 			answered <- err
 		}()
-		testwait.UntilPolling(t, time.Millisecond, "the cursor write to be stored before reconnecting (the last read is how many writes the stream held on the subject)",
+		testwait.UntilPolling(t, storedOnPoll, "the cursor write to be stored before reconnecting (the last read is how many writes the stream held on the subject)",
 			func() (uint64, bool) {
 				stored := storedOn(t, subject)
 				return stored, stored == 1
@@ -287,7 +289,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		go func() {
 			answered <- reconnecting.WriteTakeoverRecord(ctx, subject, record)
 		}()
-		testwait.UntilPolling(t, time.Millisecond, "the takeover record to be stored before reconnecting (the last read is how many records the stream held on the subject)",
+		testwait.UntilPolling(t, storedOnPoll, "the takeover record to be stored before reconnecting (the last read is how many records the stream held on the subject)",
 			func() (uint64, bool) {
 				stored := storedOn(t, subject)
 				return stored, stored == 1

@@ -345,6 +345,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 // connection event a whole bus.RepairGrace later and nothing is repairing the state behind them.
 // The INFO line of the stop can hide neither.
 func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		stop bool
@@ -353,6 +354,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 		{name: "without a stop", stop: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			srv, uri := testnats.Start(t)
 			// The stall is measured on this clock, so the test moves the grace itself rather than
 			// waiting out a minute of it.
