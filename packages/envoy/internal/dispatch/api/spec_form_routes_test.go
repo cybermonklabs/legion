@@ -479,6 +479,10 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 			specform.KindName: 0, specform.KindPurpose: 0, specform.KindDefinition: 0,
 		},
 		Findings: fault.findings(issue, 1), FindingsTotal: 1,
+		FindingLines: []string{
+			"Dispatch refuses an approval request of spec.md version 1, because 1 text breaks the form of The Spec.",
+			"- statement store-comment in spec.md version 1: " + fault.detail + ".",
+		},
 		Terms: []specFormTerm{}, Unread: []specFormUnread{}, RefusesApproval: true,
 	}
 	if !reflect.DeepEqual(read, want) {
