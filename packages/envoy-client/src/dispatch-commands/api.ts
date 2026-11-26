@@ -2,19 +2,19 @@
 //
 // `dispatch api` (`dispatch_api` in `@legion/contracts`): one request of a route under `/api/v1`
 // that no named command sends, a GET or the method `--method` names, sent through the client
-// every command uses, so it presents the credential every command presents (a set bearer, the
-// token files' broker token, else a token traded at the secrets broker, with a new DPoP proof for
-// the request), and the answer's body printed: Dispatch's JSON indented, as every command prints
-// it, for `jq` to read, and any other body of a 2xx as it came, byte for byte. An attachment (a
-// file version, a document version read with `?download=true`) is stored content whatever its
-// type, JSON included, so it is never parsed. A 2xx whose body holds a credential the command
-// presented is not printed: it is refused (`DispatchCredentialEchoError`). The contract's rule
-// refused a path that could leave `/api/v1` (`apiPathProblem`), and a body with no method
-// (`apiCallProblem`), before this runs. The request goes once (`DispatchClient.readRoute` and
-// `sendRoute`), and once more only after Dispatch answers that the token it presented is not
-// live (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
-// `Idempotency-Key`. A refusal is thrown as the client throws it, Dispatch's own error among
-// them, which the command prints and exits 1 on.
+// the spec commands use, so it presents the credential every spec command presents (a set
+// bearer, the token files' broker token, else a token traded at the secrets broker, with a new
+// DPoP proof for the request), and the answer's body printed: Dispatch's JSON indented, as every
+// spec command prints it, for `jq` to read, and any other body of a 2xx as it came, byte for
+// byte. An attachment (a file version, a document version read with `?download=true`) is stored
+// content whatever its type, JSON included, so it is never parsed. A 2xx whose body holds a
+// credential the command presented is not printed: it is refused (`DispatchCredentialEchoError`).
+// The contract's rule refused a path that could leave `/api/v1` (`apiPathProblem`), and a body
+// with no method (`apiCallProblem`), before this runs. The request goes once
+// (`DispatchClient.readRoute` and `sendRoute`), and once more only after Dispatch answers that
+// the token it presented is not live (Dispatch authenticated nothing, so nothing ran), with no
+// redirect followed and no `Idempotency-Key`. A refusal is thrown as the client throws it,
+// Dispatch's own error among them, which the command prints and exits 1 on.
 //
 // A script and a job send it too: a broker token is bound to a key, so no script can send it as a
 // bearer. Where no host is found, as in a GitHub Actions job, the CLI reads Dispatch from the
@@ -55,7 +55,8 @@ export interface WriteRoute {
 
 /**
  * Each write route a `dispatch` command sends, with the commands that send it, which the refusal
- * of a gated session names. A route that writes nothing (`markdown/round-trip`,
+ * of a gated session names, and the first of which `dispatch proxy`'s 405 for that write names
+ * (dispatch-proxy.ts, `methodRefusal`). A route that writes nothing (`markdown/round-trip`,
  * `markdown/file-round-trip`, `related`, `results/dry-run`) names the command that sends it,
  * since the gate refuses it all the same. A write method of `DispatchClient` that no command calls
  * has no row, and neither has `sendRoute`, which sends the route its caller names:
@@ -144,21 +145,22 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   },
 ];
 
+/** Each row of {@link WRITE_ROUTES} in its order, with its pattern split at `/` once, here. */
+const WRITE_ROUTE_SEGMENTS = WRITE_ROUTES.map((row) => ({ row, segments: row.pattern.split("/") }));
+
 /** The row of {@link WRITE_ROUTES} that `method` on `path` (a route, without its query) matches,
  *  or undefined: each segment of the row's pattern as written, and each `{name}` one segment that
  *  is not empty. */
 export function writeRoute(method: string, path: string): WriteRoute | undefined {
   const segments = path.split("/");
-  return WRITE_ROUTES.find((row) => {
-    const pattern = row.pattern.split("/");
-    return (
-      row.method === method &&
-      pattern.length === segments.length &&
-      pattern.every((part, at) =>
+  return WRITE_ROUTE_SEGMENTS.find(
+    (route) =>
+      route.row.method === method &&
+      route.segments.length === segments.length &&
+      route.segments.every((part, at) =>
         part.startsWith("{") ? segments[at] !== "" : part === segments[at]
       )
-    );
-  });
+  )?.row;
 }
 
 /**

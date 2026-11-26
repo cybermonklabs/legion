@@ -144,3 +144,30 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 		}
 	}
 }
+
+// A defect a look finds is routed as the tester's prompt routes it (prompts/go/tester.md) and as
+// skill://legion-worker/references/findings.md says. A fail of the issue's own requirement starts
+// the issue's next change and goes to no controller; a defect outside the issue goes as that
+// reference says, and the task names the reference rather than a route of its own. The task is the
+// text in front of the tester at every look, so a task that sent every such defect to the tester's
+// own controller, or that kept the ask for a decision alone, would overrule the prompt it comes
+// with.
+func TestTheCheckTaskRoutesADefectAsTheTesterPromptDoes(t *testing.T) {
+	for _, last := range []bool{false, true} {
+		task := checkTaskFor(wakeMerge, "merge-43", last)
+		for _, want := range []string{
+			"A fail starts the next change of this issue, so send it to no controller.",
+			"A defect outside this issue still goes as skill://legion-worker/references/findings.md says.",
+		} {
+			if !strings.Contains(task, want) {
+				t.Errorf("the check task (last %t) = %q, want it to say %q", last, task, want)
+			}
+		}
+		for _, retired := range []string{"the controller topic your Legion addressing line names",
+			"the controller's role token from your Legion addressing line", "only a defect that needs a decision"} {
+			if strings.Contains(task, retired) {
+				t.Errorf("the check task (last %t) still says %q", last, retired)
+			}
+		}
+	}
+}

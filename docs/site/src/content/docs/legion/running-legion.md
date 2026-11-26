@@ -831,7 +831,7 @@ What each part is for:
 - Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
   closed issue's production check runs before its last look, 14 days by default,
   decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
-  update round ends and the pod is replaced, whatever the roles answered and unless an operator's
+  update round ends and the pod is replaced, whatever the roles answered and unless the operator's or the controller's
   suspension holds the round, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
   `pod_update_rounds_per_minute` (how many rounds one sweep opens), each a positive integer whose
@@ -955,7 +955,7 @@ What each part is for:
   that owns the issue is told what the record held: how long the agent was silent, the bound it
   passed, when the turn began, and the call the record names, if any. The stall of a child's own
   architect is told to the architect above that child. A root architect's own stall is told to
-  the controller as well.
+  the controller as well only when the replacement failed that architect's claim.
 
   A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
   judges — 8 hours for an implementer and a reviewer, 2 for every other role and the controller —
@@ -1234,7 +1234,7 @@ Send from the Agents page is answered in the conversation that page shows.
 Size its pod under `runtime.kubernetes.resources.controller`: with no requests it is the first pod
 the kubelet evicts under memory pressure.
 To hand the controller back to a person, set `controller: operator`, drop
-`runtime.kubernetes.resources.controller` (the daemon refuses that key unless `controller: daemon`)
+`runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account` (the daemon refuses each of those keys unless `controller: daemon`)
 and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
@@ -1245,8 +1245,8 @@ it lists the controller's claim as an issue keyed `""`, which every agent's plug
 stop using the in-cluster controller, switch to `controller: operator` on this release rather than
 rolling back the image. If you must roll back, do it in this order:
 
-1. Remove `controller` and `runtime.kubernetes.resources.controller` from `legion.yaml`: the
-   earlier release refuses both as unknown keys, and without them this release runs
+1. Remove `controller`, `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account` from `legion.yaml`: the
+   earlier release refuses each as an unknown key, and without them this release runs
    `controller: operator`. Restart this release once with that file. Do not skip this boot: only
    this release ends the stopped controller's registration. It is done when `legion claims list`
    shows `legion-<project>-controller` `retired`. If the boot is refused,
@@ -1379,7 +1379,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    pod brings a disk of its own, so its workspace is provisioned afresh from the issue's branch
    and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
-   **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
+   **An operator's suspension holds until the operator resumes the agent.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
    first step back, on their kept sessions, at its next first phase start, and each other role at
@@ -1387,12 +1387,12 @@ Closing the terminal leaves the project without one, and the daemon logs
    in a new session instead. The daemon suspends or ends claims only when an issue leaves the
    workflow, when a claim moves to another tree, or for a production check after the issue is done.
    A phase start gives its task to that live claim. At boot the daemon
-   resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
-   operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
-   operator-suspended architect waits until the operator resumes it. A notice for a child whose
-   own architect an operator suspended goes to the architect above that child. A drain therefore
-   ends with the operator resuming every claim they suspended, one `legion claims resume` each;
-   `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`, or
+   resumes by rule a suspended worker that still owns its issue's phase and that the daemon itself suspended, but never an agent the
+   operator or the project's controller suspended: a start for an agent either of them holds waits instead, until a resume lifts the hold. The operator's resume lifts either, and the controller's only its own. A notice for a root's
+   architect that the operator or the controller suspended waits until a resume lifts that suspension. A notice for a child whose
+   own architect is suspended, whoever suspended it, goes to the architect above that child, unless the daemon only released that architect's idle pod, which the notice wakes. A drain therefore
+   ends with the operator resuming every agent they suspended, one `legion claims resume` each;
+   `legion claims list --json` names each one's `suspendedBy` (`operator`, `controller`, `daemon`, `exit`, `released` for one whose idle pod the daemon released, or
    `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
    left the workflow waits for its current turn to finish, with no stop timeout: a child parked
    in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,

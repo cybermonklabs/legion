@@ -234,33 +234,44 @@ func TestACheckStartOfAnIssueWaitingInVerifyingRunsItsLook(t *testing.T) {
 	}
 }
 
-// An operator's suspension of the implementer holds a phase start on the row's backoff until the
-// operator resumes it; a look cannot wait that long, so the check start finishes without acting and
-// ends the look as one nobody reported, with the hold as its cause, of the check the row's issue
-// holds.
-func TestACheckStartOnAnOperatorHeldImplementerEndsTheLook(t *testing.T) {
+// A suspension of the implementer that holds — the operator's or the controller's — holds a phase
+// start on the row's backoff until a resume lifts it; a look cannot
+// wait that long, so the check start finishes without acting and ends the look as one nobody
+// reported, of the check the row's issue holds, with the hold as its cause named by its holder,
+// so the look's retry says whose resume it waited on.
+func TestACheckStartOnAHeldImplementerEndsTheLook(t *testing.T) {
 	t.Parallel()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	root := checkRoot()
-	putOutboxIssue(t, pool, records, root)
-	check := openCheck(root, "a1b2c3d4")
-	putProductionCheck(t, pool, records, check)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	machine, _ := suspendedImplementer(t, sup, root, supervise.SuspendedByOperator)
-	facts := &outboxFactHandler{}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
+	for _, tc := range []struct {
+		by    supervise.SuspendSource
+		cause string
+	}{
+		{supervise.SuspendedByOperator, "operator hold"},
+		{supervise.SuspendedByController, "controller hold"},
+	} {
+		t.Run(tc.cause, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			root := checkRoot()
+			putOutboxIssue(t, pool, records, root)
+			check := openCheck(root, "a1b2c3d4")
+			putProductionCheck(t, pool, records, check)
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			machine, _ := suspendedImplementer(t, sup, root, tc.by)
+			facts := &outboxFactHandler{}
+			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+				handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
 
-	if err := runner.execute(context.Background(), checkStart(t, root, 1)); err != nil {
-		t.Fatalf("check start on the operator's hold = %v, want finished without acting", err)
-	}
-	if got := machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator || got.LastStartRow != 0 || len(rt.CallsOf("Resume")) != 0 {
-		t.Fatalf("implementer = %s by %s with last start %d and %d resumes, want left to the operator", got.State, got.SuspendedBy, got.LastStartRow, len(rt.CallsOf("Resume")))
-	}
-	want := intake.CheckLookEnded{Issue: root.Key, Look: 1, Cause: "operator hold"}
-	if got := facts.facts(); len(got) != 1 || !sameCheckFact(got[0], want, check) {
-		t.Fatalf("facts applied = %+v, want %+v of the check opened %s", got, want, check.OpenedAt)
+			if err := runner.execute(context.Background(), checkStart(t, root, 1)); err != nil {
+				t.Fatalf("check start on the %s's hold = %v, want finished without acting", tc.by, err)
+			}
+			if got := machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != tc.by || got.LastStartRow != 0 || len(rt.CallsOf("Resume")) != 0 {
+				t.Fatalf("implementer = %s by %s with last start %d and %d resumes, want left to the %s", got.State, got.SuspendedBy, got.LastStartRow, len(rt.CallsOf("Resume")), tc.by)
+			}
+			want := intake.CheckLookEnded{Issue: root.Key, Look: 1, Cause: tc.cause}
+			if got := facts.facts(); len(got) != 1 || !sameCheckFact(got[0], want, check) {
+				t.Fatalf("facts applied = %+v, want %+v of the check opened %s", got, want, check.OpenedAt)
+			}
+		})
 	}
 }
 

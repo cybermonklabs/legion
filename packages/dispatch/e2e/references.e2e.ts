@@ -73,7 +73,8 @@ test("an issue and its ask show a cross-project message and structural backlinks
   ).resolves.toBe(true);
 
   await page.goto("/");
-  const phoneCard = page.getByTestId(`ask-${decision.id}`);
+  // At 390 px the Inbox lists short rows; the question's card is read in the view its row opens.
+  const phoneCard = await askCard(page, decision.id);
   await phoneCard.getByRole("button", { name: /^Referenced by \(1\)$/ }).click();
   await expect(phoneCard.getByRole("region", { name: "Referenced by" })).toContainText(
     `Message · ${source.key}`

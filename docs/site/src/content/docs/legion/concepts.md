@@ -93,19 +93,20 @@ controller posts a report on what Legion finished, closed and is running. That s
 daemon's status repair, which puts back the Dispatch status of any issue Legion works whose status
 is not the status of the phase it stands in, so a longer interval slows that repair as well. A free
 slot is never a reason for the controller to take an issue: it takes only what a person hands over
-and the clear defects Legion's agents report.
+and the clear defects Legion's agents report that no tree owns.
 
-No Legion agent files an issue for a problem it finds outside its own issue. A defect with a clear
-fix in code the agent's own tree touches or depends on is fixed in that tree's pull request, while
-the agent is there. Any other goes to the controller with its evidence, and the controller gives it
-to the running tree whose code it is. Only when no tree owns that code does it file the issue with
-the `legion` label, so Legion works it without asking you. A problem that needs a decision of
-yours goes into a Dispatch ask on
-Legion's daily report issue instead, naming the issue it came from and where the fix belongs (the
-repository or layer, and saying so when it is not Legion), with its evidence and a recommendation,
-and you decide whether it needs an issue. The controller files that issue, with the `legion` label
-only when your answer asks Legion to work it. An architect also files the children of its own
-issue.
+No Legion agent files an issue for a problem it finds outside its own issue. The agent fixes a
+defect with a clear fix itself, in its own pull request or a separate pull request of its tree, in
+whichever repository the defect is. It writes the defect to the architect of the tree whose code it
+is, as a Dispatch comment that mentions that architect's role, only when its fix would collide with
+that tree's open pull request or its token does not reach the repository. Only when no tree owns
+that code does the controller file the issue with the `legion` label, so Legion works it without
+asking you; the controller passes no message from one agent to another. A problem that needs a
+decision of yours goes into a Dispatch ask on Legion's daily report issue instead, naming the
+issue it came from and where the fix belongs (the repository or layer, and saying so when it is
+not Legion), with its evidence and a recommendation, and you decide whether it needs an issue.
+The controller files that issue, with the `legion` label only when your answer asks Legion to work
+it. An architect also files the children of its own issue.
 
 The only statuses the controller sets are `todo`, `backlog` and `icebox` (`triage` is set by
 whoever files an issue). It reads pull requests as the review App, and never touches a tree's work.
@@ -789,10 +790,11 @@ not happened yet;
 or `fail`, a requirement observed as not met, or a defect of the change, naming the issue, the pull
 request, the merge commit, what it drove and what failed.
 A `fail` starts the next change of the issue ([the close](#the-close)) and goes to no controller.
-A defect the look finds outside the issue goes to the controller, which gives it to the tree that
-owns that code and files an issue only when none does.
-One that needs a decision is a Dispatch ask on Legion's daily report issue, so you decide whether it
-needs an issue.
+A defect with a clear fix that the look finds outside the issue goes to its owner, as a Dispatch
+comment that mentions the architect of the tree whose code it is, or to the controller, which files
+an issue only when no tree owns that code.
+Only one that needs a decision is a Dispatch ask on Legion's daily report issue, so you decide
+whether it needs an issue.
 The record is those results and the pull request.
 Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
 stored microseconds unchanged. That field alone selects a report on that check: without it,
@@ -808,19 +810,19 @@ next look. A time less than 60 seconds ahead becomes 60 seconds ahead, and a tim
 check's own bound starts no look of its own, because the look at that bound already stands.
 Nothing else wakes an open check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and
 no daemon boot, and the daemon reads no deployment's production workflows at all.
-A look is bounded at two hours, and a look nobody reported — its two hours or an operator's
-hold — starts the next look two hours later. An agent whose claim fails, in a look or after it
-ended, backs the check off: the next look comes two hours later after the first such look, and
-twice as long after each failed look in a row after it (four hours, eight, and so on, never past
-the check's bound), until a look the agent reports sets it back to two hours. That look tries the
-agent once more, with one attempt left of the budget its failure spent, so an agent that cannot
-start is launched once a look rather than a whole budget's worth of times; a failure that spent no
-budget, a provider error's, starts a fresh run. The architect is told of each such failure, with
-its cause, how the agent's last pod ended and when the next look tries it. An operator's
-`legion claims retry` or the controller's fresh session gives the agent its whole budget again.
-A look that began before
-a pause of the project ended counts its two hours from the resume, or from its agent's last ready
-after the resume where that is later, and counts nothing while that agent is still starting.
+A look is bounded at two hours, and a look nobody reported — its two hours or a hold the
+operator or the controller put on the agent — starts the next look two hours later. An agent
+whose claim fails, in a look or after it ended, backs the check off: the next look comes two
+hours later after the first such look, and twice as long after each failed look in a row after it
+(four hours, eight, and so on, never past the check's bound), until a look the agent reports sets
+it back to two hours. That look tries the agent once more, with one attempt left of the budget its
+failure spent, so an agent that cannot start is launched once a look rather than a whole budget's
+worth of times; a failure that spent no budget, a provider error's, starts a fresh run. The
+architect is told of each such failure, with its cause, how the agent's last pod ended and when the
+next look tries it. An operator's `legion claims retry`, or the controller's retry or fresh session,
+gives the agent its whole budget again. A look that began before a pause of the project ended
+counts its two hours from the resume, or from its agent's last ready after the resume where that is
+later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen days, by default), counted
 from its open: the look at that bound is the last.
 On the last look, a requirement still unobserved is `pending`, which closes the check as not run,
