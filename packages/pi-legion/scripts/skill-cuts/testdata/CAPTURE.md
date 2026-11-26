@@ -3,9 +3,9 @@
 Every fixture here came from a real system on 2026-11-20, with made-up skills (`alpha`, `beta`,
 `tool-loop-alpha`) and made-up prompts, but for these: F10, F11 and F15 are GitHub's answers, a
 pull request's body and a pull request's diff of real repositories, read on 2026-11-22, with the
-names their sections give replaced; F16 is files of the public dotfiles repository read on
-2026-11-25, as its section says; and F12, F13, F14, the style texts and the control skills are
-made up, read from no system, in the shapes their sections give.
+names their sections give replaced; F16 and F17 are files of the public dotfiles repository read
+on 2026-11-25 and 2026-11-26, as their sections say; and F12, F13, F14, the style texts and the
+control skills are made up, read from no system, in the shapes their sections give.
 A test that reads a fixture cites its section of this file in its header. The scan at the end says
 how each file was checked for keys and private names.
 
@@ -774,6 +774,27 @@ at commit 3c266c9f (2026-10-27), with `gh api repos/<dotfilesRepo>/contents/<pat
 checkout.test.ts loads the extension in the pin's sandbox (the bash gate's rows) and in an
 ordinary print-mode session beside `F16-config.yml` (the row that sets the stub against such a
 session); cli.test.ts copies the extension into `--repos` at the made-up dotfiles commit.
+
+## F17: the dotfiles' experiments extension with its context line (`F17-experiments/`)
+
+Read on 2026-11-26 from the same public dotfiles repository as F16, with the same `gh api`
+command, at commit 58dac64e (2026-10-22), before 3253a1b9 deleted the extension's `context_line`
+feature:
+
+- `F17-experiments/bash-gate.ts`, `bash-gate-core.ts`, `context-line.ts` and `gates.ts`:
+  `omp/extensions/experiments/<file>` at that commit, byte for byte (each file's git object id is
+  the `sha` GitHub's contents listing of that directory at that commit gives it).
+- `F17-experiments/gates.json`: that commit's, with `context_line`'s gate `on` in place of
+  `random`; every other byte as it is.
+- `F17-experiments/index.ts`: that commit's `omp/extensions/experiments/index.ts` less the five
+  import lines of its other features (`judge-log`, `proactive-memory`, `rules-refresh`,
+  `selfcompact`, `skill-gate`) and their five entries of `REGISTRATIONS`, which keeps
+  `context_line`'s alone; every other byte as it is. The rest of the directory is not copied, as
+  for F16.
+
+checkout.test.ts loads it in the pin's sandbox: the row that the pin's run turns the extension's
+other features off, so a call the bash gate refuses gets the refusal alone, and its control, a run
+that turns none off, whose refusal comes with the context line as a second text part.
 
 ## The canned reader answers
 

@@ -956,9 +956,12 @@ answered (`unanswered-read`, naming why), and the stage records why (`checkout.s
   through). A call the gate refuses gets its refusal as the pin's bash tool returns it, an error,
   even where its paths are outside the checkout; one it lets through is answered as before, by
   the runner's own run, or by the pin's run, which loads the extension too, where the minimizer
-  may rewrite it. A pin run whose session records another arm than the case's, or none (the
-  extension did not load), is not answered. Each call's gate answer is asked once per runner
-  process.
+  may rewrite it. Each pin run that loads the extension turns off every other feature its
+  `gates.json` names (`OMP_EXPERIMENT_<FEATURE>=off`), since one that runs could make the answer
+  other than the session stored it: `context_line` (at dotfiles commits before 3253a1b9, which
+  deleted it) adds `[Token usage: …]` to a tool's result as a text part no session file holds.
+  A pin run whose session records another arm than the case's, or none (the extension did not
+  load), is not answered. Each call's gate answer is asked once per runner process.
 - The gate's version. The extension loads once per process, so a session can run an older one
   than its profile's commit holds. Four texts ran, at dotfiles commits 050e8a40, bc8c956a,
   3c266c9f and 31823ec2; a refusal of a step of several tells them apart (`checkout.ts`'s

@@ -26,6 +26,7 @@ import {
   knivesTouches,
   minimizerReadings,
   pinBashAnswer,
+  pinRun,
   READ_ONLY_TOOLS,
   readOnlyCall,
   removeOutsideLinks,
@@ -2314,6 +2315,21 @@ pinned.test(
   120_000
 );
 
+// Catches: a feature of the experiments extension whose name is no piece of a variable's name
+// written into the pin's command line as `OMP_EXPERIMENT_<FEATURE>=off`, which the shell reads as
+// a command rather than an assignment, so the run fails, or the feature runs, unsaid.
+test("a session's experiments extension whose gates.json names a feature that is no variable name, x-y, answers no bash call, saying which feature and why", async () => {
+  const dir = path.join(scratch, "odd-feature-gate");
+  writeTree(dir, { "gates.json": JSON.stringify({ "x-y": "on", bash_gate_leading: "random" }) });
+  const copy = {
+    ...filesCopy("odd-feature", { x: "x\n" }),
+    shell: { gate: { dir, leading: true } },
+  };
+  expect(await answerCall(copy, "bash", { command: "cat x" }, "hashline")).toEqual({
+    why: `the session's bash gate decides whether the call runs, and the pinned Oh My Pi that holds it gave no answer: the session's experiments extension names a feature "x-y" in its gates.json that is no variable name the runner can turn off`,
+  });
+});
+
 /** The dotfiles' omp/config.yml at 3c266c9f, its comments taken out (testdata/CAPTURE.md, "F16"):
  *  what an ordinary session's `--config` gives it, as the dotfiles' shims/omp gives it every
  *  session through PI_CONFIG_FILES. */
@@ -2599,6 +2615,61 @@ pinned.test(
     });
   },
   120_000
+);
+
+/** The dotfiles' experiments extension at 58dac64e, cut to its bash gate and its context line,
+ *  whose gate is `on` (testdata/CAPTURE.md, "F17"), as `BashGate.dir`. */
+const CONTEXT_GATE_DIR = path.join(import.meta.dir, "testdata", "F17-experiments");
+
+/** The bash gate's refusal of `cat x`, a command of one step, in the form all its versions give. */
+const CAT_X_REFUSAL =
+  "Blocked: `cat x` has a dedicated tool, `read`. Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.\n\nOriginal command: cat x";
+
+// Catches: a feature of the experiments extension other than its bash gate left to run in the
+// pin's run, so that context_line's `[Token usage: …]` follows the tool's result as a text part of
+// its own, which no session file holds: the gate's refusal, and the pin's answer of a call the
+// minimizer rewrites, are then not one text, and the runner answers neither.
+pinned.test(
+  "with the experiments extension's context_line on in its gates.json, a call the bash gate refuses gets the refusal alone, one text, and calls it lets through are answered as before, by the runner's own run and by the pin's; the same pin run with no feature turned off answers the refusal with the context line as a second text",
+  async () => {
+    const shell = { gate: { dir: CONTEXT_GATE_DIR, leading: true } };
+    const copy = {
+      ...filesCopy("context-line", {
+        ...Object.fromEntries(PIN_NAMES.map((each) => [`d/${each}`, ""])),
+        x: "x\n",
+      }),
+      shell,
+    };
+    expect(await answerCall(copy, "bash", { command: "cat x" }, "hashline")).toEqual({
+      text: CAT_X_REFUSAL,
+      isError: true,
+    });
+    const own = await sandboxedBash(copy, "ls; cat x");
+    if ("why" in own) throw new Error(own.why);
+    expect(
+      sansWallTime(await answerCall(copy, "bash", { command: "ls; cat x" }, "hashline"))
+    ).toEqual({ text: own.output, isError: false });
+    expect(
+      sansWallTime(await answerCall(copy, "bash", { command: PIN_CHAIN }, "hashline"))
+    ).toEqual({ text: `${PIN_CHAIN_TEXT}[raw output: artifact://1]\n`, isError: false });
+    // The control: the gate's ask of `cat x` as the runner makes it, with no feature turned off.
+    const control = await pinRun(
+      copy,
+      { tool: "bash", arguments: { command: "cat x" }, seed: {}, gate: true },
+      [],
+      shell,
+      []
+    );
+    if ("why" in control) throw new Error(control.why);
+    expect({ content: control.content, isError: control.isError }).toEqual({
+      content: [
+        { type: "text", text: CAT_X_REFUSAL },
+        { type: "text", text: expect.stringMatching(/^\n\n\[Token usage: [\d,]+\/[\d,]+\]$/) },
+      ],
+      isError: true,
+    });
+  },
+  180_000
 );
 
 // Catches: a binary of another build than the pin's run where the pin's own answers a call, or a

@@ -211,6 +211,10 @@
  *   gate refuses gets its refusal as the pin's bash tool returns it (an error), whatever else would
  *   keep the runner from running it; one it lets through is answered as below, by the runner's
  *   own run or, where the minimizer may rewrite it, by the pin's run with the extension loaded too.
+ *   Each pin run that loads the extension turns every other feature its gates.json names off
+ *   (OMP_EXPERIMENT_<FEATURE>=off, `featuresOff`), since one that runs could make the answer other
+ *   than the session stored it: context_line (at dotfiles commits before 3253a1b9, which deleted
+ *   it) adds `[Token usage: …]` to a tool's result as a text part no session file holds.
  *   A run whose session records another arm than the case's, or none, is not answered. The
  *   extension loads once per process, so a session may have run an older version than its
  *   profile's commit holds: four texts ran (BASH_GATE_COMMITS: 050e8a40, bc8c956a, 3c266c9f,
@@ -582,6 +586,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+import { messageFor } from "@legion/envoy-client/errors";
 import {
   fileTag,
   formatBytes,
@@ -2902,6 +2907,39 @@ function shellWord(value: string): string {
 }
 
 /**
+ * The features of the experiments extension of `gate` (`BashGate`) that the pin's run turns off,
+ * each by OMP_EXPERIMENT_<FEATURE>=off, the variable that overrides a feature's gate (gates.ts):
+ * every feature its gates.json names but the bash gate's, `bash_gate_leading`. The extension holds
+ * other features beside the gate, and one whose gate is `on`, or `random` and drawn on, could
+ * change what the pin's tool answers: context_line (context-line.ts, at dotfiles commits before
+ * 3253a1b9, which deleted it) appends `\n\n[Token usage: <used>/<window>]` to the last message of
+ * each request, a tool's result among them, as a text part of its own that no session file stores.
+ * Turned off, none runs, so the answer is the tool's as the session stored it. Why not, where the
+ * runner cannot name them: a gates.json it cannot read, or a feature whose name is no piece of a
+ * variable's name, which the shell would not read as an assignment.
+ */
+function featuresOff(gate: BashGate): string[] | Unanswered {
+  let features: string[];
+  try {
+    features = Object.keys(
+      JSON.parse(readFileSync(path.join(gate.dir, "gates.json"), "utf8")) as object
+    );
+  } catch (error) {
+    return {
+      why: `the session's experiments extension has no gates.json the runner can read, which names the features to turn off beside its bash gate: ${messageFor(error)}`,
+    };
+  }
+  const off = features.filter((feature) => feature !== "bash_gate_leading");
+  const odd = off.find((feature) => !/^[a-z][a-z0-9_]*$/.test(feature));
+  if (odd !== undefined) {
+    return {
+      why: `the session's experiments extension names a feature ${JSON.stringify(odd)} in its gates.json that is no variable name the runner can turn off`,
+    };
+  }
+  return off;
+}
+
+/**
  * The pinned Oh My Pi's own answer to `call` (pin-hook.ts's PinCall: its tool, its arguments, the
  * session's paths in them as the sandbox's, and the files it seeds the session's artifacts
  * directory with), run headless, with no model, in a sandbox of `copy` (`runSandboxed` with `pin`)
@@ -2914,9 +2952,10 @@ function shellWord(value: string): string {
  * call's, `ShellSetup`), PI_SHELL_PREFIX is its prefix, as the session's Oh My Pi had it; and
  * where it has the session's bash gate (`BashGate`), the experiments extension's directory is
  * bound read-only at `ext`, its `index.ts` alone is loaded with `-e` (`--no-extensions` keeps
- * every other discovery off; an explicit `-e` path still loads, the pin's CLI flags say), and
- * OMP_EXPERIMENT_BASH_GATE_LEADING is the session's arm; a result whose session records another
- * arm, or none (the extension did not load), is not answered. The run counts in the sandbox's
+ * every other discovery off; an explicit `-e` path still loads, the pin's CLI flags say),
+ * OMP_EXPERIMENT_BASH_GATE_LEADING is the session's arm, and every other feature of the
+ * extension is turned off (`featuresOff`); a result whose session records another arm, or none
+ * (the extension did not load), is not answered. The run counts in the sandbox's
  * BASH_TIME_LIMIT_MS from its ready marker, as a command's does, and is not answered past it;
  * nor where `programs` (the call's programs that are no builtin of bash's) are on no directory of
  * the sandbox's PATH. The tool's result and the artifacts it made (pin-hook.ts's PinResult), the
@@ -2927,6 +2966,20 @@ async function pinAnswer(
   call: PinCall,
   programs: readonly string[],
   shell: ShellSetup = {}
+): Promise<PinResult | Unanswered> {
+  const off = shell.gate === undefined ? [] : featuresOff(shell.gate);
+  if ("why" in off) return off;
+  return pinRun(copy, call, programs, shell, off);
+}
+
+/** `pinAnswer`'s run, `off` the features of the experiments extension it turns off
+ *  (`featuresOff`). Exported for checkout.test.ts, whose control runs it with none turned off. */
+export async function pinRun(
+  copy: CheckoutCopy,
+  call: PinCall,
+  programs: readonly string[],
+  shell: ShellSetup,
+  off: readonly string[]
 ): Promise<PinResult | Unanswered> {
   const omp = pinnedOmp();
   if ("why" in omp) return { why: `the runner has no pinned Oh My Pi binary: ${omp.why}` };
@@ -2950,7 +3003,10 @@ async function pinAnswer(
       ...(shell.prefix === undefined ? [] : [`PI_SHELL_PREFIX=${shellWord(shell.prefix)}`]),
       ...(gate === undefined
         ? []
-        : [`OMP_EXPERIMENT_BASH_GATE_LEADING=${gate.leading ? "on" : "off"}`]),
+        : [
+            `OMP_EXPERIMENT_BASH_GATE_LEADING=${gate.leading ? "on" : "off"}`,
+            ...off.map((feature) => `OMP_EXPERIMENT_${feature.toUpperCase()}=off`),
+          ]),
       shellWord(omped),
       "-p",
       ...(gate === undefined ? [] : [`-e ${PIN_MOUNT}/ext/index.ts`]),
