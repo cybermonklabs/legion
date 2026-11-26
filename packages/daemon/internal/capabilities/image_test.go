@@ -852,49 +852,37 @@ func passedOnceStarted(t *testing.T, cause error) (ctx context.Context, started,
 // the cause its attempt recorded (errCommandTimeout). The first case gives the command its own
 // clock, a budget of a second that runWithin itself must apply: a runWithin that applied none would
 // leave the command running until the row's far bound. That clock starts before the command does,
-// and a loaded machine can spend it first, which leaves nothing to cut; such a run never wrote its
-// started file, so it is not judged, and the case runs again, within a minute. The second case
-// passes the budget with that cause at a fact, once the command has started
-// (testwait.StandInDeadline, the caller's context the attempt derives from), so every run of it is
-// judged. The command runs until the budget's stop or the row's cleanup ends it, never on a timer
-// of its own.
+// and its one run is judged, as main judged it: a command that started at all, however late a
+// loaded machine started it, is still running when the second passes, so the budget's stop reaches
+// it and the run timed out; only a runWithin that spends the second before Start leaves nothing to
+// cut, and that is runWithin's fault. The second case passes the budget with that cause at a fact,
+// once the command has started (testwait.StandInDeadline, the caller's context the attempt derives
+// from), so every run of it is judged. The command runs until the budget's stop or the row's
+// cleanup ends it, never on a timer of its own.
 func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 	t.Run("its own clock", func(t *testing.T) {
 		const budget = time.Second
-		within := testwait.Bounded(t, time.Minute, answerBudget+time.Second)
-		until := time.Now().Add(within)
-		for runs := 1; ; runs++ {
-			dir := t.TempDir()
-			started, held := filepath.Join(dir, "started"), filepath.Join(dir, "held")
-			t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
-			img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+		held := filepath.Join(t.TempDir(), "held")
+		t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
+		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
-			done := make(chan ran, 1)
-			go func() {
-				done <- img.runWithin(context.Background(), budget, "sh", "-c", `: >"$1"; while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done`, "sh", started, held, strconv.Itoa(os.Getpid()))
-			}()
-			var r ran
-			far := testwait.Bounded(t, answerBudget, time.Second)
-			select {
-			case r = <-done:
-			case <-time.After(far):
-				t.Fatalf("run %d had not returned %s after it started: its own %s budget did not end the command", runs, far, budget)
-			}
+		done := make(chan ran, 1)
+		go func() {
+			done <- img.runWithin(context.Background(), budget, "sh", "-c", `while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null; do sleep 0.01; done`, "sh", held, strconv.Itoa(os.Getpid()))
+		}()
+		var r ran
+		far := testwait.Bounded(t, answerBudget, time.Second)
+		select {
+		case r = <-done:
+		case <-time.After(far):
+			t.Fatalf("the run had not returned %s after it was called: its own %s budget did not end the command", far, budget)
+		}
 
-			if _, err := os.Stat(started); err != nil {
-				if time.Now().Before(until) {
-					t.Logf("run %d is not judged: its %s budget passed before the command started (run = exit %d, error %v)", runs, budget, r.exit, r.err)
-					continue
-				}
-				t.Fatalf("no run of the right order in %d runs over %s: in each, the %s budget passed before the command started (run = exit %d, error %v)", runs, within, budget, r.exit, r.err)
-			}
-			if want := "timed out after " + budget.String(); r.err == nil || r.err.Error() != want {
-				t.Errorf("run %d = exit %d, error %v; want the error %q: the command's own budget cut it off", runs, r.exit, r.err, want)
-			}
-			if r.cut {
-				t.Errorf("run %d is cut, want a run its own budget ended, which the caller's context did not cut", runs)
-			}
-			return
+		if want := "timed out after " + budget.String(); r.err == nil || r.err.Error() != want {
+			t.Errorf("run = exit %d, error %v; want the error %q: the command's own budget cut it off", r.exit, r.err, want)
+		}
+		if r.cut {
+			t.Error("run is cut, want a run its own budget ended, which the caller's context did not cut")
 		}
 	})
 
