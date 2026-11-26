@@ -11,14 +11,15 @@
 // branch decides the case only where the earlier check passes the key:
 //
 //   - foreignDependencyTargets refuses a parent and a blocked_by target before the reads under
-//     the locks. TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey calls validateIssueParent
-//     and writeBlockedBy directly, and so holds the branch of each. The create's read of its
-//     parent under the locks is held by its HTTP case where foreignDependencyTargets passes the
-//     key, which only a control that sets that outer check to false can show.
+//     the locks. TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey calls each of those
+//     reads directly, readCreateParent, validateIssueParent and writeBlockedBy, and so holds the
+//     branch of each.
 //   - resolveCheck leaves out a check of a private project before readResultRequest asks about
-//     the check's issue. The project check of a retraction asks about the check's issue before the
-//     keyed layer and the handler (secondProjectResolverFor), and retractCheckResult asks again in
-//     its transaction.
+//     the check's issue (refuseUncoveredCheck). The project check of a retraction asks about the
+//     check's issue before the keyed layer and the handler (secondProjectResolverFor), and
+//     retractCheckResult asks again in its transaction (refuseRetractionOfUncoveredCheck).
+//     TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne calls each of the two
+//     second checks directly, and so holds the branch of each.
 //
 // A status change leaves the private issue out of its cascade, and the answers 409
 // PARENT_STATUS_CONFLICT and 409 FOREIGN_CHILD_OPEN leave it out of their issues.
@@ -259,10 +260,10 @@ func TestAPrivateProjectsObjectAnswersAsAMissingObjectToAnotherProjectsToken(t *
 //     the locks refuses the key after it. The same close with a stale expected_sequence, which the
 //     write under the locks would refuse 409 ISSUE_CHANGED, gets the same 400 for both keys.
 //   - A create that names the parent, a PATCH that sets the parent, and a create that names the
-//     target, the writes whose reads under the locks are the create's read of its parent,
-//     validateIssueParent and writeBlockedBy. foreignDependencyTargets refuses each key first, so
-//     these cases hold the answer and that nothing is written. The create's cases also send no
-//     title, which the create judges after foreignDependencyTargets.
+//     target, the writes whose reads under the locks are readCreateParent, validateIssueParent and
+//     writeBlockedBy. foreignDependencyTargets refuses each key first, so these cases hold the
+//     answer and that nothing is written. The create's cases also send no title, which the create
+//     judges after foreignDependencyTargets.
 //
 // The same write with the token that names the private project is taken.
 func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsToken(t *testing.T) {
@@ -313,10 +314,10 @@ func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsT
 		})
 	}
 
-	// The create's read of its parent under the locks is reached only where
+	// readCreateParent, the create's read of its parent under the locks, is reached only where
 	// foreignDependencyTargets passes the key. This HTTP case holds the answer and that nothing is
-	// written, and it holds that read's own branch only under a control that sets the outer check
-	// to false.
+	// written, and TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey holds
+	// readCreateParent's own branch.
 	t.Run("the create's read of its parent: a create under the private issue", func(t *testing.T) {
 		create := func(token, parent, title string) func() *httptest.ResponseRecorder {
 			return func() *httptest.ResponseRecorder {
@@ -374,13 +375,14 @@ func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsT
 	})
 }
 
-// TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey: validateIssueParent and writeBlockedBy,
-// the reads under the locks of a PATCH's parent and of a blocked_by target, each answer a parent
-// or a target of a private project that the caller does not name with the error of a key that no
-// issue holds, parentNotFound and blockedByNotFound, in status, code and message. Through HTTP,
-// foreignDependencyTargets refuses such a key before either read, so this test calls each one
-// directly, in a transaction of the test database that it rolls back, and so holds the branch of
-// each. With a caller that names the private project, each takes the key.
+// TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey: readCreateParent, validateIssueParent
+// and writeBlockedBy, the reads under the locks of a create's parent, of a PATCH's parent and of a
+// blocked_by target, each answer a parent or a target of a private project that the caller does
+// not name with the error of a key that no issue holds, parentNotFound and blockedByNotFound, in
+// status, code and message. Through HTTP, foreignDependencyTargets refuses such a key before each
+// read, so this test calls each one directly, in a transaction of the test database that it rolls
+// back, and so holds the branch of each. With a caller that names the private project, each takes
+// the key.
 func TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey(t *testing.T) {
 	t.Parallel()
 	rig := newPrivateProjectRig(t, testServerOptions{})
@@ -390,10 +392,14 @@ func TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey(t *testing.T) {
 	ctx := context.Background()
 	for _, site := range []struct {
 		name, code string
-		// read runs the site for the issue own, for a caller that names the project caller, and
-		// for key as the parent or the blocked_by target.
+		// read runs the site for a caller that names the project caller, with key as the parent
+		// or the blocked_by target of the issue own, or as the parent of the issue a create files.
 		read func(tx pgx.Tx, caller, key string) error
 	}{
+		{"readCreateParent", "PARENT_INPUT", func(tx pgx.Tx, caller, key string) error {
+			_, _, err := readCreateParent(ctx, tx, caller, key)
+			return err
+		}},
 		{"validateIssueParent", "PARENT_INPUT", func(tx pgx.Tx, caller, key string) error {
 			return validateIssueParent(ctx, tx, own, caller, key)
 		}},
@@ -432,6 +438,90 @@ func TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey(t *testing.T) {
 	}
 }
 
+// TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne: refuseUncoveredCheck and
+// refuseRetractionOfUncoveredCheck, the checks of a check's issue's project that readResultRequest
+// and retractCheckResult make after their route's first check, each answer a check of a private
+// project that the caller does not name as their route answers a target that does not exist, in
+// status, code and message: 400 UNKNOWN_CHECK, a result's answer for a check that no Verification
+// document above its issue holds, and 403 PROJECT_SCOPE, a retraction's answer for a result id
+// that no result holds. Through HTTP, resolveCheck and withinProjectScope refuse such a check
+// before either, so this test calls each one directly, in a transaction of the test database that
+// it rolls back, and so holds the branch of each. With a caller that names the private project,
+// each takes the check.
+func TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne(t *testing.T) {
+	t.Parallel()
+	rig := newPrivateProjectRig(t, testServerOptions{})
+	parent := rig.issue(t, privateTestProject, "A private project's approved issue", map[string]any{"spec": "# Spec"})
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+parent, "verification.md", twoChecks)
+	own := rig.issue(t, brokerTestProject, "Records on a private project's check", map[string]any{"parent": parent})
+	rig.makePrivate(t)
+	ctx := context.Background()
+	for _, site := range []struct {
+		name, code string
+		status     int
+		// check runs the site for a caller that names the project caller, on the check k1 of the
+		// private issue parent.
+		check func(tx pgx.Tx, caller string) error
+		// missing is the status and the body that the route answers the scoped token for a target
+		// that does not exist, as they read for the check k1.
+		missing func(t *testing.T) (int, string)
+	}{
+		{
+			name: "refuseUncoveredCheck", code: "UNKNOWN_CHECK", status: http.StatusBadRequest,
+			check: func(tx pgx.Tx, caller string) error {
+				return refuseUncoveredCheck(ctx, tx, caller, parent, "k1")
+			},
+			// A result on own against k9, which no Verification document above own holds.
+			missing: func(t *testing.T) (int, string) {
+				absent := rig.send(t, scopedToken, http.MethodPost, "/api/v1/issues/"+own+"/results", resultBody("k9", "pass", newHeadCommit, nil))
+				return absent.Code, strings.ReplaceAll(absent.Body.String(), "k9", "k1")
+			},
+		},
+		{
+			name: "refuseRetractionOfUncoveredCheck", code: codeProjectScope, status: http.StatusForbidden,
+			check: func(tx pgx.Tx, caller string) error {
+				return refuseRetractionOfUncoveredCheck(ctx, tx, caller, parent)
+			},
+			// A retraction of a result id that no result holds, whose answer names no result.
+			missing: func(t *testing.T) (int, string) {
+				absent := rig.send(t, scopedToken, http.MethodPost, "/api/v1/results/"+missingResult+"/retract",
+					map[string]any{"reason": "The run was against the wrong commit."})
+				return absent.Code, absent.Body.String()
+			},
+		},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			// answer is what the site answers, in a transaction that it rolls back.
+			answer := func(caller string) error {
+				t.Helper()
+				tx, err := rig.database.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatalf("begin the transaction of %s: %v", site.name, err)
+				}
+				defer tx.Rollback(ctx)
+				return site.check(tx, caller)
+			}
+			err := answer(brokerTestProject)
+			if err == nil {
+				t.Fatalf("%s took the private project's check k1, want the answer of a target that does not exist", site.name)
+			}
+			refused := httptest.NewRecorder()
+			rig.served.writeHandlerError(refused, err)
+			if code, _ := refusalOf(t, refused); refused.Code != site.status || code != site.code {
+				t.Fatalf("%s of the private project's check k1: status=%d body=%s, want %d %s",
+					site.name, refused.Code, refused.Body.String(), site.status, site.code)
+			}
+			if status, body := site.missing(t); refused.Code != status || refused.Body.String() != body {
+				t.Errorf("%s answers %d %s for the private project's check, and its route answers %d %s for a target that does not exist, want one answer",
+					site.name, refused.Code, refused.Body.String(), status, body)
+			}
+			if err := answer(privateTestProject); err != nil {
+				t.Errorf("%s for a caller that names %s answered %v, want the check taken", site.name, privateTestProject, err)
+			}
+		})
+	}
+}
+
 // TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsToken: an issue of the
 // token's own project stands under an issue of the private project, whose Verification document
 // holds the check k1. The path names the issue of the token's own project, so each write passes
@@ -450,7 +540,10 @@ func TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey(t *testing.T) {
 //     asks about the check's issue before the keyed layer, so neither answer echoes the key, a
 //     second body under the key is refused as the first was, and a malformed key changes nothing.
 //
-// The same writes with the token that names the private project are taken.
+// resolveCheck and the retraction's project check refuse k1 before the second checks of
+// readResultRequest and retractCheckResult, so these cases hold the answer and that nothing is
+// written, and TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne holds the branch of
+// each second check. The same writes with the token that names the private project are taken.
 func TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsToken(t *testing.T) {
 	t.Parallel()
 	rig := newPrivateProjectRig(t, testServerOptions{})

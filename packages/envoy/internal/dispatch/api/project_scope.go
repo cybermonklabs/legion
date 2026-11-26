@@ -440,17 +440,24 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 	}
 }
 
-// refuseWriteOutsideProjectScope is the refusal of a write whose target resolves to no project or
-// to nothing, to a caller whose credential names the one project covers. It names that project
-// and nothing of the credential itself. It names no project of the target, since there is none to
+// outsideProjectScopeError is the refusal of a write whose target resolves to no project or to
+// nothing, to a caller whose credential names the one project covers. It names that project and
+// nothing of the credential itself. It names no project of the target, since there is none to
 // name and an invented one would say something about what exists. withinProjectScope answers it
 // also for an object of a private project that the credential does not name, and
-// retractCheckResult for a check of such a project, so each answers as for a target that does not
-// exist, and the three answers cannot drift.
+// retractCheckResult for a check of such a project (refuseRetractionOfUncoveredCheck), so each
+// answers as for a target that does not exist. Both write this one value, so the answers cannot
+// drift.
+func outsideProjectScopeError(covers string) *apiError {
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential names project %s, and this write resolves to no project", covers)
+}
+
+// refuseWriteOutsideProjectScope writes outsideProjectScopeError, for the checks that answer
+// before a handler runs.
 func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers string) {
-	writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-		"this request's credential names project %s, and this write resolves to no project",
-		covers))
+	refusal := outsideProjectScopeError(covers)
+	writeError(w, refusal.code, refusal.status, refusal.message)
 }
 
 // withinSessionScope runs the session check in front of one mutating route's handler. A row

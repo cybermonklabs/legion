@@ -325,26 +325,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	var parentAssignee *string
 	if parentKey != "" {
 		var parentProject string
-		var parentPrivate bool
-		err := tx.QueryRow(r.Context(), `
-			select i.project_key, i.assignee, p.visibility = 'private'
-			from issues i
-			join projects p on p.key = i.project_key
-			where i.key = $1
-		`, parentKey).Scan(&parentProject, &parentAssignee, &parentPrivate)
-		if errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, parentNotFound(parentKey))
-			return
-		}
+		parentProject, parentAssignee, err = readCreateParent(r.Context(), tx, callerProject, parentKey)
 		if err != nil {
 			s.writeHandlerError(w, err)
-			return
-		}
-		// A parent may be an issue of any project. A credential that names one project is asked
-		// about it again here, under the locks, as the lock step asked before them. A parent of a
-		// private project the credential does not name answers as a parent that does not exist.
-		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, parentProject, parentPrivate) {
-			s.writeHandlerError(w, parentNotFound(parentKey))
 			return
 		}
 		// A parent of another project passes on no assignee, as it passes on no repository,
@@ -684,6 +667,35 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
 	suggestions.NearCopyCheck = outcome.NearCopyCheck
 	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
+}
+
+// readCreateParent reads, under a create's locks, the parent that the create names: the project
+// of that issue and its assignee. A parent may be an issue of any project. caller is the one
+// project the request's credential names, empty for a credential that names none. A parent that
+// no issue holds answers parentNotFound. A credential that names one project is asked about the
+// parent again here, under the locks, as the lock step asked before them
+// (lockIssueDependencyWrite), and this read is the final check. A parent of a private project
+// that the credential does not name answers parentNotFound too, as a parent that does not exist.
+func readCreateParent(ctx context.Context, tx pgx.Tx, caller, parent string) (string, *string, error) {
+	var project string
+	var assignee *string
+	var private bool
+	err := tx.QueryRow(ctx, `
+		select i.project_key, i.assignee, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = $1
+	`, parent).Scan(&project, &assignee, &private)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, parentNotFound(parent)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if caller != "" && !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return "", nil, parentNotFound(parent)
+	}
+	return project, assignee, nil
 }
 
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read

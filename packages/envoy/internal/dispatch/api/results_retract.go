@@ -33,7 +33,8 @@ type checkResultRetractionInput struct {
 // retractedResult is what the write reads about the result it is asked to retract: the issue
 // the result was recorded on, whose claim is one of the three credentials that may retract it,
 // the check's issue, which the event is appended on and whose owner lock the route takes before
-// it reads anything else, and the session that recorded it.
+// it reads who may retract the result and whether a retraction stands, and the session that
+// recorded it.
 type retractedResult struct {
 	IssueKey      string
 	CheckIssueKey string
@@ -54,7 +55,8 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// another project. The pre-handler check asked about both before any other layer ran
 	// (withinProjectScope, projectOfRetractedCheck), so a check of a private project that the
 	// credential does not name got the answer of a result that does not exist, whatever the
-	// request holds. The transaction asks again below, under its locks.
+	// request holds. The transaction asks again below, once it has read the result and before it
+	// takes the owner lock of the check's issue (refuseRetractionOfUncoveredCheck).
 	callerProject, _ := s.callerProject(r)
 	var input checkResultRetractionInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -90,35 +92,26 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// The read phase holds no transaction id (INFRA-636). The result's row is read plainly, for
 	// the owner it names: nothing ever updates a check_results row, and its one writer, the
 	// record route, inserts it under that same owner's lock (results.go, lockIssueOwners), so
-	// the row read here holds still. The owner's lock comes next, and it is the lock the event's
-	// append would otherwise be the first to take (store.LockOwner, events' lockEventOwner):
-	// advisory, so this route waits for it holding no transaction id, where a `select ... for
-	// update` of the result taken first would have held one across the wait and across every
-	// read below it.
+	// the row read here holds still. The owner's lock comes after the check of the owner's
+	// project below, and it is the lock the event's append would otherwise be the first to take
+	// (store.LockOwner, events' lockEventOwner): advisory, so this route waits for it holding no
+	// transaction id, where a `select ... for update` of the result taken first would have held
+	// one across the wait and across every read below it.
 	//
-	// Everything the retraction is decided on is read in the statements after that lock, each
-	// taking a fresh snapshot: a second retraction of this result, whose only writer is this
-	// route under this lock, reads the first one as soon as that one commits.
+	// Who may retract the result, and whether a retraction of it stands already, are read in the
+	// statements after that lock, each taking a fresh snapshot: a second retraction of this
+	// result, whose only writer is this route under this lock, reads the first one as soon as
+	// that one commits.
 	result, err := readRetractedResult(r.Context(), tx, resultID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// The check of the check's issue's project again, in the transaction that appends the
-	// retraction to that issue, with the visibility of its project read in the same statement,
-	// before it takes that issue's owner lock (access.CredentialCovers). The first check refused
-	// a check of a private project that the credential does not name already, so this one refuses
-	// it only where its project became private between the two reads, with the same answer.
-	if callerProject != "" {
-		project, private, err := checkIssueProject(r.Context(), tx, callerProject, result.CheckIssueKey)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, private) {
-			refuseWriteOutsideProjectScope(w, callerProject)
-			return
-		}
+	// retraction to that issue, before it takes that issue's owner lock.
+	if err := refuseRetractionOfUncoveredCheck(r.Context(), tx, callerProject, result.CheckIssueKey); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	if err := store.LockOwner(r.Context(), tx, store.IssueOwner(result.CheckIssueKey)); err != nil {
 		s.writeHandlerError(w, err)
@@ -222,13 +215,14 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 	return holder, nil
 }
 
-// readRetractedResult reads the result a retraction names, which is the one read this route
-// makes before it takes the owner's lock: it names that owner (check_issue_key). It takes no row
-// lock, so it leaves the transaction without a transaction id for the wait on that lock. A row
-// lock here would serialise nothing the owner's lock does not: check_results is written once, by
-// the record route under the check issue's owner lock, and two retractions of one result are
-// taken one after the other because both hold that lock while they read and write
-// (retractCheckResult).
+// readRetractedResult reads the result a retraction names, before the route takes the owner's
+// lock: the result names that owner (check_issue_key). The route's one other read before that
+// lock is the check of the owner's project for a credential that names one
+// (refuseRetractionOfUncoveredCheck). This read takes no row lock, so it leaves the transaction
+// without a transaction id for the wait on that lock. A row lock here would serialise nothing the
+// owner's lock does not: check_results is written once, by the record route under the check
+// issue's owner lock, and two retractions of one result are taken one after the other because
+// both hold that lock while they read and write (retractCheckResult).
 func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
 	var result retractedResult
 	err := tx.QueryRow(ctx, `
@@ -243,6 +237,29 @@ func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedRe
 		return retractedResult{}, fmt.Errorf("read result %s: %w", id, err)
 	}
 	return result, nil
+}
+
+// refuseRetractionOfUncoveredCheck asks again, in the transaction that appends a retraction to
+// the result's check's issue, checkIssue, whether the request's credential covers that issue's
+// project, with the visibility of that project read in the same statement (checkIssueProject).
+// caller is the one project the credential names, empty for a credential that names none, which
+// is refused nothing here. retractCheckResult asks it before it takes the owner lock of
+// checkIssue. The pre-handler check refused a check of a private project that the credential
+// does not name already (withinProjectScope, projectOfRetractedCheck), so this one refuses it
+// only where its project became private between the two reads, with the same answer: the answer
+// of a result that does not exist (outsideProjectScopeError).
+func refuseRetractionOfUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue string) error {
+	if caller == "" {
+		return nil
+	}
+	project, private, err := checkIssueProject(ctx, q, caller, checkIssue)
+	if err != nil {
+		return err
+	}
+	if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return outsideProjectScopeError(caller)
+	}
+	return nil
 }
 
 // projectOfRetractedCheck reads, in one statement, the project of the check's issue of the result
