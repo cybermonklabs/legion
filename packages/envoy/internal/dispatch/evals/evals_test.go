@@ -139,6 +139,23 @@ func (r rig) entries(t *testing.T, evalIDs ...string) []Entry {
 	return entries
 }
 
+// current answers one page of up to 200 of the current entries of projects, by project and slug,
+// as the list read holds them (CurrentIn, in a snapshot of its own), failing the test when the
+// read fails.
+func (r rig) current(t *testing.T, projects ...string) Page[Entry] {
+	t.Helper()
+	tx, err := r.registry.BeginSnapshot(t.Context())
+	if err != nil {
+		t.Fatalf("begin the read of the evals of %v: %v", projects, err)
+	}
+	defer tx.Rollback(t.Context())
+	page, err := CurrentIn(t.Context(), tx, projects, "", 200, 0)
+	if err != nil {
+		t.Fatalf("read the evals of %v: %v", projects, err)
+	}
+	return page
+}
+
 // document answers the text and the blocks of the project's evals-md, failing the test when the
 // project has none.
 func (r rig) document(t *testing.T) (string, []model.ArtifactBlock) {

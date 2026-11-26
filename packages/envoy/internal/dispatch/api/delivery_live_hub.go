@@ -321,11 +321,12 @@ type deliveryView struct {
 	spec deliveryLiveSpec
 	subs map[*deliverySub]struct{}
 	// dirty is set when a change can have moved the view's answer; immediate when the mark waits
-	// for no quiet: a sub waits for its first answer, or a settings rewrite's day rows arrived
-	// (markDirtyLocked). firstDirty and lastDirty time the coalescing, and notBefore holds a failed
-	// read's retry back. A recompute clears dirty and immediate once its read holds its change
-	// position (deliveryHub.read), not when it begins: whatever marked the view until then was
-	// committed before the reads that follow, which answer it.
+	// for no quiet: a sub waits for its first answer, or a settings rewrite's, a rebuild's or a
+	// publishing of the defaults' day rows arrived (markDirtyLocked). firstDirty and lastDirty time
+	// the coalescing, and notBefore holds a failed read's retry back. A recompute clears dirty and
+	// immediate once its read holds its change position (deliveryHub.read), not when it begins:
+	// whatever marked the view until then was committed before the reads that follow, which answer
+	// it.
 	dirty, immediate      bool
 	firstDirty, lastDirty time.Time
 	notBefore             time.Time
@@ -340,8 +341,9 @@ type deliveryView struct {
 	reading       bool
 	heardIssues   map[string]bool
 	heardSessions map[string]string
-	// rules, pop and pipe are as of the last read, and readFrom the window start pop was read for:
-	// an expiry narrows them without a read.
+	// rules, pop and pipe are as of the last read, rules those the stored day rows stand built
+	// under (readDeliveryRules), and readFrom the window start pop was read for: an expiry narrows
+	// them without a read.
 	rules    *delivery.SourceRules
 	pop      deliveryPopulation
 	pipe     pipelinePopulation
@@ -354,7 +356,9 @@ type deliveryView struct {
 	readingSeq int64
 	changedAt  *time.Time
 	// from and at are the window start and the pipeline clock the last answer resolved; expiry is
-	// the next moment something leaves it, zero for a custom range or a pinned at.
+	// the next moment something leaves it, zero for a custom range or a pinned at, and of an evals
+	// view the moment the refresher's age its answer states moves a step (readEvalsView), zero
+	// where it states none.
 	from, at time.Time
 	expiry   time.Time
 	// issues are the issue keys the population names, ancestors theirs, and sessions each

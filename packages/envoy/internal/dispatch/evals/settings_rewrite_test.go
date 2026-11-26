@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -134,10 +135,11 @@ func readAlso(t *testing.T, r *refresherRig, fixture deliverytest.Fixture, repos
 	putSources(t, r.database.Pool, fixture.Project, fixture.Settings.PopulationAuthors, sources...)
 }
 
-// isDeliveryEval reports whether evalID is a delivery or CI eval's, one a delivery day writes.
+// isDeliveryEval reports whether evalID is a delivery or CI eval's, one a delivery day writes: a
+// project's or an owner key's (owners.go), whose key holds its repository's '/', so the slug is
+// what follows the id's last '/'.
 func isDeliveryEval(evalID string) bool {
-	_, slug, _ := strings.Cut(evalID, "/")
-	return slices.Contains(deliveryDaySlugs, slug)
+	return slices.Contains(deliveryDaySlugs, evalID[strings.LastIndex(evalID, "/")+1:])
 }
 
 // walkCut is what two databases' rows and stored figures of one family compare by
@@ -263,13 +265,20 @@ func movedEvals(before, after map[string]DayRow) []string {
 	return slices.Sorted(maps.Keys(moved))
 }
 
-// changedEvals is how many eval_days changes each eval logged after seq.
+// changedEvals is how many eval_days changes each eval logged after seq: the refresher's words of
+// no eval, that the rows stand at the settings (delivery.SettingsApplied) and that it recorded them
+// (delivery.SettingsRecorded), left out.
 func (r *refresherRig) changedEvals(t *testing.T, seq int64) map[string]int {
 	t.Helper()
+	changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, seq, 100000)
+	if err != nil {
+		t.Fatalf("read the delivery changes after %d: %v", seq, err)
+	}
 	changed := map[string]int{}
-	for _, line := range r.evalDayChanges(t, seq) {
-		evalID, _, _ := strings.Cut(line, " ")
-		changed[evalID]++
+	for _, change := range changes {
+		if change.Kind == delivery.ChangeKindEvalDays && !delivery.SettingsApplied(change) && !delivery.SettingsRecorded(change) {
+			changed[change.Ref]++
+		}
 	}
 	return changed
 }
@@ -516,36 +525,66 @@ func (r *refresherRig) keyedRead(t *testing.T, project, deployRepo string) []str
 	return labels
 }
 
-// TestASettingsChangeThatMovesNoEvalWritesNothing: over a settled history, each change of a setting
-// no day row reads (the two workflow paths, the population rule's authors and excluded
-// repositories, the roll-up job), and a production job name no run holds, listed beside the one
-// that is, logs its settings change, and the pass after it builds no delivery day (its report
-// holds none: the rewrite records there each day it builds and writes, as the walk does), writes
-// no day row, member or stored figure, logs no eval_days change, begins no walk, and leaves the
-// settings the rows stand built under agreeing with the new ones on every field a day row reads.
-// The same settings saved again by another person log no change at all (migration
-// 20261120111107), and the pass after them writes nothing either.
+// TestASettingsChangeThatMovesNoEvalWritesNothing: over a settled history whose staging gate
+// follows the production job, each change of a setting no day row reads (the two workflow paths,
+// the population rule's authors and excluded repositories, the roll-up job), a production job name
+// no run holds, listed beside the one that is, the production job names in another order, and the
+// staging gate renamed from one name the production rule follows to the other (a name two cards
+// follow counts for the first, the production card), logs its settings change, and the pass after
+// it builds no delivery day (its report holds none: the rewrite records there each day it builds
+// and writes, as the walk does), writes no day row, member or stored figure, logs no eval_days
+// change of an eval, begins no walk, and leaves the rule the rows stand built under agreeing with
+// the new settings on every field a day row reads. Where the change moves one of those fields, the
+// pass logs one eval_days change of no project that the rules are recorded
+// (delivery.SettingsRecorded), in the transaction that records them in eval_days_rules (a trigger
+// of the test's own database notes the transaction of each), and none where it moves none. The
+// same settings saved again by another person log no change at all (migration 20261120111107),
+// and the pass after them writes nothing either.
 func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 	t.Parallel()
 	r, deliveries := newSettingsRig(t, walkBatch)
 	settings := deliveries.Settings
+	settings.StagingE2EJobName = new(settings.ProductionJobNames[0])
+	r.putSettings(t, settings, alice)
+	r.settle(t)
+	for _, statement := range []string{
+		`create table evals_test_recorded (txid bigint not null, what text not null)`,
+		`create function evals_test_recorded() returns trigger language plpgsql as $$
+		begin
+			insert into evals_test_recorded values (txid_current(), tg_argv[0]);
+			return null;
+		end $$`,
+		`create trigger evals_test_recorded after insert on delivery_changes_pending for each row
+			when (new.ref = '` + delivery.SettingsRecordedRef + `') execute function evals_test_recorded('change')`,
+		`create trigger evals_test_recorded after insert or update on eval_days_rules for each row
+			execute function evals_test_recorded('settings')`,
+	} {
+		r.exec(t, "note the transactions that record the settings", statement)
+	}
 	for _, change := range []struct {
-		name   string
-		change func(*delivery.DeliverySettings)
-		actor  model.Actor
-		logs   bool
+		name          string
+		change        func(*delivery.DeliverySettings)
+		actor         model.Actor
+		logs, records bool
 	}{
-		{"the deploy workflow's path", func(s *delivery.DeliverySettings) { s.DeployWorkflowPath = ".github/workflows/deploy-next.yml" }, alice, true},
-		{"the PR-checks workflow's path", func(s *delivery.DeliverySettings) { s.PRChecksWorkflowPath = ".github/workflows/pr-checks-next.yml" }, alice, true},
+		{"the deploy workflow's path", func(s *delivery.DeliverySettings) { s.DeployWorkflowPath = ".github/workflows/deploy-next.yml" }, alice, true, false},
+		{"the PR-checks workflow's path", func(s *delivery.DeliverySettings) { s.PRChecksWorkflowPath = ".github/workflows/pr-checks-next.yml" }, alice, true, false},
 		{"one population author fewer", func(s *delivery.DeliverySettings) {
 			s.PopulationAuthors = s.PopulationAuthors[:len(s.PopulationAuthors)-1]
-		}, alice, true},
-		{"one excluded repository more", func(s *delivery.DeliverySettings) { s.ExcludedRepos = []string{"acme/elsewhere"} }, alice, true},
-		{"the roll-up job renamed", func(s *delivery.DeliverySettings) { s.PRChecksRollupJobName = new("checks-complete-v2") }, alice, true},
+		}, alice, true, false},
+		{"one excluded repository more", func(s *delivery.DeliverySettings) { s.ExcludedRepos = []string{"acme/elsewhere"} }, alice, true, false},
+		{"the roll-up job renamed", func(s *delivery.DeliverySettings) { s.PRChecksRollupJobName = new("checks-complete-v2") }, alice, true, false},
 		{"a production job name no run holds", func(s *delivery.DeliverySettings) {
 			s.ProductionJobNames = append(slices.Clone(s.ProductionJobNames), "production-release / apply-v2")
-		}, alice, true},
-		{"the same settings saved by another person", func(*delivery.DeliverySettings) {}, implementer, false},
+		}, alice, true, true},
+		{"the production job names in another order", func(s *delivery.DeliverySettings) {
+			s.ProductionJobNames = slices.Clone(s.ProductionJobNames)
+			slices.Reverse(s.ProductionJobNames)
+		}, alice, true, true},
+		{"the staging gate renamed between two names the production rule follows", func(s *delivery.DeliverySettings) {
+			s.StagingE2EJobName = new(s.ProductionJobNames[0])
+		}, alice, true, true},
+		{"the same settings saved by another person", func(*delivery.DeliverySettings) {}, implementer, false, false},
 	} {
 		change.change(&settings)
 		seq, walk, before := r.latestSeq(t), r.walkXmin(t), r.writtenState(t)
@@ -564,8 +603,44 @@ func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 			t.Errorf("%s: the pass built the delivery days %v, want none", change.name, built)
 		}
 		r.expectUnwritten(t, change.name, before)
-		if changed := r.evalDayChanges(t, seq); len(changed) > 0 {
-			t.Errorf("%s: the pass logged the eval_days changes %v, want none", change.name, changed)
+		if changes, err = delivery.ChangesSince(t.Context(), r.database.Pool, seq, 1000); err != nil {
+			t.Fatalf("read the changes after %d: %v", seq, err)
+		}
+		var words, others []delivery.Change
+		for _, one := range changes {
+			switch {
+			case one.Kind != delivery.ChangeKindEvalDays:
+			case delivery.SettingsRecorded(one):
+				words = append(words, one)
+			default:
+				others = append(others, one)
+			}
+		}
+		if len(others) > 0 {
+			t.Errorf("%s: the pass logged the eval_days changes %+v, want none of an eval", change.name, others)
+		}
+		want := 0
+		if change.records {
+			want = 1
+		}
+		if len(words) != want {
+			t.Errorf("%s: the pass logged %d changes that the settings are recorded (%+v), want %d", change.name, len(words), words, want)
+		}
+		// The change is logged by the transaction that records the settings.
+		txs := map[string][]string{}
+		rows, err := r.database.Pool.Query(t.Context(), `with taken as (delete from evals_test_recorded returning txid, what) select what, txid::text from taken`)
+		if err != nil {
+			t.Fatalf("read the transactions that recorded the settings: %v", err)
+		}
+		var what, txid string
+		if _, err := pgx.ForEachRow(rows, []any{&what, &txid}, func() error {
+			txs[what] = append(txs[what], txid)
+			return nil
+		}); err != nil {
+			t.Fatalf("read the transactions that recorded the settings: %v", err)
+		}
+		if len(txs["change"]) != want || want == 1 && !slices.Contains(txs["settings"], txs["change"][0]) {
+			t.Errorf("%s: the change that the rules are recorded was logged by the transactions %v, and eval_days_rules written by %v", change.name, txs["change"], txs["settings"])
 		}
 		if r.walkXmin(t) != walk {
 			t.Errorf("%s: the pass began the delivery walk again", change.name)
@@ -574,9 +649,9 @@ func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := settings
-		want.Project = deliveries.Project
-		if held, found := recorded[ruleKey(settings.DeployRepo)]; !found || !sameBuiltRule(held.rule, want) {
+		wantRule := settings
+		wantRule.Project = deliveries.Project
+		if held, found := recorded[ruleKey(settings.DeployRepo)]; !found || !sameBuiltRule(held.rule, wantRule) {
 			t.Fatalf("%s: the rows stand built under %+v, want the new settings, production jobs %v", change.name, recorded, settings.ProductionJobNames)
 		}
 	}
@@ -688,9 +763,10 @@ func TestOnlyTheSettingsRewritesEvalDaysChangesCarryItsMark(t *testing.T) {
 			if change.Kind != delivery.ChangeKindEvalDays {
 				continue
 			}
-			if change.RunKind == delivery.EvalDaysWrittenByDefaults && (change.Ref == "" || delivery.JudgingMoved(change)) {
-				// The page's publishing of the default repositories (evals.publishDefaults), a
-				// change of no eval.
+			if change.RunKind == delivery.EvalDaysWrittenByDefaults && (change.Ref == "" || delivery.JudgingMoved(change)) || delivery.SettingsRecorded(change) {
+				// The page's publishing of the default repositories (evals.publishDefaults), or the
+				// record of the rules the rows stand built under (recordRules, recordRule): a change of
+				// no eval.
 				continue
 			}
 			logged++
@@ -929,6 +1005,87 @@ func TestAProductionRuleChangeRewritesEachRepositoryThatHoldsDeploys(t *testing.
 	walking.settle(t)
 	rewriting.expectSameAsWalk(t, "the apply step named", walking)
 	t.Logf("the apply step moved rows of %v; %s's %d rows and %d members stand", moved, checksOnly, len(untouched), len(untouchedMembers))
+}
+
+// TestAProductionRuleChangeDuringTheFirstWalkRewritesWhatAWholeWalkWrites: a history whose passes
+// walk two days each is walked by one pass, so the delivery walk has days left, and the apply step
+// is then named. The pass after it rewrites every day of the evals the step moves, each day of the
+// history among them (rewriteSettings, where the walk has not written today), as a whole walk
+// under the step would write them, and the passes after it finish the walk; the database then
+// holds what a second database whose first walk ran under the step holds.
+func TestAProductionRuleChangeDuringTheFirstWalkRewritesWhatAWholeWalkWrites(t *testing.T) {
+	t.Parallel()
+	rewriting, deliveries := newSettingsHistory(t, 2)
+	if report, _ := rewriting.pass(t); !report.walksLeft {
+		t.Fatal("the first pass of a walk of two days a pass left no day to walk, and the check needs a walk with days left")
+	}
+	walking, _ := newSettingsHistory(t, walkBatch)
+	settings := deliveries.Settings
+	settings.ProductionApplyStepName = new(settingsApplyStep)
+	rewriting.putSettings(t, settings, alice)
+	walking.putSettings(t, settings, alice)
+	report, _ := rewriting.pass(t)
+	built := builtDeliveryDays(report)
+	for day := measures.Midnight(deliveries.From); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
+		if !slices.Contains(built, day.Format(time.DateOnly)) {
+			t.Errorf("the pass after the step built the days %v, and not %s, a day of the history", built, day.Format(time.DateOnly))
+		}
+	}
+	rewriting.settle(t)
+	walking.settle(t)
+	rewriting.expectSameAsWalk(t, "the apply step named during the first walk", walking)
+}
+
+// TestAPageWriteAfterARewriteOfEveryDayKeepsTheZeroRowsOfARepositoryItDidNotRewrite: two databases
+// load one history in which a third repository, which a source of the project reads (only source
+// repositories are kept, dispatch://INFRA-978 D1), holds PR-checks runs alone (the deploy
+// repository's, copied), so pr-ci's rows are kept for it as the deploy repository, and walk it
+// whole. A UTC day passes, so the delivery walk has not written the new today; then, in one page,
+// the apply step is named and that repository's PR-checks runs of the history's third day are
+// deleted, so the day holds no input of its pr-ci, whose series began before it. The pass's
+// rewrite builds every day of the repositories that hold a deploy run (rewriteSettings), and the
+// page then writes the third day: its pr-ci rows of the repository of PR-checks runs alone are
+// zero rows (R12: a day with no input of a series begun reads 0), as a whole walk holds them. Red
+// where the pass's later writes build by the first input days the rewrite built, which hold none
+// of a repository it did not rewrite, and so delete those rows.
+func TestAPageWriteAfterARewriteOfEveryDayKeepsTheZeroRowsOfARepositoryItDidNotRewrite(t *testing.T) {
+	t.Parallel()
+	rigs := make([]*refresherRig, 2)
+	var deliveries deliverytest.Fixture
+	for i := range rigs {
+		rigs[i], deliveries = newSettingsRig(t, walkBatch)
+		readAlso(t, rigs[i], deliveries, deliveries.Repos[2])
+		rigs[i].copyRuns(t, deliveries.DeployRepo, deliveries.Repos[2], delivery.DeliveryRunKindPRChecks)
+		rigs[i].exec(t, "forget the rules the rows stand built under", `delete from eval_days_rules`)
+		rigs[i].settle(t)
+		rigs[i].now = rigs[i].now.AddDate(0, 0, 1)
+	}
+	rewriting, walking := rigs[0], rigs[1]
+	checksOnly, third := deliveries.Repos[2], measures.Midnight(deliveries.From).AddDate(0, 0, 2)
+	settings := deliveries.Settings
+	settings.ProductionApplyStepName = new(settingsApplyStep)
+	for _, r := range rigs {
+		r.putSettings(t, settings, alice)
+		r.exec(t, "delete "+checksOnly+"'s PR-checks runs of "+third.Format(time.DateOnly), `
+			with gone as (
+				delete from delivery_runs where repo = $1 and kind = $2 and started_at >= $3 and started_at < $4 returning run_id
+			)
+			delete from delivery_run_jobs where repo = $1 and run_id in (select run_id from gone)
+		`, checksOnly, string(delivery.DeliveryRunKindPRChecks), third, third.AddDate(0, 0, 1))
+	}
+	rewriting.pass(t)
+	walking.exec(t, "forget the rules the rows stand built under", `delete from eval_days_rules`)
+	walking.settle(t)
+	zeros := `select count(*) from eval_days where deploy_repo = $1 and day = $2 and repo = '' and n = 0 and eval_id like '%/' || $3`
+	held, kept := walking.count(t, zeros, checksOnly, third, SlugPRCI), rewriting.count(t, zeros, checksOnly, third, SlugPRCI)
+	if held == 0 {
+		t.Fatalf("a whole walk holds no pr-ci zero row of %s on %s, and the check needs some", checksOnly, third.Format(time.DateOnly))
+	}
+	if kept != held {
+		t.Errorf("the pass left %d pr-ci zero rows of %s on %s, and a whole walk holds %d", kept, checksOnly, third.Format(time.DateOnly), held)
+	}
+	rewriting.expectSameAsWalk(t, "the apply step named beside "+checksOnly+"'s runs of "+third.Format(time.DateOnly)+" deleted", walking)
+	t.Logf("%s holds %d pr-ci zero rows on %s", checksOnly, kept, third.Format(time.DateOnly))
 }
 
 // builtDeliveryDays is the days of the delivery writes a pass's report holds, YYYY-MM-DD, each once
@@ -1267,7 +1424,10 @@ func TestAProductionRuleThatShipsAnEarlierPullRequestFirstRewritesTheDaysUpToThe
 // `staging-e2e / run-v2`, and walk it whole. The staging gate is renamed to `staging-e2e / run-v2`,
 // a job only some push runs hold. One pass of the first rewrites what the rename moves and builds
 // none of the first two days, whose push runs hold no job either name follows, so the gate's part
-// of each is the same under both; the first then holds what the second's whole walk holds.
+// of each is the same under both, and no day whose rows it moves none of: the gate's series
+// begins on the third day under both names, so no first day it moves earlier reaches a day after
+// its moved ones, whatever first days the projects the deploy repository's pull requests count
+// for hold (movedDeliveryDays). The first then holds what the second's whole walk holds.
 func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t *testing.T) {
 	t.Parallel()
 	const legacy, renamed = "staging-e2e / legacy", "staging-e2e / run-v2"
@@ -1297,11 +1457,20 @@ func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t
 	if len(built) == 0 || built[0] < third {
 		t.Errorf("the pass built the days %v, want some and none before %s", built, third)
 	}
-	written := len(movedRows(before, rewriting.dayRows(t)))
+	moved := movedRows(before, rewriting.dayRows(t))
+	days := map[string]bool{}
+	for _, row := range moved {
+		days[row.Day.Format(time.DateOnly)] = true
+	}
+	for _, day := range built {
+		if !days[day] {
+			t.Errorf("the pass built %s, a day whose rows the rename moves none of (it built %v and moved the rows of %v)", day, built, slices.Sorted(maps.Keys(days)))
+		}
+	}
 	walking.exec(t, "forget the rules the rows stand built under", `delete from eval_days_rules`)
 	walking.settle(t)
 	rewriting.expectSameAsWalk(t, "the staging gate renamed to a job some push runs hold", walking)
-	t.Logf("the staging gate renamed to %s: the pass built the days %v and wrote %d day rows", renamed, built, written)
+	t.Logf("the staging gate renamed to %s: the pass built the days %v and wrote %d day rows", renamed, built, len(moved))
 }
 
 // TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites: over a settled history of thirty
@@ -1541,14 +1710,26 @@ const storedPrint = `
 		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_range_figures f), '') || '|' ||
 		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_day_figures f), ''))`
 
-// commitPrints is a tracer (storetest.TracedStore) that reads storedPrint, on the rig's own pool,
-// after each transaction the traced pool commits: every state of the rows, the members and the
-// figures a reader can see between two commits of a pass.
+// storedSettingsPrint is storedPrint beside the rules the rows stand built under (eval_days_rules,
+// every field a read takes of them, BuiltSettingsIn and DeployReposIn), read by one statement, so
+// of one snapshot: what a reader of the evals can see of the rows and of the rules it reads them
+// under at that moment.
+const storedSettingsPrint = `
+	select (` + storedPrint + `) || ' ' || coalesce((
+		select string_agg(md5(s::text), '' order by s.repo) from (
+			select repo, project_key, production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name,
+				kept_since
+			from eval_days_rules) s), 'none')`
+
+// commitPrints is a tracer (storetest.TracedStore) that reads query (storedPrint where it is
+// empty), on the rig's own pool, after each transaction the traced pool commits: every state of
+// what the query reads that a reader can see between two commits of a pass.
 type commitPrints struct {
-	t    *testing.T
-	rig  rig
-	mu   sync.Mutex
-	seen []string
+	t     *testing.T
+	rig   rig
+	query string
+	mu    sync.Mutex
+	seen  []string
 }
 
 type commitPrintAt struct{}
@@ -1570,13 +1751,28 @@ func (c *commitPrints) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.
 	c.seen = append(c.seen, print)
 }
 
-// read is storedPrint as it stands now.
+// read is the query (storedPrint where it is empty) as it stands now.
 func (c *commitPrints) read() string {
 	var print string
-	if err := c.rig.database.Pool.QueryRow(context.Background(), storedPrint).Scan(&print); err != nil {
+	if err := c.rig.database.Pool.QueryRow(context.Background(), cmp.Or(c.query, storedPrint)).Scan(&print); err != nil {
 		c.t.Errorf("read the fingerprint of the stored rows: %v", err)
 	}
 	return print
+}
+
+// others is how many states c saw after its commits since the last call that are neither before
+// nor after, and it forgets them.
+func (c *commitPrints) others(before, after string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	states := map[string]bool{}
+	for _, print := range c.seen {
+		states[print] = true
+	}
+	c.seen = nil
+	delete(states, before)
+	delete(states, after)
+	return len(states)
 }
 
 // spanChange is one change that moved a walk back before a rewound span landed in one commit: its
@@ -1674,7 +1870,9 @@ func (r *refresherRig) walkRecord(t *testing.T) string {
 // then one pass. That pass:
 //
 //   - commits every day row, member and stored figure it writes in one transaction (recordWrites);
-//   - logs at most one eval_days change of each eval, each carrying the rebuild's mark
+//   - logs one eval_days change of each eval whose rows moved, as the projects that read it read
+//     it (readerEvals: an owner key's under each project that reads the key, none where no
+//     project does), and none of any other eval, each carrying the rebuild's mark
 //     (delivery.EvalDaysWrittenByRebuild), for which the live hub recomputes an evals view at once;
 //   - leaves no reader a state other than the one before it and the one after it: the fingerprint
 //     of the rows, members and figures read after each of its commits (commitPrints) is one of the
@@ -1716,14 +1914,10 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 			if before == after {
 				t.Errorf("the pass left the rows, the members and the figures as they stood, and the change moves them")
 			}
-			states := map[string]bool{}
-			for _, print := range prints.seen {
-				states[print] = true
-			}
-			delete(states, before)
-			delete(states, after)
-			if len(states) > 0 {
-				t.Errorf("a reader between two commits of the pass saw %d states that are neither the one before it nor the one after it", len(states))
+			commits := len(prints.seen)
+			states := prints.others(before, after)
+			if states > 0 {
+				t.Errorf("a reader between two commits of the pass saw %d states that are neither the one before it nor the one after it", states)
 			}
 			if report.walksLeft {
 				t.Errorf("the pass left a walk with days to build")
@@ -1733,17 +1927,10 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 			}
 			logged := live.rebuildChanges(t, seq, "the pass")
 			// A repository that is no project's default brings the rows of its owner key alone
-			// (owners.go), which no project reads, and so no change; every other change moves a row
-			// a project reads, and logs its change.
-			readers, read := live.ownerReaders(t), 0
-			for _, row := range movedRows(rows, live.dayRows(t)) {
-				read += len(asReaders(row, readers))
-			}
-			if read > 0 && len(logged) == 0 {
-				t.Errorf("the pass moved %d day rows as the projects that read them read them, and logged no eval_days change", read)
-			}
-			if read == 0 && len(logged) > 0 {
-				t.Errorf("the pass moved no day row a project reads, and logged the eval_days changes %v", logged)
+			// (owners.go), which no project reads, and so no change.
+			want := readerEvals(movedEvals(rows, live.dayRows(t)), live.ownerReaders(t))
+			if got := slices.Sorted(maps.Keys(logged)); !slices.Equal(got, want) {
+				t.Errorf("the pass logged the eval_days changes %v, want one of each eval whose rows moved, as its readers read it, %v", logged, want)
 			}
 
 			walk, _ := newSettingsHistory(t, walkBatch)
@@ -1754,7 +1941,7 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 			walk.settle(t)
 			live.expectSameAsWalk(t, change.name, walk)
 			t.Logf("%s: one pass wrote in the transactions %v, logged the eval_days changes %v and left %d states between its %d commits",
-				change.name, transactions, logged, len(states), len(prints.seen))
+				change.name, transactions, logged, states, commits)
 		})
 	}
 }
@@ -2310,10 +2497,17 @@ func TestAPullRequestLeavingTheDaysBeforeItsRepositorysHistoryRewritesTheDeployT
 
 // TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem: over a settled history, a save of
 // the project's source that moves its repository alone, and one that moves the production rule,
-// whose rewrite moves rows, each leave what a read of the evals takes (DeployReposIn's repository
-// of the project, BuiltSettingsIn's every field eval_days_rules records of it) at the old settings
-// until the refresher's pass commits, and at the new ones once it has: the record moves in the
-// commit that brings the rows to the settings, not at the save.
+// each leave what a read of the evals takes (DeployReposIn's repository of the project,
+// BuiltSettingsIn's every field eval_days_rules records of it) at the old settings until the
+// refresher's pass commits, and at the new ones once it has: the record moves in the commit that
+// brings the rows to the settings, not at the save. And no reader sees the one move without the
+// other: the fingerprint of the rows, the members, the stored figures and the recorded rules, read
+// in one snapshot after each commit of the pass (commitPrints of storedSettingsPrint), is the one
+// before the pass or the one after it. A move of the source builds the rows of the repository it
+// reads now and drops those of the one it left (syncKept), so it moves rows too; the production
+// rule is then the rule of that repository alone (dispatch://INFRA-978, D1), which holds no deploy
+// run, so its change records the rule and moves no row (syncSettings); and the move back moves the
+// rows again.
 func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) {
 	t.Parallel()
 	r, deliveries := newSettingsRig(t, walkBatch)
@@ -2337,14 +2531,17 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 		want.Project = deliveries.Project
 		return sameBuiltRule(built, want)
 	}
+	prints, rows := &commitPrints{t: t, rig: r.rig, query: storedSettingsPrint}, &commitPrints{t: t, rig: r.rig}
+	r.registry = r.tracedStore(t, prints)
 	settings := deliveries.Settings
 	for _, change := range []struct {
 		name   string
 		change func(*delivery.DeliverySettings)
+		rows   bool
 	}{
-		{"the deploy repository moved alone", func(s *delivery.DeliverySettings) { s.DeployRepo = deliveries.Repos[1] }},
-		{"the production rule moved", func(s *delivery.DeliverySettings) { s.ProductionJobNames = []string{"release / a job no run holds"} }},
-		{"both moved back", func(s *delivery.DeliverySettings) { *s = deliveries.Settings }},
+		{"the deploy repository moved alone", func(s *delivery.DeliverySettings) { s.DeployRepo = deliveries.Repos[1] }, true},
+		{"the production rule moved", func(s *delivery.DeliverySettings) { s.ProductionJobNames = []string{"release / a job no run holds"} }, false},
+		{"both moved back", func(s *delivery.DeliverySettings) { *s = deliveries.Settings }, true},
 	} {
 		was := settings
 		change.change(&settings)
@@ -2353,10 +2550,19 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 			t.Errorf("%s: before the pass a read takes the deploy repository %s and the production jobs %v, want the old ones, %s and %v",
 				change.name, repo, built.ProductionJobNames, was.DeployRepo, was.ProductionJobNames)
 		}
+		rowsBefore, before := rows.read(), prints.read()
 		r.pass(t)
+		after := prints.read()
 		if repo, built := read(change.name + ", after the pass"); repo != settings.DeployRepo || !sameBuiltSettings(built, settings) {
 			t.Errorf("%s: after the pass a read takes the deploy repository %s and the production jobs %v, want the new ones, %s and %v",
 				change.name, repo, built.ProductionJobNames, settings.DeployRepo, settings.ProductionJobNames)
+		}
+		if moved := rows.read() != rowsBefore; moved != change.rows {
+			t.Errorf("%s: the pass moved the rows, the members or the figures is %t, want %t", change.name, moved, change.rows)
+		}
+		if states := prints.others(before, after); states > 0 {
+			t.Errorf("%s: a reader between two commits of the pass saw %d states of the rows and the settings that are neither the one before it nor the one after it",
+				change.name, states)
 		}
 	}
 }
@@ -2467,6 +2673,7 @@ func TestASettingsChangeSaysTheRowsStandAtItWhereItMovesTheDeployRepository(t *t
 			case one.Kind != delivery.ChangeKindEvalDays:
 			case delivery.SettingsApplied(one):
 				applied++
+			case delivery.SettingsRecorded(one):
 			default:
 				ofEvals++
 			}

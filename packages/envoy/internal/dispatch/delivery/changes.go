@@ -35,9 +35,11 @@ import (
 // publishing of the default repositories (EvalDaysWrittenBySettingsRewrite,
 // EvalDaysWrittenByRebuild, EvalDaysWrittenByDefaults). An eval_days row of no eval, whose Repo
 // and Ref are empty, is the refresher's word that the day rows stand at the delivery settings in
-// the commit that moves the deploy repository recorded with them, or records them first in a page
-// that read a change of the settings row (SettingsApplied below): it carries the settings
-// rewrite's RunKind and no span.
+// the page's commit that moves the source repositories recorded with them (eval_days_rules), or
+// records them first in a page that read a change of the settings (SettingsApplied below): it
+// carries the settings rewrite's RunKind and no span. One of no project whose Ref is
+// SettingsRecordedRef is its word that it recorded the rules the rows stand built under
+// (SettingsRecorded below), with the same RunKind and no span.
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
@@ -90,14 +92,15 @@ const (
 // where every other change waits the quiet that gathers a burst into one recompute.
 //
 // It is also the RunKind of the eval_days change of no eval (SettingsApplied): the one change the
-// refresher logs where the commit that brings the day rows to the delivery settings moves the
-// deploy repository recorded with them, which a read of every project's evals chooses rows by, or
-// records them first: the rewrite's transaction where it rewrote rows, and the page's commit where
-// the change moved none. An evals view reads the deploy repository and the rows together, so it is
-// recomputed for this change, at once, and not for the change of the settings row itself, which it
-// would answer from rows not yet rewritten. A change that moves rows and not the deploy repository
-// logs none: the rewrite's own changes, each under the project of an eval it moved, wake the views
-// it moves.
+// refresher logs where the page's commit that brings the day rows to the delivery settings moves
+// the source repositories recorded with them (a repository gained or lost, eval_days_rules), which
+// a read of every project's evals chooses rows by (evals.DeployReposIn, evals.DeployRepoOf), or
+// records them first. An evals view reads those repositories and the rows together, so it is
+// recomputed for this change, at once, and not for the change of the settings itself, which it
+// would answer from rows not yet rewritten. A change that moves rows and no source repository logs
+// none: the rewrite's own changes, each under the project of an eval it moved, wake the views it
+// moves. And it is the RunKind of the change that says the rules are recorded (SettingsRecorded),
+// which every commit that moves a recorded rule logs.
 const EvalDaysWrittenBySettingsRewrite = "settings_rewrite"
 
 // EvalDaysWrittenByRebuild is the RunKind of an eval_days change that the refresher's rebuild of a
@@ -126,10 +129,26 @@ const EvalDaysWrittenByDefaults = "defaults"
 // moved (EvalDaysWrittenByDefaults).
 const DefaultsJudgingRef = "judging"
 
+// SettingsRecordedRef is the Ref of the change that says the refresher recorded the delivery
+// settings the day rows stand built under (SettingsRecorded).
+const SettingsRecordedRef = "settings-recorded"
+
 // SettingsApplied reports whether change is the refresher's word that the day rows stand at the
 // delivery settings (EvalDaysWrittenBySettingsRewrite): an eval_days change of no eval.
 func SettingsApplied(change Change) bool {
 	return change.Kind == ChangeKindEvalDays && change.Repo == "" && change.Ref == ""
+}
+
+// SettingsRecorded reports whether change is the refresher's word that it recorded the rules the
+// day rows stand built under (evals.recordRules, evals.recordRule): an eval_days change of no
+// project, Ref SettingsRecordedRef, carrying EvalDaysWrittenBySettingsRewrite, logged by every
+// commit that records them. The delivery routes and views answer under the recorded rules
+// (evals.BuiltSettingsIn), so it marks every delivery view; it names no project and is no
+// SettingsApplied, so it marks no evals view, whose answer only the deploy repositories among those
+// settings move.
+func SettingsRecorded(change Change) bool {
+	return change.Kind == ChangeKindEvalDays && change.Repo == "" && change.Ref == SettingsRecordedRef &&
+		change.RunKind == EvalDaysWrittenBySettingsRewrite
 }
 
 // JudgingMoved reports whether change is the refresher's word that the project judging a deploy

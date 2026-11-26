@@ -460,8 +460,9 @@ func definitionInsert(definition Definition) (string, []any, error) {
 }
 
 // insertSeries writes series as a new version of that series, or nothing where that version
-// exists already (a concurrent first reading registered the series first), answered inserted
-// false.
+// exists already, answered inserted false. Every writer of a series holds its eval's lock
+// (lockEval, lockEvals), under which it read the version before it, so only a write that holds no
+// such lock could have stored that version first, and each caller answers that as an error.
 func insertSeries(ctx context.Context, tx pgx.Tx, series Series) (Series, bool, error) {
 	statement, args, err := seriesInsert(series)
 	if err != nil {

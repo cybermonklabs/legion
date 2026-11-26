@@ -486,6 +486,18 @@ func threeBadRequests(t *testing.T) {
 			}
 			continue
 		}
+		// A reading is append-only: its PUT and DELETE refuse 405 READING_APPEND_ONLY whatever the
+		// id names (routes_table.go), and read nothing, so under another project's key each answers
+		// that and nothing else. A row that took any refusal would pass a route that read the
+		// reading by its id first and refused it as another project's, or as missing: the answer of
+		// a route that reads readings, which these do not.
+		if strings.HasSuffix(route.Pattern, "/readings/{id}") {
+			if code := responseCode(t, response); response.Code != http.StatusMethodNotAllowed || code != "READING_APPEND_ONLY" {
+				t.Errorf("%s answers %d %s for another project's reading, want 405 READING_APPEND_ONLY: %s",
+					route.Method+" "+target, response.Code, code, firstLine(response.Body.String()))
+			}
+			continue
+		}
 		if response.Code < 400 {
 			t.Errorf("%s answers %d for an identifier of another project: %s",
 				route.Method+" "+target, response.Code, firstLine(response.Body.String()))
@@ -989,9 +1001,11 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //     upsert on the key and the repository, and no object of another project;
 //   - {slug} of /projects/{key}/evals/{slug}: the eval only this project holds, which no other
 //     project's eval list carries, where a slug of the seeded catalogue is every project's own;
-//   - {id} of /evals/{slug}/readings/{id}: that eval's reading. The readings write (POST) takes
-//     none and answers false: its {slug} names an eval of the key's own project, which a slug
-//     no eval of that project holds registers there (R3), and no object of another project.
+//   - {id} of /evals/{slug}/readings/{id}: that eval's reading, which its PUT and DELETE refuse
+//     405 READING_APPEND_ONLY as every id (threeBadRequests holds them to that answer). The
+//     readings write (POST) takes none and answers false: its {slug} names an eval of the key's
+//     own project, which a slug no eval of that project holds registers there (R3), and no object
+//     of another project.
 //
 // A route under a key whose {slug}, {id} or {owner}/{repo} is of a kind no line above names fails
 // the test: an identifier of another kind is refused under every key alike, and would prove

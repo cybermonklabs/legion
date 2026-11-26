@@ -8,12 +8,12 @@
 - merger: `merging` and `awaiting_merge`
 - no role: `awaiting_person` and `held`
 
-The hours in the queue and the hours out of the workflow before the close, as legion-work-time counts them, are on no bar. So the seven bars of an issue add up to its work time, and this eval and legion-work-time agree.
+The hours in the queue and the hours out of the workflow before the close, as legion-work-time counts them, are on no bar. So the seven bars of an issue add up to its work time, and this eval and legion-work-time agree. When the daemon stops reporting an issue, its sampler writes `null` for every field of the issue at one moment, and that is a drop, not a release. The phase and the slot that the issue held run on through a drop until the next observation that names a phase, and from that moment the issue holds a slot only if a slot observation at the same moment names one; where no such observation comes, they run to the issue's end.
 
 The hours of each bar split into five segments. Each hour goes to the first segment of this list that holds through it:
 
 1. Waiting on a person: the daemon recorded the root in `awaiting_person`, or an ask that a session of the tree opened on the issue was on the person's turn.
-2. In a turn: a role of the issue had the claim state `working`.
+2. In a turn: a role of the issue had the claim state `working`. A claim that a drop writes `null` is no claim.
 3. CI wait: not measured. No source says when a pull request waits on CI since the daemon stopped carrying its CI verdict, so an hour it would have held goes to the next segment that holds, and the segment stays at zero in its place.
 4. Waiting on children: the issue is a root with a child in a phase from planning to awaiting merge, during that child's own work time. A child out of the workflow is in none of those phases and outside its work time, so the root waits on it through none of those hours.
 5. Idle: every hour that no segment above claimed.

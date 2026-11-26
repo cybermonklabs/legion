@@ -317,3 +317,68 @@ func TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput(t *testing.T) {
 	t.Logf("the page wrote %v: %d rows; the walk then wrote %d rows with input of later days the page had left with none",
 		report.sorted(), len(paged), later)
 }
+
+// TestAPageWritingAnUnbuiltDayWritesEveryOwnerKeyOfTheDay (R12, dispatch://INFRA-2916's k12): over
+// the delivery history with its pull requests' attribution inputs read, a boot commits its cursors
+// and stops before its first walk (pageAlone), so no delivery day is served yet. A change to one
+// merged pull request of DELIV then runs a page alone: its day holds both deploys that ship a pull
+// request of DELIV (a key carrying a list) and deploys that ship none (the plain owner key). The
+// page writes every owner key the day holds rows of in one commit, so reading DELIV's
+// deploy-frequency on that day right after the page answers the settled day's values (and every
+// row of the day carries one transaction id), never the half-written day of the one key the
+// changed pull request's deploy belonged to. Red where applyDelivery writes only the changed
+// item's own owner key on an unbuilt day.
+func TestAPageWritingAnUnbuiltDayWritesEveryOwnerKeyOfTheDay(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	deliveries, _ := r.seedHistories(t)
+	r.pageAlone(t)
+	main := deliveries.Project
+	projects := map[string]string{}
+	for project, keys := range deliveries.Issues {
+		for _, key := range keys {
+			projects[key] = project
+		}
+	}
+	var opened *delivery.DeliveryPullRequest
+	for i, pr := range deliveries.PullRequests {
+		if pr.IssueKey != nil && projects[*pr.IssueKey] == main && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+			slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author) {
+			opened = &deliveries.PullRequests[i]
+			break
+		}
+	}
+	if opened == nil {
+		t.Fatalf("the history holds no merged pull request of %s", main)
+	}
+	day := measures.Midnight(*opened.MergedAt)
+	r.exec(t, "open "+PullRequestMember(opened.Repo, opened.Number)+" an hour earlier", `
+		update delivery_pull_requests set created_at = created_at - interval '1 hour' where repo = $1 and number = $2
+	`, opened.Repo, opened.Number)
+	r.pageAlone(t)
+
+	readDay := func() string {
+		t.Helper()
+		window := Range{From: day, To: day.AddDate(0, 0, 1)}
+		stated, _, _ := r.listedValues(t, main, window, nil, r.now)
+		return statedPart(t, stated[EvalID(main, SlugDeployFrequency)], "days", day.AddDate(0, 0, 1))
+	}
+	before := readDay()
+	keys := r.count(t, `select count(distinct project_key) from eval_days where eval_id like '%/' || $1 and day = $2 and repo = ''`, SlugDeployFrequency, day)
+	txids := r.count(t, `select count(distinct xmin::text) from eval_days where eval_id like '%/' || $1 and day = $2 and repo = ''`, SlugDeployFrequency, day)
+
+	r.settle(t)
+	after := readDay()
+	settledKeys := r.count(t, `select count(distinct project_key) from eval_days where eval_id like '%/' || $1 and day = $2 and repo = ''`, SlugDeployFrequency, day)
+	if settledKeys < 2 {
+		t.Fatalf("%s holds %d owner keys of deploy-frequency once settled, and the check needs at least two", day.Format(time.DateOnly), settledKeys)
+	}
+	if before != after {
+		t.Errorf("after the page before the first walk, %s's deploy-frequency on %s answers %s, want the settled %s (wrote %d of %d keys)",
+			main, day.Format(time.DateOnly), before, after, keys, settledKeys)
+	}
+	if txids != 1 {
+		t.Errorf("after the page before the first walk, deploy-frequency on %s holds rows of %d transactions, want one", day.Format(time.DateOnly), txids)
+	}
+	t.Logf("%s on %s: the page before the first walk wrote %d keys in %d transaction; day point %s", main, day.Format(time.DateOnly), keys, txids, before)
+}

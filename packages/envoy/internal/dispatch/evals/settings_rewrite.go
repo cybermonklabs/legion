@@ -3,6 +3,7 @@ package evals
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -260,12 +261,27 @@ func BuiltSettingsIn(ctx context.Context, q delivery.Querier, repos []string) ([
 // recordRules records, in q, built as the rules the stored delivery and CI rows stand built under
 // (eval_days_rules): one row per repository, each written where a field moved, and every row of a
 // repository built does not hold deleted. A pass's page writes it with its cursors (commitPage).
+// Where it moves a rule a read of the rows answers under (BuiltSettingsIn: a field of a recorded
+// rule that moved, or a rule deleted) it logs, in the same transaction, that the rules are
+// recorded (logRulesRecorded), as the release before logs a record of its settings. A repository's
+// first rule moves no such read, which answers the saved rule of a repository with none recorded,
+// and neither does a move of where a repository's rows start alone (kept_since, syncKept), as the
+// release before logs no record of the repositories kept: a page whose record moves only those
+// logs nothing.
 func recordRules(ctx context.Context, q pgx.Tx, built map[string]builtRule) error {
 	repos := make([]string, 0, len(built))
+	moved := false
 	for _, key := range slices.Sorted(maps.Keys(built)) {
 		one := built[key]
 		repos = append(repos, one.rule.DeployRepo)
-		if _, err := q.Exec(ctx, `
+		// The statement answers a row only where it wrote one, and whether it moved a field of a rule
+		// recorded before it (held is the row as it stood before the statement, none for a first one).
+		var ruleMoved bool
+		err := q.QueryRow(ctx, `
+			with held as (
+				select project_key, production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name
+				from eval_days_rules where repo = $1
+			)
 			insert into eval_days_rules (repo, project_key, production_job_names, production_apply_step_name,
 				staging_e2e_job_name, staging_apply_job_name, kept_since)
 			values ($1, $2, $3, $4, $5, $6, $7::date)
@@ -278,20 +294,34 @@ func recordRules(ctx context.Context, q pgx.Tx, built map[string]builtRule) erro
 					eval_days_rules.staging_e2e_job_name, eval_days_rules.staging_apply_job_name, eval_days_rules.kept_since)
 				is distinct from (excluded.project_key, excluded.production_job_names, excluded.production_apply_step_name,
 					excluded.staging_e2e_job_name, excluded.staging_apply_job_name, excluded.kept_since)
+			returning exists (
+				select 1 from held
+				where (held.project_key, held.production_job_names, held.production_apply_step_name, held.staging_e2e_job_name,
+						held.staging_apply_job_name)
+					is distinct from (eval_days_rules.project_key, eval_days_rules.production_job_names,
+						eval_days_rules.production_apply_step_name, eval_days_rules.staging_e2e_job_name,
+						eval_days_rules.staging_apply_job_name))
 		`, one.rule.DeployRepo, one.rule.Project, nonNil(one.rule.ProductionJobNames), one.rule.ProductionApplyStepName,
-			one.rule.StagingE2EJobName, one.rule.StagingApplyJobName, one.since); err != nil {
+			one.rule.StagingE2EJobName, one.rule.StagingApplyJobName, one.since).Scan(&ruleMoved)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("record the rule the day rows of %s stand built under: %w", one.rule.DeployRepo, err)
 		}
+		moved = moved || ruleMoved
 	}
-	if _, err := q.Exec(ctx, `delete from eval_days_rules where repo <> all($1::text[])`, repos); err != nil {
+	deleted, err := q.Exec(ctx, `delete from eval_days_rules where repo <> all($1::text[])`, repos)
+	if err != nil {
 		return fmt.Errorf("delete the rules of the repositories the day rows no longer stand built for: %w", err)
 	}
-	return nil
+	if !moved && deleted.RowsAffected() == 0 {
+		return nil
+	}
+	return logRulesRecorded(ctx, q)
 }
 
 // recordRule records, in q, rule as the rule the stored delivery and CI rows of its repository
-// (rule.DeployRepo, as recorded) stand built under, its start left as it is: the rewrite of that
-// repository's change (rewriteSettings) writes it in its own transaction.
+// (rule.DeployRepo, as recorded) stand built under, its start left as it is, and logs in the same
+// transaction that the rules are recorded (logRulesRecorded): the rewrite of that repository's
+// change (rewriteSettings) writes it in its own transaction.
 func recordRule(ctx context.Context, q pgx.Tx, rule delivery.DeliverySettings) error {
 	if _, err := q.Exec(ctx, `
 		update eval_days_rules
@@ -301,6 +331,24 @@ func recordRule(ctx context.Context, q pgx.Tx, rule delivery.DeliverySettings) e
 	`, rule.DeployRepo, rule.Project, nonNil(rule.ProductionJobNames), rule.ProductionApplyStepName,
 		rule.StagingE2EJobName, rule.StagingApplyJobName); err != nil {
 		return fmt.Errorf("record the rule the day rows of %s stand built under: %w", rule.DeployRepo, err)
+	}
+	return logRulesRecorded(ctx, q)
+}
+
+// logRulesRecorded logs in q one eval_days change of no project that the rules the stored delivery
+// and CI rows stand built under are recorded (delivery.SettingsRecorded: Ref
+// delivery.SettingsRecordedRef, carrying the rewrite's mark), recorded in the change log's outbox
+// as every eval change is (delivery_change_log_pending). The delivery routes and the live hub's
+// delivery views answer under the recorded rules (BuiltSettingsIn), so the hub marks every delivery
+// view for it and recomputes it at once (delivery.EvalDaysImmediate), whether or not the commit
+// moved a day row; it marks no evals view, which names no project of it and is no SettingsApplied.
+// Its callers are the rewrite's transaction (recordRule, rewriteSettings) and the page's commit
+// that records rules whose difference moved no eval (recordRules, commitPage); a save of the same
+// values records nothing (syncSettings), and so logs nothing.
+func logRulesRecorded(ctx context.Context, q pgx.Tx) error {
+	if _, err := q.Exec(ctx, `select delivery_change_log_pending($1, $2, null, $3, null, null)`,
+		delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenBySettingsRewrite, delivery.SettingsRecordedRef); err != nil {
+		return fmt.Errorf("log that the rules the day rows stand built under are recorded: %w", err)
 	}
 	return nil
 }
@@ -443,9 +491,31 @@ func sameKept(a, b []keptRepo) bool {
 }
 
 // rewriteWorkers is the most goroutines rewriteSettings runs at once, each computing one
-// repository's containment under one rule or building one day: the CPUs the process may use, up
-// to this many.
-const rewriteWorkers = 8
+// repository's containment under one rule, building one day or folding one stored figure: the
+// CPUs the process may use, up to this many. Every open evals view the rewrite moves waits for its
+// commit (R14's 2 s), and none is recomputed before it.
+const rewriteWorkers = 16
+
+// memberParts is how many parts of the days rewriteSettings reads the stored members of, each
+// on a connection of its own: a production rule's rewrite reads those of every day of the
+// history, which read whole took longer than the build beside it.
+const memberParts = 4
+
+// seriesOf is the zero rows of next, and those of prev of a series next holds none of: the
+// series either settings make, each once.
+func seriesOf(next, prev []DayRow) []DayRow {
+	type series struct{ eval, deployRepo, name string }
+	held := make(map[series]bool, len(next))
+	for _, row := range next {
+		held[series{row.EvalID, row.DeployRepo, row.Series}] = true
+	}
+	for _, row := range prev {
+		if one := (series{row.EvalID, row.DeployRepo, row.Series}); !held[one] {
+			held[one], next = true, append(next, row)
+		}
+	}
+	return next
+}
 
 // rewriteDays is how many days rewriteSettings builds at a time: what it holds at once is a
 // chunk's days, their rows and their samples, as many as a pass's batch of the delivery walk
@@ -521,22 +591,22 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 // not move. A repository that holds no deploy run moves with no field of its rule, and its rows
 // and members are left as they are:
 //
-//   - one read of the history, its parts side by side: every population pull request, and every
-//     deploy run on main of each repository rewritten with its jobs of the names either rule
-//     judges by and each card the change moves follows under either settings
-//     (delivery.ReadHistoryRows), the walk's first input day (deliveryInputStart, over every kept
-//     repository), each project's first days (firstDays) and the record of the walks
-//     (readWalks);
-//   - the attribution lists of the pull requests (readAttribution), and beside that read
-//     containment over each repository's history as the deploy repository (historyOf): the new
+//   - the reads, side by side: every deploy run on main of each repository rewritten with its jobs
+//     of the names either rule judges by and each card the change moves follows under either
+//     settings (delivery.ReadHistoryRows); every population pull request, read apart, and then
+//     their attribution lists (readAttributionSideBySide), which no deploy run moves; the walk's
+//     first input day (deliveryInputStart, over every kept repository), each project's first days
+//     of each series either settings make (firstDays), the record of the walks (readWalks) and the
+//     serving record (servingNext);
+//   - containment over each repository's history as the deploy repository (historyOf): the new
 //     production rule's verdict on each run (ProductionApplies, which judges a run by its own jobs
 //     alone, and by its jobs of the judged names as by every job), each pull request's first
 //     shipping apply (delivery.ShippingIndex), and each deploy's shipped set, the pull requests
 //     whose first shipping apply it is (Deploys.ShippedBy's rule over every day at once); and,
 //     where it builds the days the change can move alone (below), the old rule's verdict and first
-//     shipping applies (containmentOf), the new rule's where the rule did not change. No
-//     containment reads the attribution, so each repository's under each rule runs on a
-//     goroutine of its own, as many at once as rewriteWorkers allows;
+//     shipping applies (containmentOf), the new rule's where the rule did not change. Each
+//     repository's under each rule runs on a goroutine of its own, as many at once as
+//     rewriteWorkers allows;
 //   - the days to build, from the delivery walk's first day through today: those whose rows the
 //     change can move (movedDeliveryDays), none for a change that moves no verdict and no card's
 //     part, and every day after one of them that was a moved eval's first input day and holds no
@@ -555,11 +625,13 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     delivery rows are whole through the day (servingNext), and with none where they are not
 //     (writeNamed's rule); and of the days written, those holding a row or that can hold a stored
 //     row of a moved eval (on or after its first stored first input day), the rows of the evals
-//     slugs names and the members of families, held until the last chunk is built; and beside that
-//     build, the stored members of families of the repositories rewritten on those days
-//     (readMembers), none where it builds none, of the CI family the push runs' alone: the days
-//     build no PR-checks run, whose project its pull request's issue decides (attribution.check),
-//     which no setting moves, so its members stand as stored;
+//     slugs names and the members of families, held until the last chunk is built. A day built
+//     that moves a series' first input day earlier adds the days after it up to the old one, of
+//     that project alone (firstMoved). Beside that build, the stored members of families of the
+//     repositories rewritten on those days are read in parts (readMembers, memberParts), none
+//     where it builds none, of the CI family the push runs' alone: the days build no PR-checks run,
+//     whose project its pull request's issue decides (attribution.check), which no setting moves,
+//     so its members stand as stored;
 //   - then, in one transaction: those rows upserted where a value moved (upsertDays, which cuts
 //     them into statements of at most statementBytes of parameters); once, over every day
 //     written, those evals' stored rows of the repositories rewritten that the days no longer hold
@@ -627,7 +699,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		measures.DeployCardJobNames(followed)))))
 
 	var history delivery.HistoryRows
-	var input *time.Time
+	var prs []delivery.DeliveryPullRequest
+	var attribute attribution
+	var input, served *time.Time
 	var walks map[walkKey]walkState
 	// owners is the delivery family's owners (refresh.owners), and the owner keys the rewritten
 	// history counts rows for that the store holds none of yet, added below once it is attributed.
@@ -642,9 +716,27 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 	}
 	posted := make([]postedRecord, len(events))
+	// The reads side by side, each on a connection of its own. The pull requests are read apart
+	// from the deploy runs, so their attribution, which reads them alone, is read beside the deploy
+	// runs and their jobs, the slowest read: delivery.ReadHistoryRows of no repository reads them
+	// alone, and its read of the repositories reads them again, an answer the rewrite takes the
+	// first one's of (the two read one table at two moments, as its side-by-side reads do).
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
+			began := time.Now()
 			history, err = delivery.ReadHistoryRows(ctx, pool, names, judged, end)
+			times.deploysRead = time.Since(began)
+			return err
+		},
+		func(ctx context.Context) error {
+			began := time.Now()
+			read, err := delivery.ReadHistoryRows(ctx, pool, nil, nil, end)
+			if err != nil {
+				return err
+			}
+			prs, times.pullRequestsRead = read.PullRequests, time.Since(began)
+			attribute, err = readAttributionSideBySide(ctx, r.store, prs)
+			times.attributionRead = time.Since(began) - times.pullRequestsRead
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -652,16 +744,29 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			return err
 		},
 		func(ctx context.Context) (err error) {
+			// Each series either settings make: one the new settings unmake (a deploy card) holds
+			// rows the rewrite deletes from its first day on (lostFirstDays).
+			began := time.Now()
 			zeros := make(map[string][]DayRow, len(owners))
 			rules := keptRules(kept)
+			// The rules before the change: the rewritten repository's under prev.
+			prevRules := slices.Clone(rules)
+			if at := slices.IndexFunc(prevRules, func(rule delivery.DeliverySettings) bool { return ruleKey(rule.DeployRepo) == ruleKey(repo.name) }); at >= 0 {
+				prevRules[at] = prev
+			}
 			for _, project := range owners {
-				zeros[project] = ZeroDeliveryDay(project, r.today, rules).Rows
+				zeros[project] = seriesOf(ZeroDeliveryDay(project, r.today, rules).Rows, ZeroDeliveryDay(project, r.today, prevRules).Rows)
 			}
 			firsts, err = r.store.firstDays(ctx, zeros, nil)
+			times.firstDaysRead = time.Since(began)
 			return err
 		},
 		func(ctx context.Context) (err error) {
 			walks, err = r.store.readWalks(ctx)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			served, err = r.servingNext(ctx, walkDelivery, "")
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -675,7 +780,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	); err != nil {
 		return fmt.Errorf("read the delivery history for a settings change: %w", err)
 	}
-	times.history = times.lap()
+	times.reads = times.lap()
 	earliest := map[evalKey]time.Time{}
 	for _, first := range firsts {
 		// An eval id names its project, so no two projects' entries share a key.
@@ -699,13 +804,8 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			}
 		}
 	}
-	prs := history.PullRequests
 	prsByDay := prsByMergeDay(prs)
 	start := earliestOf(input, earliest)
-	served, err := r.servingNext(ctx, walkDelivery, "")
-	if err != nil {
-		return err
-	}
 	walk, found := walks[walkKey{family: walkDelivery}]
 	// The days the change can move alone are built where the stored delivery rows are whole and the
 	// delivery walk has written today (no walk begun again rebuilds them), and they need the old
@@ -730,6 +830,17 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 		r.first[walkKey{family: walkDelivery, project: project}] = first
 	}
+	// Those first input days are the rewrite's own, and hold none of a repository it does not
+	// rewrite where it builds every day: once it ends, a later write of the pass builds by the
+	// store's (storedFirst), which hold the rewrite's from its commit on, so each owner's goes
+	// from the pass's (r.first), the owner keys the history adds below among them. A day written
+	// by the pass's own first days, emptied here, would leave out the zero rows of every series
+	// of a repository the rewrite did not build, and its write would delete them (R12).
+	defer func() {
+		for _, project := range owners {
+			delete(r.first, walkKey{family: walkDelivery, project: project})
+		}
+	}()
 	// computed reports whether the stored delivery rows are whole through day (servingNext): a day
 	// they are not holds the rows with input alone, as any write outside the walk leaves it
 	// (writeNamed).
@@ -745,40 +856,32 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if movedOnly {
 		was = make([]containment, len(rewritten))
 	}
-	// Each containment below reads the history and writes its own slot.
-	var attribute attribution
-	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			attribute, err = readAttribution(ctx, r.store, prs, nil)
-			return err
-		},
-		func(ctx context.Context) error {
-			group, groupCtx := errgroup.WithContext(ctx)
-			group.SetLimit(min(runtime.GOMAXPROCS(0), rewriteWorkers))
-			for k, repo := range rewritten {
-				group.Go(func() error {
-					if err := groupCtx.Err(); err != nil {
-						return err
-					}
-					histories[k] = historyOf(repo, history.Deploys[repo.name], prs)
-					return nil
-				})
-				if movedOnly && !sameRule {
-					group.Go(func() error {
-						if err := groupCtx.Err(); err != nil {
-							return err
-						}
-						was[k] = containmentOf(repo.name, history.Deploys[repo.name], prs, prevProduction)
-						return nil
-					})
-				}
+	// Each repository's containment under each rule on a goroutine of its own, each writing its own
+	// slot.
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(min(runtime.GOMAXPROCS(0), rewriteWorkers))
+	for k, repo := range rewritten {
+		group.Go(func() error {
+			if err := groupCtx.Err(); err != nil {
+				return err
 			}
-			return group.Wait()
-		},
-	); err != nil {
+			histories[k] = historyOf(repo, history.Deploys[repo.name], prs)
+			return nil
+		})
+		if movedOnly && !sameRule {
+			group.Go(func() error {
+				if err := groupCtx.Err(); err != nil {
+					return err
+				}
+				was[k] = containmentOf(repo.name, history.Deploys[repo.name], prs, prevProduction)
+				return nil
+			})
+		}
+	}
+	if err := group.Wait(); err != nil {
 		return err
 	}
-	times.attribution = times.lap()
+	times.containment = times.lap()
 	for _, owner := range historyOwners(histories, prs, attribute) {
 		if slices.Contains(owners, owner) {
 			continue
@@ -797,7 +900,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 				was[k] = histories[k].containment
 			}
 		}
-		days = movedDeliveryDays(histories, was, prs, attribute, prevCards, cards, slugs, owners, firsts, *start, r.today)
+		days = movedDeliveryDays(histories, was, prs, prevCards, cards, slugs, *start, r.today)
 	} else if start != nil {
 		for day := *start; !day.After(r.today); day = day.AddDate(0, 0, 1) {
 			days = append(days, day)
@@ -834,76 +937,131 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	var rows []DayRow
 	var pairProjects []string
 	var pairDays []time.Time
-	var stored map[memberKey]memberAt
+	stored := map[memberKey]memberAt{}
 	members := map[memberKey]memberAt{}
 	written := map[projectDay]bool{}
 	spans := map[string]daySpan{}
 	// The stored members are read of the days built alone, beside their build, and of none where
-	// none is built. writeMovedMembers looks up each member built, and sends it where the one stored
-	// stands elsewhere or is not found: a member stored on a day not built is sent either way, since
-	// its day is not the one built; and one stored on a day built is read. It deletes only members
-	// stored on a day written, and every day written is built.
-	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			stored, err = r.store.readMembers(ctx, owners, families, names, days)
+	// none is built: in memberParts parts of the days, each part read on a connection of its own (a
+	// member stands on one day, so no two parts read it). writeMovedMembers looks up each member
+	// built, and sends it where the one stored stands elsewhere or is not found: a member stored on
+	// a day not built is sent either way, since its day is not the one built; and one stored on a
+	// day built is read. It deletes only members stored on a day written, and every day written is
+	// built. A day a moved first day reaches (firstMoved), which the build adds as it goes, builds no
+	// member: its inputs did not move, so its members stand as stored.
+	builtDays := len(days)
+	parts := min(memberParts, len(days))
+	storedParts, partTimes := make([]map[memberKey]memberAt, parts), make([]time.Duration, parts)
+	reads := make([]func(context.Context) error, 0, parts+1)
+	for i := range parts {
+		part := days[i*len(days)/parts : (i+1)*len(days)/parts]
+		reads = append(reads, func(ctx context.Context) (err error) {
+			began := time.Now()
+			storedParts[i], err = r.store.readMembers(ctx, owners, families, names, part)
+			partTimes[i] = time.Since(began)
 			return err
-		},
-		func(ctx context.Context) error {
-			for chunk := range slices.Chunk(days, rewriteDays) {
-				// The chunk's days built side by side.
-				built := make([][]ProjectDay, len(chunk))
-				group, groupCtx := errgroup.WithContext(ctx)
-				group.SetLimit(min(runtime.GOMAXPROCS(0), rewriteWorkers))
-				for index, day := range chunk {
-					group.Go(func() error {
-						if err := groupCtx.Err(); err != nil {
-							return err
-						}
-						built[index] = dayOf(day)
-						return nil
-					})
-				}
-				if err := group.Wait(); err != nil {
-					return err
-				}
+		})
+	}
+	reads = append(reads, func(ctx context.Context) error {
+		began := time.Now()
+		defer func() { times.build = time.Since(began) }()
+		// pending is the days left to build, in day order; reached is, of each day a moved first
+		// day reaches that is no other day to build, the projects whose series it begins.
+		pending, scheduled := slices.Clone(days), make(map[time.Time]bool, len(days))
+		for _, day := range days {
+			scheduled[day] = true
+		}
+		reached := map[time.Time]map[string]bool{}
+		for len(pending) > 0 {
+			chunk := pending[:min(rewriteDays, len(pending))]
+			pending = pending[len(chunk):]
+			// The chunk's days built side by side.
+			built := make([][]ProjectDay, len(chunk))
+			group, groupCtx := errgroup.WithContext(ctx)
+			group.SetLimit(min(runtime.GOMAXPROCS(0), rewriteWorkers))
+			for index, day := range chunk {
+				group.Go(func() error {
+					if err := groupCtx.Err(); err != nil {
+						return err
+					}
+					built[index] = dayOf(day)
+					return nil
+				})
+			}
+			if err := group.Wait(); err != nil {
+				return err
+			}
 
-				// The chunk's days the walk writes, in day order, as it moves each eval's first input
-				// day. A day of a project that builds no row and can hold a stored row of a moved eval
-				// (heldFrom) is written all the same, so its stale rows and members go.
-				for index, day := range chunk {
-					for p, project := range owners {
-						own := built[index][p]
-						first := r.first[walkKey{family: walkDelivery, project: project}]
-						own.Rows = dropUnshipped(own.Rows, first, day)
-						full := own
-						if computed(day) && begunBy(first, day) {
-							full = own.WithZeros(zerosFrom(ZeroDeliveryDay(project, day, []delivery.DeliverySettings{next}).Rows, first, day))
-						}
-						if from, held := heldFrom[project]; len(full.Rows) == 0 && (!held || day.Before(from)) {
-							continue
-						}
-						pairProjects, pairDays = append(pairProjects, project), append(pairDays, day)
-						written[projectDay{project: project, day: day}], spans[project] = true, spans[project].widen(day)
-						for _, row := range full.Rows {
-							if ids[row.EvalID] {
-								rows = append(rows, row)
+			// The chunk's days the walk writes, in day order, as it moves each eval's first input
+			// day. A day of a project that builds no row and can hold a stored row of a moved eval
+			// (heldFrom) is written all the same, so its stale rows and members go. A day a moved
+			// first day reaches is built once the day that moved it is, and can be after a later
+			// moved day: its inputs being what they were, it moves no first day, and so no row of
+			// a day after it.
+			var added []time.Time
+			for index, day := range chunk {
+				only := reached[day]
+				for p, project := range owners {
+					if only != nil && !only[project] {
+						continue
+					}
+					own := built[index][p]
+					first := r.first[walkKey{family: walkDelivery, project: project}]
+					own.Rows = dropUnshipped(own.Rows, first, day)
+					if movedOnly {
+						reach := firstMoved(own.Rows, first, ids, day, r.today)
+						for one := reach.first; !reach.first.IsZero() && !one.After(reach.last); one = one.AddDate(0, 0, 1) {
+							if !scheduled[one] {
+								scheduled[one], reached[one] = true, map[string]bool{}
+								added = append(added, one)
+							}
+							if reached[one] != nil {
+								reached[one][project] = true
 							}
 						}
+					}
+					full := own
+					if computed(day) && begunBy(first, day) {
+						full = own.WithZeros(zerosFrom(ZeroDeliveryDay(project, day, []delivery.DeliverySettings{next}).Rows, first, day))
+					}
+					if from, held := heldFrom[project]; len(full.Rows) == 0 && (!held || day.Before(from)) {
+						continue
+					}
+					pairProjects, pairDays = append(pairProjects, project), append(pairDays, day)
+					spans[project] = spans[project].widen(day)
+					for _, row := range full.Rows {
+						if ids[row.EvalID] {
+							rows = append(rows, row)
+						}
+					}
+					if only == nil {
+						written[projectDay{project: project, day: day}] = true
 						for _, member := range full.Members {
 							if slices.Contains(families, member.Family) {
 								key := memberKey{project: project, family: member.Family, deployRepo: member.DeployRepo, rowKey: member.RowKey}
 								members[key] = memberAt{day: day, repo: member.Repo, shippedBy: member.ShippedBy}
 							}
 						}
-						r.noteBuilt(walkDelivery, project, day, own.Rows)
-						r.report.days[builtDay{family: walkDelivery, project: project, day: day}] = true
 					}
+					r.noteBuilt(walkDelivery, project, day, own.Rows)
+					r.report.days[builtDay{family: walkDelivery, project: project, day: day}] = true
 				}
 			}
-			return nil
-		},
-	); err != nil {
+			if len(added) > 0 {
+				builtDays += len(added)
+				pending = slices.SortedFunc(slices.Values(slices.Concat(pending, added)), time.Time.Compare)
+			}
+		}
+		return nil
+	})
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
 		return err
+	}
+	for _, part := range storedParts {
+		maps.Copy(stored, part)
+	}
+	if parts > 0 {
+		times.membersRead = slices.Max(partTimes)
 	}
 	// The days build the CI family's push runs alone (dayOf): a PR-checks run's member stands as
 	// stored, and none goes for not being built.
@@ -940,9 +1098,11 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		return err
 	}
 	times.bookkeeping = times.lap()
+	upserted := time.Now()
 	if err := upsertDays(ctx, tx, rows, r.build); err != nil {
 		return err
 	}
+	times.upsert = time.Since(upserted)
 	if err := deleteStaleSettingsDays(ctx, tx, pairProjects, pairDays, slugs, names, rows); err != nil {
 		return err
 	}
@@ -955,7 +1115,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	for project, span := range spans {
 		moved[project] = slugSpans(project, slugs, span)
 	}
-	if err := foldFiguresInTx(withFigureTimes(ctx, &times.figures), tx, r.build, moved); err != nil {
+	// The rewrite folds on as many goroutines as it builds days on: the views that wait for its
+	// commit wait for its fold, and no view reads beside it what the fold takes CPUs from.
+	if err := foldFiguresInTx(withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers), tx, r.build, moved); err != nil {
 		return err
 	}
 	times.figureScope = times.lap() - times.figures.moved - times.figures.plan - times.figures.fold
@@ -978,7 +1140,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	times.commit = times.lap()
 	r.store.drainChanges(ctx)
 	times.drain = times.lap()
-	times.log(after.minus(before), len(days))
+	times.log(after.minus(before), builtDays, len(rows))
 	return nil
 }
 
@@ -1005,47 +1167,56 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 
 // rewriteTimes is how long each part of one rewrite of a delivery settings change took
 // (rewriteSettings), read off a stopwatch it starts as it begins, so every moment of the rewrite
-// falls in exactly one part, in the order it runs them:
+// falls in exactly one part, in the order it runs them, and how long some reads within a part
+// took of their own:
 //
-//   - history, the read of the history and the repositories rewritten, the walk's first input
-//     day, each project's first days and the walks' records side by side, the wall time of the
-//     slowest of those reads;
-//   - attribution, the serving record's read and the read of the pull requests' attribution
-//     beside each repository's containment under each rule, the wall time of the slower;
-//   - days, the days to build (movedDeliveryDays, lostFirstDays);
-//   - members, the read of the stored members beside the build of those days, the wall time of
-//     the slower;
+//   - reads, the history's deploy runs and their jobs (deploysRead), its pull requests
+//     (pullRequestsRead) and then their attribution (attributionRead), each project's first days
+//     (firstDaysRead), the walk's first input day, the walks' records, the serving record and the
+//     events repositories' posted deploys, side by side: the wall time of the slowest;
+//   - containment, each repository's containment under each rule;
+//   - days, the owner keys the history adds and the days to build (movedDeliveryDays,
+//     lostFirstDays);
+//   - members, the read of the stored members in parts (membersRead, the slowest part's) beside
+//     the build of those days (build), the wall time of the slower;
 //   - bookkeeping, the transaction begun and marked, the rule recorded, a building rebuild begun
 //     again and the two reads of what the transaction wrote (rewriteCountsStatement);
-//   - dayRows, the day rows upserted and the stale ones deleted; memberWrites, the members
-//     written;
+//   - dayRows, the day rows upserted (upsert, of the rows sent) and the stale ones deleted;
+//     memberWrites, the members written;
 //   - the figures' refold (foldFiguresInTx): figureScope, its reads of the projects that read
 //     the owner keys written, of each project's figure scope and of its evals, and whatever it
 //     does between its timed parts, and figures, its reads of the moved days, of the rows it folds
-//     and its fold and write (figureTimes);
+//     and its fold and write, and of that the statements' own time (figureTimes);
 //   - commit, and drain, the change log's outbox moved into the log once it has committed.
 type rewriteTimes struct {
 	stopwatch
-	history, attribution, days, members time.Duration
-	bookkeeping, dayRows, memberWrites  time.Duration
-	figureScope                         time.Duration
-	figures                             figureTimes
-	commit, drain                       time.Duration
+	reads, containment, days, members              time.Duration
+	deploysRead, pullRequestsRead, attributionRead time.Duration
+	firstDaysRead, membersRead, build              time.Duration
+	bookkeeping, dayRows, upsert, memberWrites     time.Duration
+	figureScope                                    time.Duration
+	figures                                        figureTimes
+	commit, drain                                  time.Duration
 }
 
-// log logs the rewrite's parts in the order it ran them, then what it wrote and how many days it
-// built: the line a measurement of a settings write's way to the open pages reads.
-func (t *rewriteTimes) log(wrote rewriteCounts, days int) {
+// log logs the rewrite's parts in the order it ran them, each followed by the reads of its own
+// within it, then what it wrote, how many days it built and how many day rows it sent: the line a
+// measurement of a settings write's way to the open pages reads.
+func (t *rewriteTimes) log(wrote rewriteCounts, days, sent int) {
 	slog.Info("dispatch: the eval day-row refresher rewrote what a delivery settings change moved",
-		"history_ms", t.history.Milliseconds(), "attribution_ms", t.attribution.Milliseconds(), "days_ms", t.days.Milliseconds(),
-		"members_and_build_ms", t.members.Milliseconds(), "day_rows_ms", t.dayRows.Milliseconds(),
+		"reads_ms", t.reads.Milliseconds(), "deploys_read_ms", t.deploysRead.Milliseconds(),
+		"pull_requests_read_ms", t.pullRequestsRead.Milliseconds(), "attribution_read_ms", t.attributionRead.Milliseconds(),
+		"first_days_read_ms", t.firstDaysRead.Milliseconds(), "containment_ms", t.containment.Milliseconds(),
+		"days_ms", t.days.Milliseconds(), "members_and_build_ms", t.members.Milliseconds(),
+		"members_read_ms", t.membersRead.Milliseconds(), "build_ms", t.build.Milliseconds(),
+		"day_rows_ms", t.dayRows.Milliseconds(), "upsert_ms", t.upsert.Milliseconds(),
 		"member_writes_ms", t.memberWrites.Milliseconds(), "figure_scope_ms", t.figureScope.Milliseconds(),
 		"moved_figure_days_ms", t.figures.moved.Milliseconds(), "figure_plan_ms", t.figures.plan.Milliseconds(),
 		"figure_plan_reads", t.figures.reads, "figure_plan_rows", t.figures.rows, "fold_and_write_ms", t.figures.fold.Milliseconds(),
-		"bookkeeping_ms", t.bookkeeping.Milliseconds(), "commit_ms", t.commit.Milliseconds(), "drain_ms", t.drain.Milliseconds(),
-		"total_ms", t.total().Milliseconds(), "days_built", days, "day_rows_written", wrote.dayRows,
-		"day_rows_deleted", wrote.dayRowsGone, "members_written", wrote.members, "evals_moved", wrote.evals,
-		"figures_written", wrote.figures)
+		"figure_writes_ms", t.figures.writes.Milliseconds(), "bookkeeping_ms", t.bookkeeping.Milliseconds(),
+		"commit_ms", t.commit.Milliseconds(), "drain_ms", t.drain.Milliseconds(), "total_ms", t.total().Milliseconds(),
+		"days_built", days, "day_rows_sent", sent, "day_rows_written", wrote.dayRows, "day_rows_deleted", wrote.dayRowsGone,
+		"members_written", wrote.members, "evals_moved", wrote.evals, "figures_written", wrote.figures)
 }
 
 // rewriteCounts is what a rewrite's transaction has written so far (rewriteCountsStatement): the
@@ -1121,22 +1292,17 @@ func MarkSettingsRewrite(ctx context.Context, tx pgx.Tx) error {
 //     shipped sets, and so whose with_prs and projects, it moves;
 //   - where slugs names a deploy card, each day whose push runs the two settings' cards build that
 //     card's part of otherwise (measures.DeployJobsDay): every day with a push run, where the
-//     card is made or unmade;
-//   - from the earliest of those days on, the days a first day moved earlier reaches. One of them
-//     can hold the first row of an eval of a project that held none on or before it, which moves
-//     the eval's first input day to it (noteBuilt), and the whole rebuild then writes the eval's
-//     zero rows, and a lead time's rows that count no deployed pull request, on each day after it
-//     up to the old first day (zerosFrom, dropUnshipped), days whose inputs did not move. So for
-//     each eval slugs names and each project that can count a row of it, every day from the
-//     earliest moved day up to the day before the eval's stored first day (firsts), where that is
-//     later, or through today, where it has none. Each of those evals' rows, a deploy card's
-//     included, counts for the projects of the repository's pull requests, which alone its
-//     deploys ship and its push runs, those deploys, count for.
+//     card is made or unmade.
 //
-// Every other day builds the rows it holds: its inputs, its evals' first days and what it reads
-// of the settings are what its rows were built from.
-func movedDeliveryDays(histories []repoHistory, was []containment, prs []delivery.DeliveryPullRequest, attribute attribution,
-	before, after []measures.DeployJobCard, slugs, projects []string, firsts map[string]map[evalKey]time.Time, start, today time.Time) []time.Time {
+// Every other day builds the rows it holds from its inputs, its evals' first days and what it
+// reads of the settings, which are what its rows were built from, but a day after a moved one that
+// moves a series' first input day earlier (noteBuilt), up to the old first day: such a day holds
+// the series' zero row, and a lead time's row that counts no deployed pull request, from the new
+// first day on (zerosFrom, dropUnshipped). Which series a moved day begins earlier is known once
+// it is built, so rewriteSettings adds those days as it builds (firstMoved), and a series that
+// begins on no moved day adds none.
+func movedDeliveryDays(histories []repoHistory, was []containment, prs []delivery.DeliveryPullRequest,
+	before, after []measures.DeployJobCard, slugs []string, start, today time.Time) []time.Time {
 	var cards []measures.DeployJobCardID
 	for _, slug := range slugs {
 		if card, ok := CardOf(slug); ok {
@@ -1145,12 +1311,10 @@ func movedDeliveryDays(histories []repoHistory, was []containment, prs []deliver
 	}
 	moved := map[time.Time]bool{}
 	for k, h := range histories {
-		var span daySpan
 		note := func(day time.Time) {
-			if day.Before(start) || day.After(today) {
-				return
+			if !day.Before(start) && !day.After(today) {
+				moved[day] = true
 			}
-			moved[day], span = true, span.widen(day)
 		}
 		started := func(runID int64) time.Time { return measures.Midnight(h.runByID[runID].StartedAt) }
 		for id, apply := range h.applied {
@@ -1184,40 +1348,34 @@ func movedDeliveryDays(histories []repoHistory, was []containment, prs []deliver
 				}
 			}
 		}
-		if span.first.IsZero() {
-			continue
-		}
-		counted := map[string]bool{}
-		for i := range prs {
-			if prs[i].Repo == h.repo {
-				counted[attribute.of(prs[i]).project] = true
-			}
-		}
-		// Each eval's and project's days run from the earliest moved day, so together they run
-		// through the latest last day of any, reach (the zero time, before every day, where none).
-		var reach time.Time
-		for _, slug := range slugs {
-			for _, project := range projects {
-				if !counted[project] {
-					continue
-				}
-				last := today
-				if first, held := firsts[project][evalKey{eval: EvalID(project, slug), deployRepo: h.repo}]; held {
-					if !span.first.Before(first) {
-						continue
-					}
-					last = first.AddDate(0, 0, -1)
-				}
-				if last.After(reach) {
-					reach = last
-				}
-			}
-		}
-		for day := span.first; !day.After(reach); day = day.AddDate(0, 0, 1) {
-			moved[day] = true
-		}
 	}
 	return slices.SortedFunc(maps.Keys(moved), time.Time.Compare)
+}
+
+// firstMoved is the days a built day of a project moves to write besides itself: for each of
+// rows, the project's rows of day as the walk keeps them (dropUnshipped), that is an
+// all-repositories row of a moved eval (ids) whose series' first input day, of the pass's first
+// days (first, before noteBuilt moves it), is after day or none, every day after day up to the day
+// before that first day, or through today where it has none. Those days' inputs did not move, and
+// they hold the series' zero rows and its unshipped lead times from day on.
+func firstMoved(rows []DayRow, first map[evalKey]time.Time, ids map[string]bool, day, today time.Time) daySpan {
+	var reach daySpan
+	for i := range rows {
+		if rows[i].Repo != "" || !ids[rows[i].EvalID] {
+			continue
+		}
+		last := today
+		if since, held := first[keyOf(rows[i])]; held {
+			if !day.Before(since) {
+				continue
+			}
+			last = since.AddDate(0, 0, -1)
+		}
+		if last.After(day) {
+			reach = reach.widen(day.AddDate(0, 0, 1)).widen(last)
+		}
+	}
+	return reach
 }
 
 // lostFirstDays is days, the days a change of the delivery settings can move (movedDeliveryDays),
@@ -1404,6 +1562,39 @@ func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, 
 		}
 	}
 	return slices.Sorted(maps.Keys(owners))
+}
+
+// attributionParts is how many parts readAttributionSideBySide cuts a history's pull requests
+// into, each read on a connection of its own.
+const attributionParts = 4
+
+// readAttributionSideBySide is readAttribution of prs, every population pull request of the
+// history, which holds no PR-checks run: prs cut into attributionParts parts of about one size,
+// each part's attribution read side by side with the others', and their lists together. A pull
+// request's list is made of its own candidates or its own issue alone (readAttribution), so a
+// part's lists are the lists one read of every pull request answers of that part's.
+func readAttributionSideBySide(ctx context.Context, s *Store, prs []delivery.DeliveryPullRequest) (attribution, error) {
+	parts := min(attributionParts, len(prs))
+	if parts < 2 {
+		return readAttribution(ctx, s, prs, nil)
+	}
+	read := make([]attribution, parts)
+	reads := make([]func(context.Context) error, parts)
+	for i := range parts {
+		part := prs[i*len(prs)/parts : (i+1)*len(prs)/parts]
+		reads[i] = func(ctx context.Context) (err error) {
+			read[i], err = readAttribution(ctx, s, part, nil)
+			return err
+		}
+	}
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
+		return attribution{}, err
+	}
+	lists := make(map[string]attributionList, len(prs))
+	for _, one := range read {
+		maps.Copy(lists, one.lists)
+	}
+	return attribution{lists: lists}, nil
 }
 
 // deleteStaleSettingsDays is deleteStaleDays over many days at once: it deletes each of the

@@ -418,6 +418,62 @@ func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
 	}
 }
 
+// TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStoredIn: two issues whose
+// links both name one pull request are two candidates of one source and one place, and they rank
+// by key. A URL holds one link (issue_external_links_url), so the two links spell it two ways, as
+// GitHub spells the repository (`Acme/Widgets`) and lowercased, as Dispatch stores a GitHub link,
+// and the link source compares both lowercased. So every reader of the ranked list — one pull
+// request's pick (resolveStoredIssueKey), the stored rows' pick (AttributePullRequests) and the
+// list the evals' owner keys are made of (ResolvedCandidates) — answers alike for two pull requests
+// whose links were stored in opposite orders, as two databases holding the same links may hold
+// them.
+func TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStoredIn(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	link := func(spelling string, number int) string {
+		return "https://github.com/" + spelling + "/pull/" + strconv.Itoa(number)
+	}
+	// #250's links are stored ATTR-252's first, #255's ATTR-251's first.
+	seedAttributionIssues(t, ctx, pool, []string{"ATTR-252"}, map[string][]string{"ATTR-252": {link("acme/widgets", 250)}})
+	seedAttributionIssues(t, ctx, pool, []string{"ATTR-251"}, map[string][]string{"ATTR-251": {link("Acme/Widgets", 250), link("acme/widgets", 255)}})
+	seedAttributionIssues(t, ctx, pool, []string{"ATTR-252"}, map[string][]string{"ATTR-252": {link("Acme/Widgets", 255)}})
+	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	pulls := []PullRequestKey{{Repo: "acme/widgets", Number: 250}, {Repo: "acme/widgets", Number: 255}}
+	for _, pull := range pulls {
+		url := "https://github.com/acme/widgets/pull/" + strconv.Itoa(pull.Number)
+		key, source := resolvedKey(t, ctx, pool, attributionFacts{Repo: pull.Repo, URL: url, Title: "feat: no key here"})
+		if key != "ATTR-251" || source != sourceExternalLink {
+			t.Errorf("#%d resolved %q from %q, want ATTR-251, the lower key of the two linking it, from %q",
+				pull.Number, key, source, sourceExternalLink)
+		}
+		if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+			Repo: pull.Repo, Number: pull.Number, Title: "feat: no key here", URL: url,
+			Author: "octocat", CreatedAt: &merged, MergedAt: &merged, Attribution: &AttributionInputs{},
+		}); err != nil {
+			t.Fatalf("seed #%d: %v", pull.Number, err)
+		}
+	}
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, AttributionResolveBatch); err != nil {
+		t.Fatalf("attribute the stored rows: %v", err)
+	}
+	resolved, err := unrenamed().ResolvedCandidates(ctx, pool, pulls)
+	if err != nil {
+		t.Fatalf("read the stored rows' candidates: %v", err)
+	}
+	for _, pull := range pulls {
+		if stored := storedIssueKey(t, ctx, pool, pull.Repo, pull.Number); stored != "ATTR-251" {
+			t.Errorf("#%d is stored crediting %s, want ATTR-251", pull.Number, stored)
+		}
+		var keys []string
+		for _, candidate := range resolved[pull] {
+			keys = append(keys, candidate.Key)
+		}
+		if !slices.Equal(keys, []string{"ATTR-251", "ATTR-252"}) {
+			t.Errorf("#%d's candidates read %v, want [ATTR-251 ATTR-252]", pull.Number, keys)
+		}
+	}
+}
+
 // TestAttributionRefusesAKeyDispatchDoesNotHave: a key-shaped string in every source that names
 // no stored issue credits nothing.
 func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {

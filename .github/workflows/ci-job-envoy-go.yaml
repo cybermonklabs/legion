@@ -135,7 +135,7 @@ jobs:
       # model is out of the race build too, and runs in a job of its own, envoy-go-claim-model;
       # the API's nine source guards, and one_expression_guard_test.go beside them, carry that
       # tag as well and are deliberately not here: they read the module's source, the text-check
-      # job runs their twenty-two tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
+      # job runs their twenty-three tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
       # TEXT_CHECK_TESTS leave exactly those tests out of this step rather than have each of them
       # run twice. It comes before the unit step for the
       # reason the API package's own run did: run beside the other package binaries,

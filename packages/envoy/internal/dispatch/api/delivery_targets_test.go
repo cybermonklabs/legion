@@ -71,6 +71,7 @@ func showTargets(targets measures.Targets) string {
 // counts every project's open P0 issues now. With the deploy repository no project's default, both
 // answers are judged by the catalogue's targets, main's (catalogueTargets).
 func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture, _ := seedEvalHistories(t, database, deps, 14)
 	project := fixture.Project
@@ -204,6 +205,7 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 // catalogue's judges (merge to production's longest change and median, the per-deploy rate)
 // answer the median's verdict, met, and the change failure rate's, met.
 func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
+	t.Parallel()
 	_, database := newTestHandlerWithStore(t)
 	catalogue, err := evals.New(database, nil, nil, nil).DeployRepoEvals(t.Context(), "acme/widgets", evals.DeliveryTargetSlugs)
 	if err != nil {
@@ -253,6 +255,7 @@ func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
 // pinned at the test's start, the at its GET route reads, since that route reads at alone and the
 // hub's clock runs on.
 func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	createTestProject(t, rig.handler, "HUB")
 	if _, err := rig.database.Pool.Exec(t.Context(), `update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil {

@@ -14,8 +14,8 @@ import (
 // TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed meets the title correction of a
 // project document (renameArtifact) with a session's comment on that document (createCommentFor).
 // The correction of a document no issue holds takes only its project's upload lock
-// (beginArtifactWrite, lockProjectArtifacts) before it updates the document's row, and meets the
-// document's owner lock (store.ArtifactOwner) first in its event's append (appendEvent,
+// (beginArtifactWrite, docs.LockProjectArtifacts) before it updates the document's row, and
+// meets the document's owner lock (store.ArtifactOwner) first in its event's append (appendEvent,
 // events.Broker's lockEventOwner). The comment takes that owner lock in its read phase
 // (lockCommentOwner) and then appends comment.created, whose insert advances the document row's
 // last_seq (events.Broker.QueueAppendWithLogins). A correction that updated the row before it

@@ -496,37 +496,55 @@ func TestAChangeDuringARebuildIsNeitherLostNorOverwritten(t *testing.T) {
 // TestAFreshDatabasesFirstWalkCommitsDayByDay: a database no rows are served of has nothing to keep
 // serving, so its first walk builds every family in the open, a day a transaction, each day
 // readable once written and "no data" before (k12's rule), and stages nothing: no rebuild begins.
-// Over the delivery and Legion histories walked two days a pass, every transaction that writes a
-// day row writes the rows of one day, the first pass leaves rows on the walk's first two days and
-// none after them, the serving records follow the walks, and no rebuild and no staged row exists.
+// Over the delivery and Legion histories with their pull requests' attribution inputs read, so the
+// delivery days hold rows of projects, of plain owner keys and of owner keys that carry lists
+// (owners.go), and a project reads its own rows with both kinds of key, walked two days a pass:
+// every transaction that writes a day row writes the rows of one day; every delivery and CI
+// eval's rows of a day, of every key that holds one, are written by one transaction, so no read
+// between two commits folds some of the keys a project reads of the day and not the others; that
+// transaction moves the family's serving record past the day, as each Legion day's moves its
+// project's; the first pass leaves rows on the walk's first two days and none after them, the
+// walk and the serving record standing after them; and no rebuild and no staged row exists. Red
+// where a day is committed one owner key at a time, or the serving record moves in a commit of its
+// own.
 func TestAFreshDatabasesFirstWalkCommitsDayByDay(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	r.batch = 2
-	deliveries, _ := r.seedHistories(t)
-	r.leaveInputsUnread(t)
+	r.seedHistories(t)
+	trace := &dayCommits{open: map[*pgx.Conn]int{}, writing: map[*pgx.Conn]bool{}}
+	r.registry = New(storetest.TracedStore(t, r.database, trace), r.documents, r.registry.events, r.registry.attributor)
 	for _, statement := range []string{
-		`create table evals_test_days (txid bigint not null, day date not null, primary key (txid, day))`,
+		`create table evals_test_days (txid bigint not null, project_key text not null, eval_id text not null, day date not null)`,
 		`create function evals_test_record_day() returns trigger language plpgsql as $$
 		begin
-			insert into evals_test_days (txid, day) values (txid_current(), coalesce(new.day, old.day)) on conflict do nothing;
+			insert into evals_test_days (txid, project_key, eval_id, day)
+			values (txid_current(), coalesce(new.project_key, old.project_key), coalesce(new.eval_id, old.eval_id), coalesce(new.day, old.day));
 			return null;
 		end $$`,
 		`create constraint trigger evals_test_record_day after insert or update or delete on eval_days
 			deferrable initially deferred for each row execute function evals_test_record_day()`,
+		`create table evals_test_serving (txid bigint not null, family text not null, project_key text not null, next_day date not null)`,
+		`create function evals_test_record_serving() returns trigger language plpgsql as $$
+		begin
+			insert into evals_test_serving (txid, family, project_key, next_day) values (txid_current(), new.family, new.project_key, new.next_day);
+			return null;
+		end $$`,
+		`create trigger evals_test_record_serving after insert or update on eval_days_serving
+			for each row execute function evals_test_record_serving()`,
 	} {
-		r.exec(t, "record the days each transaction writes", statement)
+		r.exec(t, "record what each transaction writes", statement)
 	}
+	// slug is a recorded row's slug, read off its eval id under its key.
+	const slug = `substr(eval_id, length(project_key) + 2)`
 	r.pass(t)
-	main := deliveries.Project
 	var first, last *time.Time
-	if err := r.database.Pool.QueryRow(t.Context(), `select min(day), max(day) from eval_days where project_key = $1 and eval_id = $2`,
-		main, EvalID(main, SlugDeployFrequency)).Scan(&first, &last); err != nil || first == nil {
+	if err := r.database.Pool.QueryRow(t.Context(), `select min(day), max(day) from evals_test_days where `+slug+` = any($1)`,
+		deliveryDaySlugs).Scan(&first, &last); err != nil || first == nil {
 		t.Fatalf("read the first pass's delivery days: %v (%v)", err, first)
 	}
 	if last.Sub(*first) > 24*time.Hour {
-		t.Errorf("the first pass wrote %s's deploy-frequency rows from %s to %s, want its walk's first two days alone", main,
-			first.Format(time.DateOnly), last.Format(time.DateOnly))
+		t.Errorf("the first pass wrote delivery rows from %s to %s, want its walk's first two days alone", first.Format(time.DateOnly), last.Format(time.DateOnly))
 	}
 	if next, _ := r.rebuildNext(t, walkDelivery, ""); next == nil || !next.Equal(first.AddDate(0, 0, 2)) {
 		t.Errorf("the delivery walk stands at %v after its first batch, want %s", next, first.AddDate(0, 0, 2).Format(time.DateOnly))
@@ -535,15 +553,133 @@ func TestAFreshDatabasesFirstWalkCommitsDayByDay(t *testing.T) {
 		t.Errorf("the delivery rows are served through %d records at the walk's day, want one", served)
 	}
 	r.settle(t)
-	if wide := r.count(t, `select count(*) from (select txid from evals_test_days group by txid having count(*) > 1) wide`); wide != 0 {
+
+	// The check needs a project that reads its own rows with a plain owner key's and with a key's
+	// that carries lists, of the days the walk wrote.
+	keys, err := r.database.Pool.Query(t.Context(), `select distinct project_key from evals_test_days where `+slug+` = any($1)`, deliveryDaySlugs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	var key string
+	if _, err := pgx.ForEachRow(keys, []any{&key}, func() error {
+		if _, _, lists, ok := parseOwner(key); ok {
+			kinds[key] = "plain"
+			if len(lists) > 0 {
+				kinds[key] = "lists"
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reads := map[string]map[string]int{}
+	for owner, projects := range r.ownerReaders(t) {
+		for _, project := range projects {
+			if kind := kinds[owner]; kind != "" {
+				if reads[project] == nil {
+					reads[project] = map[string]int{}
+				}
+				reads[project][kind]++
+			}
+		}
+	}
+	reader := ""
+	for _, project := range slices.Sorted(maps.Keys(reads)) {
+		if reads[project]["plain"] > 0 && reads[project]["lists"] > 0 {
+			reader = project
+			break
+		}
+	}
+	if reader == "" {
+		t.Fatalf("no project reads both a plain owner key and a key that carries lists of the walked days (%v), and the check needs one", reads)
+	}
+
+	if days := r.count(t, `select count(distinct (`+slug+`, day)) from evals_test_days where `+slug+` = any($1)`, deliveryDaySlugs); days == 0 {
+		t.Fatal("the walk recorded no delivery day, and the check needs its days")
+	}
+	if wide := r.count(t, `select count(*) from (select txid from evals_test_days group by txid having count(distinct day) > 1) wide`); wide != 0 {
 		t.Errorf("%d transactions wrote the day rows of more than one day, want each a day's", wide)
+	}
+	split, err := r.database.Pool.Query(t.Context(), `
+		select `+slug+`, day, count(distinct project_key), count(distinct txid) from evals_test_days
+		where `+slug+` = any($1) group by 1, 2 having count(distinct txid) > 1 order by 2, 1`, deliveryDaySlugs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evalSlug string
+	var day time.Time
+	var held, commits int
+	splits := 0
+	if _, err := pgx.ForEachRow(split, []any{&evalSlug, &day, &held, &commits}, func() error {
+		if splits++; splits <= 5 {
+			t.Errorf("%s's rows of %s, of %d keys, were written by %d transactions, want one: a read between them folds some of the keys alone",
+				evalSlug, day.Format(time.DateOnly), held, commits)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if unserved := r.count(t, `
+		with written as (
+			select distinct txid, day,
+				case when `+slug+` = any($1::text[]) then $3::text else $4::text end as family,
+				case when `+slug+` = any($1::text[]) then '' else project_key end as walk
+			from evals_test_days where `+slug+` = any($1::text[] || $2::text[])
+		)
+		select count(*) from written w where not exists (
+			select 1 from evals_test_serving s where s.txid = w.txid and s.family = w.family and s.project_key = w.walk and s.next_day = w.day + 1)
+	`, deliveryDaySlugs, legionDaySlugs, walkDelivery, walkLegion); unserved != 0 {
+		t.Errorf("%d transactions wrote a walk's day and did not move its serving record past it, want none", unserved)
 	}
 	if rebuilds := r.count(t, `select count(*) from eval_rebuilds`); rebuilds != 0 || r.staged(t) != 0 {
 		t.Errorf("the first walk began %d rebuilds and left %d staged rows, want none", rebuilds, r.staged(t))
 	}
-	t.Logf("the first pass wrote %s to %s; %d transactions wrote day rows, each of one day", first.Format(time.DateOnly), last.Format(time.DateOnly),
-		r.count(t, `select count(distinct txid) from evals_test_days`))
+	t.Logf("the first pass wrote %s to %s; %d transactions wrote day rows, each of one day, %d delivery (eval, day)s of more than one; %s reads %d plain owner keys and %d keys that carry lists",
+		first.Format(time.DateOnly), last.Format(time.DateOnly), r.count(t, `select count(distinct txid) from evals_test_days`), splits,
+		reader, reads[reader]["plain"], reads[reader]["lists"])
+	t.Logf("the longest day commit wrote %d rows and sent %d statements between its begin and its commit, of %d commits that wrote day rows",
+		r.count(t, `select coalesce(max(n), 0) from (select count(*) as n from evals_test_days group by txid) one`), trace.most, trace.commits)
 }
+
+// dayCommits is a tracer (storetest.TracedStore) that counts, on the pool it traces, the
+// statements of each transaction from its begin to its commit, and of those that wrote day rows
+// (inserted, updated or deleted one) how many committed and the most statements one sent.
+type dayCommits struct {
+	mu            sync.Mutex
+	open          map[*pgx.Conn]int
+	writing       map[*pgx.Conn]bool
+	commits, most int
+}
+
+func (d *dayCommits) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	statement := strings.ToLower(strings.TrimSpace(data.SQL))
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case strings.HasPrefix(statement, "begin"):
+		d.open[conn], d.writing[conn] = 0, false
+	case statement == "commit":
+		if d.writing[conn] {
+			d.commits++
+			d.most = max(d.most, d.open[conn])
+		}
+		delete(d.open, conn)
+		delete(d.writing, conn)
+	case statement == "rollback":
+		delete(d.open, conn)
+		delete(d.writing, conn)
+	default:
+		if _, in := d.open[conn]; in {
+			d.open[conn]++
+			d.writing[conn] = d.writing[conn] || strings.Contains(statement, "insert into eval_days (") ||
+				strings.Contains(statement, "update eval_days ") || strings.Contains(statement, "delete from eval_days ")
+		}
+	}
+	return ctx
+}
+
+func (d *dayCommits) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // moveMerge moves the merge of the pull request pr (`<repo>#<number>`) an hour, within its day.
 func (r *refresherRig) moveMerge(t *testing.T, pr string) {

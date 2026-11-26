@@ -58,6 +58,9 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, intake)
+	// The durable's first bind starts at the stream's next message, so the envelopes go out once
+	// it is bound.
+	awaitBoundDurable(t, natsClient)
 
 	envelopeFields := map[string]string{
 		"kind": "pr", "action": "closed", "repo": "acme/widgets", "number": "42",

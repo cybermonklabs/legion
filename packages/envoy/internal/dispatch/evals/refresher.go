@@ -103,9 +103,11 @@ const RefresherLease = "eval-days"
 // pass and its own pass after its commit, the 2 s R14 allows.
 //
 // No gap paces the refold of a stale cut either: every pass, with a batch of the walks or none,
-// folds each stale cut again batch after batch until its mark is cleared (refoldStaleCuts), so the
-// pass that publishes a move begins the refold of the cuts it marks once its pages are done, and
-// takes none of the gap's batch.
+// folds each stale cut again batch after batch until its mark is cleared (refoldStaleCuts), and its
+// batches are none of the gap's. The refold runs after the pass's pages, and, in a pass that builds
+// the gap's batch of the walks, after that batch's walks and the figures walk's batch too
+// (refresh): the pass that publishes a move begins the refold of the cuts it marks once that work
+// is done.
 //
 // A batch's walks stop between two days when a wake is owed (duty.WakeOwed), once the pass has
 // built a day, so a change waits behind one day's build rather than a whole batch. The owed pass,
@@ -709,8 +711,11 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // and the page read a change of the settings row (work.settingsApplied, syncSettings), the commit
 // says that the day rows stand at the settings (markSettingsApplied); a rewrite of one
 // repository's rows says so in no transaction of its own (rewriteSettings). Where a project's
-// default repository moved (work.defaults, syncDefaults), the commit publishes it, with the stored
-// figures it moves (publishDefaults). The event cursor
+// default repository moved (work.defaults, syncDefaults), the commit publishes it, with the marks
+// of the stored cuts it moves and the first paints of those whose evals are all computed
+// (publishDefaults). It takes no eval lock, whose place in the eval tables' lock order is before
+// every row lock (defaults.go): the day rows and stored figures it writes are of computed evals,
+// whose rows are the refresher's alone. The event cursor
 // is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
 // page last read the change log to its end (page), which the lost-cursor rule reads and which a
 // full page leaves where it stood. Once the transaction commits, the pass records what the spans
@@ -793,7 +798,10 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	if published != nil {
 		published.log(began, committed)
 	}
-	if work.settingsApplied || len(spans) > 0 || work.defaults != nil {
+	// The commit logged a change where it recorded the rules (recordRules logs that they are
+	// recorded where one moved, which the delivery views are recomputed for), applied them, wrote a
+	// span or published a default: the log's outbox is moved into the log now, not at the next pass.
+	if work.record || work.settingsApplied || len(spans) > 0 || work.defaults != nil {
 		r.store.drainChanges(ctx)
 	}
 	return nil

@@ -52,9 +52,9 @@ type SettingsCache struct {
 
 	current atomic.Pointer[SourceRules]
 
-	mu sync.Mutex
-	// changed is closed by the next read that stores rules, and replaced by a fresh channel.
-	changed chan struct{}
+	// read is closed by the first read that answered (reload), and readOnce closes it once.
+	read     chan struct{}
+	readOnce sync.Once
 }
 
 // newSettingsCache builds a cache over pool's delivery settings that reads them again on each
@@ -62,7 +62,16 @@ type SettingsCache struct {
 // and logs to logger, the intakes' (startIntakes passes intakeTuning.log); a nil logger is the
 // default logger as it is now. It holds nothing until Run (or reload) has read the settings.
 func newSettingsCache(pool *store.Pool, settingsWake, projectsWake <-chan struct{}, logger *slog.Logger) *SettingsCache {
-	return &SettingsCache{pool: pool, settingsWake: settingsWake, projectsWake: projectsWake, log: cmp.Or(logger, slog.Default()), changed: make(chan struct{})}
+	return &SettingsCache{pool: pool, settingsWake: settingsWake, projectsWake: projectsWake, log: cmp.Or(logger, slog.Default()), read: make(chan struct{})}
+}
+
+// Read returns a channel closed once the cache's first read of the delivery settings has answered,
+// whatever it found: the rules of every source repository, or none where no project's delivery is
+// on. A read that failed is no answer, and Run makes it again. The delivery intake binds its
+// durable only after it (Intake.Run), so a deployment with settings never routes an envelope by the
+// nil the cache holds before then.
+func (c *SettingsCache) Read() <-chan struct{} {
+	return c.read
 }
 
 // Load returns the rules of the latest read, or nil while the cache has read none. A read that
@@ -70,22 +79,6 @@ func newSettingsCache(pool *store.Pool, settingsWake, projectsWake <-chan struct
 // pull request admitted.
 func (c *SettingsCache) Load() *SourceRules {
 	return c.current.Load()
-}
-
-// routes reports whether the cache holds the rule of at least one repository: the intake's bind
-// waits for it, since an intake with no rule has nothing to route a run by, and a first bind of a
-// deployment that never had settings would deliver the stream's whole backlog (runOnce).
-func (c *SettingsCache) routes() bool {
-	return len(c.Load().All()) > 0
-}
-
-// Changed returns a channel that is closed once the cache next stores rules. Taken before a Load,
-// it cannot miss a store that lands after that Load: the intake's bind waits on it for the first
-// rules.
-func (c *SettingsCache) Changed() <-chan struct{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.changed
 }
 
 // Run reads the settings at once, then each time settingsWake is signalled, and each time
@@ -135,10 +128,7 @@ func (c *SettingsCache) reload(ctx context.Context) bool {
 		return false
 	}
 	c.current.Store(rules)
-	c.mu.Lock()
-	close(c.changed)
-	c.changed = make(chan struct{})
-	c.mu.Unlock()
+	c.readOnce.Do(func() { close(c.read) })
 	return true
 }
 

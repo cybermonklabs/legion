@@ -65,10 +65,7 @@ func (r rig) seededState(t *testing.T, project string) seededState {
 func (r rig) requireSeeded(t *testing.T, project string) seededState {
 	t.Helper()
 	state := r.seededState(t, project)
-	page, err := r.registry.Current(t.Context(), []string{project}, "", 100, 0)
-	if err != nil {
-		t.Fatalf("read the evals of %s: %v", project, err)
-	}
+	page := r.current(t, project)
 	if page.Total != len(catalogue) || len(page.Items) != len(catalogue) {
 		t.Fatalf("%s holds %d evals, want the catalogue's %d", project, page.Total, len(catalogue))
 	}
@@ -170,7 +167,20 @@ func TestEnsureAddsTheSectionsAProjectsDocumentLacks(t *testing.T) {
 	if state.documentVersions != before+1 {
 		t.Fatalf("the document went from %d versions to %d, want one write", before, state.documentVersions)
 	}
-
+	bySlug := map[string]Entry{}
+	for _, entry := range r.current(t, r.project).Items {
+		bySlug[entry.Definition.Slug] = entry
+	}
+	for _, want := range catalogue {
+		slug := want.definition.Slug
+		got, found := bySlug[slug]
+		if !found || got.Definition.Version != 1 || got.Definition.WrittenVia != ViaSeed || !hasBlock(state.blocks, got.Definition.DocBlock) {
+			t.Errorf("the seed into the existing document left %s as found %t, %+v; want version 1 by the seed naming a block of %s", slug, found, got.Definition, DocumentSlug)
+		}
+		if n := headings(state.text, slug); n != 1 {
+			t.Errorf("%s holds %d headings of %s after the seed into the existing document, want 1", DocumentSlug, n, slug)
+		}
+	}
 	target := 3.0
 	slug := SlugLegionRework
 	evalID := EvalID(r.project, slug)
@@ -232,10 +242,7 @@ func withCatalogue(t *testing.T, change func(entries []catalogueEntry)) {
 // none.
 func (r rig) currentOf(t *testing.T, slug string) (Definition, map[string]Series) {
 	t.Helper()
-	page, err := r.registry.Current(t.Context(), []string{r.project}, "", 100, 0)
-	if err != nil {
-		t.Fatalf("read the evals of %s: %v", r.project, err)
-	}
+	page := r.current(t, r.project)
 	for _, entry := range page.Items {
 		if entry.Definition.Slug == slug {
 			series := map[string]Series{}
@@ -798,6 +805,48 @@ func TestASeedRefusedForItsDocumentIsTriedAgainOnceItIsOne(t *testing.T) {
 	for _, project := range []string{"FILED", "BYPASS"} {
 		state := r.requireSeeded(t, project)
 		t.Logf("%s was seeded once its file went: %d versions", project, state.versions)
+	}
+}
+
+// TestADeletedProjectWhoseSeedFailedIsNotSeededAgain: seeding.note's third outcome, a refusal
+// other than EVALS_DOCUMENT_NOT_A_DOCUMENT. A project whose seed failed is held to be seeded again
+// by the next pass; once the project's row is gone, that next pass's seed is refused
+// PROJECT_NOT_FOUND, which drops the project from the failed set rather than holding it there or
+// in the document-refusal set, so no pass after it tries that project again.
+func TestADeletedProjectWhoseSeedFailedIsNotSeededAgain(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	for _, statement := range []string{
+		`insert into projects (key, name, default_assignee) values ('GONE', 'Removed later', 'alice')`,
+		`create function evals_test_fail_gone() returns trigger language plpgsql as $$
+		begin
+			raise exception 'the test fails GONE''s seed';
+		end $$`,
+		`create trigger evals_test_fail_gone before insert on eval_versions
+		for each row when (new.project_key = 'GONE') execute function evals_test_fail_gone()`,
+	} {
+		if _, err := r.database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("stage GONE: %v", err)
+		}
+	}
+	seeds := &seeding{}
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{r.project, "GONE"}) || !seeds.failed["GONE"] || len(seeds.refused) != 0 {
+		t.Fatalf("the first pass seeded %v, failed %v, refused %v; want %s and GONE seeded, GONE failed and none refused",
+			seeded, seeds.failed, seeds.refused, r.project)
+	}
+	if _, err := r.database.Pool.Exec(ctx, `delete from projects where key = 'GONE'`); err != nil {
+		t.Fatalf("delete GONE: %v", err)
+	}
+	if seeded := r.seedPass(t, seeds); !slices.Equal(seeded, []string{"GONE"}) || len(seeds.failed) != 0 || len(seeds.refused) != 0 {
+		t.Fatalf("the pass after GONE was deleted seeded %v, failed %v, refused %v; want GONE tried once and dropped from both sets",
+			seeded, seeds.failed, seeds.refused)
+	}
+	if seeded := r.seedPass(t, seeds); len(seeded) != 0 {
+		t.Errorf("the pass after GONE was refused PROJECT_NOT_FOUND seeded %v, want none", seeded)
 	}
 }
 

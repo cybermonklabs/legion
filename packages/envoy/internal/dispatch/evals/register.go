@@ -255,7 +255,8 @@ type Registered struct {
 // one eval at once both land, in turn, as the next two versions: each takes the eval's lock
 // (lockEval) before it reads the version it writes after. A write of a computed eval that names a
 // field of its computation is refused, and stores nothing (computationField, R5), and so is a
-// write of a min_n no read ranks by (rankedByMinN). A write that adds a series to a logged eval
+// write of a min_n no read ranks by (rankedByMinN), and one that names a series twice
+// (CodeSeriesInvalid, validateRegistration). A write that adds a series to a logged eval
 // that would then hold more than MaxEvalSeries series is refused (CodeSeriesLimit), counted under
 // the eval's lock, so two writes cannot pass the bound together; one that adds none is never
 // refused for the series the eval holds. A write that would store a version of the definition, or
@@ -266,7 +267,11 @@ type Registered struct {
 // rows in the same transaction (relistDays). A write that may write the eval's section, one
 // carrying doc_text or the first of an eval, takes the document's owner lock before it stores
 // anything (lockDocument) and does the section's document work there, in its read phase, queued
-// for the commit after its versions' rows (writeMethod).
+// for the commit after its versions' rows (writeMethod). A write carrying doc_block takes the
+// same lock and reads the document's blocks under it, and is refused (CodeFieldInvalid) where
+// none of them is the block it names: the eval would have no method, and the seed, which writes a
+// section of its own for an eval of the catalogue whose doc_block names no block (ensure), would
+// replace what the write set at the next boot (R5).
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
 	written, err := s.RegisterWith(ctx, change.Project, nil, change)
 	if err != nil {
@@ -377,9 +382,9 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 			return Registered{}, err
 		}
 	}
-	// Each version of a series the write stores, in the order the body names the series; standing
-	// is the eval's series as the write leaves them, so a series the body names twice gets a
-	// version for each change it makes.
+	// Each version of a series the write stores, in the order the body names the series, each once
+	// (validateRegistration); standing is the eval's series as the write leaves them, so the first
+	// series an eval with none registers is its headline.
 	standing := maps.Clone(series)
 	var seriesWrites []seriesWrite
 	for index, seriesChange := range change.Series {
@@ -418,6 +423,23 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 			if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller); err != nil {
 				return Registered{}, err
 			}
+		}
+	case change.DocBlock.Set:
+		document, documentFound, err := lockDocument(ctx, w)
+		if err != nil {
+			return Registered{}, err
+		}
+		held := false
+		if documentFound {
+			blocks, err := s.documents.Blocks(ctx, document.id)
+			if err != nil {
+				return Registered{}, fmt.Errorf("read the blocks of the %s document of %s: %w", DocumentSlug, w.project, err)
+			}
+			held = hasBlock(blocks, change.DocBlock.Value)
+		}
+		if !held {
+			return Registered{}, fieldRefusal(CodeFieldInvalid, "doc_block", "doc_block %q names no block of the project's %s document, which holds the eval's method",
+				change.DocBlock.Value, DocumentSlug)
 		}
 	case !found && next.DocBlock == "":
 		document, documentFound, err := lockDocument(ctx, w)
@@ -735,9 +757,12 @@ var (
 )
 
 // validateRegistration refuses a register write whose fields the tables would refuse, whose keys
-// an index entry cannot hold (maxKeyBytes), whose links are not links, or that names more series
-// than an eval holds (MaxEvalSeries), before any transaction opens, naming the field it refuses as
-// the body spells it.
+// an index entry cannot hold (maxKeyBytes), whose links are not links, that names one series twice,
+// or that names more series than an eval holds (MaxEvalSeries), before any transaction opens,
+// naming the field it refuses as the body spells it. A series named again and again would store a
+// version, and log a change row, for each entry that changes it, and relist its day rows for each
+// that moves its listing, in the one transaction that holds the eval's lock: a body of a megabyte
+// holds some 30,000 entries.
 func validateRegistration(change Registration) error {
 	if !slugPattern.MatchString(change.Slug) {
 		return fieldRefusal(CodeSlugInvalid, "slug", "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", change.Slug)
@@ -790,6 +815,7 @@ func validateRegistration(change Registration) error {
 			return err
 		}
 	}
+	named := make(map[string]int, len(change.Series))
 	for index, series := range change.Series {
 		at := fmt.Sprintf("series[%d]", index)
 		if err := validSeriesName(series.Series); err != nil {
@@ -798,6 +824,11 @@ func validateRegistration(change Registration) error {
 		if reason := keyTooLong(at+".series", series.Series); reason != "" {
 			return fieldRefusal(CodeKeyTooLong, at+".series", "%s", reason)
 		}
+		if earlier, twice := named[series.Series]; twice {
+			return fieldRefusal(CodeSeriesInvalid, at+".series", "series %q is named at series[%d] already, and a register write names each series once, with every field it sets of it",
+				series.Series, earlier)
+		}
+		named[series.Series] = index
 		if series.Role.Set && !slices.Contains(roles, series.Role.Value) {
 			return fieldRefusal(CodeFieldInvalid, at+".role", "series %s: role %q is not one of %s", series.Series, series.Role.Value, strings.Join(roles, ", "))
 		}

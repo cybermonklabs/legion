@@ -271,12 +271,17 @@ const attributionCandidateBound = 25
 
 // attributionCandidates is the issues a pull request's five sources name, best first: the
 // ranking is the file's, every candidate of a source before any of the next, and within a
-// source the order the keys were read in. The union's arms are written in that ranked order,
-// so the text reads as the list at the top of this file reads. The two link sources compare
-// URLs lowercased on both sides: GitHub's owner and repository names are case-insensitive, its
-// answers spell them as their owners do (`Acme/Widgets`), and Dispatch stores an issue's GitHub
-// link lowercased (refs.ExternalRepo) or as a person typed it (issue_external_links_url_lower
-// serves the comparison).
+// source the order the keys were read in. The issues one place names together — the issues whose
+// link is the pull request's URL, or those whose link is the GitHub issue one citation names —
+// rank by key in byte order (`collate "C"`), and so do the statements that order the candidates
+// again, so two databases holding the same links rank them alike whatever order the links were
+// stored in: the first held one is the pull request's issue, and the evals' owner keys carry the
+// whole order (evals/delivery_days.go, attributionListOf). The union's arms are written in that
+// ranked order, so the text reads as the list at the top of this file reads. The two link sources
+// compare URLs lowercased on both sides: GitHub's owner and repository names are case-insensitive,
+// its answers spell them as their owners do (`Acme/Widgets`), and Dispatch stores an issue's
+// GitHub link lowercased (refs.ExternalRepo) or as a person typed it
+// (issue_external_links_url_lower serves the comparison).
 //
 // Each link source compares a link with every spelling of the URL it looks for: the URL itself,
 // and the URL under the other name of each rename pair that names it (refs.URLSpellingsSQL). So
@@ -300,7 +305,7 @@ func attributionCandidates(renames refs.Renames, c attributionColumns) string {
 		union all
 		select m.key, '` + string(sourceCommitMessage) + `', 4, m.n
 			from unnest(` + c.CommitKeys + `) with ordinality m(key, n) join issues i on i.key = m.key
-	) s order by s.rank, s.n limit ` + strconv.Itoa(attributionCandidateBound)
+	) s order by s.rank, s.n, s.key collate "C" limit ` + strconv.Itoa(attributionCandidateBound)
 }
 
 // attributionHeld is the condition one candidate passes to be the pull request's issue: it
@@ -362,7 +367,7 @@ select c.key, c.source, ` + attributionHeld(renames, attributionOneRepo) + ` as 
 from candidates c
 	left join issues i on i.key = c.key
 	` + refs.IssueRepoJoin + `
-order by c.rank, c.n`
+order by c.rank, c.n, c.key collate "C"`
 }
 
 // attributionRowColumns are a stored row's own columns, aliased src, which the two statements over
@@ -408,7 +413,7 @@ func attributionBatchQuery(renames refs.Renames) string {
 			where ` + attributionHeld(renames, "c.pr_repo") + `
 		), picked as (
 			select distinct on (pr_repo, pr_number) pr_repo, pr_number, key
-			from held order by pr_repo, pr_number, rank, n
+			from held order by pr_repo, pr_number, rank, n, key collate "C"
 		), resolved as (
 			select src.repo, src.number, p.key, src.issue_key is distinct from p.key as changed
 			from batch src
@@ -454,7 +459,7 @@ func resolvedCandidatesQuery(renames refs.Renames) string {
 		from candidates c
 			left join issues i on i.key = c.key
 			` + refs.IssueRepoJoin + `
-		order by c.pr_repo, c.pr_number, c.rank, c.n`
+		order by c.pr_repo, c.pr_number, c.rank, c.n, c.key collate "C"`
 }
 
 // Attributor attributes pull requests to issues by the rename pairs this process read at boot
@@ -553,7 +558,7 @@ func (a *Attributor) resolveStoredIssueKey(ctx context.Context, pool *store.Pool
 // over — so the two cannot come to answer one list differently.
 //
 // The pick is made in two places, not one: a whole batch of stored rows is picked for in SQL
-// instead, by attributionBatchQuery's `distinct on (pr_repo, pr_number) … order by … rank, n`
+// instead, by attributionBatchQuery's `distinct on (pr_repo, pr_number) … order by … rank, n, key`
 // over its `held` term, since resolving a batch row by row would pay for a repository walk per
 // row (AttributePullRequests). The two are one rule because they read one ranked list and one
 // holding: attributionCandidates ranks, attributionHeld holds, attributionSubjects names the

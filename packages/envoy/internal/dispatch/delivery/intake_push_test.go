@@ -82,13 +82,13 @@ func pushEnvelope(t *testing.T, owner, name, ref string) contracts.Envelope {
 // A push of a branch reaches the intake on notifications.github.<owner>.<repo>.push.branch.<branch>,
 // and the intake hands it to its importer, once, with the payload's repository and the branch its
 // ref names, dots and slashes included, on a context that holds no connection of the pool. A push
-// of a tag is handed nowhere. The intake binds its durable and routes a message only while its
-// settings cache holds a source repository's rule (Run, deliver), so delivery settings are saved
-// before the cache's one read, though a push's handler reads none of them (handlePushEnvelope). A
-// push is no delivery fact, so neither push moves the event freshness of the source that reads its
-// repository (last_event_at). A workflow run of a file the source's rule does not name does move
-// it: route answers such a run handled, and routeWorkflowEnvelope fetches nothing for it, so it
-// costs no GitHub call. So the freshness is one the intake writes, and its staying null after the
+// of a tag is handed nowhere. A project's delivery settings are saved for the freshness check below
+// alone, since the event freshness is stamped on the source that reads the repository; a push's
+// handler reads none of them (handlePushEnvelope). A push is no delivery fact, so neither push
+// moves the event freshness of the source that reads its repository (last_event_at). A workflow
+// run of a file the source's rule does not name does move it: route answers such a run handled,
+// and routeWorkflowEnvelope fetches nothing for it, so it costs no GitHub call. So the freshness is
+// one the intake writes, and its staying null after the
 // pushes shows that they did not write it.
 func TestTheIntakeHandsABranchPushToItsImporter(t *testing.T) {
 	t.Parallel()

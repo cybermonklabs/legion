@@ -844,8 +844,9 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 
 // evalValues is what one answer states its evals' values from, read in its snapshot
 // (readEvalValues): each eval's values where the stored figures answer it, the indexes of those
-// they do not (unstated) with the day rows and the first days their values are folded from, the
-// oldest updated_at of the stored rows read, and the refresher's age.
+// they do not (unstated) with the day rows and the first days their values are folded from, how far
+// each family's stored rows are whole through (built), the oldest updated_at of the stored rows
+// read, and the refresher's age.
 type evalValues struct {
 	entries  []evals.Entry
 	ranges   evalRanges
@@ -853,6 +854,7 @@ type evalValues struct {
 	unstated []int
 	rows     []evals.WindowRow
 	firsts   map[string]map[string]time.Time
+	built    evals.Built
 	oldest   *time.Time
 	age      time.Duration
 	aged     bool
@@ -863,12 +865,14 @@ type evalValues struct {
 // that reads the deploy repository is stated from the rows kept for its project's repositories in
 // deployRepos, those recorded with the stored rows (evals.DeployRepoOf, evals.DeployReposIn), so a
 // move of a project's repositories is this selection. It reads each series' first day
-// (evals.FirstDaysIn), and for an offered range (evals.FiguresOffered: a window and a compare range
-// each of a length the Evals tab offers, of the projects' own rows or of the one repository named)
-// the stored figures of that cut (evals.ReadStoredFiguresIn: the read of how far each project is
-// built and which of its evals a stale mark of the cut names, then two primary-key reads of the
-// evals they serve), from which it states each eval they answer. An eval they cannot answer (an
-// eval of a project whose figures are not built yet, one whose rows in the cut a move of a default
+// (evals.FirstDaysIn), how far the stored rows of each computed eval's family are whole through as
+// of now's UTC day (evals.BuiltIn, one read of the serving records, made where an eval's rows are a
+// walk's), and for an offered range (evals.FiguresOffered: a window and a compare range each of a
+// length the Evals tab offers, of the projects' own rows or of the one repository named) the
+// stored figures of that cut (evals.ReadStoredFiguresIn: the read of how far each project is built
+// and which of its evals a stale mark of the cut names, then two primary-key reads of the evals
+// they serve), from which it states each eval they answer. An eval they cannot answer (an eval of
+// a project whose figures are not built yet, one whose rows in the cut a move of a default
 // repository moved and the refresher has not folded again, or one whose stored row was folded
 // under another fold key than the eval's) and every eval of any other read, one that names two or
 // more repositories among them, is stated from one read of the day rows of the window and the
@@ -886,6 +890,9 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 		return read, nil
 	}
 	if read.firsts, err = evals.FirstDaysIn(ctx, tx, entries, deployRepos); err != nil {
+		return evalValues{}, err
+	}
+	if read.built, err = evals.BuiltIn(ctx, tx, entries, now); err != nil {
 		return evalValues{}, err
 	}
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
@@ -932,7 +939,11 @@ func (v *evalValues) earliest(at time.Time) {
 // items is each of v's evals with its values, in the order read, and the answer's freshness: the
 // oldest updated_at of the rows its values fold, and the refresher's age. It folds the day rows of
 // the evals the stored figures did not answer (evals.SeriesValuesOf) and reads nothing, so it runs
-// once the snapshot v was read in is committed.
+// once the snapshot v was read in is committed. Every eval's values, the stored figures' and the
+// day rows' alike, are stated under one rule (evals.Built.Withhold): a window or a compare range
+// that holds a day before today its family's stored rows are not whole through answers no value,
+// as one before its series' first day does, until the walk has built the day (R12); the verdict
+// judges what is stated.
 func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	byEval := map[string][]evals.WindowRow{}
 	for _, row := range v.rows {
@@ -945,11 +956,12 @@ func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	}
 	items := make([]evalItem, len(v.entries))
 	for index, entry := range v.entries {
+		series := v.built.Withhold(entry.Definition, v.values[index], v.ranges.window, v.ranges.compare)
 		items[index] = evalItem{
 			Definition: entry.Definition,
 			Owner:      evalOwnerOf(entry.Definition),
-			Series:     v.values[index],
-			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(v.values[index])),
+			Series:     series,
+			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(series)),
 		}
 	}
 	freshness := evalFreshness{RowsUpdatedAt: v.oldest}

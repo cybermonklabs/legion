@@ -150,31 +150,24 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 	}
 }
 
-// A read that finds no delivery-on project holds no rule, so an intake does not bind (routes); the
-// first settings saved are stored and close the channel Changed handed out before them; and a
-// project whose delivery is turned off gives no rule again.
+// A read that finds no delivery-on project holds no rule; the first settings saved are stored; and
+// a project whose delivery is turned off gives no rule again.
 func TestTheSettingsCacheHoldsTheRulesOfDeliveryOnProjects(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	cache := newSettingsCache(pool, nil, nil, nil)
-	if cache.Load() != nil || cache.routes() {
+	if cache.Load() != nil {
 		t.Fatalf("a cache that has read nothing holds %+v, want nothing", cache.Load())
 	}
-	if !cache.reload(ctx) || cache.Load() == nil || cache.routes() {
+	if !cache.reload(ctx) || cache.Load() == nil || len(cache.Load().All()) != 0 {
 		t.Fatalf("a read with no delivery settings holds %+v, want rules with no repository", cache.Load().All())
 	}
 
-	changed := cache.Changed()
 	seeded := seedDeliverySettings(t, ctx, pool)
 	if !cache.reload(ctx) {
 		t.Fatal("read the seeded settings")
 	}
-	select {
-	case <-changed:
-	default:
-		t.Fatal("storing the first rules did not close the channel Changed handed out before them")
-	}
-	if held, ok := cache.Load().For(seeded.DeployRepo); !ok || held.DeployWorkflowPath != seeded.DeployWorkflowPath || !cache.routes() {
+	if held, ok := cache.Load().For(seeded.DeployRepo); !ok || held.DeployWorkflowPath != seeded.DeployWorkflowPath {
 		t.Fatalf("held rule of %s = %+v (%t), want the seeded rule", seeded.DeployRepo, held, ok)
 	}
 
@@ -184,7 +177,7 @@ func TestTheSettingsCacheHoldsTheRulesOfDeliveryOnProjects(t *testing.T) {
 	if !cache.reload(ctx) {
 		t.Fatal("read the settings with delivery off")
 	}
-	if cache.routes() {
+	if len(cache.Load().All()) != 0 {
 		t.Fatalf("held rules with the project's delivery off = %+v, want none", cache.Load().All())
 	}
 }
@@ -247,4 +240,56 @@ func TestTheCacheReloadsOnASaveAndOnADefaultRepositoryMove(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("the cache holds %+v two seconds after the projects wake, want the source's rule under %s alone", cache.Load().All(), moved)
 	})
+}
+
+// SettingsCache.Read's channel is closed by the first read that answers, whatever it found, and by
+// no read that failed: a read on a cancelled context fails and leaves it open; a read that finds a
+// project's settings answers, holds its source's rule, and closes it; and a first read that finds
+// no delivery-on project closes it, holding rules with no repository.
+func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	closed := func(cache *SettingsCache) bool {
+		select {
+		case <-cache.Read():
+			return true
+		default:
+			return false
+		}
+	}
+
+	cache := newSettingsCache(pool, nil, nil, nil)
+	if closed(cache) {
+		t.Fatal("a settings cache that has read nothing has its first read closed")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if cache.reload(cancelled) {
+		t.Fatal("control: a read on a cancelled context answered")
+	}
+	if closed(cache) {
+		t.Fatal("a read that failed closed the settings cache's first read")
+	}
+
+	seeded := seedDeliverySettings(t, ctx, pool)
+	if !cache.reload(ctx) {
+		t.Fatal("read the seeded settings")
+	}
+	if _, ok := cache.Load().For(seeded.DeployRepo); !ok {
+		t.Fatalf("held rules after the first read = %+v, want the rule of %s", cache.Load().All(), seeded.DeployRepo)
+	}
+	if !closed(cache) {
+		t.Fatal("a read that found a project's settings left the settings cache's first read open")
+	}
+
+	if _, err := pool.Exec(ctx, `update project_delivery_settings set delivery = false where project_key = $1`, deliveryProject); err != nil {
+		t.Fatalf("turn the project's delivery off: %v", err)
+	}
+	empty := newSettingsCache(pool, nil, nil, nil)
+	if !empty.reload(ctx) || !closed(empty) {
+		t.Fatal("a first read that found no delivery-on project left the settings cache's first read open")
+	}
+	if held := empty.Load(); held == nil || len(held.All()) != 0 {
+		t.Fatalf("held rules with no delivery-on project = %+v, want rules with no repository", held.All())
+	}
 }

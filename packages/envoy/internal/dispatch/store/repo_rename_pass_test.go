@@ -4,13 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // renamedRepositoriesSeed writes a row under the old name sjawhar/legion in every field of the
@@ -602,6 +608,228 @@ func TestTheRenamePassKeepsTheRowsOfOwnerKeysThatRenameApart(t *testing.T) {
 	}
 	if !maps.EqualFunc(deleted, want, slices.Equal[[]string]) {
 		t.Errorf("logged deletions %v, want %v", deleted, want)
+	}
+}
+
+// evalLineHoldKey is the advisory lock a held statement of the pass waits for (holdTheEvalLine).
+const evalLineHoldKey = int64(0x524E414D0001)
+
+// holdTheEvalLine puts a trigger of the test's database alone before each statement that runs op
+// on table. The trigger lifts the lock timeout of the statement's transaction for the rest of it
+// (repoRenameLockTimeout), so a test that holds a lock the pass's line of the eval tables waits for
+// is no race against its 5 s. Given hold, it then makes the statement wait, before it reads a row,
+// for an advisory lock the answered transaction holds, which the test commits to let the line on.
+// Given no hold it answers nil.
+func holdTheEvalLine(t *testing.T, store *Store, op, table string, hold bool) pgx.Tx {
+	t.Helper()
+	ctx := context.Background()
+	for _, statement := range []string{
+		`create function rename_pass_test_hold() returns trigger language plpgsql as $$
+		begin
+			perform set_config('lock_timeout', '0', true);
+			if tg_argv[0]::boolean then
+				perform pg_advisory_xact_lock(tg_argv[1]::bigint);
+			end if;
+			return null;
+		end $$`,
+		fmt.Sprintf(`create trigger rename_pass_test_hold before %s on %s for each statement
+			execute function rename_pass_test_hold('%t', '%d')`, op, table, hold, evalLineHoldKey),
+	} {
+		if _, err := store.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("hold the pass at its %s of %s: %v", op, table, err)
+		}
+	}
+	if !hold {
+		return nil
+	}
+	holder, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the hold of the pass: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `select pg_advisory_xact_lock($1)`, evalLineHoldKey); err != nil {
+		t.Fatalf("take the hold's lock: %v", err)
+	}
+	return holder
+}
+
+// awaitTheHeldLine waits for a statement of the pass to wait at its hold (holdTheEvalLine), read
+// through holder's own connection, and answers the pid of the pass's backend. It fails the test
+// where the pass answers on passed first.
+func awaitTheHeldLine(t *testing.T, holder pgx.Tx, passed <-chan RepoRenamePass) uint32 {
+	t.Helper()
+	return testwait.Until(t, "the pass to wait at its hold", func() (uint32, bool) {
+		select {
+		case pass := <-passed:
+			t.Fatalf("the pass answered %+v before it reached its hold", pass)
+		default:
+		}
+		var pid uint32
+		if err := holder.QueryRow(context.Background(), `
+			select coalesce((select pid from pg_locks where locktype = 'advisory' and not granted and objsubid = 1
+				and classid = (($1::bigint >> 32) & 4294967295)::oid and objid = ($1::bigint & 4294967295)::oid limit 1), 0)
+		`, evalLineHoldKey).Scan(&pid); err != nil {
+			t.Fatalf("read the waits at the hold: %v", err)
+		}
+		return pid, pid != 0
+	})
+}
+
+// requireNoDeadlock fails the test where err is not nil, saying where it is Postgres's deadlock.
+func requireNoDeadlock(t *testing.T, what string, err error) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == "40P01":
+		t.Errorf("%s deadlocked (SQLSTATE 40P01): %v", what, err)
+	case err != nil:
+		t.Errorf("%s: %v", what, err)
+	}
+}
+
+// The line of the eval tables writes owner rows before day rows (its comment says why), where the
+// eval_days change trigger, the one other writer of both, writes a key's owner row after its day
+// rows, in the statement that writes them. So the line takes eval_days' own lock first, before any
+// owner row: the place the eval tables' lock order gives eval_days (evals/defaults.go). Over
+// renameOwnersSeed, the line is held at its first statement on the day rows, its owner rows renamed
+// by then, and a refresher of an earlier build, as a roll runs one, rewrites the day row of the
+// plain key of the old name, whose trigger writes that key's owner row: the write queues on
+// eval_days' lock behind the line before it locks any row, holding no transaction id, and, once the
+// line is let on and has committed, finds no row of the old name left to write. The pass fails
+// nowhere and leaves nothing on the old name. Red where the line takes no lock of eval_days first:
+// the write then locks the day row beside the held line and waits for the owner row the line
+// renamed, and the line, let on, waits for that day row, a cycle Postgres breaks by failing one of
+// the two with `deadlock detected` (40P01).
+func TestTheRenamePassLocksTheDayRowsBeforeTheOwnerRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renameOwnersSeed)
+	holder := holdTheEvalLine(t, store, "delete", "eval_days", true)
+	passed := make(chan RepoRenamePass, 1)
+	go func() { passed <- RewriteRenamedRepositories(ctx, store.Pool, pairs) }()
+	line := awaitTheHeldLine(t, holder, passed)
+
+	conn, err := store.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire the refresher's connection: %v", err)
+	}
+	writer := conn.Conn().PgConn().PID()
+	written := make(chan error, 1)
+	go func() {
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `update eval_days set n = n + 1 where project_key = ':sjawhar/legion|'`)
+			return err
+		})
+		conn.Release()
+		written <- err
+	}()
+	// queued is what the refresher's write waits for behind the line, by pg_locks, and whether it
+	// holds a transaction id, a row it wrote, while it waits.
+	type queued struct {
+		lock string
+		xid  bool
+	}
+	wait := testwait.Until(t, "the refresher's write of a day row to queue behind the held line", func() (queued, bool) {
+		select {
+		case err := <-written:
+			t.Fatalf("the refresher's write answered (%v) beside the held line, want it to queue behind the line", err)
+		default:
+		}
+		var q queued
+		if err := holder.QueryRow(ctx, `
+			select coalesce((select l.locktype || ' ' || coalesce(l.relation::regclass::text, '-') || ' ' || l.mode
+					from pg_locks l where l.pid = $1 and not l.granted and $2 = any(pg_blocking_pids($1)) limit 1), ''),
+				exists (select 1 from pg_locks where pid = $1 and locktype = 'transactionid' and granted)
+		`, writer, line).Scan(&q.lock, &q.xid); err != nil {
+			t.Fatalf("read the waits of the refresher's write: %v", err)
+		}
+		return q, q.lock != ""
+	})
+	if wait.lock != "relation eval_days RowExclusiveLock" || wait.xid {
+		t.Errorf("the refresher's write waits behind the line for %q, holding a transaction id %t; want it to wait for eval_days' lock, holding none",
+			wait.lock, wait.xid)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("let the line on: %v", err)
+	}
+	pass := testwait.Receive(t, "the rename pass", passed)
+	requireNoDeadlock(t, "the refresher's write", testwait.Receive(t, "the refresher's write", written))
+	if pass.Failures != 0 || pass.Left != noneLeft {
+		t.Errorf("the pass = %+v (%v), want no failure and nothing left", pass, pass.Err())
+	}
+}
+
+// renamedDefaultsSeed holds the rename pair sjawhar/legion to cybermonklabs/legion and two projects
+// that publish the old name as their default, BRAVO's published row written before ALPHA's, so a
+// read of the published defaults in the table's own order meets BRAVO's first.
+const renamedDefaultsSeed = `
+	insert into projects (key, name, default_assignee, default_repo) values
+		('ALPHA', 'Alpha', 'alice', 'sjawhar/legion'),
+		('BRAVO', 'Bravo', 'alice', 'sjawhar/legion');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('sjawhar/legion', 'ALPHA', '{"kind":"user","id":"alice"}', 'cybermonklabs/legion');
+	insert into eval_days_defaults (project_key, repo) values ('BRAVO', 'sjawhar/legion'), ('ALPHA', 'sjawhar/legion');
+`
+
+// The line of the eval tables locks the published defaults it moves in the byte order of their
+// keys, the order the eval tables' lock order gives them (evals/defaults.go), which a refresher's
+// commit of a move of the defaults keeps too (evals.publishDefaults). Over renamedDefaultsSeed, a
+// transaction holds BRAVO's published default, as such a commit that reached it would, and the
+// pass runs: its line waits for BRAVO's row holding ALPHA's, and, once let on, marks both projects'
+// cuts of the old and the new name and publishes the new name for both. Red where the line locks
+// the rows in the table's own order, which meets BRAVO's first: it then waits for BRAVO's holding no
+// lock of ALPHA's, the other way round from the commit, and the two deadlock where the commit holds
+// ALPHA's and waits for BRAVO's while the line holds BRAVO's and waits for ALPHA's.
+func TestTheRenamePassLocksThePublishedDefaultsInTheOrderOfTheirKeys(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renamedDefaultsSeed)
+	holdTheEvalLine(t, store, "delete", "eval_day_owners", false)
+	holder, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the hold of BRAVO's published default: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `select from eval_days_defaults where project_key = 'BRAVO' for update`); err != nil {
+		t.Fatalf("hold BRAVO's published default: %v", err)
+	}
+	passed := make(chan RepoRenamePass, 1)
+	go func() { passed <- RewriteRenamedRepositories(ctx, store.Pool, pairs) }()
+	testwait.Until(t, "the pass to wait for BRAVO's published default", func() (bool, bool) {
+		select {
+		case pass := <-passed:
+			t.Fatalf("the pass answered %+v while BRAVO's published default was held, want it to wait for it", pass)
+		default:
+		}
+		var waiting bool
+		if err := holder.QueryRow(ctx, `select exists (select 1 from pg_locks where not granted and pg_backend_pid() = any(pg_blocking_pids(pid)))`).Scan(&waiting); err != nil {
+			t.Fatalf("read the waits behind the hold: %v", err)
+		}
+		return waiting, waiting
+	})
+	probe, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the probe of ALPHA's published default: %v", err)
+	}
+	_, err = probe.Exec(ctx, `select from eval_days_defaults where project_key = 'ALPHA' for update nowait`)
+	_ = probe.Rollback(ctx)
+	if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Errorf("while the line waited for BRAVO's published default, a lock of ALPHA's answered %v; want SQLSTATE 55P03, the line holding it", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("let the line on: %v", err)
+	}
+	if pass := testwait.Receive(t, "the rename pass", passed); pass.Failures != 0 || pass.Left != noneLeft {
+		t.Errorf("the pass = %+v (%v), want no failure and nothing left", pass, pass.Err())
+	}
+	for query, want := range map[string]string{
+		`select string_agg(project_key || '=' || repo, ' ' order by project_key) from eval_days_defaults`: "ALPHA=cybermonklabs/legion BRAVO=cybermonklabs/legion",
+		`select string_agg(project_key || ' ' || repo, ' | ' order by project_key, repo collate "C") from eval_figure_cuts_stale`: "ALPHA cybermonklabs/legion | ALPHA sjawhar/legion | " +
+			"BRAVO cybermonklabs/legion | BRAVO sjawhar/legion",
+	} {
+		if got := readText(t, store, query); got != want {
+			t.Errorf("%s\n= %s\nwant %s", query, got, want)
+		}
 	}
 }
 

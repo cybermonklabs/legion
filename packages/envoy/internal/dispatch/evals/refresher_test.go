@@ -359,7 +359,7 @@ func (r *refresherRig) changesHead(t *testing.T) delivery.ChangeCursor {
 // evalDayChanges is every eval_days change of an eval logged after seq, as `<eval id> <first
 // day>..<last day>`, in seq order. An eval_days change that names no day is left out: the
 // refresher's word that the day rows stand at the delivery settings (delivery.SettingsApplied),
-// that it recorded the settings they stand built under (recordBuiltUnder), or that the project
+// that it recorded the rules they stand built under (recordRules, recordRule), or that the project
 // judging the delivery views moved (delivery.JudgingMoved).
 func (r *refresherRig) evalDayChanges(t *testing.T, after int64) []string {
 	t.Helper()

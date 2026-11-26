@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -1182,6 +1181,7 @@ func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
 // view. Read as a change pruned in its time, the cursor would read only the change the prune kept
 // after it, which touches no timeline, and the view would never learn of the merge.
 func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, func(hub *deliveryHub) {
 		hub.dial = func(context.Context) (*pgx.Conn, error) { return nil, context.DeadlineExceeded }
 	})
@@ -2682,18 +2682,20 @@ func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, "")))
 	snapshot := conn.snapshot(t, "p")
 
-	upsertPR(t, rig.database, hubPR(2, rig.clock.Now().Add(-time.Hour)))
+	// The second pull request was open five hours where the first was open two (hubPR), so the
+	// opened-to-merge spread moves, and the timeline's measures with it: the one delta sets the
+	// measures beside the window. No deploy shipped it, so no deploy or lead-time-to-production
+	// measure moves.
+	second := hubPR(2, rig.clock.Now().Add(-time.Hour))
+	second.CreatedAt = new(second.MergedAt.Add(-5 * time.Hour))
+	upsertPR(t, rig.database, second)
 	delta := conn.delta(t, "p")
 	set, items, mapsChanged, counts := liveSections(delta)
 	if !slices.Equal(items, []string{"prs"}) || !slices.Equal(liveUpsertIDs(t, delta, "prs"), []string{"acme/widgets#2"}) || len(delta.Items["prs"].Remove) != 0 {
 		t.Fatalf("delta items = %v, prs upsert %v remove %v; want acme/widgets#2 upserted alone", items, liveUpsertIDs(t, delta, "prs"), delta.Items["prs"].Remove)
 	}
-	// The timeline's measures do not move, so the delta sets the window alone. No deploy shipped
-	// the pull request, so no deploy or lead-time-to-production measure moves; it was open two
-	// hours as the first was (hubPR), so the opened-to-merge spread stays; rework share stays 0,
-	// a share that states no count of the merged pull requests.
-	if !slices.Equal(set, []string{"window"}) || len(mapsChanged) != 0 {
-		t.Fatalf("delta set = %v, maps = %v; want the window alone, and no map", set, mapsChanged)
+	if !slices.Equal(set, []string{"measures", "window"}) || len(mapsChanged) != 0 {
+		t.Fatalf("delta set = %v, maps = %v; want measures and window, and no map", set, mapsChanged)
 	}
 	var held struct {
 		FacetCounts map[string]map[string]int `json:"facet_counts"`
@@ -3227,6 +3229,11 @@ func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
 	snapshot := conn.snapshot(t, "b")
 	requireSameBody(t, "the board's first snapshot", snapshot.Body,
 		getBody(t, rig.handler, windowTarget(t, legionBoardView, snapshot.Body, "")))
+	// The listener's connection and the relay's feed each mark the board (dirtyLegionViews,
+	// applyFeed): both are answered before the sampler's rows are written, so no recompute reads
+	// them half written.
+	rig.waitFor(t, 0, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
+	rig.settle(t)
 
 	// The sampler's next read finds the implementer's child in review, with no role in a turn.
 	held := snapshot.Body
@@ -3322,32 +3329,33 @@ func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 }
 
 // TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce: a delivery read takes each facet any
-// number of times and every other key it reads once, so a query naming the search or the
-// Pipeline's at twice is refused naming it, as one naming from or to twice is
-// (TestADeliveryReadRefusesARepeatedWindowKey). A timeline or measures view is read as its GET
-// route reads its query, so it refuses the search named twice too, and takes its facets repeated.
+// number of times and every other key it reads once, so GET /api/v1/delivery/timeline and
+// /api/v1/delivery/measures with the search named twice, and GET /api/v1/delivery/pipeline with
+// its at named twice, are refused naming it, as one naming from or to twice is
+// (TestADeliveryReadRefusesARepeatedWindowKey), and the timeline answers its facets repeated. A
+// timeline or measures view is read as its GET route reads its query, so it refuses the search
+// named twice too, and takes its facets repeated.
 func TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
 	facets := url.Values{"repo": {"acme/one", "acme/two"}, "priority": {"P0", "P1"}, "q": {"fix"}}
-	if _, _, err := parseDeliveryWindowQuery(facets); err != nil {
-		t.Errorf("the timeline's query %s: %v, want its facets taken repeated", facets.Encode(), err)
+	if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/timeline?"+facets.Encode(), nil, "alice"); response.Code != http.StatusOK {
+		t.Errorf("GET the timeline of %s: status %d, body %.200s; want 200, its facets taken repeated", facets.Encode(), response.Code, response.Body.String())
 	}
 	for _, refused := range []struct {
-		read, key string
-		query     url.Values
-		parse     func(url.Values) error
+		route, key string
+		query      url.Values
 	}{
-		{"the timeline", "q", url.Values{"q": {"fix", "revert"}}, func(query url.Values) error {
-			_, _, err := parseDeliveryWindowQuery(query)
-			return err
-		}},
-		{"the Pipeline", "at", url.Values{"at": {"2026-11-14T00:00:00Z", "2026-11-07T00:00:00Z"}}, func(query url.Values) error {
-			// The check getDeliveryPipeline makes before it reads at.
-			return repeatedQueryKey(query, deliveryPipelineOneValueKeys)
-		}},
+		{"/api/v1/delivery/timeline", "q", url.Values{"q": {"fix", "revert"}}},
+		{"/api/v1/delivery/measures", "q", url.Values{"q": {"fix", "revert"}}},
+		{"/api/v1/delivery/pipeline", "at", url.Values{"at": {"2026-11-14T00:00:00Z", "2026-11-07T00:00:00Z"}}},
 	} {
-		var apiErr *apiError
-		if err := refused.parse(refused.query); !errors.As(err, &apiErr) || apiErr.code != "INVALID_QUERY" || !strings.Contains(apiErr.message, strconv.Quote(refused.key)) {
-			t.Errorf("%s's query %s: %v, want INVALID_QUERY naming %s", refused.read, refused.query.Encode(), err, refused.key)
+		target := refused.route + "?" + refused.query.Encode()
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		var refusal evalRefusal
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Error, strconv.Quote(refused.key)) {
+			t.Errorf("GET %s: status %d, body %.200s; want 400 INVALID_QUERY naming %s", target, response.Code, response.Body.String(), refused.key)
 		}
 	}
 	window := DeliveryLiveWindow{Preset: new(7)}
@@ -3370,6 +3378,7 @@ func TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce(t *testing.T) {
 // rather than held as a view whose every answer shows days of the year 0. The first at whose days
 // all lie in the year 1 is held.
 func TestAPipelineViewWhoseShownDaysStartBeforeYearOneIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, refused := range []struct{ at, first string }{
 		{"0001-01-01T12:00:00Z", "0000-12-26"},
 		{"0001-01-06T23:59:59Z", "0000-12-31"},

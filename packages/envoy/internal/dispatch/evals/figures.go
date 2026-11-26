@@ -902,7 +902,9 @@ func movedCuts(moved map[figureGroupKey]map[time.Time]bool) []figureCut {
 // more than the CPUs the process may use. The fold runs inside the server that answers the page
 // reads, in the transaction that writes what it folds, so it takes a few of the server's CPUs and
 // leaves the rest to those reads: it was 0.69 s of the 2.03 s of CPU a production rule's rewrite
-// took at ten times INFRA's size (k8's breakdown at c6c68919), one range after another.
+// took at ten times INFRA's size (k8's breakdown at c6c68919), one range after another. The
+// settings rewrite folds on more (withFoldWorkers): on the farm at ten times INFRA's size its 26,000
+// figures folded on 4 took 380 ms, of which its statements took 250 ms (dispatch://INFRA-2916).
 const figureFoldWorkers = 4
 
 // figurePlan is what one write of a project's stored figures folds of the days it moved, every row
@@ -1064,12 +1066,17 @@ func rangeChunks(ranges []rangeTarget, least, limit int) []int {
 // workers fold the chunks after it and then the days (foldInChunks), and once every range is
 // upserted the gone ranges, the days and the gone days follow (writeAfterRanges). So the range
 // upserts take the rows writeFigures would take, in its order, cut at other boundaries. The first
-// error of a statement ends the folds, and is answered.
+// error of a statement ends the folds, and is answered. It adds the time its statements took to
+// the figureTimes ctx carries, where it carries one (writes).
 func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureScope, workers int) error {
 	ends := rangeChunks(p.ranges, rangeChunkLeast, statementRows)
 	writes := figureWrites{goneRanges: p.goneRanges, goneDays: p.goneDays}
 	held := make([]rangeFigureRow, 0, min(len(p.ranges), statementRows))
 	from := 0
+	times := figureTimesIn(ctx)
+	if times == nil {
+		times = &figureTimes{}
+	}
 	if err := foldInChunks(len(p.ranges)+len(p.days), workers, p.fold, ends, func(chunk int) error {
 		held = held[:0]
 		for index := from; index < ends[chunk]; index++ {
@@ -1080,7 +1087,10 @@ func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureSc
 			}
 		}
 		from = ends[chunk]
-		return upsertRangeFigures(ctx, tx, scope, held)
+		began := time.Now()
+		err := upsertRangeFigures(ctx, tx, scope, held)
+		times.writes += time.Since(began)
+		return err
 	}); err != nil {
 		return err
 	}
@@ -1092,7 +1102,10 @@ func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureSc
 		}
 	}
 	writes.sortByKey()
-	return writeAfterRanges(ctx, tx, scope, writes)
+	began := time.Now()
+	err := writeAfterRanges(ctx, tx, scope, writes)
+	times.writes += time.Since(began)
+	return err
 }
 
 // foldInChunks runs fold of each index below n on up to workers goroutines at once, each taking the
@@ -1216,7 +1229,7 @@ func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[
 		return nil, err
 	}
 	began = time.Now()
-	err = plan.foldAndWrite(ctx, tx, scope, min(runtime.GOMAXPROCS(0), figureFoldWorkers))
+	err = plan.foldAndWrite(ctx, tx, scope, min(runtime.GOMAXPROCS(0), foldWorkersIn(ctx)))
 	times.fold += time.Since(began)
 	if err != nil {
 		return nil, err
@@ -1234,12 +1247,12 @@ func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[
 // in the parts of each project's fold (refoldMoved), summed over the projects it folds: the reads
 // of the moved days (movedFigureDays), the reads of the rows the folds fold (readFigurePlan), with
 // how many statements those sent (DayWindowIn, one a cut of a deploy repository, readFigureGroups)
-// and how many rows they answered, and the folds and their writes (figurePlan.foldAndWrite). A
-// writer that logs them carries one on the context it folds under (withFigureTimes), and a fold
-// on a context that carries none times nothing.
+// and how many rows they answered, and the folds and their writes (figurePlan.foldAndWrite), with
+// the time its statements took of it (writes). A writer that logs them carries one on the context
+// it folds under (withFigureTimes), and a fold on a context that carries none times nothing.
 type figureTimes struct {
-	moved, plan, fold time.Duration
-	reads, rows       int
+	moved, plan, fold, writes time.Duration
+	reads, rows               int
 }
 
 type figureTimesKey struct{}
@@ -1253,6 +1266,25 @@ func withFigureTimes(ctx context.Context, times *figureTimes) context.Context {
 func figureTimesIn(ctx context.Context) *figureTimes {
 	times, _ := ctx.Value(figureTimesKey{}).(*figureTimes)
 	return times
+}
+
+type foldWorkersKey struct{}
+
+// withFoldWorkers is ctx carrying workers, the most goroutines a fold made under it folds on in
+// place of figureFoldWorkers: the settings rewrite's (rewriteSettings), which every view it moves
+// waits for.
+func withFoldWorkers(ctx context.Context, workers int) context.Context {
+	return context.WithValue(ctx, foldWorkersKey{}, workers)
+}
+
+// foldWorkersIn is the most goroutines a fold under ctx folds on: the number ctx carries
+// (withFoldWorkers), figureFoldWorkers where it carries none, and never more than the CPUs the
+// process may use (refoldMoved).
+func foldWorkersIn(ctx context.Context) int {
+	if workers, ok := ctx.Value(foldWorkersKey{}).(int); ok {
+		return workers
+	}
+	return figureFoldWorkers
 }
 
 // foldFiguresInTx is the stored figures' part of a write of day rows by build, in tx, the write's

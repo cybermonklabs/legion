@@ -546,32 +546,13 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		}
 		return keys
 	}
-	// A row whose issue owns no repository is stored under legionfacts.DefaultRepo, which stands
-	// for the project's published default repository (evals.PublishedDefaultIn): the items read
-	// shows and filters that repository, so a default move moves the cut and rewrites no row.
-	published, err := evals.PublishedDefaultIn(ctx, read.tx, read.project)
-	if err != nil {
-		return nil, err
-	}
-	resolve := func(repos map[string]string) map[string]string {
-		for key, repo := range repos {
-			if repo == legionfacts.DefaultRepo {
-				if published == "" {
-					delete(repos, key)
-					continue
-				}
-				repos[key] = published
-			}
-		}
-		return repos
-	}
 	var repos map[string]string
 	if len(read.request.repos) > 0 {
-		stored, err := legionfacts.ReadRepos(ctx, read.tx, keysOf(filings, closed))
+		resolved, err := issueReposIn(ctx, read.tx, read.project, keysOf(filings, closed))
 		if err != nil {
 			return nil, err
 		}
-		repos = resolve(stored)
+		repos = resolved
 		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Key]) })
 		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.request.repos, repos[row.Issue]) })
 	}
@@ -584,11 +565,11 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		keys := keysOf(pageFilings, pageClosed)
 		pageRepos := repos
 		if pageRepos == nil {
-			stored, err := legionfacts.ReadRepos(ctx, read.tx, keys)
+			resolved, err := issueReposIn(ctx, read.tx, read.project, keys)
 			if err != nil {
 				return nil, 0, err
 			}
-			pageRepos = resolve(stored)
+			pageRepos = resolved
 		}
 		issues, err := legionfacts.ReadItemIssues(ctx, read.tx, keys)
 		if err != nil {
@@ -606,9 +587,38 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 	}, nil
 }
 
+// issueReposIn is the repository each of keys, issues of project, resolves to now, read in tx: the
+// one the day rows cut it by (legionfacts.ReadRepos), where legionfacts.DefaultRepo, which a row of
+// an issue that owns no repository is stored under, stands for the project's published default
+// repository (evals.PublishedDefaultIn), so the items read shows and filters that repository and a
+// default move moves the cut and rewrites no row. An issue that resolves to none, or to the default
+// while the project publishes none, has no entry.
+func issueReposIn(ctx context.Context, tx pgx.Tx, project string, keys []string) (map[string]string, error) {
+	repos, err := legionfacts.ReadRepos(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	published, err := evals.PublishedDefaultIn(ctx, tx, project)
+	if err != nil {
+		return nil, err
+	}
+	for key, repo := range repos {
+		if repo == legionfacts.DefaultRepo {
+			if published == "" {
+				delete(repos, key)
+				continue
+			}
+			repos[key] = published
+		}
+	}
+	return repos, nil
+}
+
 // unownedItemRows is unowned-p0's issues: the project's open P0 issues with no owner now
 // (delivery.ListUnownedP0), the count its day rows record, answered in the window alone since
-// the count is of the present.
+// the count is of the present; where the request names repositories, those of the issues that
+// resolve to one of them (issueReposIn), which those repositories' rows count
+// (evals.Store.WriteUnownedP0Day).
 func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	if read.rng.label != evals.RangeWindow {
 		return nil, nil
@@ -616,6 +626,17 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 	issues, err := delivery.ListUnownedP0(ctx, read.tx, read.project)
 	if err != nil {
 		return nil, err
+	}
+	if len(read.request.repos) > 0 {
+		keys := make([]string, len(issues))
+		for index, issue := range issues {
+			keys[index] = issue.Key
+		}
+		repos, err := issueReposIn(ctx, read.tx, read.project, keys)
+		if err != nil {
+			return nil, err
+		}
+		issues = slices.DeleteFunc(issues, func(issue delivery.UnownedIssue) bool { return !slices.Contains(read.request.repos, repos[issue.Key]) })
 	}
 	now := time.Now().UTC()
 	rows := make([]evalItemRow, len(issues))

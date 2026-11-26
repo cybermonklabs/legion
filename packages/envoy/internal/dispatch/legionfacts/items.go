@@ -86,14 +86,15 @@ type ItemRow struct {
 }
 
 // ItemRows turns stored facts rows into the items rows an eval's issue list serves: one row per
-// issue, in the order the rows were given, which is the key order computeKeys and ComputeProject
-// answer in.
+// issue, in the order the rows were given. Its one caller, the eval items route
+// (api/evals_items.go's legionItemSource), gives it the rows of the issues closed in a range as
+// ReadClosedIn answers them, newest close first, each closed at the request (Row.At).
 //
 // The measured time is when the facts were measured: a closed issue's close, the moment its
 // values stopped moving and the moment its Legion evals count it on, whenever its row was last
-// recomputed; and an open issue's row's AsOf, the moment its still-moving facts stand at, which
-// is the reader's own clock once the reader has closed the row there (Row.At, which ReadClosedIn
-// makes). An eval that charts it reads it at the moment it was true.
+// recomputed. An eval that charts it reads it at the moment it was true. A row of an open issue,
+// which ReadClosedIn never answers, would be measured at its AsOf, the moment its still-moving
+// facts stand at.
 //
 // The repo column is repos' entry for the issue, "" for none: the repository the issue resolves
 // to now (ReadRepos), which the items route filters by and the Legion day rows cut by
