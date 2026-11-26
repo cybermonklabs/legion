@@ -61,6 +61,10 @@ type workflowRuntime struct {
 	admission *admit.Admission
 	handlers  []intake.Handler
 	dispatch  dispatch.Client
+	// approvals is Dispatch as the boot's read for the approvals signal reads it (readApprovalsOnce):
+	// the same client as dispatch in the daemon, which has the reads Client leaves out. Nil, in a
+	// runtime a test builds by hand that runs no such read.
+	approvals dispatch.ApprovalReads
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
@@ -743,8 +747,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if !ok {
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
+	dispatchClient := dispatch.New(cfg.DispatchURL, dispatchTransport)
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchTransport), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatchClient, approvals: dispatchClient, repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
@@ -2004,9 +2009,15 @@ const (
 // second census. Only the daemon's stop leaves it unapplied, and the next boot applies its own.
 func (w *workflowRuntime) runBooted(ctx context.Context, bootID int64) {
 	retryUntilApplied(ctx, w.log, bootRetryFirst, bootRetryMax, func(ctx context.Context) error { return w.booted(ctx, bootID) })
-	// The boot's read of GitHub's merge queue follows the boot fact, on the same backoff: the fact
-	// records that the queue is kept from now on, and the read says what stood in it.
-	w.retryQueueBootRead(ctx, bootID, bootRetryFirst, bootRetryMax)
+	// The boot's reads of GitHub's merge queue and of Dispatch's open asks follow the boot fact,
+	// each on the same backoff: the fact records that the queue and the approvals are kept from now
+	// on, and each read says what stood in them. They run beside each other, so a source that does
+	// not answer leaves the other's signal no less recorded, and each takes a hold mark of its own
+	// (store.ForConcurrentWorker), as the daemon's loops do.
+	var reads sync.WaitGroup
+	reads.Go(func() { w.retryQueueBootRead(store.ForConcurrentWorker(ctx), bootID, bootRetryFirst, bootRetryMax) })
+	reads.Go(func() { w.retryApprovalsBootRead(store.ForConcurrentWorker(ctx), bootID, bootRetryFirst, bootRetryMax) })
+	reads.Wait()
 }
 
 // retryUntilApplied runs apply until it succeeds or ctx ends, waiting first, then twice as long up

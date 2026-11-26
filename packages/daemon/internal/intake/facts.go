@@ -108,6 +108,13 @@ type DispatchIssue struct {
 	// at the observation's Seq, behind the claim's own fence (record.PutDispatchClaim).
 	ClaimedBy  string
 	ClaimKnown bool
+	// Assignee is who the observation shows as the issue's assignee, a login or "" for nobody, and
+	// AssigneeKnown says the observation showed the assignee at all: an event retained from a
+	// Dispatch that did not yet send it says nothing of it. Admission keeps a known one at the
+	// observation's Seq for the approvals signal (record.Store.KeepIssueAssignee), where an ask
+	// with no asked_of person waits on its issue's assignee.
+	Assignee      string
+	AssigneeKnown bool
 	// Observed is a fact made from Dispatch's view of an issue the workflow did not record when the
 	// fact was prepared (ObservedIssue), not from one event, so no actor is known to have written
 	// its state. It reaches only an issue still unrecorded when it applies, and only while no later
@@ -179,8 +186,8 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers and
-// repository, with no event's type or actor, since no one event wrote that state.
+// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers,
+// repository and assignee, with no event's type or actor, since no one event wrote that state.
 // release_children's todo child and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 	parent := ""
@@ -189,7 +196,8 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
 		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
-		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
+		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread,
+		Assignee: issue.Assignee, AssigneeKnown: issue.AssigneeKnown, Observed: true}
 }
 
 // OwnStatusWrite is the event the daemon's own status write makes, as the Dispatch consumer
@@ -216,7 +224,7 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
 		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
-		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
+		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread, Assignee: issue.Assignee, AssigneeKnown: issue.AssigneeKnown}
 }
 
 // dispatchPriority is level, the priority a Dispatch read serves, as the record keeps it. The
@@ -386,6 +394,11 @@ func (f GateAboveDispatch) namedIssue() (string, bool) { return f.Read.Key, true
 // to approve (Artifact, "" for a question; every ask.* event of an approval ask carries it), the
 // session that opened it (AuthorSession, "" for a person), and its event's place in the issue's
 // Dispatch event log (Mark). On a root it opens the ask's mirror row (record.RootAsk).
+//
+// Turn is the event as the approvals signal reads it (signals.AskEvent): its kind, ask, issue, the
+// state, asked_of and approval versions its payload carries. Every fact of an ask event carries
+// one, and admission keeps the ask by it at Mark.Seq (record.Store.KeepAskEvent); a fact built
+// with none (no Ask) keeps nothing.
 type DispatchAskOpened struct {
 	Key           string
 	Ask           string
@@ -393,13 +406,14 @@ type DispatchAskOpened struct {
 	Artifact      string
 	AuthorSession string
 	Mark          record.EventMark
+	Turn          signals.AskEvent
 }
 
 func (f DispatchAskOpened) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchAskRestored is Dispatch's settlement restoring a decision block it retracted: the ask
 // opened again (Open), or closed again with the answer given before the retraction. Nobody acted,
-// so it moves the ask's mirror row alone and is never a person's act.
+// so it moves the ask's mirror row alone and is never a person's act. Turn is DispatchAskOpened's.
 type DispatchAskRestored struct {
 	Key      string
 	Ask      string
@@ -407,13 +421,14 @@ type DispatchAskRestored struct {
 	Artifact string
 	Open     bool
 	Mark     record.EventMark
+	Turn     signals.AskEvent
 }
 
 func (f DispatchAskRestored) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchAskClosed is an answered or resolved ask (State `answered` or `resolved`), its kind and
 // document as DispatchAskOpened names them, the actor who closed it, and where Dispatch recorded
-// that act (Mark).
+// that act (Mark). Turn is DispatchAskOpened's.
 //
 // Decline is the person's decline to answer, set where the close carries a resolution of the one
 // kind this daemon acts on (ResolutionDeclined) and nil for every other close: an answer, a close
@@ -430,6 +445,7 @@ type DispatchAskClosed struct {
 	Decline  *record.AskDecline
 	Actor    dispatch.Actor
 	Mark     record.EventMark
+	Turn     signals.AskEvent
 }
 
 // ResolutionDeclined is the resolution kind of an ask a person chose not to answer
@@ -444,7 +460,8 @@ func (f DispatchAskClosed) namedIssue() (string, bool) { return f.Key, true }
 // on (WaitingOn: `agent` or `human` on an open ask, a hand-back `human`, and "" on a closed one),
 // the actor who made it, its event's place in the issue's Dispatch event log (Mark), and the
 // comment's own id (Comment, empty for a hand-back), which is where in Dispatch a person's reply
-// relayed to the controller was made (workflow's relayParkedDecision).
+// relayed to the controller was made (workflow's relayParkedDecision). Turn is DispatchAskOpened's:
+// a hand-back's kind is signals.AskHandedBack, a comment's signals.AskCommented.
 type DispatchAskReply struct {
 	Key       string
 	Ask       string
@@ -454,6 +471,7 @@ type DispatchAskReply struct {
 	Actor     dispatch.Actor
 	Mark      record.EventMark
 	Comment   string
+	Turn      signals.AskEvent
 }
 
 func (f DispatchAskReply) namedIssue() (string, bool) { return f.Key, true }
@@ -461,15 +479,57 @@ func (f DispatchAskReply) namedIssue() (string, bool) { return f.Key, true }
 // DispatchApprovalMoved is an approval request of Artifact that a version of its document moved
 // past the version its agent last handed to the person (Dispatch's ask.edited of an approval ask
 // whose requested_version is below its version), at Mark: Dispatch shows such a request waiting on
-// its agent until the agent hands it back. Nobody replied, so it is never a person's act.
+// its agent until the agent hands it back. Nobody replied, so it is never a person's act. Turn is
+// DispatchAskOpened's.
 type DispatchApprovalMoved struct {
 	Key      string
 	Ask      string
 	Artifact string
 	Mark     record.EventMark
+	Turn     signals.AskEvent
 }
 
 func (f DispatchApprovalMoved) namedIssue() (string, bool) { return f.Key, true }
+
+// DispatchAskTurn is an event of an ask that changes nothing the workflow acts on and can change
+// the approvals signal: ask.asked_of, which hands the ask to another person, and an ask.edited
+// that moves no approval request, which still carries the ask's state and asked_of. Turn is the
+// event as that signal reads it, and Mark its place in the issue's Dispatch event log; admission
+// keeps the ask by it (record.Store.KeepAskEvent), and the workflow and the blockers mirror do
+// nothing for it.
+type DispatchAskTurn struct {
+	Key  string
+	Turn signals.AskEvent
+	Mark record.EventMark
+}
+
+func (f DispatchAskTurn) namedIssue() (string, bool) { return f.Key, true }
+
+// AskTurnOf is the event of an ask fact carries for the approvals signal and its sequence in the
+// issue's Dispatch event log, for a fact of an ask event that carries one; false for any other.
+// Admission keeps an ask by it, and the boot's read folds an issue's events by it, so both read an
+// event of an ask as the one decoder made it.
+func AskTurnOf(fact Fact) (signals.AskEvent, int64, bool) {
+	var turn signals.AskEvent
+	var mark record.EventMark
+	switch fact := fact.(type) {
+	case DispatchAskOpened:
+		turn, mark = fact.Turn, fact.Mark
+	case DispatchAskRestored:
+		turn, mark = fact.Turn, fact.Mark
+	case DispatchAskClosed:
+		turn, mark = fact.Turn, fact.Mark
+	case DispatchAskReply:
+		turn, mark = fact.Turn, fact.Mark
+	case DispatchApprovalMoved:
+		turn, mark = fact.Turn, fact.Mark
+	case DispatchAskTurn:
+		turn, mark = fact.Turn, fact.Mark
+	default:
+		return signals.AskEvent{}, 0, false
+	}
+	return turn, mark.Seq, turn.Ask != ""
+}
 
 // DispatchClaim is the holder Dispatch records for an issue at Seq, from its issue.claimed or
 // issue.released event: ClaimedBy is `<kind>:<id>`, or "" when the release cleared the claim.
@@ -1034,6 +1094,32 @@ type QueueBootStatus struct {
 }
 
 func (QueueBootStatus) namedIssue() (string, bool) { return "", false }
+
+// DispatchDefaultAssignee is Dispatch's settings.project_default_assignee.updated of the daemon's
+// project: the project's default assignee became Assignee, a login, at Seq in the project's own
+// Dispatch event log, at At, Dispatch's time of the event. Every ask with no asked_of person on an
+// issue with no assignee waits on that person, so admission keeps it for the approvals signal
+// (record.Store.KeepDefaultAssignee); the workflow and the blockers mirror do nothing for it.
+type DispatchDefaultAssignee struct {
+	Assignee string
+	Seq      int64
+	At       time.Time
+}
+
+func (DispatchDefaultAssignee) namedIssue() (string, bool) { return "", false }
+
+// ApprovalsBootRead is one boot read of Dispatch for the approvals signal, never decoded from an
+// event: the asks of the project's issues with an ask open, each as its issue's events leave it,
+// those issues' assignees, and the project's default assignee as Dispatch's read of the project's
+// open asks answers it (record.ApprovalsRead), applied as one fact. A failed read carries why in
+// ReadError and nothing read, so the approvals signal reads as not recorded with that reason until
+// a read succeeds; a read that succeeded clears it (record.Store.SetSignalInputReadError).
+type ApprovalsBootRead struct {
+	Read      record.ApprovalsRead
+	ReadError string
+}
+
+func (ApprovalsBootRead) namedIssue() (string, bool) { return "", false }
 
 // MergeQueueReadDone is the outbox's merge-queue read (record.MergeQueueRead) finishing with no
 // merge: never decoded from an event. GitHub answered that pull request Number of Issue is open,

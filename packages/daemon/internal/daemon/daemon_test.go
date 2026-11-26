@@ -2216,9 +2216,11 @@ func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole
 // boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
 // and that same sweep sends; the publish of an issue's role sessions, which the boot queues for
 // every issue with a recent claim (daemon.queueRoleHoldersPublish) and each boot ready and each
-// change of a claim's role holder queues again (roleHoldersChanged, the store's putClaim); and the
+// change of a claim's role holder queues again (roleHoldersChanged, the store's putClaim); the
 // read of a gate's own document, which the boot's catch-up makes for every root it reads
-// (bindGateRequest through dispatch.Client.Approval). It reports whether it answered r. A board
+// (bindGateRequest through dispatch.Client.Approval); and the read of the project's open asks with
+// its default assignee, which the boot makes for the approvals signal (readApprovalsOnce), and which
+// a board answers with no open ask and no default assignee. It reports whether it answered r. A board
 // that leaves one of these to its own default arm fails the test with an unexpected request,
 // which is what this helper exists to stop: none of them belongs to a test here.
 // role_holder_publish_test.go and TestRoleHoldersLandInScratchDispatch are the tests of the
@@ -2257,6 +2259,8 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 		// slug or the role — register_gate's document check — meets the zero value and fails,
 		// which is the board telling it to model the document rather than guess at one.
 		body = map[string]any{"approval": map[string]any{"state": "draft", "latest_version": 1}}
+	case r.URL.Path == "/api/v1/asks/open" && r.URL.Query().Get("project") == project:
+		body = map[string]any{"as_of": time.Now().UTC().Format(time.RFC3339Nano), "asks": []any{}, "default_assignee": nil}
 	default:
 		return false
 	}

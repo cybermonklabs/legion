@@ -2855,6 +2855,29 @@ type Store interface {
 	// SignalInputStatus is the moment the daemon began keeping input for project, whether one is
 	// recorded, and why the boot's read of it failed, "" where it did not.
 	SignalInputStatus(ctx context.Context, tx pgx.Tx, project, input string) (time.Time, bool, string, error)
+	// KeepAskEvent keeps one event of an ask of project's issue, at its sequence in the issue's
+	// Dispatch event log, as signals.NextAsk turns the kept ask by it, where it is newer than the
+	// event the kept ask was last changed by. Admission calls it in the fact's own transaction,
+	// before that fact's pass (admit's keepSignalFacts), as it does each method below that keeps.
+	KeepAskEvent(ctx context.Context, tx pgx.Tx, project string, event signals.AskEvent, seq int64) error
+	// KeepIssueAssignee keeps the assignee of an issue of project, as its issue event named it,
+	// where no newer event of the issue named one.
+	KeepIssueAssignee(ctx context.Context, tx pgx.Tx, project string, assignee IssueAssignee) error
+	// KeepDefaultAssignee keeps the default assignee of project as Dispatch's settings event at seq
+	// in the project's event log moved it, where no newer such event was kept.
+	KeepDefaultAssignee(ctx context.Context, tx pgx.Tx, project, assignee string, seq int64, at time.Time) error
+	// KeepApprovalsRead keeps the boot's read of Dispatch for project: its asks, assignees and
+	// default assignee, each where no newer event of it was kept.
+	KeepApprovalsRead(ctx context.Context, tx pgx.Tx, project string, read ApprovalsRead) error
+	// OpenApprovalAsks is each ask of project the store holds open, which the boot reads the
+	// issues of beside those Dispatch lists open.
+	OpenApprovalAsks(ctx context.Context, tx pgx.Tx, project string) ([]ApprovalAsk, error)
+	// DefaultAssigneeSeq is the sequence of the newest settings event of project's default
+	// assignee the store holds, 0 for none.
+	DefaultAssigneeSeq(ctx context.Context, tx pgx.Tx, project string) (int64, error)
+	// ApprovalsOf is the approvals signal's input of project as the store holds it: the asks that
+	// wait on the project's default assignee, or why the signal cannot be computed.
+	ApprovalsOf(ctx context.Context, tx pgx.Tx, project string) (Approvals, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

@@ -307,14 +307,22 @@ func (w *workflowRuntime) queueTargets(ctx context.Context) ([]queueBranch, []re
 	return targets, open, nil
 }
 
-// retryQueueBootRead reads GitHub's merge queue (readQueueOnce) until a read succeeds or ctx ends,
-// waiting first, then twice as long up to most, between reads, so the queue the boot could not read
-// is not left unread until the next boot: the queue signal reads as not recorded, with the reason
-// of the last failed read, until one succeeds (intake.QueueBootStatus).
+// retryQueueBootRead reads GitHub's merge queue (readQueueOnce) until a read succeeds or ctx ends
+// (retryBootRead), so the queue the boot could not read is not left unread until the next boot:
+// the queue signal reads as not recorded, with the reason of the last failed read, until one
+// succeeds (intake.QueueBootStatus).
 func (w *workflowRuntime) retryQueueBootRead(ctx context.Context, bootID int64, first, most time.Duration) {
+	retryBootRead(ctx, bootID, first, most, w.readQueueOnce)
+}
+
+// retryBootRead makes read, one boot read of a signal's source that says whether it succeeded,
+// until a read succeeds or ctx ends, waiting first, then twice as long up to most, between reads.
+// Each read is named by the boot and its attempt, so no read's facts are taken for another's as
+// already applied.
+func retryBootRead(ctx context.Context, bootID int64, first, most time.Duration, read func(ctx context.Context, id string) bool) {
 	delay := first
 	for attempt := 1; ctx.Err() == nil; attempt++ {
-		if w.readQueueOnce(ctx, fmt.Sprintf("%d.%d", bootID, attempt)) {
+		if read(ctx, fmt.Sprintf("%d.%d", bootID, attempt)) {
 			return
 		}
 		timer := time.NewTimer(delay)

@@ -111,4 +111,11 @@ func TestDecodeSignalInputs(t *testing.T) {
 			t.Fatalf("fact = %#v, want %#v", got.Fact, want)
 		}
 	})
+	// The approvals signal's inputs (signal_inputs_approvals_test.go): each ask event it reads, the
+	// hand-on of an ask, the assignee an issue event names and the move of the project's default
+	// assignee.
+	t.Run("ask-asked-of", testAskAskedOf)
+	t.Run("issue-assignee", testIssueAssignee)
+	t.Run("project-default-assignee", testProjectDefaultAssignee)
+	t.Run("ask-lifecycle", testAskLifecycle)
 }

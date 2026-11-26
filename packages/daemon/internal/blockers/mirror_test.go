@@ -85,7 +85,8 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 	for _, fact := range []intake.Fact{
 		intake.Handover{}, intake.DispatchArtifact{}, intake.GateAboveDispatch{},
 		intake.DispatchAskOpened{}, intake.DispatchAskRestored{}, intake.DispatchAskClosed{}, intake.DispatchAskReply{},
-		intake.DispatchApprovalMoved{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{}, intake.SignalDeadline{},
+		intake.DispatchApprovalMoved{}, intake.DispatchAskTurn{}, intake.DispatchDefaultAssignee{}, intake.ApprovalsBootRead{},
+		intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{}, intake.SignalDeadline{},
 		intake.PullRequestOpened{}, intake.PullRequestSynchronized{}, intake.PullRequestReview{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.PullRequestEnqueued{}, intake.QueueTimeline{}, intake.QueueBootStatus{},

@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -37,12 +38,28 @@ import (
 //   - intake.QueueBootStatus: why the boot's read of GitHub's merge queue failed, or that it
 //     succeeded (record.Store.SetSignalInputReadError), so the queue signal reads as not recorded
 //     with that reason where a read failed, and never as an empty queue.
-//   - intake.DaemonBooted: each boot records that this daemon keeps the kills and the queue from
-//     now on, where no earlier boot recorded it (record.Store.BeginSignalInput), so each signal
-//     that counts over a span is recorded from the first boot of the release that keeps its input
-//     plus that span (signals.KillSpan, signals.QueueExitSpan), and not before, where nothing was
-//     kept.
+//   - each fact of an ask event (intake.AskTurnOf: an ask opened, restored, answered or resolved,
+//     handed back, edited, handed to a person, or replied to): the ask as signals.NextAsk turns it
+//     by the event, kept at the event's sequence in its issue's Dispatch event log
+//     (record.Store.KeepAskEvent), so an older event delivered after a newer one, or one event
+//     read from two paths (the stream and the boot's catch-up), changes nothing.
+//   - intake.DispatchIssue that shows the issue's assignee: that person, at the observation's
+//     sequence (record.Store.KeepIssueAssignee).
+//   - intake.DispatchDefaultAssignee: the project's default assignee as Dispatch's settings event
+//     moved it, at its sequence in the project's event log (record.Store.KeepDefaultAssignee).
+//   - intake.ApprovalsBootRead: the boot's read of Dispatch, its asks, assignees and default
+//     assignee, each kept where no newer event of it was (record.Store.KeepApprovalsRead), and the
+//     read's outcome (record.Store.SetSignalInputReadError), so the approvals signal reads as not
+//     recorded with the reason where the read failed.
+//   - intake.DaemonBooted: each boot records that this daemon keeps the kills, the queue and the
+//     approvals from now on, where no earlier boot recorded it (record.Store.BeginSignalInput), so
+//     each signal that counts over a span is recorded from the first boot of the release that
+//     keeps its input plus that span (signals.KillSpan, signals.QueueExitSpan), and not before,
+//     where nothing was kept.
 func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
+	if turn, seq, ok := intake.AskTurnOf(fact); ok {
+		return a.store.KeepAskEvent(ctx, tx, a.project, turn, seq)
+	}
 	switch fact := fact.(type) {
 	case intake.MemoryGuardKill:
 		return a.store.KeepMemoryKill(ctx, tx, a.project, fact.Report, a.now())
@@ -56,14 +73,45 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		return a.store.KeepQueueEvents(ctx, tx, a.project, fact.Events, a.now())
 	case intake.QueueBootStatus:
 		return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Queue, fact.ReadError, a.now())
+	case intake.DispatchIssue:
+		// A view of another project's issue (a child release_children reads) carries an assignee
+		// no ask of this project waits on.
+		if !fact.AssigneeKnown || fact.Seq < 1 || !claim.KeyOfProject(a.project, fact.Key) {
+			return nil
+		}
+		return a.store.KeepIssueAssignee(ctx, tx, a.project, record.IssueAssignee{Issue: fact.Key, Assignee: fact.Assignee, Seq: fact.Seq})
+	case intake.DispatchDefaultAssignee:
+		return a.store.KeepDefaultAssignee(ctx, tx, a.project, fact.Assignee, fact.Seq, fact.At)
+	case intake.ApprovalsBootRead:
+		if fact.ReadError == "" {
+			if err := a.store.KeepApprovalsRead(ctx, tx, a.project, fact.Read); err != nil {
+				return err
+			}
+		}
+		return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Approvals, fact.ReadError, a.now())
 	case intake.DaemonBooted:
 		for _, input := range []string{signals.Kills, signals.Queue} {
 			if err := a.store.BeginSignalInput(ctx, tx, a.project, input, a.now()); err != nil {
 				return err
 			}
 		}
+		return a.beginApprovals(ctx, tx)
 	}
 	return nil
+}
+
+// beginApprovals records, at the first boot of the release that keeps the approvals' inputs, that
+// the daemon keeps them from now on, and that the boot's read of Dispatch has not succeeded yet
+// (record.ApprovalsNotRead): no ask, issue assignee or default assignee was kept before it, so a
+// count made before that read would leave out every ask open since before the boot. The read's
+// own fact clears the reason (intake.ApprovalsBootRead). A later boot reads over what the earlier
+// run kept, which the stream kept current, so it records nothing here.
+func (a *Admission) beginApprovals(ctx context.Context, tx pgx.Tx) error {
+	_, began, err := a.store.SignalInputSince(ctx, tx, a.project, signals.Approvals)
+	if err != nil || began {
+		return err
+	}
+	return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Approvals, record.ApprovalsNotRead, a.now())
 }
 
 // queueTimelineOf queues the timeline read of a dequeued or merged pull request, which names no

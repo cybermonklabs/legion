@@ -28,6 +28,20 @@ body: |-
   so the queue reads absent with its reason rather than as an empty queue. A migration adds
   `queue_events`, `signal_inputs.read_error` and the `queue_timeline_read` outbox kind; its header
   carries the way back.
+
+  The daemon also keeps what the approvals signal of admission by signals needs: each ask of the
+  project's issues with the person it was handed to (`asked_of`) and whose turn it is, each issue's
+  assignee, and the project's default assignee. The Dispatch consumer's durable now also takes this
+  project's `settings.project_default_assignee.updated` subject and no other setting, updated in
+  place with its position kept. Each event is kept at its sequence in Dispatch's log, so one
+  delivered twice or after a newer one changes nothing. The boot lists the project's issues, reads
+  its open asks with its default assignee (`GET /api/v1/asks/open?project=`, which a Dispatch before
+  this change answers without the default) and the open asks of each issue with one open, and
+  closes the asks it held open that Dispatch no longer lists. A failed read records its reason on
+  the `approvals` row of `signal_inputs`, and against a Dispatch that gives no default assignee,
+  with none kept from an event, the signal reads as not recorded with its reason, never as a number.
+  A migration adds `approval_asks`, `approval_assignees` and `approval_default_assignees`; its
+  header carries the way back.
 time: 2026-11-26T01:22:27Z
 custom:
     Issue: pr5603

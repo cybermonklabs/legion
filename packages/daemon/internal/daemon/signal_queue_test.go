@@ -784,6 +784,9 @@ func TestSignalBootReconciles(t *testing.T) {
 			t.Fatalf("waits after the failed read = %+v, want the open wait as it stood", got)
 		}
 	})
+
+	// The boot's read of Dispatch for the approvals signal (signal_approvals_test.go).
+	t.Run("asks", testSignalBootReconcilesAsks)
 }
 
 // The queue signal of a moment reads the pull requests that stand in the queue and those that left

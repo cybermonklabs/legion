@@ -229,6 +229,7 @@ var FactSources = map[string]FactSource{
 	"DispatchAskClosed":     {Way: FactInjected, From: "each recorded ask.answered and ask.resolved event"},
 	"DispatchAskReply":      {Way: FactInjected, From: "each recorded comment on an ask and ask.handed_back event"},
 	"DispatchApprovalMoved": {Way: FactInjected, From: "each recorded ask.edited event of an approval request a version moved past"},
+	"DispatchAskTurn":       {Way: FactInjected, From: "each recorded ask.asked_of event and each ask.edited event that moves no approval request"},
 	"DispatchClaim":         {Way: FactInjected, From: "each recorded issue.claimed and issue.released event"},
 
 	// The API's facts, rebuilt from the record's lines at the end of their segment or their
@@ -254,6 +255,12 @@ var FactSources = map[string]FactSource{
 	"SignalDeadline": {Way: FactUnrecorded, From: "the moment a signal that a rule admits by would cross its limit with no event " +
 		"(intake.SignalDeadline, admission's own timer fact): no daemon release emits it and no recorded window holds a line of it, " +
 		"so the replay injects none until it supplies the signals to the pass and emits the fact at each deadline of a signal rule"},
+	"DispatchDefaultAssignee": {Way: FactUnrecorded, From: "each move of the project's default assignee (Dispatch's settings.project_default_assignee.updated, " +
+		"which the Dispatch durable hears from this release on): the replay reads a window's settings events into its own approvals signal " +
+		"(SignalRecord's readAsks), and injects none until it supplies the signals to the pass"},
+	"ApprovalsBootRead": {Way: FactUnrecorded, From: "the boot's read of Dispatch's open asks, their issues' events and the project's default assignee " +
+		"(intake.ApprovalsBootRead), which no recorded window holds a line of: the replay reads a window's events and settings into its own " +
+		"approvals signal, and injects none until it supplies the signals to the pass"},
 
 	// The daemon's own producers, made by the replay as the daemon makes them.
 	"ControllerTick":           {Way: FactProduced, From: "the replay's ticks, a minute after each boot and every tick interval, observing from the shadow the keys blockers.WaitedOn selects"},
