@@ -958,10 +958,8 @@ holds that lock for each write to the connection, not for a whole message, so a 
 backpressure stalls holds it only while the kernel blocks a write: between two fragments of a frame
 it holds none, and a close that comes then takes the free lock and is written at once. The relay
 socket rows of `packages/envoy/cmd/listener` build their rig with `withHeldWrites`
-(`relay_socket_fixture_test.go`), the same gate. Before it, they stalled the writer with a client
-that read nothing, and under load `TestARelaySocketsCloseGoesBetweenTheFragmentsOfAFrame` waited
-for its close to wait on the lock until the test binary's deadline in 26 of 425 runs
-(dispatch://INFRA-3904).
+(`relay_socket_fixture_test.go`), the same gate. Use small TCP buffers and a client that reads
+nothing only to test the slow client itself, not to make `WriteControl` wait for a lock.
 
 ## A fake HTTP server whose client gives up on requests
 
