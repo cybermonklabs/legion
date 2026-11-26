@@ -1,7 +1,7 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -276,6 +276,68 @@ test("useOutOfTabOrder takes an element that scrolls out of the tab order, a lat
     expect(view.container.querySelector("[data-visible]")?.hasAttribute("tabindex")).toBe(false);
   } finally {
     view.unmount();
+  }
+});
+
+/** The issues `PlainWords` links, one for each of its 25 steps. */
+const PLAIN_STEPS = Array.from({ length: 25 }, (_unused, at) => `CORE-${at + 1}`);
+
+/** A box `useOutOfTabOrder` keeps out of the tab order, with `keepScrollers` as given, holding a
+ *  row's words of 200 elements - paragraphs, spans, links, strong and emphasised words, lists and
+ *  their items, eight for each step of `PLAIN_STEPS` - none of which scrolls. */
+function PlainWords({ keepScrollers }: { keepScrollers: boolean }): ReactNode {
+  const box = useRef<HTMLDivElement>(null);
+  useOutOfTabOrder(box, true, { keepScrollers });
+  return (
+    <div data-plain-words="" ref={box}>
+      {PLAIN_STEPS.map((key) => (
+        <Fragment key={key}>
+          <p>
+            <span>Step</span> <a href={`/issues/${key}`}>{key}</a> <strong>held</strong>{" "}
+            <em>loose</em>
+          </p>
+          <ul>
+            <li>one</li>
+            <li>two</li>
+          </ul>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+// A row's words hold hundreds of elements, and a style read for each of them on every pass cost
+// seconds of a large issue's load. The pass reads the style only of an element that can scroll -
+// a code block, a table, a diagram's preview, one whose own style sets its overflow - so words
+// that hold none read no element's style, with `keepScrollers` and without, a late link's pass
+// included, while every link still leaves the tab order.
+test("a row of 200 elements that scroll nothing reads no element's style", async () => {
+  const styles = spyOn(window, "getComputedStyle");
+  const view = draw(<PlainWords keepScrollers={false} />);
+  try {
+    const box = view.container.querySelector<HTMLElement>("[data-plain-words]");
+    if (box === null) throw new Error("the box draws no words");
+    expect(box.querySelectorAll("*")).toHaveLength(200);
+    view.redraw(<PlainWords keepScrollers />);
+    const late = document.createElement("a");
+    late.href = "/issues/CORE-99";
+    act(() => {
+      box.append(late);
+    });
+    await waitFor(() => {
+      expect(outOfTabOrder(late)).toBe(true);
+    });
+    expect(
+      [...box.querySelectorAll("a")].filter((link) => !outOfTabOrder(link)).length,
+      "a link kept its tab stop"
+    ).toBe(0);
+    expect(
+      styles.mock.calls.filter(([element]) => box.contains(element)).length,
+      "the pass read the style of an element that scrolls nothing"
+    ).toBe(0);
+  } finally {
+    view.unmount();
+    styles.mockRestore();
   }
 });
 
