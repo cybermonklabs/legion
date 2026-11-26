@@ -1,11 +1,12 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import type { IssueTreeParent } from "../web/src/api/types";
+import type { IssueTreeNode, IssueTreeParent, IssueTreeRead } from "../web/src/api/types";
 import {
   criterionEdits,
   criterionMarkdown,
 } from "../web/src/features/issue-page/model-rows/criterion-write";
 import type { NodeType } from "../web/src/features/issue-page/page-words";
+import { treeIdOfNode } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import {
   answerAsk,
   baseUrl,
@@ -22,10 +23,9 @@ import {
   recordCheckResult,
   requestApproval,
   reviewArtifact,
-  userHeaders,
 } from "./api";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
-import { asPlanner, HEAD_SHA, PROJECT, pause } from "./issue-layout-seed-support";
+import { asPlanner, HEAD_SHA, PROJECT, pause, readTree } from "./issue-layout-seed-support";
 import {
   checkBlockId,
   checkText,
@@ -45,12 +45,11 @@ import { composer } from "./issue-page-l";
  * whole. Each of those rows is selected by its title from the issue's checks. This file is
  * those rows' own: it imports the other issue-page e2e files' readers and changes none of them.
  *
- * - **The tree read** `GET /api/v1/issues/{key}/tree` is a read `@legion/contracts` does not
- *   generate yet, so `treeAnswerOf` reads it with a plain request signed in as the reader,
- *   follows its `cursor` to the last page, and types the answer as narrowly as the rows read it:
- *   `converted`, `tree`, `view_of`, and each node's `id`, `supertag`, `parent` and `text`.
- *   `artifactRoomOf` reads the artifact read's `room` through `getArtifact`, typed by hand, since
- *   the generated artifact holds no such member yet.
+ * - **The tree read** `GET /api/v1/issues/{key}/tree` is read through `readTree`
+ *   (`e2e/issue-layout-seed-support.ts`), every page merged, and narrowed by `treeAnswerOf` to
+ *   `converted`, `tree`, `view_of`, and each node's `id`, `block_id`, `document`, `issue`,
+ *   `supertag`, `parent` and `text`. `artifactRoomOf` reads the artifact read's `room` through
+ *   `getArtifact`, typed by hand, since the generated artifact holds no such member yet.
  * - **The rows** are the outline's `[data-node-row]`, each carrying `data-node-type`
  *   (`NodeRow.tsx`): a criterion's row is `criterion` and a reading's `reading`. A node of
  *   another issue carries a link `[data-node-issue]` to that issue before its kind tag, which
@@ -98,7 +97,13 @@ const MODEL_WORDS = {
 /** One node of the tree read, by the members these rows read. Its `parent` is the read's own
  *  `IssueTreeParent`: the node it stands under, named by its `id`. */
 export interface TreeReadNode {
+  /** The block's own id inside its document or tree, absent for a node that is no block. */
+  readonly block_id?: string;
+  /** The document a typed block of one of this issue's documents lives in, absent otherwise. */
+  readonly document?: IssueTreeNode["document"];
   readonly id: string;
+  /** The owning issue of a foreign node, absent for a node of this issue. */
+  readonly issue?: string;
   /** The node it stands under, or null for a node at the top. */
   readonly parent: IssueTreeParent | null;
   readonly supertag: string;
@@ -115,29 +120,6 @@ export interface TreeReadAnswer {
   readonly tree: string | null;
   /** The ancestor whose statements the issue is a view of, or null. */
   readonly view_of: string | null;
-}
-
-/** One page of the read: `converted`, `tree` and `view_of` are the first page's for the whole
- *  read. */
-interface TreeReadPage extends TreeReadAnswer {
-  /** The next page's cursor, absent or null on the last page. */
-  readonly cursor?: string | null;
-}
-
-/** A read no generated route types, as the reader, failing with the route's own answer. */
-async function readAnswer<T>(
-  path: string,
-  query: Readonly<Record<string, string>> = {}
-): Promise<T> {
-  const url = new URL(path, baseUrl);
-  for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
-  const response = await fetch(url, { headers: await userHeaders(READER) });
-  if (!response.ok) {
-    throw new Error(
-      `GET ${url.pathname}${url.search} failed: ${response.status} ${await response.text()}`
-    );
-  }
-  return (await response.json()) as T;
 }
 
 /** Whether the server serves the issue's tree read, from its public route index. Only rows
@@ -159,15 +141,13 @@ export const TREE_READ_OWED =
 
 /** The tree read of issue `key`, every page it names read in turn and merged. */
 export async function treeAnswerOf(key: string): Promise<TreeReadAnswer> {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}/tree`;
-  const first = await readAnswer<TreeReadPage>(path);
-  const nodes = [...first.nodes];
-  for (let cursor = first.cursor ?? null; cursor !== null; ) {
-    const next = await readAnswer<TreeReadPage>(path, { cursor });
-    nodes.push(...next.nodes);
-    cursor = next.cursor ?? null;
-  }
-  return { converted: first.converted, nodes, tree: first.tree, view_of: first.view_of };
+  const read: IssueTreeRead = await readTree(key, null);
+  return {
+    converted: read.converted,
+    nodes: read.nodes ?? [],
+    tree: read.tree,
+    view_of: read.view_of,
+  };
 }
 
 /** The room the artifact read of `id` answers, the issue's tree artifact on a converted issue,
@@ -180,6 +160,8 @@ export async function artifactRoomOf(id: string): Promise<string | null> {
 /** One node a wait looks for in a tree read: by its supertag and one run of words its text
  *  holds, and, where it names one, under the node an earlier entry of the same wait found. */
 interface Wanted {
+  /** The exact read id to match, where text alone could select a duplicate block or ask node. */
+  readonly id?: string;
   /** What a failure names it by. */
   readonly name: string;
   readonly supertag: NodeType;
@@ -189,11 +171,11 @@ interface Wanted {
   readonly words?: string;
 }
 
-/** What a wait found: the tree read's id for each entry, by its name, and the answer it was
+/** What a wait found: the tree read's node for each entry, by its name, and the answer it was
  *  found in. */
 interface Placed {
   readonly answer: TreeReadAnswer;
-  readonly ids: ReadonlyMap<string, string>;
+  readonly nodes: ReadonlyMap<string, TreeReadNode>;
 }
 
 /**
@@ -205,19 +187,20 @@ async function awaitPlaced(key: string, wanted: readonly Wanted[]): Promise<Plac
   const deadline = Date.now() + SETTLED_WITHIN_MS;
   for (;;) {
     const answer = await treeAnswerOf(key);
-    const ids = new Map<string, string>();
+    const nodes = new Map<string, TreeReadNode>();
     const missing = wanted.find((want) => {
-      const parent = want.under === undefined ? undefined : ids.get(want.under);
+      const parent = want.under === undefined ? undefined : nodes.get(want.under)?.id;
       const node = answer.nodes.find(
         (one) =>
           one.supertag === want.supertag &&
+          (want.id === undefined || one.id === want.id) &&
           (want.words === undefined || one.text.includes(want.words)) &&
           (want.under === undefined || (one.parent !== null && one.parent.id === parent))
       );
-      if (node !== undefined) ids.set(want.name, node.id);
+      if (node !== undefined) nodes.set(want.name, node);
       return node === undefined;
     });
-    if (missing === undefined) return { answer, ids };
+    if (missing === undefined) return { answer, nodes };
     if (Date.now() > deadline) {
       throw new Error(
         `the tree read of ${key} does not answer ${missing.name} where it was written within ` +
@@ -228,11 +211,16 @@ async function awaitPlaced(key: string, wanted: readonly Wanted[]): Promise<Plac
   }
 }
 
+/** The node `placed` found for the entry `name`. */
+function placedNode(placed: Placed, name: string): TreeReadNode {
+  const node = placed.nodes.get(name);
+  if (node === undefined) throw new Error(`the wait found no ${name}`);
+  return node;
+}
+
 /** The id `placed` found for the entry `name`. */
 function placedId(placed: Placed, name: string): string {
-  const id = placed.ids.get(name);
-  if (id === undefined) throw new Error(`the wait found no ${name}`);
-  return id;
+  return placedNode(placed, name).id;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -263,23 +251,36 @@ export function criterionRefusal(page: Page): Locator {
 // Writing a criterion as the page does.
 // ---------------------------------------------------------------------------------------------
 
+/** One criterion written into the issue's tree artifact (`writeCriterionApi`): its read id in the
+ *  tree read (`id`) and the row id `treeIdOfNode` gives that bare tree block (`row`, its
+ *  `block_id`), which `data-node-id` carries on the outline and in Spec. */
+export interface WrittenCriterion {
+  readonly id: string;
+  readonly row: string;
+}
+
 /**
  * The page's own write of a criterion: the body `criterionEdits` (`criterion-write.ts`) builds
  * for `criterionMarkdown(parent, text)`, the one the page's request sends, appended to issue
  * `key`'s tree artifact `tree`, the tree read's `tree`, by `POST /api/v1/artifacts/{tree}/edits`
- * as the reader. It answers the tree read's id for the criterion once the read holds it, under
- * no node in particular.
+ * as the reader. It answers the criterion's read id and its page row id (`treeIdOfNode`) once
+ * the read holds it, under no node in particular.
  */
 export async function writeCriterionApi(
   key: string,
   tree: string,
   parent: string,
   text: string
-): Promise<string> {
+): Promise<WrittenCriterion> {
   await editArtifact(tree, criterionEdits(criterionMarkdown(parent, text)), { login: READER });
   const name = "the criterion written through the edits route";
   const words = text.split("\n")[0]?.trim() ?? text;
-  return placedId(await awaitPlaced(key, [{ name, supertag: "criterion", words }]), name);
+  const placed = await awaitPlaced(key, [{ name, supertag: "criterion", words }]);
+  const node = placedNode(placed, name);
+  return {
+    id: node.id,
+    row: treeIdOfNode(node as IssueTreeNode, key),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -292,9 +293,9 @@ export interface ModelNode {
   readonly address: string;
   /** The id the tree read answers for it. */
   readonly id: string;
-  /** The id the outline draws its row under (`data-node-id`): the tree read keeps the model's
-   *  `<slug>#b-<block>` (`blockNodeId`) for a block of one of this issue's documents, an ask's
-   *  block included, and a comment's own id, and gives a node of another issue its read id. */
+  /** The id the outline draws its row under (`data-node-id`), matching `treeIdOfNode`: a document
+   *  block keeps `<slug>#b-<block>`, a foreign block or bare tree block takes its `block_id`, and
+   *  any non-block node keeps its read id. */
   readonly row: string;
 }
 
@@ -348,11 +349,9 @@ const DECISIONS_PART =
 /** The opening line of the spec's `q-open` ask block. */
 const QUESTION_OPENING = new RegExp(`^:::ask\\{[^}]*#${OPEN_QUESTION_BLOCK_ID}[\\s}]`);
 
-/** Whether the spec's `q-open` block reads answered: the server writes the answer into the
- *  block's own attributes (`docs/ask_blocks.go`'s `askServerAttributeNames`). */
-function questionAnswered(markdown: string): boolean {
-  const opening = markdown.split("\n").find((line) => QUESTION_OPENING.test(line));
-  return opening !== undefined && /\bstate="?answered\b/.test(opening);
+/** Whether the spec's stored markdown holds the `q-open` ask block's opening fence. */
+function hasQuestionBlock(markdown: string): boolean {
+  return markdown.split("\n").some((line) => QUESTION_OPENING.test(line));
 }
 
 /**
@@ -379,16 +378,17 @@ function withQuestionReading(markdown: string): string {
   ].join("\n");
 }
 
-/** Waits until the spec's text, as its live room holds it, satisfies `holds`. */
+/** Waits until the spec's text, as its live room holds it, satisfies `holds`, answering both the
+ *  markdown and the document token that read carried. */
 async function awaitSpecText(
   id: string,
   holds: (markdown: string) => boolean,
   what: string
-): Promise<string> {
+): Promise<{ readonly markdown: string; readonly token: string }> {
   const deadline = Date.now() + SETTLED_WITHIN_MS;
   for (;;) {
-    const { markdown } = await getArtifactText(id);
-    if (holds(markdown)) return markdown;
+    const { markdown, token } = await getArtifactText(id);
+    if (holds(markdown) && token !== undefined) return { markdown, token };
     if (Date.now() > deadline) {
       throw new Error(`the spec's text does not hold ${what} within ${SETTLED_WITHIN_MS / 1000} s`);
     }
@@ -460,8 +460,8 @@ function blockAddress(key: string, slug: string, block: string): string {
  * planner agent (`asPlanner`) unless it says alice, in this order:
  *
  * 1. a decision node and its reading, in the spec's `## Decisions`;
- * 2. the spec's `q-open` answered as alice, then its reading, written as the spec's next version
- *    (an upload of a document's name is its next version) once the answer is in the spec's text;
+ * 2. the spec's `q-open` answered as alice (whose answer stands on the ask's node, not in the
+ *    markdown), then its reading uploaded against the spec's current document token;
  * 3. the spec's approval, requested as the planner and given as alice, which must stand at the
  *    spec's current version;
  * 4. a child with a `verification.md` whose one check serves statement 7 and a `plan.md` whose
@@ -488,19 +488,30 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
   );
 
   // (2) The question answered, then its reading in the spec's next version.
-  await answerAsk(seeded.openQuestion.askId, {
+  const answeredAsk = await answerAsk(seeded.openQuestion.askId, {
     expected_edited_at: null,
     selected: [],
     text: `${MODEL_WORDS.answer}: 1280 px.`,
   });
-  const answered = await awaitSpecText(
+  expect(answeredAsk.state, `answering ${OPEN_QUESTION_BLOCK_ID} did not leave it answered`).toBe(
+    "answered"
+  );
+  const checkedAsk = await getAsk(seeded.openQuestion.askId);
+  expect(checkedAsk.ask.state, `reading ${OPEN_QUESTION_BLOCK_ID} did not answer answered`).toBe(
+    "answered"
+  );
+  const currentSpec = await awaitSpecText(
     spec.id,
-    (markdown) => markdown.includes(MODEL_WORDS.decision) && questionAnswered(markdown),
-    `the decision and alice's answer to ${OPEN_QUESTION_BLOCK_ID}`
+    (markdown) => markdown.includes(MODEL_WORDS.decision) && hasQuestionBlock(markdown),
+    `the decision and ${OPEN_QUESTION_BLOCK_ID}`
   );
   await createIssueArtifact(
     key,
-    { content: withQuestionReading(answered), name: spec.name },
+    {
+      content: withQuestionReading(currentSpec.markdown),
+      name: spec.name,
+      precondition: { document: currentSpec.token },
+    },
     asPlanner
   );
   await awaitSpecText(
@@ -560,12 +571,8 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
 
   // (5) Each of them in the tree read, where it was written.
   const thread = seeded.comments.threads[0] ?? "";
-  const [threadRead, questionRead] = await Promise.all([
-    getComment(thread),
-    getAsk(seeded.openQuestion.askId),
-  ]);
+  const threadRead = await getComment(thread);
   const threadLine = threadRead.comment.body.split("\n")[0]?.trim() ?? "";
-  const question = questionRead.ask.question;
   const NAMES = {
     check: "the child's check",
     checkOne: "check c1",
@@ -593,7 +600,7 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
         under: NAMES.decision,
         words: MODEL_WORDS.decisionReading,
       },
-      { name: NAMES.question, supertag: "ask", words: question },
+      { id: seeded.openQuestion.askId, name: NAMES.question, supertag: "ask" },
       {
         name: NAMES.questionReading,
         supertag: "reading",
@@ -612,6 +619,8 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
   if (tree === null) throw new Error(`the tree read of ${key} names no tree artifact`);
 
   const id = (name: string) => placedId(placed, name);
+  const rowOfPlaced = (name: string): string =>
+    treeIdOfNode(placedNode(placed, name) as IssueTreeNode, key);
   const specBlock = (name: string, block: string): ModelNode => ({
     address: blockAddress(key, spec.slug, block),
     id: id(name),
@@ -620,7 +629,7 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
   const borrowed = (name: string, slug: string, block: string): ModelNode => ({
     address: blockAddress(child.key, slug, block),
     id: id(name),
-    row: id(name),
+    row: rowOfPlaced(name),
   });
   return {
     ...seeded,
@@ -634,7 +643,7 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
       check: borrowed(NAMES.check, childChecks.artifact.slug, BLOCKS.check),
       comment: comment.id,
       key: child.key,
-      result: id(NAMES.result),
+      result: rowOfPlaced(NAMES.result),
       task: borrowed(NAMES.task, childTasks.artifact.slug, BLOCKS.task),
     },
     decision: specBlock(NAMES.decision, BLOCKS.decision),

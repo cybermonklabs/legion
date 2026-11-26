@@ -24,7 +24,14 @@ import {
   parseDispatchReference,
   shortForm,
 } from "../web/src/features/refs/routes";
-import { editArtifact, getArtifact, getIssueCoverage } from "./api";
+import { editArtifact, getArtifact, getArtifactText, getIssueCoverage } from "./api";
+import {
+  applySupertagMigration,
+  builtSchemaVersion,
+  installedVersion,
+  restoreStoreSchema,
+  servesAddedType,
+} from "./block-schema";
 import { countDocumentSockets } from "./editor";
 import { nextFrames } from "./frames";
 import { seedWholeIssue } from "./issue-layout-seed";
@@ -62,16 +69,18 @@ import {
 import { planChart, planView } from "./issue-page-k";
 import { composerField, composerTarget } from "./issue-page-l";
 import { decisionsFoot } from "./issue-page-q";
+import { outlineAnswerOf } from "./issue-page-t-tree";
 import { verificationCard, verificationCheck } from "./issue-page-v";
+import { heldTreeAnswer } from "./issue-page-w";
 import {
   childItems,
   type DrawnMark,
   filterCount,
-  type HeldRow,
   heldUnder,
   marginComments,
   type NodeStateSeed,
   ownMarks,
+  questionReadId,
   seedNodeStates,
   treeItemsDrawn,
   writeNodeState,
@@ -87,6 +96,7 @@ import {
   TREE_READ_OWED,
   treeAnswerOf,
   treeReadServed,
+  type WrittenCriterion,
   writeCriterionApi,
 } from "./issue-page-y";
 import { settledState } from "./settled";
@@ -137,8 +147,9 @@ const WRITTEN = {
   underOvertaken: "Thornwick",
 } as const;
 
-/** One word each rows 3 and 4 type at the start of a node's words. */
+/** One word each rows 3 and 4 type into a node's words. */
 const TYPED = {
+  afterSchema: "Briarford",
   check: "Nettlecombe",
   criterion: "Oakhurst",
   statement: "Marrowind",
@@ -818,14 +829,16 @@ test("a reading stands under what it reads, and a child's check draws the standi
 // answer the tree artifact as their room, the criterion's editor opens the tree artifact after one
 // artifact read of it, each Enter opens at most one socket, and what is typed in all three is in
 // the tree read after a reload. A comment and an ask take no caret, and a check of the child issue
-// says it is edited on its own issue. At 1440 px.
-// c-editing's (4), an open editor that stays writable when the block schema changes, is not in
-// this row: its helpers (`applySupertagMigration`, `restoreStoreSchema`) are not among the e2e
-// helpers yet; the step and the title's words come with them.
+// says it is edited on its own issue; and an open editor survives a supertag migration of the
+// block schema, stays writable, stores further words with no reload notice, and restores the store
+// schema in finally. At 1440 px.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, a criterion written and waited on too, then three
-// editors opened and typed in, a reload, and the tree read polled for the stored words.
-test("a node is edited where it lives", async ({ browser }) => {
+// editors opened and typed in, a reload, the tree read polled for the stored words, and a live
+// supertag migration across an open editor.
+test("a node is edited where it lives and an open editor survives a schema change", async ({
+  browser,
+}) => {
   test.skip(!(await treeReadServed()), TREE_READ_OWED);
   test.setTimeout(240_000);
   await phase(browser, seedModelRows, async (page, seeded) => {
@@ -861,10 +874,10 @@ test("a node is edited where it lives", async ({ browser }) => {
     // (2) The criterion: the caret in it, through the tree artifact's own socket, after one
     // artifact read of it; the two documents' rooms are the tree artifact.
     traffic.reset();
-    await focusRow(page, criterion);
+    await focusRow(page, criterion.row);
     await caretInto(page, {
       artifact: seeded.tree,
-      id: criterion,
+      id: criterion.row,
       message: "the criterion is edited in the issue's room",
       what: "the criterion",
     });
@@ -906,7 +919,7 @@ test("a node is edited where it lives", async ({ browser }) => {
               .startsWith(word) ?? false;
           return {
             check: startsWith(seeded.checkOne.id, TYPED.check),
-            criterion: startsWith(criterion, TYPED.criterion),
+            criterion: startsWith(criterion.id, TYPED.criterion),
             statement: startsWith(seeded.statementOne.id, TYPED.statement),
           };
         },
@@ -939,6 +952,81 @@ test("a node is edited where it lives", async ({ browser }) => {
       KEY_REPORTS.issue_above,
       "the child's check under statement 7"
     );
+
+    // (4) With the caret in statement 1, a supertag migration moves the block schema under the
+    // running server: the open editor reconnects writable, takes more words that are stored, and
+    // shows no reload notice; the store schema is restored in `finally`.
+    await restoreStoreSchema();
+    await expect.poll(() => installedVersion()).toBe(builtSchemaVersion);
+    expect(await servesAddedType()).toBe(false);
+    const statementRow = await focusRow(page, seeded.statementOne.row);
+    await caretInto(page, {
+      artifact: seeded.specArtifactId,
+      id: seeded.statementOne.row,
+      message: "Enter on statement 1 before the schema change does not put the caret in it",
+      what: "statement 1 before the schema change",
+    });
+    const reconnects = countDocumentSockets(page, seeded.specArtifactId);
+    try {
+      await applySupertagMigration();
+      await expect
+        .poll(() => servesAddedType(), {
+          message: "the server did not install the migrated block schema",
+          timeout: 15_000,
+        })
+        .toBe(true);
+      await expect
+        .poll(reconnects, {
+          message:
+            "the open editor did not open a fresh document socket after the block schema switched",
+          timeout: 15_000,
+        })
+        .toBeGreaterThanOrEqual(1);
+      await expect(
+        statementRow.getByRole("article", { exact: true, name: "Document" }),
+        "the open editor became read-only after the schema change"
+      ).toHaveAttribute("data-read-only", "false");
+      await expect
+        .poll(
+          async () =>
+            (await caretInNode(page)) && (await focusedNodeId(page)) === seeded.statementOne.row,
+          {
+            message: "the caret did not stay in statement 1 after the schema change",
+            timeout: 15_000,
+          }
+        )
+        .toBe(true);
+      await expect(
+        page.getByText("Reload to edit."),
+        "the page asked to reload after the schema change"
+      ).toHaveCount(0);
+      await page.keyboard.type(`${TYPED.afterSchema} `);
+      await expect(
+        page.getByText("Reload to edit."),
+        "the page asked to reload while typing after the schema change"
+      ).toHaveCount(0);
+      await expect
+        .poll(async () => (await getArtifactText(seeded.specArtifactId)).markdown, {
+          message: "the words typed after the schema change were not stored in the spec",
+          timeout: 30_000,
+        })
+        .toContain(TYPED.afterSchema);
+      await expect
+        .poll(
+          async () =>
+            (await treeAnswerOf(seeded.key)).nodes.find(
+              (node) => node.id === seeded.statementOne.id
+            )?.text ?? "",
+          {
+            message: "the tree read does not hold the words typed after the schema change",
+            timeout: 20_000,
+          }
+        )
+        .toContain(TYPED.afterSchema);
+    } finally {
+      await restoreStoreSchema();
+      await expect.poll(() => servesAddedType(), { timeout: 15_000 }).toBe(false);
+    }
   });
 });
 
@@ -970,7 +1058,7 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     // the tree artifact it is written in.
     await pickPreset(page, PRESET_NAMES.spec);
     const specStatement = nodeRow(page, statementSeven.row).first();
-    const specCriterion = nodeRow(page, criterion).first();
+    const specCriterion = nodeRow(page, criterion.row).first();
     await focusFilterRow(specStatement);
     await caretInto(page, {
       artifact: seeded.specArtifactId,
@@ -984,7 +1072,7 @@ test("a node is edited in place in each filter", async ({ browser }) => {
       page,
       {
         artifact: seeded.tree,
-        id: criterion,
+        id: criterion.row,
         message: "a press on the criterion's words in Spec does not put the caret in it",
         what: "the criterion",
       },
@@ -1051,7 +1139,7 @@ test("a node is edited in place in each filter", async ({ browser }) => {
           const { nodes } = await treeAnswerOf(seeded.key);
           const text = (id: string) => nodes.find((node) => node.id === id)?.text.trimStart() ?? "";
           return {
-            criterion: text(criterion).includes(TYPED.criterion),
+            criterion: text(criterion.id).includes(TYPED.criterion),
             starts: [statementOne.id, checkOne.id, statementSeven.id].map(
               (id) => text(id).split(/\s+/, 1)[0]
             ),
@@ -1224,12 +1312,12 @@ const UNDER_CRITERION_BLOCK = "r-under-criterion";
 /** The kinds the Spec control counts (`presets.ts`' `COUNTED_KINDS`): statements and criteria. */
 const SPEC_COUNTED: readonly string[] = ["requirement", "criterion"];
 
-/** What row 6 reads, each node by its read id: part X's seed, the issue's first comment thread
- *  (a comment's read id is its own id), the three criteria written under it, and the statement
- *  written under the overtaken one. */
+/** What row 6 reads: part X's seed, the issue's first comment thread (a comment's read id is its
+ *  own id), the three criteria written under it (each by read id and page row id), and the
+ *  statement written under the overtaken one. */
 interface CriterionStates {
   readonly comment: string;
-  readonly criteria: Readonly<Record<"live" | "overtaken" | "proposed", string>>;
+  readonly criteria: Readonly<Record<"live" | "overtaken" | "proposed", WrittenCriterion>>;
   readonly states: NodeStateSeed;
   readonly statement: string;
 }
@@ -1289,7 +1377,7 @@ async function seedCriterionStates(): Promise<CriterionStates> {
       ops: [
         {
           after: "end",
-          markdown: `:::requirement{#${UNDER_CRITERION_BLOCK} parent="${addressOf(overtaken)}"}\n${WRITTEN.underOvertaken}: the list keeps each criterion a later one replaced.\n:::`,
+          markdown: `:::requirement{#${UNDER_CRITERION_BLOCK} parent="${addressOf(overtaken.id)}"}\n${WRITTEN.underOvertaken}: the list keeps each criterion a later one replaced.\n:::`,
           op: "insert",
         },
       ],
@@ -1318,7 +1406,7 @@ async function seedCriterionStates(): Promise<CriterionStates> {
         timeout: SEED_READ_MS,
       }
     )
-    .toBe(overtaken);
+    .toBe(overtaken.id);
   await expect
     .poll(
       async () =>
@@ -1333,13 +1421,13 @@ async function seedCriterionStates(): Promise<CriterionStates> {
     )
     .toBe(0);
 
-  await writeNodeState(key, addressOf(proposed), "proposed");
-  await writeNodeState(key, addressOf(overtaken), "overtaken");
+  await writeNodeState(key, addressOf(proposed.id), "proposed");
+  await writeNodeState(key, addressOf(overtaken.id), "overtaken");
   const answer = await readTree(key, null);
   for (const [id, state, what] of [
-    [proposed, "proposed", "the proposed criterion"],
-    [overtaken, "overtaken", "the overtaken criterion"],
-    [live, "live", "the live criterion"],
+    [proposed.id, "proposed", "the proposed criterion"],
+    [overtaken.id, "overtaken", "the overtaken criterion"],
+    [live.id, "live", "the live criterion"],
   ] as const) {
     const node = answer.nodes?.find((one) => one.id === id);
     expect(node?.state, `the tree read does not answer ${what} ${state}`).toBe(state);
@@ -1488,31 +1576,40 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
     const plain = presetPath(key, "conversation");
     const underQuestion = [ids.questionCriterion, ids.questionStatement];
     const traffic = watchApiRequests(page);
+    const conversation = outlineAnswerOf(page, "conversation");
+    const graph = outlineAnswerOf(page, "graph");
 
     // (1) The page as it first opened, before any press: the overtaken question open with its
-    // criterion and its statement.
+    // criterion and its statement. Conversation's read names its kinds (`CONVERSATION_KINDS`) and
+    // holds each question by its ask's node rather than its block (`questionReadId`).
     await gotoIssue(page, plain);
+    const firstAnswer = await heldTreeAnswer(conversation, "the first load", (held) =>
+      (held.nodes ?? []).some(
+        (node) => node.id === criteria.overtaken.id && node.state === "overtaken"
+      )
+    );
+    const conversationQuestion = questionReadId(firstAnswer, states, "overtakenQuestion");
     await expectOpenWith(
       page,
-      ids.overtakenQuestion,
+      conversationQuestion,
       underQuestion,
       "the overtaken question is drawn open with its criterion on the first load"
     );
     // (5)'s live criterion, the first mark read: its words hold "proposed", its state is live.
-    const live = nodeRow(page, criteria.live).first();
+    const live = nodeRow(page, criteria.live.row).first();
     await expect(live, "the live criterion is no row of the outline").toBeVisible();
     expect(await ownMarks(live), "the live criterion carries no Proposed mark").toEqual([]);
 
     // (2) Once the load settled: the question's mark, open with both, and no gap on its criterion.
     await expectLoadSettled(traffic);
     await expect
-      .poll(() => ownMarks(rowOfRead(page, ids.overtakenQuestion)), {
+      .poll(() => ownMarks(rowOfRead(page, conversationQuestion)), {
         message: "after the load the overtaken question does not carry Overtaken",
       })
       .toEqual([OVERTAKEN]);
     await expectOpenWith(
       page,
-      ids.overtakenQuestion,
+      conversationQuestion,
       underQuestion,
       "after the load the overtaken question is not drawn open with its criterion and its statement"
     );
@@ -1521,16 +1618,23 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
       "the criterion under the overtaken question draws a gap"
     ).toHaveCount(0);
 
-    // (3) The same in Graph.
+    // (3) The same in Graph, whose read holds no `kind=` filter and so holds the question's block
+    // (`questionReadId`).
     await pickSettled(page, traffic, PRESET_NAMES.graph);
+    const graphAnswer = await heldTreeAnswer(graph, "Graph's load", (held) =>
+      (held.nodes ?? []).some(
+        (node) => node.id === criteria.overtaken.id && node.state === "overtaken"
+      )
+    );
+    const graphQuestion = questionReadId(graphAnswer, states, "overtakenQuestion");
     await expectOpenWith(
       page,
-      ids.overtakenQuestion,
+      graphQuestion,
       underQuestion,
       "the overtaken question is drawn open with its criterion and its statement in Graph"
     );
     await expect
-      .poll(() => ownMarks(rowOfRead(page, ids.overtakenQuestion)), {
+      .poll(() => ownMarks(rowOfRead(page, graphQuestion)), {
         message: "the overtaken question does not carry Overtaken in Graph",
       })
       .toEqual([OVERTAKEN]);
@@ -1540,40 +1644,40 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
     ).toHaveCount(0);
 
     // (4) Each branch folded once on a fresh load, the overtaken question first, beside what
-    // alice's tree read holds under it: a question indexed from a block stands for its ask too,
-    // and a comment on a node's text and its thread count in no branch (`HeldRow`).
+    // Conversation's own tree read holds under it: each question is one node of that read, its
+    // ask's (`questionReadId`), and a comment on a node's text and its thread count in no branch
+    // (`HeldRow.margin`).
+    const foldedWatch = outlineAnswerOf(page, "conversation");
     await loadSettled(page, traffic, plain);
-    const answer = await readTree(key, null);
+    const answer = await heldTreeAnswer(foldedWatch, "the fold load", (held) =>
+      (held.nodes ?? []).some(
+        (node) => node.id === criteria.overtaken.id && node.state === "overtaken"
+      )
+    );
+    const foldedQuestion = questionReadId(answer, states, "overtakenQuestion");
     const margin = await marginComments(key);
-    const asks = new Map([
-      [ids.openQuestion, [states.whole.openQuestion.askId]],
-      [ids.overtakenQuestion, [states.overtakenAskId]],
-      [ids.proposedQuestion, [states.proposedAskId]],
-    ]);
-    const held = (readId: string): HeldRow => ({ alike: asks.get(readId), margin });
     expect(
-      await foldedCount(rowOfRead(page, ids.overtakenQuestion), "the overtaken question"),
+      await foldedCount(rowOfRead(page, foldedQuestion), "the overtaken question"),
       "the folded overtaken question counts its criterion"
-    ).toBe(heldUnder(answer, key, ids.overtakenQuestion, held(ids.overtakenQuestion)));
+    ).toBe(heldUnder(answer, key, foldedQuestion, { margin }));
     const branches = (await treeItemsDrawn(page)).filter(
-      (item) =>
-        item.expanded === "true" && item.readId !== null && item.readId !== ids.overtakenQuestion
+      (item) => item.expanded === "true" && item.readId !== null && item.readId !== foldedQuestion
     );
     for (const branch of branches) {
       const readId = branch.readId ?? "";
       expect(
         await foldedCount(nodeRow(page, branch.id).first(), branch.id),
         `the fold of ${branch.id} does not count what the tree read holds under it, the criteria and what stands under them included`
-      ).toBe(heldUnder(answer, key, readId, held(readId)));
+      ).toBe(heldUnder(answer, key, readId, { margin }));
     }
 
     // (5) The proposed criterion in the outline, in Graph, and under Spec, in its count.
-    await expectProposedCriterion(page, criteria.proposed, "in the outline");
+    await expectProposedCriterion(page, criteria.proposed.row, "in the outline");
     await pickSettled(page, traffic, PRESET_NAMES.graph);
-    await expectProposedCriterion(page, criteria.proposed, "in Graph");
+    await expectProposedCriterion(page, criteria.proposed.row, "in Graph");
     await pickSettled(page, traffic, PRESET_NAMES.spec);
     await expect
-      .poll(() => ownMarks(nodeRow(page, criteria.proposed).first()), {
+      .poll(() => ownMarks(nodeRow(page, criteria.proposed.row).first()), {
         message: "the proposed criterion does not carry Proposed under Spec",
       })
       .toEqual([PROPOSED]);
@@ -1583,7 +1687,7 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
       )
     );
     expect(
-      specCounted.has(criteria.proposed),
+      specCounted.has(criteria.proposed.id),
       "the Spec view read does not take the proposed criterion"
     ).toBe(true);
     await expect
@@ -1607,7 +1711,7 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
             items,
             items.find((item) => item.readId === comment)
           ).map((item) => item.readId);
-          return drawn.includes(criteria.overtaken);
+          return drawn.includes(criteria.overtaken.id);
         },
         {
           message: "the overtaken criterion is no row among the comment's children",
@@ -1619,7 +1723,7 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
       drawn.filter((id) => id !== null && siblings.includes(id)),
       "the overtaken criterion does not stand at its place among the comment's children"
     ).toEqual(siblings.filter((id) => drawn.includes(id)));
-    const overtaken = nodeRow(page, criteria.overtaken).first();
+    const overtaken = nodeRow(page, criteria.overtaken.row).first();
     await expect
       .poll(() => ownMarks(overtaken), {
         message: "the overtaken criterion does not carry Overtaken",
@@ -1627,7 +1731,7 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
       .toEqual([OVERTAKEN]);
     await expectOpenWith(
       page,
-      criteria.overtaken,
+      criteria.overtaken.id,
       [statement],
       "the overtaken criterion is not drawn open with the statement under it"
     );
@@ -1650,7 +1754,7 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
     await overtaken.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
     await expectOpenWith(
       page,
-      criteria.overtaken,
+      criteria.overtaken.id,
       [statement],
       "the overtaken criterion's fold control does not open it again with the statement under it"
     );
