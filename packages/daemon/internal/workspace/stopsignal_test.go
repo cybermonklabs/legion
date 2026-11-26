@@ -53,14 +53,10 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		budget := time.Second
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
-		// The command takes the lock, traps SIGTERM to remove it and leave, then reports that it
-		// is running and loops. The budget's end stops it with SIGTERM, and a lock that is gone
-		// here is one the command's own handler removed. This row reads the stop's outcome, the
-		// lock released and the clean exit classified as a timeout, not how long a loaded runner
-		// took to observe it: that is scheduling latency, which a wall clock cannot bound under
-		// load. procgroup's own test bounds the grace's promptness
-		// (TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds).
+		// The lock is taken before the command reports that it is running, so a lock that is gone
+		// at the end is one the command's own SIGTERM handler removed.
 		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
+
 		started := time.Now()
 		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
 		elapsed := time.Since(started)
@@ -69,10 +65,13 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 			t.Fatalf("the command never reported that it was running (%v): the budget ended before it ran, so this run proves nothing (RunCommand = %v)", statErr, err)
 		}
 		if _, statErr := os.Stat(lock); !os.IsNotExist(statErr) {
-			t.Errorf("the lock the command held is still there (%v) after %s: the stop gave it no SIGTERM to remove it on (RunCommand = %v)", statErr, elapsed, err)
+			t.Errorf("the lock the command held is still there (%v) after %s: the budget's end gave it no SIGTERM to remove it on (RunCommand = %v)", statErr, elapsed, err)
 		}
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget ended the command, however cleanly it then left", err, elapsed)
+		}
+		if elapsed > budget+procgroup.StopGrace/2 {
+			t.Errorf("the run took %s, which is past its %s budget plus half the %s grace: a command that leaves on its SIGTERM must end the grace, not sit out its whole span", elapsed, budget, procgroup.StopGrace)
 		}
 	})
 
