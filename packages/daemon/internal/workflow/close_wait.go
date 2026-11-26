@@ -445,7 +445,7 @@ func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Is
 	if len(view.wait.Beneath) > 0 || len(view.facts.Defects) > 0 || view.facts.OpenChange {
 		return nil
 	}
-	if check := view.facts.Production; check != nil && check.Generation == issue.Generation && check.MergeSHA == issue.Merge.SHA {
+	if check := view.facts.Production; check != nil {
 		return nil
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
@@ -895,17 +895,6 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
 	}
 	for _, check := range stored.Checks {
 		terms = append(terms, fmt.Sprintf("Check %s has no pass since %s: %s.", check.ID, since(check.Since), strings.Trim(check.Answer+", "+check.Reason, ", ")))
-	}
-	if production := stored.Production; production != nil {
-		state := production.State
-		switch {
-		case production.Outcome != "":
-			state = "closed as " + production.Outcome
-		case production.NextLookAt != nil:
-			state = "open, its next look at " + since(*production.NextLookAt)
-		}
-		terms = append(terms, fmt.Sprintf("Its production check of generation %d at merge commit %s is %s since %s.", production.Generation, production.Merge, state, since(production.Since)),
-			"Its way out is a pass at its look, one more look after a late result, or the next change of a fail.")
 	}
 	for _, defect := range stored.Defects {
 		terms = append(terms, fmt.Sprintf("Reason %d waits since %s: %s.", defect.ID, since(defect.Since), defect.Text))
