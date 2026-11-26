@@ -43,7 +43,6 @@ import type {
   TreeAsk,
 } from "./issue-tree";
 import type { LensFacts } from "./lenses/lens-drafts";
-import { storeKindOf } from "./lenses/store-link";
 import {
   type AskState,
   type CheckState,

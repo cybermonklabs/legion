@@ -1,10 +1,11 @@
+import { referenceSpans } from "@legion/contracts";
+
 import type { DisplayTree } from "../../../api/types";
-import { referenceSpans } from "../../refs/reference-spans";
 import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { storedReading } from "../stored-reading";
-import { addressesAsShortForms, type Draft, plainWords, storeKindWord } from "../tree-drafts";
+import type { Draft } from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import {
@@ -21,19 +22,24 @@ import {
   plainRuns,
   storedFacts,
   storedRowWords,
+  storedWords,
+  storeKindWord,
+  storeKindWords,
 } from "./lens-drafts";
 import { outlineRowPath, type StoreKind } from "./store-link";
 
 /**
  * A store address in a row's words on the issue page (decision 388): `dispatch://lens/<uuid>`,
  * `dispatch://risk/<uuid>`, `dispatch://constraint/<uuid>`, and a finding's
- * `dispatch://lens/<uuid>#b-<id>`. No route names one (`refs/store-address.ts`), and a uuid is
- * no word a reader reads, so every one-line words write one as its kind's word
- * (`tree-drafts.ts`'s `addressesAsShortForms`). Where the tree read holds the node and a step
- * drafted its row, a row's words read it by the node's name instead, linked to that row
- * (`?node=`). `storeWords` is the mark of `tree-read/tree-nodes.ts`'s `treeDraftMarks` that
- * writes them so, and `store-link.ts`'s `storeLinkPath` the check a row makes before it follows
- * such a link.
+ * `dispatch://lens/<uuid>#b-<id>`. No route names one (`refs/store-address.ts`), so the row's
+ * renderer, which names every other reference, draws a bare one as its author wrote it, and a
+ * uuid is no word a reader reads. Where the tree read holds the node and a step drafted its row,
+ * a row's words read it by the node's name, linked to that row (`?node=`), and by its kind's word
+ * otherwise (`storeKindWord`); the row's one line, read from those words, reads it alike.
+ * `storeWords` is the mark of `tree-read/tree-nodes.ts`'s `treeDraftMarks` that writes them so,
+ * and `store-link.ts`'s `placeStoreLinks` makes each name's link one to that row as the row paints
+ * its words, once `storeLinkPath` has checked it. Every other address stays as its author wrote
+ * it, for the renderer to name (`RowText.tsx`'s `DrawnText`, `node-line.tsx`'s `useNodeLine`).
  *
  * Every fact comes from the tree read; nothing here sends a request. This module imports only
  * types from `tree-read/`, which imports it, so no import cycle closes (`biome.json`'s
@@ -68,15 +74,15 @@ const NO_MARKS: readonly DisplayTree[] = [];
  *   (`storeAddressesIn`).
  * - A draft with none whose text holds a store address: one paragraph of its text's plain words,
  *   named (`lineRuns`), which its row then draws its words from, the links with them. Its other
- *   addresses stay as written, which the row's link pass links as it links a text drawn as
- *   stored (`RowText.tsx`'s `StoredText`), and its line writes short as every line does.
+ *   addresses stay as written, which the row's renderer names in its words and in its line, as it
+ *   names them in a text drawn as stored.
  * - A lens's, a risk's and a constraint's own draft, whose words `lensDrafts` read from their
  *   attributes (`storedRowWords`, `constraintRuns`, `storedFacts`): each attribute that holds a
  *   store address read again with its names (`nameStored`), an author's link to a node among
  *   them, and each fact line that names a node with its parts, which link the node's row.
  *
- * A child issue's title is no markdown and its row draws it as written, so it is left as it is;
- * its line reads a store address as its kind's word, as every line does.
+ * A child issue's title is no markdown and its row draws it as written, so it is left as it is,
+ * and its line reads it as written too (`issue-tree.ts`'s `lineWordsRaw`).
  */
 export function storeWords(
   draft: Draft,
@@ -98,7 +104,7 @@ export function storeWords(
         draft.tree = storeAddressesIn(draft.tree, index);
         return;
       }
-      const runs = lineRuns(draft.text, index, (words) => words);
+      const runs = lineRuns(draft.text, index);
       if (runs !== undefined) draft.tree = lineOf(runs);
     }
   }
@@ -134,19 +140,19 @@ function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
 }
 
 /** The name a row's words read `node` by, whole: a lens by its kind's words as its chip names it
- *  (`lensChipWords`), a risk by its heading, a constraint by its words (`constraintWords`), a
- *  finding by its row's line (`TreeDraftContext.lineOf`), and the page's word for its kind where
- *  those hold none. Each is read as the one-line words read it, so an address in it reads as its
- *  kind's word or its short form, and no name holds another node's. */
+ *  (`lensChipWords`), a risk by its heading's words (`storedWords`), a constraint by its words
+ *  (`constraintWords`), a finding by its row's line (`TreeDraftContext.lineOf`), and the page's
+ *  word for its kind where those hold none. A store address in it reads as its kind's word
+ *  (`storeKindWords`), so no name holds another node's; every other address stays as written. */
 function nameOf(node: TreeAnswerNode, type: StoreKind, context: TreeDraftContext): string {
-  if (type === "lens") return lensChipWords(addressesAsShortForms(kindOf(node, context))).words;
+  if (type === "lens") return lensChipWords(storeKindWords(kindOf(node, context))).words;
   const words =
     type === "risk"
-      ? plainWords(storedRowWords(node, type))
+      ? storedWords(storedRowWords(node, type))
       : type === "constraint"
         ? constraintWords(node)
         : (context.lineOf(node.id) ?? "");
-  return words === "" ? NODE_TYPE_NAMES[type] : words;
+  return words === "" ? NODE_TYPE_NAMES[type] : storeKindWords(words);
 }
 
 /** Whether the stored string `raw` can hold a store address: only a `dispatch://` span is one. */
@@ -161,29 +167,24 @@ function lineOf(runs: DisplayTree[]): DisplayTree {
 
 /**
  * The runs of the one paragraph the stored string `raw` reads as with each store address in it
- * named (`lineOf` makes them a reading), of the very words `plainWords` reads from it: its
+ * named (`lineOf` makes them a reading), of the very words `storedWords` reads from it: its
  * reading (`storedReading`) named (`storeAddressesIn`), its text runs in order and spaced as
  * `wordsOf` joins them, white space collapsed. A name's run keeps one mark, its link: a bare
  * address's, an autolink's, and an author's own words linked to a node the index holds, words
  * in a code span among them but for code words that are the link's own address, which link
  * nothing (`linkedRuns`). Every other run is plain text, so an author's link to a node the
  * index does not hold, or to anything else, reads as its words. A run in code - marked as inline
- * code, or inside a code block - reads as written, a name's run in a code span too, and every
- * other run's words are written by `others`. A name's run joins the one before it where both
- * carry the same link - the same `href` and the same `title` - with no words between them, so an
- * author's link whose words carry marks, `[the **HTTP** rule](…)`, is one run. A row draws a
- * verdict, a heading, a fact line and a constraint's words that cite nothing as `plainWords`
- * reads them, each other address written short (`addressesAsShortForms`), so the same words that
- * cite a node are drawn as the same one line, the cited words alone changed, with none of the
- * lists and emphasis a parse made in the page would draw (R20); a text drawn with no reading
- * keeps its other addresses as written, for the row's link pass. Undefined where the walk names
- * nothing, so a draft keeps the words it has.
+ * code, or inside a code block - reads as written, a name's run in a code span too. A name's run
+ * joins the one before it where both carry the same link, the same `href` and the same `title`,
+ * with no words between them, so an author's link whose words carry marks,
+ * `[the **HTTP** rule](…)`, is one run. A row draws a verdict, a heading, a fact line and a
+ * constraint's words that cite nothing as `storedWords` reads them, so the same words that cite
+ * a node are drawn as the same one line, the cited words alone changed, with none of the lists
+ * and emphasis a parse made in the page would draw (R20). Every other address stays as its
+ * author wrote it, for the row's renderer to name. Undefined where the walk names nothing, so a
+ * draft keeps the words it has.
  */
-function lineRuns(
-  raw: string | undefined,
-  index: () => StoreIndex,
-  others: (words: string) => string
-): DisplayTree[] | undefined {
+function lineRuns(raw: string | undefined, index: () => StoreIndex): DisplayTree[] | undefined {
   if (!cites(raw)) return undefined;
   const reading = storedReading(raw);
   const named = storeAddressesIn(reading, index);
@@ -197,17 +198,12 @@ function lineRuns(
     if (typeof node.text === "string") {
       if (apart && (words !== "" || parts.length > 0)) words += " ";
       apart = false;
-      if (inCode) {
-        words += node.text;
-        return;
-      }
-      const marks = Array.isArray(node.marks) ? (node.marks as DisplayTree[]) : NO_MARKS;
-      const text = marks.some((mark) => mark.type === "inlineCode") ? node.text : others(node.text);
       // Outside a code block the walk leaves no link to a store address but a name's, in a code
       // span too: `linkedRuns` names or drops each other one.
-      const link = marks.find((mark) => linkedAddress(mark) !== undefined);
+      const marks = Array.isArray(node.marks) ? (node.marks as DisplayTree[]) : NO_MARKS;
+      const link = inCode ? undefined : marks.find((mark) => linkedAddress(mark) !== undefined);
       if (link === undefined) {
-        words += text;
+        words += node.text;
         return;
       }
       if (words !== "") parts.push({ text: words, type: "text" });
@@ -215,10 +211,10 @@ function lineRuns(
       // A name's run with the same link as the one just before it, no words between, joins it.
       const before = parts.at(-1);
       if (before?.marks !== undefined && sameLink((before.marks as DisplayTree[])[0], link)) {
-        parts[parts.length - 1] = { ...before, text: `${before.text as string}${text}` };
+        parts[parts.length - 1] = { ...before, text: `${before.text as string}${node.text}` };
         return;
       }
-      parts.push({ marks: [link], text, type: "text" });
+      parts.push({ marks: [link], text: node.text, type: "text" });
       return;
     }
     apart = true;
@@ -284,14 +280,14 @@ function nameStored(
   if (type === "constraint") {
     let named = false;
     const runs = constraintRuns(node, (raw) => {
-      const line = lineRuns(raw, index, addressesAsShortForms);
+      const line = lineRuns(raw, index);
       if (line === undefined) return plainRuns(raw);
       named = true;
       return line;
     });
     if (named) nameLine(draft, runs);
   } else {
-    nameLine(draft, lineRuns(storedRowWords(node, type), index, addressesAsShortForms));
+    nameLine(draft, lineRuns(storedRowWords(node, type), index));
   }
   if (draft.lens !== undefined) {
     draft.lens = { ...draft.lens, ...storedFacts(node, type, (raw) => factWords(raw, index)) };
@@ -300,15 +296,15 @@ function nameStored(
 
 /**
  * A fact line read from the stored string `raw` with each store address in it named, as
- * `LensFacts` holds it: its plain words (`plainWords`) where it names nothing, and else its named
+ * `LensFacts` holds it: its words (`storedWords`) where it names nothing, and else its named
  * reading's words (`lineRuns`), its runs joined (`factText`). Where that reading names a node the
  * index holds, the line is answered as its runs instead, its parts: each run with a name's link a
  * chip of the node - its store address, the run's words and its read id, so the chip links its
  * row - and every other run its text.
  */
 function factWords(raw: string, index: () => StoreIndex): string | FactParts {
-  const runs = lineRuns(raw, index, addressesAsShortForms);
-  if (runs === undefined) return plainWords(raw);
+  const runs = lineRuns(raw, index);
+  if (runs === undefined) return storedWords(raw);
   const parts = runs.map((run): string | LensChip => {
     const text = run.text as string;
     const link = Array.isArray(run.marks) ? (run.marks as DisplayTree[])[0] : undefined;
@@ -331,15 +327,15 @@ function factWords(raw: string, index: () => StoreIndex): string | FactParts {
  * `collectReferenceAnchors`) reads a link to a path of an issue's page as a reference to the
  * issue, which it draws by the issue's title at the issue's own path, while it leaves alone a
  * link to a store address, which no route names. The row's link pass (`RowText.tsx`'s
- * `DrawnText`) then makes the path the link's address (`storeLinkPath`). An address is found as
- * `addressesAsShortForms` finds one (`referenceSpans`), and what `trimReference` cuts off its
- * end stays where it stood. A run that already links to a store address is written as
- * `linkedRuns` writes it. One that links anywhere else keeps its marks, its link among them, and
- * each store address in its words is named as plain words, since a link holds no second link. A
- * run in code - marked as inline code, or inside a code block - keeps its words as its author
- * wrote them, as `withShortAddresses` keeps them, and only an inline code run's link to a store
- * address is written as `linkedRuns` writes it; `inCode` says `node` stands inside a code block,
- * so none of its runs is named.
+ * `DrawnText`) then makes the path the link's address (`store-link.ts`'s `placeStoreLinks`). An
+ * address is found as the page finds a reference in text (`referenceSpans`), and what
+ * `trimReference` cuts off its end stays where it stood. A run that already links to a store
+ * address is written as `linkedRuns` writes it. One that links anywhere else keeps its marks, its
+ * link among them, and each store address in its words is named as plain words, since a link
+ * holds no second link. A run in code - marked as inline code, or inside a code block - keeps its
+ * words as its author wrote them, as a rendered body draws them, and only an inline code run's
+ * link to a store address is written as `linkedRuns` writes it; `inCode` says `node` stands
+ * inside a code block, so none of its runs is named.
  *
  * `node` itself is never changed, since a reading is shared (`storedReading`). A run that
  * names an address is copied, and so is each node above it; a node that holds none is answered

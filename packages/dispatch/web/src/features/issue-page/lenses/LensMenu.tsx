@@ -25,11 +25,11 @@ import { dialogOpen } from "../../shell/useDialog";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, type NodeType } from "../page-words";
-import type { Outline } from "../tree-read/tree-read";
 import { lensStoreAddress } from "./lens-drafts";
 import {
   lensKindsQuery,
   lensPlaceOf,
+  type Outline,
   type StandingAddress,
   useInvokeLens,
   useStandingAddress,

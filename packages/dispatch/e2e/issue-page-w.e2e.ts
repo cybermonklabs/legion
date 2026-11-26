@@ -15,7 +15,6 @@ import {
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { CHILD_PAGE } from "../web/src/features/issue-page/tree-fold";
-import type { Outline } from "../web/src/features/issue-page/tree-read/tree-read";
 import { createComment, getIssueCoverage } from "./api";
 import { nextFrames } from "./frames";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
@@ -186,7 +185,10 @@ import { assertPageFits } from "./unclipped";
 const VIEWS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly Preset[];
 
 /** The two outlines, which draw them: Conversation, at the issue's own address, and Graph. */
-const OUTLINES = ["conversation", "graph"] as const satisfies readonly Outline[];
+const OUTLINES = ["conversation", "graph"] as const;
+
+/** One of the two outlines (`OUTLINES`). */
+type Outline = (typeof OUTLINES)[number];
 
 /** The lens catalogue's read, which the menu of lens kinds sends as it opens. */
 const CATALOGUE_READ = "**/api/v1/schema/blocks";
