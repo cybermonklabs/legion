@@ -1010,6 +1010,15 @@ pods, a write blocked for a third of a second completed the moment the page sent
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
 
+A test that needs a close or a ping (gorilla/websocket's `WriteControl`) to wait for the
+connection's write lock holds the writer the same way, before the close or the ping comes. gorilla
+holds that lock for each write to the connection, not for a whole message, so a writer that TCP
+backpressure stalls holds it only while the kernel blocks a write: between two fragments of a frame
+it holds none, and a close that comes then takes the free lock and is written at once. The relay
+socket rows of `packages/envoy/cmd/listener` build their rig with `withHeldWrites`
+(`relay_socket_fixture_test.go`), the same gate. Use small TCP buffers and a client that reads
+nothing only to test the slow client itself, not to make `WriteControl` wait for a lock.
+
 ## A fake HTTP server whose client gives up on requests
 
 A fake `httptest` server whose handler fails the test on a request body it cannot read stops with `Shutdown` before `Close` when its client sends requests the test does not wait for, as the Cloud SQL connector does when it gives up on a refresh.
