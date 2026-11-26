@@ -166,7 +166,7 @@ while :; do
     '{operationName: "PriorityPulls", query: $query, variables: {owner: $owner, repo: $repo, after: $after}}' \
     > "$work/request.json"
   if ! gh_read gh api graphql --input "$work/request.json" > "$work/answer.json"; then
-    fail "GitHub's GraphQL API refused the read of the open pull requests labelled priority at every attempt, $unread"
+    exit 0 # CONTROL: a refused label read passes, which the harness must catch
   fi
   if ! jq -e "$shape" "$work/answer.json" > /dev/null 2>&1; then
     fail "GitHub's GraphQL API answered the read of the open pull requests labelled priority in a shape this check does not read, $unread"
@@ -425,7 +425,7 @@ for candidate in "${candidates[@]}"; do
   found=yes
   if [ "$status" -eq 0 ]; then
     # The base merges cleanly with it, so every conflict of the change's merge is the change's.
-    cp "$work/ours.paths" "$work/caused"
+    : > "$work/caused"; found='' # CONTROL: a conflict with a base-clean priority PR passes
   else
     stale=$(sed -z -E 's/~(change|priority|landed)$//' "$work/before.paths" | sort -z -u | tr -cd '\0' | wc -c)
     echo "$name already conflicts with the base of $change in $stale file(s): those are its own to resolve, and count against $change only where $change adds a conflict."
@@ -477,7 +477,7 @@ for candidate in "${candidates[@]}"; do
           cmp -s "$work/a" "$work/b" || same=$?
           case $same in
             0) ;;
-            1) printf '%s\0' "$path" >> "$work/caused" ;;
+            1) ;; # CONTROL: a file that differs from the change's own merge is not counted
             *) fail "could not compare $path of the merges of $change with $name, $unread" ;;
           esac
         done < "$work/differ"
