@@ -212,8 +212,8 @@ step before your acceptance brings the child to your acceptance again. On a task
 and the pass of its last step starts its retro, as the acceptance paragraph above says. The merge
 closes it, and its `done` reaches the architect above you as a `child-closed` notice. Like the
 root architect, you run no file-backed phase: write no
-handoff and report no phase completion, since the daemon accepts a completion only from the role
-that works the issue's current phase.
+handoff and report no phase completion, since the daemon refuses an architect's completion
+(`ACCEPTANCE_IS_SIGN_OFF`).
 Until then, other roles on this issue may message you through Envoy with questions; answer them.
 You may message any role on this issue, and the architect above you, with `envoy_publish` to
 `notifications.role.` followed by its encoded role token — never hand-format one: your own role
