@@ -1003,7 +1003,9 @@ func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
 // wait status on and prefixed writers of the generation's own; in the controller's pod, the shim
 // itself in the container's own namespaces, writing to the container's stdout and stderr
 // themselves (cfg.Stdout and cfg.Stderr, never the launcher's own writer, which is no file), so
-// the shim's descriptors are the container's files and no pipe through the launcher.
+// the shim's descriptors are the container's files and no pipe through the launcher. There the
+// shim is told to reap its own orphans (reapingShim); role-init's shim never is, since role-init
+// keeps that shim in role-init's own process group (runRoleShim).
 func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProcess, error) {
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
@@ -1016,11 +1018,30 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 		process.output = []io.Writer{stdout, stderr}
 		return process, nil
 	}
-	cmd := exec.Command(start.Argv[0], start.Argv[1:]...)
+	argv := reapingShim(start.Argv)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = m.cfg.Stdout, m.cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &roleProcess{cmd: cmd}, nil
+}
+
+// reapOrphansFlag is the flag that makes `legion worker-shim` the child subreaper of everything it
+// starts, reaping their orphans itself (internal/shim's Config.ReapOrphans).
+const reapOrphansFlag = "--" + shimwire.ReapOrphansFlag
+
+// reapingShim is argv with reapOrphansFlag after `legion worker-shim`, where argv runs the shim,
+// and argv as it is otherwise. The controller pod's single-role form starts the shim as this
+// process's own child, in a process group of the shim's own, and this process, the container's
+// PID 1, is in another: an orphan of the shim's group that PID 1 reaped would be reaped by a
+// parent outside that group, which under the cluster's gVisor takes one from the count that keeps
+// the group from reading as orphaned (internal/shim's Config.ReapOrphans says the whole of it).
+// With the flag such orphans come to the shim, in their own group, and the shim reaps them.
+func reapingShim(argv []string) []string {
+	if len(argv) < 2 || argv[1] != shimArgument {
+		return argv
+	}
+	return slices.Concat(argv[:2], []string{reapOrphansFlag}, argv[2:])
 }
 
 // wait reports the generation's exit once its process is gone. A role's exit is the shim's own:

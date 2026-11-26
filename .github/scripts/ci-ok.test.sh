@@ -558,8 +558,8 @@ for path in sorted(pathlib.Path(sys.argv[1]).glob("*.yaml")):
                 found[path.name] = (count + 1, marked + (os.environ["MARKER"] in step.get("run", "")))
 print(" ".join(f"{name}={count}/{marked}" for name, (count, marked) in sorted(found.items())))
 ' "$script_dir/../workflows")
-check "every restating step writes it: daemon-go's two, envoy-go-race-api's and envoy-go-race-docs's" \
-  "$(is "$held" "ci-job-daemon-go.yaml=2/2 ci-job-envoy-go-race-api.yaml=1/1 ci-job-envoy-go-race-docs.yaml=1/1")"
+check "every restating step writes it: daemon-go's two, envoy-go's, envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs's" \
+  "$(is "$held" "ci-job-daemon-go.yaml=2/2 ci-job-envoy-go-race-api.yaml=1/1 ci-job-envoy-go-race-docs.yaml=1/1 ci-job-envoy-go-race.yaml=1/1 ci-job-envoy-go.yaml=1/1")"
 
 echo "case: GitHub refuses the check runs of this head"
 # The read is tried three times and the verdict is reached without it: a read that did not

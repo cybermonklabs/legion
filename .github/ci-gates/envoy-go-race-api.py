@@ -16,5 +16,5 @@ GATE = gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run(RACE_API
     (GO_LEGS_SCRIPT, f"{at(RACE_API_LEGS_JOB, RACE_API.step, ENVOY_GO_RACE_API_FILE)} runs it for the leg's group and package"),
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
     (f"{GO_LEGS_GROUPS}/**", f"{GO_LEGS_SCRIPT} reads the groups of a split package's tests from it"),
-) + ceiling_reads(RACE_API_LEGS_JOB, ENVOY_GO_RACE_API_FILE) + crash_safety_reads(RACE_API_LEGS_JOB, ENVOY_GO_RACE_API_FILE)
+) + ceiling_reads(RACE_API_LEGS_JOB, ENVOY_GO_RACE_API_FILE) + service_settings_reads(RACE_API_LEGS_JOB, ENVOY_GO_RACE_API_FILE)
   + setup_go(RACE_API_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_RACE_API_FILE))

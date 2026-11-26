@@ -50,6 +50,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+  A server that takes neither and can listen on a unix socket listens on one in a directory of the test's own (`testtmp.Dir`), and on no TCP port, as `internal/ompsessions`' PgBouncer does in a directory docker mounts into its container.
   A daemon a test boots in its own process (`packages/daemon/internal/daemon`) takes its API listener from a socket the test holds (`heldListen`, through `overrides.listen`), and a test whose daemons must listen on one port across a restart, as the controller sandbox rig's worker stream must, hands each boot a descriptor of a socket it holds for its whole run (`heldSocketListen`, through `overrides.listen` and `overrides.streamListen`).
   A port a test holds so that another bind of it fails is held at the address that bind names: a wildcard listener from `net.Listen` (`0.0.0.0` or `[::]`, which sets `SO_REUSEADDR`) keeps a bind of one address off its port under Linux but not under gVisor, whose netstack lets a second socket that sets `SO_REUSEADDR` bind that address beside it (`internal/testnats`'s `TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady` holds its server's profiler port at the server's own host for this reason).
 
@@ -238,7 +239,7 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 124 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -329,6 +330,36 @@ included.
 When a test waits for a process that the code under test starts, the code tells the test that
 process's pid. A command that a test hands to the code, such as a `!` token command or a stand-in,
 writes its own pid (`echo $$ >FILE`) as its first act.
+
+## A Go test that starts a copy of its own test binary
+
+A copy of a Go test binary that a test starts with a marker, an environment variable or a first
+argument, gets its role from the package's `TestMain`, which runs that role and no test. In a build
+of the tests without that `TestMain` (a build constraint that keeps its file out of one build, a
+split of the test files) the copy runs every test, and each test that starts a copy starts more:
+on 2026-11-25 a copy of `packages/envoy/clitest`'s tests, split so that its `TestMain` was in an
+`integration` build alone, grew to 21,523 live copies and 505,340 threads, and stopped a 288-CPU
+host for 3.5 hours.
+
+So before every start of such a copy, a test asks one function of its package that returns an
+error in a process that carries a copy's marker itself (`fakeCopyRefusal` in
+`packages/envoy/clitest`, `legionCopyRefusal` in the daemon's `cmd/legion`, `helperCopyRefusal` in
+its `internal/launcher`), and refuses to start the copy on that error. A test that must set a
+copy's marker in its own process, because a copy started by code under test inherits it from there,
+starts every copy of its own before it sets it.
+
+The package has two tests of this. One is a unit test of that function: under `t.Setenv` of the
+marker (and, for a role given by the first argument, with `os.Args` set and put back) it returns
+the error, and with the marker unset it returns nil. While `TestMain` is in the build no copy ever
+reaches the function, so this test is the one that fails when the check is deleted. The other
+starts one copy with its marker and `-h`. Whatever the role does with `-h`, the testing package
+reads it before any test runs: in a build without `TestMain` that copy prints the testing package's
+flag usage and exits, so the test fails by name and starts nothing more. That covers a role chosen
+by an environment variable alone: Go stops reading flags at the first argument that is not one, so
+a copy whose role is its first argument (the launcher's `worker-shim` stand-in) never reads a `-h`
+after it, and for such a role the unit test, with `os.Args` set, is the only test. A copy started
+with `-test.run=^Name$`, whose named test reads its marker, is not of this kind: without
+`TestMain` it still runs that one test.
 
 ## The act rule of a Dispatch unit test
 
@@ -592,6 +623,33 @@ bound that the parallel tests' load could make it miss, which the comment names 
 one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
 comment runs alone for no reason, as 46 tests did by 2026-11-25.
 
+## A daemon test writes a file it then executes with `internal/execfile`
+
+In a package of the daemon module whose tests run beside each other (`cmd/legion`,
+`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
+(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+another test forks while the file is open for writing holds the write descriptor until its own
+exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
+reading from the open to the close, so no fork lands in between. Code a test runs that writes such
+a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
+`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+record) needs neither.
+
+## A test in `packages/daemon/internal/runtime/sandbox` runs beside the others
+
+Every top-level test of `packages/daemon/internal/runtime/sandbox`, in the default build and the
+e2e build, calls `t.Parallel()` as its first statement or says on its first line, in a
+`// Not parallel:` comment, why it cannot; the package's `TestMain` runs 8 at once
+(`sandboxTestParallelism`). Each test drives a fake API server, launchers and store of its own
+(`newRig`). A test stays serial when it calls `t.Setenv` (`newSetupRig`), writes
+`gitHubRefreshInterval`, or needs a step to land inside a window of the wall clock, which the
+comment names. A test that asserts which deadline a wait meets sets a `clocktest.Fake` as the
+runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the
+others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
+by 2026-11-25.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -608,18 +666,23 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
 gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its nineteen source-guard
+steps); `envoy-go` leaves it out of its unit legs, and `text-checks` runs its nineteen source-guard
 tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-Every package of `packages/daemon` runs in CI in exactly one leg that `.github/go-legs.yaml` names
-for it (or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
-daemon package, change its line there in the same change: every daemon-go leg fails, naming the
-package, while `go list ./...` and the file disagree. Put a new package in the leg its measured
-time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
+Every package of `packages/daemon` and of `packages/envoy` runs in CI in exactly one leg that
+`.github/go-legs.yaml` names for it, or, as `internal/daemon` and `cmd/listener` do, in a group of
+its tests in each of several legs of one job (or under `elsewhere`, with the job that runs it).
+When you add, remove, rename or move a package of either module, change its line there in the same
+change. A package `go list ./...` prints and the file does not name still runs, in exactly one
+leg: the last leg of the job the module's `unlisted` names (daemon-go, envoy-go), and every leg
+of the module warns, naming it, until the file does. A line that names a directory that is no
+package, or a package in two places, fails every leg of the module. Put a new package in the leg
+its measured time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` and
+`.github/ci-notes/ci.md`, "Why envoy's Go tests run in legs", say how the legs are balanced.
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
 under the race detector, once per run, split by test name over the three race legs
@@ -673,7 +736,7 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's line of `envoy-go`'s step "Test what the race build cannot run at all or at full size", which runs plain the tests the race build leaves out or shrinks.
+CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's lines of `envoy-go`'s two plain steps for what the race build leaves out or shrinks: "Test what the race build cannot run at all or at full size" (`envoy-go-race-impossible`) for the memory bounds and the render storms, and "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" (`envoy-go-alone`) for the xid window rows.
 The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
 Both are slow suites: a pull request runs them only with the label `full-ci` or that suite's `lane:` label, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 

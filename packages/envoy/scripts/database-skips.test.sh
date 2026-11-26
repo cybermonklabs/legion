@@ -34,15 +34,17 @@
 #      gives no reason is refused; and with either of `--var DISPATCH_TEST_DATABASE_URL --var
 #      BROKER_TEST_DATABASE_URL` unset or empty beside the other set, the counter prints
 #      `database_skips=UNKNOWN` naming that one and runs no test.
-#   6. --module-except, whose pattern here keeps internal/fold alone of the module beside the
-#      broker API's package: a skip planted in internal/fold is not counted and the run passes,
-#      printing that package's time; a failure planted there fails the counter, which prints it;
-#      and the option is refused beside --report.
+#   6. --count-table over internal/fold, which is no package of the table, beside the broker
+#      API's package, which is: a skip planted in internal/fold is not counted and the run passes,
+#      printing both packages' times; a skip planted in the API's package is counted and fails the
+#      counter; a failure planted in internal/fold fails the counter, which prints it; a run of
+#      internal/fold alone prints database_skips=NONE and passes, and fails on that planted
+#      failure; and the option is refused beside --report and with no package.
 #   7. -run, as a leg of envoy-go-race-api pipes it in: a run of the API package under a -run that
 #      leaves most of its EXPECTED_SKIPS tests out passes, those lines being other legs'; a copy of
 #      the counter with a line for a test the package does not have reads UNKNOWN under a -run and
-#      names that line alone; a -run that is no list of whole test names is refused before any test
-#      runs; and the option is refused beside --report.
+#      names that line alone; a name with a non-ASCII letter is taken; a -run that is no list of
+#      whole test names is refused before any test runs; and the option is refused beside --report.
 #
 # Every run narrows its packages to the tests it is about with
 # GOFLAGS=-run=..., which go test reads as its own -run (and go list ignores): what the counter
@@ -359,32 +361,54 @@ for name in DISPATCH_TEST_DATABASE_URL BROKER_TEST_DATABASE_URL; do
   done
 done
 
-echo "database-skips.test.sh: control 6, --module-except" >&2
-# The module's other packages run in the counter's one go test, as envoy-go's unit step runs them:
-# a skip of theirs is not counted, a failure of theirs fails the counter, and each prints its
-# time. The pattern takes out every package of the module but internal/fold, each by its whole
-# import path, so the run is of that package and the broker API's, both narrowed by -run.
+echo "database-skips.test.sh: control 6, --count-table" >&2
+# A unit leg's packages run in the counter's one go test, as envoy-go's unit legs run them: the
+# table's packages among them are counted, a skip of any other is not, a failure of any fails the
+# counter, and each prints its time. Here the leg is internal/fold, which is no package of the
+# table, beside the broker API's package, which is, both narrowed by -run.
 fold="$MODULE/internal/fold"
-except="$(cd "$ENVOY" && go list ./... | grep -vxF "$fold" | sed -e 's/[.]/\\./g' -e 's/.*/^&$/' | paste -sd '|')"
-module_run='-run=^(TestPlantedSkip|TestPlantedFail|TestHealthzIsPublic)$'
+table_run='-run=^(TestPlantedSkip|TestPlantedFail|TestHealthzIsPublic)$'
 plant fold-skip internal/fold "$SKIP_BODY"
-count module-skip env GOFLAGS="-overlay=$WORK/fold-skip.overlay $module_run" bash "$COUNTER" \
-  --module-except "$except" ./internal/cipher/api/
-judge "$([ "$(code module-skip)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/module-skip.out" &&
-  grep -qxF 'go_test_exit=0' "$WORK/module-skip.out" && grep -qE "^pass $fold " "$WORK/module-skip.err" &&
-  echo 0 || echo 1)" \
-  "control 6: a skip planted in a package --module-except adds is not counted, and that package's time is printed" \
-  "$(seen module-skip); stderr $(tr '\n' '|' <"$WORK/module-skip.err")"
+count table-skip env GOFLAGS="-overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/ ./internal/cipher/api/
+judge "$([ "$(code table-skip)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/table-skip.out" &&
+  grep -qxF 'go_test_exit=0' "$WORK/table-skip.out" && grep -qE "^pass $fold " "$WORK/table-skip.err" &&
+  grep -qE "^pass $MODULE/internal/cipher/api " "$WORK/table-skip.err" && echo 0 || echo 1)" \
+  "control 6: a skip planted in a package of the run outside the table is not counted, and both packages' times are printed" \
+  "$(seen table-skip); stderr $(tr '\n' '|' <"$WORK/table-skip.err")"
+plant api-skip internal/cipher/api "$SKIP_BODY"
+count table-counted env GOFLAGS="-overlay=$WORK/api-skip.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/ ./internal/cipher/api/
+judge "$([ "$(code table-counted)" = 1 ] && grep -qxF "SKIP $MODULE/internal/cipher/api TestPlantedSkip" "$WORK/table-counted.out" &&
+  grep -qxF 'database_skips=1' "$WORK/table-counted.out" && echo 0 || echo 1)" \
+  "control 6: a skip planted in the table's package among the run's is counted, and fails the counter" "$(seen table-counted)"
 plant fold-fail internal/fold 'func TestPlantedFail(t *testing.T) { t.Fatal("planted failure") }'
-count module-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $module_run" bash "$COUNTER" \
-  --module-except "$except" ./internal/cipher/api/
-judge "$([ "$(code module-fail)" = 1 ] && grep -qxF 'database_skips=0' "$WORK/module-fail.out" &&
-  grep -qE '^go_test_exit=[1-9]' "$WORK/module-fail.out" && said module-fail "FAIL $fold TestPlantedFail" &&
-  said module-fail 'planted failure' && echo 0 || echo 1)" \
-  "control 6: a failure planted in a package --module-except adds fails the counter, which prints it" "$(seen module-fail)"
-count module-report bash "$COUNTER" --report "$WORK/quiet.json" --module-except "$except" "${QUIET[@]}"
-judge "$([ "$(code module-report)" = 1 ] && said module-report 'refused beside it' && echo 0 || echo 1)" \
-  "control 6: --module-except is refused beside --report" "$(seen module-report)"
+count table-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/ ./internal/cipher/api/
+judge "$([ "$(code table-fail)" = 1 ] && grep -qxF 'database_skips=0' "$WORK/table-fail.out" &&
+  grep -qE '^go_test_exit=[1-9]' "$WORK/table-fail.out" && said table-fail "FAIL $fold TestPlantedFail" &&
+  said table-fail 'planted failure' && echo 0 || echo 1)" \
+  "control 6: a failure planted in a package of the run outside the table fails the counter, which prints it" "$(seen table-fail)"
+# A leg that holds no package of the table counts nothing: it says so, rather than read as a
+# count of zero, and go test's result alone decides.
+count table-none env GOFLAGS="-overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/
+judge "$([ "$(code table-none)" = 0 ] && grep -qxF 'database_skips=NONE' "$WORK/table-none.out" &&
+  grep -qxF 'go_test_exit=0' "$WORK/table-none.out" && said table-none 'so this run counts no skip' &&
+  echo 0 || echo 1)" \
+  "control 6: a run with no package of the table prints database_skips=NONE, not a zero, and passes on go test's pass" "$(seen table-none)"
+count table-none-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $table_run" bash "$COUNTER" \
+  --count-table ./internal/fold/
+judge "$([ "$(code table-none-fail)" = 1 ] && grep -qxF 'database_skips=NONE' "$WORK/table-none-fail.out" &&
+  grep -qE '^go_test_exit=[1-9]' "$WORK/table-none-fail.out" && said table-none-fail "FAIL $fold TestPlantedFail" &&
+  echo 0 || echo 1)" \
+  "control 6: a run with no package of the table still fails on a failed test, which it prints" "$(seen table-none-fail)"
+count table-report bash "$COUNTER" --report "$WORK/quiet.json" --count-table "${QUIET[@]}"
+judge "$([ "$(code table-report)" = 1 ] && said table-report 'refused beside it' && echo 0 || echo 1)" \
+  "control 6: --count-table is refused beside --report" "$(seen table-report)"
+count table-bare bash "$COUNTER" --count-table
+judge "$([ "$(code table-bare)" = 1 ] && said table-bare 'needs a PACKAGE' && echo 0 || echo 1)" \
+  "control 6: --count-table with no package is refused" "$(seen table-bare)"
 
 echo "database-skips.test.sh: control 7, -run (a leg's group)" >&2
 # A leg of envoy-go-race-api pipes `-run=^(Name|...)$` and the package into the counter. Each run

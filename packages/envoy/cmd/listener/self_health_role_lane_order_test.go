@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -30,7 +29,7 @@ func TestTheSelfHealthProbeReportsALostDurableBeforeARefusedRoleLaneAndStillSend
 	rig := newRoleLaneHealthRig(t, "role-lane-health-order")
 	rig.stop()
 	rig.revoke(t)
-	waitFor(t, 30*time.Second, "the role lane to read the revocation", func() bool { return !rig.lane.CoreSubOK() })
+	waitFor(t, "the role lane to read the revocation", func() bool { return !rig.lane.CoreSubOK() })
 	from := rig.traceFrom()
 	err := checkSelfHealth(rig.caches, rig.lane, func() error { return natsgo.ErrConsumerNotFound })
 	if !errors.Is(err, natsgo.ErrConsumerNotFound) || errors.Is(err, errRoleLaneInactive) {
@@ -127,7 +126,7 @@ func TestARefusedRoleLaneDoesNotTurnFaultsTheRebuildRepairsIntoARestart(t *testi
 				cancel()
 				<-done
 			}()
-			waitFor(t, 30*time.Second, "twenty probes, or the monitor stopping the listener", func() bool {
+			waitFor(t, "twenty probes, or the monitor stopping the listener", func() bool {
 				return probes.Load() >= 20 || stopped.Load()
 			})
 			if got := stopped.Load(); got != row.wantStopped {
