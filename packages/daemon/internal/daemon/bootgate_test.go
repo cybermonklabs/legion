@@ -966,7 +966,7 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 }
 
 // The tmux gate asks the load probe for the skills and task agents the daemon's role prompts name,
-// beside the plugin's own: legion-controller is loaded by roles/controller-root.md alone.
+// beside the plugin's own: deep-worker is dispatched by roles/implementer.md alone.
 func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process.
 	cfg := testConfig(t)
@@ -988,14 +988,14 @@ func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 	if err := run(context.Background(), cfg, quietLogger(), o); err == nil {
 		t.Fatal("run passed the gate, want the fake's not-loaded refusal")
 	}
-	var skills string
+	var agents string
 	for _, line := range strings.Split(f.read(t, "env.1"), "\n") {
-		if value, ok := strings.CutPrefix(line, "LEGION_PROMPT_SKILLS="); ok {
-			skills = value
+		if value, ok := strings.CutPrefix(line, "LEGION_PROMPT_AGENTS="); ok {
+			agents = value
 		}
 	}
-	if !slices.Contains(strings.Split(skills, ","), "legion-controller") {
-		t.Errorf("the load probe was asked for the skills %q, want legion-controller among them", skills)
+	if !slices.Contains(strings.Split(agents, ","), "deep-worker") {
+		t.Errorf("the load probe was asked for the task agents %q, want deep-worker among them", agents)
 	}
 }
 

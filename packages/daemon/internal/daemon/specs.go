@@ -689,11 +689,11 @@ func RepositoriesSentence(owners []string) string {
 
 // DesignGateFragment is the sentence a tree's root architect is told after its addressing, and
 // the controller as its launch addressing: the design-gate steps this deployment gates, in the
-// order it gates them, each in backticks, which is the "Design gate steps" line the shared role
-// prompts read. A deployment that gates no step is told so by name, since a line that named
-// nothing would read as a line the daemon failed to fill. What each step asks of the architect,
-// and which document each records, is in its role parts (prompts/roles/architect-root.md and
-// prompts/go/architect-root.md).
+// order it gates them, each in backticks, which is the "Design gate steps" line the
+// legion-architect skill reads. A deployment that gates no step is told so by name, since a line
+// that named nothing would read as a line the daemon failed to fill. What each step asks of the
+// architect, and which document each records, is in that skill
+// (skills/legion-architect/references/design-gate.md, "Which steps are gated").
 //
 // The steps the line names are the ones every root must register. A deployment that gates spec
 // and not criteria holds a root on criteria too once its architect registers the Verification
@@ -718,13 +718,12 @@ func DesignGateFragment(steps []record.DesignStep) string {
 // is told last in its addressing: the project's `production_check` (check) as the file writes it
 // (config.Project.ProductionCheckWord), the role that works the production check a merge closing
 // one of the project's issues opens, or `off` for the empty role. It is the "Production check" line
-// the architect prompts read (prompts/roles/architect-root.md, prompts/roles/architect.md and
-// prompts/go/architect-common.md): where it names a role, the architect writes one `after_merge`
-// check for that check in each Verification document it writes, while the issue is open, since a
-// closed issue takes no new document; where it reads `off`, it writes none (dispatch://INFRA-175
-// R7). A root architect is told it after the design gate steps, and a sub-architect, which is
-// told no steps, after its addressing. The controller writes no Verification document and is
-// told nothing of it.
+// the legion-architect skill reads (skills/legion-architect/SKILL.md): where it names a role, the
+// architect writes one `after_merge` check for that check in each Verification document it
+// writes, while the issue is open, since a closed issue takes no new document; where it reads
+// `off`, it writes none (dispatch://INFRA-175 R7). A root architect is told it after the design
+// gate steps, and a sub-architect, which is told no steps, after its addressing. The controller
+// writes no Verification document and is told nothing of it.
 func ProductionCheckFragment(check claim.Role) string {
 	return "Production check: " + config.Project{ProductionCheck: check}.ProductionCheckWord() + "."
 }

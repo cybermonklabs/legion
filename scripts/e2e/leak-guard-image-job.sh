@@ -330,7 +330,7 @@ trap 'exit 129' HUP
 # and the expectations are stated once.
 #
 # Read the probe's own verdict and never the Job's phase: a Job reports `Succeeded` when its
-# container exited 0 and nothing more (skills/legion-worker/references/tools.md).
+# container exited 0 and nothing more.
 #
 # Its text is the file beside this script, which render_manifest below writes into the Job's
 # command, since a Job holds no checkout to read it from. It is checked here, before anything is

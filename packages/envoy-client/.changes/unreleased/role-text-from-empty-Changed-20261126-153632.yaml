@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  Comments that said "ruling" now say what was decided or answered. No identifier, string or
+  behaviour changes.
+time: 2026-11-26T15:36:32Z
+custom:
+    Issue: role-text-from-empty

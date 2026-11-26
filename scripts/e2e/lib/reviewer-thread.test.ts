@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
@@ -151,5 +151,42 @@ describe("reviewer_thread", () => {
     const { code, stderr } = run(fixture, "review_app_login=\nreviewer_thread");
     expect(code).not.toBe(0);
     expect(stderr).toContain("role_app: no App login for reviewer: read_app_logins has not run");
+  });
+});
+
+// The review-thread reference's own listing, as it ships: its one code block that pipes
+// `gh api graphql --paginate --slurp` into `jq` (the reference's other block, the resolve
+// mutation, pipes into nothing). Its filter runs through jq on fixture F7, gh 2.98.0's slurped
+// pages of a public pull request's threads (one thread a page), with the last page's thread made
+// unresolved: the filter must find that thread, which a filter that reads only the first page, or
+// reads the pages as one object, misses.
+describe("the review-thread reference's listing", () => {
+  const reference = readFileSync(
+    join(import.meta.dir, "../../../skills/legion-worker/references/review-threads.md"),
+    "utf8"
+  );
+  const f7 = join(
+    import.meta.dir,
+    "../../../packages/pi-legion/scripts/skill-scenarios/testdata/f7-paginate-slurp.stdout"
+  );
+
+  test("its jq filter finds an unresolved thread on a later page", () => {
+    const listings = [...reference.matchAll(/```bash\n([\s\S]*?)```/g)]
+      .map((block) => block[1] ?? "")
+      .filter((block) => /\|\s*jq\s/.test(block));
+    expect(listings).toHaveLength(1);
+    const filter = listings[0]?.match(/\|\s*jq\s+'([^']+)'/)?.[1];
+    expect(filter).toBeDefined();
+    const pages = JSON.parse(readFileSync(f7, "utf8"));
+    expect(pages.length).toBeGreaterThan(1);
+    const later = pages.at(-1).data.repository.pullRequest.reviewThreads.nodes[0];
+    later.isResolved = false;
+    const run = Bun.spawnSync(["jq", "-c", filter ?? "."], {
+      stdin: Buffer.from(JSON.stringify(pages)),
+    });
+    expect(run.stderr.toString()).toBe("");
+    expect(run.exitCode).toBe(0);
+    const found = JSON.parse(run.stdout.toString()) as { id: string }[];
+    expect(found.map((thread) => thread.id)).toEqual([later.id]);
   });
 });

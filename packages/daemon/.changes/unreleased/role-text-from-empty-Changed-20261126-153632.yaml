@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  Each role prompt part is rewritten from empty, so a launch's role parts total 0.7 to 4.5 KB in
+  place of 4.7 to 106 KB. A part keeps the role's identity, its assignment, its authority and the
+  rules that a policy or the code needs: the delegation of coding tasks to scratch copies, the
+  Legion footer of a review, and the Claude Code tool names.
+  Every part keeps its path and its place in each launch. The tests that pinned the old words are
+  deleted; the tests of part order, joins and boundaries stay.
+time: 2026-11-26T15:36:32Z
+custom:
+    Issue: role-text-from-empty

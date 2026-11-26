@@ -154,8 +154,9 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 // The reviewer creates no commit and pushes nothing (its role part), so the ask a pod round sends
 // it tells it to push nothing, and asks it to commit nothing a subagent made. A role that commits
 // is still told to push its commits and what its subagents made: the implementer, and the merger,
-// which makes and pushes the merge of the base forward in merging (roles/merger.md), whose
-// unpushed merge commit the pod's replacement would lose.
+// which makes and pushes the merge of the base forward in merging
+// (skills/legion-worker/references/conflicts-and-rewrites.md), whose unpushed merge commit the
+// pod's replacement would lose.
 func TestPodUpdateTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
 	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleMerger}

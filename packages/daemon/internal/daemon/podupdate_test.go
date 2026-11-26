@@ -1652,8 +1652,7 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 // of the round had answered — so the worker comes back on the session it kept and a disk built
 // new, where its launch is what starts the process and nothing of the round's end prompts the
 // agent in it. What keeps that session is the launch's own ResumeSessionFile (runtime.SpawnSpec),
-// which only Resume sets, and the worker is told so in the prompt every role reads
-// (internal/prompts/go/worker-common.md, "Your process is shorter than your session").
+// which only Resume sets.
 //
 // What does prompt it is its relaunch's ready, a workflow fact that gives a phase worker holding
 // nothing its phase's task once its new process is ready

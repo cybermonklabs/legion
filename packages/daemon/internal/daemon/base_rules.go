@@ -62,7 +62,7 @@ type githubBranch struct {
 // the pull request built (readPullRequest). applyMergeability calls it for a read GitHub answered
 // `mergeable: false`, and the answer rides on that read's fact (intake.PullRequestMergeability.Rules),
 // which R0 decides a confirmed conflict on (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge).
-// These are the two reads the reviewer's prompt makes of the same rules (prompts/go/reviewer.md):
+// These are the two reads:
 //
 //   - GET /rules/branches/{base}, every page (githubrest.GetPages): each `required_status_checks`
 //     rule of the rulesets that apply to the branch gives its contexts, and Strict holds when one

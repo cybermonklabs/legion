@@ -81,7 +81,7 @@ func OutOfWorkflow(status string) bool {
 //
 // It lives here because two packages send it, and api does not import workflow: workflow's
 // refusals and notices over children still in the workflow, and api's refusals of close_root on a
-// child and of the removed child route. The architect prompts carry the same rules whole
+// child and of the removed child route. The architect prompts carry a short form of it
 // (prompts/go/architect-common.md). The legion tool's description carries these words
 // (packages/pi-legion/src/tools.ts), and these tests hold the copies together:
 // TestTheEndChildRuleGolden in internal/api writes this constant and StatusNotTakenYet to

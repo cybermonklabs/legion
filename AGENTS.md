@@ -77,9 +77,9 @@ Each directory below that is marked "guide" has an `AGENTS.md` of its own.
 - This repository is public: no name of the private infrastructure it deploys into (a hostname, tailnet machine, account id, IAM role, token audience, secret-store id, bucket or alert channel) goes in a file, a path, a commit or a pull request.
   Use placeholders (`<name>.internal.example`, `<name>.<tailnet>.ts.net`, `example/<service>/<name>`), and make a value a live script needs a required input.
 
-- Name neither the repository Legion is deployed from, nor the company that runs it, nor its Dispatch keys:
-  write "the deployment repository" and a neutral key such as `ACME`.
-  Legion's own names and `LEGION-<n>` keys are fine.
+- Name neither the repository Legion is deployed from nor the company that runs it:
+  write "the deployment repository".
+  Legion's own names are fine.
 
 - A skill, a role prompt and an `AGENTS.md` name no person: write "a person", "the operator" or "the human".
   A login or a path that holds a name is fine.

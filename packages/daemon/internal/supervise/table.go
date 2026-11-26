@@ -420,8 +420,8 @@ The daemon starts your process again on the new pod, in this same session. %[4]s
 // createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
 // handoff is a record on the Dispatch issue (roles/reviewer.md). The update task asks no commit or
 // push of it. The merger is not one: it makes and pushes the merge of the base forward in merging
-// (roles/merger.md, workflow's mergeForward), and a merge commit it has not pushed when the pod is
-// replaced is lost with the pod.
+// (skills/legion-worker/references/conflicts-and-rewrites.md, workflow's mergeForward), and a
+// merge commit it has not pushed when the pod is replaced is lost with the pod.
 func createsNoCommit(role claim.Role) bool {
 	return role == claim.RoleReviewer
 }

@@ -2,11 +2,11 @@
 # The live proof that a Legion phase worker whose task line names a stale plan-handoff pointer
 # builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038).
 # `--tasks` chooses one of two stagings and `--mid-approval` one of two watcher shapes. Each
-# staging is run twice, as two arms that differ in one thing: the implementer's role prompt. The
-# head arm composes it from this checkout's own `packages/daemon`, with the change's new text. The
-# base arm composes it from the daemon module of the commit `--base-commit` names, taken with
-# `git archive` into the run's own work directory, which is the control that carries no such text.
-# Both arms compose through the daemon's own composer (`workerPane`,
+# staging runs one arm, which composes the implementer's role prompt from the daemon module of the
+# commit `--base-commit` names, taken with `git archive` into the run's own work directory. The
+# head arm, which composed it from this checkout's own `packages/daemon`, is retired: the rule it
+# measured, that the implementer reads the plan again and builds from the newest approved version,
+# is no longer in the role prompts. The arm composes through the daemon's own composer (`workerPane`,
 # packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts), so what each session is told is what
 # the daemon would send it, and the whole `--append-system-prompt` argument is turned into the
 # prompt file by the shell rather than by a regular expression
@@ -61,7 +61,7 @@
 #      that file is written. With --tasks 1 the plan holds that scored task alone and its file
 #      carries `adopt: <call>`, so no first task's file is written and the row's first-wrote and
 #      first-design read `none` with designs-differ `no`;
-#   3. the implementer's pane prompt, composed from the arm's daemon module;
+#   3. the implementer's pane prompt, composed from the base commit's daemon module;
 #   4. the session: `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`,
 #      `NATS_*`, `GH_*`, `GITHUB_*`, `PG*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID`
 #      variable of this shell unset, `OMP_SESSION_STORAGE=file`, an empty `GH_CONFIG_DIR` of the
@@ -70,7 +70,7 @@
 #      (packages/daemon/internal/workflow/effects.go), naming plan version 1 and nothing else: it
 #      asks for each task of the plan, each one's line written to a file of the run's own, and for
 #      the round's `implement` handoff body, written to one more file, which a worker with no
-#      workspace can all do and which the role prompt reads the plan again before;
+#      workspace can all do;
 #   5. the watcher, which writes plan.md version 9 - the last design change, with the plan
 #      review's approval of it when --mid-approval is `approved` - the moment the session's first
 #      read of the plan's text appears in a transcript, and at its bound when no such read
@@ -95,8 +95,7 @@
 #      cases before it wrote the scored file. A session that reads the approved plan, and
 #      writes that design a second after the watcher moves the plan, followed the rule. The
 #      row's `counted-mid-approval=` says which of the two it was.
-#      The summary line of each arm names the staging and the watcher shape, and counts each
-#      verdict.
+#      The summary line names the staging and the watcher shape, and counts each verdict.
 #
 # An attempt whose mid-session version landed after the scored file was written is unscorable: the
 # session wrote that file before the new version existed, so the attempt is neither a pass nor a
@@ -111,9 +110,9 @@
 # LEGION_TEST_PG_DSN is required and names a loopback PostgreSQL server this run creates databases
 # on; its own database is never written. LEGION_OMP_PATH is required and names the Oh My Pi binary
 # the sessions run, which must reach a model. --base-commit is required and names the commit the
-# control's daemon module is taken from: `git archive` takes `packages/daemon` and `packages/envoy`
-# of it, the second because `packages/daemon/go.mod` replaces `github.com/sjawhar/envoy` with
-# `../envoy` and the composer runs `go run` in that module. --runs is how many runs each arm makes
+# daemon module is taken from: `git archive` takes `packages/daemon` and `packages/envoy` of it,
+# the second because `packages/daemon/go.mod` replaces `github.com/sjawhar/envoy` with `../envoy`
+# and the composer runs `go run` in that module. --runs is how many runs it makes
 # (default 1; three or more is what a reading needs). --tasks is how many tasks the staged plan
 # holds, 1 or 2 (default 2, the staging a bare run makes). --mid-approval is the watcher's shape,
 # `approved` or `unapproved` (default `approved`). PLAN_POINTER_DRIVE_TRIGGER_SECONDS (120) is the
@@ -125,8 +124,7 @@
 # DSN with libpq's own parser and takes one loopback host alone (its section of
 # scripts/e2e/README.md says what it refuses), when LEGION_OMP_PATH is not executable, when
 # --tasks is neither 1 nor 2, when --mid-approval is neither word, when --base-commit is missing
-# or names no commit of this checkout, when either arm's daemon module is missing, or when the
-# two arms compose the same prompt byte for byte, which is a base arm that is no control.
+# or names no commit of this checkout, or when that commit's daemon module is missing.
 #
 # Each run's database is dropped when the run ends, and the teardown drops every database the run
 # made, on success and on failure: the PostgreSQL server is a shared one. The work directory under
@@ -141,8 +139,8 @@
 # `skills/legion-worker/SKILL.md` is the one this box has installed for a session's `skill://`
 # read, never the checkout's, so a change to that file is read by this drive rather than driven by
 # it. With --tasks 2, a run whose two files name the same design does not say whether the session
-# read the plan again: it says only that the second file carries no newer design. Two arms over a
-# few runs are a reproduction and a control, not a rate.
+# read the plan again: it says only that the second file carries no newer design. One arm over a
+# few runs is a reproduction, not a rate.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -182,7 +180,7 @@ base_commit=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --runs)
-      [ $# -ge 2 ] || fail "--runs takes how many runs each arm makes"
+      [ $# -ge 2 ] || fail "--runs takes how many runs the drive makes"
       runs=$2
       shift 2
       ;;
@@ -209,7 +207,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --base-commit)
-      [ $# -ge 2 ] || fail "--base-commit takes the commit the control's daemon module is taken from"
+      [ $# -ge 2 ] || fail "--base-commit takes the commit the daemon module is taken from"
       base_commit=$2
       shift 2
       ;;
@@ -227,7 +225,6 @@ gh_path=${LEGION_GH_PATH:-}
 trigger_seconds=${PLAN_POINTER_DRIVE_TRIGGER_SECONDS:-120}
 session_seconds=${PLAN_POINTER_DRIVE_SESSION_SECONDS:-900}
 attempts=${PLAN_POINTER_DRIVE_ATTEMPTS:-3}
-head_module=$root/packages/daemon
 
 # The work directory is made once the prerequisites hold, so a refused run leaves nothing behind.
 work=''
@@ -314,10 +311,8 @@ require_loopback_dsn db_host LEGION_TEST_PG_DSN "$pg_dsn" "this run creates and 
 [ -n "$gh_path" ] || gh_path=$(command -v gh) ||
   fail "no gh on PATH and no LEGION_GH_PATH: the pane composer is told the real gh"
 [ -x "$gh_path" ] || fail "the gh the composer is told, $gh_path, is not an executable file"
-[ -d "$head_module" ] || fail "the head arm's daemon module $head_module is missing"
-[ -f "$head_module/go.mod" ] || fail "$head_module holds no go.mod"
 [ -n "$base_commit" ] ||
-  fail "--base-commit is required: it names the commit the control's daemon module is taken from (the merge base with the default branch), and a default of trunk() would make the head arm its own control once this change is on trunk"
+  fail "--base-commit is required: it names the commit the daemon module the run composes its prompt from is taken from"
 base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
   fail "--base-commit '$base_commit' is no commit of $root"
 [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" packages/daemon)" ] ||
@@ -338,9 +333,9 @@ esac
 case "$attempts" in
   '' | *[!0-9]* | 0*) fail "PLAN_POINTER_DRIVE_ATTEMPTS takes a count from 1 up, not '$attempts'" ;;
 esac
-note "PostgreSQL $db_host (the URL is not printed), $runs run(s) per arm, up to $attempts attempt(s) each"
+note "PostgreSQL $db_host (the URL is not printed), $runs run(s), up to $attempts attempt(s) each"
 note "the staged plan holds $tasks task(s), and the watcher leaves the mid-session version $mid_approval"
-note "head arm $head_module, base arm $base_sha"
+note "base arm $base_sha"
 pass
 
 begin base-tree
@@ -354,20 +349,6 @@ base_module=$work/base/packages/daemon
 [ -f "$base_module/go.mod" ] || fail "the extracted base tree holds no $base_module/go.mod"
 note "work directory $work"
 note "base daemon module $base_module"
-pass
-
-begin control
-# Two arms whose composed prompts are the same text measure nothing, so the run refuses before it
-# makes a database, a server or a session. The issue key here is the one each attempt's own seed
-# mints on its own empty database, and both arms are composed for the same key: what the
-# comparison reads is the daemon module, which is the one thing the two arms differ in.
-compose_prompt "$work/control/head" "$head_module" DRIVE-1
-compose_prompt "$work/control/base" "$base_module" DRIVE-1
-if cmp -s "$work/control/head/prompt.txt" "$work/control/base/prompt.txt"; then
-  head_commit=$(jj -R "$root" log -r @ --no-graph -T commit_id) || head_commit='unknown'
-  fail "the two arms compose the same prompt, byte for byte: this checkout's working copy ($head_commit) and --base-commit $base_sha carry the same packages/daemon text, so the base arm is no control"
-fi
-note "head prompt $(wc -c <"$work/control/head/prompt.txt") bytes, base prompt $(wc -c <"$work/control/base/prompt.txt") bytes, and they differ"
 pass
 
 # The environment each session runs in: nothing of this pod's Legion, Dispatch, Envoy, NATS,
@@ -535,26 +516,19 @@ run_one() {
   fail "all $attempts attempt(s) were unscorable: the session wrote the scored file before the mid-session version landed each time, so the run is neither a pass nor a failure; see $work"
 }
 
-# The scorable attempt of each run, per arm: what the summary counts.
-head_dirs=()
+# The scorable attempt of each run: what the summary counts.
 base_dirs=()
 for ((i = 1; i <= runs; i++)); do
-  run_one head "$i" "$head_module"
-  head_dirs+=("$kept_dir")
   run_one base "$i" "$base_module"
   base_dirs+=("$kept_dir")
 done
 
 begin summary
 evidence=$work
-for arm in head base; do
-  declare -n kept="${arm}_dirs"
-  # The address of nothing: the driver's own import of packages/dispatch/e2e/api.ts reads
-  # PLAYWRIGHT_BASE_URL at import, and the summary reads the rows alone.
-  PLAYWRIGHT_BASE_URL=http://127.0.0.1:1 \
-    bun "$root/scripts/e2e/plan-pointer-drive.ts" summarize "$arm" "${kept[@]}" ||
-    fail "the $arm arm's rows did not summarize"
-  unset -n kept
-done
+# The address of nothing: the driver's own import of packages/dispatch/e2e/api.ts reads
+# PLAYWRIGHT_BASE_URL at import, and the summary reads the rows alone.
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:1 \
+  bun "$root/scripts/e2e/plan-pointer-drive.ts" summarize base "${base_dirs[@]}" ||
+  fail "the base arm's rows did not summarize"
 pass
 run_end

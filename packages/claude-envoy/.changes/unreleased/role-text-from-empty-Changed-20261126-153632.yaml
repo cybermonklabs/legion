@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The Claude Code plugin packs the rewritten Legion skills and agents, and `dispatch-first`.
+time: 2026-11-26T15:36:32Z
+custom:
+    Issue: role-text-from-empty

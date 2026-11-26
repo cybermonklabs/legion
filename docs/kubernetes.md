@@ -27,7 +27,7 @@ It carries:
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.
   It links the commit it was built from: `docker run --rm ghcr.io/cybermonklabs/legion-worker@sha256:… version` prints `legion (devel) commit <sha>`.
   It embeds Legion's role prompts (`packages/daemon/internal/prompts/roles`:
-  phase workers compose `core/<role>.md`, `mechanics/headless.md`, and the per-role residue;
+  phase workers compose `mechanics/headless.md` and the per-role residue;
   merger composes headless plus its residue; root architect, controller, and sub-architect prompts remain single-file).
   The daemon snapshots its own into its state directory before a pane can read them and inlines that snapshot into each pod it runs, and `legion probe-image`, given no `--role-references`, resolves the task agents and skills named by the prompts the image's own `legion` embeds (`packages/daemon/cmd/legion/probe_image.go`);
 
@@ -57,7 +57,7 @@ It carries:
 - `@bopstack/pi-codegraph`, installed at `/opt/omp-plugins` from the committed lockfile at `packages/daemon/docker/omp-plugins` (its `package.json` is the pin;
   the build resolves nothing from npm), the one plugin linked into the OMP profile `legion` (`OMP_PROFILE=legion`;
   plugins resolve to `/home/legion/.omp/profiles/legion/plugins/node_modules`), backed by the CodeGraph CLI (`@colbymchenry/codegraph`, installed at `/opt/codegraph` from the committed lockfile at `packages/daemon/docker/codegraph`) at `/opt/codegraph/bin` (`PATH`)
-  — the `codegraph` tool a tester queries for `affected` tests and a reviewer for `impact`/`callers` blast radius (`packages/daemon/internal/prompts/roles/core/tester.md`, `core/reviewer.md`).
+  — the `codegraph` tool.
   A pod's agent has that tool because its launch loads profile plugins (dispatch://LEGION-629), which the capability report's `codegraph` row says ([The deployment's capability report](#the-deployments-capability-report));
 
 - OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest):
@@ -355,7 +355,7 @@ Each item below names an option and its measurement, then the verdict on it.
   **chosen**
 
 - a per-issue install onto the issue's disk
-  — the issue's disk is 49 GiB, and every cache already sits on it (`XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `TMPDIR`, `GOCACHE`, `GOMODCACHE`, `BUN_INSTALL_CACHE_DIR`, `UV_CACHE_DIR` and `UV_PYTHON_INSTALL_DIR`, the nine `skills/legion-worker/references/withheld-capability.md` lists), so disk is not what rules it out
+  — the issue's disk is 49 GiB, and every cache already sits on it (`XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `TMPDIR`, `GOCACHE`, `GOMODCACHE`, `BUN_INSTALL_CACHE_DIR`, `UV_CACHE_DIR` and `UV_PYTHON_INSTALL_DIR`), so disk is not what rules it out
 
   **rejected for a compiled client on a role's `PATH`**:
   `apt` refuses above, and leaving one unpacked where a role's later commands resolve it is the withheld `operator-setup` capability (decision dispatch://LEGION-200), the extraction item below.
@@ -380,9 +380,9 @@ Each item below names an option and its measurement, then the verdict on it.
 
   **rejected**: it buys nothing the image does not, since it is still an unprivileged container
 
-The forms a role types, the rule that a pin names a coordinate as well as a version, and the line between a sanctioned pinned run and the withheld `operator-setup` capability are a role's own documentation rather than an operator's, and they live in one place:
+The forms a role types and the line between a sanctioned pinned run and the withheld `operator-setup` capability are a role's own documentation rather than an operator's, and they live in one place:
 `skills/legion-worker/references/tools.md`.
-The worker image ships that skill, so a role reads it where it works, and a tool no runner reaches is the image change that reference spells out, with the grep that finds its sites.
+The worker image ships that skill, so a role reads it where it works, and a tool no runner reaches is a change of the image, as that reference says.
 
 ### A test database in the pod
 
@@ -5825,7 +5825,7 @@ the image rows are `present` once the probe passed and `unchecked` before it or 
 compare its `incarnation` with the claim's `locator.incarnation` to tell the running process's report from a predecessor's.
 A plugin from contract 25 to 212 accepts only `configuration` or `boot` as a `source`, and refuses the whole state for any other word.
 So a caller below contract 213 is served each row whose `source` is `caches` without its `source`, with every other field of the row (`withoutUnadmittedCapabilitySources` in `internal/api/shaping.go`), where a value follows the contract the caller states in `Legion-Plugin-Contract`, else the lowest contract its pod's claims record.
-The controller's `tick` notice, whose `openCapabilities` names the open rows, live rows beside the deployment gaps, so the day's report names each (`skills/legion-controller/SKILL.md`).
+The controller's `tick` notice, whose `openCapabilities` names the open rows, live rows beside the deployment gaps, so the day's report names each (`skills/legion-controller/references/wakes.md`, `tick`).
 And `legion config check`, which prints after its OK line the rows the file alone leaves open.
 Nothing refuses to start over a gap: a daemon that would not run its pods would itself keep workers from working, so a deployment gap is the operator's to close or to decide, by name and with the reason, and a live gap is the session's environment to fix.
 The example `legion.yaml` (`deploy/kubernetes/daemon/legion.yaml.example`) leaves its `resources` block commented out, so the daemon's defaults reserve CPU and memory for every role, and decides `secrets`.

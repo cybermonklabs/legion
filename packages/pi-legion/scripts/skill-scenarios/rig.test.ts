@@ -1669,9 +1669,8 @@ sleep() { command sleep 0.05; }`;
 });
 
 // The tester-proof world's gh routes (worker_routes), answered by the run's gh stand-in. A tester
-// finds its pull request with the worker prompt's lookup, `gh pr list --repo <the issue's
-// repository> --head legion/<issue> --state open --json number --jq '.[0].number'`
-// (packages/daemon/internal/prompts/go/worker-common.md).
+// finds its pull request with the lookup `gh pr list --repo <the issue's repository> --head
+// legion/<issue> --state open --json number --jq '.[0].number'`.
 describe("worker_routes", () => {
   const pr = {
     number: 1001,

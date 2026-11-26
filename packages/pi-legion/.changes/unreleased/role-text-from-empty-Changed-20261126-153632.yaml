@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The agents and the Legion skills (`legion-architect`, `legion-controller`, `legion-oracle`,
+  `legion-retro`, `legion-worker`, `simplify-settled-diff`) are rewritten from empty, each to
+  the guidance a role needs for a correct action. Seven reference files that no role needs are
+  deleted: `plan-changes.md`, `surface-round.md`, `backlog-stewardship.md`, `learnings.md`,
+  `pr-body-content.md`, `gvisor.md` and `withheld-capability.md`. Every file, heading and anchor
+  that a role prompt or the daemon names stays. A test now checks that each reference a shipped
+  text or the daemon names resolves against the packed plugins, and that each entry skill stays
+  within its base size plus 500 bytes.
+time: 2026-11-26T15:36:32Z
+custom:
+    Issue: role-text-from-empty

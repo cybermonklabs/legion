@@ -2183,11 +2183,10 @@ func (MergeQueueRemoval) OutboxKind() OutboxKind { return OutboxKindMergeQueueRe
 // Message is what the runner publishes for issue to its merger, where repo is the repository the
 // record holds the pull request under (PullRequest.Repo): it starts with the issue key, as a merge
 // forward's message does, names the pull request as `owner/name#n` and the head, and says that
-// GitHub's event names no reason, so the merger reads the reason on GitHub as step 5 of its role
-// prompt says (internal/prompts/roles/merger.md). With Unread it also says that the daemon could
-// not read the pull request, so the merger does not take the message to mean that GitHub did not
-// merge it. The sentences are short and plain, one instruction to a sentence, because an agent
-// reads them (ASD-STE100).
+// GitHub's event names no reason, so the merger reads the reason on GitHub. With Unread it also
+// says that the daemon could not read the pull request, so the merger does not take the message to
+// mean that GitHub did not merge it. The sentences are short and plain, one instruction to a
+// sentence, because an agent reads them (ASD-STE100).
 func (p MergeQueueRemoval) Message(issue, repo string) string {
 	unread := ""
 	if p.Unread {

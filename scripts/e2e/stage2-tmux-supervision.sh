@@ -487,37 +487,38 @@ pass
 begin gate-refuses-a-missing-skill
 # The gate's load probe resolves every skill Legion's prompts load through the pane's own Oh My Pi.
 # The reviewer's pair ships in the Envoy plugin, which every consumer installs; the installed set
-# without the rubric that thermonuclear-code-quality, the thermonuclear-deep-review agent and the
-# reviewer's role prompt load is refused, naming the skill and every file that loads it.
+# without the rubric that pi-legion's thermonuclear-deep-review agent loads is refused, naming the
+# skill and every file of pi-legion and of the role prompts that loads it (the gate reads no
+# Envoy skill's references, so Envoy's thermonuclear-code-quality is not among them).
 mv "$work/pi-envoy/dist/skills/thermonuclear-deep-review" "$work/rubric.aside"
-expect_refusal missing-skill "finds no skill thermonuclear-deep-review (loaded by dist/skills/thermonuclear-code-quality/SKILL.md, agents/thermonuclear-deep-review.md, roles/core/reviewer.md)"
+expect_refusal missing-skill "finds no skill thermonuclear-deep-review (loaded by agents/thermonuclear-deep-review.md)"
 mv "$work/rubric.aside" "$work/pi-envoy/dist/skills/thermonuclear-deep-review"
 [ -f "$work/pi-envoy/dist/skills/thermonuclear-deep-review/SKILL.md" ] || fail "the rubric was not restored"
 pass
 
-begin gate-refuses-a-skill-only-a-role-prompt-loads
-# The gate also resolves the skills the daemon's role prompts load, beside the plugin's own: the
-# refusal of the plugin without legion-controller names roles/controller-root.md, which only a gate
+begin gate-refuses-an-agent-a-role-prompt-dispatches
+# The gate also resolves the task agents the daemon's role prompts dispatch, beside the plugin's
+# own: the refusal of the plugin without deep-worker names roles/implementer.md, which only a gate
 # that reads the daemon's own role prompts can name.
-mv "$work/pi-legion/dist/skills/legion-controller" "$work/controller-skill.aside"
-expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-worker/references/findings.md, roles/controller-root.md)"
-mv "$work/controller-skill.aside" "$work/pi-legion/dist/skills/legion-controller"
-[ -f "$work/pi-legion/dist/skills/legion-controller/SKILL.md" ] || fail "the legion-controller skill was not restored"
+mv "$work/pi-legion/agents/deep-worker.md" "$work/deep-worker.aside"
+expect_refusal prompt-agent "finds no task agent deep-worker (dispatched by dist/skills/legion-controller/references/consolidation.md, roles/implementer.md)"
+mv "$work/deep-worker.aside" "$work/pi-legion/agents/deep-worker.md"
+[ -f "$work/pi-legion/agents/deep-worker.md" ] || fail "the deep-worker agent was not restored"
 pass
 
 begin gate-refuses-an-unconfigured-model-role
 # The gate's load probe also resolves each of those task agents' models as the task tool resolves a
-# subagent's, in the pane's own Oh My Pi under this profile. The profile without modelRoles.oracle
+# subagent's, in the pane's own Oh My Pi under this profile. The profile without modelRoles.deep
 # is refused, naming the agent and the role no one configured: the task tool would otherwise run
-# every oracle consult on the session's own model without a word.
+# every deep-worker task on the session's own model without a word.
 roles=$profile_agent/config.yml
 cp -p "$roles" "$work/roles.orig"
-grep -v '^  oracle: ' "$work/roles.orig" >"$roles"
-! grep -q '^  oracle: ' "$roles" || fail "modelRoles.oracle is still in $roles"
-note "modelRoles.oracle removed from $roles"
-expect_refusal model-role "on its model @oracle: role oracle is not configured"
-grep -qF "task agent oracle (dispatched by " "$work/refusal-model-role.log" ||
-  fail "the refusal does not name task agent oracle and the prompts that dispatch it"
+grep -v '^  deep: ' "$work/roles.orig" >"$roles"
+! grep -q '^  deep: ' "$roles" || fail "modelRoles.deep is still in $roles"
+note "modelRoles.deep removed from $roles"
+expect_refusal model-role "on its model @deep: role deep is not configured"
+grep -qF "task agent deep-worker (dispatched by " "$work/refusal-model-role.log" ||
+  fail "the refusal does not name task agent deep-worker and the prompts that dispatch it"
 cp -p "$work/roles.orig" "$roles"
 cmp -s "$work/roles.orig" "$roles" || fail "the profile's model roles were not restored"
 pass

@@ -377,9 +377,9 @@ func (r *liveRig) checkImageProbe() error {
 	return nil
 }
 
-// image-probe-negative: with modelRoles.oracle gone from the run's ConfigMap, the probe on the same
+// image-probe-negative: with modelRoles.deep gone from the run's ConfigMap, the probe on the same
 // image refuses, naming the agent and the role no one configured, since the task tool would run
-// every oracle consult on the session's model; the ConfigMap is restored before the check ends,
+// every deep-worker task on the session's model; the ConfigMap is restored before the check ends,
 // and every later check boots on it.
 func (r *liveRig) checkImageProbeRefusal() error {
 	name := r.env.operatorConfigMap
@@ -389,12 +389,12 @@ func (r *liveRig) checkImageProbeRefusal() error {
 	}
 	var kept []string
 	for line := range strings.Lines(overlay) {
-		if !strings.HasPrefix(line, "  oracle: ") {
+		if !strings.HasPrefix(line, "  deep: ") {
 			kept = append(kept, line)
 		}
 	}
 	if removed := strings.Count(overlay, "\n") - strings.Count(strings.Join(kept, ""), "\n"); removed != 1 {
-		return fmt.Errorf("ConfigMap %s's overlay.yml holds %d modelRoles.oracle lines, want 1", name, removed)
+		return fmt.Errorf("ConfigMap %s's overlay.yml holds %d modelRoles.deep lines, want 1", name, removed)
 	}
 	patch := func(text string) error {
 		body, err := json.Marshal(map[string]any{"data": map[string]string{"overlay.yml": text}})
@@ -407,7 +407,7 @@ func (r *liveRig) checkImageProbeRefusal() error {
 	if err := patch(strings.Join(kept, "")); err != nil {
 		return err
 	}
-	note("operator", "ConfigMap %s: modelRoles.oracle removed from overlay.yml", name)
+	note("operator", "ConfigMap %s: modelRoles.deep removed from overlay.yml", name)
 	p := r.imageProbe()
 	_, refusal := r.rt.ProbeImage(r.ctx, p)
 	if err := patch(overlay); err != nil {
@@ -415,14 +415,14 @@ func (r *liveRig) checkImageProbeRefusal() error {
 	}
 	note("operator", "ConfigMap %s: overlay.yml restored", name)
 	if refusal == nil {
-		return errors.New("ProbeImage passed with modelRoles.oracle removed from the operator's overlay")
+		return errors.New("ProbeImage passed with modelRoles.deep removed from the operator's overlay")
 	}
-	for _, want := range []string{"task agent oracle (dispatched by ", "on its model @oracle: role oracle is not configured"} {
+	for _, want := range []string{"task agent deep-worker (dispatched by ", "on its model @deep: role deep is not configured"} {
 		if !strings.Contains(refusal.Error(), want) {
 			return fmt.Errorf("the probe's refusal does not say %q: %v", want, refusal)
 		}
 	}
-	note("runtime", "refused: %s", lineContaining(refusal.Error(), "role oracle is not configured"))
+	note("runtime", "refused: %s", lineContaining(refusal.Error(), "role deep is not configured"))
 	_, digest, _ := strings.Cut(r.env.image, "@sha256:")
 	probe := probeName(r.env.project, digest, "")
 	if err := r.poll(liveGoneLimit, "probe Sandbox "+probe+" to be deleted", func() (bool, error) {

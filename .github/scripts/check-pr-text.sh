@@ -438,8 +438,8 @@ fi
 # THE ISSUE-KEY RULE (check-private-names.sh's rule 6: an issue key of the deployment's own
 # projects), over new text only. Its cutoff is derived, never typed: the commit that added
 # .github/issue-key-cutoff to the base branch is the one that told every worker to keep keys out
-# of this repository's text (skills/legion-worker/references/pr-body.md), and the cutoff is the
-# publish time of the earliest legion-v* release whose commit
+# of this repository's text (skills/legion-worker/references/pr-body.md at that commit), and the
+# cutoff is the publish time of the earliest legion-v* release whose commit
 # contains it, found at a cost that does not grow with the releases (below). No such commit, or no
 # such release yet, and the rule is inactive; a history or a release GitHub does not answer is
 # UNKNOWN, and refused. Once active, a

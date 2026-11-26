@@ -1660,7 +1660,7 @@ worker_routes() {
 # holds the check that the implementer's seeded result and the tester's own run are against.
 # testerProof fails a run that
 # pushes a change to legion/<key>, and it cannot tell a tester that pinned a real defect with a red
-# test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
+# test, which roles/tester.md asks for, from one that went off-task. A defect left in the
 # fixture turns correct testing into a fail.
 worker_fixture() {
   local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config pr

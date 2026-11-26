@@ -1048,9 +1048,7 @@ func (e *Engine) reviewHead(review intake.PullRequestReview) string {
 	return review.CommitID
 }
 
-// The fact that wrote a review-stuck notice, its summary. The architect prompt
-// (prompts/go/architect-common.md) reads a notice the reviewer's completion or answer wrote after
-// the architect asked as the reviewer answering, and every other as news about the round.
+// The fact that wrote a review-stuck notice, its summary.
 const (
 	byCompletion       = "the reviewer's completion"
 	byAnswer           = "the reviewer's review"

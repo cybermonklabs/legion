@@ -7,7 +7,7 @@
 # the expectations are stated once. Either arm ends with its own negative control, a push the guard
 # never sees, which must land. Every check prints `CHECK <name>: got [x] want [y]`, and the
 # last line is `JOB-RESULT pass` or `JOB-RESULT fail`, which is the verdict the harness reads; a
-# Job's own phase says only that the container exited 0 (skills/legion-worker/references/tools.md).
+# Job's own phase says only that the container exited 0.
 #
 # It is no proof of its own and nothing runs it from a checkout: a Job holds no checkout, so the
 # harness beside this file reads this text in and writes it into the Job's command, which is the

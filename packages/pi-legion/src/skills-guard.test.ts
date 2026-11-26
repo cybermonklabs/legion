@@ -193,10 +193,10 @@ test("the retro skill names the rating's fields, its refusals, its scale and its
 });
 
 // Only a review that requests changes counts a review round (the daemon's recordRound): a tester's
-// fail and a move back, the architect's from `accepting` among them, count none, as the architect's
-// prompt parts say (`go/architect-common.md`). The two guides that say what the cap counts say so
-// too, and each sentence that counted every move back is gone. A move made at a conflicting head
-// raises no pair, whoever made it (recordPass), so the concepts page says that of any such move.
+// fail and a move back, the architect's from `accepting` among them, count none. The two guides
+// that say what the cap counts say so too, and each sentence that counted every move back is gone.
+// A move made at a conflicting head raises no pair, whoever made it (recordPass), so the concepts
+// page says that of any such move.
 // The guides are read where they live in the repository.
 test("the guides say only a review that requests changes counts a round", () => {
   const guide = (relative: string, duties: RegExp[]) => {

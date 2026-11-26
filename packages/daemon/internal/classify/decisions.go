@@ -1401,11 +1401,11 @@ const NullMergeableTellAfter = 30 * time.Minute
 // cannot tell such a hold from a required check or review that holds the head
 // (dispatch://INFRA-4192/comment/1c89885e-5e89-42f7-8122-9cdc697d0ccd). A round that waited for
 // `clean` on such a head would wait for good. The merger's merge is the call GitHub answers about
-// the merge itself, accepted or refused with its reason, and the merger answers that refusal (step
-// 6 of prompts/roles/merger.md). The holds the daemon can read - a check of the head running, a
-// review asked for - keep the round here, since the merger would meet them as a refusal already
-// known. A required check nobody has reported (EXPECTED) is no check running: nothing is under way
-// to report it, so waiting on it waits for good, and it is the merger's refusal to name. A
+// the merge itself, accepted or refused with its reason, and the merger answers that refusal. The
+// holds the daemon can read - a check of the head running, a review asked for - keep the round
+// here, since the merger would meet them as a refusal already known. A required check nobody has
+// reported (EXPECTED) is no check running: nothing is under way to report it, so waiting on it
+// waits for good, and it is the merger's refusal to name. A
 // confirmed conflict is no outcome of this rule: RoundWaitsOnMergeState ends that round whatever
 // the merge state (ConflictRound).
 func MergeOutcomeOf(pr record.PullRequest, at time.Time) MergeOutcome {

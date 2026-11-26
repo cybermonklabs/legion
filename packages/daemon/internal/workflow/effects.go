@@ -422,9 +422,7 @@ func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason})
 }
 
-// testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's
-// prompt names it as the tester's result rather than its own (prompts/go/reviewer.md), which a test
-// ties to it.
+// testerVerdictLabel labels the tester's verdict a started worker's task carries.
 const testerVerdictLabel = "Tester's verdict"
 
 // start starts what a move of issue into the phase it now stands in starts, from being the phase

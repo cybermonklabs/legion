@@ -57,7 +57,7 @@ type ArchitectStart struct {
 	// (record.HandedOverRoot.GateCarried), which it does where the tree it left had one. A tree
 	// whose root was reopened in its linger has its gate cleared, so its children are handed over
 	// with none, and their architects register their own steps
-	// (internal/prompts/roles/architect-root.md). The reader reads it with Carried.
+	// (skills/legion-architect/references/design-gate.md). The reader reads it with Carried.
 	GateCarried bool
 	// PhaseFinished says the phase a carried root stands in is over by its own terminating fact
 	// (PhaseFinished): it stands in merging and its pull request has merged, so the daemon starts
@@ -187,8 +187,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //  1. A hand-over carried the root in (Carried) and it is past phase.Admitted. It came into that
 //     run with its phase records, its pull request and, where the row says so, its design gate
 //     (GateCarried), so it is told to take up the phase it stands in and that it decomposes
-//     nothing (internal/prompts/roles/architect-root.md, "decompose nothing and release no
-//     child"). It is asked for no spec. The phase it stands in is the phase that came with it or
+//     nothing. It is asked for no spec. The phase it stands in is the phase that came with it or
 //     one it has moved to since, which the record does not tell apart, so the task says what
 //     holds of either (writeCarriedPhase).
 //  2. The root is past phase.Admitted under its own power. It stands in a working phase, waits on
@@ -346,7 +345,7 @@ func writeFreshTree(task *strings.Builder, start ArchitectStart) {
 // writeCarriedPhase writes the task of a root a hand-over carried in. It stands in the run that
 // hand-over carried it into, with the phase records and the pull request the carry brought and,
 // where the hand-over row says so, the design gate (GateCarried), so it is asked for no spec and
-// no decomposition (internal/prompts/roles/architect-root.md).
+// no decomposition.
 //
 // The phase it names is the phase the root stands in now, which is the phase that came with it
 // until the root moves on and one of that same run after. The record does not tell the two apart

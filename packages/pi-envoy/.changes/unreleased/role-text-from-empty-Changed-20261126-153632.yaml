@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `dispatch-first` is rewritten from empty to its search, duplicate and ask rules, and it keeps
+  the duplicate rule that the Dispatch command's advice names.
+time: 2026-11-26T15:36:32Z
+custom:
+    Issue: role-text-from-empty

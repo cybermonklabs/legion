@@ -289,10 +289,9 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// path writes nothing about a slot: a root keeps the row it was started with through its
 	// whole wait (record.KeepsSlot), so its resume takes no new one (admit's slotFor), and where
 	// it stands in the line is the `waitingLine` on its own state, which the projection writes
-	// (api.WaitingLineView). An architect reads the rule in its role prompt,
-	// packages/daemon/internal/prompts/roles/architect-root.md. The members
-	// the opening releases are started by admission's own pass over this same fact, which gives
-	// each the slot its first phase needs (record.Waiting's LineFirstPhase).
+	// (api.WaitingLineView). The members the opening releases are started by admission's own pass
+	// over this same fact, which gives each the slot its first phase needs (record.Waiting's
+	// LineFirstPhase).
 	switch {
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
@@ -1119,8 +1118,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// This opening writes nothing about a slot: a root keeps the row it was started with
 		// through its whole wait (record.KeepsSlot), so its resume takes no new one (admit's
 		// slotFor), and where it stands in the line is the `waitingLine` on its own state,
-		// which the projection writes (api.WaitingLineView). An architect reads the rule in its
-		// role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
+		// which the projection writes (api.WaitingLineView).
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()
@@ -1297,13 +1295,12 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // version of step's document, and the one writer of its words for both of its senders: the role
 // message at the opening (tellGateMoved) and the news task that carries the opening in its place
 // (RenderNews, gateAtSend). onBasis is the gated steps that stand open on an ancestor's approval.
-// Every opening keeps the two parts that roles/merger.md quotes as the release of a merge: `The
-// design gate of <tree> opened:` and `every step the deployment gates now stands open`. Where the
-// step whose move opened the gate stands on a person's approval, that approval is named first, as
-// the person's clause. Where onBasis is empty, that clause is the whole cause of the opening, and
-// the message says the design worked to is the approved one. Otherwise each step on a basis is
-// named after it with the ancestor's approval it stands on, and with the root's version that no
-// person approved.
+// Every opening keeps two parts: `The design gate of <tree> opened:` and `every step the deployment
+// gates now stands open`. Where the step whose move opened the gate stands on a person's approval,
+// that approval is named first, as the person's clause. Where onBasis is empty, that clause is the
+// whole cause of the opening, and the message says the design worked to is the approved one.
+// Otherwise each step on a basis is named after it with the ancestor's approval it stands on, and
+// with the root's version that no person approved.
 func gateOpenedMessage(tree string, step record.DesignStep, document string, version int, onBasis []record.DesignGate) string {
 	var body strings.Builder
 	fmt.Fprintf(&body, "The design gate of %s opened: ", tree)
@@ -1456,7 +1453,7 @@ func nothingChangedSince(took int) string {
 // version of step's document, now with its reviewer. Its two senders are gateOpenedMessage's: the
 // role message at the close, and a news task composed while the gate stood open and sent after a
 // later version closed it (RenderNews), which says closed rather than an opening that no longer
-// stands. The merger's prompt quotes its opening words as what holds a merge.
+// stands.
 func gateClosedSentence(tree string, step record.DesignStep, document string, version int) string {
 	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 		"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+

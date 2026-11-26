@@ -1,10 +1,7 @@
 package workflow
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -237,19 +234,13 @@ func everyNewsForm() map[string]string {
 	}
 }
 
-// mergerQuote is the gate sentence prompts/roles/merger.md quotes as the message that moves a
-// merge, opened or closed, with its placeholders filled in: the words a merger reads for.
-func mergerQuote(t *testing.T, move, step, document string, version int) string {
-	t.Helper()
-	prompt, err := os.ReadFile(filepath.Join("..", "prompts", "roles", "merger.md"))
-	if err != nil {
-		t.Fatalf("read the merger's prompt: %v", err)
-	}
-	quoted := regexp.MustCompile("`(The design gate of <tree> " + move + ":[^`]*)`").FindStringSubmatch(string(prompt))
-	if quoted == nil {
-		t.Fatalf("the merger's prompt quotes no gate sentence that says %q", move)
-	}
-	return strings.NewReplacer("<tree>", newsTree, "<n>", strconv.Itoa(version), "<step>", step, "<id>", document).Replace(quoted[1])
+// gateOpening is the start of the message the daemon writes when the news tree's gate opens on a
+// person's approval of version of step's document (gateOpenedMessage), up to the gate standing
+// open: the words a holder owed the opening reads first.
+func gateOpening(step record.DesignStep, document string, version int) string {
+	const open = "every step the deployment gates now stands open"
+	opened := gateOpenedMessage(newsTree, step, document, version, nil)
+	return opened[:strings.Index(opened, open)+len(open)]
 }
 
 // newsItem is the item of a news list whose first line opens with opening, that line and the
@@ -285,16 +276,16 @@ func newsLine(t *testing.T, text, opening string) string {
 	return ""
 }
 
-// A holder owed the opening reads the gate sentence first, in the words the merger's prompt
-// quotes as what releases a merge, so a merger released by its news task reads the release it
-// waits for. A holder that was told the opening already reads no gate sentence.
+// A holder owed the opening reads the gate sentence first, in the words of the opened role message
+// (gateOpenedMessage), so a merger released by its news task reads the release that message
+// carries. A holder that was told the opening already reads no gate sentence.
 func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(rootHolderNews())
 	t.Logf("the root holder's news:\n%s", text)
-	opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5)
+	opened := gateOpening(record.DesignStepSpec, "artifact-spec", 5)
 	if !strings.HasPrefix(text, opened) {
-		t.Fatalf("the news opens %q, want the merger prompt's quoted opening %q first", firstLine(text), opened)
+		t.Fatalf("the news opens %q, want the opened role message's opening %q first", firstLine(text), opened)
 	}
 	told := rootHolderNews()
 	told.OpeningOwed = false
@@ -310,9 +301,9 @@ func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(closedHolderNews())
 	t.Logf("the news sent after version 6 closed the gate:\n%s", text)
-	closed := mergerQuote(t, "closed", "spec", "artifact-spec", 6)
+	closed := gateClosedSentence(newsTree, record.DesignStepSpec, "artifact-spec", 6)
 	if !strings.HasPrefix(text, closed) {
-		t.Fatalf("the news opens %q, want the merger prompt's quoted close at version 6 %q first", firstLine(text), closed)
+		t.Fatalf("the news opens %q, want the closed sentence at version 6 %q first", firstLine(text), closed)
 	}
 	if strings.Contains(text, "opened") {
 		t.Fatalf("news sent while the gate is closed says it opened:\n%s", text)
@@ -326,7 +317,7 @@ func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 // list: the spec's sections, among them the run of text outside every section named by the section
 // it follows, and its requirements; the Verification document's checks, which are the root's to
 // prove, and none of its other blocks. Each item ends with the command that prints its new version,
-// and the news ends with the rule the holder's prompt carries.
+// and the news ends with the rule for answering it (holderRule).
 func TestNewsNamesEachStepsSectionsAndBlocksWithItsVersionPair(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(rootHolderNews())
@@ -353,7 +344,7 @@ func TestNewsNamesEachStepsSectionsAndBlocksWithItsVersionPair(t *testing.T) {
 		t.Errorf("the news does not name the issue and the phase its holder holds:\n%s", text)
 	}
 	rule := lastParagraph(text)
-	for _, want := range []string{"read each named section and check at the new version", "`request_backward_move`",
+	for _, want := range []string{"Read each named section and check at the new version", "`request_backward_move`",
 		"names the version and the change", "`dispatch comment` on LEGION-208", "never moves back"} {
 		if !strings.Contains(rule, want) {
 			t.Errorf("the news's closing rule %q does not say %q", rule, want)
@@ -433,8 +424,8 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 	}
 }
 
-// The architect holding a child in accepting answers its news as its prompt says it answers
-// accepting: by its sign-off, or by a move back to planning, implementing or testing.
+// The architect holding a child in accepting answers its news as it answers accepting: by its
+// sign-off, or by a move back to planning, implementing or testing.
 func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(acceptingHolderNews())
@@ -451,8 +442,8 @@ func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T
 }
 
 // A stale plan is the planner's own work wherever its task places its step, so a planner's news ends with the planner's own
-// answer, as its prompt gives it (prompts/go/planner.md): a stale plan is revised in place and its
-// plan review run again, and a current one gets a comment. No move back is named.
+// answer: a stale plan is revised in place and its plan review run again, and a current one gets a
+// comment. No move back is named.
 func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(plannerHolderNews())
@@ -461,7 +452,7 @@ func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 	if strings.Contains(rule, "Planning has no earlier phase") {
 		t.Errorf("the planner's closing rule still says planning has no earlier phase, false for a planner after the implementer: %q", rule)
 	}
-	for _, want := range []string{"read each named section and check at the new version", "A stale plan is your own work wherever your task places your step",
+	for _, want := range []string{"Read each named section and check at the new version", "A stale plan is your own work wherever your task places your step",
 		"revise `plan.md` in place to match the new version of the design", "run the plan review again", "`dispatch comment` on LEGION-218"} {
 		if !strings.Contains(rule, want) {
 			t.Errorf("the planner's closing rule %q does not say %q", rule, want)
@@ -479,7 +470,7 @@ func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(decisionOnlyHolderNews())
 	t.Logf("the news of a decision-only version:\n%s", text)
-	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
+	if opened := gateOpening(record.DesignStepSpec, "artifact-spec", 5); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
 	}
 	if !strings.Contains(text, "Nothing your issue holds changed since version 4, which your phase took.") {
@@ -501,7 +492,7 @@ func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(unchangedHolderNews())
 	t.Logf("the news of an unchanged version:\n%s", text)
-	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
+	if opened := gateOpening(record.DesignStepSpec, "artifact-spec", 5); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
 	}
 	if want := "Nothing your issue holds changed since version 4, which your phase took. " +
@@ -643,7 +634,7 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(mergedRootSummaryNews())
 	t.Logf("the summary of a merged root:\n%s", text)
-	if opened := mergerQuote(t, "opened", "criteria", "artifact-checks", 3); !strings.HasPrefix(text, opened) {
+	if opened := gateOpening(record.DesignStepCriteria, "artifact-checks", 3); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the summary owed the opening opens %q, want %q first", firstLine(text), opened)
 	}
 	merged := newsLine(t, text, "- LEGION-208, in merging: ")

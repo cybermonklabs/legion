@@ -186,8 +186,8 @@ const (
 // naming the step approved last, and, where a gated step stands open on an ancestor's approval,
 // each such step with the approval it stands on (gateOpenedMessage); and the closed sentence,
 // naming the version that closed it, once a later version has (gateClosedSentence). tellGateMoved
-// writes both through the same two functions, so a merger's release reads the words its prompt
-// quotes, and news sent after the gate closed again says so.
+// writes both through the same two functions, so a merger's release by news reads the words of the
+// opened role message, and news sent after the gate closed again says so.
 //
 // To a holder it then names, for each step, the version pair as the version its phase last took,
 // the sections and the typed blocks that changed (requirements and the other non-check blocks for
@@ -196,8 +196,8 @@ const (
 // by its heading, or a run of the text outside every section, named by where it stands
 // (sectionName). A step whose earlier version Dispatch's review history could not give is named
 // as the new version since a version the daemon could not read, with the reason that history
-// could not be read, and the same command. One closing sentence names the rule the role's prompt
-// carries for answering it. A holder whose every item changed nothing of the work
+// could not be read, and the same command. One closing sentence names the rule for answering it
+// (holderRule). A holder whose every item changed nothing of the work
 // (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all) is told only that
 // nothing its issue holds changed, and why, with no list and no rule, since there is nothing to
 // answer: that is the one news task of such a version, sent where the opening is owed to it.
@@ -257,8 +257,8 @@ func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignS
 }
 
 // holderNews is the holder's form after its gate sentence: what changed for its issue, then the
-// rule its prompt carries. An issue whose every item changed nothing of the work is told that
-// nothing it holds changed, and why, and nothing more.
+// rule for answering it (holderRule). An issue whose every item changed nothing of the work is
+// told that nothing it holds changed, and why, and nothing more.
 func holderNews(news News) []string {
 	if len(news.Items) == 0 {
 		return nil
@@ -296,22 +296,22 @@ func nothingChanged(item NewsChange) string {
 	return fmt.Sprintf("%s Version %d of its %s document (%s) %s.", nothingChangedSince(changes.From), changes.To, item.Step, changes.ArtifactID, why)
 }
 
-// holderRule is the closing paragraph of a holder's news: the rule its role's prompt carries for
-// answering it. The architect holding an issue in accepting answers by its sign-off or a move
+// holderRule is the closing paragraph of a holder's news: how it answers the news. The architect
+// holding an issue in accepting answers by its sign-off or a move
 // back (acceptingAnswer). The planner revises its plan in place when it is stale, since the plan is
-// its own work wherever its task places its step (prompts/go/planner.md), and comments when it is current. Every
+// its own work wherever its task places its step, and comments when it is current. Every
 // other phase worker moves back when its work is stale, and comments when it is current.
 func holderRule(issue string, p phase.Phase) string {
 	switch p {
 	case phase.Accepting:
-		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue) +
+		return "Read each named section and check at the new version, then " + acceptingAnswer(issue) +
 			", with a reason that names the version and the change."
 	case phase.Planning:
-		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. A stale plan is your own work "+
+		return fmt.Sprintf("Read each named section and check at the new version. A stale plan is your own work "+
 			"wherever your task places your step, so it does not move back. If your plan is stale, revise `plan.md` in place to match the new version of the design, "+
 			"then run the plan review again. If your plan is current, write a `dispatch comment` on %s that names the version and why.", issue)
 	}
-	return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version: if your work is stale, "+
+	return fmt.Sprintf("Read each named section and check at the new version: if your work is stale, "+
 		"call `request_backward_move` with a reason that names the version and the change; if it is current, write a `dispatch comment` "+
 		"on %s that names the version and why; an issue whose pull request has merged never moves back.", issue)
 }

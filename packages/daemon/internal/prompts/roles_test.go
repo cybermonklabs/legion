@@ -143,10 +143,8 @@ func TestEveryRoleHasItsPartAndTheMergerHasNoCore(t *testing.T) {
 func TestEveryTaskAgentARolePromptDispatchesIsShipped(t *testing.T) {
 	agents := RoleReferences()[promptrefs.TaskAgents]
 	// A reader that finds nothing would pass below while checking nothing.
-	for _, agent := range []string{"plan-gap-analyst", "plan-reviewer"} {
-		if !slices.Equal(agents[agent], []string{"roles/planner.md"}) {
-			t.Errorf("task agent %s is dispatched by %q, want roles/planner.md alone", agent, agents[agent])
-		}
+	if !slices.Equal(agents["deep-worker"], []string{"roles/implementer.md"}) {
+		t.Errorf("task agent deep-worker is dispatched by %q, want roles/implementer.md alone", agents["deep-worker"])
 	}
 	for agent, files := range agents {
 		if _, err := os.Stat(filepath.Join("..", "..", "..", "pi-legion", "agents", agent+".md")); err != nil {

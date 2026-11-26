@@ -800,7 +800,6 @@ func TestStateAddressDialsLoopbackForAWildcardBind(t *testing.T) {
 	}
 }
 
-// Every Go role prompt tells a worker to re-read its issue record with `legion state` on relaunch.
 // A pane has no legion.yaml; it has the daemon's URL (LEGION_DAEMON_URL) and its issue
 // (LEGION_ISSUE), which the daemon names on every pane. From there `legion state` reads the state
 // the daemon serves and prints the pane's issue record.

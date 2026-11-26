@@ -92,11 +92,6 @@ const (
 	mergerMergeHead    = "head-merged"
 )
 
-// mergerPromptSections are the headings of the merger's prompt a reader holds against what the
-// daemon sent the merger in the run (prompts/roles/merger.md): the conflict, and the check that
-// failed beneath it.
-var mergerPromptSections = []string{"## A head that conflicts with its base", "### A check that failed"}
-
 // conflictMergerLive is one run of the proof: the booted daemon, its log and the baseline of each
 // role topic (conflictLive), the three roles the driver acts as over the worker stream, and the
 // watch of the issue's phase over the whole run.
@@ -496,8 +491,7 @@ func (r *conflictMergerLive) mergeClosesTheIssue() {
 
 // Step 6. The merger's prompt as its launch carries it: the role prompt the daemon composed at
 // boot, read from the paths the merger's launch named rather than from any prompt the driver wrote.
-// Its section on a head that conflicts with its base, and the subsection on a check that failed,
-// are printed whole, beside the messages step 2, 3 and 4 printed, for a reader to hold the one
+// It is printed whole, beside the messages step 2, 3 and 4 printed, for a reader to hold the one
 // against the other.
 func (r *conflictMergerLive) mergerPromptAsLaunched() {
 	t := r.t
@@ -516,19 +510,7 @@ func (r *conflictMergerLive) mergerPromptAsLaunched() {
 		text.Write(body)
 	}
 	r.note("read back: the merger's launch names %d role prompt parts the daemon composed at boot, %d bytes in all", len(launch.Prompt.RolePromptPaths), text.Len())
-	composed := text.String()
-	start := strings.Index(composed, mergerPromptSections[0]+"\n")
-	if start < 0 {
-		t.Fatalf("the merger's composed prompt has no section %q", mergerPromptSections[0])
-	}
-	section := composed[start:]
-	if end := strings.Index(section[len(mergerPromptSections[0]):], "\n## "); end >= 0 {
-		section = section[:len(mergerPromptSections[0])+end]
-	}
-	if !strings.Contains(section, "\n"+mergerPromptSections[1]+"\n") {
-		t.Fatalf("the merger's section %q holds no subsection %q", mergerPromptSections[0], mergerPromptSections[1])
-	}
-	for _, line := range strings.Split(strings.TrimSpace(section), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(text.String()), "\n") {
 		r.note("prompt| %s", line)
 	}
 }

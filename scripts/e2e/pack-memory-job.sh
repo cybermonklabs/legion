@@ -105,9 +105,8 @@
 #
 # Read the verdict from the probe's own `JOB-RESULT` line and never from the Job's phase: the probe
 # exits 0 on a failed verdict as well, so the Job does not start a whole attempt again to reach the
-# same one, and a Job reports `Succeeded` when its container exited 0 and nothing more
-# (skills/legion-worker/references/tools.md). With a retry, the log read is the newest pod's whole
-# log, read once its container has terminated.
+# same one, and a Job reports `Succeeded` when its container exited 0 and nothing more. With a
+# retry, the log read is the newest pod's whole log, read once its container has terminated.
 #
 # This script is synchronous, runs for as long as the Job does (an hour or more on the default
 # repository), and its clean-up is a trap, so a role that runs it from its own bash tool runs it

@@ -3,10 +3,9 @@ package intake
 import "testing"
 
 // Every Legion role appends a footer to a pull-request review it submits, naming the session that
-// wrote it (skills/legion-worker/SKILL.md, prompts/roles/reviewer.md). LegionSession finds the
-// last one, since a review may quote an earlier footer (a reply, a reviewer's own draft) before
-// appending its own: workflow's byReviewer tells the reviewer's own review-App session from any
-// other's by it.
+// wrote it (prompts/roles/reviewer.md). LegionSession finds the last one, since a review may quote
+// an earlier footer (a reply, a reviewer's own draft) before appending its own: workflow's
+// byReviewer tells the reviewer's own review-App session from any other's by it.
 func TestLegionSessionFindsTheLastFooterInAReviewsBody(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

@@ -202,6 +202,9 @@ test("each served entry skill stays within its base plus 500 bytes", () => {
 // words name the list the command replaces. Counted as this test counts, over the staged skills,
 // the three stand at 2,334 words, 6 under the bound: the other edits of the three since #5051
 // hold the words the two counts above leave out.
+//
+// The rewrite of the Legion role texts from empty wrote dispatch-first again as 14 lines. Counted
+// as this test counts, over the three skills, they stand at 2,006 words, 334 under the bound.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
@@ -265,7 +268,7 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // (what `omp agents unpack` writes, read off the pinned binary rather than listed here). A
 // `skill://legion-*` mention in these skills is held to no such partition, on purpose: each is a
 // sentence conditioned on a Legion role (skills/dispatch/SKILL.md:13,
-// skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:48), inert
+// skills/dispatch-writing-specs/SKILL.md:10), inert
 // for a person and right for a pane with both plugins, and `brokenSkillLinks` above resolves a
 // `skill://<name>/<path>` link against the repository's skills/ for the same reason.
 test.skipIf(omp === undefined && !onActions)(

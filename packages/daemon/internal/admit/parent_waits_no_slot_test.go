@@ -893,7 +893,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	// backlog by its owning architect's status write (its record leaving the workflow), and the
 	// fourth reaches done with its pull request merged. The testing task the return starts names the
 	// first and the fourth, each with its pull request, and neither of the others, and it carries the
-	// Handoff line of the implementer's last handoff, which roles/tester.md tells the tester to read.
+	// Handoff line of the implementer's last handoff.
 	t.Run("the return names the children that merged during the wait and no other", func(t *testing.T) {
 		const (
 			iceboxed = "LEGION-302"

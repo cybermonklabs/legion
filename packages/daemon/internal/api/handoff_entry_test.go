@@ -607,9 +607,9 @@ func TestARepeatOfAnAcceptedBehindCompletionIsAnsweredAsARepeat(t *testing.T) {
 }
 
 // The same answer holds for any further completion from that claim, not only a byte-for-byte
-// repeat. Every phase worker's prompt says a completion it reports for a phase it no longer works
-// is refused HANDOFF_NOT_CURRENT_PHASE (go/worker-common.md), and a level claim's further
-// completion naming a newer record of the phase is answered so. A behind completion taken at the
+// repeat. A completion a phase worker reports for a phase it no longer works is refused
+// HANDOFF_NOT_CURRENT_PHASE, and a level claim's further completion naming a newer record of the
+// phase is answered so. A behind completion taken at the
 // recorded head leaves the claim serving the entry it was behind on, so a further completion that
 // names a newer record meets the entry fence in reviewing. It must not be answered
 // HANDOFF_STALE_ENTRY, which tells the worker the current entry's task is owed to it and the
