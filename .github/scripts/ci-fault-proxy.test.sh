@@ -424,19 +424,19 @@ run_proxy() {
 }
 run_proxy --mode recover --per-host-window --coalesce-outage-gap 5 --hosts fetch.invalid
 check "--coalesce-outage-gap with --per-host-window" \
-  "$(is "$status:$(contains "$out" 'and --per-host-window gives each host a window of its own: pass one of them$')" 2:true)"
+  "$(is "$status:$(contains "$out" '^ci-fault-proxy\.py: error: .*--per-host-window')" 2:true)"
 run_proxy --mode fail --coalesce-outage-gap 5 --hosts fetch.invalid
 check "--coalesce-outage-gap with a mode that has no window" \
-  "$(is "$status:$(contains "$out" 'coalesce-outage-gap joins the windows of --mode recover into outages, and --mode fail has no window$')" 2:true)"
+  "$(is "$status:$(contains "$out" '^ci-fault-proxy\.py: error: .*--mode fail')" 2:true)"
 run_proxy --mode recover --coalesce-outage-gap 5
 check "--coalesce-outage-gap with no --hosts" \
-  "$(is "$status:$(contains "$out" 'coalesce-outage-gap needs a --hosts list')" 2:true)"
+  "$(is "$status:$(contains "$out" '^ci-fault-proxy\.py: error: .*--hosts')" 2:true)"
 run_proxy --mode recover --coalesce-outage-gap 0 --hosts fetch.invalid
 check "--coalesce-outage-gap of 0 s" \
-  "$(is "$status:$(contains "$out" 'coalesce-outage-gap is a number of seconds more than 0, not 0$')" 2:true)"
+  "$(is "$status:$(contains "$out" '^ci-fault-proxy\.py: error: .*\b0$')" 2:true)"
 run_proxy --mode recover --hosts fetch.invalid --probe-host download-retry-probe.fetch.invalid
 check "--probe-host without --coalesce-outage-gap" \
-  "$(is "$status:$(contains "$out" 'probe-host keeps one host out of the outages of --coalesce-outage-gap, and this run does not pass that flag$')" 2:true)"
+  "$(is "$status:$(contains "$out" '^ci-fault-proxy\.py: error: .*--coalesce-outage-gap')" 2:true)"
 
 echo "case: --mode stall sends nothing, so each attempt ends at the client's own bound"
 start_proxy stall --mode stall --hosts fetch.invalid

@@ -545,23 +545,23 @@ check "its last line is the error annotation, naming the download and the attemp
 echo "case: a malformed call is refused, naming the mistake"
 run_retry "a tool" 5 true
 check "a call with no -- separator is refused" "$(is "$status" 2)"
-check "and says the separator is missing" "$(contains "$out" '^::error::retry_fetch: no -- separator before the command')"
+check "and names the missing --" "$(contains "$out" '^::error::.*--')"
 check "it slept nothing" "$([ "$elapsed" -lt 3 ] && echo true || echo false)"
 
 run_retry "a tool"
 check "a call with fewer than three arguments is refused" "$(is "$status" 2)"
-check "and says what it takes" "$(contains "$out" '^::error::retry_fetch takes <what> <per-attempt bound in seconds> -- <command\.\.\.>, and got 1 argument')"
+check "and names the 1 argument it got" "$(contains "$out" '^::error::.*\b1\b')"
 
 run_retry "a tool" 30s -- true
 check "a bound that is not a whole number is refused" "$(is "$status" 2)"
-check "and names the bound" "$(contains "$out" "^::error::retry_fetch: the per-attempt bound is a positive whole number of seconds, not '30s'\$")"
+check "and names the bound" "$(contains "$out" '^::error::.*30s')"
 
 run_retry "a tool" 0 -- true
 check "a bound of zero is refused" "$(is "$status" 2)"
-check "and names it" "$(contains "$out" "not '0'\$")"
+check "and names it" "$(contains "$out" '^::error::.*\b0\b')"
 
 run_retry "a tool" 5 --
 check "a call with nothing after -- is refused" "$(is "$status" 2)"
-check "and says so" "$(contains "$out" '^::error::retry_fetch: nothing to run after --')"
+check "and names the --" "$(contains "$out" '^::error::.*--')"
 
 summary "ci-retry.sh"

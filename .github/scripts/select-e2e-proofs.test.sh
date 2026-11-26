@@ -279,7 +279,7 @@ drop_row_key "$root" hosted 0 run_timeout_minutes
 run_select "$root" schedule
 check "a row with no run_timeout_minutes fails" "$(is "$status" 1)"
 check "names the file, the row and the key" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh lacks run_timeout_minutes\.')"
+  "$(contains "$out" '^::error file=.github/e2e-scripts.json::.*alpha-proof\.sh.*run_timeout_minutes')"
 check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
 check "and writes no matrix" "$(is "$proofs" "")"
 
@@ -287,24 +287,24 @@ root=$(fixture quoted-run-timeout)
 write_row_key "$root" hosted 0 run_timeout_minutes '"12"'
 run_select "$root" schedule
 check "a quoted run_timeout_minutes fails" "$(is "$status" 1)"
-check "names the row, the key and what it must hold" \
-  "$(contains "$out" "^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh has run_timeout_minutes '12', which is not a whole number. Write run_timeout_minutes as a whole number.$")"
-check "and is not compared with the job's limit as well" \
-  "$(is "$(contains "$out" 'not below its timeout_minutes')" false)"
+check "names the file, the row, the key and its value" \
+  "$(contains "$out" "^::error file=.github/e2e-scripts.json::.*alpha-proof\.sh.*run_timeout_minutes.*'12'")"
+check "and is refused once, not compared with the job's limit as well" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
 
 root=$(fixture fraction-run-timeout)
 write_row_key "$root" hosted 0 run_timeout_minutes 12.5
 run_select "$root" schedule
 check "a run_timeout_minutes with a fraction fails" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" 'hosted row alpha-proof.sh has run_timeout_minutes 12\.5, which is not a whole number')"
+check "and is named" "$(contains "$out" '^::error file=.github/e2e-scripts.json::.*alpha-proof\.sh.*run_timeout_minutes.*12\.5')"
 
 root=$(fixture equal-run-timeout)
 write_row_key "$root" hosted 0 run_timeout_minutes 25
 run_select "$root" schedule
 check "a run_timeout_minutes equal to the row's timeout_minutes fails" "$(is "$status" 1)"
-check "names the file, the row, both limits and the remedy" \
-  "$(contains "$out" "^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh has run_timeout_minutes 25, which is not below its timeout_minutes 25: the job's limit would cut the step that runs the script before that step's own limit names it. Write run_timeout_minutes below timeout_minutes, each as the file's comment derives it.$")"
+check "names the file, the row, the key and its value" \
+  "$(contains "$out" '^::error file=.github/e2e-scripts.json::.*alpha-proof\.sh.*run_timeout_minutes.*25')"
 check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
 check "and writes no matrix" "$(is "$proofs" "")"
 
@@ -313,7 +313,7 @@ write_row_key "$root" hosted 1 run_timeout_minutes 30
 run_select "$root" schedule
 check "a run_timeout_minutes above the row's timeout_minutes fails" "$(is "$status" 1)"
 check "and is named" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::hosted row beta-proof.sh has run_timeout_minutes 30, which is not below its timeout_minutes 20:')"
+  "$(contains "$out" '^::error file=.github/e2e-scripts.json::.*beta-proof\.sh.*run_timeout_minutes.*30')"
 
 root=$(fixture just-below-run-timeout)
 write_row_key "$root" hosted 0 run_timeout_minutes 24

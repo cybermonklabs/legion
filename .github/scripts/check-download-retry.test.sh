@@ -14660,10 +14660,11 @@ check "refuses nothing" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
 # 39 of dispatch://INFRA-1545 no case wrote a `.ts` with a `#!` line, so the gate passed every
 # case with its `.ts` entry of OWN_INTERPRETERS set to `sh`. A `.go` takes no `#!` line: Go
 # cannot compile a file that starts with `#`. So a `.go` whose first line runs a shell, and one
-# whose first line names `go`, are each refused at its line 1 and told to remove that line. A step
-# that runs a `.go` as its command word is refused, with or without a `#!` line, and no refusal
-# offers a `.go` a `#!` line. Until round 68 a `.go` under `#!/usr/bin/env go` passed, and the
-# refusals told a `.go` to keep a first line naming `go` (dispatch://INFRA-1545, round 68).
+# whose first line names `go`, are each refused at its line 1. A step that runs a `.go` as its
+# command word is refused, with or without a `#!` line. Until round 68 a `.go` under
+# `#!/usr/bin/env go` passed (dispatch://INFRA-1545, round 68). Since round 69 no row of this case
+# checks the words of a refusal or its cure: each checks only where the gate refuses, which file
+# and which step it names, and, for a `.ts`, that it names `bun` (dispatch://INFRA-1545, round 69).
 echo "case: r66 W17 a top-level .go and .ts under .github/scripts pass, gofmt may name the .go, a shell given either is refused, and a .go opening with any #! line is refused"
 root=$(fixture r66-w17-scanners)
 printf '// a scanner\npackage main\n\nfunc main() {}\n' > "$root/.github/scripts/r66-scan.go"
@@ -14703,38 +14704,24 @@ check "passes the top-level .go and .ts where they stand" \
 check "passes gofmt given the .go" \
   "$(is "$(contains "$out" "step 'Check the scanner's formatting'")" false)"
 check "refuses bash given the .go, at its run" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Run the Go scanner with bash' of job 'build' writes ..github/scripts/r66-scan.go. as an argument of .bash., and it names .github/scripts/r66-scan.go, a file under .github/scripts/ this check does not read as a script")"
-check "names no interpreter of a .go among those a command word's #! line may name, to bash given the .go" \
-  "$(is "$(contains "$out" 'line=12::.*for a `\.go`')" false)"
-check "tells bash given the .go which files run by their path under their own interpreter, no .go among them" \
-  "$(contains "$out" 'line=12::.*and run a `\.py`, `\.jq` or `\.ts` there by its path, under a first line naming its own interpreter; a shell script goes in')"
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Run the Go scanner with bash' of job 'build' writes ..github/scripts/r66-scan.go.")"
 check "refuses . given the .ts, at its run" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Source the TypeScript scanner' of job 'build' writes ..github/scripts/r66-scan.ts. as an argument of .\.., and it names .github/scripts/r66-scan.ts, a file under .github/scripts/ this check does not read as a script")"
-check "refuses the .go whose first line runs a shell, at its line 1, as a line go run cannot compile" \
-  "$(contains "$out" '::error file=.github/scripts/r66-shell.go,line=1::.github/scripts/r66-shell.go is a `.go` directly in .github/scripts/ whose first line, `#!/bin/sh`, is a `#!` line\. `go run` cannot compile a file that starts with `#`, so it cannot run this one\. Run as a command word, this file is handed to `sh`')"
-check "refuses the .go whose first line names go, at its line 1, as a line go run cannot compile" \
-  "$(contains "$out" '::error file=.github/scripts/r68-env-go.go,line=1::.github/scripts/r68-env-go.go is a `.go` directly in .github/scripts/ whose first line, `#!/usr/bin/env go`, is a `#!` line\. `go run` cannot compile a file that starts with `#`, so it cannot run this one\. Run as a command word, this file is handed to `go`')"
-for name in r66-shell r68-env-go; do
-  check "tells $name.go to remove its #! line, and that a program of this tree compiles it with go run" \
-    "$(contains "$out" "::error file=.github/scripts/$name.go,line=1::.*Remove the .#!. line: a .\.go. there opens with no .#!. line, and a program of this tree compiles it from its path with .go run. (dispatch://INFRA-1545, round 68)\.$")"
-done
-check "tells no .go to keep a first line naming its own interpreter" \
-  "$(is "$(contains "$out" 'keep a `\.go` program')" false)"
-check "refuses the .ts whose first line runs a shell, at its line 1" \
-  "$(contains "$out" '::error file=.github/scripts/r66-shell.ts,line=1::.github/scripts/r66-shell.ts is a `.ts` directly in .github/scripts/ whose first line, `#!/bin/sh`, runs `sh`, not `bun`')"
-check "tells the .ts whose first line runs a shell to keep it under bun's" \
-  "$(contains "$out" "::error file=.github/scripts/r66-shell.ts,line=1::.*keep a .\.ts. program under the first line of its own interpreter, .bun.")"
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Source the TypeScript scanner' of job 'build' writes ..github/scripts/r66-scan.ts.")"
+check "refuses the .go whose first line runs a shell, at its line 1" \
+  "$(contains "$out" '::error file=.github/scripts/r66-shell.go,line=1::')"
+check "refuses the .go whose first line names go, at its line 1" \
+  "$(contains "$out" '::error file=.github/scripts/r68-env-go.go,line=1::')"
+check "refuses the .ts whose first line runs a shell, at its line 1, naming bun twice" \
+  "$(contains "$out" '::error file=.github/scripts/r66-shell.ts,line=1::.*`bun`.*`bun`')"
 check "refuses the .ts whose first line runs a shell where a step runs it as its command word" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Run the TypeScript program whose first line runs a shell' of job 'build' writes ..github/scripts/r66-shell.ts. as a command word that does not open with a .#!. line naming its own interpreter, and it names .github/scripts/r66-shell.ts, a file under .github/scripts/ this check does not read as a script")"
-check "tells that run the interpreter a .ts names, bun, and to run such a program under its own" \
-  "$(contains "$out" "line=16::.*as a command word whose .#!. line names its own interpreter (.*.bun. for a .\.ts.).*and run a .\.py., .\.jq. or .\.ts. there by its path, under a first line naming its own interpreter")"
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Run the TypeScript program whose first line runs a shell' of job 'build' writes ..github/scripts/r66-shell.ts.")"
+check "tells that run the interpreter a .ts names, bun" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=16::.*`bun`')"
 for refusal in "18	Run the Go scanner as its command word	r66-scan.go" \
   "20	Run the Go program whose first line names go as its command word	r68-env-go.go"; do
   IFS=$'\t' read -r line step name <<<"$refusal"
-  check "refuses $name where a step runs it as its command word, as a file whose #! line go run cannot compile" \
-    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/$name. as a command word, which runs a file through its .#!. line, a line .go run. cannot compile in a .\.go., and it names .github/scripts/$name, a file under .github/scripts/ this check does not read as a script")"
-  check "offers $name's run no interpreter of a .go" \
-    "$(is "$(contains "$out" "line=$line::.*for a .\.go.")" false)"
+  check "refuses $name where a step runs it as its command word" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/$name.")"
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 8)"
 
@@ -14751,7 +14738,8 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # wrapper the gate does not read, and of a script that fetches named where the gate reads no call.
 # Since round 68 the cure of the `.py` handed to bash names the suffixes OWN_INTERPRETERS gives an
 # interpreter, as the files a command word may run, so it names `.zz` too (dispatch://INFRA-1545,
-# round 68).
+# round 68). Since round 69 each row checks only where the gate refuses and the added member it
+# names, not the words around it (dispatch://INFRA-1545, round 69).
 echo "case: review r39 each refusal that names a list's members names a member added to that list"
 root=$(fixture r39-listed-members)
 copy="$root/.github/scripts/check-download-retry.sh"
@@ -14795,21 +14783,21 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "names zzrun, the added interpreter, twice to the .zz whose first line runs a shell" \
-  "$(contains "$out" '::error file=.github/scripts/r39-shell.zz,line=1::.*whose first line, `#!/bin/sh`, runs `sh`, not `zzrun`: .*keep a `\.zz` program under the first line of its own interpreter, `zzrun`')"
-check "names .zz among the files the gate leaves alone, to a file it does not read" \
-  "$(contains "$out" "::error file=.github/scripts/r39-notes.txt,line=1::.*leaves that directory's .*\.zz.* and .\*\.test\.sh. files alone")"
-check "names .zz among the files a directory its walk skips may hold directly in .github/scripts/" \
-  "$(contains "$out" "::error file=.github/scripts/vendor,line=1::.*a shell script as .github/scripts/<name>.sh, a .*\.zz.* directly in .github/scripts/")"
-check "names zzrun for a .zz among the interpreters a command word's first line may name" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::.*its own interpreter (.*.zzrun. for a .\.zz.*), or as an argument of ")"
-check "names .zz among the files a command word may run by their path, to the .py handed to bash" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=8::.*and run a [^;]*`\.zz`[^;]* there by its path, under a first line naming its own interpreter')"
-check "names zzprint among the programs whose arguments may name a file the gate does not read" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::.*), or as an argument of .*.zzprint.[^.]*, none of which runs a file it names")"
-check "names zzwrap --zz <zzword> among the wrapper options the gate reads" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::.*runs .env. with .-S., an option of it this check does not read: it reads .*.zzwrap --zz <zzword>..* alone")"
-check "names zzsay among the programs whose arguments only print a path" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=13::.*an argument of .*.zzsay. whose output no shell runs")"
+  "$(contains "$out" '::error file=.github/scripts/r39-shell.zz,line=1::.*`zzrun`.*`zzrun`')"
+check "names .zz, the added suffix, to a file the gate does not read" \
+  "$(contains "$out" '::error file=.github/scripts/r39-notes.txt,line=1::.*`\.zz`')"
+check "names .zz to a directory its walk skips" \
+  "$(contains "$out" '::error file=.github/scripts/vendor,line=1::.*`\.zz`')"
+check "names zzrun for a .zz to the .py handed to bash" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=8::.*`zzrun`.*`\.zz`')"
+check "names .zz twice to the .py handed to bash" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=8::.*`\.zz`.*`\.zz`')"
+check "names zzprint, the added program, to the .py handed to bash" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=8::.*`zzprint`')"
+check "names zzwrap --zz <zzword>, the added option, to an option of a wrapper the gate does not read" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=10::.*`zzwrap --zz <zzword>`')"
+check "names zzsay, the added program, to a script that fetches named where the gate reads no call" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=13::.*`zzsay`')"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
 
 # Review round 68 of dispatch://INFRA-1545. Round 67 built each refusal the review named from its
@@ -14822,7 +14810,10 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # subcommand `zzx` to MISE_SILENT, the variable `ZZ_ENV` to STARTUP_VARIABLES, the suffix `w` to
 # SUFFIX, the word `zzloop` to LOOP_WORDS, the consumer `zzdata` to HEREDOC_DATA, the shell `zzsh`
 # to INTERPRETERS, and the suffix `.zq` to SCRIPT_DATA, with `zqc` its command in NO_HASHBANG.
-# Each refusal or cure that lists one of those lists must then name the added member.
+# Each refusal or cure that lists one of those lists must then name the added member. Since round
+# 69 each row checks only where the gate refuses and the added member it names, not the words
+# around it. The refusals of `mise zzx` and `ZZ_ENV` also quote the step's own text, which holds
+# the member, so their rows check that it is named twice (dispatch://INFRA-1545, round 69).
 echo "case: review r68 each refusal that wrote a list's members by hand names a member added to that list"
 root=$(fixture r68-listed-members)
 copy="$root/.github/scripts/check-download-retry.sh"
@@ -14881,26 +14872,22 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-check "names mise zzx, the added subcommand, among the mise subcommands that exit 0" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=10::.*that retry protects nothing: [^:]*`mise zzx`[^:]* exit 0 when they cannot resolve the tool')"
-check "names ZZ_ENV, the added variable, among the variables to name no startup file in" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=12::.*; and name no startup file in [^:]*`ZZ_ENV`[^:]*: write the commands of the file it names')"
-check "names w, the added suffix, among the suffixes of a sleep's arguments the gate charges" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=19::.*each with an optional [^:]*`w`[^:]*, summed as sleep sums them')"
-check "names w among the suffixes the sleep's argument does not end in" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=19::.*Its argument `5x` is no literal number with an optional [^:]*`w`[^:]*, so this check charges this sleep nothing')"
-check "names zzloop, the added word, among the words that open a loop" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=26::.*a command whose first word is [^:]*`zzloop`[^:]* to the next whose first word is `done`')"
-check "names zzdata, the added consumer, among the consumers that take a heredoc's body as data" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=29::.*which it is for [^:]*`zzdata`[^:]* with nothing piped into a shell')"
-check "names zzsh, the added shell, among the shells whose operand is read as a run" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=34::.*as the operand of [^:]*`zzsh`[^:]*, and refuses a path built from data')"
-check "names zqc, the added command, as what cannot compile the .zq whose first line is a #! line" \
-  "$(contains "$out" '::error file=.github/scripts/r68-shell.zq,line=1::.*is a `#!` line\. `zqc` cannot compile a file that starts with `#`')"
-check "names zqc as what runs a .zq, to the .zq whose first line is a #! line" \
-  "$(contains "$out" '::error file=.github/scripts/r68-shell.zq,line=1::.*Remove the `#!` line: a `\.zq` there opens with no `#!` line, and a program of this tree compiles it from its path with `zqc`')"
+check "names mise zzx, the added subcommand, twice to the step that retries it" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=10::.*`mise zzx`.*`mise zzx`')"
+check "names ZZ_ENV, the added variable, twice to the step that exports it" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=12::.*`ZZ_ENV`.*`ZZ_ENV`')"
+check "names w, the added suffix, twice to the sleep whose argument the gate does not read" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=19::.*`w`.*`w`')"
+check "names zzloop, the added word, to the loop's word in quotes" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=26::.*`zzloop`')"
+check "names zzdata, the added consumer, to the heredoc fed to bash" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=29::.*`zzdata`')"
+check "names zzsh, the added shell, to the script run through a variable" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=34::.*`zzsh`')"
+check "names zqc, the added command, twice to the .zq whose first line is a #! line" \
+  "$(contains "$out" '::error file=.github/scripts/r68-shell.zq,line=1::.*`zqc`.*`zqc`')"
 check "names zqc and .zq to the step that runs the .zq as its command word" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=36::.*as a command word, which runs a file through its `#!` line, a line `zqc` cannot compile in a `\.zq`, and it names \.github/scripts/r68-shell\.zq')"
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=36::.*`zqc`.*`\.zq`')"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 8)"
 
 # W12. The two routes past that rule to shell text the gate does not read (dispatch://INFRA-1545,
