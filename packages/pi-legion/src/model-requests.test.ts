@@ -6,10 +6,13 @@ import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types";
 import {
   createModelRequestsReporter,
+  type HostEvents,
   MODEL_REQUEST_REPORT_BOUND_MS,
   type ModelRequestCredential,
   type ModelRequestsReporter,
+  PINNED_HOST_EVENTS,
   refusalPatterns,
+  reportsRetriedRefusals,
 } from "./model-requests";
 import { createTurnOutcomeReporter } from "./turn-outcome";
 
@@ -85,13 +88,18 @@ interface Rig {
  * The reporter over a stub daemon. `answer` answers each report of model requests, by the order it
  * arrived in, with the ids the daemon keeps, and defaults to every id of the batch; it may hold its
  * answer back by returning a promise. The clock and the timers are the rig's: nothing waits on the
- * wall clock.
+ * wall clock. `retriedRefusalsReported` is what the detection read of the host, and defaults to
+ * its reading of the pinned host, as the plugin builds the reporter.
  */
 function rig(
   options: {
     readonly env?: Readonly<Record<string, string | undefined>>;
-    readonly answer?: (body: Record<string, unknown>, attempt: number) => Promise<Response> | Response;
+    readonly answer?: (
+      body: Record<string, unknown>,
+      attempt: number
+    ) => Promise<Response> | Response;
     readonly credential?: (sessionID: string) => ModelRequestCredential | undefined;
+    readonly retriedRefusalsReported?: boolean;
   } = {}
 ): Rig {
   const posted: Posted[] = [];
@@ -137,6 +145,8 @@ function rig(
       };
     },
     newId: () => `req-${++nextId}`,
+    retriedRefusalsReported:
+      options.retriedRefusalsReported ?? reportsRetriedRefusals(PINNED_HOST_EVENTS),
   });
   const advance = async (ms: number) => {
     const until = clock + ms;
@@ -158,7 +168,9 @@ function rig(
     posted,
     warned,
     batches: () =>
-      posted.filter((post) => post.route === "/legion/v1/claims/model-requests").map((post) => post.body),
+      posted
+        .filter((post) => post.route === "/legion/v1/claims/model-requests")
+        .map((post) => post.body),
     advance,
     now: () => clock,
   };
@@ -198,7 +210,8 @@ function refused(at: number, text: string): AgentEndMessage {
 const role = { session: ROLE_SESSION, subagent: false } as const;
 
 // A turn runs on for minutes; a request that ended is reported within the bound of its end while
-// the turn goes on, with the moment it ended and its fresh input plus its cache writes.
+// the turn goes on, with the moment it ended and its fresh input plus its cache writes, in a batch
+// that says the pinned host does not report the 429s its transport retries.
 test("partial while active", async () => {
   const { reporter, batches, advance, now } = rig();
 
@@ -222,6 +235,7 @@ test("partial while active", async () => {
           uncachedInputTokens: 18,
         },
       ],
+      retriedRefusalsReported: false,
     },
   ]);
 });
@@ -241,10 +255,9 @@ test("batch across minutes", async () => {
   expect(batches()).toEqual([]);
   await advance(1);
   expect(batches()).toHaveLength(1);
-  expect((batches()[0]?.requests as { endedAt: string }[]).map((request) => request.endedAt)).toEqual([
-    "2026-11-25T21:53:17.412Z",
-    "2026-11-25T21:53:27.412Z",
-  ]);
+  expect(
+    (batches()[0]?.requests as { endedAt: string }[]).map((request) => request.endedAt)
+  ).toEqual(["2026-11-25T21:53:17.412Z", "2026-11-25T21:53:27.412Z"]);
 
   await advance(MODEL_REQUEST_REPORT_BOUND_MS);
   expect(batches()).toHaveLength(1);
@@ -326,13 +339,11 @@ test("request variants", async () => {
   const { reporter, batches, now } = rig();
   const variants: [string, AgentEndMessage, Record<string, unknown>][] = [
     ["clean", answered(now()), { uncachedInputTokens: 18 }],
-    ...REFUSAL_CLASSES.cases.map(
-      (row): [string, AgentEndMessage, Record<string, unknown>] => [
-        row.name,
-        refused(now(), row.text),
-        { uncachedInputTokens: 0, refusal: row.refusal },
-      ]
-    ),
+    ...REFUSAL_CLASSES.cases.map((row): [string, AgentEndMessage, Record<string, unknown>] => [
+      row.name,
+      refused(now(), row.text),
+      { uncachedInputTokens: 0, refusal: row.refusal },
+    ]),
     [
       "cached input",
       answered(now(), { input: 3, output: 9, cacheRead: 52_000, cacheWrite: 1_200 }),
@@ -385,7 +396,11 @@ test("request variants", async () => {
 test("session inventory", async () => {
   const { reporter, batches, now } = rig({
     credential: (sessionID) =>
-      sessionID === ROLE_SESSION ? implementer : sessionID === CONTROLLER_SESSION ? controller : undefined,
+      sessionID === ROLE_SESSION
+        ? implementer
+        : sessionID === CONTROLLER_SESSION
+          ? controller
+          : undefined,
   });
   const inventory: {
     readonly name: string;
@@ -393,7 +408,11 @@ test("session inventory", async () => {
     readonly credential: ModelRequestCredential;
   }[] = [
     { name: "role", where: role, credential: implementer },
-    { name: "subagent", where: { session: SUBAGENT_SESSION, subagent: true }, credential: implementer },
+    {
+      name: "subagent",
+      where: { session: SUBAGENT_SESSION, subagent: true },
+      credential: implementer,
+    },
     {
       name: "controller",
       where: { session: CONTROLLER_SESSION, subagent: false },
@@ -427,10 +446,51 @@ test("session inventory", async () => {
   );
 });
 
+// Each batch says whether its host reports the 429s its HTTP transport retries by itself, which
+// the plugin reads from the host's events and never from a version text: true only where the host
+// offers an event for each such attempt. The pinned host offers none, and no event is named until
+// the fork's change decides one, so even a host that offers every event is read as without; a
+// stand-in host that offers the event the detection is given is read as with it.
+test("retried refusals", async () => {
+  const STANDIN_EVENT = "standin_retried_attempt";
+  const offering = (offered: readonly string[]): HostEvents => ({
+    offers: (event) => offered.includes(event),
+  });
+  const everything: HostEvents = { offers: () => true };
+  expect(reportsRetriedRefusals(PINNED_HOST_EVENTS)).toBe(false);
+  expect(reportsRetriedRefusals(everything)).toBe(false);
+  expect(reportsRetriedRefusals(offering([STANDIN_EVENT]), [STANDIN_EVENT])).toBe(true);
+  expect(reportsRetriedRefusals(offering(["message_end"]), [STANDIN_EVENT])).toBe(false);
+  expect(reportsRetriedRefusals(PINNED_HOST_EVENTS, [STANDIN_EVENT])).toBe(false);
+
+  const hosts: readonly (readonly [string, boolean, boolean])[] = [
+    ["the pinned host", reportsRetriedRefusals(PINNED_HOST_EVENTS), false],
+    [
+      "a host that offers the event",
+      reportsRetriedRefusals(offering([STANDIN_EVENT]), [STANDIN_EVENT]),
+      true,
+    ],
+  ];
+  for (const [host, said, want] of hosts) {
+    const { reporter, batches, now } = rig({ retriedRefusalsReported: said });
+    reporter.messageEnded(role, answered(now()));
+    reporter.messageEnded(role, refused(now(), "rate limited"));
+    reporter.turnEnded();
+    await reporter.settled();
+    expect(
+      `${host}: ${JSON.stringify(batches().map((batch) => batch.retriedRefusalsReported))}`
+    ).toBe(`${host}: ${JSON.stringify([want])}`);
+  }
+});
+
 // The two patterns come from the launch's environment; a pattern that is unset or empty classes
 // nothing as its limit's, so every refusal is unknown, and the own pattern alone classes only own.
 test("configured patterns", async () => {
-  const configurations: [string, Readonly<Record<string, string | undefined>>, (row: (typeof REFUSAL_CLASSES.cases)[number]) => string][] = [
+  const configurations: [
+    string,
+    Readonly<Record<string, string | undefined>>,
+    (row: (typeof REFUSAL_CLASSES.cases)[number]) => string,
+  ][] = [
     ["both set", PATTERN_ENV, (row) => row.refusal],
     ["unset", {}, () => "unknown"],
     [
@@ -502,5 +562,7 @@ test("the turn-outcome report is unchanged beside the model requests", async () 
       },
     },
   ]);
-  expect(posted.filter((post) => post.route === "/legion/v1/claims/model-requests")).toHaveLength(1);
+  expect(posted.filter((post) => post.route === "/legion/v1/claims/model-requests")).toHaveLength(
+    1
+  );
 });

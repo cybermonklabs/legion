@@ -213,6 +213,27 @@ func (r *requestsRig) report(h host, requests ...claim.ModelRequest) (int, strin
 	})
 }
 
+// batch is h's host sending requests in one batch, as its own secret's caller, with the body's
+// retriedRefusalsReported as said gives it: the member set to said[0], as the Oh My Pi plugin
+// sets it, or no member at all where said is empty, as a host of a contract before it sends.
+func (r *requestsRig) batch(h host, requests []claim.ModelRequest, said ...bool) (int, string) {
+	r.t.Helper()
+	body := map[string]any{"claimToken": h.token, "sessionId": h.session, "secret": h.secret, "generation": h.generation, "requests": requests}
+	if len(said) > 0 {
+		body["retriedRefusalsReported"] = said[0]
+	}
+	return r.post(r.server, "/legion/v1/claims/model-requests", body)
+}
+
+// bridgeReport is the Claude Code bridge of h's launch sending requests in one batch, by its boot
+// token, saying that its host reports each 429 its transport retries, as every batch of the bridge
+// does (claudebridge's call).
+func (r *requestsRig) bridgeReport(h host, requests ...claim.ModelRequest) (int, string) {
+	r.t.Helper()
+	return r.post(r.server, "/legion/v1/claims/model-requests", claim.ModelRequestsRequest{
+		BootCaller: claim.BootCaller{BootToken: h.bootToken}, Generation: h.generation, Requests: requests, RetriedRefusalsReported: true})
+}
+
 // kept requires the answer of a report to be 200 naming exactly ids as kept.
 func (r *requestsRig) kept(status int, answer string, ids ...string) {
 	r.t.Helper()
@@ -239,6 +260,31 @@ func (r *requestsRig) minutes(from, to time.Time) record.ProviderMinutes {
 		r.t.Fatalf("read the provider's minutes: %v", err)
 	}
 	return minutes
+}
+
+// provider is the provider's headroom and refusals at at as admission's live signals read them
+// (admit.LiveSignals, registered as the daemon registers it, its hosts reporting their requests
+// from the admission-signals contract on), admission by signals on with limits.
+func (r *requestsRig) provider(at time.Time, limits map[string]float64) (headroom, refusals admit.SeriesReading) {
+	r.t.Helper()
+	live := admit.NewLiveSignals(r.admission, signalSettings(limits), api.ModelRequestsContract())
+	var reading admit.LiveReading
+	if err := store.TransactWith(r.ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		reading, err = live.Reading(ctx, tx, at)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the live signals at %s: %v", at.Format(time.TimeOnly), err)
+	}
+	for _, series := range reading.Series {
+		switch series.Name {
+		case signals.Provider:
+			headroom = series
+		case signals.Refusals:
+			refusals = series
+		}
+	}
+	return headroom, refusals
 }
 
 // wantMinutes requires the record over the minutes of want, from its first to its last, to hold
@@ -304,7 +350,9 @@ func request(id, session, model string, at time.Time, tokens int64, refusal clai
 // models the project counts, its refusals by the project's own limit (unknown ones among them,
 // as the replay counts them) and by the provider, and the limit in force when it began. A minute
 // some turn of a host that reports no requests overlaps is absent, never zero; a minute every
-// host of which reports its requests is held, zero where none ran.
+// host of which reports its requests is held, zero where none ran. The provider's refusals are
+// not recorded while a request of a host that does not report the 429s its transport retries is
+// in the hour they read, and are recorded again, at a crossing the timer sees, once it leaves it.
 func TestSignalRequestReports(t *testing.T) {
 	t.Parallel()
 	opus := "claude-opus-5-5"
@@ -543,4 +591,74 @@ func TestSignalRequestReports(t *testing.T) {
 		// Before the boot that began keeping the requests, no minute is held.
 		r.wantMinutes(-3, 0, map[int]signals.Minute{})
 	})
+	// The Oh My Pi host gives an extension no event for a 429 its HTTP transport retries by
+	// itself, so it says its batches leave those refusals out, and while a request of its session
+	// is in the hour the refusals read they are not recorded, never counted short; the bridge
+	// reports each such 429 and says so, and its sessions leave them recorded. The headroom counts
+	// every host's tokens alike.
+	t.Run("retried-refusals", func(t *testing.T) {
+		t.Parallel()
+		r := newRequestsRig(t)
+		omp := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
+		bridge := r.launch(claim.RoleTester, api.DaemonAPIVersion())
+		limits := map[string]float64{signals.Refusals: 1}
+		// The daemon began keeping the requests at minute 0, so the hour before minute 62 is whole.
+		r.now = minute(61).Add(15 * time.Second)
+		status, answer := r.bridgeReport(bridge, request("bridge-1", "claude-session-9", opus, minute(61).Add(10*time.Second), -1, claim.RefusalProvider))
+		r.kept(status, answer, "bridge-1")
+		if _, refusals := r.provider(minute(62).Add(5*time.Second), limits); !refusals.Value.Recorded || refusals.Value.Value != 1 || !refusals.Holds {
+			t.Fatalf("after the bridge's refused request the refusals read %+v (%q), want 1 recorded, at its limit", refusals.Value, refusals.Absent)
+		}
+		r.now = minute(65).Add(15 * time.Second)
+		status, answer = r.batch(omp, []claim.ModelRequest{request("omp-1", omp.session, opus, minute(65).Add(10*time.Second), 1200, "")}, false)
+		r.kept(status, answer, "omp-1")
+		headroom, refusals := r.provider(minute(66).Add(5*time.Second), limits)
+		if !headroom.Value.Recorded || headroom.Value.Value != 0.2 {
+			t.Errorf("with the Oh My Pi host's request in the hour the headroom reads %+v (%q), want its 1200 tokens of 6000 recorded", headroom.Value, headroom.Absent)
+		}
+		if refusals.Value.Recorded || refusals.Holds || !strings.Contains(refusals.Absent, retriedRefusalsCause) {
+			t.Errorf("with the Oh My Pi host's request in the hour the refusals read %+v holding %t (%q), want not recorded because %s, holding nothing",
+				refusals.Value, refusals.Holds, refusals.Absent, retriedRefusalsCause)
+		}
+		// A refusal the bridge reports meanwhile is kept and keeps the refusals no less absent.
+		r.now = minute(100).Add(15 * time.Second)
+		status, answer = r.bridgeReport(bridge, request("bridge-2", "claude-session-9", opus, minute(100).Add(10*time.Second), -1, claim.RefusalOwn))
+		r.kept(status, answer, "bridge-2")
+		// The minute of the Oh My Pi host's last request leaves the hour the refusals read at
+		// minute 126, when they are recorded again: that end of the gap is their next crossing,
+		// at which the bridge's refusal of minute 100 holds the limit of 1.
+		if _, before := r.provider(minute(125).Add(59*time.Second), limits); before.Value.Recorded || !strings.Contains(before.Absent, retriedRefusalsCause) ||
+			!before.Due || !before.Next.Equal(minute(126)) {
+			t.Errorf("a second before minute 126 the refusals read %+v (%q), next crossing %s due %t, want not recorded with the crossing at minute 126",
+				before.Value, before.Absent, before.Next.Format(time.TimeOnly), before.Due)
+		}
+		if _, after := r.provider(minute(126), limits); !after.Value.Recorded || after.Value.Value != 1 || !after.Holds {
+			t.Errorf("at minute 126 the refusals read %+v holding %t (%q), want the bridge's one refusal recorded, at its limit", after.Value, after.Holds, after.Absent)
+		}
+	})
+	// A batch of a host of a contract before the member says nothing of the 429s its transport
+	// retries, which reads as a host that does not report them; an Oh My Pi host that says it
+	// does leaves the refusals recorded, as the bridge does.
+	t.Run("retried-refusals-untold", func(t *testing.T) {
+		t.Parallel()
+		r := newRequestsRig(t)
+		role := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
+		r.now = minute(61).Add(15 * time.Second)
+		status, answer := r.batch(role, []claim.ModelRequest{request("told-1", role.session, opus, minute(61).Add(10*time.Second), 300, "")}, true)
+		r.kept(status, answer, "told-1")
+		if _, refusals := r.provider(minute(62), nil); !refusals.Value.Recorded || refusals.Value.Value != 0 {
+			t.Fatalf("after a batch that says its host reports each retried 429 the refusals read %+v (%q), want 0 recorded", refusals.Value, refusals.Absent)
+		}
+		r.now = minute(70).Add(15 * time.Second)
+		status, answer = r.batch(role, []claim.ModelRequest{request("untold-1", role.session, opus, minute(70).Add(10*time.Second), 300, "")})
+		r.kept(status, answer, "untold-1")
+		if _, refusals := r.provider(minute(71), nil); refusals.Value.Recorded || !strings.Contains(refusals.Absent, retriedRefusalsCause) {
+			t.Errorf("after a batch that says nothing of the retried 429s the refusals read %+v (%q), want not recorded because %s",
+				refusals.Value, refusals.Absent, retriedRefusalsCause)
+		}
+	})
 }
+
+// retriedRefusalsCause is what the reason of the refusals not recorded names while a request of a
+// host that cannot report the 429s its transport retried is in the hour they read.
+const retriedRefusalsCause = "cannot report the 429s its transport retried"

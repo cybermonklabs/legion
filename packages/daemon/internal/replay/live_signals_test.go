@@ -266,13 +266,16 @@ func liveReplayRecord(requests *[]requestAt) []liveReplayFact {
 					{ID: int64(id), Repo: builtRepository, PullRequest: n, At: at, Enters: kind == queueAdded}}})
 			}}
 	}
+	// The record's host reports every refusal, the 429s its transport retried among them, so the
+	// daemon's refusals count each of the record's as the replay does.
 	request := func(id string, r requestAt) liveReplayFact {
 		return liveReplayFact{at: r.at, what: "the model request " + id,
 			window: func(*windowBuilder) { *requests = append(*requests, r) },
 			live: func(d *liveDaemon) {
 				tokens := r.tokens
 				d.apply(r.at, intake.ModelRequests{Claim: architectToken(d.t, "ACME-1"), Generation: 1, Requests: []claim.ModelRequest{
-					{ID: id, Session: "ses_1", Model: "acme-model", EndedAt: r.at, UncachedInputTokens: &tokens, Refusal: r.refusal}}})
+					{ID: id, Session: "ses_1", Model: "acme-model", EndedAt: r.at, UncachedInputTokens: &tokens, Refusal: r.refusal}},
+					RetriedRefusalsReported: true})
 			}}
 	}
 	ask := func(at time.Time, key, id, kind string, payload map[string]any) liveReplayFact {

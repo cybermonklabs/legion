@@ -231,11 +231,20 @@ const MaxModelRequests = 200
 // with its registration's secret, the Claude Code bridge with its launch's boot token. Generation
 // is that launch's, and the daemon keeps each request under the claim, the generation and the
 // request's ID. The body names no project: the project is the claim's.
+//
+// RetriedRefusalsReported says whether the host reports each HTTP 429 that its HTTP transport
+// retries by itself, as a refused request of its own: the Claude Code bridge does (each retried
+// attempt is an `api_retry` line), and the pinned Oh My Pi host gives an extension no event for
+// such an attempt, so its refusals count short. A host of a contract before the member sends
+// none, which reads as false. While a request of a batch that says false is in the hour the
+// refusals read, the provider's refusals are not recorded (admit's LiveSignals), and its headroom
+// is read as from any other batch.
 type ModelRequestsRequest struct {
 	AgentCaller
 	BootCaller
-	Generation uint64         `json:"generation"`
-	Requests   []ModelRequest `json:"requests"`
+	Generation              uint64         `json:"generation"`
+	Requests                []ModelRequest `json:"requests"`
+	RetriedRefusalsReported bool           `json:"retriedRefusalsReported,omitempty"`
 }
 
 // Caller is the identity the body named, and false when it named both or neither.

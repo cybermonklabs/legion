@@ -12,7 +12,11 @@ body: |-
   goes on, and what is left at the run's end at once; a request the daemon does not say it holds is
   sent again under the same id. Nothing of a turn waits on a report, and the turn-outcome report is
   unchanged. A 429 Oh My Pi's transport retries by itself reaches no extension, and is not
-  reported.
+  reported, so each batch says whether its host reports those 429s (`retriedRefusalsReported`):
+  true only where the host offers an event for each attempt its transport retries, read from the
+  host and never from a version text, and false on the pinned host, which offers none. The daemon
+  then reads the provider's refusals as not recorded while a request of such a batch is in the hour
+  they count, rather than a count known to be low; the headroom counts its tokens as before.
 time: 2026-11-26T05:33:15Z
 custom:
     Issue: pr5603

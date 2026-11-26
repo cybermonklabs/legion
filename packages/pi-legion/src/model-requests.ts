@@ -32,7 +32,11 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * reaches no extension at all: `message_end` comes once, for the attempt that was answered, and
  * `after_provider_response` fires only for a response whose headers came with a 2xx
  * (`anthropic.ts:2806`). Those refusals, and a side request outside the agent loop (a title, a
- * classifier, a compaction's summary), are what this host cannot report.
+ * classifier, a compaction's summary), are what this host cannot report. So each batch says
+ * whether its host reports the 429s its transport retries (`retriedRefusalsReported`,
+ * `reportsRetriedRefusals`), false on this host, and the daemon reads the provider's refusals as
+ * not recorded while a request of such a batch is in the hour they count, rather than a count it
+ * knows to be low; the headroom counts this host's tokens as any other's.
  *
  * **What a request is.** A `message_end` of an assistant message the provider answered: one with
  * the provider's response id or tokens, or a refusal (`errorStatus` 429, the status a limit
@@ -123,6 +127,42 @@ export function refusalClass(text: string, patterns: RefusalPatterns): RefusalCl
   return "unknown";
 }
 
+/**
+ * The events a host fires for each attempt its HTTP transport retries by itself, any one of which
+ * carries the 429 of such an attempt to an extension. None is named: the pinned host offers none
+ * (the capture above), and the event this waits for is the change to the Oh My Pi fork that
+ * dispatch://INFRA-5899/comment/d25642c3-df88-4141-8ff0-020f9f8be3f8 asks for, whose name and
+ * shape that thread decides. Until it is named here, with a handler that reports each such 429,
+ * every batch says its host does not report them.
+ */
+const RETRIED_ATTEMPT_EVENTS: readonly string[] = [];
+
+/** A host as `reportsRetriedRefusals` reads it: whether it offers an extension the event named. */
+export interface HostEvents {
+  readonly offers: (event: string) => boolean;
+}
+
+/**
+ * The pinned host as `reportsRetriedRefusals` reads it. Its extension API lists no event an
+ * extension can ask after — `pi.on` takes a handler under any name, and the host calls those of
+ * the events it fires — and it fires none for an attempt its transport retries, so it offers none.
+ */
+export const PINNED_HOST_EVENTS: HostEvents = { offers: () => false };
+
+/**
+ * Whether `host` reports each HTTP 429 its transport retries by itself, which each batch says
+ * (`retriedRefusalsReported`): true only where it offers one of `events`, an event for each such
+ * attempt, read from the host and never from a version text. The daemon reads the provider's
+ * refusals as not recorded while a request of a batch that says false is in the hour they count,
+ * since that host's count is known to be low.
+ */
+export function reportsRetriedRefusals(
+  host: HostEvents,
+  events: readonly string[] = RETRIED_ATTEMPT_EVENTS
+): boolean {
+  return events.some((event) => host.offers(event));
+}
+
 export interface ModelRequestsReporterDeps {
   readonly daemon: () => LegionDaemonClient;
   /** The claim a top-level session of this process holds — a role's registration or the
@@ -137,6 +177,9 @@ export interface ModelRequestsReporterDeps {
   readonly schedule: (callback: () => void, delayMs: number) => () => void;
   /** A fresh id, never given out before. */
   readonly newId: () => string;
+  /** Whether this host reports each HTTP 429 its transport retries by itself
+   * (`reportsRetriedRefusals`), which every batch says. */
+  readonly retriedRefusalsReported: boolean;
 }
 
 export interface ModelRequestsReporter {
@@ -173,7 +216,9 @@ function tokens(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : 0;
 }
 
-export function createModelRequestsReporter(deps: ModelRequestsReporterDeps): ModelRequestsReporter {
+export function createModelRequestsReporter(
+  deps: ModelRequestsReporterDeps
+): ModelRequestsReporter {
   let pending: Pending[] = [];
   let sending: Promise<void> | undefined;
   let cancelTimer: (() => void) | undefined;
@@ -242,6 +287,7 @@ export function createModelRequestsReporter(deps: ModelRequestsReporterDeps): Mo
           secret: owner.secret,
           generation: owner.generation,
           requests: batch.map((entry) => entry.request),
+          retriedRefusalsReported: deps.retriedRefusalsReported,
         })
       );
       kept = new Set(answer.kept);
@@ -282,7 +328,10 @@ export function createModelRequestsReporter(deps: ModelRequestsReporterDeps): Mo
       const refused = message.stopReason === "error" && message.errorStatus === REFUSED_STATUS;
       const usage = message.usage;
       const counted =
-        tokens(usage?.input) + tokens(usage?.cacheWrite) + tokens(usage?.cacheRead) + tokens(usage?.output);
+        tokens(usage?.input) +
+        tokens(usage?.cacheWrite) +
+        tokens(usage?.cacheRead) +
+        tokens(usage?.output);
       if (!refused && message.responseId === undefined && counted === 0) return;
       if (message.model === undefined || message.model === "") return;
       const endedAt = message.completedAt ?? deps.now();

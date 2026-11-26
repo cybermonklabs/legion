@@ -36,12 +36,18 @@ package api
 // host forgets, sending the rest again under the same ids. The body is the caller of a turn outcome
 // — `claimToken`, `sessionId` and `secret`, or `bootToken` — with `generation` and `requests`, 1 to
 // 200 of `{id, session, model, endedAt, uncachedInputTokens?, refusal?}`, refusal one of `own`,
-// `provider` and `unknown`; it is decoded strictly and names no project, which is the claim's. The
-// operator's controller, which holds no claim the daemon supervises, names its own token,
-// `legion-<project>-controller`, with its registration's session and secret, checked against the
-// controller record. A host before this entry reports none and still sends its turn outcome, whose
-// body and answer are unchanged; the provider's record holds no minute such a host's turn
-// overlaps (ModelRequestsContract, record.Postgres.ProviderMinutes).
+// `provider` and `unknown`, and `retriedRefusalsReported?`, whether the host reports each HTTP 429
+// its transport retries by itself; it is decoded strictly and names no project, which is the
+// claim's. The Claude Code bridge sends true, since each such attempt is an `api_retry` line it
+// reports; the Oh My Pi plugin sends what its host offers, false on a host that gives an extension
+// no event for such an attempt; a body without the member reads as false. While a request of a
+// batch that said false is in the hour the refusals read, the provider's refusals are not
+// recorded, and its headroom reads every batch alike. The operator's controller, which holds no
+// claim the daemon supervises, names its own token, `legion-<project>-controller`, with its
+// registration's session and secret, checked against the controller record. A host before this
+// entry reports none and still sends its turn outcome, whose body and answer are unchanged; the
+// provider's record holds no minute such a host's turn overlaps (ModelRequestsContract,
+// record.Postgres.ProviderMinutes).
 //
 // Every launch of a role's pane or pod, and of the controller's, the daemon's and the operator's,
 // carries the project's two refusal patterns by which its host classes each refused request:

@@ -161,10 +161,13 @@ func (l *LiveSignals) Read(ctx context.Context, tx pgx.Tx, at time.Time) (signal
 // are whole minutes, held only where every request of them was reported
 // (record.Store.ProviderMinutes): the headroom reads the minute before at, and the refusals are
 // recorded only where every minute of the hour before at is held, so an hour with a minute no host
-// reported is absent rather than counted short. The minute under way at at counts its tokens so
-// far for the headroom's next crossing alone, at the boundary where it becomes the minute before,
-// and never as the minute before; its refusals count from its end, as signals.RefusalsNext counts
-// a minute's.
+// reported is absent rather than counted short. So is an hour, or the minute under way, in which a
+// session of a host that cannot report the 429s its transport retries had a request: the refusals
+// are recorded again an hour after that minute ends, an edge of their coverage, and the headroom
+// reads that host's tokens as any other's. The minute under way at at counts its tokens so far for
+// the headroom's next crossing alone, at the boundary where it becomes the minute before, and
+// never as the minute before; its refusals count from its end, as signals.RefusalsNext counts a
+// minute's.
 func (l *LiveSignals) Reading(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, error) {
 	a := l.admission
 	settings, err := l.settings.SignalSwitch(ctx, tx, a.project)
@@ -334,19 +337,45 @@ func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at time.Time, hea
 	}
 
 	refusals := SeriesReading{Name: signals.Refusals}
-	refusals.Value, refusals.Absent = hourOfRefusals(minutes.Read, at)
+	var unreported unreportedRetries
+	unreported.minute, unreported.found = minutes.RetriesUnreported()
+	refusals.Value, refusals.Absent = hourOfRefusals(minutes.Read, unreported, at)
 	if !kept {
 		refusals.Absent = "the daemon has not begun keeping the project's model requests"
 	}
 	if refusalsLimit != nil {
-		refusals.Next, refusals.Due = refusalsNext(predicted, at, *refusalsLimit)
+		refusals.Next, refusals.Due = refusalsNext(predicted, unreported, at, *refusalsLimit)
 	}
 	return headroom, refusals, nil
 }
 
+// unreportedRetries is the latest minute of the provider's record that holds a request of a host
+// that does not report the 429s its transport retries (record.ProviderMinutes.RetriesUnreported),
+// where found: such a host's session may have been refused by a 429 no report names, so the
+// refusals of any moment whose hour reaches that minute are known to count short.
+type unreportedRetries struct {
+	minute time.Time
+	found  bool
+}
+
+// shortAt says whether the refusals at at count short for that minute: it is one of the hour of
+// minutes they read, or the minute under way, whose refusals they read once it ends. A request
+// ends before its report, so the reading at the report's moment is already short, and no later
+// moment turns it short without a report of its own.
+func (u unreportedRetries) shortAt(at time.Time) bool {
+	return u.found && !u.minute.Before(at.Truncate(time.Minute).Add(-signals.RefusalSpan))
+}
+
+// whole is the moment the minute leaves the hour the refusals read, an hour after its end, from
+// which they count whole again where no later such request came: an edge of their coverage.
+func (u unreportedRetries) whole() time.Time {
+	return u.minute.Add(time.Minute + signals.RefusalSpan)
+}
+
 // hourOfRefusals is the refusals at at (signals.RefusalsAt) where read holds every minute of the
-// hour before at, and otherwise unrecorded, with why.
-func hourOfRefusals(read signals.Series, at time.Time) (signals.Value, string) {
+// hour before at and no request of a host that cannot report the 429s its transport retries
+// leaves them short (unreportedRetries.shortAt), and otherwise unrecorded, with why.
+func hourOfRefusals(read signals.Series, unreported unreportedRetries, at time.Time) (signals.Value, string) {
 	current := at.Truncate(time.Minute)
 	for minute := current.Add(-signals.RefusalSpan); minute.Before(current); minute = minute.Add(time.Minute) {
 		if _, held := read(minute); !held {
@@ -354,15 +383,20 @@ func hourOfRefusals(read signals.Series, at time.Time) (signals.Value, string) {
 				"or the daemon began keeping them after it began", minute.Format(time.RFC3339))
 		}
 	}
+	if unreported.shortAt(at) {
+		return signals.Value{}, fmt.Sprintf("a session of a host that cannot report the 429s its transport retried had a request in the hour, the last in the minute at %s, "+
+			"so the refusals count whole from %s", unreported.minute.Format(time.RFC3339), unreported.whole().Format(time.RFC3339))
+	}
 	return signals.RefusalsAt(read, at).Value(), ""
 }
 
 // refusalsNext is the refusals' next crossing of limit after at, the record standing as predicted
-// reads it: the moment an old refusal leaves the hour, and the moment a minute the record does not
-// hold leaves it, after which the hour is whole again (an edge of the refusals' coverage), each
-// judged by hourOfRefusals. Refusals come only at events, so the count rises at no moment of its
-// own.
-func refusalsNext(predicted signals.Series, at time.Time, limit float64) (time.Time, bool) {
+// reads it: the moment an old refusal leaves the hour, the moment a minute the record does not
+// hold leaves it, after which the hour is whole again, and the moment the latest minute of a
+// request of a host that cannot report the 429s its transport retries leaves it
+// (unreportedRetries.whole), the last two edges of the refusals' coverage, each judged by
+// hourOfRefusals. Refusals come only at events, so the count rises at no moment of its own.
+func refusalsNext(predicted signals.Series, unreported unreportedRetries, at time.Time, limit float64) (time.Time, bool) {
 	current := at.Truncate(time.Minute)
 	var moments []time.Time
 	for minute := current.Add(-signals.RefusalSpan); !minute.After(current); minute = minute.Add(time.Minute) {
@@ -371,8 +405,11 @@ func refusalsNext(predicted signals.Series, at time.Time, limit float64) (time.T
 			moments = append(moments, minute.Add(time.Minute+signals.RefusalSpan))
 		}
 	}
+	if unreported.found {
+		moments = append(moments, unreported.whole())
+	}
 	return signals.FirstChange(at, moments, func(t time.Time) bool {
-		value, _ := hourOfRefusals(predicted, t)
+		value, _ := hourOfRefusals(predicted, unreported, t)
 		return value.Binds(limit)
 	})
 }

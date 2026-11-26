@@ -355,12 +355,15 @@ func (r *modelRequests) post(batch []claim.ModelRequest) {
 }
 
 // call posts batch and answers the ids the daemon holds, and whether the rest go again: not for a
-// report the daemon refused, which no retry passes.
+// report the daemon refused, which no retry passes. Every batch says that its host reports each
+// 429 its HTTP transport retries, since Claude Code writes an `api_retry` line for each such
+// attempt and the bridge reports each as a refused request of its own (refused).
 func (r *modelRequests) call(batch []claim.ModelRequest) ([]string, bool) {
 	body, err := json.Marshal(claim.ModelRequestsRequest{
-		BootCaller: claim.BootCaller{BootToken: r.bootToken},
-		Generation: r.generation,
-		Requests:   batch,
+		BootCaller:              claim.BootCaller{BootToken: r.bootToken},
+		Generation:              r.generation,
+		Requests:                batch,
+		RetriedRefusalsReported: true,
 	})
 	if err != nil {
 		r.log.Printf("could not encode a report of %d model requests: %v", len(batch), err)

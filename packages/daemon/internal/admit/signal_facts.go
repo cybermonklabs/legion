@@ -63,9 +63,10 @@ import (
 //     too (record.Store.KeepTokenLimit), which each minute from then on is read against.
 //   - intake.ModelRequests: one report of a host's model requests, each kept once by the claim,
 //     its launch generation and the request's own id, marked counted where the configured model
-//     selector takes its model (record.Store.KeepModelRequests), with no mark of a write of its
-//     own: the architect's rule decides whether the report runs the pass (signalFactMoved), and
-//     the deadline is set again from it either way.
+//     selector takes its model and with whether the report said its host reports each 429 its
+//     transport retries (record.Store.KeepModelRequests), with no mark of a write of its own: the
+//     architect's rule decides whether the report runs the pass (signalFactMoved), and the
+//     deadline is set again from it either way.
 //   - intake.TurnEdge: the start or end of a turn of a claim, which the claim itself records, so
 //     nothing is kept; where the claim's issue holds a slot, the architect's rule decides whether
 //     it runs the pass, as for a report. A claim of an issue that holds none moves no series.
@@ -106,7 +107,7 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		}
 		return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Approvals, fact.ReadError, a.now())
 	case intake.ModelRequests:
-		if err := a.store.KeepModelRequests(ctx, tx, a.project, fact.Claim, fact.Generation, fact.Requests, a.countsTokens, a.now()); err != nil {
+		if err := a.store.KeepModelRequests(ctx, tx, a.project, fact.Claim, fact.Generation, fact.Requests, fact.RetriedRefusalsReported, a.countsTokens, a.now()); err != nil {
 			return err
 		}
 		return a.signalFactMoved(ctx, tx)

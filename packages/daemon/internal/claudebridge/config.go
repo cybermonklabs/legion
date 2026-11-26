@@ -117,13 +117,13 @@ func Configure(argv, env []string) (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		Argv:          argv,
-		Env:           env,
-		SessionID:     session,
-		Seed:          fresh,
-		DaemonURL:     envValue(env, "LEGION_DAEMON_URL"),
-		BootTokenFile: envValue(env, "LEGION_BOOT_TOKEN_FILE"),
-		Generation:    generationOf(envValue(env, "LEGION_GENERATION")),
+		Argv:            argv,
+		Env:             env,
+		SessionID:       session,
+		Seed:            fresh,
+		DaemonURL:       envValue(env, "LEGION_DAEMON_URL"),
+		BootTokenFile:   envValue(env, "LEGION_BOOT_TOKEN_FILE"),
+		Generation:      generationOf(envValue(env, "LEGION_GENERATION")),
 		OwnRefusal:      envValue(env, runtime.OwnRefusalVariable),
 		ProviderRefusal: envValue(env, runtime.ProviderRefusalVariable),
 	}

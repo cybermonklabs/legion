@@ -193,9 +193,11 @@ type requestRow struct {
 }
 
 // rowsOf is each request of reports as a requestRow, and fails on a request that names no id, no
-// end, or an id another request of reports has: each request counts once. An end at or after
-// since is the bridge's own clock, for a line that names none (a retry line), and reads "now";
-// uncached is "" where the request names none.
+// end, or an id another request of reports has: each request counts once. It fails too on a
+// report that does not say its host reports each 429 its transport retries, which the bridge does
+// by each `api_retry` line, so a Claude Code session never leaves the provider's refusals
+// unrecorded. An end at or after since is the bridge's own clock, for a line that names none (a
+// retry line), and reads "now"; uncached is "" where the request names none.
 func rowsOf(t *testing.T, since time.Time, reports ...claim.ModelRequestsRequest) []requestRow {
 	t.Helper()
 	var rows []requestRow
@@ -203,6 +205,9 @@ func rowsOf(t *testing.T, since time.Time, reports ...claim.ModelRequestsRequest
 	for _, report := range reports {
 		if report.BootToken != testBootToken || report.Generation != 4 || report.ClaimToken != "" || report.Secret != "" {
 			t.Fatalf("the report named %+v, want the launch's boot token and generation 4 and no other credential", report)
+		}
+		if !report.RetriedRefusalsReported {
+			t.Fatalf("the report %+v does not say that its host reports each 429 its transport retries, which the bridge does by each api_retry line", report)
 		}
 		for _, request := range report.Requests {
 			if request.ID == "" || seen[request.ID] || request.EndedAt.IsZero() {
@@ -244,8 +249,8 @@ const (
 // The bridge reports each model request of the stream within its window of the request's end
 // while the turn goes on, and what is left at the turn's end at once; each refused attempt with
 // who refused it; the role's own session and each subagent's once each, under the launch's boot
-// token alone; and classes a refusal's text by the project's two patterns as the Oh My Pi plugin
-// does.
+// token alone, each batch saying that its host reports each 429 its transport retries; and
+// classes a refusal's text by the project's two patterns as the Oh My Pi plugin does.
 func TestBridgeReportsModelRequests(t *testing.T) {
 	classes := readRefusalClasses(t)
 	patterns := []string{

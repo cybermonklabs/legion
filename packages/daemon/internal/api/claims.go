@@ -406,7 +406,9 @@ func (s *server) reportBySecret(w http.ResponseWriter, r *http.Request, caller c
 //
 // The batch is one fact (intake.ModelRequests) under an id that names the claim, the generation
 // and the batch's ids, so a batch sent again is a duplicate that keeps nothing twice; a batch
-// carrying an id already held keeps that id's first report.
+// carrying an id already held keeps that id's first report. The fact carries the batch's word on
+// whether its host reports each 429 its transport retries, false where the body says nothing of
+// it, as a host of a contract before the member's says nothing.
 func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 	var req claim.ModelRequestsRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireGeneration(w, r, req.Generation) {
@@ -429,7 +431,7 @@ func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 		ids[i] = request.ID
 	}
 	result, err := s.apply(r.Context(), "api", modelRequestsFactID(token, generation, ids),
-		intake.ModelRequests{Claim: token, Generation: generation, Requests: req.Requests})
+		intake.ModelRequests{Claim: token, Generation: generation, Requests: req.Requests, RetriedRefusalsReported: req.RetriedRefusalsReported})
 	if err != nil {
 		s.logFailure("api: keep a report of model requests", "claim", token, "generation", generation, "error", err)
 		s.refuse(w, r, http.StatusInternalServerError, "report of model requests failed: the daemon could not keep it")

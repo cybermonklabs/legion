@@ -61,14 +61,23 @@ body: |-
   keys. A migration adds `model_requests`, `signal_token_limits` and `claim_turns`; its header
   carries the way back.
 
+  Each batch also says whether its host reports each HTTP 429 its transport retries by itself
+  (`retriedRefusalsReported`, false where the body says nothing of it), and the daemon keeps each
+  request with it. While a request of a batch that said false ended in the hour the refusals read,
+  or in the minute under way, the provider's refusals read as not recorded, with a reason naming
+  that cause, and hold no start; they are recorded again an hour after that request's minute ends,
+  a crossing the signal deadline's timer sees. The headroom reads every batch alike. A migration
+  adds `model_requests.retried_refusals_reported`; its header carries the way back.
+
   `legion claude-bridge` reports each model request of its Claude Code session on that route with
   the launch's boot token: each answered request once, by its message id, however many stream lines
   it took, ended at its last line, with `input_tokens + cache_creation_input_tokens`; a subagent's
   under its `agent_id`; each attempt Claude Code retries after a 429 (`system` `api_retry`) as a
   refusal of its own, `unknown`, since the line carries no text of the refusal; and the last refused
   attempt classed by its text under the two patterns, compiled as `regexp.Compile("(?s)" +
-  pattern)`. A request is reported within 15 seconds of its end while the turn goes on, and what is
-  left at each `result` at once; the turn-outcome report is unchanged.
+  pattern)`. Each batch says that its host reports the 429s its transport retries. A request is
+  reported within 15 seconds of its end while the turn goes on, and what is left at each `result`
+  at once; the turn-outcome report is unchanged.
 
   Each admission pass now reads the six series of admission by signals from what the daemon
   keeps, with the replay's one definition of each: the idle share of the slot holders, the merge

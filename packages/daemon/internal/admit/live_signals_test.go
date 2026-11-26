@@ -143,11 +143,21 @@ func (lt *liveTest) queued(t *testing.T, pool *pgxpool.Pool, number int, entered
 }
 
 // request applies one report of a host's model request id, ended at ended, of tokens uncached
-// input tokens, refused by refusal ("" for none).
+// input tokens, refused by refusal ("" for none), the host one that reports each 429 its transport
+// retries, as the Claude Code bridge does.
 func (lt *liveTest) request(t *testing.T, pool *pgxpool.Pool, id string, ended time.Time, tokens int64, refusal claim.RefusalClass) {
 	t.Helper()
+	lt.report(t, pool, id, ended, tokens, refusal, true)
+}
+
+// report applies one report of a host's model request as request does, the batch saying retried
+// of whether its host reports each 429 its transport retries: the pinned Oh My Pi host says it
+// does not.
+func (lt *liveTest) report(t *testing.T, pool *pgxpool.Pool, id string, ended time.Time, tokens int64, refusal claim.RefusalClass, retried bool) {
+	t.Helper()
 	applyThrough(t, pool, lt.admission, "api", "requests-"+id, intake.ModelRequests{Claim: acmeToken(t, "ACME-9", claim.RoleImplementer), Generation: 1,
-		Requests: []claim.ModelRequest{{ID: id, Session: "ses_9", Model: "acme-model", EndedAt: ended, UncachedInputTokens: &tokens, Refusal: refusal}}})
+		Requests:                []claim.ModelRequest{{ID: id, Session: "ses_9", Model: "acme-model", EndedAt: ended, UncachedInputTokens: &tokens, Refusal: refusal}},
+		RetriedRefusalsReported: retried})
 }
 
 // heldLines is each line the passes logged of a start a signal held, as "<issue> <signal>/<part>
@@ -211,15 +221,29 @@ const (
 )
 
 // seriesRow is one series of the gate's table: the inputs that make it read value, at which each
-// row sets its limit, a legal limit above value under which it holds nothing, and, where the series
-// can read as not recorded, inputs under which it does, with value's limit set.
+// row sets its limit, a legal limit above value under which it holds nothing, and each way the
+// series can read as not recorded, the inputs under which it does, with value's limit set.
 type seriesRow struct {
 	name    string
 	value   float64
 	under   float64
 	arrange func(t *testing.T, pool *pgxpool.Pool, lt *liveTest)
-	absent  func(t *testing.T, pool *pgxpool.Pool, lt *liveTest)
+	absent  []absentCase
 }
+
+// absentCase is one cause for which a series reads as not recorded, and inputs under which it
+// does.
+type absentCase struct {
+	cause   string
+	arrange func(t *testing.T, pool *pgxpool.Pool, lt *liveTest)
+}
+
+// providerCoverage is each cause, by the provider's part, for which the gate's table holds that
+// part not recorded: the headroom with no token limit configured, and the refusals over an hour
+// the daemon did not wholly keep and while a request of a host that cannot report the 429s its
+// transport retried is in the hour.
+var providerCoverage = []string{"provider/headroom: no token limit", "provider/refusals: an hour not wholly kept",
+	"provider/refusals: a host that cannot report its retried 429s"}
 
 // seriesRows is one row for each of the six series (signals.Names()), the provider's headroom and
 // its refusals each a row of its own.
@@ -227,6 +251,13 @@ func seriesRows() []seriesRow {
 	booted := func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 		t.Helper()
 		lt.boot(t, pool, fixedNow.Add(-7*time.Hour), "acme-owner@example.invalid")
+	}
+	refusals := func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
+		t.Helper()
+		lt.request(t, pool, "r1", fixedNow.Add(-50*time.Minute), 0, claim.RefusalOwn)
+		lt.request(t, pool, "r2", fixedNow.Add(-40*time.Minute), 0, claim.RefusalOwn)
+		lt.request(t, pool, "r3", fixedNow.Add(-30*time.Minute), 0, claim.RefusalUnknown)
+		lt.request(t, pool, "r4", fixedNow.Add(-20*time.Minute), 0, claim.RefusalProvider)
 	}
 	return []seriesRow{
 		{name: signals.Idle, value: 0.5, under: 0.75, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
@@ -241,30 +272,29 @@ func seriesRows() []seriesRow {
 			t.Helper()
 			booted(t, pool, lt)
 			lt.queued(t, pool, 7, fixedNow.Add(-3*time.Hour), time.Time{})
-		}, absent: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
+		}, absent: []absentCase{{cause: "the boot's read of the merge queue failed", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			booted(t, pool, lt)
 			lt.queued(t, pool, 7, fixedNow.Add(-3*time.Hour), time.Time{})
 			applyThrough(t, pool, lt.admission, "daemon", "queue-read", intake.QueueBootStatus{ReadError: "GitHub answered 502"})
-		}},
+		}}}},
+		// The headroom counts the tokens of a host that cannot report the 429s its transport
+		// retries as any host's: such a host leaves only the refusals unrecorded.
 		{name: signals.Provider, value: 0.5, under: 0.75, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			booted(t, pool, lt)
-			lt.request(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000, "")
-		}, absent: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
+			lt.report(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000, "", false)
+		}, absent: []absentCase{{cause: "no token limit", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			lt.admission.UseModelRequests(0, nil)
 			booted(t, pool, lt)
 			lt.request(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000, "")
-		}},
+		}}}},
 		{name: signals.Refusals, value: 4, under: 5, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			booted(t, pool, lt)
-			lt.request(t, pool, "r1", fixedNow.Add(-50*time.Minute), 0, claim.RefusalOwn)
-			lt.request(t, pool, "r2", fixedNow.Add(-40*time.Minute), 0, claim.RefusalOwn)
-			lt.request(t, pool, "r3", fixedNow.Add(-30*time.Minute), 0, claim.RefusalUnknown)
-			lt.request(t, pool, "r4", fixedNow.Add(-20*time.Minute), 0, claim.RefusalProvider)
-		}, absent: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
+			refusals(t, pool, lt)
+		}, absent: []absentCase{{cause: "an hour not wholly kept", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			// The daemon began keeping the requests 30 minutes ago, so the hour before holds
 			// minutes it did not keep.
@@ -272,26 +302,33 @@ func seriesRows() []seriesRow {
 			for i := range 5 {
 				lt.request(t, pool, fmt.Sprintf("r%d", i), fixedNow.Add(-time.Duration(20-i)*time.Minute), 0, claim.RefusalOwn)
 			}
-		}},
+		}}, {cause: "a host that cannot report its retried 429s", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
+			t.Helper()
+			// The four refusals stand, and an answered request of a host that cannot report the
+			// 429s its transport retried ended 50 minutes ago, in the hour the refusals read.
+			booted(t, pool, lt)
+			refusals(t, pool, lt)
+			lt.report(t, pool, "unreported", fixedNow.Add(-50*time.Minute), 100, "", false)
+		}}}},
 		{name: signals.Kills, value: 2, under: 3, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			booted(t, pool, lt)
 			lt.kill(t, pool, 1, fixedNow.Add(-30*time.Minute))
 			lt.kill(t, pool, 2, fixedNow.Add(-10*time.Minute))
-		}, absent: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
+		}, absent: []absentCase{{cause: "an hour not wholly kept", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			// The daemon began keeping the kills 30 minutes ago, so their hour is not whole.
 			lt.boot(t, pool, fixedNow.Add(-30*time.Minute), "acme-owner@example.invalid")
 			lt.kill(t, pool, 1, fixedNow.Add(-20*time.Minute))
 			lt.kill(t, pool, 2, fixedNow.Add(-10*time.Minute))
-		}},
+		}}}},
 		{name: signals.Approvals, value: 2, under: 3, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			lt.boot(t, pool, fixedNow.Add(-7*time.Hour), "acme-owner@example.invalid", "1", "2")
-		}, absent: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
+		}, absent: []absentCase{{cause: "no default assignee", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			lt.boot(t, pool, fixedNow.Add(-7*time.Hour), "", "1", "2")
-		}},
+		}}}},
 	}
 }
 
@@ -394,8 +431,9 @@ func startedOf(t *testing.T, pool *pgxpool.Pool, keys []string) []string {
 }
 
 // The gate's table has a row for each of the six series, the provider's headroom and its refusals
-// each named by its own part, and for each hold of the line plan section 4 keeps with admission by
-// signals on. It fails where one lacks a row.
+// each named by its own part, for each cause for which a part of the provider reads as not
+// recorded (providerCoverage), and for each hold of the line plan section 4 keeps with admission
+// by signals on. It fails where one lacks a row.
 func TestSignalGateInventory(t *testing.T) {
 	series := map[string]bool{}
 	parts := map[string]bool{}
@@ -403,13 +441,16 @@ func TestSignalGateInventory(t *testing.T) {
 		series[row.name] = true
 		signal, part := SignalPart(row.name)
 		parts[signal+"/"+part] = true
+		for _, absent := range row.absent {
+			parts[signal+"/"+part+": "+absent.cause] = true
+		}
 	}
 	for _, name := range signals.Names() {
 		if !series[name] {
 			t.Errorf("the series %s has no row of TestLiveSignalGate/series", name)
 		}
 	}
-	for _, part := range []string{"provider/headroom", "provider/refusals"} {
+	for _, part := range append([]string{"provider/headroom", "provider/refusals"}, providerCoverage...) {
 		if !parts[part] {
 			t.Errorf("the provider's part %s has no row of TestLiveSignalGate/series", part)
 		}
@@ -486,8 +527,8 @@ func TestLiveSignalGate(t *testing.T) {
 			t.Run(row.name+"/at its limit", func(t *testing.T) { run(t, map[string]float64{row.name: row.value}, row.arrange, false) })
 			t.Run(row.name+"/under its limit", func(t *testing.T) { run(t, map[string]float64{row.name: row.under}, row.arrange, true) })
 			t.Run(row.name+"/with no limit", func(t *testing.T) { run(t, nil, row.arrange, true) })
-			if row.absent != nil {
-				t.Run(row.name+"/not recorded", func(t *testing.T) { run(t, map[string]float64{row.name: row.value}, row.absent, true) })
+			for _, absent := range row.absent {
+				t.Run(row.name+"/not recorded: "+absent.cause, func(t *testing.T) { run(t, map[string]float64{row.name: row.value}, absent.arrange, true) })
 			}
 		}
 	})

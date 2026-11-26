@@ -1718,13 +1718,19 @@ func (ControllerMemoryGuardKill) namedIssue() (string, bool) { return "", false 
 // sent again is a duplicate (api's modelRequests). Claim and Generation are the authenticated
 // launch's, never anything the body says; the project is the claim's, admission's own.
 //
+// RetriedRefusalsReported is the batch's own word (claim.ModelRequestsRequest's): whether its host
+// reports each HTTP 429 its transport retries, false for a host of a contract before the member.
+// Each request is kept with it, so the provider's refusals are not recorded while a request of a
+// host that does not report them is in the hour they read.
+//
 // Admission keeps each request once, by the claim, the generation and the request's own id, in
 // the fact's transaction before its pass (admit's keepSignalFacts), so a request two batches carry
 // is kept once. The workflow does nothing with it.
 type ModelRequests struct {
-	Claim      claim.Token
-	Generation uint64
-	Requests   []claim.ModelRequest
+	Claim                   claim.Token
+	Generation              uint64
+	Requests                []claim.ModelRequest
+	RetriedRefusalsReported bool
 }
 
 func (ModelRequests) namedIssue() (string, bool) { return "", false }

@@ -1704,8 +1704,14 @@ export const LegionModelRequest = z.strictObject({
 export type LegionModelRequestBody = z.output<typeof LegionModelRequest>;
 
 /** The half of `claim.ModelRequestsRequest` that is the report rather than the caller: the launch
- * generation the requests are kept under, which must be the authenticated launch's own, and 1 to
- * `LEGION_MAX_MODEL_REQUESTS` requests whose ids no two share. */
+ * generation the requests are kept under, which must be the authenticated launch's own, 1 to
+ * `LEGION_MAX_MODEL_REQUESTS` requests whose ids no two share, and `retriedRefusalsReported`,
+ * whether the host reports each HTTP 429 its transport retries by itself as a refused request of
+ * its own. The Claude Code bridge sends true; the Oh My Pi plugin sends what its host offers, false
+ * on a host that gives an extension no event for such an attempt; a body without it, a host's of a
+ * contract before it, reads as false. While a request of a batch that said false is in the hour
+ * the provider's refusals count, the daemon reads them as not recorded, since that host's count is
+ * known to be low. */
 const modelRequestsFields = {
   generation: z.number().int().positive(),
   requests: z
@@ -1715,6 +1721,7 @@ const modelRequestsFields = {
     .refine((requests) => new Set(requests.map((request) => request.id)).size === requests.length, {
       message: "an id names one request of a report",
     }),
+  retriedRefusalsReported: z.boolean().optional(),
 };
 
 /** `claim.AgentCaller`'s report of model requests: the Oh My Pi plugin, which names the claim with

@@ -26,6 +26,7 @@
         "requests.*.refusal",
         "requests.*.session",
         "requests.*.uncachedInputTokens",
+        "retriedRefusalsReported",
         "secret",
         "sessionId"
       ]

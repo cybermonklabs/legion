@@ -15,10 +15,12 @@ import (
 // intake.ModelRequests), as rows of model_requests: each once by the claim, the generation and the
 // request's own id, so a request two reports carry, or one report delivered twice, is one row and
 // the first one kept stays as it was kept. Each row keeps the session, the model, when the request
-// ended, its uncached input tokens or none, who refused it or none, and whether counts takes its
+// ended, its uncached input tokens or none, who refused it or none, whether counts takes its
 // model (the project's signal_token_model_pattern as the daemon was configured when it kept it),
-// so a changed selector reads no kept request again. It takes the wire's own request, as
-// KeepMemoryKill takes the wire's frame.
+// so a changed selector reads no kept request again, and retried, whether the report said its
+// host reports each HTTP 429 its transport retries (ProviderMinutes reads the refusals short of
+// those where it did not). It takes the wire's own request, as KeepMemoryKill takes the wire's
+// frame.
 //
 // It then deletes every request of project that ended before the first minute a read at now or
 // later reaches (modelRequestsReach), so the rows a read meets stay bounded by an hour of
@@ -29,7 +31,7 @@ import (
 // every few seconds from every session, and most change no hold and no value a pass would record,
 // so admission decides by the architect's rule whether the report runs the pass (admit's
 // signalsMoved, NoteSignalsMoved).
-func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, requests []claim.ModelRequest, counts func(model string) bool, now time.Time) error {
+func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, requests []claim.ModelRequest, retried bool, counts func(model string) bool, now time.Time) error {
 	batch := &pgx.Batch{}
 	for _, request := range requests {
 		var refusal *string
@@ -37,10 +39,10 @@ func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project str
 			class := string(request.Refusal)
 			refusal = &class
 		}
-		batch.Queue(`insert into model_requests (project, claim, generation, id, session, model, ended_at, uncached, counted, refusal)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (project, claim, generation, id) do nothing`,
+		batch.Queue(`insert into model_requests (project, claim, generation, id, session, model, ended_at, uncached, counted, refusal, retried_refusals_reported)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) on conflict (project, claim, generation, id) do nothing`,
 			project, string(claim), int64(generation), request.ID, request.Session, request.Model, request.EndedAt,
-			request.UncachedInputTokens, counts(request.Model), refusal)
+			request.UncachedInputTokens, counts(request.Model), refusal, retried)
 	}
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 		return fmt.Errorf("keep the model requests of %s at generation %d: %w", claim, generation, err)
@@ -103,9 +105,14 @@ func (s *Postgres) KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string
 }
 
 // ProviderMinutes is the provider's record of a project over a range of whole minutes, as
-// Postgres.ProviderMinutes reads it: each minute the record holds, by its start.
+// Postgres.ProviderMinutes reads it: each minute the record holds, by its start, and the latest
+// minute of the range that holds a request of a host that does not report the 429s its transport
+// retries.
 type ProviderMinutes struct {
 	minutes map[int64]signals.Minute
+	// unreported is the start of that latest minute, and unreportedFound whether there is one.
+	unreported      time.Time
+	unreportedFound bool
 }
 
 // Read is the minute that starts at start and whether the record holds it, the reading a
@@ -116,6 +123,16 @@ func (m ProviderMinutes) Read(start time.Time) (signals.Minute, bool) {
 	}
 	minute, held := m.minutes[start.Unix()]
 	return minute, held
+}
+
+// RetriesUnreported is the start of the latest minute of the range read that holds a request
+// whose report said its host does not report each HTTP 429 its transport retries, or said nothing
+// of them as a host of a contract before the member does, and whether one does. Such a session
+// may have been refused by a 429 that no report names, so the refusals of any moment whose hour
+// reaches that minute are known to count short (admit's LiveSignals reads them as not recorded).
+// The headroom reads that minute's tokens as any other's.
+func (m ProviderMinutes) RetriesUnreported() (time.Time, bool) {
+	return m.unreported, m.unreportedFound
 }
 
 // ProviderMinutes is project's provider record of each whole UTC minute that begins in [from, to):
@@ -132,6 +149,11 @@ func (m ProviderMinutes) Read(start time.Time) (signals.Minute, bool) {
 // model requests (api.ModelRequestsContract): its turn's tokens reach no report, so each minute
 // from its start to its end, or on while it runs, is absent, never zero. A held minute in which
 // no request ran is zero.
+//
+// It also reads the latest minute of the range that holds a request whose report said its host
+// does not report each HTTP 429 its transport retries, or said nothing of them
+// (ProviderMinutes.RetriesUnreported): such a minute is held, its tokens and refusals counted as
+// any other's, and the refusals of an hour that reaches it are known to count short.
 func (s *Postgres) ProviderMinutes(ctx context.Context, tx pgx.Tx, project string, from, to time.Time, reporting int) (ProviderMinutes, error) {
 	read := ProviderMinutes{minutes: map[int64]signals.Minute{}}
 	since, kept, err := s.SignalInputSince(ctx, tx, project, signals.Provider)
@@ -160,16 +182,21 @@ func (s *Postgres) ProviderMinutes(ctx context.Context, tx pgx.Tx, project strin
 	}
 	rows, err := tx.Query(ctx, `select floor(extract(epoch from ended_at) / 60)::bigint * 60,
 			coalesce(sum(uncached) filter (where counted), 0)::bigint,
-			count(*) filter (where refusal in ('own', 'unknown')), count(*) filter (where refusal = 'provider')
+			count(*) filter (where refusal in ('own', 'unknown')), count(*) filter (where refusal = 'provider'),
+			bool_or(not retried_refusals_reported)
 		from model_requests where project = $1 and ended_at >= $2 and ended_at < $3 group by 1`, project, first, to)
 	if err != nil {
 		return read, fmt.Errorf("read the model requests of %s from %s to %s: %w", project, first, to, err)
 	}
 	var start, uncached, own, provider int64
-	if _, err := pgx.ForEachRow(rows, []any{&start, &uncached, &own, &provider}, func() error {
+	var unreported bool
+	if _, err := pgx.ForEachRow(rows, []any{&start, &uncached, &own, &provider, &unreported}, func() error {
 		minute := read.minutes[start]
 		minute.Uncached, minute.Own, minute.Provider = uncached, own, provider
 		read.minutes[start] = minute
+		if at := time.Unix(start, 0).UTC(); unreported && (!read.unreportedFound || at.After(read.unreported)) {
+			read.unreported, read.unreportedFound = at, true
+		}
 		return nil
 	}); err != nil {
 		return read, fmt.Errorf("read the model requests of %s from %s to %s: %w", project, first, to, err)

@@ -2881,9 +2881,10 @@ type Store interface {
 	ApprovalsOf(ctx context.Context, tx pgx.Tx, project string) (Approvals, error)
 	// KeepModelRequests keeps each of requests, one report of the host of claim's launch at
 	// generation, once by the claim, the generation and the request's id, each marked counted
-	// where counts takes its model, and deletes the project's requests of minutes no read reaches
-	// again before now.
-	KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, requests []claim.ModelRequest, counts func(model string) bool, now time.Time) error
+	// where counts takes its model and with retried, whether the report said its host reports
+	// each 429 its transport retries, and deletes the project's requests of minutes no read
+	// reaches again before now.
+	KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, requests []claim.ModelRequest, retried bool, counts func(model string) bool, now time.Time) error
 	// KeepTokenLimit records limit (0 for none) as project's token limit a minute from at, where it
 	// differs from the limit in force then.
 	KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string, limit int64, at time.Time) error
@@ -2892,7 +2893,9 @@ type Store interface {
 	ModelRequestsHeld(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, ids []string) ([]string, error)
 	// ProviderMinutes is project's provider record of each whole minute that begins in [from,
 	// to), each held only where every request of it is known to have been reported by a host of a
-	// plugin contract at or above reporting: what the provider's headroom and refusals read.
+	// plugin contract at or above reporting, and the latest of those minutes that holds a request
+	// of a host that does not report the 429s its transport retries: what the provider's headroom
+	// and refusals read.
 	ProviderMinutes(ctx context.Context, tx pgx.Tx, project string, from, to time.Time, reporting int) (ProviderMinutes, error)
 	// SignalDeadline is project's one deadline of admission by signals as committed, and
 	// PutSignalDeadline writes it, in the transaction of the fact whose pass computed it (admit's
