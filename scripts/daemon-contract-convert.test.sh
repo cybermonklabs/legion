@@ -211,6 +211,23 @@ PY
   write_goldens "entry $1"
 }
 
+# added_entry_files REF prints, one a line in name order, each entry file that HEAD adds over REF.
+# With no rename detection: an entry converted again differs from REF's file of it by its id alone,
+# which git would read as a rename.
+added_entry_files() {
+  git diff --no-renames --name-only --diff-filter=A "$1" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' | sort || true
+}
+
+# stacked_alone REF WHAT prints the entry file that HEAD adds over REF, and fails, naming WHAT,
+# unless that is the one file HEAD adds and the stacked entry's (convert-stacked).
+stacked_alone() {
+  local added
+  mapfile -t added < <(added_entry_files "$1")
+  [ "${#added[@]}" -eq 1 ] && [[ ${added[0]} == */contract_*_convert-stacked.go ]] ||
+    fail "$2 adds ${#added[@]} entry files over $1, want 1, entry $((k + 1))'s: ${added[*]}"
+  echo "${added[0]}"
+}
+
 # fixture_of ENTRY_FILE prints the path of the entry's fixture.
 fixture_of() {
   sed -E "s|.*/contract_([0-9]{14})_(.*)\\.go\$|$fixtures/contracts/\\1_\\2.json|" <<<"$1"
@@ -453,7 +470,7 @@ git merge-base --is-ancestor "$this" HEAD || fail "the branch does not hold this
 echo "merged with no conflict"
 
 step "one entry file, with the entry's text and its band"
-mapfile -t entries < <(git diff --name-only --diff-filter=A "$this" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' || true)
+mapfile -t entries < <(added_entry_files "$this")
 [ "${#entries[@]}" -eq 1 ] || fail "the branch adds ${#entries[@]} entry files, want 1: ${entries[*]}"
 entry=${entries[0]}
 id=$(sed -E 's|.*/contract_([0-9]{14})_.*|\1|' <<<"$entry")
@@ -596,10 +613,8 @@ GIT_SEQUENCE_EDITOR="sed -i '/convert-test: a commit before the cutover\$/s/^pic
   fail "the rebased crossed branch has merge bases $(git merge-base --all HEAD "$base_crossed" | tr '\n' ' ')with the first branch, want ${entry_commit:0:10} alone"
 bash "$root/scripts/daemon-contract-convert.sh" --base "$base_crossed" >"$scratch/convert-rebased.txt" 2>&1 ||
   { cat "$scratch/convert-rebased.txt"; fail "scripts/daemon-contract-convert.sh --base ${base_crossed:0:10} failed on the rebased crossed branch"; }
-mapfile -t rebased < <(git diff --no-renames --name-only --diff-filter=A "$base_crossed" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' || true)
-[ "${#rebased[@]}" -eq 1 ] && [[ ${rebased[0]} == */contract_*_convert-stacked.go ]] ||
-  fail "the rebased crossed branch adds ${#rebased[@]} entry files over ${base_crossed:0:10}, want 1, entry $((k + 1))'s: ${rebased[*]}"
-echo "PASS: rebased onto ${entry_commit:0:10} with the merged commit dropped, the crossed branch has one merge base, and converts entry $((k + 1)) alone to ${rebased[0]}"
+rebased=$(stacked_alone "$base_crossed" "the rebased crossed branch")
+echo "PASS: rebased onto ${entry_commit:0:10} with the merged commit dropped, the crossed branch has one merge base, and converts entry $((k + 1)) alone to $rebased"
 git checkout -q "$branch_stacked"
 
 step "the conversion of the stacked branch over its base branch"
@@ -609,11 +624,7 @@ bash "$root/scripts/daemon-contract-convert.sh" --base "$branch" >"$scratch/conv
 cat "$scratch/convert-stacked.txt"
 
 step "the stacked branch adds its own entry alone over its base branch"
-# With no rename detection: an entry of the base branch converted again differs from the base
-# branch's file by its id alone, which git would read as a rename.
-mapfile -t stacked < <(git diff --no-renames --name-only --diff-filter=A "$branch" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' || true)
-[ "${#stacked[@]}" -eq 1 ] && [[ ${stacked[0]} == */contract_*_convert-stacked.go ]] ||
-  fail "the stacked branch adds ${#stacked[@]} entry files over its base branch $branch, want 1, entry $((k + 1))'s: ${stacked[*]}"
+stacked=$(stacked_alone "$branch" "the stacked branch")
 git merge-base --is-ancestor "$branch" HEAD || fail "the stacked branch does not hold its base branch $branch after the conversion"
 [[ $(git log -1 --format=%s) == *", and merge $branch" ]] ||
   fail "the stacked branch's conversion commit names no merge of its base branch $branch: $(git log -1 --format=%s)"
@@ -621,10 +632,10 @@ git merge-base --is-ancestor "$branch" HEAD || fail "the stacked branch does not
 body=$(git log -1 --format=%b | tr '\n' ' ')
 [[ $body == *"and merged $branch ($(git rev-parse "$branch")) into the branch."* ]] ||
   fail "the stacked branch's conversion commit does not say it merged $branch at $(git rev-parse --short "$branch"): ${body:0:300}"
-stacked_fixture=$(fixture_of "${stacked[0]}")
-[ "$(git diff --no-renames --name-only "$branch" HEAD | sort)" = "$(printf '%s\n' "${stacked[0]}" "$stacked_fixture" | sort)" ] ||
-  { git diff --stat "$branch" HEAD; fail "the stacked branch differs from its base branch $branch by more than ${stacked[0]} and $stacked_fixture"; }
-echo "PASS: the stacked branch converts entry $((k + 1)) alone to ${stacked[0]}, and differs from $branch by that entry's file and fixture"
+stacked_fixture=$(fixture_of "$stacked")
+[ "$(git diff --no-renames --name-only "$branch" HEAD | sort)" = "$(printf '%s\n' "$stacked" "$stacked_fixture" | sort)" ] ||
+  { git diff --stat "$branch" HEAD; fail "the stacked branch differs from its base branch $branch by more than $stacked and $stacked_fixture"; }
+echo "PASS: the stacked branch converts entry $((k + 1)) alone to $stacked, and differs from $branch by that entry's file and fixture"
 
 step "a merge of the base branch that conflicts is left to the author, with the ref and its commit"
 # A branch made from the first branch's commit of entry $k adds numbered entry $((k + 1)) and edits
@@ -676,7 +687,7 @@ cat "$scratch/convert-two.txt"
 git merge-base --is-ancestor "$this" HEAD || fail "the second branch does not hold this change after the conversion"
 
 step "each entry's fixture records its own request change alone"
-mapfile -t pair < <(git diff --name-only --diff-filter=A "$this" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' | sort || true)
+mapfile -t pair < <(added_entry_files "$this")
 [ "${#pair[@]}" -eq 2 ] || fail "the second branch adds ${#pair[@]} entry files, want 2: ${pair[*]}"
 # The ids follow the numbers, so the first file of the two in id order is entry $k's.
 [[ ${pair[0]} == */contract_*_convert-first.go && ${pair[1]} == */contract_*_convert-second.go ]] ||
