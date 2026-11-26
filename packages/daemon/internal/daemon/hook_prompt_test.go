@@ -201,7 +201,7 @@ func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 		t.Fatalf("the hook prompt no session holds, inside the hour = %v, want a wait on the no-holder answer", err)
 	}
 	row.CreatedAt = time.Now().Add(-time.Hour - time.Minute)
-	if err := runner.execute(ctx, row); !errors.Is(err, errHookPromptPastItsHour) || errors.Is(err, wait.ErrWaiting) || !permanentRefusal(row, err) {
+	if err := runner.execute(ctx, row); !errors.Is(err, errKeptRoleMessagePastItsHour) || errors.Is(err, wait.ErrWaiting) || !permanentRefusal(row, err) {
 		t.Fatalf("the hook prompt past its hour = %v, want a failure no retry repairs, which ends the row", err)
 	}
 }

@@ -149,7 +149,7 @@ func TestTwoPromptsThatEndTogetherOpenOneWindow(t *testing.T) {
 				leasedOutboxRow(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now())),
 				leasedOutboxRow(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", loopHook, time.Now())),
 			}
-			cause := &hookPromptUndelivered{why: "the implementer's claim failed", cause: notify.ErrNoHolder}
+			cause := &keptRoleMessageUndelivered{why: "the implementer's claim failed", cause: notify.ErrNoHolder}
 			if !concurrent {
 				for _, row := range rows {
 					if err := runner.finishRefused(ctx, row, cause); err != nil {
@@ -205,7 +205,7 @@ func TestAHookPromptWindowIsFoundByItsDataAndNotByItsWords(t *testing.T) {
 	t.Parallel()
 	runner, _, pool := hookRunner(t, &holderPublisher{})
 	ctx := context.Background()
-	cause := &hookPromptUndelivered{why: "the implementer's claim failed", cause: notify.ErrNoHolder}
+	cause := &keptRoleMessageUndelivered{why: "the implementer's claim failed", cause: notify.ErrNoHolder}
 	if err := runner.finishRefused(ctx, leasedOutboxRow(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now())), cause); err != nil {
 		t.Fatal(err)
 	}

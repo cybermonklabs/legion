@@ -3244,7 +3244,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 //
 // `hook-prompt-undelivered` is a hook's prompt to a role of the issue that ended with no session of
 // that role handed it: the role's claim failed or was retired, or no session of it held the role
-// within the prompt's hour (internal/daemon's hookPromptEnded, finishRefused). The issue's
+// within the prompt's hour (internal/daemon's keptRoleMessageEnded, finishRefused). The issue's
 // architect is told once for each message on the issue that names such prompts, when the first of
 // them opens that message (Store.NameUndeliveredHookPrompt), so a role that is not coming makes
 // one notice an hour, as it makes one message. The reason names the role, the hook, why the
