@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -35,6 +36,13 @@ type outboxLane struct {
 	key  record.LaneKey
 	wake chan struct{}
 }
+
+// outboxHoldRecheck is how soon a row the test's hold put back (outbox.hold) is due again, and
+// errOutboxRowHeld the last error such a row records. Neither is reached in production, where
+// nothing holds a row.
+const outboxHoldRecheck = 100 * time.Millisecond
+
+var errOutboxRowHeld = errors.New("held by the outbox's test hold until it lets the row through")
 
 // timers is the clock the lanes' timers are armed on: the outbox's, or the wall clock for an outbox
 // a test built by hand without one.
@@ -327,6 +335,12 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 		}
 		return nil
 	}
+	if r.hold != nil && r.hold(row) {
+		if err := r.retryAt(ctx, row, r.now().UTC().Add(outboxHoldRecheck), errOutboxRowHeld); err != nil {
+			r.log.Error("outbox row hold not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
+		}
+		return nil
+	}
 	// The renewal's ticks run on timer goroutines of their own (renewLease), beside the row's
 	// effect, so they are a second caller of the pool and take a hold mark of their own
 	// (store.ForConcurrentWorker). On the lane's mark a tick that came while the effect was inside
@@ -482,16 +496,17 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 }
 
 // finishesItsOwnRow is whether row's own effect finishes the row inside its run: a left pod's close
-// check (record.IssueWorkspaceCheck with CloseRoles), which finishes its row in the transaction that
-// records what it decided (checkLeftPodWorkspace). The idle release's check is the same kind and
-// never does.
+// check (record.IssueWorkspaceCheck.LeftPodClose: CloseRoles, or the launcher's check with Close
+// where no role runs in the pod), which finishes its row in the transaction that records what it
+// decided (checkLeftPodWorkspace). The idle release's check, and the launcher's check of a pod no
+// claim owns, are the same kind and never do.
 func finishesItsOwnRow(row record.OutboxRow) bool {
 	if row.Kind != record.OutboxKindIssueBundle {
 		return false
 	}
 	payload, err := record.DecodeOutboxPayload(row)
 	check, ok := payload.(record.IssueWorkspaceCheck)
-	return err == nil && ok && len(check.CloseRoles) > 0
+	return err == nil && ok && check.LeftPodClose()
 }
 
 // warnHeld is one tick's look at the lifecycle rows of the row's issue held behind it

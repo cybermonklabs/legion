@@ -71,8 +71,9 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 // populatedRecord is the populated record's issues. Each comment says what the case is there for
 // and which writer of the daemon leaves such a record.
 //
-//   - LEGION-207 merged and closed; its tree lingers until 10:10:12, and its production check is
-//     open at its second look.
+//   - LEGION-207 merged and closed; its tree lingers until 10:10:12, its production check is open
+//     at its second look, and its spec stands open on a person's approval of its ancestor
+//     LEGION-200's.
 //   - LEGION-208, the tree root at work in implementing, carries every optional a claim view has
 //     between its architect, planner and implementer, a plan task's counts, a pull request with
 //     changes requested, an approved design gate, the memory draw and the handshake of its
@@ -90,7 +91,8 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //     (blockers.Exempt).
 //   - LEGION-212, a P0 root a person answered, holding its slot and waiting in the line's returned
 //     part of its band, its spec sent back with changes, a tester retired in its tree.
-//   - LEGION-214, a root whose Legion label is off, which never ran.
+//   - LEGION-214, a root whose Legion label is off, which never ran, and whose spec waits on its
+//     ancestor LEGION-200's open approval request.
 //   - LEGION-215, a labelled root under LEGION-217, a child of LEGION-208 its architect has not
 //     released and the daemon keeps no record of: its chain reaches LEGION-208's live tree.
 //   - LEGION-216, a root that has never run, queued behind LEGION-211 and blocked by LEGION-210.
@@ -261,20 +263,34 @@ func populatedRecord(s *seeding) {
 	}
 
 	// The design gates (workflow/gate.go's registration and the approvals Dispatch carries,
-	// record.Store.PutGate). The deployment gates `root-issues`, the one step spec. LEGION-207's,
-	// LEGION-208's, LEGION-218's and LEGION-219's specs stand approved at the version Dispatch
-	// holds (LEGION-208's must: a shut gate of its tree would hold its child at design_gate, the
-	// word the held ladder reads before dispatch_blocker); LEGION-211's came with its hand-over;
-	// LEGION-210's architect registered a version after the one its person approved, so its gate
-	// waits; LEGION-212's reviewer asked for changes at the version Dispatch holds and the architect
-	// was told. LEGION-214, LEGION-215 and LEGION-216 never ran, so no architect registered theirs.
+	// record.Store.PutGate). The deployment gates `root-issues`, the one step spec. LEGION-208's,
+	// LEGION-218's and LEGION-219's specs stand approved at the version Dispatch holds
+	// (LEGION-208's must: a shut gate of its tree would hold its child at design_gate, the word the
+	// held ladder reads before dispatch_blocker); LEGION-211's came with its hand-over; LEGION-210's
+	// architect registered a version after the one its person approved, so its gate waits;
+	// LEGION-212's reviewer asked for changes at the version Dispatch holds and the architect was
+	// told. Two steps rest on the ancestor LEGION-200's spec (dispatch://INFRA-3320, R1 to R3), as
+	// workflow's registration writes them through record.OpenOnBasis and record.PendOnBasis.
+	// LEGION-207's architect registered its spec on a person's approval of version 5 of LEGION-200's,
+	// so the step stands open on that basis at the version it registered, which no person approved.
+	// LEGION-214's architect registered its spec on version 6 while a person's approval of that
+	// version was still asked for, so its step waits, closed, on that open request. LEGION-215 and
+	// LEGION-216 never ran, so no architect registered theirs.
+	const ancestor, ancestorSpec = "LEGION-200", "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58"
+	openOnBasis := record.GateBasis{Issue: ancestor, ArtifactID: ancestorSpec, Version: 5,
+		Approval: record.EventMark{At: at(20, 15, 2, 41)}, Approver: "user:alice",
+		Reason: "the parent's spec decides this root's design", Session: "ses_architect_207", RegisteredAt: at(20, 15, 30, 0)}
+	pendingOnBasis := record.GateBasis{Issue: ancestor, ArtifactID: ancestorSpec, Version: 6,
+		Reason: "the parent's spec decides this root's design", Session: "ses_architect_214", RegisteredAt: at(22, 7, 1, 30)}
 	for _, gate := range []record.DesignGate{
-		{Issue: "LEGION-207", ArtifactID: "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90", LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true},
+		record.OpenOnBasis(record.DesignGate{Issue: "LEGION-207", Step: record.DesignStepSpec, ArtifactID: "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90", LatestVersion: 4, EverOpened: true}, openOnBasis),
 		{Issue: "LEGION-208", ArtifactID: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093", LatestVersion: 7, ApprovedVersion: new(7), EverOpened: true},
 		{Issue: "LEGION-210", ArtifactID: "4e8b2a61-7d93-4c05-b1f6-8a3e5c9d2074", LatestVersion: 2, ApprovedVersion: new(1), EverOpened: true},
 		{Issue: "LEGION-211", ArtifactID: "e5a2c1d7-3b46-4f82-9e07-2d4a6c8b1f53", LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true},
 		{Issue: "LEGION-212", ArtifactID: "b71f0a94-6c3e-4d28-85af-19c7d0e3b462", LatestVersion: 2,
 			ToldChangesVersion: new(2), ToldChangesReason: "name the rollback path for the schema change"},
+		record.PendOnBasis(record.DesignGate{Issue: "LEGION-214", Step: record.DesignStepSpec, ArtifactID: "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39", LatestVersion: 2},
+			pendingOnBasis, "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75"),
 		{Issue: "LEGION-218", ArtifactID: "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38", LatestVersion: 5, ApprovedVersion: new(5), EverOpened: true},
 		{Issue: "LEGION-219", ArtifactID: "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54", LatestVersion: 2, ApprovedVersion: new(2), EverOpened: true},
 	} {

@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -165,7 +164,7 @@ func newAppFixture(t *testing.T, apps ...string) (m *Machine, enrollmentID strin
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}
-	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
 	return m, enrollmentID, requesterKey, fixtureOperator
 }
 
@@ -1408,10 +1407,10 @@ func TestAGrantFrozenOnAnotherSourceIsNotLive(t *testing.T) {
 	set := policytest.Current(t, store).Get()
 	live := set.Secrets["DEEL_API_KEY"].Source
 	requester := policy.Requester{Operator: "ada@example.com"}
-	if err := stillAllowed(set, proxyrules.Rules{}, "DEEL_API_KEY", live, policy.Automatic, "", nil, requester); err != nil {
+	if err := stillAllowed(set, "DEEL_API_KEY", live, policy.Automatic, "", nil, requester); err != nil {
 		t.Fatalf("stillAllowed on the live source = %v, want nil", err)
 	}
-	if err := stillAllowed(set, proxyrules.Rules{}, "DEEL_API_KEY", "projects/000000000000/secrets/agent-secrets-deel-api-key", policy.Automatic, "", nil, requester); !errors.Is(err, ErrGrantNotLive) {
+	if err := stillAllowed(set, "DEEL_API_KEY", "projects/000000000000/secrets/agent-secrets-deel-api-key", policy.Automatic, "", nil, requester); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("stillAllowed on a source the policy no longer serves = %v, want ErrGrantNotLive", err)
 	}
 }

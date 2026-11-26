@@ -40,17 +40,38 @@ import-path order, so one long package that came late set the step's time. In me
   group's time.
 
 So each step runs in legs: one job per leg, all at the same time, each over the packages
-`.github/go-legs.yaml` lists for it, longest first. Plain leg 1 is internal/store, whose 542 s
-sets its time, beside the next three, each on a core of its own; plain leg 2 is the other 90
-packages, about 880 s of package time over four cores, and runs alone the steps no leg splits:
-the race-impossible tests, the forced-order tests and Stage 1, 57 s in that job, and the shape
-gate of internal/api stamped with main's merge order, added since (4 s with its stamp in job
-139602068850). internal/daemon takes three race legs, a group of its tests each ([below](#why-internaldaemons-tests-run-in-three-legs));
-race leg 4 is the other four packages, whose time is internal/launcher's (292 s in run
-45601893438; internal/intake took 134 s there, its tests now beside each other). The longest leg
-is then plain leg 1, internal/store's: 506 s of job in run 45678673783, against 463 s for the
-longest race leg (a group of internal/daemon) and 385 s for race leg 4, where the merge group
-waited 940 s for daemon-go.
+`.github/go-legs.yaml` lists for it, longest first. The first split ran the plain step in two legs:
+leg 1 was internal/store, whose 542 s set its time, beside the next three, each on a core of its
+own; leg 2 was the other 87 packages, about 880 s of package time over four cores, and ran alone
+the steps no leg splits: the race-impossible tests, the forced-order tests and Stage 1, 57 s in
+that job, and the shape gate of internal/api stamped with main's merge order, added since (4 s
+with its stamp in job 139602068850). internal/daemon takes three race legs, a group of its tests
+each ([below](#why-internaldaemons-tests-run-in-three-legs)); race leg 4 is the other four
+packages, whose time is internal/launcher's (292 s in run 45601893438; internal/intake took 134 s
+there, its tests now beside each other). The longest leg was then plain leg 1, internal/store's:
+506 s of job in run 45678673783, against 463 s for the longest race leg (a group of
+internal/daemon) and 385 s for race leg 4, where the merge group had waited 940 s for daemon-go.
+
+Those legs put the packages that compete for the runner's cores in one leg. In the ten green merge
+groups that ran the legs from 20:27Z to 22:55Z on 2026-11-25 (runs 45695186634 to 45717072988),
+plain leg 1 took a median 578 s of job and leg 2 376 s; in leg 1, cmd/legion took a median 432 s,
+internal/store 274 s, internal/runtime/sandbox 156 s (its tests in parallel since #5507) and
+internal/workflow 156 s. Run alone on 4 CPUs, each with its CPU over its time (build-cluster Jobs
+legion-ci-cmdlegion-4jtkm and -tl98h), cmd/legion keeps 1.1 cores busy, about 2.4 once its tests
+run beside each other (#5514), and internal/runtime/sandbox 1.2; internal/store, internal/workflow
+and the other long packages mostly wait on Postgres or a child, under half a core each, but their
+one Postgres service runs on the same runner. Two legs could not keep both apart. With
+cmd/legion's tests beside each other and internal/store beside it in one leg, cmd/legion took
+421.1 s, internal/store 440.4 s and internal/api 244.3 s (run 45731654069, job 139616724747).
+With cmd/legion alone beside three packages that need neither cores nor Postgres, it took 194.5 s,
+but the other leg then held every Postgres package, and internal/store took 407.4 s there and the
+leg 611 s of job (run 45737777272, jobs 139637308654 and 139637308512). So the plain step runs in
+three legs, a runner each: leg 1 is cmd/legion's with internal/leakguard, internal/record and
+internal/repocache; leg 2 is internal/store's with the small packages and the race-impossible
+tests, the forced-order tests and Stage 1; leg 3 is internal/workspace, internal/runtime/sandbox,
+internal/workflow, internal/admit, internal/api and the rest, about 874 s of package time over
+four cores, and the stamped shape gate, which reuses the test build of internal/api that leg 3's
+plain step compiled.
 
 The rules the legs keep:
 
@@ -90,7 +111,7 @@ The rules the legs keep:
 What it costs:
 
 - each leg repeats its setup, about 70 s for a plain leg and 100 s for a race leg, and a leg's
-  runner sits partly idle when one package sets its time, so two legs a kind use more runner
+  runner sits partly idle when one package sets its time, so a kind's legs use more runner
   minutes than one job did: 1,705 runner seconds (29 billed minutes) in merge group 45553934471,
   1,939 and 2,135 s (37 and 39 billed minutes) in this change's runs 45586895835 and 45601893438;
 - each of the two jobs that keep the old names is a second wait for a runner, after its kind's

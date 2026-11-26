@@ -125,20 +125,22 @@ const (
 // here, so the two never spell one of them differently. A daemon below API contract 86 serves
 // `awaiting_merge` and one at 86 or later never does (packages/daemon/internal/api/version.go,
 // 86), so the board and the metrics read PhaseAwaitingMerge in what the sampler observed of such
-// an earlier daemon.
+// an earlier daemon. PhaseAwaitingChildren is a parent that an open Dispatch child of it holds
+// (dispatch://INFRA-3320, R11): no worker of it works, and it keeps no slot.
 const (
-	PhaseAdmitted       = "admitted"
-	PhaseAwaitingPerson = "awaiting_person"
-	PhasePlanning       = "planning"
-	PhaseImplementing   = "implementing"
-	PhaseTesting        = "testing"
-	PhaseReviewing      = "reviewing"
-	PhaseAccepting      = "accepting"
-	PhaseRetro          = "retro"
-	PhaseMerging        = "merging"
-	PhaseAwaitingMerge  = "awaiting_merge"
-	PhaseDone           = "done"
-	PhaseHeld           = "held"
+	PhaseAdmitted         = "admitted"
+	PhaseAwaitingPerson   = "awaiting_person"
+	PhaseAwaitingChildren = "awaiting_children"
+	PhasePlanning         = "planning"
+	PhaseImplementing     = "implementing"
+	PhaseTesting          = "testing"
+	PhaseReviewing        = "reviewing"
+	PhaseAccepting        = "accepting"
+	PhaseRetro            = "retro"
+	PhaseMerging          = "merging"
+	PhaseAwaitingMerge    = "awaiting_merge"
+	PhaseDone             = "done"
+	PhaseHeld             = "held"
 )
 
 // JSONString is a JSON text's string value, or "" for a null, a number, or anything else: an

@@ -293,20 +293,23 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // own state, asked through the route itself. The caller is served at the recorded contract at or
 // below the one it states (recordedContractAtOrBelow), which the mark's `caller` names: its
 // `repositories` block in the shape contract 152 gave it, written from the same entries
-// (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
-// row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
-// intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
-// podHoldContract's row does too, no issue's `priority` and no waiting line's (withoutPriority),
-// since priorityContract's row does too, no claim view's `lastDeathAt` or `lastStartFailureAt`
-// (withoutCauseTimes), since causeTimesContract's row does too, and every other key as a caller
-// at shapedAnswersContract is served it, since no other row of stateNarrowings stands between
-// shapedAnswersContract and repositoriesLiveContract. shapedAnswersContract's row stands at or
-// below the contract it is served at, which is why the golden carries `lowestPluginContract` and
-// each claim view's `updateState`; the populated state holds no pause, so it carries no `paused`.
-// The mark's `daemon` names this daemon's own contract, which an entry moves, so it is taken out
-// before the golden is compared or written (apifixture.WithoutContractMarks) and held to that
-// number here, as internal/daemon's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds takes
-// out state.json's marks with the same strip; the `caller` is 199, which no entry moves, and stays.
+// (withoutRepositoriesLive), each assignment without its `plan` (withoutAssignmentPlans,
+// assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
+// intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
+// root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
+// (withoutGateBasis, gateBasisContract's row), the three other rows of stateNarrowings above the
+// contract it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no
+// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row)
+// and no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row),
+// and every other key as a caller at shapedAnswersContract is served it, since no other
+// row of stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// shapedAnswersContract's row stands at or below the contract it is served at, which is why the
+// golden carries `lowestPluginContract` and each claim view's `updateState`; the populated state
+// holds no pause, so it carries no `paused`. The mark's `daemon` names this daemon's own contract,
+// which an entry moves, so it is taken out before the golden is compared or written
+// (apifixture.WithoutContractMarks) and held to that number here, as internal/daemon's
+// TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds takes out state.json's marks with the
+// same strip; the `caller` is 199, which no entry moves, and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
@@ -822,7 +825,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", IssueStatusResponse{})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
-	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
+	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
 	golden(t, "gate-register.json", GateRegisterResponse{})
 	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})

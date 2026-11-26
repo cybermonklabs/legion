@@ -75,6 +75,7 @@
       "phase": "done",
       "status": "done",
       "tree": "LEGION-207",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "lingerUntil": "2126-09-22T10:10:12Z",
@@ -126,7 +127,14 @@
           "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
           "currentVersion": 4,
           "approvedVersion": 4,
-          "status": "approved"
+          "status": "open_on_basis",
+          "basis": {
+            "issue": "LEGION-200",
+            "artifactId": "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+            "version": 5,
+            "approver": "user:alice",
+            "approvedAt": "2126-09-20T15:02:41Z"
+          }
         }
       ],
       "check": {
@@ -152,6 +160,7 @@
       "phase": "implementing",
       "status": "in_progress",
       "tree": "LEGION-208",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -381,6 +390,7 @@
       "phase": "held",
       "status": "in_progress",
       "tree": "LEGION-210",
+      "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "holdReason": "escalated",
@@ -449,6 +459,7 @@
       "phase": "implementing",
       "status": "todo",
       "tree": "LEGION-211",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": 1,
@@ -513,6 +524,7 @@
       "phase": "awaiting_person",
       "status": "in_progress",
       "tree": "LEGION-212",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": 0,
@@ -579,15 +591,29 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-214",
+      "treeRuns": false,
       "repo": "zeta/archive",
       "defaultBranch": "main",
       "priority": null,
       "workers": {},
+      "designGate": {
+        "artifactId": "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+        "currentVersion": 2,
+        "approvedVersion": null
+      },
       "gatedSteps": [
         {
           "step": "spec",
+          "artifactId": "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+          "currentVersion": 2,
           "approvedVersion": null,
-          "status": "unregistered"
+          "status": "pending_on_basis",
+          "basis": {
+            "issue": "LEGION-200",
+            "artifactId": "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+            "version": 6,
+            "askId": "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75"
+          }
         }
       ],
       "why": {
@@ -601,6 +627,7 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-215",
+      "treeRuns": false,
       "repo": "sjawhar/legion",
       "defaultBranch": "main",
       "ancestry": [
@@ -629,6 +656,7 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-216",
+      "treeRuns": false,
       "repo": "acme/gadgets",
       "defaultBranch": "main",
       "priority": null,
@@ -667,6 +695,7 @@
       "phase": "reviewing",
       "status": "needs_review",
       "tree": "LEGION-218",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -768,6 +797,7 @@
       "phase": "reviewing",
       "status": "needs_review",
       "tree": "LEGION-219",
+      "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "architect": {
