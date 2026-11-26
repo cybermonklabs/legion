@@ -102,8 +102,10 @@ esac
 
 # The read goes through retry_fetch at 30 s an attempt, the bound this repository's CI gives one
 # page of a REST route (ci-budgets.md's Retries note), and the ladder runs through gh-read.sh's
-# gh_wait_reset, which waits out a spent API budget or a secondary rate limit only when the wait
-# and one more ladder fit within this step's limit and the job's, and fails by name otherwise.
+# gh_wait_reset, which waits out a spent API budget only when the wait and one more ladder fit
+# within this step's limit and the job's, and fails by name otherwise. The read is paginated, so
+# gh-read.sh reads the spent budget off GitHub's rate_limit route, and a secondary rate limit,
+# whose retry-after is in an answer it does not read, is one of the ladder's failed attempts.
 # The redirection is this shell's own and is applied once: the helper buffers each attempt's
 # output and prints the successful attempt's alone, so no refused attempt's body reaches this
 # file (ci-retry.sh's header says what gh writes there).

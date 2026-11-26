@@ -1089,6 +1089,18 @@ func lastSeqs(series []promSeries) map[string]float64 {
 	return out
 }
 
+// seriesNames is the names of series, sorted, each once.
+func seriesNames(series []promSeries) []string {
+	var names []string
+	for _, s := range series {
+		if !slices.Contains(names, s.name) {
+			names = append(names, s.name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // awaitLastSeqs waits up to 30 s for the exporters on ports to report want last_seq series of
 // stream, each value, and returns them.
 func awaitLastSeqs(t *testing.T, ports []int, stream string, want int, value float64) map[string]float64 {
@@ -1536,14 +1548,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	atRest := awaitLastSeqs(t, exporterPorts, r3, 3, float64(messages))
 	series, err := streamSeries(exporterPorts, r3)
 	require.NoError(t, err)
-	var metricNames []string
-	for _, s := range series {
-		if !slices.Contains(metricNames, s.name) {
-			metricNames = append(metricNames, s.name)
-		}
-	}
-	sort.Strings(metricNames)
-	t.Logf("(c) the exporters' series of %s: %s", r3, strings.Join(metricNames, ", "))
+	t.Logf("(c) the exporters' series of %s: %s", r3, strings.Join(seriesNames(series), ", "))
 	t.Logf("(c) %s at rest: %d %s series, equal: %v", r3, len(atRest), lastSeqMetric, atRest)
 
 	leader, err = streamLeader()

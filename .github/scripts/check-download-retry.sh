@@ -1335,16 +1335,19 @@
 #      text. None of the four writes a fetch this check reads, so the closure exempts no site of
 #      theirs. Since the merge of main's #4893 at round 55 it adds gh-read.sh too, which
 #      release-push.sh sources for its gh calls, and ci-log-guard.sh, which gh-read.sh sources as
-#      ci-retry.sh does. gh-read.sh writes one fetch this check reads, _gh_read_reset's `timeout
-#      30 gh api rate_limit`, the read of a spent budget's reset gh_wait_reset makes after a call
-#      GitHub refused for its rate limit, and the closure exempts it as a site of a file a
-#      credentialed job runs; a call through gh_wait_reset is charged its command alone (rule 6),
-#      so no step's key holds that read's 30 s either, which the wait's own check, made after the
-#      read, holds within the limit instead. release-push.sh's unretried fetches are the gh calls
-#      of its `restart`, `release` and `release-section` commands — `gh run list`, `gh workflow
-#      run`, `gh release view`, `gh release create`, `gh release upload` and `gh release edit`,
-#      each through gh_wait_reset since main's #4893 — and nothing in the tree but those publish
-#      jobs runs one of them.
+#      ci-retry.sh does. gh-read.sh writes four fetches this check reads. One is _gh_read_reset's
+#      `timeout 30 gh api rate_limit`, which gh_wait_reset makes after a call GitHub refused for
+#      its rate limit, or, since main's #5154, after a call whose answer it cannot read exits 1.
+#      The other three are _gh_read_gh's `exec gh "$@"` lines, since main's #5154: they run the
+#      command a caller hands gh_wait_reset, which that caller's own ladder retries. The closure
+#      exempts all four as sites of a file a credentialed job runs; a call through gh_wait_reset
+#      is charged its command alone (rule 6), so no step's key holds the rate_limit read's 30 s
+#      but the key dispatch-browser.yaml's "Reading one, the rows" writes by hand
+#      (.github/ci-notes/dispatch-browser.md says why). release-push.sh's unretried fetches are
+#      the gh calls of its `restart`, `release` and `release-section` commands — `gh run list`,
+#      `gh workflow run`, `gh api` (its release lookup, since main's #5154), `gh release view`,
+#      `gh release create`, `gh release upload` and `gh release edit`, each through gh_wait_reset
+#      since main's #4893 — and nothing in the tree but those publish jobs runs one of them.
 #
 #      Retrying them means sourcing .github/scripts/ci-retry.sh into the publish job, and that is
 #      what check-release-credentials.sh refuses: its rule 1(a) lets a credentialed job run no

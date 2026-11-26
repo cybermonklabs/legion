@@ -557,7 +557,9 @@ run_pr_text
 check "a comparison GitHub cannot make is refused" "$(is "$status" 1)"
 check "names the read and gh's message" \
   "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh: Could not resolve to a commit.)")"
-check "reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api ')" false)"
+# gh-read.sh reads the rate_limit route after a read that fails with no answer it can read, so the
+# row looks for the compare route itself.
+check "reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api repos/example/repo/compare/')" false)"
 # A total above 1000 goes to the compare route after the first page: the pages GraphQL would serve
 # after it cannot make the list whole.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
@@ -862,11 +864,12 @@ echo "case: a spent GraphQL budget is waited out within the job's limit, and ref
 # GraphQL answers a spent budget with HTTP 200 and an error of type RATE_LIMITED; gh fails on it.
 # Every read goes through retry_fetch's ladder inside gh-read.sh's gh_wait_reset: the ladder's five
 # attempts meet the spent budget (its sleeps return at once here, check-private-names-test-lib.sh
-# says why), and the helper then reads the reset off GET /rate_limit, waits for it when the wait
-# and one more ladder, 5 x 30 + 150 = 300 s and 30 s after it, fall inside the job's limit, and
-# runs the ladder once more. Here the budget is back 10 s after the first refusal, inside a
-# six-minute job; ten, so that the five refused attempts and the rate_limit read end before the
-# reset on a loaded host, and the helper has a wait left to log.
+# says why). This stand-in gh writes no GH_DEBUG log, so the helper has no answer of its own to
+# read: it reads GET /rate_limit, finds the graphql budget the read spends at 0, waits for its reset
+# when the wait and one more ladder, 5 x 30 + 150 = 300 s and 30 s after it, fall inside the job's
+# limit, and runs the ladder once more. Here the budget is back 10 s after the first refusal,
+# inside a six-minute job; ten, so that the five refused attempts and the rate_limit read end
+# before the reset on a loaded host, and the helper has a wait left to log.
 clean_pr
 echo "1 10" > "$work/graphql-rate-limited"
 run_pr_text_in_job 6
@@ -878,11 +881,12 @@ check "asks the same read again after the wait: the ladder's five, then one more
   "$(is "$(grep -c '^graphql PrText {"full":true,' "$work/calls")" 6)"
 check "after the reset" "$(is "$([ "$seconds" -ge 10 ] && echo true || echo false)" true)"
 
-# GitHub's words for it are "API rate limit already exceeded"; the type alone is read as well.
+# GitHub's words for it are "API rate limit already exceeded"; neither the words nor the error's
+# type decide, since the rate_limit route does.
 clean_pr
 echo "1 10 type" > "$work/graphql-rate-limited"
 run_pr_text_in_job 6
-check "a RATE_LIMITED answer whose words name no rate limit is waited out too: passes" "$(is "$status" 0)"
+check "a RATE_LIMITED answer whose words name no rate limit is waited out the same way: passes" "$(is "$status" 0)"
 check "and says so" "$(contains "$out" '^::warning::the API budget is spent until ')"
 
 # A later round's read: the first page is kept, and the round is asked again from its cursor.

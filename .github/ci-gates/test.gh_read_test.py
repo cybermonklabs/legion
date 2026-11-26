@@ -4,4 +4,5 @@ GATE = harness("gh_read_test", "Test the wait for a spent API budget and the ret
     (f"{SCRIPTS}/gh-read.sh", "the script under test"),
     *ci_retry("gh-read.test.sh's composed cases source it beside the code they drive, for the ladder "
               "gh_wait_reset runs"),
+    (f"{SCRIPTS}/gh-read-stand-in.py", "the stand-in GitHub gh-read.test.sh starts, which every case calls"),
 ])

@@ -32,11 +32,13 @@ go-envoy-test (envoy-go, envoy-go-claim-model, which builds the API's test binar
 the binaries, multiprocess and visual jobs of .github/workflows/dispatch-browser.yaml, which
 ci.yaml's dispatch-browser and dispatch-browser-pr jobs call: those three build the Dispatch
 server and the real broker's commands, whose packages the go-envoy entry's build of the listener
-and natsd alone does not hold, and the two jobs of
+and natsd alone does not hold, the two jobs of
 .github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step and twobuild test step
-build out of that same set), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose build cache
-is a directory of its own, the GOCACHE of that step's env) and go-envoy-infra (envoy-infra-build
-and envoy-infra-go, and the build job of release-envoy-infra.yaml).
+build out of that same set, and dispatch-memory, dispatch-multiprocess, envoy-go-race and
+envoy-go-race-api, whose ceiling step and tests read its modules and, for the two plain ones, its
+objects), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose build cache is a directory of
+its own, the GOCACHE of that step's env) and go-envoy-infra (envoy-infra-build and
+envoy-infra-go, and the build job of release-envoy-infra.yaml).
 The key carries `runner.arch` because Go's build cache holds the objects of the architecture
 that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
 its objects. So each family is filled on every architecture one of its readers runs on, one

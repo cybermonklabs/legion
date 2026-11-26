@@ -2850,6 +2850,31 @@ modules and the compiled dependencies match, while the tree's own packages, buil
 script's `git archive` directory, compile again, since without -trimpath Go keys a package
 outside the module cache on its directory.
 
+## Why the envoy lanes with a database restore go-envoy-test
+
+dispatch-memory, dispatch-multiprocess, envoy-go-race and envoy-go-race-api restore go-envoy-test
+and save nothing, as the two-builds jobs and envoy-go-claim-model do. Until they did, they
+restored no cache at all, so their first go command, the ceiling step's
+`go run ./internal/dispatch/store/cmd/connections`, downloaded 17 modules and compiled the store
+from nothing: a median of 19 to 20 s of the step in each (16 to 23 s), against 1 s in envoy-go,
+which restores the entry (20 green merge groups of 2026-11-25, 18:43Z to 22:37Z). The tests
+after it downloaded more: 66 modules in dispatch-memory's memory step, which then compiled for
+44 s before its first test ran (job 139546656768), and 101 in envoy-go-race's race step (job
+139546656393). Each push to main fills the entry with the test binary of every package of the
+envoy module, so it holds every module those steps download and the plain objects of every
+package they build. The two plain jobs build cmd/dispatch's tests under `-tags memory` and
+`-tags multiprocess`, so they reuse the entry's modules and the objects of the packages the tag
+leaves as they are; the two race jobs reuse its modules, and the ceiling step's plain `go run`,
+since a `-race` build compiles every package again. Each of the four runs its retried
+`go mod download` after the restore and before the ceiling step (dispatch://INFRA-1545), so a
+module the entry lacks comes down there, retried, and not inside a build or a test. The restore
+costs the entry's download: 17 to 21 s in envoy-go on the same arm64 runner (12 jobs of that
+window, before #5600 took the
+module zips out of the entry, 676 MiB at 2026-11-26T02:56Z). envoy-go-race-docs and
+envoy-session-stall restore go-envoy, 192 MiB in 1 to 4 s, after which their ceiling step
+downloaded 9 modules and their tests 2 and none, fewer seconds than go-envoy-test's larger
+download would add, so they keep go-envoy.
+
 ## The server-change soak
 
 The server-change soak (packages/envoy/cmd/listener/server_change_test.go, INFRA-547): it

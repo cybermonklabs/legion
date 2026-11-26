@@ -59,9 +59,11 @@
 # connection and then sends nothing would otherwise hang the step for as long as the job has;
 # the comment at the call says why the attempt carries both bounds and why the inner one is the
 # one that decides. The ladder runs through gh-read.sh's gh_wait_reset, which waits out a spent
-# API budget or a secondary rate limit only when the wait and one more ladder fit within the
-# step's STEP_TIMEOUT_MINUTES and the job's JOB_TIMEOUT_MINUTES, then runs the ladder once more,
-# and otherwise fails by name at once: a rate limit lasts longer than the ladder's 150 s.
+# API budget only when the wait and one more ladder fit within the step's STEP_TIMEOUT_MINUTES
+# and the job's JOB_TIMEOUT_MINUTES, then runs the ladder once more, and otherwise fails by name
+# at once: a rate limit lasts longer than the ladder's 150 s. A paginated read leaves it no answer
+# to read, so it reads the spent budget off GitHub's rate_limit route, and a secondary rate limit,
+# whose retry-after is in that unread answer, is one of the ladder's failed attempts.
 # A read refused after the ladder names the endpoint, which attempt decided the failure - the
 # last one the ladder made - and what that attempt did, what each earlier attempt did where it
 # did something else, how many attempts that was and the run attempt, and says in those words

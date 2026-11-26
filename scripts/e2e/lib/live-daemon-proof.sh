@@ -60,7 +60,7 @@
 # shellcheck source-path=SCRIPTDIR source=run-verdict.sh
 . "$root/scripts/e2e/lib/run-verdict.sh"
 # lib/loopback-dsn.sh holds require_loopback_dsn, the guard prerequisites reads LEGION_TEST_PG_DSN
-# with. It needs nothing of this file's.
+# with, through require_loopback_env. It needs nothing of this file's.
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 
@@ -148,15 +148,16 @@ live_daemon_proof() {
   trap cleanup EXIT
 
   begin prerequisites
-  [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+  [ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
     refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
   for tool in go awk python3; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
   # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
-  # these three, and why the call comes after the tool check above.
+  # these three, and why the call comes after the tool check above. The call names the variable
+  # and not its value (require_loopback_env), so a run under `bash -x` traces no DSN.
   unset PGHOSTADDR PGSERVICE PGSERVICEFILE
-  require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops a database there" ||
+  require_loopback_env db_host LEGION_TEST_PG_DSN "this run creates and drops a database there" ||
     refuse "$db_host"
   note "go $(go version | awk '{print $3}'), store LEGION_TEST_PG_DSN (set; not printed)"
   nats_bin=${LEGION_E2E_NATS_BIN:-}

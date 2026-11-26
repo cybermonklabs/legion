@@ -280,7 +280,8 @@ timed_waits() {
 # around the wrapper, and the wrapper's `timeout 30` around gh. This stand-in records the whole
 # argument list of both, one file per call, whether or not it stands in for that call, so
 # `timeout_calls` and `ladder_args` read the ladder's bound and `gh_bounds` and `gh_bound_args`
-# read the wrapper's, in every drive in this file.
+# read the wrapper's, in every drive in this file. gh-read.sh's own rate_limit read is the one
+# call it does not record (the last paragraph here).
 #
 # Standing in is what is opt-in, and the reason is not the recording: a stand-in every case
 # used would still catch a dropped bound through `timeout_calls`. It is that a call it stands
@@ -305,9 +306,17 @@ timed_waits() {
 # own n-th call rather than attempt n + 1, and in a case that mixes the two the two
 # numberings drift apart. `fixture` removes those files again, and a call no file was written
 # for runs the real timeout this execs, so that attempt's gh is bounded as the script asked.
+#
+# gh-read.sh's own read of the rate_limit route, `timeout 30 gh api rate_limit ...`, is no
+# attempt: the helper makes it once, after a ladder whose last attempt exited 1, since a paginated
+# read leaves it no answer to read. It goes to the real timeout unrecorded, and the stand-in gh
+# answers it apart.
 cat > "$work/bin/timeout" <<TIMEOUT
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "\${2:-} \${3:-} \${4:-}" = "gh api rate_limit" ]; then
+  exec $real_timeout "\$@"
+fi
 calls=\$(find "$work/timeout-calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/timeout-calls/call.\$calls"
 if [ "\${2:-}" != gh ]; then
@@ -908,9 +917,10 @@ TRACE
 # RATE_LIMITED: the jobs read refused for the repository's spent API budget, as run 44995550797's
 # merge job was at 07:10:31Z on 2026-11-22 (`gh: API rate limit exceeded for installation (HTTP
 # 403)`), where main's ladder made its three attempts in seconds and decided the read failed. The
-# read is retry_fetch's ladder run through gh-read.sh's gh_wait_reset, which reads the reset from
-# `gh api rate_limit` once the ladder's five attempts are refused, and waits for it only when the
-# reset, one more ladder (5 x 40 + 150 = 350 s) and 30 s end before the job's limit. The
+# read is retry_fetch's ladder run through gh-read.sh's gh_wait_reset. A paginated read leaves it
+# no answer of its own to read, so once the ladder's five attempts are refused it reads the spent
+# budget and its reset from `gh api rate_limit`, not from gh's words, and waits for the reset only
+# when the reset, one more ladder (5 x 40 + 150 = 350 s) and 30 s end before the job's limit. The
 # stand-in `sleep` records every wait, the ladder's and the reset's, and returns at once, so no
 # case waits either out; `waited` reads their seconds in the order they were asked.
 rate_limited="gh: API rate limit exceeded for installation (HTTP 403)"

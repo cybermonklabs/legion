@@ -1533,23 +1533,33 @@ that step carried. The rule's two-minute floor does not bind. Main's #4987 has t
 run packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
 full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
 counted at a whole second, (4 + 1) x 1.15 = 5.75 s and 120 + 5.75 = 125.75 s, still the 3 min.
+Main's #5154 has gh-read.sh read the rate limit of a paginated read off GitHub's rate_limit
+route, bounded by its own `timeout 30`, after each of that ladder's attempts that exits 1. So
+each attempt took up to 30 + 30 s, the ladder 3 x 60 + 10 + 20 = 210 s at most, and
+210 + 5.75 = 215.75 s, at the next whole minute above, the 4 min main's step carries.
 
-A spent API budget or a secondary rate limit is not in the ladder's bound: gh-read.sh's
-gh_wait_reset, which the read's ladder runs through, waits for GitHub to answer again only when
-that time, one more run of the ladder (5 x 40 + 150 = 350 s) and 30 s end before this step's
-limit and the job's, which the job's env passes as JOB_TIMEOUT_MINUTES and the step's as
-STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait and the limit. So
-the wait never outlives either budget, and the budgets need no room for it: a step that would
-have to wait past them fails by name instead, and a re-run after the reset reads the jobs again.
-In "Reading one, the rows" no wait can ever fit: that margin, 350 + 30 = 380 s, is more than the
-step's whole 6 min, 360 s, so a rate-limited jobs read there fails by name after its one ladder.
-The key stays at 6 min all the same: a re-run after the reset reads the jobs again.
+A spent API budget is not in the ladder's bound: when the rate_limit route shows the core budget
+this read spends at 0, gh-read.sh's gh_wait_reset, which the read's ladder runs through, waits
+for its reset only when that time, one more run of the ladder (5 x 40 + 150 = 350 s) and 30 s
+end before this step's limit and the job's, which the job's env passes as JOB_TIMEOUT_MINUTES
+and the step's as STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait
+and the limit. So the wait never outlives either budget, and the budgets need no room for it: a
+step that would have to wait past them fails by name instead, and a re-run after the reset
+reads the jobs again. The read is paginated, so gh-read.sh has no answer of its own to read: it
+asks the rate_limit route, bounded by its own `timeout 30`, once, after a ladder whose last
+attempt exited 1, and the step's budget holds those 30 s on top of the ladder's 350 s. In
+"Reading one, the rows" no wait can ever fit: the first ladder's own waits take 150 s before
+the helper decides, and that margin, 350 + 30 = 380 s, on top of them is more than the step's
+whole 7 min, 420 s, so a rate-limited jobs read there fails by name after its one ladder. The
+key stays at 7 min all the same: a re-run after the reset reads the jobs again. A secondary rate
+limit is not waited for on this read: GitHub names its wait in the answer's retry-after, which a
+paginated read leaves unread, so it is one of the ladder's failed attempts.
 
-So by the rule in this file's head the job's budget is the sum of its step budgets, that
-one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
+So by the rule in this file's head main's job budget is the sum of its step budgets, that
+one step's 240 s, plus the measured maximum of every step without one: 40 s less reading
 one's 4 s is 36 s, and 1 s for "Report a refused blob download as a refused read", which
 runs one `echo` and has no measurement of its own - 1 s is what this job's other
-one-command steps measure. 180 + 37 = 217 s, which is 3 min 37 s, so 4 min. The job's
+one-command steps measure. 240 + 37 = 277 s, which is 4 min 37 s, so 5 min. The job's
 budget is above the step's, so the step's own budget fires first and names the step,
 which is the reason this file's head gives for putting budgets on steps.
 
@@ -1563,21 +1573,22 @@ Four steps carry a budget of their own since dispatch://INFRA-1545, each from it
 arithmetic rather than a measured maximum: the workspace install, 5 x 180 + 150 = 1050 s
 -> 18 min; the two that run .github/scripts/dispatch-browser-run-reads.sh - "Reading one, the
 rows", through .github/scripts/dispatch-browser-reading-rows.sh, and "Report a refused blob
-download as a refused read" - at 6 min each, which is what rule 8 of
-.github/scripts/check-download-retry.sh asks of any step that reaches that file, since it
-credits the file's whole ladder to every step that runs it whichever mode the step asks for,
-5 x 40 + 150 = 350 s, and "Reading one, the rows" adds its own 5.75 s of work above, 355.75 s,
-still under 6 min; and the ci-ok report, 2460 s -> 43 min, the Budgets note's figure. Of the
-two that run that file only "Reading one, the rows" waits on a host at all: `blobs-refused` is
-one `echo` and makes no request. The measured half of the rule gives this job the 40 s of step
-maxima above, which is under the two-minute floor, and its first term is main's own 4 minutes,
-240 s, kept rather than tightened: it stands far above the 34 s this job measured, so it only
-loosens this ceiling. To it the rule adds the arithmetic of this job's slowest retried step,
-the setup-bun step at 3416 s, above the workspace install's 1050 s, the ci-ok report's 2460 s
-and each reading's 350 s: 240 + 3416 = 3656 s -> 61 min, which stands above the largest step
-budget of this job, the setup-bun step's own 57. The ladder "Reading one, the rows" waits on is
-.github/scripts/ci-retry.sh's now, at 40 s an attempt, where it was gh-read.sh's three attempts
-bounded at 30 s.
+download as a refused read" - from the ladder rule 8 of
+.github/scripts/check-download-retry.sh credits to any step that reaches that file, whichever
+mode the step asks for, 5 x 40 + 150 = 350 s: the report at 6 min, and "Reading one, the rows"
+at 7 min, since it adds the 30 s bound of gh-read.sh's one rate_limit read after a ladder whose
+last attempt exited 1 (the paragraph above) and its own 5.75 s of work, 385.75 s; and the ci-ok
+report, 2460 s -> 43 min, the Budgets note's figure. Of the two that run that file only "Reading
+one, the rows" waits on a host at all: `blobs-refused` is one `echo` and makes no request. The
+measured half of the rule gives this job the 40 s of step maxima above, which is under the
+two-minute floor, and its first term is main's own 5 minutes, 300 s, kept rather than
+tightened: it stands far above the 34 s this job measured, so it only loosens this ceiling. To
+it the rule adds the arithmetic of this job's slowest retried step, the setup-bun step at
+3416 s, above the workspace install's 1050 s, the ci-ok report's 2460 s, the 380 s of "Reading
+one, the rows" and the report's 350 s: 300 + 3416 = 3716 s -> 62 min, which stands above the
+largest step budget of this job, the setup-bun step's own 57. The ladder "Reading one, the rows"
+waits on is .github/scripts/ci-retry.sh's now, at 40 s an attempt, where it was gh-read.sh's
+three attempts bounded at 30 s.
 
 ## Why every leg's blob report is downloaded without merge-multiple, and the two layouts it lands in
 

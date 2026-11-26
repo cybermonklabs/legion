@@ -293,7 +293,8 @@ func seedAcceptingChild(t *testing.T, pool *pgxpool.Pool, key, parent string, at
 // its acceptance is gone (dispatch://INFRA-980, "A parent is accepted after its children"): an
 // issue beneath that is still in the workflow now refuses the sign-off
 // (TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow), since a parent is accepted only once
-// no issue beneath it is still in the workflow.
+// no issue beneath it is still in the workflow, and once its checks pass on a base commit that
+// carries its children's merges.
 func TestSignOffIsAcceptedWhenNothingBeneathIsInTheWorkflow(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

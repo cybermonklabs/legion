@@ -196,10 +196,11 @@ GREP
 # holding `N SECONDS` answers the Nth GraphQL call, and every one after it until SECONDS have
 # passed since, as GraphQL answers a spent budget (HTTP 200, an error of type RATE_LIMITED, "API
 # rate limit already exceeded", gh failing on it), the budget back SECONDS after that Nth call,
-# and with `N SECONDS type` the same error with words that name no rate limit, so only its type
-# tells. GET /rate_limit (`gh api rate_limit --jq <filter>`, as gh-read.sh reads it) answers that
-# reset for the graphql budget at 0 until it passes, and both budgets whole otherwise. The REST
-# routes it answers are the ones the script still reads, each from a file a case
+# and with `N SECONDS type` the same error with words that name no rate limit (gh-read.sh reads
+# neither: the rate_limit route decides). GET /rate_limit (`gh api rate_limit --jq <filter>`, as
+# gh-read.sh reads it) answers that reset for the graphql budget at 0 until it passes, and both
+# budgets whole otherwise. The REST routes it answers are the ones the script still reads, each
+# from a file a case
 # writes and otherwise as GitHub answers a repository with no such record: the compare route, for
 # a comparison GraphQL answered short, matched whole for the event's own base...head and refused
 # without --paginate (losing either paging token would pass on a list GitHub cut short at 250
