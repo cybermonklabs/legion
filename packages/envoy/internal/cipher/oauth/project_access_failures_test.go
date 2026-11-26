@@ -103,7 +103,7 @@ func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			server := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{project: {Visibility: "private", Owner: person}},
 				map[string]string{person: projectaccess.MemberRestricted})
-			client := projectaccess.New(server.URL, ciphertoken.NewAccountToken(c.path(t)), nil)
+			client := projectaccess.New(server.URL, ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", c.path(t)), nil)
 			if _, err := client.Access(context.Background(), project, person); !errors.Is(err, dispatchread.ErrBrokerRefused) || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_TOKEN_FILE") {
 				t.Fatalf("Access with an unreadable account token = %v, want ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE", err)
 			}

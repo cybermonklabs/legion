@@ -41,7 +41,11 @@ body: |-
   release records itself, so none of its rounds writes such a record after the settle.
   A notice, role message, phase-ended message, hook prompt, merge-queue removal message, merge
   holds change message or merge-forward message held through the release reaches its claim once
-  the next boot's start of it holds its role again. The controller's `retry`, `resume_agent` and
+  the next boot's start of it holds its role again. The hour a phase-ended message or a hook prompt
+  waits for its role's session runs from that session's ready after the boot's start, and none of
+  it runs while the release holds the row. A claim the release stopped keeps its role in the role
+  holders Dispatch reads, since the next boot starts it on the same session, so neither its stop
+  nor that start changes Dispatch's set. The controller's `retry`, `resume_agent` and
   `replace_pod` are refused `409 PROJECT_RELEASED` until that boot, as the operator's starts are;
   its `stop` and `suspend` still run.
   While the project is paused, or while a pod that a pause stopped is still held after the resume,

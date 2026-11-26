@@ -75,8 +75,10 @@ also taken, as the one issuer of a deployment of one cluster, with no name. The 
 token's `iss` claim before it trusts the token, and checks the token against the keys of that
 issuer alone. It refuses a token whose issuer the list does not name. The tokens of every issuer
 carry the one audience `BROKER_K8S_OIDC_AUDIENCE`. The
-broker refuses to start on a malformed entry, on two entries of one name or of one URL, and on a
-bare URL beside named entries.
+broker refuses to start on a malformed entry, on two entries of one name or of one URL, on a
+bare URL beside named entries, and on an issuer URL that holds a user name or a password, an `@`
+after its host, or a query or a fragment. Each refusal names the setting and the entry by its
+place in the list, never any text of the value, where a credential could have been pasted.
 
 The broker reads each issuer in the background from its start, so it starts and serves while
 one of them cannot be read. Until it reads an issuer, it answers the tokens of that issuer
@@ -321,6 +323,12 @@ The broker refuses to start, naming the variable, when one is missing, malformed
 and also while a variable it no longer reads is still set. `BROKER_DATABASE_URL` is the only
 database variable: a password goes in the URL itself, URL-escaped, and on Amazon RDS the broker
 needs none ([Signing in to RDS by IAM token](#signing-in-to-rds-by-iam-token)).
+A URL holding an `@` after its user name and password is refused by the variable's name alone,
+since Postgres would read the rest of a password as the host, the database or a query and print it:
+write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as
+`%2F`.
+A database name holding an `@` is refused however it is written, and so is a host holding a `:`
+that is neither a socket directory nor an IP address (`host=db:5432`; give the port as `port=`).
 
 A secret owned by a service rather than a person needs that service registered.
 `BROKER_SERVICES` lists each service with the Kubernetes service accounts its pods run as,

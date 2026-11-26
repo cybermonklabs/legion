@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -881,13 +882,16 @@ const releaseFarSideError = `Delete "https://user:secret@api.example/apis?labelS
 	"\x00" + ` the request`
 
 // releaseFarSideKept is releaseFarSideError as the store keeps a far side's error text
-// (storetext.FarSideError): the URL without its userinfo and its query, the NUL as U+FFFD, and
-// every other word as written.
-const releaseFarSideKept = `Delete "https://api.example/apis": the server refused` + "\uFFFD" + ` the request`
+// (storetext.FarSideError): the URL's authority, which holds a userinfo, written as
+// redact.URLWithCredentials with nothing of it kept (redact.URLCredentials since
+// cybermonklabs/legion#4796, which before it removed the userinfo alone and kept the host), its
+// query removed, the NUL as U+FFFD, and every other word as written.
+const releaseFarSideKept = `Delete "https://` + redact.URLWithCredentials + `/apis": the server refused` + "\uFFFD" + ` the request`
 
 // releaseFarSideLastWords is how the log keeps the last words of releaseFarSideLong, the
-// release's longer far side's error: the URL they name without its userinfo and its query.
-const releaseFarSideLastWords = `the last request went to "https://api.example/apis" and these are the last words`
+// release's longer far side's error: the URL they name with its authority, which holds a
+// userinfo, written as redact.URLWithCredentials, and its query removed.
+const releaseFarSideLastWords = `the last request went to "https://` + redact.URLWithCredentials + `/apis" and these are the last words`
 
 // releaseFarSideLong is a far side's error text longer than the store keeps of one
 // (storetext.FarSideErrorRunes): releaseFarSideError, then a relayed command's stderr, then last

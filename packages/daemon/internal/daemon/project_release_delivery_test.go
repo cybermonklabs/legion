@@ -36,18 +36,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// releaseDeliveries is the three rows that publish to a role's own topic and that the outbox ends
-// when nobody holds it: each names its recipient and builds its row for that recipient's claim.
+// releaseDeliveries is the three rows that publish to a role's own topic and that a role nobody
+// holds does not reach: each names its recipient and builds its row for that recipient's claim.
+// kept is a phase-ended message's and a hook prompt's row, which keeps its message for the role
+// (publishKeptToRole) where a role message's row ends (nobodyHolds says each rule).
 var releaseDeliveries = []struct {
 	name    string
 	role    claim.Role
+	kept    bool
 	payload func(claim.Token) record.OutboxPayload
 }{
-	{"a role message", claim.RoleImplementer, func(token claim.Token) record.OutboxPayload {
+	{"a role message", claim.RoleImplementer, false, func(token claim.Token) record.OutboxPayload {
 		return record.RoleMessage{Role: string(token), Body: "CI settled at the head"}
 	}},
-	{"a phase-ended message", claim.RoleTester, func(claim.Token) record.OutboxPayload { return endedByTheWait }},
-	{"a hook prompt", claim.RoleImplementer, func(claim.Token) record.OutboxPayload { return firedHook }},
+	{"a phase-ended message", claim.RoleTester, true, func(claim.Token) record.OutboxPayload { return endedByTheWait }},
+	{"a hook prompt", claim.RoleImplementer, true, func(claim.Token) record.OutboxPayload { return firedHook }},
 }
 
 // releaseDeliveryRig is an outbox over an isolated database holding LEGION-208 in implementing,
@@ -95,8 +98,9 @@ func (r *releaseDeliveryRig) boot(t *testing.T, claims ...supervise.Claim) {
 	}
 	sup.OnDurableState((&workflowRuntime{pool: r.pool, records: r.records, log: quietLogger(), releaseStopped: stopped}).claimDurableState)
 	r.sup = sup
+	// The tree store is the one a kept role message reads a role's open resume from (wakeComing).
 	r.runner = &outbox{dispatchProject: "LEGION", pool: r.pool, records: r.records, supervisor: sup, project: "legion",
-		notices: r.publisher, log: quietLogger(), now: r.clock.Now, releaseStopped: stopped}
+		notices: r.publisher, log: quietLogger(), now: r.clock.Now, releaseStopped: stopped, trees: r.st}
 }
 
 // recordEndedRelease writes a project release that stopped each of stopped's claims as the
@@ -193,13 +197,47 @@ func (r *releaseDeliveryRig) endsUndelivered(t *testing.T, when string, attempts
 	}
 }
 
+// nobodyHolds runs the row and requires the outbox's rule for a role nobody holds, which is the
+// row's kind's: a role message is published once, refused, and finished undelivered
+// (endsUndelivered). A phase-ended message or a hook prompt (kept) is its own row's to keep
+// (publishKeptToRole): published once and refused, it waits for a session to hold the role within
+// its hour, but for a role whose claim failed or retired (ended), which no session holds again, so
+// its row ends before any publish (keptRoleMessageEnded).
+func (r *releaseDeliveryRig) nobodyHolds(t *testing.T, kept, ended bool, when string, attemptsBefore, deliveredBefore int) {
+	t.Helper()
+	if !kept {
+		r.endsUndelivered(t, when, attemptsBefore, deliveredBefore)
+		return
+	}
+	r.run(t)
+	published := attemptsBefore + 1
+	if ended {
+		published = attemptsBefore
+	}
+	if attempts, delivered := r.publisher.snapshot(); attempts != published || len(delivered) != deliveredBefore {
+		t.Fatalf("%s: publish attempts = %d with %d delivered, want %d and %d", when, attempts, len(delivered), published, deliveredBefore)
+	}
+	var held int
+	var lastError string
+	if err := r.pool.QueryRow(context.Background(), `select count(*), coalesce(max(last_error), '') from outbox
+		where issue = 'LEGION-208' and kind in ('phase_ended', 'hook_prompt')`).Scan(&held, &lastError); err != nil {
+		t.Fatalf("%s: read the kept message's row: %v", when, err)
+	}
+	switch {
+	case ended && held != 0:
+		t.Fatalf("%s: %d kept message rows left, want the row ended: no session of a failed or retired claim holds the role again", when, held)
+	case !ended && (held != 1 || !strings.Contains(lastError, "waits for a session to hold")):
+		t.Fatalf("%s: %d kept message rows left with %q, want the row waiting for a session to hold the role", when, held, lastError)
+	}
+}
+
 // A role message, a phase-ended message and a hook prompt for a claim the boot found stopped by
 // the project release each wait while that claim has not come back: before the boot's start of it
 // has run, and while the start's process is launching, connected and registered, when no session
-// holds the role's topic and a publish would end the row undelivered. Once the claim has stood
-// ready past the first-turn bound its session holds the role, and the row is published to it. The
-// claim is then out of the set, so when its process dies later and it is relaunching, a new row
-// nobody holds ends undelivered, as it does for any other claim.
+// holds the role's topic and a publish would be refused. Once the claim has stood ready past the
+// first-turn bound its session holds the role, and the row is published to it. The claim is then
+// out of the set, so when its process dies later and it is relaunching, a new row meets the rule
+// for a role nobody holds, as it does for any other claim (nobodyHolds).
 func TestADeliveryHeldThroughAProjectReleaseReachesItsClaimAfterItsStart(t *testing.T) {
 	t.Parallel()
 	for _, tc := range releaseDeliveries {
@@ -256,7 +294,7 @@ func TestADeliveryHeldThroughAProjectReleaseReachesItsClaimAfterItsStart(t *test
 			}
 			rig.publisher.setAbsent(topic)
 			rig.enqueue(t, tc.payload(stored.Token))
-			rig.endsUndelivered(t, "while the claim that came back relaunches", attempts, len(delivered))
+			rig.nobodyHolds(t, tc.kept, false, "while the claim that came back relaunches", attempts, len(delivered))
 		})
 	}
 }
@@ -500,7 +538,7 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForItsClaimAcrossARestart(t *te
 // A claim the newest release stopped whose session has held its role since that release ended is
 // not waited for after a restart: one that had a turn since and is relaunching now, and one whose
 // ready the store holds from longer ago than the first-turn bound. Each delivery for them meets the
-// rule for a role nobody holds and ends undelivered.
+// rule for a role nobody holds (nobodyHolds).
 func TestADeliveryForAClaimThatHeldItsRoleSinceTheReleaseEndsAfterARestart(t *testing.T) {
 	t.Parallel()
 	for _, tc := range releaseDeliveries {
@@ -529,7 +567,7 @@ func TestADeliveryForAClaimThatHeldItsRoleSinceTheReleaseEndsAfterARestart(t *te
 				rig.publisher.setAbsent(notify.RoleTopicPrefix + string(held.Token))
 				rig.enqueue(t, tc.payload(held.Token))
 
-				rig.endsUndelivered(t, "for a claim that "+since.name, 0, 0)
+				rig.nobodyHolds(t, tc.kept, false, "for a claim that "+since.name, 0, 0)
 			})
 		}
 	}
@@ -662,7 +700,7 @@ func TestAStartTakenOutByAnotherRolesStartStillStartsTheClaimTheProjectReleaseSt
 
 // A claim no project release stopped keeps the outbox's rule for a role nobody holds while it
 // comes up: the boot read it launching or registered, so it is not in the set, and its row is
-// published once, refused, and finished undelivered.
+// published once, refused, and handled as its kind handles a role nobody holds (nobodyHolds).
 func TestADeliveryForAClaimNoReleaseStoppedEndsWhenNobodyHoldsItsRole(t *testing.T) {
 	t.Parallel()
 	for _, tc := range releaseDeliveries {
@@ -676,7 +714,7 @@ func TestADeliveryForAClaimNoReleaseStoppedEndsWhenNobodyHoldsItsRole(t *testing
 				rig.publisher.setAbsent(notify.RoleTopicPrefix + string(held.Token))
 				rig.enqueue(t, tc.payload(held.Token))
 
-				rig.endsUndelivered(t, "for a claim no release stopped", 0, 0)
+				rig.nobodyHolds(t, tc.kept, false, "for a claim no release stopped", 0, 0)
 			})
 		}
 	}
@@ -684,7 +722,8 @@ func TestADeliveryForAClaimNoReleaseStoppedEndsWhenNobodyHoldsItsRole(t *testing
 
 // A claim the boot found stopped by the project release that will not come back holds no row: one
 // that has failed, one that has retired, and one an operator or the daemon has suspended since
-// each leave the row to the rule for a role nobody holds, which ends it.
+// each leave the row to the rule for a role nobody holds (nobodyHolds), under which a kept
+// message to a failed or retired claim ends before any publish.
 func TestADeliveryStopsWaitingForAStoppedClaimThatWillNotComeBack(t *testing.T) {
 	t.Parallel()
 	for _, tc := range releaseDeliveries {
@@ -707,7 +746,8 @@ func TestADeliveryStopsWaitingForAStoppedClaimThatWillNotComeBack(t *testing.T) 
 				rig.publisher.setAbsent(notify.RoleTopicPrefix + string(held.Token))
 				rig.enqueue(t, tc.payload(held.Token))
 
-				rig.endsUndelivered(t, "for a stopped claim that "+now.name, 0, 0)
+				ended := now.state == supervise.StateFailed || now.state == supervise.StateRetired
+				rig.nobodyHolds(t, tc.kept, ended, "for a stopped claim that "+now.name, 0, 0)
 			})
 		}
 	}

@@ -14,8 +14,10 @@ import (
 )
 
 // The publication of an issue's role sessions to Dispatch is an outbox row the daemon's board lane
-// runs (record.RoleHoldersPublish, PUT /api/v1/issues/{key}/role-holders), and it reads the live
-// set from the claims when it runs. Once the daemon has turned the publication on
+// runs (record.RoleHoldersPublish, PUT /api/v1/issues/{key}/role-holders), and it reads from the
+// claims when it runs the set of sessions whose claims hold their roles (supervise.HoldsRole): a
+// claim the idle release suspended is in it, and so is one the project release stopped. Once the
+// daemon has turned the publication on
 // (PublishRoleHolders), the claim write that changes the session holding a role queues it in that
 // write's own transaction (putClaim), where every write of a claim's state and session converges,
 // so the change and the obligation to publish it commit together or not at all: no change of a
@@ -23,7 +25,7 @@ import (
 // end whose own write failed with an error the machine owes is published when the repair that
 // makes it good lands, whichever decision makes it. An end whose failed write is not owed is
 // written again only when a later decision retires a task the claim still holds, which writes the
-// claim with it; until then the store, and so Dispatch's set, keeps the claim live
+// claim with it; until then the store, and so Dispatch's set, keeps the claim holding its role
 // (dispatch://INFRA-4099).
 //
 // The row is keyed by the issue, so it is queued only for an issue of the claim's own project
@@ -49,11 +51,12 @@ func holdsIssueRole(c supervise.Claim) bool {
 }
 
 // roleHolder is the session a claims row names as the holder of its role: its session while its
-// state has a registered agent with a running process (supervise.HoldsCapability), "" in every
-// other state. It is the row's part of what a publication sends (record.Postgres.LiveRoleHolders,
-// whose state list a test holds to HoldsCapability).
-func roleHolder(state supervise.ClaimState, session string) string {
-	if !supervise.HoldsCapability(state) {
+// state and suspension source hold the role (supervise.HoldsRole), "" otherwise. It is the row's
+// part of what a publication sends (record.Postgres.RoleHolders, which reads the same rule), so a
+// write that moves the claim between two states that both hold the role, such as the idle
+// release's suspension and the launch that resumes its session, changes no holder.
+func roleHolder(state supervise.ClaimState, by supervise.SuspendSource, session string) string {
+	if !supervise.HoldsRole(state, by) {
 		return ""
 	}
 	return session
@@ -64,19 +67,19 @@ func roleHolder(state supervise.ClaimState, session string) string {
 // claim the store does not hold yet names none. A claim's first row is its admission (AdmitClaim),
 // which is globally serialized, so two first writes of one claim never race past this read.
 func storedRoleHolder(ctx context.Context, tx pgx.Tx, c supervise.Claim) (string, error) {
-	var state, session string
-	err := tx.QueryRow(ctx, `select state, session from claims where token = $1 for update`, string(c.Token)).Scan(&state, &session)
+	var state, by, session string
+	err := tx.QueryRow(ctx, `select state, suspended_by, session from claims where token = $1 for update`, string(c.Token)).Scan(&state, &by, &session)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("read the role holder the row of %s names: %w", c.Token, err)
 	}
-	return roleHolder(supervise.ClaimState(state), session), nil
+	return roleHolder(supervise.ClaimState(state), supervise.SuspendSource(by), session), nil
 }
 
 // EnqueueRoleHolders writes the one role_holders_publish row of issue, due at nextAt, and answers
-// whether it wrote it. The payload names the issue alone, since the executor reads the live set
+// whether it wrote it. The payload names the issue alone, since the executor reads the set
 // when the row runs, so a row the outbox already holds is made due again rather than queued
 // beside: its next_at moves to the earlier of the two, and its attempts and its last error stay.
 // The unique partial index of 20261116165926_role_holders_publish makes one row per issue the

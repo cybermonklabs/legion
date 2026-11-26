@@ -2267,10 +2267,12 @@ func refusedNaming(t *testing.T, e map[string]string, want ...string) {
 
 // TestTheK8sIssuerSettingTakesNamedIssuers pins BROKER_K8S_OIDC_ISSUER's list: one bare URL loads
 // one issuer with no name, with the audiences and the account maps a deployment of one cluster
-// holds; named entries load in their order; and the setting refuses, naming itself, a malformed
-// entry, a repeated name, a repeated URL and a bare URL beside named entries.
-// BROKER_EXCHANGE_K8S_ISSUER names the exchange's issuers, which load in its order, may be left
-// out beside one issuer, and refuses, naming itself, an exchange whose issuers are unclear.
+// holds; named entries load in their order; and the setting refuses, naming itself and the entry
+// by its place in the list and holding no URL of the value, a malformed entry, a repeated name, a
+// repeated URL, a bare URL beside named entries, and an entry's URL holding a credential
+// (oidc.IssuerRefusal). BROKER_EXCHANGE_K8S_ISSUER names the exchange's issuers, which load in its
+// order, may be left out beside one issuer, and refuses, naming itself, an exchange whose issuers
+// are unclear.
 func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 	t.Run("one bare URL loads one issuer with no name", func(t *testing.T) {
 		e := validEnv()
@@ -2361,6 +2363,10 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 	})
 
 	const issuerSetting, exchangeSetting = "BROKER_K8S_OIDC_ISSUER", "BROKER_EXCHANGE_K8S_ISSUER"
+	// The credentials are made up, and joined at run time as TestLoadRefusesAnIssuerHoldingACredential
+	// joins them.
+	const user, secret = "madeUpIssuerUser0123", "madeUpIssuerSecret0123"
+	userinfo := user + ":" + secret + "@"
 	for _, c := range []struct {
 		name     string
 		settings map[string]string
@@ -2369,42 +2375,52 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 		{
 			name:     "a malformed entry: a name in capitals",
 			settings: map[string]string{issuerSetting: "First=https://oidc.first.example,second=https://oidc.second.example"},
-			want:     []string{issuerSetting, `"First=https://oidc.first.example"`},
+			want:     []string{issuerSetting + " entry 1 must be <name>=<issuer URL>"},
 		},
 		{
 			name:     "a malformed entry: an empty name",
 			settings: map[string]string{issuerSetting: "=https://oidc.first.example,second=https://oidc.second.example"},
-			want:     []string{issuerSetting, `"=https://oidc.first.example"`},
+			want:     []string{issuerSetting + " entry 1 must be <name>=<issuer URL>"},
 		},
 		{
 			name:     "a malformed entry: a name longer than 64",
 			settings: map[string]string{issuerSetting: strings.Repeat("a", 65) + "=https://oidc.first.example,second=https://oidc.second.example"},
-			want:     []string{issuerSetting, strconv.Quote(strings.Repeat("a", 65) + "=https://oidc.first.example")},
+			want:     []string{issuerSetting + " entry 1 must be <name>=<issuer URL>"},
 		},
 		{
 			name:     "a malformed entry: a URL that is not absolute",
 			settings: map[string]string{issuerSetting: "first=oidc.first.example,second=https://oidc.second.example"},
-			want:     []string{issuerSetting, `"first=oidc.first.example"`},
+			want:     []string{issuerSetting + " entry 1 must be <name>=<issuer URL>"},
 		},
 		{
 			name:     "a malformed entry: an empty entry",
 			settings: map[string]string{issuerSetting: "first=https://oidc.first.example,,second=https://oidc.second.example"},
-			want:     []string{issuerSetting, `got ""`},
+			want:     []string{issuerSetting + " entry 2 must be <name>=<issuer URL>"},
 		},
 		{
 			name:     "a repeated name",
 			settings: map[string]string{issuerSetting: "first=https://oidc.first.example,first=https://oidc.second.example"},
-			want:     []string{issuerSetting, "first", "https://oidc.first.example", "https://oidc.second.example"},
+			want:     []string{issuerSetting + " entries 1 and 2 give the name first to two issuers"},
 		},
 		{
 			name:     "a repeated URL",
 			settings: map[string]string{issuerSetting: "first=https://oidc.first.example,second=https://oidc.first.example"},
-			want:     []string{issuerSetting, "https://oidc.first.example", "first", "second"},
+			want:     []string{issuerSetting + " entries 1 and 2 name one issuer URL, as first and as second"},
 		},
 		{
 			name:     "a bare URL beside named entries",
 			settings: map[string]string{issuerSetting: "https://oidc.first.example,second=https://oidc.second.example"},
-			want:     []string{issuerSetting, `"https://oidc.first.example"`},
+			want:     []string{issuerSetting + " entry 1 gives its issuer no name beside other entries"},
+		},
+		{
+			name:     "an entry's URL holding a user name and a password",
+			settings: map[string]string{issuerSetting: "first=https://oidc.first.example,second=https://" + userinfo + "oidc.second.example"},
+			want:     []string{issuerSetting + " entry 2 cannot be read: it holds a user name or a password"},
+		},
+		{
+			name:     "an entry's URL holding a token in its query",
+			settings: map[string]string{issuerSetting: "first=https://oidc.first.example/?token=" + secret + ",second=https://oidc.second.example"},
+			want:     []string{issuerSetting + " entry 1 cannot be read: it holds a query or a fragment"},
 		},
 		{
 			// An empty value is an unset one to Load.
@@ -2447,6 +2463,10 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 			e := namedIssuersEnv()
 			maps.Copy(e, c.settings)
 			refusedNaming(t, e, c.want...)
+			// No refusal of the list quotes a URL of it, where a credential can be pasted.
+			if _, err := Load(env(e)); strings.Contains(err.Error(), "oidc.") || strings.Contains(err.Error(), "madeUp") {
+				t.Fatalf("Load refused with %q, which quotes the setting's value", err)
+			}
 		})
 	}
 }
@@ -3477,13 +3497,48 @@ func TestLoadRefusesThePlainSignInSecret(t *testing.T) {
 
 // TestLoadRefusesASignInIssuerThatIsNotHTTPS pins that the issuer, which a sign-in's code
 // exchange sends the client secret to, is an absolute https URL, with http allowed only to a
-// loopback host.
+// loopback host. The refusal names the setting and never the value.
 func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 	for _, bad := range []string{"http://accounts.example.com", "http://10.0.0.1:5556", "http://127.0.0.1.example.com", "accounts.example.com", "ftp://accounts.example.com", "https://"} {
 		e := validEnv()
 		e["BROKER_SIGNIN_ISSUER"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") || strings.Contains(err.Error(), signInSecret) {
-			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want a refusal naming it", bad, err)
+		_, err := Load(env(e))
+		if want := "BROKER_SIGNIN_ISSUER must be an absolute https URL, or http to a loopback host"; err == nil || err.Error() != want {
+			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want %q", bad, err, want)
+		}
+	}
+}
+
+// Every issuer setting the broker reads refuses a value holding a credential, naming the setting
+// alone (oidc.IssuerRefusal): a made-up user name and password, a made-up token holding a "/"
+// written as the user, its "@" past the host, and a made-up token in the query or the fragment.
+// No issuer identifier holds any of them, and each is printed in the broker's boot lines,
+// discovery errors and sign-in page.
+func TestLoadRefusesAnIssuerHoldingACredential(t *testing.T) {
+	const user, secret = "madeUpIssuerUser0123", "madeUpIssuerSecret0123"
+	userinfo := user + ":" + secret + "@"
+	pairs := map[string]string{
+		"BROKER_K8S_OIDC_ISSUER":        "BROKER_K8S_OIDC_AUDIENCE",
+		"BROKER_EXCHANGE_GITHUB_ISSUER": "BROKER_EXCHANGE_GITHUB_AUDIENCE",
+	}
+	for _, setting := range []string{"BROKER_SIGNIN_ISSUER", "BROKER_GOOGLE_OIDC_ISSUER", "BROKER_K8S_OIDC_ISSUER", "BROKER_EXCHANGE_GITHUB_ISSUER"} {
+		for shape, value := range map[string]string{
+			"userinfo":                "https://" + userinfo + "issuer.example",
+			"an @ past the host":      "https://" + user + "/" + secret + "@issuer.example",
+			"a token in the query":    "https://issuer.example/?token=" + secret,
+			"a token in the fragment": "https://issuer.example/#" + secret,
+		} {
+			t.Run(setting+"/"+shape, func(t *testing.T) {
+				e := validEnv()
+				e[setting] = value
+				if audience, paired := pairs[setting]; paired {
+					e[audience] = "agent-secrets"
+				}
+				_, err := Load(env(e))
+				if err == nil || !strings.HasPrefix(err.Error(), setting+" cannot be read: ") || strings.Contains(err.Error(), user[:10]) || strings.Contains(err.Error(), secret[:10]) {
+					t.Fatalf("Load = %v, want a refusal naming %s and no part of the credential", err, setting)
+				}
+			})
 		}
 	}
 }

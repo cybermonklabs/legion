@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
@@ -78,7 +79,8 @@ type Config struct {
 	// refused too, since the system trust store holds no RDS CA. Any other URL, one carrying its own
 	// password or a passwordless one to a local Postgres that trusts its clients, connects as given.
 	// Nothing is substituted into it: a URL naming the removed ${BROKER_DATABASE_PASSWORD}
-	// placeholder is refused, as BROKER_DATABASE_PASSWORD itself is.
+	// placeholder is refused, as BROKER_DATABASE_PASSWORD itself is. A URL holding an "@" after its
+	// user name and password is refused by the store, naming this variable alone (store.Open).
 	DatabaseURL string
 	// DatabaseIAM is whether the broker signs in to DatabaseURL with RDS IAM auth tokens: the URL
 	// names a user and an RDS endpoint host, pgx finds no password for it, and it verifies that
@@ -875,9 +877,11 @@ type Config struct {
 	// it holds still verifies. The token exchange takes the tokens of the issuers
 	// BROKER_EXCHANGE_K8S_ISSUER names through the same reads, with the same answers, and the NATS
 	// auth service a service's token for BROKER_NATS_K8S_AUDIENCE, refusing one it cannot verify.
-	// A malformed entry, two entries of one name or of one URL, and a bare URL beside other
-	// entries refuse the boot. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no
-	// pod can enroll.
+	// A malformed entry, two entries of one name or of one URL, a bare URL beside other entries,
+	// and an issuer URL holding a user name or a password, an "@" after its host, or a query or a
+	// fragment refuse the boot, naming the setting and an entry by its place in the list, never
+	// the value's text (oidc.IssuerRefusal). Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in
+	// which case no pod can enroll.
 	K8sOIDCIssuers []oidc.NamedIssuer
 	// BROKER_K8S_OIDC_AUDIENCE: the audience a pod's projected service-account token must carry,
 	// one value for the tokens of every issuer BROKER_K8S_OIDC_ISSUER names.
@@ -1161,14 +1165,15 @@ type Config struct {
 	// connection its configuration lists no static user for, and which answers each with a NATS
 	// user of that connection's own, and the NATS writer hold it decides by. BROKER_NATS_URLS is
 	// the hub's servers, comma separated, each refused at start, by its place in the list and
-	// never its text, when it carries user info or is no URL: the service connects as its seed's
-	// user, and the URLs are written to its log; BROKER_NATS_SEED_FILE the service's own NATS user
-	// seed, a user the hub lists as an auth user; BROKER_NATS_ISSUER_SEED_FILE the account seed the
-	// hub names as its auth_callout issuer, which signs every user the service admits;
-	// BROKER_NATS_XKEY_SEED_FILE the curve seed the hub seals each request to. Each file is read at
-	// start and refused unless it holds a seed of its kind (a user, an account, a curve key),
-	// naming the variable and never the value. BROKER_NATS_SERVICES lists the services admitted by
-	// platform identity, as whitespace-separated <kind>/<machine id or ->/<* or
+	// never its text, when it carries user info, an "@" after its host, a query or a fragment, or
+	// is no URL: the service connects as its seed's user, and the URLs are written to its log;
+	// BROKER_NATS_SEED_FILE the service's own NATS user seed, a user the hub lists as an auth
+	// user; BROKER_NATS_ISSUER_SEED_FILE the account seed the hub names as its auth_callout
+	// issuer, which signs every user the service admits; BROKER_NATS_XKEY_SEED_FILE the curve
+	// seed the hub seals each request to. Each file is read at start and refused unless it holds
+	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
+	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
+	// whitespace-separated <kind>/<machine id or ->/<* or
 	// ->=<account>[=<issuer name>[,<issuer name>…]] entries (dispatch, listener, edge-listener,
 	// daemon or measure; operator, the deployment's one operator identity, whose grant is the
 	// writer hold's phase's and whose token alone writes the hold through /v1/nats-hold; or probe,
@@ -1535,39 +1540,51 @@ var issuerNamePattern = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 
 // parseK8sIssuers reads setting's issuers from value, trimmed: comma-separated
 // <name>=<issuer URL> entries, in order, or one bare issuer URL, the list's one issuer with an
-// empty name, which is taken as written and not checked as a URL, so a deployment that names its
-// one cluster that way boots on the value it holds.
-// An entry is bare when it holds no "=" or a ":" before its first one, since a name holds no ":"
-// and a URL's scheme does, so a URL with "=" in its path is still one bare URL. It refuses, naming
-// setting: an entry not of the form (an empty one, a name not of issuerNamePattern, a URL not
-// absolute http(s)); two entries of one name; two of one URL; and a bare URL beside other
-// entries, which would leave an issuer no account entry can name. Empty answers no issuer.
+// empty name, which is taken as written but for the refusal every issuer setting makes
+// (oidc.IssuerRefusal), so a deployment that names its one cluster that way boots on the value it
+// holds. An entry is bare when it holds no "=" or a ":" before its first one, since a name holds
+// no ":" and a URL's scheme does, so a URL with "=" in its path is still one bare URL. It refuses,
+// naming setting, and an entry by its place in the list, never any text of the value, where a
+// credential can be pasted (oidc.IssuerRefusal): an issuer URL oidc.IssuerRefusal refuses, which a
+// bare URL's refusal names by setting alone, as every issuer setting's does; an entry not of the
+// form (an empty one, a name not of issuerNamePattern, a URL not absolute http(s)); two entries of
+// one name, which it names; two of one URL; and a bare URL beside other entries, which would leave
+// an issuer no account entry can name. Empty answers no issuer.
 func parseK8sIssuers(setting, value string) ([]oidc.NamedIssuer, error) {
 	if value == "" {
 		return nil, nil
 	}
 	texts := strings.Split(value, ",")
 	var issuers []oidc.NamedIssuer
-	for _, text := range texts {
+	for i, text := range texts {
 		text = strings.TrimSpace(text)
+		entry := fmt.Sprintf("%s entry %d", setting, i+1)
 		name, issuer, named := strings.Cut(text, "=")
 		switch {
 		case text == "":
-			return nil, k8sIssuerForm(setting, text)
+			return nil, k8sIssuerForm(entry)
 		case !named || strings.Contains(name, ":"):
-			if len(texts) == 1 {
-				return []oidc.NamedIssuer{{URL: text}}, nil
+			if len(texts) > 1 {
+				return nil, fmt.Errorf("%s gives its issuer no name beside other entries: with more than one issuer, each entry is <name>=<issuer URL>, so an account entry can name it", entry)
 			}
-			return nil, fmt.Errorf("%s gives the issuer %q no name beside other entries: with more than one issuer, each entry is <name>=<issuer URL>, so an account entry can name it", setting, text)
-		case !issuerNamePattern.MatchString(name) || httpURLSetting(setting, issuer) != nil:
-			return nil, k8sIssuerForm(setting, text)
+			if err := oidc.IssuerRefusal(setting, text); err != nil {
+				return nil, err
+			}
+			return []oidc.NamedIssuer{{URL: text}}, nil
 		}
-		for _, other := range issuers {
+		if err := oidc.IssuerRefusal(entry, issuer); err != nil {
+			return nil, err
+		}
+		if !issuerNamePattern.MatchString(name) || httpURLSetting(setting, issuer) != nil {
+			return nil, k8sIssuerForm(entry)
+		}
+		// issuers holds every entry before this one, in order, so the other's place is j+1.
+		for j, other := range issuers {
 			if other.Name == name {
-				return nil, fmt.Errorf("%s gives the name %s to two issuers, %s and %s; a name is one issuer, so give each issuer its own", setting, name, other.URL, issuer)
+				return nil, fmt.Errorf("%s entries %d and %d give the name %s to two issuers; a name is one issuer, so give each issuer its own", setting, j+1, i+1, name)
 			}
 			if other.URL == issuer {
-				return nil, fmt.Errorf("%s names the issuer %s twice, as %s and as %s; each issuer is one entry, so name it once", setting, issuer, other.Name, name)
+				return nil, fmt.Errorf("%s entries %d and %d name one issuer URL, as %s and as %s; each issuer is one entry, so name it once", setting, j+1, i+1, other.Name, name)
 			}
 		}
 		issuers = append(issuers, oidc.NamedIssuer{Name: name, URL: issuer})
@@ -1575,9 +1592,10 @@ func parseK8sIssuers(setting, value string) ([]oidc.NamedIssuer, error) {
 	return issuers, nil
 }
 
-// k8sIssuerForm is the refusal of a BROKER_K8S_OIDC_ISSUER entry not of the form.
-func k8sIssuerForm(setting, text string) error {
-	return fmt.Errorf("%s must be one issuer URL or comma-separated <name>=<issuer URL> entries, each name lowercase letters, digits and hyphens, at most 64, and each URL absolute http(s), got %q", setting, text)
+// k8sIssuerForm is the refusal of a BROKER_K8S_OIDC_ISSUER entry not of the form, named by its
+// place in the list (entry) and never by its text.
+func k8sIssuerForm(entry string) error {
+	return fmt.Errorf("%s must be <name>=<issuer URL>, the name lowercase letters, digits and hyphens, at most 64, and the URL absolute http(s): the setting is one issuer URL or comma-separated such entries", entry)
 }
 
 // CutIssuerNames splits an account entry's text into its <name>=<account> head and the issuer
@@ -3774,7 +3792,7 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		cfg.ExchangeGoogleAccounts = append(cfg.ExchangeGoogleAccounts, machine)
 	}
-	issuerList, audience, err := oidc.ConfigFromEnv(getenv, "BROKER_K8S_OIDC_ISSUER", "BROKER_K8S_OIDC_AUDIENCE")
+	issuerList, audience, err := oidc.PairFromEnv(getenv, "BROKER_K8S_OIDC_ISSUER", "BROKER_K8S_OIDC_AUDIENCE")
 	if err != nil {
 		return Config{}, err
 	}
@@ -3793,6 +3811,10 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.ServiceLogins) > 0 && len(cfg.K8sOIDCIssuers) == 0 {
 		return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its accounts log in with")
+	}
+	// BROKER_GOOGLE_OIDC_ISSUER is Google's unless a dev stack names its own.
+	if err := oidc.IssuerRefusal("BROKER_GOOGLE_OIDC_ISSUER", cfg.GoogleOIDCIssuer); err != nil {
+		return Config{}, err
 	}
 	callers, err := parseAPIAccounts("BROKER_API_ACCOUNTS", getenv("BROKER_API_ACCOUNTS"), cfg.K8sOIDCIssuers)
 	if err != nil {
@@ -4114,8 +4136,12 @@ func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (app
 	if len(missing) > 0 {
 		return approval.SignIn{}, fmt.Errorf("the broker's approval page needs %s; missing %s", strings.Join(SignInSettings, ", "), strings.Join(missing, ", "))
 	}
+	if err := oidc.IssuerRefusal(signInIssuerSetting, signIn.Issuer); err != nil {
+		return approval.SignIn{}, err
+	}
+	// The value is not quoted: a token or a URL with a password pasted here would print.
 	if !signInIssuerOK(signIn.Issuer) {
-		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host, got %q", signInIssuerSetting, signIn.Issuer)
+		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host", signInIssuerSetting)
 	}
 	var err error
 	if signIn.ClientSecret, err = secretFile(signInClientSecretSetting, secretPath); err != nil {
@@ -4153,15 +4179,16 @@ func secretValue(getenv func(string) string, name string) (string, error) {
 }
 
 // secretFile reads the trimmed contents of path, the file the variable setting names; an
-// unreadable or blank file is an error naming setting and path, never what the file holds.
+// unreadable or blank file is an error naming setting and why (fileerr.Class), never the path,
+// which can be a credential pasted where it goes, nor what the file holds.
 func secretFile(setting, path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", setting, path, err)
+		return "", fmt.Errorf("%s names a file that cannot be read: %s", setting, fileerr.Class(err))
 	}
 	value := strings.TrimSpace(string(data))
 	if value == "" {
-		return "", fmt.Errorf("%s names %s, which is empty", setting, path)
+		return "", fmt.Errorf("%s names a file that is empty", setting)
 	}
 	return value, nil
 }

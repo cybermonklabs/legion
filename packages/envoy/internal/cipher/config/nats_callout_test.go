@@ -299,13 +299,14 @@ func TestNATSCalloutSettings(t *testing.T) {
 			}
 		})
 	}
-	// A hub URL that carries user info is refused at load, by its place in the list and never its
-	// text: the service connects as the user its seed names, so user info is a credential it does
-	// not use, and the broker writes the URLs into its start line and the service's connect error.
-	// nats.go dials an entry with no scheme as nats://<entry> (nats.go, parseServerURL), so such an
-	// entry is read the same way, and an entry that does not parse as a URL, whose parse error
-	// would quote it whole, is refused too. Each URL is built from a random secret of this run, so
-	// no credential-shaped URL is written in the source, and the refusal must hold none of it.
+	// A hub URL that carries user info, a query or a fragment is refused at load, by its place in
+	// the list and never its text: the service connects as the user its seed names, so user info is
+	// a credential it does not use, a query or a fragment is where a token can be put, and the
+	// broker writes the URLs into its start line and the service's connect error. nats.go dials an
+	// entry with no scheme as nats://<entry> (nats.go, parseServerURL), so such an entry is read the
+	// same way, and an entry that does not parse as a URL, whose parse error would quote it whole,
+	// is refused too. Each URL is built from a random secret of this run, so no credential-shaped
+	// URL is written in the source, and the refusal must hold none of it.
 	secret := rand.Text()
 	userAndPassword := (&url.URL{Scheme: "nats", User: url.UserPassword("svc", secret), Host: "hub-b:4222"}).String()
 	for _, row := range []struct{ name, urls, names string }{
@@ -313,6 +314,11 @@ func TestNATSCalloutSettings(t *testing.T) {
 		{"a token as the user", (&url.URL{Scheme: "nats", User: url.User(secret), Host: "hub-a:4222"}).String(), "BROKER_NATS_URLS entry 1"},
 		{"user info with no scheme", strings.TrimPrefix(userAndPassword, "nats://"), "BROKER_NATS_URLS entry 1"},
 		{"no URL at all", strings.Replace(userAndPassword, secret, secret+"%zz", 1), "BROKER_NATS_URLS entry 1"},
+		// A token holding a "/" written as the user: url.Parse reads its head as the host and the
+		// "@" in the path, so no user info is parsed and the "@" is what is refused.
+		{"a token holding a / as the user", "nats://hub-a:4222, nats://" + secret + "/rest@hub-b:4222", "BROKER_NATS_URLS entry 2 carries user info"},
+		{"a token in its query", "nats://hub-a:4222?token=" + secret, "BROKER_NATS_URLS entry 1 carries a query or a fragment"},
+		{"a token in its fragment", "nats://hub-a:4222#" + secret, "BROKER_NATS_URLS entry 1 carries a query or a fragment"},
 	} {
 		t.Run("a hub URL with "+row.name, func(t *testing.T) {
 			e := full()

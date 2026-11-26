@@ -918,11 +918,11 @@ func (c Claim) PassedOverByRound() bool {
 // Released is whether the claim is the one suspension a wake brings back: the daemon released its
 // idle issue pod, so the claim keeps its session, its phase and its pending task, and the next
 // wake for its role resumes it (SuspendedByReleased). Every rule that acts on a released claim —
-// the wakes, the notice routing and a reader in a transaction (both through record.HoldsRole), the
-// stranded report, a release the store cancelled — reads it here rather than spelling the pair out
-// again. A claim the project release stopped is not one: no wake brings it back, since the
-// daemon's next boot starts it (ProjectReleased), though it holds its role as a released claim
-// does (record.HoldsRole).
+// the wakes, the notice routing, a reader in a transaction and the role-holder publication (each
+// through HoldsRole), the stranded report, a release the store cancelled — reads it here rather
+// than spelling the pair out again. A claim the project release stopped is not one: no wake
+// brings it back, since the daemon's next boot starts it (ProjectReleased), though it holds its
+// role as a released claim does (HoldsRole).
 func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
 }
@@ -930,8 +930,8 @@ func (c Claim) Released() bool {
 // ProjectReleased is whether the project release stopped the claim and the claim waits, as it
 // left it, for the daemon's next boot to start it (SuspendedByProjectRelease). The rules that
 // read it treat it as they treat a released claim where the claim's role is concerned — the notice
-// routing and a reader in a transaction keep its role (record.HoldsRole) — and never wake it,
-// since the boot is what brings it back.
+// routing, a reader in a transaction and the role-holder publication keep its role (HoldsRole) —
+// and never wake it, since the boot is what brings it back.
 func (c Claim) ProjectReleased() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByProjectRelease
 }
@@ -5588,6 +5588,43 @@ func HoldsCapability(state ClaimState) bool {
 	default:
 		return false
 	}
+}
+
+// HoldsRole is whether a claim the store records in state, suspended by by, holds its role: this
+// daemon supervises it (state is not ""), it has not failed or retired, and it is not suspended,
+// unless the suspension is the idle release's (Claim's Released), which a project pause's stop
+// makes too, or the project release's (Claim's ProjectReleased). A claim the outbox has not
+// created yet has no state and holds none: a new child's architect is such a claim until the
+// outbox runs the start its child's first phase start queued, and holds its role from that run
+// on, queued or launching. A released claim keeps its session, its phase and its task, and the
+// next wake for its role resumes the same session, so what it owns is still its own. A claim the
+// project release stopped keeps them too, as the release left them, and the daemon's next boot
+// starts it on that session (workflow's startReleaseStopped) rather than a wake: a delivery for it
+// waits for that start (internal/daemon's awaitsBootStart). The controller is the one claim that
+// boot may start on a fresh session (the controller keeper's rule, dispatch://INFRA-2045), and it
+// holds no issue's role in the set Dispatch reads (internal/store's holdsIssueRole). Any other
+// suspension stops the agent until a rule or a resume starts it again, and one the operator or the
+// controller holds (SuspendSource.Holds) until that holder's resume, or one that outranks it,
+// lifts it. A claim launched again over the session it kept, a released or a stopped one's start
+// among them, holds its role through the launch, so neither that start nor the stop before it
+// moves a holder.
+//
+// It is the one rule for whether a claim holds its role, which HoldsCapability (a running process)
+// is not: the owner walk reads it (record.ArchitectRuns, and the daemon's holdsRole over the
+// machine's live view), and so does the role-holder publication, both the claim write that queues
+// it (internal/store's roleHolder) and the set it sends (record.Postgres.RoleHolders). Were a
+// released or stopped architect to lose its role here, a notice for it would walk up to the
+// architect above it, which owns neither the issue nor the answer, and Dispatch would name no
+// architect of its issue until the next wake or boot.
+func HoldsRole(state ClaimState, by SuspendSource) bool {
+	switch state {
+	case "", StateFailed, StateRetired:
+		return false
+	case StateSuspended:
+		held := Claim{State: state, SuspendedBy: by}
+		return held.Released() || held.ProjectReleased()
+	}
+	return true
 }
 
 // SaidReady is whether a claim in state has an agent that said it can be prompted: ready, working

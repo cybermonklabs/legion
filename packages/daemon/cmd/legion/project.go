@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // newProjectCommand is the operator's hand on the daemon's project as a whole, one command per
@@ -332,8 +333,8 @@ func runProjectRelease(ctx context.Context, c *operatorCall, bound, wait time.Du
 		if dryRun {
 			ended = "a dry run records and starts nothing"
 		}
-		fmt.Fprintf(c.stderr, "%s: %s %s%s was not answered before the command's wait of %s ended; %s\n",
-			c.name(), http.MethodPost, op.base, api.ProjectReleaseRoute, c.until.Sub(began).Round(time.Millisecond), ended)
+		fmt.Fprintf(c.stderr, "%s: %s %s was not answered before the command's wait of %s ended; %s\n",
+			c.name(), http.MethodPost, redact.URL(op.base+api.ProjectReleaseRoute), c.until.Sub(began).Round(time.Millisecond), ended)
 		return 1
 	}
 	if !ok {
@@ -397,7 +398,7 @@ func releaseRequest(ctx context.Context, c *operatorCall, op operator, method st
 		return api.ProjectReleaseResponse{}, nil, cut, false
 	}
 	if err := decodeAnswer(answer, &release); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, api.ProjectReleaseRoute, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), redact.URL(op.base+api.ProjectReleaseRoute), err)
 		return api.ProjectReleaseResponse{}, nil, false, false
 	}
 	return release, answer, false, true

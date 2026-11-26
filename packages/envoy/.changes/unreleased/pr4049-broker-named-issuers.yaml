@@ -4,6 +4,10 @@ body: |-
   `BROKER_K8S_OIDC_ISSUER` takes comma-separated `<name>=<issuer URL>` entries, one for each
   cluster, or one bare issuer URL as before, and the broker checks each token against the issuer
   its `iss` claim names.
+  The broker refuses to start on a malformed entry, two entries of one name or of one URL, a bare
+  URL beside named entries, and an entry whose URL holds a user name or a password, an `@` after
+  its host, or a query or a fragment, naming the setting and the entry by its place in the list
+  (`BROKER_K8S_OIDC_ISSUER entry 2 cannot be read: …`) and never any text of the value.
   The broker reads each issuer in the background, so it starts and serves while one of them cannot
   be read, and it answers the tokens of that issuer `503 OIDC_ISSUER_UNAVAILABLE` until it can. It
   answers the same, and does not refuse the token as unverified, to a token whose key it cannot
