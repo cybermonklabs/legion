@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+    The `legion` tool's `handoff_complete` on a `done` issue now posts the report of the retro that
+    Legion runs after the issue's close, when the issue closed with no retro in its last run
+    (dispatch://INFRA-5602, daemon API contract entry `20261126014218`, `retro-after-close`). A call
+    that carries `plan_rating` and `plan_reason` and no `verdict` sends its `summary` and the rating,
+    with no handoff record and no commit, whatever production check the issue's record shows, and the
+    daemon takes it from that retro's own agent. The tool's description says so and names the
+    refusals `RETRO_NOT_OPEN` and `RETRO_AGENT_MISMATCH`, and its rule for ending a child says that a
+    `done` ends the worker's turn and the pod at once, but keeps the agent and session of a retro it
+    starts or finds running. Install this release with a daemon of the same release: a daemon before
+    it refuses that report `CHECK_LOOK_NOT_SERVED`.
+time: 2026-11-26T04:22:40.592744172Z
+custom:
+    Issue: INFRA-5602

@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+    The Claude bridge's `legion` tool, `handoff_complete` on a `done` issue, now posts the report of
+    the retro that Legion runs after the issue's close, when the issue closed with no retro in its last
+    run (dispatch://INFRA-5602, daemon API contract entry `20261126014218`, `retro-after-close`). A
+    call that carries `plan_rating` and `plan_reason` and no `verdict` sends its `summary` and the
+    rating, with no handoff record and no commit, whatever production check the issue's record shows,
+    and the daemon takes it from that retro's own agent. The tool's description says so and names the
+    refusals `RETRO_NOT_OPEN` and `RETRO_AGENT_MISMATCH`. Install this release with a daemon of the
+    same release: a daemon before it refuses that report `CHECK_LOOK_NOT_SERVED`.
+time: 2026-11-26T04:22:40.564464846Z
+custom:
+    Issue: INFRA-5602

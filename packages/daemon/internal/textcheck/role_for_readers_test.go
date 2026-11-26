@@ -58,7 +58,9 @@ type roleForReader struct {
 // acceptance step after it),
 // or reads the retro's own phase and the phase of the last step of a parent's task, neither of
 // which is admitted (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held
-// before its retro for the issues beneath it), or never reads admitted at all because a check
+// before its retro for the issues beneath it, and Engine.retroAgentRole, which names the agent of
+// the retro after a close by the retro's phase alone, the implementer, never the architect, even
+// for an issue that closes at admitted), or never reads admitted at all because a check
 // before it refuses that phase, which is what each named test holds it to. The owner walk reads no
 // role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
@@ -95,6 +97,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:      {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
+	{file: "internal/workflow/retro.go", fn: "Engine.retroAgentRole"}:             {calls: 1, test: "TestEveryCloseOfAStartedRunWithNoRetroStartsItsRetro"},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:              {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:        {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:                  {calls: 1, test: "TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"},

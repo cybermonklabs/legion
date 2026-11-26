@@ -3074,6 +3074,47 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that runs a closed issue's retro after its close
+
+The release that runs a closed issue's retro after its close is the one whose `packages/daemon/internal/api` carries the contract entry `20261126014218` (`retro-after-close`).
+When an issue that Legion started closes and its last run had no retro, that release gives the retro to the agent that does the issue's retro, in its kept session, after the close, and the retro ends with its report or at 24 hours ([The retro after a close](https://cybermonklabs.github.io/legion/legion/concepts/#the-retro-after-a-close)).
+Its migration `20261125213821_run_retros` adds the table `run_retros`, one row for each issue and run: when the run started, when its retro started, and the retro after the issue's close, with when it opened, its bound, its agent, its end and its outcome.
+It adds the columns `claims.serving_retro_run` and `pending_task_deliveries.retro_run`, the run of the retro after a close that a claim serves and that a pending task is of.
+It writes the outbox's kind check (`outbox_kind_check`) again, as the list of `20261119203047_design_news` with `retro_bound` added.
+A `retro_bound` row ends a retro after a close that nobody reported at its bound, a `supervise` start that carries `retroRun` hands the retro's task to its agent, and one that carries `retroWake` wakes the architect of a closed tree's root for a message to its role topic while a retro of that tree is open.
+
+**Those queued rows must go before the earlier image is pinned.**
+The release before decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind `retro_bound` nor a `supervise` row's `retroRun` or `retroWake`.
+So it fails each such row at every attempt, and its issue's lifecycle lane behind it.
+That release names neither the table nor the two columns in any read or write, so it boots with them standing.
+Run the way back below with every daemon of the database stopped and before the release before starts, in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session:
+
+```sql
+begin;
+delete from outbox where kind = 'retro_bound';
+delete from outbox where kind = 'supervise' and (payload ? 'retroRun' or payload ? 'retroWake');
+alter table claims drop column if exists serving_retro_run;
+alter table pending_task_deliveries drop column if exists retro_run;
+drop table if exists run_retros;
+delete from schema_version where version = 20261125213821;
+commit;
+```
+
+The header of `20261125213821_run_retros.up.sql` carries this same block as its last paragraph, which `migrations.WayBack` returns.
+The two deletes of queued rows are owed to the release before.
+Each row they delete is a bound, a retro's task or a root architect's wake, which a release that runs no retro after a close owes nobody.
+The drops and the delete of the version row are owed to the roll-forward.
+With them gone, `store.apply` finds no row of this version and runs the file again, which fills `run_retros` from the issues as they stand then.
+The kind check keeps `retro_bound`, which admits every kind the release before writes, so the block needs no statement for it.
+
+**What the rollback costs.**
+What the way back costs is each retro after a close that is open at the rollback: the roll-forward opens none again, and its agent's next completion is refused as one on a `done` issue.
+While the release before runs, an issue that closes with no retro in its last run gets no retro.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `outbox`, `claims` and `pending_task_deliveries` hold the rows of every project, so the block acts on the rows of every project.
+Roll back, and roll forward, every daemon of one database in the same change, and run the block only when all of those daemons are stopped.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3566,6 +3607,7 @@ So after the roll-forward a cause the earlier release wrote with other text is s
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
+A rollback of a store that the release that runs a closed issue's retro after its close migrated runs the way back of its own section first, [Rolling back the release that runs a closed issue's retro after its close](#rolling-back-the-release-that-runs-a-closed-issues-retro-after-its-close), with every daemon of the database stopped, which deletes the queued rows the release before cannot decode, drops `run_retros`, `claims.serving_retro_run` and `pending_task_deliveries.retro_run` and deletes that version's row, and then the production check's way back and #5303's, since that release carries both; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3654,6 +3696,7 @@ The migrations recorded above this one are these.
 20261124182040_issue_pod_disks adds `issue_pod_disks` and touches none of the six, so the block holds over it.
 A rollback to a release before it leaves the table in place and needs no SQL for this migration.
 20261125000600_production_check_failed_looks adds `production_checks.failed_looks` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which takes `wakeAt` off every queued `check_wake` row, a key the release before refuses as one it does not know, drops the column and deletes its version row, with every daemon of the database stopped: `production_checks` holds the checks of every project that shares the database, and a daemon of this release still running for another project would fail every fact that reads a check after the drop.
+20261125213821_run_retros, of dispatch://INFRA-5602, adds the table `run_retros` and the columns `claims.serving_retro_run` and `pending_task_deliveries.retro_run`, writes the outbox's kind check again with `retro_bound` added, reads `phases.entry_raised_at` in its fill and writes none of the six, so the block holds over it; a rollback to a release before it takes the steps of its own section first, [Rolling back the release that runs a closed issue's retro after its close](#rolling-back-the-release-that-runs-a-closed-issues-retro-after-its-close), which delete the queued rows the release before cannot decode, drop the table and the two columns and delete its version row, with every daemon of the database stopped: `outbox`, `claims` and `pending_task_deliveries` hold the rows of every project that shares the database.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

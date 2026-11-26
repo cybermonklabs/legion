@@ -1,0 +1,30 @@
+kind: Added
+body: |-
+    An issue that Legion started and that closes with no retro in its last run now gets that retro
+    after the close, as a merged issue gets its production check after the merge
+    (dispatch://INFRA-5602). An issue counts as started when its own first phase, or the first phase
+    of an issue beneath it, started. The close can be the owning architect's `done` on a child, a
+    person's close, also after the issue waited in `backlog`, `icebox` or `triage`, or `close_root`.
+    The daemon gives the retro to the implementer, the agent that does an issue's retro, in its kept
+    session: it resumes a suspended claim in a new pod, relaunches a retired one in its kept session,
+    and launches one that never started. The task says that the issue is closed, that the retro moves
+    it nowhere, and that a requirement the retro finds unmet goes to the tree's root architect, which
+    a message to its role topic wakes while a retro of its tree is open. A retro that runs at the
+    close keeps its turn. The retro ends with its report, 24 hours after its start with no rating, or
+    at a `todo` that runs the issue again. `dispatch steps` shows it as a retro row with its start and
+    its end, and the linger of a finished tree waits for it. An issue whose last run had its retro,
+    and an issue that Legion never started, get none.
+
+    `POST /legion/v1/handoff/complete` on a `done` issue now takes that retro's report from its agent
+    (daemon API contract entry `20261126014218`, `retro-after-close`): `summary`, `planRating` and
+    `planReason`, and no verdict, commit or handoff record. The daemon records the rating on the
+    run's retro and writes no status. It refuses the report `409 RETRO_NOT_OPEN` once the retro ended,
+    naming how, and `409 RETRO_AGENT_MISMATCH` from another claim. Every other completion on a `done`
+    issue stays `409 CHECK_LOOK_NOT_SERVED`, and its text now names whose report the issue takes. The
+    rule for ending a child (`record.EndChildRule`) and the architect's instructions now say that a
+    `done` keeps the agent and session of a retro it starts or finds running. Store migration
+    `20261125213821_run_retros` adds the record of each run's retro, and docs/kubernetes.md gives its
+    way back, under "Rolling back the release that runs a closed issue's retro after its close".
+time: 2026-11-26T04:22:11.713874811Z
+custom:
+    Issue: INFRA-5602

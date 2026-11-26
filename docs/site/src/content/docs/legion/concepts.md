@@ -656,7 +656,8 @@ work after the close, where your project asks for it: `projects.<KEY>.production
 production check as the issue closes, in its own session or, where the issue's plan had no tester
 step, a fresh one, and a project that sets `off` opens no
 check at all — a child's close retires every claim of the child and releases its pod, and a
-root's close suspends every claim of its tree for the linger, whose end retires them. The loader
+root's close suspends every claim of its tree for the linger, whose end retires them, but for the
+agent of a [retro after the close](#the-retro-after-a-close). The loader
 refuses any other value, naming the key and the value it read. The check's record carries the
 role, written when the check opened, so changing the setting leaves an open check with the role
 it started under, and only that role may report on it. Each look of the check reaches the deploy
@@ -703,16 +704,47 @@ days, by default): the look at that bound is the last, and a `pending` there clo
 as not run, which the agent writes on the pull request. `legion state` prints how many checks
 are open and the oldest of them, with when its next look is due.
 
-A child's close deletes its pod, and the disk goes with it; a root's close releases any admission
+A child's close deletes its pod, or the end of its retro after the close does, and the disk goes
+with it; a root's close releases any admission
 slot its issues still held, which happens once no other issue of its tree is still in the
 workflow, and the finished tree **lingers** for
 `linger_hours` (72 by default) in case work resumes, each member's conversation kept in the session
-database; then its Sandboxes are deleted, once no member's check is open. Closing a root yourself
+database; then its Sandboxes are deleted, once no member's check or retro after a close is open.
+Closing a root yourself
 from the Dispatch dashboard lingers the tree at once, children and all: your decision outranks
 that order. What a stop keeps is the conversation and whatever was pushed to the issue's branch: a
 workspace lives as long as the pod it was provisioned in, and the next pod provisions it again
 from that branch. Setting a done root back to `todo` runs it again as a new generation, starting
 from its architect.
+
+## The retro after a close
+
+An issue can close before its retro. An architect can end a child with `done`, and you can close
+an issue, also one that waited in `backlog`, `icebox` or `triage`. When an issue that Legion
+started closes and its last run had no retro, Legion runs that retro after the close. Legion runs
+the production check after a merge in the same way. An issue counts as started when its own first
+phase, or the first phase of an issue beneath it, started. An issue whose last run had its retro
+gets no other, and an issue that Legion never started gets none. A move to `backlog`, `icebox` or
+`triage` starts no retro: the close after it does.
+
+Legion gives the retro to the agent that does the issue's retro, as the `retro` row of the table in
+[Phase workers](#phase-workers) names it. That agent works in the session that Legion kept for it.
+Where that agent never started, Legion starts it for the retro. A retro that runs when the issue
+closes keeps its turn and counts as the run's retro. The close keeps the agent and its pod while
+the retro runs. An issue that waited in `backlog`, `icebox` or `triage` has no pod at its close, so
+its retro resumes the kept session in a new pod.
+
+The retro's task says that the issue is closed. The retro moves the closed issue nowhere. The steps
+of the retro skill that move work back do not apply to it, and the daemon refuses a backward move
+of a closed issue. A requirement that the retro finds unmet goes to the architect of the tree's
+root, which puts it to you as one decision. A requirement that another open child of the same
+parent carries is pending and goes to no one. The retro of an open issue whose pull request merged
+sends its findings in the same way.
+
+The retro ends with its report, which rates the plan as every retro does, or 24 hours after it
+starts, with no rating. A `todo` that runs the issue again also ends it. The issue's status stays
+as the close left it. `dispatch steps --issue <KEY>` shows the retro as a run of the issue's retro
+step, and the linger of a finished tree waits until each such retro ends.
 
 ## Supervision
 
