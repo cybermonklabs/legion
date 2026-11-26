@@ -134,7 +134,7 @@ func replaceStoredHistory(t *testing.T, database *store.Store, artifactID, markd
 		t.Fatalf("lock the document: %v", err)
 	}
 	persist := NewPgVersioned(database)
-	head, err := persist.head(ctx, tx, artifactID)
+	head, err := roomHead(ctx, tx, artifactID)
 	if err != nil {
 		t.Fatalf("read the head the rebuild replaces: %v", err)
 	}

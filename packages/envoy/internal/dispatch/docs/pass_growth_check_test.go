@@ -473,7 +473,7 @@ func passGrowthMedian(times []time.Duration) time.Duration {
 
 // The reconciliation's pass stays one transaction, and the time the pass over a version that
 // changes one block holds the owner lock grows in proportion to the room (c-pass-growth; R15 of
-// this issue's spec).
+// the issue-tree spec).
 //
 // Each measurement makes passGrowthRuns runs over a room of 4,682 blocks and as many over a room
 // of 20,000, a run of one size after a run of the other, each on a database of its own

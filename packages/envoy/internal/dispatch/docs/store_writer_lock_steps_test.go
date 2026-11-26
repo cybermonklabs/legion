@@ -798,8 +798,8 @@ func settleVerification(t *testing.T, ctx context.Context, database *store.Store
 // leaveResultOwed records a result of the check c1 of room's Verification document as the results
 // route states one (graphstore.ResultFacts), with the mark of the room issue's queries in the same
 // transaction (QueueQueryMark), and drains nothing: the mark stands for the drain under test, whose
-// version of the Verification document the moved record owes. recordResult writes the same result
-// and mark, and runs the drain after them.
+// version of the Verification document the moved record owes. recordResult is this function
+// followed by the drain (DrainOwedQueries).
 func leaveResultOwed(t *testing.T, database *store.Store, room issueRoom) {
 	t.Helper()
 	ctx := context.Background()
@@ -1269,9 +1269,7 @@ func newDocsWriterRig(t *testing.T) *docsWriterRig {
 	rig.asked = writeDocumentThroughTheRequestPath(t, service, database, "lock-steps-asked", "# Asked\n\nThe first paragraph.\n")
 	rig.askedLive = writeDocumentThroughTheRequestPath(t, service, database, "lock-steps-asked-live", "# Asked live\n\nThe first paragraph.\n")
 	ctx := context.Background()
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, rig.askedLive).Scan(&rig.askedLiveRefKey); err != nil {
-		t.Fatalf("read the ref_key of %s: %v", rig.askedLive, err)
-	}
+	rig.askedLiveRefKey = refKeyOf(t, database, rig.askedLive)
 	// Each document's seed leaves it owing a settlement; the runs settle it themselves.
 	for _, document := range []string{rig.versioned, rig.asked, rig.askedLive} {
 		rig.awaitDurable(t, document)

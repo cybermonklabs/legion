@@ -1,7 +1,6 @@
 package docs
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -19,24 +18,13 @@ import (
 func TestARefusedWriteIntoARetiredDocumentOfAnIssueRoomLogsAtInfo(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	ctx := context.Background()
 	database := storetest.Open(t)
 	service, _ := newTestServiceInstance(t, database)
 	room := createIssueRoom(t, database, 1)
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the retirement: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
-		t.Fatalf("retire the Verification document: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the retirement: %v", err)
-	}
+	retireVerification(t, database, room)
 
-	_, err = joinedReplaceText(service, room.verification, "Written after the retirement.\n", alice)
+	_, err := joinedReplaceText(service, room.verification, "Written after the retirement.\n", alice)
 	var retired *RetiredDocumentError
 	if !errors.As(err, &retired) || retired.ID != room.verification {
 		t.Fatalf("a write into the retired Verification document %s of the issue room answered %v, want a RetiredDocumentError naming it", room.verification, err)

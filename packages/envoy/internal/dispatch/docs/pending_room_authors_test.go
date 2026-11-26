@@ -15,8 +15,8 @@ import (
 // authors of that document's edits: of the room's in-flight credits, those whose update changed its
 // fragment and those that name no document, as a version of it lists them
 // (captureDocumentAuthors). An upload holds the room's removals as the person those authors name
-// (holdRoomRemovals), so a person whose only pending edit was in the spec, read among them, was
-// recorded as the remover of an answered ask whose block the plan's upload took out.
+// (holdRoomRemovals), so a person whose only pending edit was in the spec, read among them, would
+// be recorded as the remover of an answered ask whose block the plan's upload took out.
 func TestPendingRoomAuthorsOfADocumentTakeOnlyTheCreditsOfItsFragment(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)

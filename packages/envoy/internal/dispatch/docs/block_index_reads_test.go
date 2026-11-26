@@ -25,31 +25,7 @@ func TestAHeldBlockIndexPassHoldsOffNoReadAndOnlyALockOfTheWholeTable(t *testing
 	document := createOwedDocument(t, database, service, "CORE-1", "", "held", raceVersion1, "")
 	settle(t, database, document)
 
-	entered, release := make(chan struct{}), make(chan struct{})
-	service.afterBlockIndexWrite = func(artifactID string) error {
-		if artifactID == document {
-			close(entered)
-			<-release
-		}
-		return nil
-	}
-	defer func() { service.afterBlockIndexWrite = nil }()
-	ticked := make(chan error, 1)
-	go func() {
-		_, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
-		ticked <- err
-	}()
-	released := false
-	defer func() {
-		if !released {
-			close(release)
-		}
-	}()
-	select {
-	case <-entered:
-	case <-time.After(fenceWait):
-		t.Fatalf("the pass did not reach its commit within %s", fenceWait)
-	}
+	release, ticked := holdPassAtCommit(t, service, document)
 
 	probe, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -91,8 +67,7 @@ func TestAHeldBlockIndexPassHoldsOffNoReadAndOnlyALockOfTheWholeTable(t *testing
 		t.Fatalf("a lock of the whole of artifact_versions while the pass holds its locks answered %v, want 55P03 lock_not_available", err)
 	}
 
-	close(release)
-	released = true
+	release()
 	if err := <-ticked; err != nil {
 		t.Fatalf("the pass: %v", err)
 	}

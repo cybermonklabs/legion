@@ -190,10 +190,7 @@ func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
 	ctx := context.Background()
 	source := copiedAskSource(t, service, original)["copy-open"]
 	elsewhere := createIssueDocument(t, service.store, 1, "# Elsewhere")
-	var elsewhereKey string
-	if err := service.store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, elsewhere).Scan(&elsewhereKey); err != nil {
-		t.Fatalf("read the other document's address: %v", err)
-	}
+	elsewhereKey := refKeyOf(t, service.store, elsewhere)
 	arms, params, err := graphstore.WriteArms(1, nil, nil, graphstore.AskClaims(source,
 		graphstore.AskPlaces{Anchor: elsewhereKey, Document: elsewhereKey},
 		model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent))

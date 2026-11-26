@@ -331,27 +331,25 @@ func writeRoomQueryNodes(t *testing.T, database *store.Store, room issueRoom) {
 
 // A version this build's version write wrote renders again from the tree, in the text order its
 // author wrote. The test writes a subtree of DOC-2's spec straight into the store, writes version
-// 3 from it - its rendering and its
-// version_renders row, holding the digest of the spec's record, in one transaction - and then, one
-// change at a time, edits a requirement's text, re-parents another, re-orders the text of two
-// top-level siblings and the tree ranks of two others, and retracts a paragraph's in_document,
-// each dated after the version: the version renders its first bytes after each, the head renders
-// each change that moves the text and none that moves only the tree, and two renders of the
-// version at two times read one byte string. The render prints the document's text children, each
-// once, by its text value, in increasing text_rank, a text_rank of a and one of B taking B first,
-// byte for byte; it refuses to run where select 'a' < 'B' is false. A transaction rolled back
-// leaves neither the version nor its row. The digest of a version with a row is its record's, and
-// of one without its stored markdown's. A tuple dated before the version written before the
-// cutover moves nothing of it, though the tree at its time holds that tuple; it moves the version
-// that holds a row, which the census of the versions then reads as a difference; and with that row
-// deleted the version answers its stored bytes and says so. A version whose markdown is null
-// says it holds no bytes. The head of a
-// spec a real settlement wrote renders as that version's stored markdown, and that settlement's
-// room pass recorded the version's row, holding its record's digest, which the census reads beside
-// DOC-2's with no difference. The census of document_block_texts reads no difference in either
-// direction over the converted issues, and prints the rows of DOC-9 as the class of unstated rows
-// of an issue that has not converted, with their count; and document_block_texts keeps the columns
-// 0121_block_graph.up.sql creates.
+// 3 from it - its rendering and its version_renders row, holding the digest of the spec's record,
+// in one transaction - and then, one change at a time, edits a requirement's text, re-parents
+// another, re-orders the text of two top-level siblings and the tree ranks of two others, and
+// retracts a paragraph's in_document, each dated after the version: the version renders its first
+// bytes after each, the head renders each change that moves the text and none that moves only the
+// tree, and two renders of the version at two times read one byte string. The render prints the
+// document's text children, each once, by its text value, in increasing text_rank, a text_rank of
+// a and one of B taking B first, byte for byte; it refuses to run where select 'a' < 'B' is false.
+// A transaction rolled back leaves neither the version nor its row. The digest of a version with a
+// row is its record's, and of one without its stored markdown's. A tuple dated before the version
+// written before the cutover moves nothing of it, though the tree at its time holds that tuple; it
+// moves the version that holds a row, which the census of the versions then reads as a difference;
+// and with that row deleted the version answers its stored bytes and says so. A version whose
+// markdown is null says it holds no bytes. The head of a spec a real settlement wrote renders as
+// that version's stored markdown, and that settlement's room pass recorded the version's row,
+// holding its record's digest, which the census reads beside DOC-2's with no difference. The census
+// of document_block_texts reads no difference in either direction over the converted issues, and
+// prints the rows of DOC-9 as the class of unstated rows of an issue that has not converted, with
+// their count; and document_block_texts keeps the columns 0121_block_graph.up.sql creates.
 //
 // Then the versions the real version path writes, each holding the row its pass recorded with its
 // record's digest. Five versions of the spec of CORE-1 each render their stored bytes
@@ -1026,7 +1024,7 @@ func renderStepDigests(t *testing.T, rig *renderRig) {
 
 func renderStepCensus(t *testing.T, rig *renderRig, unconverted int) {
 	census := takeStoreCensus(t, rig.database)
-	texts := treeCensusKind(t, census, "block_text")
+	texts := censusKind(t, census, "block_text")
 	for _, difference := range slices.Concat(texts.ReportedRows, texts.ReportedNodes) {
 		t.Errorf("the census reads a block_text difference at %s: %s", difference.At, difference.Cause)
 	}

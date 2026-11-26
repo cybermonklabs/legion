@@ -7,6 +7,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -255,6 +257,17 @@ func backfillMark(t *testing.T, database *store.Store, artifactID string) (marke
 		t.Fatalf("read the backfill's mark on %s: %v", artifactID, err)
 	}
 	return markedAt, standing
+}
+
+// markUnstated leaves document's document_block_versions row as the backfill leaves a document no
+// pass of this rule has stated: marked (store_owed_at), and stated by no pass.
+func markUnstated(t *testing.T, database *store.Store, document string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update document_block_versions set store_owed_at = now(), stated_version = null, stated_rule = null where artifact_id = $1`,
+		document); err != nil {
+		t.Fatalf("mark %s as the backfill marks a document no pass has stated: %v", document, err)
+	}
 }
 
 // drainedAsTheReleaseBefore stands in for a pod of the release before this one draining the
@@ -767,25 +780,7 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 		t.Fatalf("read the request's transaction time: %v", err)
 	}
 
-	entered, release := make(chan struct{}), make(chan struct{})
-	service.afterBlockIndexWrite = func(artifactID string) error {
-		if artifactID == document {
-			close(entered)
-			<-release
-		}
-		return nil
-	}
-	defer func() { service.afterBlockIndexWrite = nil }()
-	ticked := make(chan error, 1)
-	go func() {
-		_, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
-		ticked <- err
-	}()
-	select {
-	case <-entered:
-	case <-time.After(fenceWait):
-		t.Fatalf("the reconciliation did not reach its commit within %s", fenceWait)
-	}
+	release, ticked := holdPassAtCommit(t, service, document)
 
 	markdown, blocks := renderedVersion(t, raceVersion2)
 	indexed := make(chan error, 1)
@@ -821,7 +816,7 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 		}
 		return waiting > 0
 	})
-	close(release)
+	release()
 	if err := <-ticked; err != nil {
 		t.Fatalf("the reconciliation: %v", err)
 	}
@@ -868,6 +863,38 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 	if last := stated[len(stated)-1]; !last.at.After(began) {
 		t.Errorf("the request's last tuple is dated %s, not after its transaction began at %s", last.at, began)
 	}
+}
+
+// holdPassAtCommit runs a tick of the block-index reconciliation on a goroutine and holds its pass
+// over document at its commit (afterBlockIndexWrite) until release, failing t unless the pass
+// reaches it within fenceWait. ticked answers the tick once it returns. release closes the hold
+// once however often it is called, and the test's end calls it where the test did not.
+func holdPassAtCommit(t *testing.T, service *Service, document string) (release func(), ticked <-chan error) {
+	t.Helper()
+	entered, held := make(chan struct{}), make(chan struct{})
+	service.afterBlockIndexWrite = func(artifactID string) error {
+		if artifactID == document {
+			close(entered)
+			<-held
+		}
+		return nil
+	}
+	release = sync.OnceFunc(func() { close(held) })
+	testcleanup.Add(t, func() {
+		release()
+		service.afterBlockIndexWrite = nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.ReconcileBlockIndex(context.Background(), BlockIndexCursors{}, liveAheadDocuments{})
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(fenceWait):
+		t.Fatalf("the block-index pass over %s did not reach its commit within %s", document, fenceWait)
+	}
+	return release, done
 }
 
 // The backfill marks each stored document no pass of this build's rule has stated owed its block
@@ -965,7 +992,7 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 	}
 	owing := takeStoreCensus(t, database)
 	for _, name := range []string{"block_rank", "block_text", "block_size"} {
-		if kind := treeCensusKind(t, owing, name); kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+		if kind := censusKind(t, owing, name); kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
 			t.Errorf("while every document holds the backfill's mark the census reads %d row and %d node difference(s) of kind %s, %+v, "+
 				"want none: a block of a document owed its index is on neither side", kind.RowDifferences, kind.NodeDifferences, name, kind.ReportedRows)
 		}
@@ -994,7 +1021,7 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 		}
 	}
 	for _, name := range []string{"block", "block_rank", "block_text", "block_size"} {
-		if kind := treeCensusKind(t, census, name); kind.Rows == 0 || kind.Nodes == 0 {
+		if kind := censusKind(t, census, name); kind.Rows == 0 || kind.Nodes == 0 {
 			t.Errorf("the census read %d rows and %d nodes of kind %s after the reconciliation, so it compared nothing there", kind.Rows, kind.Nodes, name)
 		}
 	}
@@ -1019,7 +1046,7 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 	}
 	broken := takeStoreCensus(t, database)
 	for name, address := range map[string]string{"block_text": retractedAt, "block_rank": rankedAt, "block_size": sized} {
-		kind := treeCensusKind(t, broken, name)
+		kind := censusKind(t, broken, name)
 		if kind.RowDifferences != 1 || len(kind.ReportedRows) != 1 || !strings.Contains(kind.ReportedRows[0].At, address) {
 			t.Errorf("with block %s broken the census reads %d row difference(s) of kind %s, %+v, want the one naming it",
 				address, kind.RowDifferences, name, kind.ReportedRows)
@@ -1029,8 +1056,8 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 	}
 }
 
-// treeCensusKind is the census's line for one kind.
-func treeCensusKind(t *testing.T, report *graphcensus.StoreReport, name string) graphcensus.KindReport {
+// censusKind is the census's line for one kind.
+func censusKind(t *testing.T, report *graphcensus.StoreReport, name string) graphcensus.KindReport {
 	t.Helper()
 	index := slices.IndexFunc(report.Kinds, func(kind graphcensus.KindReport) bool { return kind.Kind == name })
 	if index < 0 {

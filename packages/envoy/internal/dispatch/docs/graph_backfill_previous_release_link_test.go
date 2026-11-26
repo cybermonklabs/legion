@@ -398,10 +398,7 @@ func writePreviousReleaseLink(t *testing.T) previousReleaseLink {
 	// The document as a build before the store wrote it: its rows, and nothing of the store.
 	drainBlockIndex(t, service, "seed")
 	takeTheStoreOff(t, database)
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
-		t.Fatalf("read the document's ref_key: %v", err)
-	}
+	refKey := refKeyOf(t, database, document)
 
 	report, err := graphcensus.Backfill(ctx, database, io.Discard)
 	if err != nil {

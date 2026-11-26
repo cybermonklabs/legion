@@ -224,7 +224,7 @@ func blockTypeSupertagCensus(t *testing.T, database *store.Store, what string) g
 	var written bytes.Buffer
 	report.Write(&written)
 	t.Logf("the store census %s:\n%s", what, written.String())
-	return treeCensusKind(t, report, "block_type")
+	return censusKind(t, report, "block_type")
 }
 
 // blockTypeSupertagDifferences is how many differences of kind block_type kind holds, and whether

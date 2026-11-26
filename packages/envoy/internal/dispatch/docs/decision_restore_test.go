@@ -244,11 +244,7 @@ func (issue *restoreIssue) latest(document string) string {
 // refKey is document's ref_key.
 func (issue *restoreIssue) refKey(document string) string {
 	issue.t.Helper()
-	var refKey string
-	if err := issue.database.Pool.QueryRow(context.Background(), `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
-		issue.t.Fatalf("read the ref_key of %s: %v", document, err)
-	}
-	return refKey
+	return refKeyOf(issue.t, issue.database, document)
 }
 
 // movedTo is each moved_to tuple the store states, from address to address, from document's
@@ -1253,7 +1249,7 @@ func TestTheConversionWritesAReadingIntoAPresentAskBlockThatIsNotTheSpecsFirst(t
 	if ends, want := askedOn(), refs.BlockNodeKind+":"+issue.refKey(issue.spec)+"#"+block; !slices.Equal(ends, []string{want}) {
 		t.Errorf("after the restore ask %s states asked_on %v, want only the one to its fresh block %s", left, ends, want)
 	}
-	if kind := treeCensusKind(t, takeStoreCensus(t, issue.database), graphstore.TupleAskedOn); kind.Rows != 2 || kind.Nodes != 2 || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+	if kind := censusKind(t, takeStoreCensus(t, issue.database), graphstore.TupleAskedOn); kind.Rows != 2 || kind.Nodes != 2 || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
 		t.Errorf("after the restore the asked_on census reads %d rows, %d tuples, %d rows no tuple states and %d tuples no row projects (%+v, %+v), want the two asks' rows and tuples and no difference",
 			kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 	}

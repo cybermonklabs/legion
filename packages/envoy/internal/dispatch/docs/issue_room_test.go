@@ -191,6 +191,29 @@ func retireVerification(t *testing.T, database *store.Store, room issueRoom) {
 	}
 }
 
+// moveIntoIssueRoom moves document, a document of issue DOC-1, into a room of its issue and answers
+// the room's tree artifact: the tree artifact, the issue's issue_trees row and the document's
+// document_rooms row naming that room, in one statement, with no announcement
+// (AnnounceDocumentRooms), so no process hears of the move.
+func moveIntoIssueRoom(t *testing.T, database *store.Store, document string) string {
+	t.Helper()
+	var tree string
+	if err := database.Pool.QueryRow(context.Background(), `
+		with tree as (
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('DOC-1', 'DOC', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
+			returning id
+		), held as (
+			insert into issue_trees (issue_key, artifact_id) select 'DOC-1', id from tree
+		), moved as (
+			insert into document_rooms (artifact_id, room) select $1::uuid, id from tree
+		)
+		select id::text from tree`, document).Scan(&tree); err != nil {
+		t.Fatalf("move the document into its issue's room: %v", err)
+	}
+	return tree
+}
+
 // Two people editing two documents of one converted issue edit one room (R5): a socket opened on
 // the spec's uuid and one on the Verification document's are both admitted to the issue's room,
 // which holds one place under the room cap, and each frame they read names the document they asked
@@ -272,13 +295,7 @@ func TestTwoSocketsThroughTwoDocumentsOfAnIssueEditOneRoom(t *testing.T) {
 	}{
 		room.spec: {2, "Spec words.\n"}, room.verification: {2, "Check words.\n"}, room.plan: {2, planSeed}, room.tree: {1, ""},
 	} {
-		var number int
-		var markdown string
-		if err := database.Pool.QueryRow(ctx, `
-			select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1
-		`, document).Scan(&number, &markdown); err != nil {
-			t.Fatalf("read the latest version of %s: %v", document, err)
-		}
+		number, markdown := newestStoredVersion(t, database, document)
 		if number != want.number || markdown != want.markdown {
 			t.Errorf("the latest version of %s is %d holding %q, want %d holding %q: its own fragment", document, number, markdown, want.number, want.markdown)
 		}
@@ -326,20 +343,7 @@ func TestAHeldSocketOnAnOldRoomIsRefusedOnceItsDocumentMoves(t *testing.T) {
 	}
 	before := storedUpdateCount(t, database, document)
 
-	var tree string
-	if err := database.Pool.QueryRow(ctx, `
-		with tree as (
-			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-			values ('DOC-1', 'DOC', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
-			returning id
-		), held as (
-			insert into issue_trees (issue_key, artifact_id) select 'DOC-1', id from tree
-		), moved as (
-			insert into document_rooms (artifact_id, room) select $1::uuid, id from tree
-		)
-		select id::text from tree`, document).Scan(&tree); err != nil {
-		t.Fatalf("move the document into its issue's room: %v", err)
-	}
+	tree := moveIntoIssueRoom(t, database, document)
 
 	if _, err := held.Send(writeParagraph(held.Doc, fragmentName, "After.")); err != nil {
 		t.Fatalf("type on the held socket: %v", err)
@@ -802,13 +806,8 @@ func TestARoomBlockKnowsItsDocumentAndAReconciliationReadsTheRoom(t *testing.T) 
 	}
 
 	retireVerification(t, database, room)
-	// The row as the backfill leaves a document no pass of this rule has stated: marked, and
-	// stated by no pass.
-	if _, err := database.Pool.Exec(ctx, `
-		update document_block_versions set store_owed_at = now(), stated_version = null, stated_rule = null where artifact_id = $1`,
-		room.verification); err != nil {
-		t.Fatalf("mark the retired Verification document as the backfill marks it: %v", err)
-	}
+	// The row as the backfill leaves a document no pass of this rule has stated.
+	markUnstated(t, database, room.verification)
 	reconcile("a mark on the retired document")
 	requireNoMarkOfTheRoom(t, database, room, "a mark on the retired document")
 	requireStatedByThisRule(t, database, room.verification, versions[room.verification], "a mark on the retired document")

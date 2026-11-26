@@ -116,12 +116,11 @@ func TestTheBlockIndexTickReportsTheBacklogAndTheAgeOfItsOldestDocument(t *testi
 // one text both the tick's logged figure and `census --store --sizing` read). Dating it by nothing
 // would leave it counted in the backlog and invisible in the age.
 //
-// What the tick then does with it is this build's rule (R16), and why this test no longer finds
-// the document owed after the tick: once the owner-locked re-read finds no markdown version, one
-// statement clears the document's marks and states it at version 0 (indexOwedDocument), where a
-// tick of the release before passed over it and left it owed for ever. After the tick the
-// document is stated at version 0 by this build's rule, owed by nothing, and the backlog holds no
-// debt of it to date.
+// What the tick then does with it is this build's rule (R16): once the owner-locked re-read finds
+// no markdown version, one statement clears the document's marks and states it at version 0
+// (indexOwedDocument), where a tick of the release before passed over it and left it owed for
+// ever. After the tick the document is stated at version 0 by this build's rule, owed by nothing,
+// and the backlog holds no debt of it to date.
 func TestADocumentWithNoVersionIsDatedByItsOwnCreation(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)

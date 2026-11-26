@@ -1249,8 +1249,8 @@ func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) 
 	}
 }
 
-// CarriedFromVersion reads the version out of the sentence each carry writes, over those very
-// sentences, and reports nothing for a reason a person wrote. It is driven from
+// model.CarriedFromVersion reads the version out of the sentence each carry writes, over those
+// very sentences, and reports nothing for a reason a person wrote. It is driven from
 // carriedReasonPrefix, restoreReason and restoreCarriedReason themselves, so a change to any of
 // them that the parser no longer reads fails here rather than leaving every carried review to
 // read as a person's own.
@@ -1274,9 +1274,9 @@ func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
 		{name: "the prefix later in the reason", reason: "Not " + carry(2)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			version, carried := CarriedFromVersion(test.reason)
+			version, carried := model.CarriedFromVersion(test.reason)
 			if carried != test.carried || version != test.version {
-				t.Fatalf("CarriedFromVersion(%q) = %d, %t; want %d, %t",
+				t.Fatalf("model.CarriedFromVersion(%q) = %d, %t; want %d, %t",
 					test.reason, version, carried, test.version, test.carried)
 			}
 		})

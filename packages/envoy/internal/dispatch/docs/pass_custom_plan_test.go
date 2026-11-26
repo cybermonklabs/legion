@@ -74,13 +74,8 @@ func TestThePassPlansItsReadsForEachRunPastTheFifthOnAConnection(t *testing.T) {
 		return nil
 	}
 	for run := range passPlanRuns {
-		// The row as the backfill leaves a document no pass of this rule has stated: marked, and
-		// stated by no pass.
-		if _, err := database.Pool.Exec(ctx, `
-			update document_block_versions set store_owed_at = now(), stated_version = null, stated_rule = null where artifact_id = $1`,
-			room.spec); err != nil {
-			t.Fatalf("mark %s's spec owed a block index: %v", room.issue, err)
-		}
+		// The row as the backfill leaves a document no pass of this rule has stated.
+		markUnstated(t, database, room.spec)
 		tick, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, nil)
 		if err != nil {
 			t.Fatalf("reconcile the block index: %v", err)

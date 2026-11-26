@@ -127,10 +127,8 @@ func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
 	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "before\n" {
 		t.Fatalf("read rebuilt document: %q (%v), want latest version markdown", text, err)
 	}
-	var updates, versions int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&updates); err != nil {
-		t.Fatalf("count rebuilt updates: %v", err)
-	}
+	updates := storedUpdateCount(t, database, artifactID)
+	var versions int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from artifact_versions where artifact_id = $1`, artifactID).Scan(&versions); err != nil {
 		t.Fatalf("count artifact versions after rebuild: %v", err)
 	}
@@ -317,17 +315,11 @@ func TestRebuildDocumentRefusesALiveRoom(t *testing.T) {
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load live room: %v", err)
 	}
-	var before int
-	if err := service.store.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&before); err != nil {
-		t.Fatalf("count updates before rebuild: %v", err)
-	}
+	before := storedUpdateCount(t, service.store, artifactID)
 	saved := savedVersion(t, service.store, artifactID)
 	_, _, err := rebuildDocument(t, service, artifactID, nil)
 	requireLiveRebuildRefusal(t, err, saved, "is open in this Dispatch process", "Stop. Ask a person whether to rebuild the document after two minutes")
-	var after int
-	if err := service.store.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&after); err != nil {
-		t.Fatalf("count updates after refused rebuild: %v", err)
-	}
+	after := storedUpdateCount(t, service.store, artifactID)
 	if after != before {
 		t.Fatalf("resident-room rebuild changed doc_updates from %d to %d", before, after)
 	}
@@ -767,10 +759,7 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 		t.Fatalf("two rebuilds at once: %d succeeded, refusals %v; want one success and one ErrDocumentLive for the moved head", succeeded, refusals)
 	}
 	requireLiveRebuildRefusal(t, refusals[0], saved, "changed while it was being rebuilt", "Another rebuild may already have repaired the document: read it again, and ask a person whether to rebuild it only if it still does not load")
-	var rows int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&rows); err != nil {
-		t.Fatalf("count the rebuilt rows: %v", err)
-	}
+	rows := storedUpdateCount(t, database, artifactID)
 	if after := storedHead(t, database, artifactID); rows != 1 || after != head+1 {
 		t.Fatalf("after the rebuilds the history holds %d rows at head %d, want the one row a single rebuild seeds at %d", rows, after, head+1)
 	}
