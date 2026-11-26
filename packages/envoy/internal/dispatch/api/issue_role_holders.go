@@ -226,7 +226,8 @@ const maxRoleHolderSessionBytes = 256
 // each session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A
 // body that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a
 // check or an index of the table. Six distinct roles bound the set at six holders. On a project
-// whose proven_sessions is on, a write whose credential does not prove the daemon's session is 403
+// whose proven_sessions is on, a write whose credential does not prove its actor's session, the
+// session of the issue's project's daemon or of another project's daemon (isIssueDaemon), is 403
 // ROLE_HOLDER_NOT_PROVEN, after those refusals; a write the route takes marks the issue's project
 // in its transaction (project_role_holder_marks).
 func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
@@ -329,10 +330,12 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Another project's daemon passes isIssueDaemon only on a broker token that proves its session,
+	// so the one actor this refuses names the issue's project's daemon without proving it.
 	if provenSessions && !writer.actor.Proven {
 		writeError(w, "ROLE_HOLDER_NOT_PROVEN", http.StatusForbidden, fmt.Sprintf(
-			"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves session %s. This request's credential does not prove that session.",
-			project, key, daemon))
+			"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves the session it publishes as: session %s, or session legion-daemon:<P> on a broker token that names project P. This request's credential does not prove session %s.",
+			project, key, daemon, daemon))
 		return
 	}
 	// Mark the project even if the body lists no holders. Update the provenance of each

@@ -115,9 +115,10 @@ const ownerProjectJoin = `
 // listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go), the
 // read putAskAskedOf takes before it writes (api/ask_asked_of.go) and projectOfAsk
 // (api/project_scope.go) - and each builds them from this one text, so the rule and the tables
-// it names move together. askReadFrom serves two of the six reads, askReadColumns and the
-// Inbox's person filter, which share one statement. TestOneExpressionDecidesWhoWaits holds them
-// to this one spelling as it holds the expression to its own.
+// it names move together. The six clauses serve seven reads: askReadFrom serves two of them,
+// askReadColumns and the Inbox's person filter, which share one statement, and each other clause
+// serves one. TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the
+// expression to its own.
 //
 // Each is an outer join: a question owned by an issue has no document row and one owned by a
 // document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees

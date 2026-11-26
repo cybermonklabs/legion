@@ -213,10 +213,11 @@ func (s *server) projectOfIssue(ctx context.Context, q queryer, r *http.Request)
 
 // issueProject reads the project of the issue key and whether that project is private, in one
 // statement. An empty project with no error means that no issue has the key (scanProjectKey). It
-// is the one read of an issue's project that a write check makes: the pre-handler check of an
-// issue's address (projectOfIssue), the results routes' check of a check's issue
-// (checkIssueProject), and the reads under the locks of a parent (validateIssueParent) and of a
-// blocked_by target (writeBlockedBy).
+// serves the pre-handler check of an issue's address (projectOfIssue), the results routes' check
+// of a check's issue (checkIssueProject), and the reads under the locks of a parent
+// (validateIssueParent) and of a blocked_by target (writeBlockedBy). A write check that needs more
+// of the issue's row reads the project and its visibility in a statement of its own, as a
+// create's read of its parent under its locks does (readCreateParent).
 func issueProject(ctx context.Context, q queryer, key string) (project string, private bool, err error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select i.project_key, p.visibility = 'private'

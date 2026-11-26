@@ -1962,6 +1962,13 @@ const proxyLifetime = 420 * time.Second
 // so a client that renews later than that keeps to it.
 const proxyRenewBefore = 300 * time.Second
 
+// proxyHalfLifeSlack is how far before a token's half life, reckoned from the expiry the broker's
+// introspection names, C2 lets the proxy renew it. The broker writes that expiry and the
+// answer's expires_in in whole seconds, truncated (EXPIRES_IN_STEP_MS of
+// packages/cipher-client/src/token-client.ts), so the life the client reckons from expires_in
+// can be up to a second short, and the half life it renews at up to half a second early.
+const proxyHalfLifeSlack = time.Second / 2
+
 // proxyReads is how long C2's client reads, from its own start: longer than the 210 s after which
 // the proxy renews a 420 s token, so the run outlives the token the proxy traded first and goes on
 // with the token it renewed that one with.
@@ -2150,10 +2157,13 @@ type proxyClientRun struct {
 //
 // Controls: the run exits 0; every read answers 200 and the client makes at least 2,000
 // requests; the bytes read back hash as the bytes uploaded; both comment POSTs answer 201, the
-// second replayed (Idempotency-Replayed: ?1), and the issue holds the comment once; the distinct
-// tokens the role's session presented from the mark on, m′, are at least 2, so the proxy renewed,
-// and at most 1 + T / (L - 300 s), so it traded once for each renewal and never once for each
-// request, and each was presented only before its own expiry; and the exit line's m is m′, its n
+// second replayed (Idempotency-Replayed: ?1), and the issue holds the comment once; the run
+// outlives the first token's half life, T > L / 2; the distinct tokens the role's session
+// presented from the mark on, m′, are exactly 2 and at most 1 + T / (L - 300 s), so the proxy
+// traded once for its one renewal and never once for each request; the second token was first
+// presented no earlier than the first token's half life, its expiry less L / 2 (less
+// proxyHalfLifeSlack), and before the first token's expiry, so the proxy renewed at that half
+// life; each token was presented only before its own expiry; and the exit line's m is m′, its n
 // the requests the recording proxy holds of that session from the mark on, and its r 0. The same
 // proxy in the role's environment without dispatch_token_broker, where DISPATCH_TOKEN_FILE stands
 // in place of DISPATCH_TOKEN_BROKER, exits 2 naming DISPATCH_TOKEN_BROKER, runs no command (touch
@@ -2307,8 +2317,8 @@ func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
 	controlRan := !errors.Is(markerErr, os.ErrNotExist)
 
 	report := r.report("C2: a tool run's reads through dispatch proxy, with one trade for each renewal")
-	report.say("`dispatch proxy` ran in the environment of the role %s, a registered session of an ExchangeRolesAccount pod of %s, with `python3 %s` as its command (proxyClient): a Python standard-library client that reaches Dispatch over the proxy's unix socket alone. The broker's access tokens live %.0f s, and the proxy's one client trades again once its token has less than %.0f s to live. The client read back rig-proxy.bin, a file of %d random bytes the role uploaded to %s, posted one comment on %s twice under one Idempotency-Key, and for %.0f s read pages of %s's issues and of each issue's events, starting one request each %d ms at most.",
-		role.session, rigP, client, proxyLifetime.Seconds(), proxyRenewBefore.Seconds(), len(uploaded), r.pIssue, r.pIssue, proxyReads.Seconds(), rigP, proxyPace.Milliseconds())
+	report.say("`dispatch proxy` ran in the environment of the role %s, a registered session of an ExchangeRolesAccount pod of %s, with `python3 %s` as its command (proxyClient): a Python standard-library client that reaches Dispatch over the proxy's unix socket alone. The broker's access tokens live %.0f s. The proxy's one client trades again %.0f s before a token's expiry, but never before half the token's life, so it renews a token of that lifetime at its half life, about %.0f s after it landed. The client read back rig-proxy.bin, a file of %d random bytes the role uploaded to %s, posted one comment on %s twice under one Idempotency-Key, and for %.0f s read pages of %s's issues and of each issue's events, starting one request each %d ms at most.",
+		role.session, rigP, client, proxyLifetime.Seconds(), proxyRenewBefore.Seconds(), (proxyLifetime / 2).Seconds(), len(uploaded), r.pIssue, r.pIssue, proxyReads.Seconds(), rigP, proxyPace.Milliseconds())
 	exitCell := exitLine
 	if exit == nil {
 		exitCell = "none: the last line on standard error is " + strconv.Quote(exitLine)
@@ -2365,8 +2375,8 @@ func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
 	if len(got.Answers) < 2000 {
 		t.Errorf("the client made %d requests in %.1f s, want at least 2,000", len(got.Answers), got.Seconds)
 	}
-	if periods := 2 * (proxyLifetime - proxyRenewBefore); wall <= periods {
-		t.Errorf("the proxy run took %s, want more than two renewal periods, %s", wall, periods)
+	if wall <= proxyLifetime/2 {
+		t.Errorf("the proxy run took %s, want more than %s, the half life of the token the proxy traded first", wall, proxyLifetime/2)
 	}
 	if reads == 0 || len(unread) > 0 {
 		t.Errorf("%d of the client's %d reads were not answered 200, want every one answered 200; the first: %s", len(unread), reads, strings.Join(unread[:min(5, len(unread))], "; "))
@@ -2381,8 +2391,18 @@ func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
 	if held != 1 {
 		t.Errorf("%s holds %d comments with the body the client posted, want exactly 1", r.pIssue, held)
 	}
-	if len(sessionTokens) < 2 {
-		t.Errorf("the session %s presented %d distinct tokens from the mark on, want at least 2: the proxy renewed none", role.session, len(sessionTokens))
+	if len(sessionTokens) != 2 {
+		t.Errorf("the session %s presented %d distinct tokens from the mark on, want exactly 2: the token the proxy traded first and the one it renewed that token with at its half life", role.session, len(sessionTokens))
+	} else if firstExpiry := r.tokens[sessionTokens[0]].expiry(); !firstExpiry.IsZero() {
+		// A zero expiry is the loop's error below.
+		halfLife := firstExpiry.Add(-proxyLifetime / 2)
+		renewed := presented[sessionTokens[1]][0].At
+		if renewed.Before(halfLife.Add(-proxyHalfLifeSlack)) || !renewed.Before(firstExpiry) {
+			t.Errorf("the session's second token %s was first presented at %s, %.1f s after the proxy run started; want it no earlier than %s (%.1f s), the half life of the first token %s less %s, and before that token's expiry %s (%.1f s)",
+				sessionTokens[1], renewed.UTC().Format(time.RFC3339Nano), renewed.Sub(start).Seconds(),
+				halfLife.UTC().Format(time.RFC3339), halfLife.Sub(start).Seconds(), sessionTokens[0], proxyHalfLifeSlack,
+				firstExpiry.UTC().Format(time.RFC3339), firstExpiry.Sub(start).Seconds())
+		}
 	}
 	if float64(len(sessionTokens)) > bound {
 		t.Errorf("the session %s presented %d distinct tokens in a run of %.1f s, want at most 1 + T / (L - 300 s) = %.2f", role.session, len(sessionTokens), wall.Seconds(), bound)

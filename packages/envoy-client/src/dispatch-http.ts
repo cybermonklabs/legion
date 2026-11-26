@@ -1613,7 +1613,9 @@ export class DispatchClient {
 
   /** `PUT /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting on.
    *  A bearer names its session in `actor`. It answers the project as `listProjects` lists it. A
-   *  token scoped to another project is 403 PROJECT_SCOPE. */
+   *  token scoped to another project turns it on, as the shared token does. A token scoped to one
+   *  project is 403 PROJECT_SCOPE for a project that does not exist and for a private project
+   *  that it does not name. */
   async turnOnProvenSessions(
     project: string,
     input: { readonly actor?: Actor } = {}
@@ -1623,8 +1625,10 @@ export class DispatchClient {
 
   /** `DELETE /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting
    *  off. The route needs the person scope, so a credential without it is 403
-   *  OAUTH_SCOPE_REQUIRED, and its writer is the person the credential acts for. It answers the
-   *  project as `listProjects` lists it. A token scoped to another project is 403 PROJECT_SCOPE. */
+   *  OAUTH_SCOPE_REQUIRED, a token scoped to another project included, and its writer is the
+   *  person the credential acts for. It answers the project as `listProjects` lists it. A token
+   *  scoped to one project is 403 PROJECT_SCOPE for a project that does not exist and for a
+   *  private project that it does not name. */
   async turnOffProvenSessions(project: string): Promise<Project> {
     return this.#json("DELETE", ["api", "v1", "projects", project, "proven-sessions"]);
   }

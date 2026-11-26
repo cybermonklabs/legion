@@ -1526,17 +1526,18 @@ func TestAJobBrokerTokenWritesEveryClass(t *testing.T) {
 	}
 }
 
-// TestAJobsNamedTokenIsHeldToItsProject: a job's token whose entry names one project is held to
-// the rule that holds a person's named token for that project. Each write below (one whose body
-// names another project, one to another project's object, and the deployment's own project
-// create) is sent under the job's token and under a person's named token for the same project,
-// and the job's answer has the status and the refusal code of the person's. At this release that
-// answer is 403 PROJECT_SCOPE for the first two and 403 PROJECT_SCOPE_DEPLOYMENT for the third
-// (dispatch://INFRA-264), and dispatch://INFRA-4799 changes it for the two tokens alike, so the
-// test pins no answer of its own. Where the person's answer is a refusal, the job's refused write
-// lands nothing. The job's writes into its own project are
+// TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject: a job's token whose entry
+// names one project is judged by the rule that judges a person's named token for that project.
+// Each write below (one whose body names another project, one to another project's object, and
+// the deployment's own project create) is sent under the job's token and under a person's named
+// token for the same project, and the job's answer has the status and the refusal code of the
+// person's. That answer is 201 for the issue made in the other project and for the comment on
+// the other project's issue, since a token that names one project writes a public project's
+// objects as a credential that names none does, and 403 PROJECT_SCOPE_DEPLOYMENT for the project
+// create (dispatch://INFRA-264). Where the answer is a refusal, the job's refused write lands
+// nothing. The job's writes into its own project are
 // TestAJobBrokerTokenWritesAsItsSessionForItsService's.
-func TestAJobsNamedTokenIsHeldToItsProject(t *testing.T) {
+func TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -1553,29 +1554,40 @@ func TestAJobsNamedTokenIsHeldToItsProject(t *testing.T) {
 		job, person any
 		// read is where a person reads the job's write back, and written the text it would show.
 		read, written string
+		// status and code are the answer both tokens get: its status, and its refusal code, which
+		// is empty for a write that lands.
+		status int
+		code   string
 	}{
 		"an issue whose body names another project": {
 			method: http.MethodPost, path: "/api/v1/issues",
 			job:    map[string]any{"project": "OTHER", "title": "Filed by a job elsewhere", "spec": "# Spec"},
 			person: map[string]any{"project": "OTHER", "title": "Filed by a person elsewhere", "spec": "# Spec"},
 			read:   "/api/v1/issues?project=OTHER", written: "Filed by a job elsewhere",
+			status: http.StatusCreated,
 		},
 		"a comment on another project's issue": {
 			method: http.MethodPost, path: "/api/v1/issues/" + other.issue + "/comments",
 			job:    map[string]any{"body": "Written by a job elsewhere."},
 			person: map[string]any{"body": "Written by a person elsewhere."},
 			read:   "/api/v1/issues/" + other.issue + "/comments", written: "Written by a job elsewhere.",
+			status: http.StatusCreated,
 		},
 		"a project of the deployment's own": {
 			method: http.MethodPost, path: "/api/v1/projects",
 			job:    map[string]any{"key": "JOB", "name": "Job", "default_assignee": brokerTestPerson},
 			person: map[string]any{"key": "PERSON", "name": "Person", "default_assignee": brokerTestPerson},
 			read:   "/api/v1/projects", written: `"JOB"`,
+			status: http.StatusForbidden, code: codeProjectScopeDeployment,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			persons := rig.serve(caller.presenting(t, write.method, write.path, personToken, write.person))
 			jobs := rig.serve(caller.presenting(t, write.method, write.path, jobToken, write.job))
+			if code := decodeBody[refusalAnswer](t, persons).Code; persons.Code != write.status || code != write.code {
+				t.Fatalf("the person's named token for the same project: status=%d code=%q body=%s, want status=%d code=%q",
+					persons.Code, code, persons.Body.String(), write.status, write.code)
+			}
 			if decodeBody[refusalAnswer](t, jobs).Code != decodeBody[refusalAnswer](t, persons).Code || jobs.Code != persons.Code {
 				t.Fatalf("the job's token: status=%d body=%s, want the answer of the person's named token for the same project: status=%d body=%s",
 					jobs.Code, jobs.Body.String(), persons.Code, persons.Body.String())
