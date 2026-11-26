@@ -3203,12 +3203,8 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	w, err := e.walk(ctx, tx, *issue)
-	if err != nil {
-		return intake.Result{}, err
-	}
 	if held.code != "" {
-		refusal, _ := held.refusal(actSignOff, issue.Key, heldAcceptanceBack(w))
+		refusal, _ := held.refusal(actSignOff, issue.Key, heldAcceptanceBack(s.walk))
 		return refusal, nil
 	}
 	accepted, err := e.acceptedRole(s)
