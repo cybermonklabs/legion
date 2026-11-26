@@ -2,7 +2,7 @@
 
 Read this in a Legion pane before you touch a role claim, or when a Legion role message fails.
 
-- The Legion plugin claims your assigned role through a daemon-minted role token, at your session's first turn or at a bound (30 s by default), whichever comes first (`packages/pi-shared/src/legion-claim-core.ts`).
+- The Legion plugin claims your assigned role through a daemon-minted role token, after the daemon answers its `claims/ready` call and it reads your claim's task with `claims/task` (`packages/pi-shared/src/legion-claim-core.ts`).
   Never call `envoy_role_set` or subscribe to your role topic yourself.
 - Never build a role token from an issue number or title: only the daemon maps tokens to issues.
 - A Legion claim is last-claim-wins. It survives parking and worker re-creation, and stays through the issue's linger after close (`linger_hours`).

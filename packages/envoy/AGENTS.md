@@ -44,4 +44,4 @@ Start with `docs/architecture.md`; `.dispatch/architecture/` at the repository r
 - Dispatch and the broker migrate at boot while the previous release still serves the same database:
   a migration that drops, renames or narrows waits a release (`cmd/dispatch/README.md`, "Database migrations").
 
-- Deliver to a session only through its own durable consumer on `ENVOY_NOTIFICATIONS`: add no plain NATS subscription and no fallback path.
+- Deliver a message of `ENVOY_NOTIFICATIONS` to a session only through the session's own durable consumer: add no plain NATS subscription and no fallback path.

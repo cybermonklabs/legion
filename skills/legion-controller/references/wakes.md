@@ -6,7 +6,7 @@ Read this when the skill's wake table sends you here. Wakes come on `notificatio
 
 Run the every-turn steps and the parked-root walk. Name in the day's report, and take nothing for: each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line; the operator or the issue's architect fixes a live row's session), each `blocked` and `held` row, and each `silent` entry with its role and how long it has been quiet (with `backgroundSince`, how long its background work has stood).
 
-A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again (with `backgroundSince`, it sends nothing) and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` being `issues.<KEY>.tree` and `<KEY>` the entry's `issue`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
+A `silent` entry is a phase worker nothing will wake: the daemon writes its task's value again for it to take (with `backgroundSince`, it writes nothing) and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` being `issues.<KEY>.tree` and `<KEY>` the entry's `issue`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
 
 ## `awaiting-person`
 
@@ -38,7 +38,15 @@ The daemon ended a stalled turn of the tree's architect, took the turn off its c
 
 ## `provider-errors`
 
-Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
+Six turns of `role` in a row ended in a provider error; the daemon keeps giving it the task. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
+
+## `intake-gave-up`
+
+The daemon's intake gave up messages it could not apply and keeps each as an open record, which `giveUps` names. Your tools show no record's error: a `replay_give_up` of one `giveUp` that still fails answers `failed` with it. A cause outside the daemon (an outage, a rate limit): replay once it has cleared. A daemon defect: send it to the tree that owns that code, or hand it over as a clear defect, and replay once a release carries the fix. A message that can never apply (it does not decode, or it is obsolete): `discard_give_up` it with a `reason`.
+
+## `memory-guard-kill`
+
+Your pod's memory guard ended one of your programs near the pod's memory limit; your session goes on. Do not run that program again unchanged: bound its output, or send heavy work where your deployment's instructions say.
 
 ## GitHub mentions
 
