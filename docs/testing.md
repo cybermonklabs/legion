@@ -693,11 +693,13 @@ change. A package `go list ./...` prints and the file does not name still runs, 
 leg: the last leg of the job the module's `unlisted` names (daemon-go, envoy-go), and every leg
 of the module warns, naming it, until the file does. A package under one of envoy's race trees
 (`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) must be listed in
-the race leg of its tree: the changes job refuses it unlisted, since the last plain leg would run
-it without the race detector. A line that names a directory that is no package, or a package in
-two places (but the two legs of a package `twice` names), fails every leg of the module. Put a new
-package in the leg its measured time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md`
-and `.github/ci-notes/ci.md`, "Why envoy's Go tests run in legs", say how the legs are balanced.
+the race leg of its tree: the import of `.github/scripts/ci_job_reads.py` refuses it unlisted, so
+the ci-filters and lint jobs fail naming it (the changes job's filter generation falls open and
+selects every job), since the last plain leg would run it without the race detector. A line that
+names a directory that is no package, or a package in two places (but the two legs of a package
+`twice` names), fails every leg of the module. Put a new package in the leg its measured time
+fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` and `.github/ci-notes/ci.md`, "Why
+envoy's Go tests run in legs", say how the legs are balanced.
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
 under the race detector, once per run, split by test name over the three race legs
