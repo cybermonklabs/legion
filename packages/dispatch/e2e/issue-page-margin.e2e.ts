@@ -1011,17 +1011,21 @@ async function readFocusedStack(
         "the threads stand at their words, or under the thread above, before the focus moves",
     })
     .toEqual([]);
-  // The poll above waited until the column placed every thread, so one reading is S1's last.
+  // The poll above waited until the column placed every thread, so one reading is S1's last. The
+  // focus scrolls the page to S2's row, so a top is read in the page's own coordinates: the
+  // box's top and the scroll that holds it.
+  const scrolled = () => page.evaluate(() => window.scrollY);
   const [before] = (await readSpots(page, [last])).spots;
-  const top = before?.box?.top;
+  const top = before?.box == null ? undefined : before.box.top + (await scrolled());
   if (top === undefined) throw new Error("S1's last thread is not drawn before the focus moves");
   await focusRow(page, first.node);
   await expect
     .poll(
       async () => {
         const [s1, s2] = (await readSpots(page, [last, first])).spots;
+        const scroll = await scrolled();
         return {
-          s1Higher: s1?.box != null && s1.box.top < top - 0.5,
+          s1Higher: s1?.box != null && s1.box.top + scroll < top - 0.5,
           s2Level:
             s2?.box != null && s2.words !== null && Math.abs(s2.box.top - s2.words.first.top) <= 2,
         };
