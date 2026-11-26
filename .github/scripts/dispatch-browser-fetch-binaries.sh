@@ -8,9 +8,12 @@
 #   GH_TOKEN=<token> .github/scripts/dispatch-browser-fetch-binaries.sh <out-dir> <job>
 #
 # <out-dir> is the directory the artifact's files are unzipped into, which the step after it
-# copies from. <job> is the id of the job that calls the workflow, its `${{ inputs.job }}`: the
-# artifact is `<job>-binaries`, as the build job names it. Each caller reads its own artifact,
-# even when several callers share a run. GH_TOKEN is the run's own `${{ github.token }}`, a key
+# copies from. <job> is the id of the caller whose binaries job built the artifact: the
+# artifact is `<job>-binaries`, as the build job names it, and the step passes the name its
+# first read takes, `${{ inputs.build-job || inputs.job }}` in the shard job and
+# `${{ inputs.job }}` in the alone job. So each caller reads its own build, even when several
+# callers share a run, but the references lane where it takes the pull-request lane's, which
+# both reads then name. GH_TOKEN is the run's own `${{ github.token }}`, a key
 # of the step's `env:` and
 # never an argument: an argument is on the process's command line, which every process of the
 # runner can read in /proc, so the token reaches curl through a header file this script writes

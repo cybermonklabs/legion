@@ -13,8 +13,11 @@
 # workflow's own `lane` input, `pull-request`, `full` or `references`: it decides which projects
 # run, whether the run is held to the `@pr` rows and whether it is held to the references lane's
 # spec files, and an unknown one ends this script below.
-# <connections> is the connection limit each stack's Postgres must allow, which the binaries job
-# reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container
+# <connections> is the connection limit each stack's Postgres must allow, which a binaries job
+# reads and the shard job passes as `${{ inputs.connections || needs.binaries.outputs.connections }}`:
+# the pull-request lane's figure where the references lane takes that lane's build
+# (.github/ci-notes/dispatch-browser.md#when-the-references-lane-takes-the-pull-request-lanes-build),
+# and this call's own binaries job's otherwise. It is handed on because this job's container
 # has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
 #
 # All three are arguments rather than keys of the step's `env:`, for the reason

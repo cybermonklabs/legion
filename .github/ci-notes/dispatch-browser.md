@@ -18,7 +18,9 @@ labelled `full-ci` or `lane:dispatch_browser`, and dispatch-references with the 
 on a pull request that changes what the reference rows test; the nightly workflow calls it with
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
-starts every artifact name, so two callers of one run share no artifact. One machine builds
+starts every artifact name, so two callers of one run share no artifact but the one build the
+references lane takes from the pull-request lane
+([its section](#when-the-references-lane-takes-the-pull-request-lanes-build)). One machine builds
 every artefact the run executes, the shard job spreads the rows over the legs its `matrix`
 names, the three `-alone` projects share a machine of their own, the two-process job, the
 fake-embedder job and the containerised visual review take one each, and one merge job joins
@@ -94,7 +96,8 @@ report step skips there and no check is posted.
 `references` runs the `chromium` project over every row of the eleven spec files the
 reference framework's Verification document names and the nine of the reading list's walk,
 with main's parse-count walk beside them, on the binaries job, the shard job's two legs and the
-merge job alone - four jobs, where the full lane runs eight and the pull-request lane five - so
+merge job alone - four jobs, where the full lane runs eight and the pull-request lane five, and
+three when it takes the pull-request lane's build - so
 a pull request that changes the reference framework gets those rows from CI at its head rather
 than from a run by hand. It gates nothing:
 .github/ci-notes/ci.md#the-reference-rows-preview-job
@@ -104,7 +107,10 @@ says why. The lane's spec files are written in one place, the `references)` arm 
 Its caller, ci.yaml's dispatch-references job, can share a workflow run with
 dispatch-browser-pr, on a pull request that selects both, and passes its own id as `job`, as
 every caller does: so its artifacts are `dispatch-references-…` beside `dispatch-browser-pr-…`,
-and each merge job reads only its own caller's legs.
+and each merge job reads only its own caller's legs. Where both run and dispatch-browser-pr's
+binaries job succeeded, it builds nothing and runs that job's binaries and dashboard
+([the next section](#when-the-references-lane-takes-the-pull-request-lanes-build));
+every artifact it uploads is still `dispatch-references-…`.
 
 Its merge job skips one step the other two lanes run: "Reading five, the lane's machine time",
 whose `if:` holds it off this lane. That reading holds a lane to a committed ceiling, and R5 of
@@ -112,6 +118,58 @@ dispatch://INFRA-1109/spec bounds the full and pull-request lanes alone. This la
 nothing, and no run of it has been read to set a ceiling from. The reading refuses a lane it
 holds no bound for (`.github/scripts/dispatch-browser-run-reads.sh#machine-time)`), so without
 that `if:` every run of this lane would fail there.
+
+## When the references lane takes the pull-request lane's build
+
+The references lane builds what the pull-request lane builds, so where both run in one run it
+takes that lane's build rather than making a second. In ci.yaml run 45850342764, attempt 1,
+`dispatch-references / binaries` (job 140015838557) and `dispatch-browser-pr / binaries` (job
+140015839531) uploaded the same artifacts: each binaries artifact held 4 files and each dashboard
+artifact 186, and every file had the same sha256 in both. Their logs, compared on every `Run`
+block, every env line, the go build lines and the cache lines, differed in the `lane:` input
+alone, `references` against `pull-request`, and that input changes nothing the job builds. The
+Go commands are fixed text of the step "Build the binaries and the dashboard the browser suite
+runs", and .github/scripts/dispatch-browser-build-dashboards.sh builds web/dist-b, the second
+rollout bundle, on the full lane alone, so every other lane builds web/dist and nothing beside
+it. The second build was 215 s of the references lane's 588 machine-seconds in that run: binaries
+215 s, shard (1) 157 s, shard (2) 189 s and merge 27 s, each job's `completed_at` less its
+`started_at` as the jobs API gives them.
+
+Two inputs carry it, both empty by default: `build-job`, the id of the caller whose binaries
+job built what this call runs, and `connections`, that job's `connections` output. Given a
+`build-job`, the binaries job skips by its `if:`, and the shard job runs past the skip, as the
+attest job of the worker image's workflow runs past the build an attest-only call skips: its
+`if:` is `!cancelled()` and a binaries job that succeeded, or one that skipped where a
+`build-job` was given. Its first read of the binaries, its second read through
+.github/scripts/dispatch-browser-fetch-binaries.sh and its dashboard download all name
+`<build-job>-binaries` and `<build-job>-dashboard`, and its browser step takes the
+`connections` input before the binaries job's output, which a skipped job leaves empty.
+
+Nothing else moves. Every artifact the call uploads keeps its own `<job>-` name, so the
+references lane's blob reports, records, merged report and failed rows' traces are still
+`dispatch-references-…`, and its merge job still reads only its own legs. The verdict step
+reads the skipped binaries job as it reads any skipped job, as no failure
+(.github/scripts/dispatch-browser-verdict.sh), and here there is none: the build it skipped is
+one the other caller's binaries job made and uploaded whole.
+
+The file's own `connections` output is what a caller reads to know there is a build to take, and
+it is not empty only once both artifacts are uploaded. The binaries job's `uploaded` output is
+the `artifact-id` of its last step, the dashboard's upload, which actions/upload-artifact leaves
+empty when the upload failed and which a step that never ran does not write; that step runs only
+after the binaries' upload and every step before it succeeded. The file's output is the
+binaries job's `connections` while `uploaded` is not empty, and empty otherwise, so a binaries
+job that wrote its connection limit and then failed, was cancelled or skipped before both
+uploads hands on nothing. That is the job's own success but for its post steps, and the one
+condition the taking call needs: the two artifacts it downloads are there. A job output and not
+`jobs.binaries.result`, which GitHub's `jobs` context holds too: actionlint 1.7.12, which the
+ci-filters job and workflow-files.yaml run, knows that context's outputs alone and refuses the
+result. ci.yaml's dispatch-references job is the one caller that fills the two inputs, both from
+dispatch-browser-pr's output, and when that output is empty it passes them empty and builds as
+it always did; .github/ci-notes/ci.md#the-reference-rows-preview-job says when each happens and
+what waiting for that call costs. The full and pull-request lanes pass neither input and run as
+they did. The alone, multiprocess, embedder and visual jobs keep their `needs: binaries` with no
+`!cancelled()`, and their downloads keep their own call's name: a lane that runs one of them
+builds for itself, which is why `build-job` is the references lane's alone.
 
 ## What the job set costs, and the machine-time ceiling the run holds it to
 
@@ -196,7 +254,8 @@ dispatch-browser-pr and dispatch-references jobs and dispatch-browser-nightly.ya
 dispatch-browser job. A build left in one caller would hand the others' runs nothing, and their
 shard and alone jobs would fail downloading an artifact their run never held. The two artifacts
 are `<job>-binaries` and `<job>-dashboard`, named for the caller, so callers that share a run
-each download their own.
+each download their own, but the references lane where it takes the pull-request lane's
+([its section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
 
 Why those two jobs do not build the binaries themselves: they run in a container, and
 .github/scripts/ci_filter_coverage.py's shell_reason counts a `container:` as something that
@@ -215,11 +274,14 @@ beside the Go commands rather than after them, in one step that waits on both, s
 build and costs this job no wall time of its own. That is what `./.github/actions/setup-bun` and
 `bun install --frozen-lockfile` are doing in a job that runs no test.
 
-It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
-already decided the call. ci.yaml's three callers hold the `dispatch_browser`,
-`dispatch_browser_pr` and `dispatch_references` outputs and the merge-group attempt term, and the
-nightly's dispatch-browser job calls it on its full-lane schedule and on every dispatch, by an
-`if:` of its own, so a condition here could only hold back a run its caller had asked for.
+Its one `if:`, `inputs.build-job == ''`, selects nothing: the caller has already decided the
+call. ci.yaml's three callers hold the `dispatch_browser`, `dispatch_browser_pr` and
+`dispatch_references` outputs and the merge-group attempt term, and the nightly's
+dispatch-browser job calls it on its full-lane schedule and on every dispatch, by an `if:` of
+its own, so a condition here on what changed could only hold back a run its caller had asked
+for. The `if:` skips the build in a call that names another caller's build to run instead,
+which only the references lane does, and the job builds in every other call
+([the references lane's section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
 
 ## The binaries job's budget
 
@@ -436,7 +498,10 @@ The stacks' connection limit, which e2e/harness-postgres.ts would otherwise comp
 print with `go run` (DISPATCH_E2E_PG_CONNECTIONS): read here, once for the run, and taken
 from this job's `connections` output by every job that starts stacks. The shard and alone
 jobs' containers have no Go, and the multiprocess, embedder and visual jobs set none up, so
-this is the one job of the file that runs it.
+this is the one job of the file that runs it. The same figure is the file's `connections`
+output, by which the references lane's call takes it with the pull-request lane's build, and
+that call's shard job reads it through its `connections` input
+([the references lane's section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
 
 ## Why the binaries artifact's name holds no run attempt
 
@@ -747,6 +812,9 @@ nothing, and the restore was there only for the build run-server.sh no longer do
 The directory is the one run-broker.sh built the broker's three binaries in, which is
 the directory `packages/dispatch/e2e/real-broker.ts#requestseed` points into, so the suite runs requestseed from there; the server
 binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN (.github/scripts/dispatch-browser-shard-suite.sh).
+In a call given `build-job` both attempts read that caller's artifact, `<build-job>-binaries`,
+in place of the call's own
+([the references lane's section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
 
 A BOUND OF ITS OWN AND A SECOND ATTEMPT. In run 44228250420 a read of this artifact took 2
 to 6 s on every leg but one, which took 428 s (the budget note above), so a slow read is
@@ -793,10 +861,13 @@ the leg retransmitted during it, so the next stall says whether the connection w
 slow. Its first read stays actions/download-artifact, which reads in seconds on all but about
 one leg in a thousand. The script runs in the step's 2 minutes, with the same directory of
 its own as the action's attempt, and reads the artifact the action reads, `<job>-binaries`,
-given the calling job's id (`${{ inputs.job }}`): callers that share a run - a pull request
-labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that changes what the
-reference rows test runs dispatch-references beside it - each read only their own build's
-binaries. A re-run uploads them again under the same name, and the action takes the highest id
+given the id the action's read in its job names: `${{ inputs.build-job || inputs.job }}` in
+the shard job and `${{ inputs.job }}` in the alone job. So callers that share a run - a pull
+request labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that changes
+what the reference rows test runs dispatch-references beside it - each read their own build's
+binaries, but the references lane where it takes the pull-request lane's, which both of its
+reads then name ([its section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
+A re-run uploads them again under the same name, and the action takes the highest id
 of the run's artifacts of that name (run 45306887784 held three by its attempt 3, and the highest
 id was not the newest by `created_at`), so the script takes that same one and reads its address,
 size and digest from it.
@@ -840,7 +911,9 @@ The dashboard the binaries job built, in place of this job's own `Build dispatch
 dashboard` step: the artifact holds the trees themselves, so this writes web/dist where
 `bun run build:web` writes it, which is what each stack's server serves. On the full lane
 the archive also carries web/dist-b, the second rollout bundle only the multiprocess job
-reads.
+reads. In a call given `build-job` the download reads that caller's `<build-job>-dashboard`,
+the same web/dist that caller's lane builds
+([the references lane's section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
 
 ## What the shard job's PostgreSQL reading records, and why it is a script
 
@@ -1947,6 +2020,10 @@ report anywhere (dispatch://INFRA-1109 put the multiprocess, embedder and visual
 it too), and without it in this list the run would be reported as legs that uploaded
 nothing rather than as the build that never handed them anything. The verdict step, "Fail
 when a leg failed or the merged report holds a failed row", names it as it names the rest.
+In a call that takes another caller's build the binaries job is skipped, and that step reads
+the skip as it reads any skipped job, as no failure: the shard legs ran on a build that
+succeeded in the other call
+([the references lane's section](#when-the-references-lane-takes-the-pull-request-lanes-build)).
 
 ## Why the merge job runs on arm64
 

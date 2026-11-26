@@ -2462,17 +2462,21 @@ lane, from main, under the job id dispatch-browser) runs it again on main's tip.
 gates nothing
 (.github/ci-notes/ci.md#the-reference-rows-preview-job).
 
-Two inputs, each a literal of its caller's. `lane` decides the projects each job of the called
-workflow runs, so nothing here chooses them a second time; it picks no browser to install any
-more: the shard and alone jobs run in the image this repository builds, which carries all three
-engines (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
+Two inputs, each a literal of its caller's, and two more that dispatch-references alone passes,
+`build-job` and `connections`, to take dispatch-browser-pr's build
+(.github/ci-notes/ci.md#the-reference-rows-preview-job). `lane` decides the projects each job
+of the called workflow runs, so nothing here chooses them a second time; it picks no browser to
+install any more: the shard and alone jobs run in the image this repository builds, which
+carries all three engines (dispatch://INFRA-1443), and the two-process job installs Chromium
+whatever the lane.
 `job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, so a
 pull request's browser checks are `dispatch-browser-pr / shard (1)` and the like, and a
 `ci_check` naming `dispatch-browser / merge` finds no run of that name on a pull request
 without the label: the dispatch-browser job's own run concludes `skipped`, and no job of
 dispatch-browser.yaml starts under it. The merge job reads only the jobs named under its own
-caller, every artifact name starts with the id so callers that share a run share none, and
-the merge job's ci-ok report names it.
+caller, every artifact name starts with the id so callers that share a run share none but the
+build dispatch-references takes from dispatch-browser-pr, and the merge job's ci-ok report
+names it.
 
 The matrix is in the called workflow and cannot be here. Every leg of a matrix shares one
 job id, and .github/actions/ci-ok-report posts the failing ci-ok of a merge-group run from
@@ -2511,10 +2515,24 @@ a pull request gets only under `full-ci` or `lane:dispatch_browser`
 the alone, multiprocess and visual jobs of the called file are skipped by their own `if:`, as
 jobs of a lane it does not run, and on the references lane those three, the embedder job and
 the merge job's machine-time reading, which holds the pull-request and full lanes alone to a
-budget (.github/ci-notes/dispatch-browser.md#the-third-lane-references).
+budget (.github/ci-notes/dispatch-browser.md#the-third-lane-references), and its binaries job
+too where it takes dispatch-browser-pr's build, below.
 No other job of this file passes a lane: a job runs all its steps wherever it runs, and a job
 that held a slow suite beside steps a pull request runs is two jobs now
 (.github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push).
+
+The binaries job reads the lane for one thing alone: `full` builds the second rollout bundle,
+web/dist-b, beside the dashboard (.github/scripts/dispatch-browser-build-dashboards.sh), and the
+Go commands are fixed text of its build step, so every other lane builds the same artifacts from
+the same tree. In run 45850342764, attempt 1, the binaries jobs of the pull-request and
+references lanes uploaded the same 4 binaries and the same 186 dashboard files, each file's
+sha256 the same in both, and their logs, every `Run` block, env line, go build line and cache
+line, differed in the `lane:` input alone. So where dispatch-browser-pr runs in the same run and
+its binaries job succeeded, dispatch-references builds nothing and runs that build, through two
+more inputs, `build-job` and `connections`; its `lane` stays `references`, which is what its
+shard legs run
+(.github/ci-notes/dispatch-browser.md#when-the-references-lane-takes-the-pull-request-lanes-build).
+The next section says when it does and what waiting for that call costs.
 
 ## The reference rows' preview job
 
@@ -2522,10 +2540,10 @@ What it runs, and why it gates nothing.
 
 The reference rows' preview: every Chromium row of the eleven spec files
 the reference framework's Verification document names and the nine of the reading list's
-walk, through the `references` lane of dispatch-browser.yaml - its binaries job, its two shard
-legs and its merge job, and none of its
-alone, two-process, embedder or visual jobs. The pull-request lane, the dispatch-browser-pr job,
-runs only the few of those rows that carry `@pr`, so without this job a change to the
+walk, through the `references` lane of dispatch-browser.yaml - its binaries job where it does
+not take dispatch-browser-pr's build (below), its two shard legs and its merge job, and none of
+its alone, two-process, embedder or visual jobs. The pull-request lane, the dispatch-browser-pr
+job, runs only the few of those rows that carry `@pr`, so without this job a change to the
 reference framework got the rest from a run by hand.
 
 Outside ci-ok on purpose: CI_OK_EXEMPT names it, ci-ok does not need it, and it passes no
@@ -2540,8 +2558,9 @@ them, and ci-ok needs that job.
 So it joins the router in fewer places than the eight
 .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs names for a
 new job: an EXCLUDED file in .github/ci-gates, dispatch-references.py, where a gate would be,
-which holds its filter's patterns by hand, an output in `changes` for that filter, its `needs:
-changes` and an `if:` on that output with the re-run term, and its name in CI_OK_EXEMPT. It has
+which holds its filter's patterns by hand, an output in `changes` for that filter, its need of
+changes and an `if:` on that output with the re-run term (it needs dispatch-browser-pr too, and
+its `if:` starts with `!cancelled()`, for the reason below), and its name in CI_OK_EXEMPT. It has
 no CI_OK_SELECTED_BY or
 CI_OK_PULL_REQUEST_ONLY entry, no report step and no place in the ci-ok job's `needs:`,
 each of which check-ci-filters.sh refuses for a job CI_OK_EXEMPT names. Its steps are
@@ -2552,6 +2571,32 @@ lane, and a second copy of them would drift from the first. It passes its own id
 artifact it uploads starts with `dispatch-references-`, and its merge job reads only its own
 legs when dispatch-browser-pr shares its run
 (.github/ci-notes/ci.md#the-browser-suite-jobs-their-lanes-their-inputs-and-why-the-matrix-is-in-the-called-file).
+
+It takes dispatch-browser-pr's build where it can. Its binaries job builds what
+dispatch-browser-pr's builds, file for file
+(.github/ci-notes/dispatch-browser.md#when-the-references-lane-takes-the-pull-request-lanes-build
+holds the measurement), so it needs dispatch-browser-pr and reads that call's `connections`
+output, which holds the stacks' connection limit once the call's binaries job has uploaded both
+its artifacts, and is empty before that. Not empty, it passes `build-job: dispatch-browser-pr`
+and that limit, and the called file skips this call's binaries job and runs dispatch-browser-pr's
+binaries and dashboard. Empty - dispatch-browser-pr was not selected and skipped, or its binaries
+job failed before both uploads - it passes two empty values, and the lane builds as it always
+has. `!cancelled()` is what lets it run after a dispatch-browser-pr that skipped or failed: a
+need that did not succeed would skip it otherwise, which is why tool-fallback, which needs
+ci-images, carries the same term. It is false only when the whole run is cancelled, and the
+rest of the `if:` still holds the job to a pull request whose change selects it. ci-ok's
+verdict is untouched: CI_OK_EXEMPT still names this job, and the ci-ok job's `needs:` holds
+dispatch-browser-pr as before and this job not at all.
+
+What the wait costs. A job that needs a job calling a reusable workflow starts when that whole
+call ends, not when its binaries job does, so this job's legs start after dispatch-browser-pr's
+merge job. In run 45850342764, attempt 1, dispatch-browser-pr's call ran 565 s (15:35:49Z to
+15:45:14Z) and this job's call 450 s wall (15:35:49Z to 15:43:19Z): its binaries job 215 s, then
+235 s of legs and merge job. Taking the build would have left that run's lane 373 of its 588
+machine-seconds, the binaries job's 215 s gone, and at that run's figures its reading would have
+ended about 565 + 235 = 800 s after the two calls started, some 350 s later than the 450 s it
+took. Nothing that gates waits for it: ci-ok does not need this job, and neither of the checks
+main's ruleset requires reads it. The run itself stays in progress until it ends.
 
 Pull requests alone: the merge queue's full lane already runs these rows, so a merge group
 would pay for them twice. The merge-group attempt term is the one every job of ci.yaml but
