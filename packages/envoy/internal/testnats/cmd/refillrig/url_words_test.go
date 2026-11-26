@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -92,8 +97,9 @@ func TestARegistrationPrintsNoCredentialItsListenerURLCarries(t *testing.T) {
 
 // TestASeedThatCannotConnectPrintsNoCredentialItsNATSURLCarries: seed's -nats can carry a
 // credential in its user information and its query, and nats.go's error for a URL it cannot parse
-// quotes the URL whole. seed's error names the flag and the failure's class alone (connect). The
-// twin shows the URL as written holds the credentials. Captures refillrig.seed-url/connect.
+// quotes the URL whole. seed's error names the flag and the failure's class alone (connect). A
+// failure that names no part of the URL keeps nats.go's own words (no-servers). The twin shows the
+// URL as written holds the credentials. Captures refillrig.seed-url/connect.
 func TestASeedThatCannotConnectPrintsNoCredentialItsNATSURLCarries(t *testing.T) {
 	raw := "nats://" + redacttest.User + ":" + redacttest.Password + "@127.0.0.1:not-a-port/?access" + "_token=" + redacttest.Token
 	t.Run("twin", func(t *testing.T) {
@@ -111,4 +117,53 @@ func TestASeedThatCannotConnectPrintsNoCredentialItsNATSURLCarries(t *testing.T)
 			t.Errorf("seed = %q; want %q, the flag and the failure's class", err, want)
 		}
 	})
+	t.Run("no-servers", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gone := "nats://" + redacttest.User + ":" + redacttest.Password + "@" + listener.Addr().String()
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		err = runSeed([]string{"-nats", gone, "-sets", ""})
+		if want := "connect to the NATS server -nats names: " + nats.ErrNoServers.Error(); err == nil || err.Error() != want {
+			t.Errorf("seed against a server that is gone = %v; want %q, nats.go's own words", err, want)
+		}
+	})
+}
+
+// TestAPollThatGetsNoAnswerWritesNoCredentialItsListenerURLCarries: poll's -url can carry a
+// credential in its user information and its query, and a request that got no answer is written
+// to -out, which a judge prints (answer). net/http's error of a GET to a listener that is gone
+// names the URL with its user name and its query (get-error), and http.NewRequest's error of a URL
+// that does not parse quotes it whole (unparsed); each is written as the rule prints it beside
+// -url. The twin shows each URL as written holds the credentials. Captures
+// refillrig.poll-url/<case>.
+func TestAPollThatGetsNoAnswerWritesNoCredentialItsListenerURLCarries(t *testing.T) {
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	gone := credentialed(dead.URL)
+	unparsed := "http://" + redacttest.User + ":" + redacttest.Password + "@127.0.0.1:1/base%zz?access" + "_token=" + redacttest.Token
+	t.Run("twin", func(t *testing.T) {
+		if held := redacttest.Held(gone); len(held) != len(redacttest.Secrets) {
+			t.Errorf("the URL %q holds %q; want every credential, so the get-error row can see one printed", gone, held)
+		}
+		if _, err := http.NewRequest(http.MethodGet, unparsed+listPaths["sessions"], nil); err == nil || len(redacttest.Held(err.Error())) != len(redacttest.Secrets) {
+			t.Errorf("http.NewRequest = %v; want an error that quotes the credentials, so the unparsed row can see them", err)
+		}
+	})
+	for _, c := range []struct{ name, url, want string }{
+		{"get-error", gone, `Get "` + redact.NotPrinted + `": ` + redact.ClassRefused},
+		{"unparsed", unparsed, `parse "` + redact.NotPrinted + `": ` + redact.ClassNotAURL},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			o := observe(context.Background(), &http.Client{Timeout: 5 * time.Second}, c.url, "sessions", nil)
+			said := answer(o)
+			redacttest.RequireNoPiece(t, "refillrig.poll-url/"+c.name, said, redacttest.User, redacttest.Password, redacttest.Token)
+			if want := "no answer (" + c.want + ")"; said != want {
+				t.Errorf("the judge prints the poll as %q; want %q, the call as the rule prints it and the failure's class", said, want)
+			}
+		})
+	}
 }

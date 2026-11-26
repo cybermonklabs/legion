@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -28,13 +29,19 @@ func bucketConfig(kind string) (*nats.KeyValueConfig, error) {
 	return nil, fmt.Errorf("bucket %q: want sessions or interests", kind)
 }
 
-// connect connects to the NATS server url names, -nats of seed and recreate. Its failure names the
-// flag and the failure's class alone: nats.go's error for a URL it cannot parse quotes the URL
-// whole, and a NATS URL carries its user and password, or its token, in its user information.
-func connect(url string) (*nats.Conn, nats.JetStreamContext, error) {
-	conn, err := nats.Connect(url, nats.Timeout(5*time.Second), nats.Name("refillrig"))
+// connect connects to the NATS server address names, -nats of seed and recreate. A failure names
+// the flag. One whose address does not parse prints its class alone: nats.go hands on net/url's
+// error, which quotes the address whole, and a NATS URL carries its user and password, or its
+// token, in its user information. Any other failure is nats.go's own words (no servers, the
+// server's authorization refusal), which name no part of the address, and prints as it is.
+func connect(address string) (*nats.Conn, nats.JetStreamContext, error) {
+	conn, err := nats.Connect(address, nats.Timeout(5*time.Second), nats.Name("refillrig"))
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect to the NATS server -nats names: %w", redact.Class(err))
+		var unparsed *url.Error
+		if errors.As(err, &unparsed) {
+			err = redact.Class(err)
+		}
+		return nil, nil, fmt.Errorf("connect to the NATS server -nats names: %w", err)
 	}
 	js, err := conn.JetStream(nats.PublishAsyncMaxPending(4096), nats.MaxWait(10*time.Second))
 	if err != nil {

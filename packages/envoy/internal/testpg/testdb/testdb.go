@@ -108,7 +108,7 @@ func adminExec(t testing.TB, adminURL, host, statement string) {
 // printed in place of adminURL, which carries a credential.
 func execOn(adminURL, host, statement string) error {
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, adminURL)
+	conn, err := connectAdmin(ctx, adminURL)
 	if err != nil {
 		return fmt.Errorf("connect to the Postgres server at %s: %w", host, err)
 	}
@@ -117,4 +117,15 @@ func execOn(adminURL, host, statement string) error {
 		return fmt.Errorf("%s on %s: %w", statement, host, err)
 	}
 	return nil
+}
+
+// connectAdmin opens a connection of its own to adminURL. Where pgx cannot read adminURL, the
+// failure prints in fixed words alone: pgx's ParseConfigError quotes the URL with its password
+// masked but its user and its query kept, and the error it wraps can quote a query key.
+func connectAdmin(ctx context.Context, adminURL string) (*pgx.Conn, error) {
+	config, err := pgx.ParseConfig(adminURL)
+	if err != nil {
+		return nil, redact.Masked(err, "pgx cannot read its connection settings")
+	}
+	return pgx.ConnectConfig(ctx, config)
 }
