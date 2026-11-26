@@ -30,7 +30,7 @@ import {
 import { publishedNames } from "../projection-fixture";
 import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
-import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import { LensLines } from "./LensLines";
 import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";
 import { lensChainQuery } from "./lens-reads";
@@ -949,7 +949,6 @@ test("a constraint's row takes a statement's colour, and a lens's, a finding's a
 // risk's row (`?node=`), as the lens's row draws its words from the tree read
 // (`buildIssueTree`).
 test("a lens row draws its verdict's author's link to a risk as a link to the risk's row", async () => {
-  await warmMarkdownRenderer();
   const lens = "c3000000-0000-4000-8000-000000000003";
   const risk = "d4000000-0000-4000-8000-000000000004";
   const root = buildIssueTree({
@@ -998,7 +997,6 @@ async function expectEarlyWarningDrawn(
   earlyWarning: string,
   expected: [string, [string, string][]]
 ): Promise<void> {
-  await warmMarkdownRenderer();
   const { constraint, lens, risk } = WARNING_ROW;
   const root = buildIssueTree({
     issue: issueDetails(),
@@ -1110,6 +1108,155 @@ test("a fact line reads a dispatch:// reference the page published by its target
         .filter((key) => JSON.stringify(key).includes("spec#b-r1")),
       "the line read a target the page named"
     ).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R22 over the one reference framework: a lens line's chip reads a `dispatch://` address in its
+// words as every one-line view reads one, through the plain-text projection: by the name the page
+// published for its target, never as the address, and with no read of its own for a target the
+// page named. The chip still links its own node's row, at the same `?node=`.
+test("a lens line's chip reads a dispatch:// reference the page published by its target's name", async () => {
+  const address = "dispatch://CORE-1/spec#b-r1";
+  const statement = node({
+    id: "spec#b-r5",
+    lens: facts({
+      constrainedBy: [
+        { address: ISSUE_CONSTRAINT, id: "constraint/9a1b", words: `Retention as ${address} says` },
+      ],
+    }),
+    reference: "dispatch://CORE-1/spec#b-r5",
+    text: "Notices expire",
+    type: "requirement",
+  });
+  const queryClient = testClient();
+  const view = renderOnIssue(
+    <ReferenceNamesProvider>
+      <Named published={publishedNames(new Map([[address, "Draw the rows"]]))}>
+        <LensLines node={statement} tabStops={false} />
+      </Named>
+    </ReferenceNamesProvider>,
+    queryClient
+  );
+  try {
+    const link = () =>
+      view.container.querySelector('[data-lens-line="constrained_by"] [data-node-chip] a');
+    await waitFor(() => expect(link()?.textContent).toBe("Retention as Draw the rows says"));
+    expect(link()?.getAttribute("href")).toBe("/issues/CORE-1?node=constraint%2F9a1b");
+    expect(
+      queryClient
+        .getQueryCache()
+        .getAll()
+        .map((query) => query.queryKey)
+        .filter((key) => JSON.stringify(key).includes("spec#b-r1")),
+      "the chip read a target the page named"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The address the code cases name, and the words they hold it in: once in a code span, and once
+ *  outside code. */
+const CODE_ADDRESS = "dispatch://CORE-2";
+const CODE_WORDS = `Run \`dispatch read ${CODE_ADDRESS}\` before ${CODE_ADDRESS} lands.`;
+
+/** `CODE_WORDS` as a line draws them once the page has named the address: the code as written,
+ *  and the address outside it by the issue's key and title. */
+const CODE_DRAWN = `Run dispatch read ${CODE_ADDRESS} before CORE-2 Store the notices lands.`;
+
+/** Draws `page` on this issue's route with the page's name for `CODE_ADDRESS` published. */
+function renderWithCodeName(page: ReactNode): RenderResult {
+  return renderOnIssue(
+    <ReferenceNamesProvider>
+      <Named published={publishedNames(new Map([[CODE_ADDRESS, "Store the notices"]]))}>
+        {page}
+      </Named>
+    </ReferenceNamesProvider>
+  );
+}
+
+// A rendered body draws an address in code as its author wrote it (`MarkdownBody.tsx`), so a fact
+// line and a chip, drawn from the tree read, read their words from the reading that keeps the
+// code: the address in the code span stays as written, and the same address outside code reads
+// as the name the page published for its target.
+test("a fact line and a chip keep an address in code as written and name it outside code", async () => {
+  const { constraint, lens, risk } = WARNING_ROW;
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY),
+        treeNode(risk, "risk", lens, {
+          attributes: { early_warning: CODE_WORDS, heading: "Replies break the HTTP rule" },
+        }),
+        treeNode(constraint, "constraint", KEY, { attributes: { standard: CODE_WORDS } }),
+      ],
+      [treeTuple("constrained_by", risk, constraint)],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children
+    .find((row) => row.id === lens)
+    ?.children.find((row) => row.id === risk);
+  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
+  const view = renderWithCodeName(<LensLines node={drawn} tabStops={false} />);
+  try {
+    const words = (line: string) =>
+      view.container.querySelector(`[data-lens-line="${line}"] [data-author-text]`)?.textContent;
+    await waitFor(() =>
+      expect([words("early_warning"), words("constrained_by")]).toEqual([CODE_DRAWN, CODE_DRAWN])
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// A chain entry, drawn from the tree read, reads the words of the row its lens stands under from
+// that row's reading, which keeps the code: the address in the code span stays as written, and
+// the same address outside code reads as the name the page published for its target.
+test("a chain entry keeps an address in code as written and names it outside code", async () => {
+  const user = userEvent.setup();
+  const { lens, risk } = WARNING_ROW;
+  const first = "f6000000-0000-4000-8000-000000000006";
+  const second = "a7000000-0000-4000-8000-000000000007";
+  answerLensReads(() =>
+    Response.json(
+      lensesOf([
+        chain([
+          lensRead(`dispatch://lens/${first}`, null),
+          lensRead(`dispatch://lens/${second}`, null),
+        ]),
+      ])
+    )
+  );
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY),
+        treeNode(risk, "risk", lens, { attributes: { heading: CODE_WORDS } }),
+        treeNode(first, "lens", risk),
+        treeNode(second, "lens", risk),
+      ],
+      [treeTuple("triggered_by", second, first)],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children
+    .find((row) => row.id === lens)
+    ?.children.find((row) => row.id === risk)
+    ?.children.find((row) => row.id === second);
+  if (drawn === undefined) throw new Error("the tree draws no row of the second lens");
+  const view = renderWithCodeName(<LensRow drawn={drawn} focused />);
+  try {
+    await user.click(await drawnControl(view));
+    await waitFor(() =>
+      expect(chainEntries(view).map(({ line }) => line)).toEqual([CODE_DRAWN, CODE_DRAWN])
+    );
   } finally {
     view.unmount();
   }

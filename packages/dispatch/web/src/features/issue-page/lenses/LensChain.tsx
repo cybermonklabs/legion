@@ -6,14 +6,21 @@ import { useLocation } from "react-router-dom";
 import { ApiError } from "../../../api/client";
 import { pageFailedText, pageQuietText } from "../../../theme/classes";
 import { usePlainHeadline } from "../../refs/plain-text";
+import { parseIssuePath } from "../../refs/routes";
 import type { TreeNode } from "../issue-tree";
 import { NodeMarks, useNodeStatesByReference } from "../node-states/NodeMarks";
 import { marksAt } from "../node-states/node-states";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPE_NAMES } from "../page-words";
-import { titleReading } from "../tree-drafts";
-import { filled, type LensChip, type LensFacts, lensChipWords } from "./lens-drafts";
-import { lensChainQuery, lensPlaceOf } from "./lens-reads";
+import {
+  filled,
+  type LensChip,
+  type LensFacts,
+  lensChipWords,
+  type PlainWords,
+  wordsReading,
+} from "./lens-drafts";
+import { lensChainQuery } from "./lens-reads";
 import { NodeLink } from "./NodeLink";
 
 /**
@@ -174,7 +181,7 @@ function ChainEntries({
               {/* After the lens's name, in the chain's own size; none where the tree holds no
                   node at that address. */}
               <NodeMarks compact marks={marksAt(states, entry.address) ?? {}} />
-              {filled(onWords) ? <EntryWords words={onWords} /> : null}
+              {filled(onWords) ? <EntryWords words={place?.onReading ?? onWords} /> : null}
             </li>
           );
         })}
@@ -196,16 +203,15 @@ function ChainEntries({
  * through the framework's plain-text projection (`usePlainHeadline`, the reading list's
  * `lens-chain-line`): each reference in them reads as its target's name, by the name the page
  * published for it and else by a read of its own, and never as a raw address (R22). The words are
- * read as one text run (`titleReading`), since the step read them to their plain words already
- * (`wholeWords`), and a role in them by the issue the page is on. Nothing until the projection
- * has answered.
+ * read from their reading where a run of them keeps a mark (`LensPlace.onReading`), so an address
+ * in code reads as written, and else as one text run, and a role in them by the issue the page is
+ * on. Nothing until the projection has answered.
  */
-function EntryWords({ words }: { words: string }): ReactNode {
+function EntryWords({ words }: { words: PlainWords }): ReactNode {
   const { pathname, search } = useLocation();
-  const issue = lensPlaceOf(pathname, search)?.issueKey;
-  const reading = useMemo(() => titleReading(words), [words]);
+  const reading = useMemo(() => wordsReading(words), [words]);
   const { reads, text } = usePlainHeadline(reading, undefined, {
-    issue,
+    issue: parseIssuePath(pathname, search)?.key,
     surface: "lens-chain-line",
   });
   return (

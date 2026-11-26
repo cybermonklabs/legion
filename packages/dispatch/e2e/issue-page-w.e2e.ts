@@ -39,6 +39,7 @@ import { ownWords } from "./issue-page-j";
 import {
   convertedGate,
   heldAnswer,
+  type OutlineKind,
   owedUnless,
   seedEventsLanded,
   type TreeAnswerWatch,
@@ -192,10 +193,7 @@ import { assertPageFits } from "./unclipped";
 const VIEWS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly Preset[];
 
 /** The two outlines, which draw them: Conversation, at the issue's own address, and Graph. */
-const OUTLINES = ["conversation", "graph"] as const;
-
-/** One of the two outlines (`OUTLINES`). */
-type Outline = (typeof OUTLINES)[number];
+const OUTLINES = ["conversation", "graph"] as const satisfies readonly OutlineKind[];
 
 /** The lens catalogue's read, which the menu of lens kinds sends as it opens. */
 const CATALOGUE_READ = "**/api/v1/schema/blocks";
@@ -266,13 +264,18 @@ function rowSize(): { readonly height: number; readonly width: number } {
 
 /** `message` as a reading in `view` says it: as the checks name it in Conversation, where each
  *  row reads first, and after "in Graph," in Graph, so a failure names the outline it read. */
-function inView(view: Outline, message: string): string {
+function inView(view: OutlineKind, message: string): string {
   return view === "conversation" ? message : `in Graph, ${message}`;
 }
 
 /** Waits until the page stands at `view`'s own address of issue `key`, whatever its query, and
  *  fails with `message` where it stands at another. */
-async function expectAt(page: Page, key: string, view: Outline, message: string): Promise<void> {
+async function expectAt(
+  page: Page,
+  key: string,
+  view: OutlineKind,
+  message: string
+): Promise<void> {
   const path = presetPath(key, view);
   await expect(page, message).toHaveURL((url) => url.pathname === path);
 }
@@ -314,7 +317,7 @@ async function drawnId(
 }
 
 /** `drawnId` in `view`, failing with a message that names the outline (`inView`). */
-function drawnIn(page: Page, view: Outline, readId: string, what: string): Promise<string> {
+function drawnIn(page: Page, view: OutlineKind, readId: string, what: string): Promise<string> {
   return drawnId(page, readId, what, inView(view, `the page draws no row for ${what}`));
 }
 
@@ -421,7 +424,7 @@ async function newLens(
 async function landOn(
   page: Page,
   key: string,
-  view: Outline,
+  view: OutlineKind,
   readId: string,
   what: string
 ): Promise<void> {
@@ -449,7 +452,7 @@ async function invokeThroughMenu(
   page: Page,
   tree: TreeAnswerWatch,
   key: string,
-  view: Outline,
+  view: OutlineKind,
   target: string,
   what: string,
   landed = false
@@ -563,7 +566,7 @@ async function readLensRowsIn(
   page: Page,
   traffic: ApiRequests,
   read: LensRowsRead,
-  view: Outline
+  view: OutlineKind
 ): Promise<void> {
   await expectLensesUnderStatementOne(page, read, view);
   await expectLongKind(page, read, view);
@@ -586,7 +589,7 @@ async function readLensRowsIn(
 async function expectLensesUnderStatementOne(
   page: Page,
   read: LensRowsRead,
-  view: Outline
+  view: OutlineKind
 ): Promise<void> {
   const { ids, lenses, words } = read;
   const statementOneRead = ids.statements[0] ?? "";
@@ -650,7 +653,7 @@ async function expectLensesUnderStatementOne(
 /** Row 1's (10): under statement 4, the threat model's tag reads its kind's words, 129
  *  characters, capitalised and whole, while the focus is on statement 4, and the page is no
  *  wider than its viewport (`assertPageFits`), at 1440 px and on `iphone` at 390 px. */
-async function expectLongKind(page: Page, read: LensRowsRead, view: Outline): Promise<void> {
+async function expectLongKind(page: Page, read: LensRowsRead, view: OutlineKind): Promise<void> {
   const { ids, words } = read;
   expect(words.threatModel, "the threat model's kind does not run to 129 characters").toHaveLength(
     129
@@ -672,7 +675,11 @@ async function expectLongKind(page: Page, read: LensRowsRead, view: Outline): Pr
 /** Row 1's (3): each lens names the other by a chip, its kind's words whole, read while the
  *  focus is on statement 1; `f` to each chip and Enter focus the other's row in the same view,
  *  with no new load. */
-async function expectTriggerChips(page: Page, read: LensRowsRead, view: Outline): Promise<void> {
+async function expectTriggerChips(
+  page: Page,
+  read: LensRowsRead,
+  view: OutlineKind
+): Promise<void> {
   const { ids, key, words } = read;
   const statementOne = await drawnIn(page, view, ids.statements[0] ?? "", "statement 1");
   const tradeOff = await drawnIn(page, view, ids.tradeOff, "the trade-off analysis");
@@ -728,7 +735,7 @@ async function expectTriggerChips(page: Page, read: LensRowsRead, view: Outline)
 }
 
 /** Row 1's (4): the finding stands under the trade-off analysis, tagged as a finding. */
-async function expectFinding(page: Page, read: LensRowsRead, view: Outline): Promise<void> {
+async function expectFinding(page: Page, read: LensRowsRead, view: OutlineKind): Promise<void> {
   const finding = await drawnIn(page, view, read.ids.finding, "the finding");
   const tradeOff = await drawnIn(page, view, read.ids.tradeOff, "the trade-off analysis");
   expect(
@@ -746,7 +753,7 @@ async function expectFinding(page: Page, read: LensRowsRead, view: Outline): Pro
  *  is read while the focus is on the pre-mortem, which both risks stand under: (3) left the
  *  address on the pre-mortem, which below 1024 px roots the outline at statement 1, so the
  *  pre-mortem has a row at both widths and statement 1 may have none. */
-async function expectRisks(page: Page, read: LensRowsRead, view: Outline): Promise<void> {
+async function expectRisks(page: Page, read: LensRowsRead, view: OutlineKind): Promise<void> {
   const { ids, lenses } = read;
   const riskA = await drawnIn(page, view, ids.riskA, "risk A");
   const riskB = await drawnIn(page, view, ids.riskB, "risk B");
@@ -798,7 +805,7 @@ async function expectRisks(page: Page, read: LensRowsRead, view: Outline): Promi
  * (`IssueTree.tsx`'s `on`), so after check 1's chip statement 1 has no row: its own address in
  * the view draws its row at both widths, and the pre-mortem's address draws the pre-mortem's.
  */
-async function expectChain(page: Page, read: LensRowsRead, view: Outline): Promise<void> {
+async function expectChain(page: Page, read: LensRowsRead, view: OutlineKind): Promise<void> {
   const { ids, key, words } = read;
   const statementOneRead = ids.statements[0] ?? "";
   await landOn(page, key, view, statementOneRead, "statement 1");
@@ -859,7 +866,7 @@ async function expectChain(page: Page, read: LensRowsRead, view: Outline): Promi
 
 /** Every word of the page's own is declared, and a kind's words, which the catalogue stores,
  *  are drawn as stored words and never as the page's. */
-async function expectOwnWords(page: Page, read: LensRowsRead, view: Outline): Promise<void> {
+async function expectOwnWords(page: Page, read: LensRowsRead, view: OutlineKind): Promise<void> {
   const chrome = await ownWords(issuePage(page));
   expect(
     [...new Set(chrome.flatMap(wordsIn).filter((word) => !DECLARED_WORDS.includes(word)))],
@@ -875,7 +882,7 @@ async function expectOwnWords(page: Page, read: LensRowsRead, view: Outline): Pr
 }
 
 /** Row 1's (9): no text the page draws reads an address or a uuid. */
-async function expectNoAddress(page: Page, view: Outline): Promise<void> {
+async function expectNoAddress(page: Page, view: OutlineKind): Promise<void> {
   const text = await issuePage(page).innerText();
   expect(text.match(/dispatch:\/\/\S*/gu) ?? [], inView(view, "the page draws an address")).toEqual(
     []
@@ -890,7 +897,7 @@ async function expectNodeAddress(
   page: Page,
   traffic: ApiRequests,
   read: LensRowsRead,
-  view: Outline
+  view: OutlineKind
 ): Promise<void> {
   const path = presetPath(read.key, view);
   const own = view === "conversation" ? "the issue's own address" : "Graph's own address";
@@ -1011,7 +1018,7 @@ async function loadView(
   events: readonly EventFrame[],
   tree: TreeAnswerWatch,
   key: string,
-  view: Outline
+  view: OutlineKind
 ): Promise<IssueTreeRead> {
   return measuredAlone(page, events, inView(view, `the load of ${key}`), async () => {
     traffic.reset();
@@ -1030,7 +1037,7 @@ function expectLoadReadsNoLens(
   traffic: ApiRequests,
   without: readonly RouteCount[],
   lenses: LensSeed,
-  view: Outline
+  view: OutlineKind
 ): void {
   expect(
     ownRoutes(traffic.byRoute()),
@@ -1071,7 +1078,7 @@ function expectLoadReadsNoLens(
 /** Opens the menu of lens kinds on the pre-mortem's row in `view`, as a reader does - the focus on
  *  the row the page draws for the read id `preMortem`, `f` to its Lens act, Enter - and waits
  *  until the menu's first kind holds the focus. */
-async function openPreMortemMenu(page: Page, view: Outline, preMortem: string): Promise<void> {
+async function openPreMortemMenu(page: Page, view: OutlineKind, preMortem: string): Promise<void> {
   const row = await focusRow(page, await drawnIn(page, view, preMortem, "the pre-mortem"));
   await pressFTo(page, lensAct(row), inView(view, "the pre-mortem's row offers no Lens act"));
   await page.keyboard.press("Enter");
@@ -1101,7 +1108,7 @@ async function expectInvocationReads(
   events: readonly EventFrame[],
   tree: TreeAnswerWatch,
   key: string,
-  view: Outline,
+  view: OutlineKind,
   before: ReadonlySet<string>,
   load: string,
   openMenu: () => Promise<void>
@@ -1173,7 +1180,7 @@ async function expectStandardChip(
   page: Page,
   ids: LensReadIds,
   lenses: LensSeed,
-  view: Outline
+  view: OutlineKind
 ): Promise<string> {
   const statementFive = await drawnIn(page, view, ids.statements[4] ?? "", "statement 5");
   expect(
@@ -1193,7 +1200,7 @@ async function expectCatalogueChip(
   page: Page,
   ids: LensReadIds,
   catalogueStandard: string,
-  view: Outline
+  view: OutlineKind
 ): Promise<void> {
   const statementSix = await drawnIn(page, view, ids.statements[5] ?? "", "statement 6");
   expect(
@@ -1675,7 +1682,7 @@ test("the first load adds no request for lenses and reads a chain only at a pres
   browser,
 }) => {
   test.setTimeout(300_000);
-  const without: Record<Outline, readonly RouteCount[]> = { conversation: [], graph: [] };
+  const without: Record<OutlineKind, readonly RouteCount[]> = { conversation: [], graph: [] };
   await phase(browser, seedWholeIssue, async (page, whole) => {
     owedUnless(await treeReadGate(page, whole.key));
     owedUnless(await convertedGate(page, whole.key));

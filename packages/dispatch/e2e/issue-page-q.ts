@@ -17,9 +17,10 @@ import { longWords, READER } from "./issue-page-g";
  * - **The list** `[data-decisions-body]`, a region named by the view, holding the tree.
  * - **The named rows** first inside the tree: the node the address names where it is neither an
  *   ask nor a decision, an outline row `[data-node-row]` under no heading and in no part.
- * - **Each part** `[data-decisions-part="open_questions" | "review" | "yours" | "agents"]` with
- *   its heading `[data-decisions-heading]` and count `[data-decisions-count]`, its rows the
- *   outline's own `[data-node-row]`; another person's entry stands in `yours` with their name.
+ * - **Each part** `[data-decisions-part="open_questions" | "review" | "yours" | "others" |
+ *   "agents"]` with its heading `[data-decisions-heading]` and count `[data-decisions-count]`, its
+ *   rows the outline's own `[data-node-row]`; another person's entry stands in `others`, under
+ *   "Decided by others", with their name (decision 502).
  *   The foot's control is the `button` in `[data-decisions-foot]`.
  * - **Keep and Change** `button[data-row-action="keep" | "change"]` on each row of the review
  *   part, drawn with no focus on the row.

@@ -1696,19 +1696,26 @@ const PREMORTEM = "dispatch://lens/0c6f1d2e-2222-4a6b-9c1d-5e2f3a4b5c62";
 const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
 const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 
-/** `chip` drawn by `NodeLink` on this issue's route, so a chip with an id is a link. */
+/** `chip` drawn by `NodeLink` on this issue's route, so a chip with an id is a link. It is drawn
+ *  under a query client whose failed read is not retried: a chip's words are drawn through the
+ *  plain-text projection, which reads through react-query. */
 function drawChip(chip: LensChip) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     createElement(
-      MemoryRouter,
-      { initialEntries: [`/issues/${KEY}`] },
+      QueryClientProvider,
+      { client },
       createElement(
-        Routes,
-        null,
-        createElement(Route, {
-          element: createElement(NodeLink, { chip, tabStops: false }),
-          path: "/issues/:key/*",
-        })
+        MemoryRouter,
+        { initialEntries: [`/issues/${KEY}`] },
+        createElement(
+          Routes,
+          null,
+          createElement(Route, {
+            element: createElement(NodeLink, { chip, tabStops: false }),
+            path: "/issues/:key/*",
+          })
+        )
       )
     )
   );

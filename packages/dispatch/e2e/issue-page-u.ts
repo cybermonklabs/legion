@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, type Request, type Route } from "@playwright/test";
 
 import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import { PAGE_CHROME_ATTRIBUTE } from "../web/src/features/issue-page/page-structure";
 import {
   DECISIONS_WORDS,
   NODE_STATE_WORDS,
@@ -63,7 +64,8 @@ import type { ApiRequests } from "./traffic";
  *   (`RowActs`) from standing beside its words; `decisionsPages` is each part of the Decisions
  *   view as row 4 reads its pages - its count, each entry with how many lines its words draw and
  *   whether they are cut or folded, and the words of the control under it that draws its next
- *   entries (`nextEntries`), which `nextCount` reads as the numbers it says.
+ *   entries (`nextEntries`), which `nextCount` reads as the numbers it says;
+ *   `decisionsPartHeading` is the words a headed part's heading names it by, its count left out.
  * - **What the page sends and receives.** `watchWrites` keeps every request under `/api/` that is
  *   no read, with its body; `holdTreeReads` holds every tree read the page sends until released.
  * - **Row 2's decisions.** `writeThirdDecision` writes, through the spec's edit route, a
@@ -341,6 +343,18 @@ export function decisionsPages(page: Page): Promise<PagedPart[]> {
  *  entries (`DecisionsFilterBody.tsx`' `NextEntries`), a treeitem out of the tab order. */
 export function nextEntries(page: Page, part: string): Locator {
   return decisionsPart(page, part).locator("[data-decisions-next] button");
+}
+
+/** The words the heading of the Decisions view's headed part `part` names it by, its count left
+ *  out: the page's own words in its heading (`[data-decisions-heading]`), the count being the
+ *  author's text (`DecisionsFilterBody.tsx`). Null where the view draws no such part. */
+export async function decisionsPartHeading(page: Page, part: string): Promise<string | null> {
+  // One read per pass: its one caller, row 5 of `issue-page-u.e2e.ts`, reads it inside
+  // `steadily` (`issue-page-t.ts`), which reads again until two readings agree.
+  const [words] = await decisionsPart(page, part)
+    .locator(`[data-decisions-heading] [${PAGE_CHROME_ATTRIBUTE}]`)
+    .allTextContents();
+  return words === undefined ? null : words.replace(/\s+/gu, " ").trim();
 }
 
 /** The words of the control that draws a part's next entries, by the page's own entries, with

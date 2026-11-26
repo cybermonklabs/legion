@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { Ask, Decision, DecisionKeep, DecisionLink, DisplayTree } from "../../../api/types";
-import { firstOfEachId } from "../decision-review";
+import { firstOfEachId, inReviewList } from "../decision-review";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree } from "../issue-tree";
 import { blockNodeId } from "../tree-drafts";
@@ -13,7 +13,14 @@ import {
   treeTuple as tuple,
 } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
-import { type DecisionNode, type DecisionReads, decisionNodes } from "./decision-nodes";
+import {
+  type DecisionNode,
+  type DecisionReads,
+  decidedByPerson,
+  decisionNodes,
+  lookupOf,
+  restatesAnswer,
+} from "./decision-nodes";
 
 /**
  * The decisions of a tree read's answer. Each case writes the answer as the route sends it
@@ -494,6 +501,94 @@ test("a person's decision the read answers on its ask is read there", () => {
       unsure: false,
       waiting_review: false,
     },
+  ]);
+});
+
+// INFRA-1196's decision 513: a decision whose `from_ask` names an ask a person answered is the
+// old decisions document's section that restates the answer, and the person's decision is the
+// answered ask itself, so it is no decision. The test is that tie, never the place: a decision
+// the read stands under the same answered ask that names no `from_ask` is an agent's decision,
+// which waits for review where its `shaped` tie names a statement. The ask is answered by the
+// rule a person's decision is read by: the read answers a person's decision on its node, or else
+// the asks read says it is answered; a `from_ask` to an open ask restates nothing.
+test("a decision whose from_ask names an answered ask restates it, and one under that ask with no such tie is an agent's decision", () => {
+  const placed = (id: string, parent: string, position: number, members: Partial<Decision>) =>
+    node(id, "decision", parent, {
+      decision: {
+        changed_at: "2026-11-06T00:00:00Z",
+        text_sha256: `sum-${id}`,
+        waiting_review: true,
+        ...members,
+      },
+      document: { ...SPEC, position },
+    });
+  const tree = answer(
+    [
+      block("r1", "requirement", SPEC, 0),
+      // The read answers a person's decision on the ask they answered.
+      node("ask-a", "ask", KEY, { decision: {} }),
+      placed("d-restates", "ask-a", 1, { asks: ["ask-a"] }),
+      placed("d-untied", "ask-a", 2, { links: [linkTo(blockRef("spec", "r1"))] }),
+      // The read answers no person's decision on this ask: the asks read says it is answered.
+      node("ask-b", "ask", KEY),
+      placed("d-restates-b", "ask-b", 3, { asks: ["ask-b"] }),
+      node("ask-open", "ask", KEY),
+      placed("d-open", "ask-open", 4, { asks: ["ask-open"] }),
+    ],
+    [tuple("shaped", "d-untied", "r1")]
+  );
+  const reads: DecisionReads = {
+    asks: [question("ask-b", { state: "answered" }), question("ask-open")],
+    issue: { key: KEY },
+  };
+  // The answer looked up as every reader of a decision looks it up.
+  const lookup = lookupOf(tree, reads);
+
+  expect(
+    ["d-restates", "d-untied", "d-restates-b", "d-open"].map((id) => [
+      id,
+      restatesAnswer(held(tree, id), lookup),
+    ])
+  ).toEqual([
+    ["d-restates", true],
+    ["d-untied", false],
+    ["d-restates-b", true],
+    ["d-open", false],
+  ]);
+  const decided = decisionNodes(tree, reads);
+  expect(decided.map((one) => one.block_id)).toEqual(["d-untied", "d-open"]);
+  const untied = decided[0];
+  expect(untied?.kind, "the decision under the answered ask is no agent's decision").toBe("agent");
+  expect(
+    untied !== undefined &&
+      inReviewList(untied, (reference) => reference === blockRef("spec", "r1")),
+    "the decision under the answered ask, tied to a statement, waits for no review"
+  ).toBe(true);
+});
+
+// INFRA-1196's decision 516: a decision block a person decided is that person's decision. The
+// test is who its `decided_by` names, read as every reader of a decision reads it
+// (`DecisionNode.decidedBy`): a person makes it that person's, and a session, or no `decided_by`
+// at all, makes it an agent's. The read answers each of the three waiting for review, as the
+// decisions read answers every decision block neither kept nor replaced; that says nothing of
+// whose it is.
+test("a decision whose decided_by names a person is that person's, and one naming a session is an agent's", () => {
+  const planner = node("session-planner", "session", null, { role: "context", text: "planner" });
+  const tree = answer(
+    [decision("d-person"), decision("d-session"), decision("d-nobody"), ALICE, planner],
+    [tuple("decided_by", "d-person", "alice"), tuple("decided_by", "d-session", "session-planner")]
+  );
+
+  expect(
+    decisionNodes(tree, READS).map((one) => [
+      one.block_id,
+      one.waiting_review,
+      decidedByPerson(one),
+    ])
+  ).toEqual([
+    ["d-person", true, true],
+    ["d-session", true, false],
+    ["d-nobody", true, false],
   ]);
 });
 

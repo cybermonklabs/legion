@@ -1,13 +1,15 @@
-import type { MouseEvent, ReactNode } from "react";
+import { type MouseEvent, type ReactNode, useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { pageMutedText } from "../../../theme/classes";
 import { isPlainClick } from "../../refs/picture-lightbox";
+import { usePlainHeadline } from "../../refs/plain-text";
+import { parseIssuePath } from "../../refs/routes";
 import { NodeMarks, useNodeStatesByReference } from "../node-states/NodeMarks";
 import { marksAt } from "../node-states/node-states";
 import { authorText, pageChrome } from "../page-structure";
 import { statesOfRead } from "../tree-read/tree-nodes";
-import type { LensChip } from "./lens-drafts";
+import { type LensChip, wordsReading } from "./lens-drafts";
 import { lensPlaceOf, rowPathIn } from "./lens-reads";
 
 /**
@@ -36,6 +38,15 @@ import { lensPlaceOf, rowPathIn } from "./lens-reads";
  * own (`chip.chrome`: the page's word for a lens whose kind has no words, and for the kind of a
  * node no page read so far holds), as `NodeRow.tsx`'s `Chip` marks the page's word for a
  * document.
+ *
+ * The author's words are drawn through the framework's plain-text projection (`usePlainHeadline`,
+ * the reading list's `lens-chip`), from their reading where they keep a mark (`chip.reading`), so
+ * an address in code reads as written: each reference in them reads as its target's name, by the
+ * name the page published for it and else by a read of its own, and never as a raw address
+ * (R22), and a role in them by the issue the page is on. The space the words keep at either end,
+ * which the projection trims, stays (`spacedWords`). Nothing is drawn until the projection has
+ * answered: a chip draws no address. The page's word is drawn as it is, and so are words that
+ * hold nothing to read.
  */
 export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean }): ReactNode {
   const { pathname, search } = useLocation();
@@ -44,14 +55,28 @@ export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean
   const states = useNodeStatesByReference();
   const id = chip.id;
   const place = id === undefined ? undefined : lensPlaceOf(pathname, search);
+  const asWritten = chip.chrome === true || chip.words === "";
+  const words = chip.reading ?? chip.words;
+  const reading = useMemo(() => wordsReading(words), [words]);
+  const { reads, text } = usePlainHeadline(asWritten ? undefined : reading, undefined, {
+    issue: parseIssuePath(pathname, search)?.key,
+    surface: "lens-chip",
+  });
+  const drawn = asWritten
+    ? chip.words
+    : text === undefined
+      ? undefined
+      : spacedWords(chip.words, text.text);
+  if (drawn === undefined) return reads;
   const marks = chip.chrome === true ? pageChrome : authorText;
   const view =
     place?.outline === "conversation" && chip.graphOnly !== true ? "conversation" : "graph";
   return (
     <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
+      {reads}
       {id === undefined || place === undefined ? (
         <span data-chip-name="" {...marks}>
-          {chip.words}
+          {drawn}
         </span>
       ) : (
         <Link
@@ -62,7 +87,7 @@ export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean
           to={rowPathIn(view, place.issueKey, id)}
           {...marks}
         >
-          {chip.words}
+          {drawn}
         </Link>
       )}
       {/* The marks of the node the chip names, from its state and its visibility as the tree
@@ -78,6 +103,15 @@ export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean
       />
     </span>
   );
+}
+
+/** The line the projection read from `words`, `line`, with the one space `words` keep at either
+ *  end, which the projection trims: a fact line's part beside a chip keeps it, and a chip's words
+ *  beside a part, once for words that are space alone. */
+export function spacedWords(words: string, line: string): string {
+  const before = words.startsWith(" ") ? " " : "";
+  const after = words.endsWith(" ") && line !== "" ? " " : "";
+  return `${before}${line}${after}`;
 }
 
 /**

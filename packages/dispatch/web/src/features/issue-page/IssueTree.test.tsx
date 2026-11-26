@@ -105,6 +105,7 @@ import { BodySlot } from "./slots/body";
 import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
+import { blockNodeId } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import {
@@ -10954,6 +10955,87 @@ test("a block or the children an address names that the tree holds none of draw 
       expect(body.view.queryByRole("tree"), `${path} drew the outline beside its line`).toBeNull();
       body.view.unmount();
     }
+  } finally {
+    names.mockRestore();
+  }
+});
+
+/** The tree read's nodes of an answered question and the two decisions the read stands under it
+ *  (INFRA-1196's decision 513): `d-restates`, whose `from_ask` names the question and which
+ *  restates the person's answer, with the agent's reading of it under it, and `d-untied`, which
+ *  names no `from_ask`. The read answers a person's decision on the question, as it does on every
+ *  ask a person answered. */
+const RESTATED_QUESTION: readonly TreeAnswerNode[] = [
+  treeNode("a-answered", "ask", KEY, {
+    decision: {},
+    text: "Which addresses must the new page still answer?",
+  }),
+  treeNode("d-restates", "decision", "a-answered", {
+    decision: { asks: ["a-answered"], waiting_review: true },
+    document: { artifact_id: specDocument.id, position: 1, slug: specDocument.slug },
+    text: "Keep every address the old page answered.",
+  }),
+  treeNode("g-restates", "reading", "d-restates", {
+    document: { artifact_id: specDocument.id, position: 2, slug: specDocument.slug },
+    text: "The agent reads the answer so.",
+  }),
+  treeNode("d-untied", "decision", "a-answered", {
+    decision: { waiting_review: true },
+    document: { artifact_id: specDocument.id, position: 3, slug: specDocument.slug },
+    text: "Fold to the frontier and not to a depth.",
+  }),
+];
+
+// INFRA-1196's decision 513: a decision whose `from_ask` names a question a person answered
+// restates the answer, and the person's decision is the question itself, so the outline draws no
+// row for it. What the read hangs under it stands under the question, its nearest drawn ancestor.
+// The test is the tie, not the place: a decision the read stands under the same question that
+// names no `from_ask` is drawn there as an agent's decision.
+test("the outline draws no row for a decision that restates a person's answer, and draws one under that question with no from_ask tie", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-d-untied`, [], BodySlot, {
+      nodes: RESTATED_QUESTION,
+    });
+    const untied = blockNodeId(specDocument.slug, "d-untied");
+    await waitFor(() => expect(focusedRow(view.container)).toBe(untied));
+    const drawn = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+      (row) => [row.getAttribute("data-node-id"), row.getAttribute("aria-level")]
+    );
+    expect(drawn).toEqual([
+      ["a-answered", "1"],
+      [blockNodeId(specDocument.slug, "g-restates"), "2"],
+      [untied, "2"],
+    ]);
+    expect(rowsFor(view.container, untied)[0]?.getAttribute("data-node-type")).toBe("decision");
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// Root R20: no citation of a node dangles. The tree holds no node of a decision that restates a
+// person's answer, so an address naming its block lands on the question it restates, focused,
+// by the rule every view lands an address by (`pathToTarget`), and draws no line that the outline
+// holds no row of the block.
+test("an address naming a decision that restates a person's answer lands on the question it restates", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-d-restates`, [], BodySlot, {
+      nodes: RESTATED_QUESTION,
+    });
+    await waitFor(
+      () => expect(focusedRow(view.container), "the address landed nowhere").toBe("a-answered"),
+      {
+        onTimeout: () =>
+          new Error(
+            `the address landed nowhere; ${view.queryByRole("heading", { name: "No row for this block" }) === null ? "no" : "the"} line that the outline holds no row of the block was drawn`
+          ),
+      }
+    );
+    expect(view.queryByRole("heading", { name: "No row for this block" })).toBeNull();
+    expect(rowsFor(view.container, blockNodeId(specDocument.slug, "d-restates"))).toEqual([]);
   } finally {
     names.mockRestore();
   }

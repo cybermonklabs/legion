@@ -64,9 +64,14 @@ import {
 } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
-/** The three parts drawn under a heading of their own, in the view's order; the fourth, the
- *  foot, is headed by the control that folds and unfolds it. */
-const HEADED = ["open_questions", "review", "yours"] as const satisfies readonly DecisionsPart[];
+/** The four parts drawn under a heading of their own, in the view's order; the fifth, the foot,
+ *  is headed by the control that folds and unfolds it. */
+const HEADED = [
+  "open_questions",
+  "review",
+  "yours",
+  "others",
+] as const satisfies readonly DecisionsPart[];
 
 /** A part the list draws a page at a time: each headed part, and the foot. */
 type PagedPart = (typeof HEADED)[number] | "agents";
@@ -83,13 +88,15 @@ const PAGE = 20;
  * The Decisions filter's body, drawn as the picture `page-v3-decisions-1440.png` and the
  * prototype's `.decs` draw it.
  *
- * It is one list in four parts, each under its own heading and in this order: the open
- * questions; the decisions that wait for the reader's review, each with Keep and Change; the
- * reader's decisions, newest first, where another person's entry stands too, with that person's
- * name on its row; and, at the foot and unfolded, the agents' decisions that no statement rests
- * on, which the page folds only when the reader folds them (R2, root R6). Each part draws its
- * first `PAGE` entries, and under a part that holds others a control says how many are left and
- * draws the next of them (`NextEntries`, root R40, decision 424): a page is no fold, each entry
+ * It is one list in parts, each under its own heading and in this order: the open questions;
+ * the decisions that wait for the reader's review, each with Keep and Change; the reader's own
+ * decisions, newest first; what other people decided, newest first, under "Decided by others",
+ * each row with that person's name on it (decision 502); and, at the foot and unfolded, the
+ * agents' decisions that no statement rests on, which the page folds only when the reader folds
+ * them (R2, root R6). Where the reader made every decision, no entry stands under "Decided by
+ * others", no part is drawn for it, and the list is R2's four parts. Each part draws its first
+ * `PAGE` entries, and under a part that holds more a control says how many are left and draws
+ * the next of them (`NextEntries`, root R40, decision 424): a page is no fold, each entry
  * drawn is whole, and each count counts every entry of its part, drawn or not. The control is a
  * row of the tree out of the tab order, as the outline's page control is (decision 366), which
  * `j` and Down on the part's last drawn row press, and a press puts the focus on the first entry
@@ -102,7 +109,7 @@ const PAGE = 20;
  * sentence explains the parts: their headings are the whole of it (R22). Before the parts
  * stands the node an address names where it is neither a question nor a decision, a comment
  * say, as a row with no heading and no count: the address outranks the view (`presets.ts`),
- * and the four parts stay all the list says. It is drawn the same at every width: the rows are
+ * and the parts stay all the list says. It is drawn the same at every width: the rows are
  * the outline's own (`DecisionsRow.tsx`).
  *
  * The list is one landmark named by the filter, and inside it answers the WAI-ARIA tree pattern
@@ -207,7 +214,7 @@ export function DecisionsFilterBody({
    *  being read again by the row (R8). */
   published: PublishedReferences;
   /** Who is reading, whose own answer carries the ink rule (R34). Another person's decision
-   *  stands under "Your decisions" too, with that person's name on its row. */
+   *  stands under "Decided by others", with that person's name on its row. */
   reader: string | undefined;
   /** What the page last asked of the outline: go to a node, which the Contents pane's list
    *  asks (`outline-request.tsx`). Each ask is acted on once. */
@@ -303,6 +310,7 @@ export function DecisionsFilterBody({
     return {
       agents: reaching("agents"),
       open_questions: reaching("open_questions"),
+      others: reaching("others"),
       review: reaching("review"),
       yours: reaching("yours"),
     };
@@ -313,34 +321,34 @@ export function DecisionsFilterBody({
     () => ({
       agents: pagesOf(parts.agents, drawnPages.agents),
       open_questions: pagesOf(parts.open_questions, drawnPages.open_questions),
+      others: pagesOf(parts.others, drawnPages.others),
       review: pagesOf(parts.review, drawnPages.review),
       yours: pagesOf(parts.yours, drawnPages.yours),
     }),
-    [drawnPages.agents, drawnPages.open_questions, drawnPages.review, drawnPages.yours, parts]
+    [
+      drawnPages.agents,
+      drawnPages.open_questions,
+      drawnPages.others,
+      drawnPages.review,
+      drawnPages.yours,
+      parts,
+    ]
   );
   // The rows in the order the page draws them, which is the order the outline's keys walk: the
   // node the address names first, then the parts, then the foot's rows while it is unfolded,
   // each part's drawn pages alone.
-  const drawn = useMemo<readonly (DecisionsEntry | NamedEntry)[]>(
+  const drawn = useMemo(
     () => [
       ...parts.named,
-      ...shown.open_questions,
-      ...shown.review,
-      ...shown.yours,
+      ...HEADED.flatMap<DecisionsEntry | NamedEntry>((part) => shown[part]),
       ...(footShown ? shown.agents : []),
     ],
     [footShown, parts.named, shown]
   );
   // Every entry the list draws, in the order it draws them, whether its page is drawn or not
   // and whether the foot is folded or not: the entries an address may name.
-  const every = useMemo<readonly (DecisionsEntry | NamedEntry)[]>(
-    () => [
-      ...parts.named,
-      ...parts.open_questions,
-      ...parts.review,
-      ...parts.yours,
-      ...parts.agents,
-    ],
+  const every = useMemo(
+    () => DECISIONS_PART_ORDER.flatMap<DecisionsEntry | NamedEntry>((part) => parts[part]),
     [parts]
   );
   // The rows as the outline's keys read them: the nth node row is the nth row drawn. Each sits
@@ -697,7 +705,7 @@ export function DecisionsFilterBody({
   // An entry the reader is on can move to another part of the list, and its row is drawn
   // again there, which drops the focus to the page: a decision they kept or asked to change
   // leaves the review list for their own decisions, a question another person answered goes
-  // under Your decisions, a decision of the foot that a read ties to a statement comes up to
+  // under Decided by others, a decision of the foot that a read ties to a statement comes up to
   // the review list. A reader who kept or asked to change a decision on its row here is working
   // down the review list, so the focus goes to the decision that stood after it, else the one
   // before it (the prototype's `keepDecision`), else to the decision where it now stands. That
@@ -998,7 +1006,7 @@ export function DecisionsFilterBody({
       >
         {/* The node the address names where it is neither a question nor a decision stands
             first, at the tree's first level, under no heading and in no part: the address
-            outranks the view, and the parts stay four (R1, R6). */}
+            outranks the view, and the parts stay all the list says (R1, R6). */}
         {parts.named.map((entry) => rowFor(entry, "named"))}
         {HEADED.map((part) => {
           const entries: readonly DecisionsEntry[] = parts[part];
@@ -1099,11 +1107,7 @@ export function DecisionsFilterBody({
           (`decisions-entries.ts`), a list with nothing in it may be one whose entries have not
           arrived, or whose read was refused and says so in its own line, so no line says the
           issue holds nothing, as the outline draws none then (`slots/body.tsx`). */}
-      {readsHeld &&
-      parts.open_questions.length === 0 &&
-      parts.review.length === 0 &&
-      parts.yours.length === 0 &&
-      parts.agents.length === 0 ? (
+      {readsHeld && [...HEADED, "agents" as const].every((part) => parts[part].length === 0) ? (
         <p className={`py-1 text-sm ${textMutedOnCanvas}`} {...pageChrome}>
           {emptyLine}
         </p>
