@@ -1,6 +1,6 @@
 import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import {
@@ -381,8 +381,8 @@ export function IssueMarginPanel({
   const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
   const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
   const referencesDrawn = referencesOpen && readingReferences;
-  // The reader's command bar runs, read only while the list is drawn (`useRunRows`).
-  const runs = useRunRows(issue, referencesDrawn);
+  // The reader's command bar runs, read only while the list is drawn, linked by the page's address.
+  const runs = useRunRows(issue, referencesDrawn, useLocation());
   const waitingRead = referenceTargetsQuery(
     waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))
   );

@@ -3,13 +3,11 @@ import {
   createElement,
   Fragment,
   type ReactNode,
-  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { UNSAFE_LocationContext, useInRouterContext } from "react-router-dom";
 
 import { referenceTargetsQuery } from "../../../api/queries";
 import type { GraphEdge, IssueDetails } from "../../../api/types";
@@ -29,6 +27,7 @@ import {
   buildDispatchReference,
   buildRunPath,
   type DispatchReferenceRoute,
+  parseNodeReference,
 } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import { retryRead } from "../details-error";
@@ -37,7 +36,7 @@ import { newPageIssue } from "../new-page-parameter";
 import { type LineNames, referenceStandIns } from "../one-line";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
 import { withoutDirectiveLines } from "../RowText";
-import { knownIssueKeys, rowReferences } from "../row-references";
+import { citedReferences, knownIssueKeys, rowReferences } from "../row-references";
 import { storedReading } from "../stored-reading";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -60,14 +59,24 @@ const CHANGED_BY_RUN: GraphEdge["kind"] = "changed_by_run";
 
 const NO_ROWS: readonly ExtraReferenceRow[] = [];
 
-/** What a run's row adds to its link on an issue page that `?issue_page=new` opened, so the link
- *  opens the run's page for the same reader (`RunRoute.tsx`, decision 533). The parameter and its
- *  value are twins of `new-page-parameter.tsx`'s `PARAMETER` and `NEW_PAGE`, which that file keeps
- *  to itself, and of `RunRoute.tsx`'s, which reads them. They are not shared: exporting them from
+/** The query parameter that opens the new issue page, and the one value of it that does. They
+ *  are twins of `new-page-parameter.tsx`'s `PARAMETER` and `NEW_PAGE`, which that file keeps to
+ *  itself, and of `RunRoute.tsx`'s, which reads them. They are not shared: exporting them from
  *  `new-page-parameter.tsx` would change a line of that file, and R6 admits none this round; this
  *  file may not import `RunRoute.tsx`, which loads `RunPage.tsx`, an importer of this file; and
- *  `RunRoute.tsx` imports no word list, which this file does. */
-const NEW_PAGE_SEARCH = "?issue_page=new";
+ *  `RunRoute.tsx` imports no word list, which this file does. `RunPage.tsx` reads them here. */
+export const NEW_PAGE_PARAMETER = "issue_page";
+export const NEW_PAGE = "new";
+
+/** What a run's row adds to its link on an issue page that `?issue_page=new` opened, so the link
+ *  opens the run's page for the same reader (`RunRoute.tsx`, decision 533). */
+const NEW_PAGE_SEARCH = `?${NEW_PAGE_PARAMETER}=${NEW_PAGE}`;
+
+/** The query parameter by which a run's row on an issue page that `?issue_page=new` opened names
+ *  that issue's key in its link, after `NEW_PAGE_SEARCH`: the run's page cannot know from its own
+ *  read which issue opened it, and keeps `?issue_page=new` on its links to that issue
+ *  (`RunPage.tsx`, decision 533). */
+export const OPENING_ISSUE = "issue";
 
 /** When `run` was made, as a time that orders; a run with no time, or a time that does not parse,
  *  orders as the oldest. */
@@ -88,46 +97,57 @@ function newestFirst(a: DatedRun, b: DatedRun): number {
 
 /** The row of one run: its kind and its edge in the page's words, its question as plain words,
  *  when it was made - no `at` where the read answers no time, so the row draws none - and the
- *  run's own page, by an address that carries `?issue_page=new` where `newPage`
- *  (`NEW_PAGE_SEARCH`). Only the key and the link hold the run's id. The question's plain words
- *  are the words of the server's reading of it (`text_tree`), and of its stored text's reading
- *  where the read sent none (`storedReading`), on one line, with each bare address as its asker
- *  wrote it. `NamedRunRows` names the references only where the list draws them. */
-function runRow(run: TreeAnswerNode, newPage: boolean): ExtraReferenceRow {
+ *  run's own page, by an address that carries `?issue_page=new` (`NEW_PAGE_SEARCH`) and the key
+ *  of the issue `newPage` (`OPENING_ISSUE`) where `newPage` names one. Only the key and the link
+ *  hold the run's id. The question's plain words are the words of the server's reading of it
+ *  (`text_tree`), and of its stored text's reading where the read sent none (`storedReading`),
+ *  on one line, with each bare address as its asker wrote it. `NamedRunRows` names the
+ *  references only where the list draws them. */
+function runRow(run: TreeAnswerNode, newPage: string | undefined): ExtraReferenceRow {
   const excerpt = wordsOf(run.text_tree ?? storedReading(run.text, run))
     .replace(/\s+/gu, " ")
     .trim();
+  const path = buildRunPath(run.id);
   return {
     ...(run.made_at === null ? {} : { at: run.made_at }),
     edge: NODE_REFERENCES_WORDS.edges.changed_by_run,
     ...(excerpt === "" ? {} : { excerpt }),
-    href: newPage ? `${buildRunPath(run.id)}${NEW_PAGE_SEARCH}` : buildRunPath(run.id),
+    href:
+      newPage === undefined
+        ? path
+        : `${path}${NEW_PAGE_SEARCH}&${OPENING_ISSUE}=${encodeURIComponent(newPage)}`,
     key: run.id,
     kind: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
   };
 }
 
-/** The references a run's one-line places cite (`namedReferences`), each once, in the order the
- *  texts cite them. Each is named by the rule every plain line of the page names a reference by
- *  (`one-line.ts`'s `referenceStandIns`), from the names `RunReferenceNames` hands it, and is
- *  drawn as the words its author wrote until it has a name and wherever it has none. */
+/** The references a run's one-line places cite (`namedReferences`), each once. Each is named by
+ *  the rule every plain line of the page names a reference by (`one-line.ts`'s
+ *  `referenceStandIns`), from the names `RunReferenceNames` hands it, and is drawn as the words
+ *  its author wrote until it has a name and wherever it has none. */
 interface RunReferences {
-  /** Each target the one batch may ask for (`useRunTargets`), by the route `rowReferences`
-   *  parsed it to: every reference but a party, an issue among them, since the rule names an
-   *  issue by its key and its title only where the page published that title. */
+  /** Each target the one batch may ask for (`useRunTargets`), by the route the text reader read
+   *  it to: every address but a party's, an issue among them, and each key written bare, as its
+   *  issue's own reference, since the rule names an issue, an address or a bare key, by its key
+   *  and its title only where the page published that title. */
   readonly batched: ReadonlyMap<string, DispatchReferenceRoute>;
   /** Each party, which the batch does not ask for and a read of its own names
    *  (`useReferenceNames`). */
   readonly parties: readonly string[];
 }
 
-/** The references that `texts` name by the page's name, as a one-line place reads them: the
- *  addresses `referenceStandIns` names, found as its `standIn` finds them, by `rowReferences` in
- *  each text without a typed block's source lines. No bare key is among them: the rule names a
- *  bare key only where the page already published its issue's title (`knownIssueKeys`), so it
- *  needs no read. A reference on a typed block's own line is left out, since no line draws it.
- *  Each is sorted here, once, by the route that reader parsed it to: a party (`isPartyRoute`) to
- *  a read of its own, and every other target, an issue among them, to the one batch.
+/** The references that `texts` name by the page's name, as a one-line place reads them, in each
+ *  text without a typed block's source lines: the addresses `referenceStandIns` names, found as
+ *  its `standIn` finds them, by `rowReferences`, and each key a text writes bare, which that
+ *  reader, handed no issue keys, reads as no reference. The rule names a bare key only where the
+ *  page published its issue's title (`knownIssueKeys`), and on the run's page nothing else asks
+ *  for one, so each is asked of the one batch too, as its issue's own reference with the issue's
+ *  route, found by the reading the outline's batch asks for it by (`citedReferences`). A word
+ *  that reading takes for a key and that names no issue (`UTF-16`) is answered gone, and is drawn
+ *  as its author wrote it. A reference on a typed block's own line is left out, since no line
+ *  draws it. Each is sorted here, once, by the route that reader parsed it to: a party
+ *  (`isPartyRoute`) to a read of its own, and every other target, an issue among them, to the
+ *  one batch.
  *
  *  The set holds every reference of the whole texts, so it holds more than a line draws where a
  *  caller cuts its line from a text, as the run's page cuts a changed node's first line
@@ -144,9 +164,16 @@ function namedReferences(texts: readonly string[]): RunReferences {
   const batched = new Map<string, DispatchReferenceRoute>();
   const parties = new Set<string>();
   for (const text of texts) {
-    for (const one of rowReferences(withoutDirectiveLines(text), [])) {
+    const words = withoutDirectiveLines(text);
+    for (const one of rowReferences(words, [])) {
       if (isPartyRoute(one.route)) parties.add(one.reference);
       else batched.set(one.reference, one.route);
+    }
+    // An address `citedReferences` names is in the set already where it names an issue, since
+    // `rowReferences` reads every address that does, so only the bare keys join it here.
+    for (const reference of citedReferences(words)) {
+      const route = batched.has(reference) ? undefined : parseNodeReference(reference);
+      if (route?.kind === "issue") batched.set(reference, route);
     }
   }
   return { batched, parties: [...parties] };
@@ -362,12 +389,12 @@ function RunExcerpts({
  *  read with `comments_before`, answers those comments and their tuples and no other node, so a
  *  run that changed only an older comment has its tuple there and its node in no page, and draws
  *  no row. A run no such tuple names draws no row, and nor does a read that holds no page. Each
- *  row links to its run's page by an address that carries `?issue_page=new` where `newPage`, the
- *  page being at an issue's address that carries it (`useNewPageAddress`), and by the plain
- *  address otherwise. */
+ *  row links to its run's page by an address that carries `?issue_page=new` and the key of the
+ *  issue `newPage` where it names one, the issue at whose address carrying that parameter the
+ *  page is (`useRunRows`), and by the plain address otherwise. */
 export function runRows(
   pages: readonly TreeAnswer[],
-  newPage = false
+  newPage?: string
 ): readonly ExtraReferenceRow[] {
   const changed = new Set<string>();
   for (const page of pages) {
@@ -397,24 +424,15 @@ function answerRows(answer: TreeAnswer): readonly ExtraReferenceRow[] {
 }
 
 /** `answerRows` with each row linking to its run's page by an address that carries
- *  `?issue_page=new`, for a page at an issue's address that carries it. */
-function newPageAnswerRows(answer: TreeAnswer): readonly ExtraReferenceRow[] {
-  return runRows([answer], true);
+ *  `?issue_page=new` and the issue `key`, for a page at an address of that issue that carries
+ *  it: one function for each key, made as the page comes to such an address (`useRunRows`), so
+ *  the rows keep their identity until the answer or the issue changes. */
+function newPageAnswerRows(key: string): (answer: TreeAnswer) => readonly ExtraReferenceRow[] {
+  return (answer) => runRows([answer], key);
 }
 
-/** Whether the page is at an issue's address that carries `?issue_page=new` (`newPageIssue`),
- *  where each run's row links to its run's page with it too, so a reader whose setting is off
- *  opens the run's page from an issue page that parameter opened (decision 533). The address is
- *  the router's location, which `useLocation` reads, read here from the router's own context:
- *  `useLocation` throws where no router stands above it, and a unit case of the rows' names
- *  draws them under none, so a caller under no router is at no such address. That context holds
- *  nothing there, which `useInRouterContext` says first. Details draws the rows under the app's
- *  router. */
-function useNewPageAddress(): boolean {
-  const routed = useInRouterContext();
-  const here = useContext(UNSAFE_LocationContext);
-  return routed && newPageIssue(here.location.pathname, here.location.search) !== undefined;
-}
+/** Where the page is: the address `useLocation` answers, as `useRunRows`' caller hands it. */
+type PageAddress = { readonly pathname: string; readonly search: string };
 
 /** The run rows of the issue's tree read, and how that read stands, as Details says a read of
  *  its own failed (`DetailsErrorLine`). */
@@ -453,13 +471,25 @@ export interface RunRowsRead {
  * an answer nor a refusal (`mayReadNow`): a first opening while a write is out sends the read,
  * and the tree's freshness asks for it again once the last write settles
  * (`subscribeTreeFreshness`). Only the asker's tree read holds a run, so another reader's rows
- * are none. Each row links to its run's page by an address that carries `?issue_page=new` where
- * the page is at an issue's address that carries it (`useNewPageAddress`); the count is the same
- * either way.
+ * are none. `location` is the page's address, as its caller's `useLocation` answers it: where it
+ * is an issue's address that carries `?issue_page=new` (`newPageIssue`), each row links to its
+ * run's page with it and that issue's key, so a reader whose setting is off opens the run's page
+ * from an issue page that parameter opened, and the run's page keeps it on that issue's links
+ * (decision 533). With no `location` the page is at no such address, and each row links to its
+ * run's plain address. The count is the same either way.
  */
-export function useRunRows(issue: IssueDetails, open: boolean): RunRowsRead {
+export function useRunRows(
+  issue: IssueDetails,
+  open: boolean,
+  location?: PageAddress
+): RunRowsRead {
   const tree = issueTreeQuery(issue.key);
-  const select = useNewPageAddress() ? newPageAnswerRows : answerRows;
+  const newPage =
+    location === undefined ? undefined : newPageIssue(location.pathname, location.search);
+  const select = useMemo(
+    () => (newPage === undefined ? answerRows : newPageAnswerRows(newPage)),
+    [newPage]
+  );
   const read = useQuery({ ...tree, enabled: false, select });
   useQuery({ ...tree, subscribed: open });
   const { data: rows, errorUpdateCount, refetch } = read;

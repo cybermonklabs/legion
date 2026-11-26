@@ -2,7 +2,6 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
 import type { Agent, DispatchUser, ReferenceTarget, ReferenceTargets } from "../../../api/types";
@@ -101,12 +100,17 @@ test("a run's row reads its question's words from the reading the tree read send
 
 // Decision 533 (root spec v184's R33): an issue's address with `?issue_page=new` draws the new
 // page for a reader whose setting is off, and the run's page opens for that reader only at a
-// run's address that carries it too (`RunRoute.tsx`). So where the issue's address carries it,
-// each run's row links to its run's page with it, and elsewhere by the plain address.
-test("a run's row links to its run's page with ?issue_page=new where the issue's address carries it, and without it where it does not", () => {
+// run's address that carries it too (`RunRoute.tsx`). The run's page cannot know from its own
+// read which issue opened it, so the link names that issue as well (`issue`), and the run's page
+// keeps the parameter on that issue's links (`RunPage.tsx`). So where the address the caller
+// hands (`useRunRows`' `location`) is one of the issue that carries it, each run's row links to
+// its run's page with it and the issue's key, and elsewhere, or with no address handed, by the
+// plain address.
+test("a run's row links to its run's page with ?issue_page=new and the issue's key where the issue's address carries it, and without them where it does not", () => {
   const issue = issueDetails();
-  function Links(): ReactNode {
-    const { rows } = useRunRows(issue, false);
+  type Address = { readonly pathname: string; readonly search: string };
+  function Links({ location }: { readonly location: Address | undefined }): ReactNode {
+    const { rows } = useRunRows(issue, false, location);
     return createElement(NamedRunRows, {
       draw: (named) =>
         named.map((row) => createElement("a", { href: row.href, key: row.key }, row.excerpt)),
@@ -114,7 +118,7 @@ test("a run's row links to its run's page with ?issue_page=new where the issue's
       rows,
     });
   }
-  const linksAt = (search: string) => {
+  const linksAt = (location: Address | undefined) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(
       issueTreeQuery(issue.key).queryKey,
@@ -122,13 +126,9 @@ test("a run's row links to its run's page with ?issue_page=new where the issue's
     );
     const view = render(
       createElement(
-        MemoryRouter,
-        { initialEntries: [`/issues/${issue.key}${search}`] },
-        createElement(
-          QueryClientProvider,
-          { client },
-          createElement(ReferenceNamesProvider, null, createElement(Links))
-        )
+        QueryClientProvider,
+        { client },
+        createElement(ReferenceNamesProvider, null, createElement(Links, { location }))
       )
     );
     const hrefs = [...view.container.querySelectorAll("a")].map((link) =>
@@ -138,10 +138,24 @@ test("a run's row links to its run's page with ?issue_page=new where the issue's
     client.clear();
     return hrefs;
   };
-  expect(linksAt("?issue_page=new"), "at the issue's address with the parameter").toEqual([
-    `/runs/${RUN}?issue_page=new`,
-  ]);
-  expect(linksAt(""), "at the issue's address without it").toEqual([`/runs/${RUN}`]);
+  const newPage = `/runs/${RUN}?issue_page=new&issue=${issue.key}`;
+  expect(
+    linksAt({ pathname: `/issues/${issue.key}`, search: "?issue_page=new" }),
+    "at the issue's address with the parameter"
+  ).toEqual([newPage]);
+  expect(
+    linksAt({ pathname: `/issues/${issue.key}/comments/${COMMENT}`, search: "?issue_page=new" }),
+    "at a comment's address of the issue with the parameter"
+  ).toEqual([newPage]);
+  expect(
+    linksAt({ pathname: `/issues/${issue.key}`, search: "" }),
+    "at the issue's address without it"
+  ).toEqual([`/runs/${RUN}`]);
+  expect(
+    linksAt({ pathname: `/issues/${issue.key}`, search: "?issue_page=old" }),
+    "at the issue's address with another value of it"
+  ).toEqual([`/runs/${RUN}`]);
+  expect(linksAt(undefined), "with no address handed").toEqual([`/runs/${RUN}`]);
 });
 
 /** Details' run rows for `runs`, the runs the issue's tree read answers, each question drawn as
@@ -252,6 +266,39 @@ test("a run's row names each reference in its question by its name once read, an
     await screen.findByText(expected);
     expect(view.drawn()).toEqual([expected]);
     expect(view.drawn()[0]).not.toContain(shortFormOf(unnamed));
+    expect(view.batch).toHaveBeenCalledTimes(1);
+    expect(
+      view.comments.mock.calls.length + view.blocks.mock.calls.length,
+      "a read of one target of its own"
+    ).toBe(0);
+  } finally {
+    view.close();
+  }
+});
+
+// A key a run's question writes bare is named as every one-line place names one: by its key and
+// its issue's title, where the page published that issue (`knownIssueKeys`). No other publisher
+// asks for it where the run's question is drawn alone, so the run's one batch asks for it as the
+// issue's own reference, beside the addresses, and reads no target of its own. A word the text
+// reader reads as a key that names no issue (`UTF-16`) is answered gone, and reads as its asker
+// wrote it.
+test("a run's bare issue key joins the one batch and is named by its key and title once read, and a key-shaped word that names no issue reads as written", async () => {
+  const question = "Does CORE-9 ship before the UTF-16 fix?";
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const view = drawQuestions([runNode(RUN, ASKED_AT, question)], { batch: () => answer.promise });
+  try {
+    // While the batch is out, both read as the asker wrote them.
+    await screen.findByText(question);
+    expect(view.drawn()).toEqual([question]);
+    expect(view.batch.mock.calls).toEqual([[["dispatch://CORE-9", "dispatch://UTF-16"]]]);
+    const targets = [
+      { gone: false, kind: "issue", name: "Pin the release date", ref: "dispatch://CORE-9" },
+      { gone: true, kind: "issue", name: "", ref: "dispatch://UTF-16" },
+    ] satisfies ReferenceTarget[];
+    await act(async () => answer.resolve({ targets }));
+    const expected = "Does CORE-9 Pin the release date ship before the UTF-16 fix?";
+    await screen.findByText(expected);
+    expect(view.drawn()).toEqual([expected]);
     expect(view.batch).toHaveBeenCalledTimes(1);
     expect(
       view.comments.mock.calls.length + view.blocks.mock.calls.length,

@@ -75,12 +75,12 @@ afterEach(() => {
   restore = undefined;
 });
 
-/** The page at the run `id`'s address, reading through `client`. */
-function runPage(client: QueryClient, id = RUN): ReactElement {
+/** The page at the run `id`'s address, with `search` after it, reading through `client`. */
+function runPage(client: QueryClient, id = RUN, search = ""): ReactElement {
   return (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <MemoryRouter initialEntries={[`/runs/${id}`]}>
+        <MemoryRouter initialEntries={[`/runs/${id}${search}`]}>
           <Routes>
             <Route element={<RunPage />} path={RUN_PATH} />
           </Routes>
@@ -90,12 +90,12 @@ function runPage(client: QueryClient, id = RUN): ReactElement {
   );
 }
 
-/** The page at the run `id`'s address, its one read answered by `answer`, in a client of its own
- *  that waits for no retry. */
-function draw(answer: () => Promise<GraphReferences>, id = RUN) {
+/** The page at the run `id`'s address, with `search` after it, its one read answered by
+ *  `answer`, in a client of its own that waits for no retry. */
+function draw(answer: () => Promise<GraphReferences>, id = RUN, search = "") {
   const getReferences = spyOn(api, "getReferences").mockImplementation(answer);
   const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
-  const view = render(runPage(client, id));
+  const view = render(runPage(client, id, search));
   restore = () => {
     getReferences.mockRestore();
     view.unmount();
@@ -596,16 +596,18 @@ test("a changed node of a kind the page has no word for is named by its line alo
   expect(within(what).queryByRole("link")).toBeNull();
 });
 
-/** An edge from the issue CORE-1, which the run changed, whose excerpt is `excerpt`. */
+/** An edge from the issue `key`, CORE-1 where none is given, which the run changed, whose excerpt
+ *  is `excerpt`. */
 function changedIssue(
-  excerpt: NonNullable<NonNullable<GraphReferences["edges"]>[number]["excerpt"]>
+  excerpt: NonNullable<NonNullable<GraphReferences["edges"]>[number]["excerpt"]>,
+  key = "CORE-1"
 ): NonNullable<GraphReferences["edges"]>[number] {
   return {
     created_at: "2026-11-17T09:00:05Z",
     direction: "in",
     excerpt,
     kind: "changed_by_run",
-    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" }),
+    node: graphNode({ id: key, issue_key: key, kind: "issue", ref: `dispatch://${key}` }),
     source_seq: null,
   };
 }
@@ -715,4 +717,97 @@ test("a changed node's line names each reference by its name once read, and as i
     getReferences.mock.calls.filter(([to]) => to !== runAddress),
     "a block read of its own"
   ).toEqual([]);
+});
+
+// A key a changed node's words write bare is named as every one-line place names one: by its key
+// and its issue's title, where the page published that issue (`knownIssueKeys`). Nothing else on
+// the run's page asks for it, so the page's one batch does, as the issue's own reference, and no
+// issue is read on its own. A word the text reader reads as a key that names no issue (`UTF-16`)
+// is answered gone, and reads as its author wrote it.
+test("a changed node's bare issue key joins the one batch and is named by its key and title once read, and a key-shaped word that names no issue reads as written", async () => {
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const batch = spyOn(api, "getReferenceTargets").mockReturnValue(answer.promise);
+  const issues = spyOn(api, "getIssue").mockRejectedValue(new ApiError(404, {}));
+  const summaries = spyOn(api, "getIssueSummary").mockRejectedValue(new ApiError(404, {}));
+  try {
+    const changed = changedIssue({ text: "Ship CORE-9 before the UTF-16 fix. Then rest." });
+    draw(() => Promise.resolve(answerOf([], [changed])));
+    const what = await screen.findByRole("region", { name: RUN_PAGE_WORDS.what_changed });
+    // While the batch is out, both read as their author wrote them.
+    expect(
+      await within(what).findByRole("link", { name: "Ship CORE-9 before the UTF-16 fix." })
+    ).toHaveAttribute("href", "/issues/CORE-1");
+    expect(batch.mock.calls).toEqual([[["dispatch://CORE-9", "dispatch://UTF-16"]]]);
+    await act(async () =>
+      answer.resolve({
+        targets: [
+          { gone: false, kind: "issue", name: "Pin the release date", ref: "dispatch://CORE-9" },
+          { gone: true, kind: "issue", name: "", ref: "dispatch://UTF-16" },
+        ],
+      })
+    );
+    expect(
+      await within(what).findByRole("link", {
+        name: "Ship CORE-9 Pin the release date before the UTF-16 fix.",
+      })
+    ).toHaveAttribute("href", "/issues/CORE-1");
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(
+      issues.mock.calls.length + summaries.mock.calls.length,
+      "a read of one issue of its own"
+    ).toBe(0);
+  } finally {
+    batch.mockRestore();
+    issues.mockRestore();
+    summaries.mockRestore();
+  }
+});
+
+// Decision 533: a run's row on an issue page that `?issue_page=new` opened links to the run's
+// page with the parameter and that issue's key (`run-references.ts`), since the run's own read
+// cannot say which issue opened it. The run's page adds the parameter to each link of a changed
+// node and of a cited item to an address of that issue that names no `issue_page` of its own,
+// after the link's own parameters and before its hash, so the reader goes back to that issue's
+// new page. A link to another issue, or to no issue, is drawn as it is, and so is every link at
+// an address that names no such issue.
+test("a run's page opened from an issue's new page keeps ?issue_page=new on its links to that issue alone, and an address that names no issue keeps it on none", async () => {
+  const items = [
+    { href: "/issues/CORE-1", title: "The release plan" },
+    { href: "/issues/CORE-1/spec?v=3#b-r2", title: "The second rule" },
+    { href: "/issues/CORE-1?issue_page=old", title: "The old page" },
+    { href: "/issues/CORE-2", title: "The build" },
+    { href: "https://example.com/release", title: "The release notes" },
+  ];
+  const answer = answerOf(
+    items.map((item, index) => frame(index + 1, GOING_EVENT_ITEM, item)),
+    [
+      changedIssue({ text: "Ship the release on Friday." }),
+      changedIssue({ text: "Pin the build first." }, "CORE-2"),
+    ]
+  );
+  /** Each link of the run's page at its address with `search`, by its name. */
+  const linksAt = async (search: string) => {
+    draw(() => Promise.resolve(answer), RUN, search);
+    await screen.findByRole("heading", { level: 1, name: RUN_WORD });
+    const links = Object.fromEntries(
+      screen.getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])
+    );
+    restore?.();
+    restore = undefined;
+    return links;
+  };
+  const asGiven = {
+    "Pin the build first.": "/issues/CORE-2",
+    "Ship the release on Friday.": "/issues/CORE-1",
+    ...Object.fromEntries(items.map(({ href, title }) => [title, href])),
+  };
+  expect(await linksAt("?issue_page=new&issue=CORE-1"), "opened from CORE-1's new page").toEqual({
+    ...asGiven,
+    "Ship the release on Friday.": "/issues/CORE-1?issue_page=new",
+    "The release plan": "/issues/CORE-1?issue_page=new",
+    "The second rule": "/issues/CORE-1/spec?v=3&issue_page=new#b-r2",
+  });
+  for (const search of ["?issue_page=new", "?issue=CORE-1"]) {
+    expect(await linksAt(search), `at ${search}`).toEqual(asGiven);
+  }
 });

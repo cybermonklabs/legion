@@ -1,10 +1,11 @@
 import { type ReactNode, type RefObject, useId, useMemo, useRef } from "react";
-import { Link, useParams } from "react-router-dom";
+import { createPath, Link, parsePath, useLocation, useParams } from "react-router-dom";
 
 import type { GraphReferences } from "../../../api/types";
 import { pageInkText, pageQuietText } from "../../../theme/classes";
 import { MarkdownBody } from "../../refs/MarkdownBody";
 import { standsFailed } from "../../refs/reference-target";
+import { parseIssuePath } from "../../refs/routes";
 import { Timestamp } from "../../refs/Timestamp";
 import { NotFoundPage } from "../../shell/NotFoundPage";
 import { useDocumentTitle } from "../../shell/useDocumentTitle";
@@ -21,7 +22,12 @@ import {
   sentenceCase,
 } from "../page-words";
 import { ROW_LINK } from "../row-references";
-import { RunReferenceNames } from "../run-references/run-references";
+import {
+  NEW_PAGE,
+  NEW_PAGE_PARAMETER,
+  OPENING_ISSUE,
+  RunReferenceNames,
+} from "../run-references/run-references";
 import { type RunChange, type RunPart, runView, useRun } from "./run-page";
 
 /** The page's heading: the word for what a run is. */
@@ -32,6 +38,38 @@ const SECTION_HEADING = `text-xs leading-4 font-semibold tracking-[0.08em] upper
 
 /** A link the page draws inside the run's own words. */
 const LINK = `dispatch-inline-link ${ROW_LINK} ${pageInkText}`;
+
+/** The issue whose new page opened the run's page: the key the address names by `OPENING_ISSUE`
+ *  where it carries `?issue_page=new` too, as a run's row on that page writes its link
+ *  (`run-references.ts`'s `runRow`, decision 533), and undefined at every other address. The
+ *  run's own read cannot say which issue opened it. */
+function useOpeningIssue(): string | undefined {
+  const parameters = new URLSearchParams(useLocation().search);
+  if (parameters.get(NEW_PAGE_PARAMETER) !== NEW_PAGE) return undefined;
+  return parameters.get(OPENING_ISSUE) ?? undefined;
+}
+
+/**
+ * `href` with `?issue_page=new` added where it is an address of the issue `key` that names no
+ * `issue_page` of its own, after the parameters it has, its hash kept; every other href, and
+ * every href where `key` is undefined, as it is. So a link of the run's page that the new page of
+ * the issue `key` opened (`useOpeningIssue`) opens that issue's new page again. This is a twin of
+ * `new-page-parameter.tsx`'s `keepNewPage`, which that file keeps to itself: exporting it would
+ * change a line of that file, and R6 admits none this round.
+ */
+function keepNewPage(key: string | undefined, href: string): string {
+  if (key === undefined) return href;
+  const path = parsePath(href);
+  const search = path.search ?? "";
+  if (
+    parseIssuePath(path.pathname ?? "")?.key !== key ||
+    new URLSearchParams(search).has(NEW_PAGE_PARAMETER)
+  ) {
+    return href;
+  }
+  const kept = `${search.length > 1 ? `${search}&` : "?"}${NEW_PAGE_PARAMETER}=${NEW_PAGE}`;
+  return createPath({ ...path, search: kept });
+}
 
 /**
  * A command bar run's own page at `/runs/<id>`: the asker's question, the answer frame by frame,
@@ -173,7 +211,8 @@ function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode
 
 /** Draws each changed node's line, its references named by `lineNames`, beside its kind's word. A
  *  node whose words hold none is named by its kind's word alone, which is then its link, and a
- *  node that has neither is left out. */
+ *  node that has neither is left out. A link to an address of the issue whose new page opened the
+ *  run's page keeps `?issue_page=new` (`keepNewPage`). */
 function ChangedNodeList({
   changed,
   lineNames,
@@ -181,6 +220,7 @@ function ChangedNodeList({
   changed: readonly RunChange[];
   lineNames: LineNames;
 }): ReactNode {
+  const opening = useOpeningIssue();
   const entries = useMemo(
     () =>
       changed.flatMap((node) => {
@@ -215,7 +255,7 @@ function ChangedNodeList({
             ) : (
               <Link
                 className={`min-w-0 truncate ${LINK}`}
-                to={node.href}
+                to={keepNewPage(opening, node.href)}
                 {...(named ? authorText : pageChrome)}
               >
                 {line}
@@ -230,8 +270,10 @@ function ChangedNodeList({
 
 /** One part of the answer: the model's text through the one markdown renderer, a thing it cites
  *  named by its title, as a link to the page it opens where it opens one, or a line the page says
- *  of the answer. */
+ *  of the answer. A link to an address of the issue whose new page opened the run's page keeps
+ *  `?issue_page=new` (`keepNewPage`); a link in the model's text is the renderer's. */
 function RunAnswerPart({ part }: { part: RunPart }): ReactNode {
+  const opening = useOpeningIssue();
   switch (part.kind) {
     case "answer":
       return (
@@ -245,7 +287,7 @@ function RunAnswerPart({ part }: { part: RunPart }): ReactNode {
           {part.href === undefined ? (
             <span {...authorText}>{part.title}</span>
           ) : (
-            <Link className={LINK} to={part.href} {...authorText}>
+            <Link className={LINK} to={keepNewPage(opening, part.href)} {...authorText}>
               {part.title}
             </Link>
           )}
