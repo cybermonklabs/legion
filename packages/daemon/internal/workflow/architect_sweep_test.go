@@ -325,7 +325,7 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 				return engine.SendArchitectStart(t.Context(), tx, root, row)
 			})
 
-			start := architectStartOf(t, pool)
+			start := architectStartOf(t, pool, entryIssue)
 			if tc.awaiting != nil {
 				if start.Task != "" || start.Kept != nil || !sameWait(start.Awaiting, *tc.awaiting) {
 					t.Fatalf("the start the sweep sends for an entry a resume raised = task %q, kept %+v, answering %+v; want no text, no kept "+

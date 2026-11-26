@@ -97,9 +97,9 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	if _, carried := dispatchCredentialServed(t, at); !carried {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
-	// A caller at the contract stands below the bands above it alone, the repository
-	// correction's, so the log holds one line for each of those (narrowingsExpected) and none
-	// for this band, whose line would mean the object had been taken out of the body just read.
+	// A caller at the contract stands below the bands above it alone, the gate basis's and the
+	// repository correction's, so the log holds one line for each of those (narrowingsExpected) and
+	// none for this band, whose line would mean the object had been taken out of the body just read.
 	for _, line := range narrowings {
 		if line.Dropped == "dispatchCredential" {
 			t.Errorf("a caller stating %d is told it lost dispatchCredential: %+v", dispatchCredentialContract, narrowings)

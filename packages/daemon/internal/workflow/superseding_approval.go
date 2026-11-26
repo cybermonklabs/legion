@@ -12,28 +12,37 @@ import (
 // earlier release kept, or a wait it answered), and where Dispatch recorded the review (Mark,
 // empty where the sender holds no mark of it). A sender that holds only the review's Dispatch
 // reference asks through RefSuperseded, which resolves the step from the reference once.
+//
+// Basis says the approval decided on may be the one an ancestor's approval opened the step on, at
+// the version the root registered (record.OpenOnBasis): the news of an approved version names
+// whichever approval the gate held when the news was made (StepApprovalStands). Every other
+// decision is a person's own, which the gate holds as record.DesignGate.ApprovedByPerson, so no
+// sender reads a basis as a person's word in its place (dispatch://INFRA-3320, R2 and R3).
 type Decision struct {
 	Kind     record.DecisionKind
 	Step     record.DesignStep
 	Artifact string
 	Version  int
 	Mark     record.EventMark
+	Basis    bool
 }
 
-// Approval is a person's approval a gate records (record.DesignGate.ApprovedVersion), by the
+// Approval is a person's approval a gate records (record.DesignGate.ApprovedByPerson), by the
 // version approved, which is what a sender names of it.
 type Approval struct {
 	Version int
 }
 
 // Supersession is what SupersedingApproval answers for a person's decision that is no longer
-// their word. By is the approval the gate records in its place, which a sender may name. It is
-// nil where the gate records no approval, so none replaced the decision: an approval that a later
-// changes request cleared (classify.ApplyDesignGateEvent), or one of a document the gate no longer
-// holds, its step holding another document with none approved. For an approval of a document the
-// gate no longer holds, a By that is set is the approval of that other document. A sender names a
-// version only where By is set. Only an approval replaces a changes request, so By is always set
-// for one.
+// their word. By is the person's approval the gate records in its place, which a sender may name,
+// never the version a basis opened the step at. It is nil where the gate records no person's
+// approval, so none replaced the decision: an approval that a later changes request cleared
+// (classify.ApplyDesignGateEvent), one of a document the gate no longer holds, its step holding
+// another document with none approved, or one a basis now stands beside with no approval of the
+// person's kept (record.DesignGate.KeptPerson). For an approval of a document the gate no longer
+// holds, a By that is set is the approval of that other document. A sender names a version only
+// where By is set. Only a person's approval replaces a changes request, so By is always set for
+// one.
 type Supersession struct {
 	By *Approval
 }
@@ -74,22 +83,26 @@ type Supersession struct {
 //
 // Past them an approval stands while the gate still holds it, which this function compares itself,
 // so no other function can ask it: the gate's row holds the document approved (d.Artifact, or the
-// document the gate holds where the sender knows none), and its approved version is the version
-// approved (d.Version, or the version the gate holds approved where the sender knows none). A new
-// version that closed the gate since leaves it standing: the gate keeps that approval as the
-// version a person approved below the latest. Its mark is not asked: a person who approves the
-// same version again after a changes request gives the same word again, under a new mark. An
-// approval the gate no longer holds is superseded: a later changes request cleared it, or the gate
-// now holds another version approved or another document.
+// document the gate holds where the sender knows none), and the person's approval it records
+// (record.DesignGate.ApprovedByPerson) is of the version approved (d.Version, or that approval's
+// version where the sender knows none). A decision that may name a basis (d.Basis) is compared
+// with the version the gate holds approved, a basis's included, while a basis stands on the step.
+// A new version that closed the gate since leaves a person's approval standing: the gate keeps that
+// approval as the version a person approved below the latest, as it keeps it beside a basis that
+// opened the step since (record.DesignGate.KeptPerson). Its mark is not asked: a person who
+// approves the same version again after a changes request gives the same word again, under a new
+// mark. An approval the gate no longer holds is superseded: a later changes request cleared it, or
+// the gate now holds another version approved or another document.
 //
-// Past them a changes request stands where the gate holds no approval, or now holds another
-// document than the one reviewed, where the sender knows it (d.Artifact). Otherwise the gate is
-// asked whether its approval followed the review (classify.ReviewSuperseded): at d.Version, or,
-// where the sender knows no version, at the version the gate holds approved — a review of a lower
-// one is answered by that approval, and one of that version is placed by its mark — and at
-// d.Mark. Both marks are Dispatch's, so the two are ordered by Dispatch's sequences when both
-// carry one and otherwise by its times (record.EventMark.After), never by the daemon's clock
-// against Dispatch's.
+// Past them a changes request stands where the gate holds no person's approval, or now holds
+// another document than the one reviewed, where the sender knows it (d.Artifact): a basis is no
+// answer a person gave to it. Otherwise the gate is asked whether the person's approval followed
+// the review (classify.ReviewSuperseded): at d.Version, or, where the sender knows no version, at
+// the version that approval holds — a review of a lower one is answered by that approval, and one
+// of that version is placed by its mark — and at d.Mark. Both marks are Dispatch's, so the two are
+// ordered by Dispatch's sequences when both carry one and otherwise by its times
+// (record.EventMark.After), never by the daemon's clock against Dispatch's. The approval a
+// supersession names (Supersession.By) is always a person's.
 //
 // One other function asks classify.ReviewSuperseded itself: requestStands
 // (awaiting_reconcile.go). It is no sender of a task or notice about a person's recorded decision.
@@ -102,56 +115,66 @@ func SupersedingApproval(gate *record.DesignGate, gated bool, d Decision) *Super
 	if gate == nil || gate.Step.OrSpec() != d.Step.OrSpec() || !gated {
 		return nil
 	}
+	held := personApproval(*gate)
 	if d.Kind == record.DecisionDesignApproved {
+		if d.Basis && gate.OnBasis() {
+			held = &Approval{Version: *gate.ApprovedVersion}
+		}
 		artifact, version := d.Artifact, d.Version
 		if artifact == "" {
 			artifact = gate.ArtifactID
 		}
-		if version == 0 && gate.ApprovedVersion != nil {
-			version = *gate.ApprovedVersion
+		if version == 0 && held != nil {
+			version = held.Version
 		}
-		if gate.ArtifactID == artifact && gate.ApprovedVersion != nil && *gate.ApprovedVersion == version {
+		if gate.ArtifactID == artifact && held != nil && held.Version == version {
 			return nil
 		}
-		return &Supersession{By: gateApproval(*gate)}
+		return &Supersession{By: personApproval(*gate)}
 	}
-	if gate.ApprovedVersion == nil || d.Artifact != "" && gate.ArtifactID != d.Artifact {
+	if held == nil || d.Artifact != "" && gate.ArtifactID != d.Artifact {
 		return nil
 	}
 	version := d.Version
 	if version == 0 {
-		version = *gate.ApprovedVersion
+		version = held.Version
 	}
 	if !classify.ReviewSuperseded(*gate, version, d.Mark) {
 		return nil
 	}
-	return &Supersession{By: gateApproval(*gate)}
+	return &Supersession{By: held}
 }
 
-// gateApproval is the approval gate records, nil where it records none.
-func gateApproval(gate record.DesignGate) *Approval {
-	if gate.ApprovedVersion == nil {
+// personApproval is the person's approval gate records (record.DesignGate.ApprovedByPerson), nil
+// where it records none: the version a basis opened the step on is no person's approval, so no
+// sender names it as one.
+func personApproval(gate record.DesignGate) *Approval {
+	approved := gate.ApprovedByPerson()
+	if approved == nil {
 		return nil
 	}
-	return &Approval{Version: *gate.ApprovedVersion}
+	return &Approval{Version: approved.Version}
 }
 
-// StepApprovalStands is the predicate's answer for a person's approval of version to of the
-// document artifact on step, asked of step's gate in gates: whether it is still the person's word.
-// It is the one ask of the two senders that hold such an approval by its step, not by a Dispatch
-// reference: the news of an approved version, of each item a send of the task that carries it
-// tells, from the gates of the item's tree (the daemon's itemStands), and the approval a
-// re-admission kept, from the gates of the root it was kept for, at each start or catch-up that
+// StepApprovalStands is the predicate's answer for an approval of version to of the document
+// artifact on step, asked of step's gate in gates: whether it is still the word that stands on
+// that version. It is the one ask of the two senders that hold such an approval by its step, not
+// by a Dispatch reference: the news of an approved version, of each item a send of the task that
+// carries it tells, from the gates of the item's tree (the daemon's itemStands), and the approval
+// a re-admission kept, from the gates of the root it was kept for, at each start or catch-up that
 // may name it (KeptDecisionsTask; artifact is "" for a pair kept before record.KeptApproval named
 // its document, and such a pair is asked of whichever document the gate holds). Each is asked as
 // an approval of step, and as gated: the gate recorded the approval a news item tells, so a person
 // approves that step, and KeptDecisionsTask asks only of a step a person approves
-// (record.TakesStep). It reads no fact of the tree beside the person's word: whether the tree
+// (record.TakesStep). basis says the approval may be the one an ancestor's approval opened the
+// step on (Decision.Basis): a news item's may, since the news tells a version a basis opened as it
+// tells one a person approved (the workflow's basisWords), and the kept approval is a person's
+// (admit's keepStaleApproval). It reads no fact of the tree beside that word: whether the tree
 // still holds a gate row for step to tell an audience of is the news's to read, beside what the
 // audience's told row holds.
 func StepApprovalStands(gates map[record.DesignStep]record.DesignGate, step record.DesignStep,
-	artifact string, to int) bool {
-	d := Decision{Kind: record.DecisionDesignApproved, Step: step, Artifact: artifact, Version: to}
+	artifact string, to int, basis bool) bool {
+	d := Decision{Kind: record.DecisionDesignApproved, Step: step, Artifact: artifact, Version: to, Basis: basis}
 	return SupersedingApproval(gateOf(gates, step), true, d) == nil
 }
 

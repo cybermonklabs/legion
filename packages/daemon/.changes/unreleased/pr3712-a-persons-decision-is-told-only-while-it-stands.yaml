@@ -31,3 +31,5 @@ body: |-
   approval now records the document approved (store migration 20261122212816 adds
   `readmitted_approvals.artifact`); a rollback takes the steps docs/kubernetes.md gives under
   the daemon API contract entry 20261125181104.
+  When an accepted ancestor enters its wait on open children, the daemon ends pending waits on
+  the ancestor's approval request before it changes the ancestor's Dispatch status to in_progress.

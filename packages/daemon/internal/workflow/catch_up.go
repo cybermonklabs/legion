@@ -339,12 +339,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // catch-up (record.CatchUpTree). A tree root's architect owns its whole tree: the catch-up says
 // whether a hand-over created the root at this generation, and whether its old root's gate came
 // with it, each design-gate step the root must hold open and how it stands, and every issue of the
-// tree in key order. The steps are the ones the tree is gated on (classify.TreeSteps), so a
-// criteria row the architect registered beside a deployment that gates spec and not criteria is
-// listed after the spec, gated as the spec is. A child's architect owns the child and every issue
-// whose recorded parent chain reaches it (record.Beneath), listed in key order at the child's own
-// generation: a child registers no gate and no hand-over creates one, so its catch-up states no
-// step and is neither handed over nor carried.
+// tree in key order. The steps are the ones the tree's work waits on (record.TreeGate.Required),
+// so a criteria row the architect registered beside a deployment that gates spec and not criteria
+// is listed after the spec, gated as the spec is. A child's architect owns the child and every
+// issue whose recorded parent chain reaches it (record.Beneath), listed in key order at the
+// child's own generation: a child registers no gate and no hand-over creates one, so its catch-up
+// states no step and is neither handed over nor carried.
 //
 // With it comes the notice's reason, which says whose issues these are and names, in key order,
 // the listed issues waiting for this architect's acceptance (awaitingAcceptance). No worker runs
@@ -354,6 +354,13 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // (the owner walk). So an architect that comes back learns of the wait from its catch-up alone;
 // the reason names these keys so that the catch-up, which a revived architect reads as its issues
 // already running, says what is the architect's own to do.
+//
+// The reason also names, for each listed issue still in the workflow, in key order, the roots
+// that rest on its approval and are still in the workflow (record.RestingRoots,
+// dispatch://INFRA-3320 R8), read for all of them at once (record.RestingRootsOn): their work holds
+// that issue's acceptance and its close, and a resting-root notice that told of one is ended
+// undelivered when the architect's claim has failed, as the phase-finished notice is, so the
+// reason names them beside the accepting list (restingClause).
 //
 // It is a pure read of the record in tx and writes nothing: the generation and the launch, and the
 // kept decisions a catch-up names and claims, are QueueCatchUp's. It is called twice for one
@@ -377,14 +384,20 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			return record.CatchUpTree{}, "", err
 		}
 		gated := classify.TreeSteps(steps, gates)
-		required := classify.RequiredSteps(gated)
+		required := record.TreeGate{Steps: steps, Rows: gates}.Required()
 		catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
 		for _, step := range required {
 			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(gated, step)}
 			if recorded, ok := gates[step]; ok {
 				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
-				if recorded.ApprovedVersion != nil {
+				// A step open on an ancestor's approval holds the version the root registered as
+				// its ApprovedVersion, which no person approved, so it states no approved version:
+				// the basis beside it is what opened the step (dispatch://INFRA-3320, R2).
+				if recorded.ApprovedVersion != nil && !recorded.OnBasis() {
 					stated.Approved = *recorded.ApprovedVersion
+				}
+				if recorded.Basis != nil {
+					stated.Pending, stated.Basis = recorded.PendingOnBasis(), record.CatchUpBasisOf(*recorded.Basis)
 				}
 			} else {
 				stated.Unregistered = true
@@ -402,6 +415,7 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	catchUp.Issues = make([]record.CatchUpIssue, 0, len(owned))
 	var accepting []record.Issue
+	var live []string
 	for _, member := range members {
 		if !owned[member.Key] {
 			continue
@@ -411,11 +425,19 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			listed.Parent = *member.Parent
 		}
 		catchUp.Issues = append(catchUp.Issues, listed)
-		if member.Phase == phase.Accepting && record.InWorkflow(member) {
+		if !record.InWorkflow(member) {
+			continue
+		}
+		if member.Phase == phase.Accepting {
 			accepting = append(accepting, member)
 		}
+		live = append(live, member.Key)
 	}
 	awaiting, err := awaitingAcceptance(ctx, tx, store, issue, accepting)
+	if err != nil {
+		return record.CatchUpTree{}, "", err
+	}
+	resting, err := record.RestingRootsOn(ctx, tx, store, live)
 	if err != nil {
 		return record.CatchUpTree{}, "", err
 	}
@@ -427,6 +449,11 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	if len(awaiting) > 0 {
 		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
+	}
+	for _, key := range live {
+		if roots := resting[key]; len(roots) > 0 {
+			reason += restingClause(key, roots)
+		}
 	}
 	return catchUp, reason, nil
 }

@@ -16,9 +16,11 @@
 # its own, which fills the cap and leaves tree 3 waiting for a slot, then closes one as done and
 # parks the other in backlog, which frees the slots tree 3 and the re-entry take, sets it todo
 # again so the daemon resumes its parked planner by rule, and parks it once more; two more
-# children are filed while the root stands in `accepting`, where the daemon refuses its sign-off
-# (`SIGNOFF_CHILD_IN_WORKFLOW`) until the proof human has parked both, one at a time, and the
-# merge then closes the root, since nothing of its tree is left in the workflow. Its
+# children are filed while the root stands in `accepting`, which moves it to `awaiting_children`,
+# where the daemon refuses its sign-off (`WAITING_ON_CHILDREN`) until the proof human has moved
+# both to the backlog, one at a time; the root then comes back to `testing`, whose round runs on
+# its head merged with the base's tip and asks no role to merge the base forward, and the merge
+# then closes the root, since nothing of its tree is left in the workflow. Its
 # architect is suspended from the operator shell while its
 # implementer completes, and stays held until the operator resumes it; in merging, every one of its
 # roles uses Oh My Pi's tools and the image's toolchain as its own App (full-agent-tools). Tree 2
@@ -268,17 +270,19 @@ stream=ENVOY_NOTIFICATIONS
 # the run's own peak under that rule, reached once, at issue-independence: tree 1's root and its
 # two children beside tree 2's root, which is where the cap stands full and tree 3, set todo
 # there, waits for it. The later gathering is three and not four: at children-first-acceptance
-# tree 1's root stands in accepting and holds no slot, so tree 3 and children 3 and 4 are the
-# whole of it — tree 2 has left the workflow by then (issue-cap-moves) and child 2 is parked again
-# (child-reentered). Trees 3 and 4 each take a slot the issues before them leave: tree 3 the one
+# tree 1's root stands in accepting and then in awaiting_children, holding no slot, so tree 3 and
+# children 3 and 4 are the whole of it — tree 2 has left the workflow by then (issue-cap-moves) and
+# child 2 is on the backlog again (child-reentered). Once both children are on the backlog
+# the root comes back to testing and takes a slot beside tree 3's, two of the four.
+# Trees 3 and 4 each take a slot the issues before them leave: tree 3 the one
 # child 1's close and child 2's park free, tree 4 the one tree 3's own backlog frees at
 # controller-walk.
 admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
 # each in an issue pod of its own with an architect of its own, which its first phase start starts,
 # and each holding a slot of its own. Children 3 and 4, filed at children-first-acceptance, run
-# while the root stands in accepting holding no slot at all, and are parked there; with tree 2 gone
-# and child 2 parked they raise no peak either.
+# while the root stands in accepting and then in awaiting_children holding no slot at all, and are
+# moved to the backlog there; with tree 2 gone and child 2 on the backlog they raise no peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
@@ -393,9 +397,10 @@ pin=
 tree1=
 child1=
 child2=
-# Children 3 and 4 of tree 1 (children-first-acceptance): both are in the workflow while their
-# root stands in accepting, where they hold its sign-off, and the proof human parks them one at a
-# time. Their pods are named so their disks can be read once the parks took them.
+# Children 3 and 4 of tree 1 (children-first-acceptance): both are open while their root stands
+# in accepting, which moves it to awaiting_children, where they hold its sign-off, and the proof
+# human moves them to the backlog one at a time. Their pods are named so their disks can be read
+# once those moves took them.
 child3=
 child3_pod=
 child4=
@@ -4910,27 +4915,38 @@ note "the reviewer's approval moved $tree1 to accepting (no worker started, the 
 pass
 
 begin children-first-acceptance
-# INFRA-980's children-first rule, live: a parent is accepted only once every issue beneath it has
-# left the workflow. Two more children of tree 1 are filed while it stands in accepting, as at
-# issue-independence — in Dispatch, todo, with no `legion` label, each entered by the daemon under
-# tree 1's open gate (workflow's recordChildUnderLiveTree) and each planner registering from an
-# issue pod of its own and holding for the driver. The architect's sign_off is then refused
-# SIGNOFF_CHILD_IN_WORKFLOW, naming both; the proof human parks them one at a time, and the refusal
-# after the first park names the one that remains, which is what makes the rule every issue beneath
-# rather than any; the sign-off lands only once the last has left, and moves tree 1 to retro.
+# dispatch://INFRA-3320's rule, live: no phase of a parent starts while an open child stands under
+# it, and a parent in accepting does not wait there for its children. Two more children of tree 1
+# are filed while it stands in accepting, as at issue-independence — in Dispatch, todo, with no
+# `legion` label, each entered by the daemon under tree 1's open gate (workflow's
+# recordChildUnderLiveTree) and each planner registering from an issue pod of its own and holding
+# for the driver. The first admission pass that sees them moves tree 1 to awaiting_children,
+# holding its acceptance (workflow's StopForChildren): Dispatch in_progress, no slot, in
+# admission.blocked with both children and in admission.held as awaiting_children, and the
+# architect told once with an awaiting-children notice. The architect's sign_off is then refused
+# WAITING_ON_CHILDREN, naming both; the proof human moves them to the backlog one at a time, and
+# the refusal after the first move names the one that remains, which is what makes the wait every
+# open child rather than any. The last move ends the wait: the admission pass takes tree 1 back to
+# testing, since a held acceptance comes back as testing (ReturnFromChildren), on a task that
+# names the start it held and, tree 1 being a parent, asks for the round on its head merged with
+# the tip of the base, in the tester's own checkout and pushed nowhere. The proof human first
+# commits a file to the base, so the base has moved past the head when the wait ends; no role is
+# asked to merge it forward, and the head stays the one the review approved. The tester and the
+# reviewer then run that round with real agents, and the architect's sign_off moves tree 1 to
+# retro.
 #
 # They are filed here, and nowhere earlier or later, for three reasons. They live through no
 # checkpoint that judges every live claim of tree 1 (the restart and both address moves all come
-# later). The root in accepting holds no slot of its own, so tree 3 and these two children are
-# three of admission_cap 4 — tree 2 left the workflow at issue-cap-moves and child 2 is parked
-# again — and the root's pod beside their three is the four pods preflight sized the pool
-# for. And an issue
+# later). The root in accepting and then in awaiting_children holds no slot of its own, so tree 3
+# and these two children are three of admission_cap 4 — tree 2 left the workflow at
+# issue-cap-moves and child 2 is on the backlog again — and the root's pod beside their three is
+# the four pods preflight sized the pool for. And an issue
 # may not enter a tree whose root is already accepted: from retro onwards the daemon holds such a
 # child at admitted and starts nothing for it (CHILD_UNDER_ACCEPTED_PARENT, record.Accepted),
 # so accepting is the last moment of tree 1's run at which a child of it still runs.
-child3=$(new_child "Stage 4b proof tree 1 child 3: in the workflow while its root waits to be accepted ($work)" "$tree1") ||
+child3=$(new_child "Stage 4b proof tree 1 child 3: open under its root while the root waits on its children ($work)" "$tree1") ||
   fail "Dispatch could not create tree 1's third child"
-child4=$(new_child "Stage 4b proof tree 1 child 4: the last beneath the root to leave, whose park lets the sign-off land ($work)" "$tree1") ||
+child4=$(new_child "Stage 4b proof tree 1 child 4: the last open child under the root, whose move to the backlog ends the wait ($work)" "$tree1") ||
   fail "Dispatch could not create tree 1's fourth child"
 note "[dispatch] tree 1's children $child3 and $child4: todo under $tree1, no legion label (a child of a live tree is the daemon's to enter)"
 # Each child's pod is kept by name (child3_pod, child4_pod): an issue pod's disk is read by its
@@ -4949,25 +4965,49 @@ for child in "$child3" "$child4"; do
   assert_pod_disk "$child_pod" ""
   note "[dispatch] $child: todo under $tree1, no legion label; its planner claim records tree $child_tree, and holds in planning in pod $child_pod on that pod's own disk ${found%% *} Bound"
 done
+# The open children move the root out of accepting, where it no longer waits for them, into
+# awaiting_children: in_progress on the board, no slot, in admission.blocked with both children
+# and in admission.held as awaiting_children, in neither admission.active nor admission.waiting.
+on_tree "$tree1" until_true 900 "$tree1 to leave accepting for awaiting_children, held by $child3 and $child4" issue_phase "$tree1" awaiting_children
+state_file awaiting-children
+jq -e --arg i "$tree1" --arg c3 "$child3" --arg c4 "$child4" '
+  (.admission.active | index($i)) == null and (.admission.waiting | index($i)) == null
+  and ([.admission.blocked[] | select(.issue == $i) | .blockedBy] | first // [] | (index($c3) != null and index($c4) != null))
+  and ([.admission.held[]? | select(.issue == $i) | .reason] == ["awaiting_children"])' "$evidence/awaiting-children.json" >/dev/null ||
+  fail "$tree1 in awaiting_children reads $(jq -c --arg i "$tree1" '{active: (.admission.active | index($i)), waiting: (.admission.waiting | index($i)), blocked: [.admission.blocked[] | select(.issue == $i)], held: [.admission.held[]? | select(.issue == $i)]}' "$evidence/awaiting-children.json"), want no slot, no place in the line, blocked by $child3 and $child4 and held as awaiting_children"
+until_true 120 "the daemon's in_progress status for $tree1 on the Dispatch board" dispatch_status_is "$tree1" in_progress
+until_true 300 "the awaiting-children notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle awaiting-children "$tree1")"
+awaiting_notices=$(notice_deliveries "$tree1" architect "$(notice_needle awaiting-children "$tree1")")
+[ "$awaiting_notices" = 1 ] ||
+  fail "$tree1's architect holds $awaiting_notices awaiting-children notices, want one: the move into awaiting_children tells it once"
+waiting_notice=$(notice_line "$tree1" architect "$(notice_needle awaiting-children "$tree1")")
+for want in "holding the start of accepting" "$child3" "$child4"; do
+  grep -qF -- "$want" <<<"$waiting_notice" ||
+    fail "the awaiting-children notice on $tree1's architect does not name \"$want\": $(cut -c1-300 <<<"$waiting_notice")"
+done
+printf '%s\n' "$waiting_notice" >"$evidence/notice-awaiting-children.jsonl"
+note "the open children moved $tree1 from accepting to awaiting_children (the board in_progress, no slot, blocked by $child3 and $child4, held as awaiting_children), and its architect was told once (kept in $evidence/notice-awaiting-children.jsonl)"
 # The refusal is read where the architect meets it: the daemon answers the `legion` tool 409, and
-# that answer is in the architect's session. refusals_beneath prints the issues each refusal in
-# that session named — the list its message carries after "still in the workflow: " — and
-# refused_naming holds a refusal to exactly one such list, so each prompt below is judged on an
-# answer the daemon gave, never on the architect's words about it.
-refusals_beneath() {
+# that answer is in the architect's session. refusals_waiting prints the issues each refusal in
+# that session named — the list its message carries after "open Dispatch children of it: ", each
+# key without the status beside it — and refused_naming holds a refusal to exactly one such list,
+# so each prompt below is judged on an answer the daemon gave, never on the architect's words
+# about it.
+refusals_waiting() {
   { claim_session_text "$tree1" architect || true; } |
-    grep -o 'still in the workflow: [^."]*' | sed 's/^still in the workflow: //'
+    grep -o 'on these open Dispatch children of it: [^."]*' |
+    sed -e 's/^on these open Dispatch children of it: //' -e 's/ ([a-z_]*)//g'
 }
-refused_naming() { refusals_beneath | grep -qxF -- "$1"; }
+refused_naming() { refusals_waiting | grep -qxF -- "$1"; }
 accept_now="read the evidence as your instructions say and accept it with the legion tool's sign_off for $tree1 now. Write no status, close nothing and change nothing: the proof human takes the children out. Report what the daemon answered."
-send_agent "$tree1" architect "Stage 4b proof acceptance: the reviewer approved pull request #$pr_number and $tree1 is in accepting, with $child3 and $child4 still in the workflow beneath it; $accept_now"
-on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off, naming $child3 and $child4 beneath it" \
+send_agent "$tree1" architect "Stage 4b proof acceptance: the reviewer approved pull request #$pr_number, and $child3 and $child4 are open beneath $tree1; $accept_now"
+on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off, naming $child3 and $child4 open beneath it" \
   refused_naming "$child3, $child4"
-session_contains "$tree1" architect SIGNOFF_CHILD_IN_WORKFLOW ||
-  fail "the architect's session holds a refusal naming $child3 and $child4 but not the code SIGNOFF_CHILD_IN_WORKFLOW"
-issue_phase "$tree1" accepting >/dev/null ||
-  fail "$tree1 is $(daemon_state | jq -r --arg i "$tree1" '.issues[$i].phase') after the refused sign-off, want it still accepting"
-note "the architect's sign_off was refused SIGNOFF_CHILD_IN_WORKFLOW naming $child3 and $child4, and $tree1 stands in accepting"
+session_contains "$tree1" architect WAITING_ON_CHILDREN ||
+  fail "the architect's session holds a refusal naming $child3 and $child4 but not the code WAITING_ON_CHILDREN"
+issue_phase "$tree1" awaiting_children >/dev/null ||
+  fail "$tree1 is $(daemon_state | jq -r --arg i "$tree1" '.issues[$i].phase') after the refused sign-off, want it still in awaiting_children"
+note "the architect's sign_off was refused WAITING_ON_CHILDREN naming $child3 and $child4, and $tree1 stands in awaiting_children"
 # child_parked ISSUE POD: the park left ISSUE no Sandbox and no pod, and POD no disk, read inside
 # the wait for the reason child2_parked gives. Each read is held to its exit status (see
 # child1_released).
@@ -4988,16 +5028,70 @@ backlog_child_issue "$child3" "$child3_pod"
 send_agent "$tree1" architect "Stage 4b proof acceptance, again: $child3 has left the workflow and $child4 has not; $accept_now"
 on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off again, naming $child4 alone" \
   refused_naming "$child4"
-issue_phase "$tree1" accepting >/dev/null ||
-  fail "$tree1 left accepting while $child4 was still in the workflow: $(daemon_state | jq -c --arg i "$tree1" '.issues[$i].phase')"
-note "with $child3 parked the daemon refused the sign_off again, naming $child4 alone (every refusal of this run so far: $(refusals_beneath | paste -sd '; ' -)): the rule is every issue beneath, not any"
+issue_phase "$tree1" awaiting_children >/dev/null ||
+  fail "$tree1 left awaiting_children while $child4 was still open: $(daemon_state | jq -c --arg i "$tree1" '.issues[$i].phase')"
+note "with $child3 on the backlog the daemon refused the sign_off again, naming $child4 alone (every refusal of this run so far: $(refusals_waiting | paste -sd '; ' -)): the wait is for every open child, not any"
+# A file on the base, so the base has moved past the pull request's head when the wait ends: the
+# return asks no role to merge it forward, so the head stays the one the review approved, and the
+# tester's merge of that head with the base's tip, in a checkout of its own, is what brings the
+# file in. It goes under docs/solutions/, which clean_smoke_main takes off the smoke main after
+# the merge, and is named after tree 1, so an earlier run that failed before that cleanup leaves
+# no file at this run's path. The PUT still sends the blob's sha when the base holds the file, as
+# the conflict step's does: GitHub refuses an update of an existing file that names none.
+children_wait_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) ||
+  fail "read pull request #$pr_number's head while $tree1 waited on $child4"
+children_base_path="docs/solutions/stage4b-children-wait-${tree1,,}.md"
+children_base_blob=$(timeout 60 gh api "repos/$repo/contents/$children_base_path?ref=$pr_base" --jq .sha 2>/dev/null) ||
+  children_base_blob=
+children_base_sha=$(jq -cn --arg branch "$pr_base" --arg sha "$children_base_blob" \
+  --arg content "$(printf 'Stage 4b proof: on the base while %s waited on its children\n' "$tree1" | base64 -w0)" \
+  '{message: "Stage 4b proof: a base commit while the root waits on its children", content: $content, branch: $branch}
+   + (if $sha == "" then {} else {sha: $sha} end)' |
+  timeout 60 gh api --method PUT "repos/$repo/contents/$children_base_path" --input - --jq .commit.sha) ||
+  fail "the proof human could not commit $children_base_path to $pr_base"
+note "the proof human committed $children_base_path to $pr_base as $children_base_sha while $tree1 waited on $child4 at head $children_wait_head"
 backlog_child_issue "$child4" "$child4_pod"
-send_agent "$tree1" architect "Stage 4b proof acceptance, last: $child3 and $child4 have both left the workflow; $accept_now"
+# The last move to the backlog ends the wait: the pass takes tree 1 back to testing in place of
+# the acceptance it held, and starts the tester and no other role. Its task names that held start
+# and, since tree 1 has Dispatch children, ends with the sentence every testing task of a parent
+# carries (workflow's baseMergeRun). No child merged during the wait, so the task names none.
+on_tree "$tree1" wait_for_phase "$tree1" testing 900
+returned=$(log_lines "workflow: a parent's open children are finished, so it goes back to the step its return takes" |
+  jq -c --arg issue "$tree1" 'select(.issue == $issue and .held == "accepting" and .to == "testing")' | grep -c . || true)
+[ "$returned" = 1 ] ||
+  fail "the daemon logged $tree1's return from awaiting_children $returned times with held=accepting to=testing, want once"
+on_tree "$tree1" wait_for_worker "$tree1" tester
+for want in "starts testing in place of the start of accepting it held" "Test the head merged with the tip of the pull request's base branch"; do
+  on_tree "$tree1" until_true 300 "the tester's task after the wait to say \"$want\"" session_contains "$tree1" tester "$want"
+done
+note "once $child4 left, $tree1 went back to testing in place of the acceptance it held, and the tester's task names that start and asks for the round on the head merged with the base's tip"
+on_tree "$tree1" send_agent "$tree1" tester "Stage 4b proof test after the wait: do the task the daemon gave you. Test the head of pull request #$pr_number merged with the tip of $pr_base, in a checkout of your own outside the issue's workspace that you never push, record each result at the head with an --observed line naming that base commit, record the test handoff with verdict pass, and complete the phase. Push nothing to legion/$tree1."
+on_tree "$tree1" wait_for_phase "$tree1" reviewing 1500
+# The return counts nothing: the round stays where the review left it.
+assert_handoff_record "$tree1" tester testing 2
+# No role merged the base forward: the pull request's head is still the one the review approved,
+# though the base moved past it during the wait.
+children_return_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) ||
+  fail "read pull request #$pr_number's head after the testing round that followed the wait"
+[ "$children_return_head" = "$children_wait_head" ] ||
+  fail "pull request #$pr_number moved from $children_wait_head to $children_return_head across the return, want it where the review left it: no role merges the base forward for the children"
+note "pull request #$pr_number still stands at $children_wait_head after the round that followed the wait, with $children_base_sha on $pr_base past it: no role merged the base forward"
+on_tree "$tree1" wait_for_worker "$tree1" reviewer
+# The decision is the reviewer's own: the proof names the head, never the verdict. The head is the
+# one the reviewer approved before the wait, but that approval names the entry of its own round,
+# so this round waits on a new decision, and the daemon's move out of reviewing is what is read.
+on_tree "$tree1" send_agent "$tree1" reviewer "Stage 4b proof review after the wait: review pull request #$pr_number in $repo at its head as your role requires, and complete the reviewer handoff. The decision is yours; take the round's steps in the order your role gives."
+on_tree "$tree1" until_true 1800 "$review_app's decision on pull request #$pr_number after the wait to move $tree1 out of reviewing" \
+  issue_phase_in "$tree1" accepting implementing
+issue_phase "$tree1" accepting >/dev/null ||
+  fail "the reviewer requested changes on pull request #$pr_number after the wait: $tree1 is $(daemon_state | jq -r --arg i "$tree1" '.issues[$i].phase')"
+note "the round after the wait ran with real agents: the tester tested the head merged with $pr_base's tip, and the reviewer approved the head, which moved $tree1 to accepting"
+send_agent "$tree1" architect "Stage 4b proof acceptance, last: $child3 and $child4 have both left the workflow, and the tester's round after the wait recorded its results at the head of pull request #$pr_number on the tip of $pr_base; $accept_now"
 on_tree "$tree1" wait_for_phase "$tree1" retro 900
 phase_change_logged "$tree1" accepting retro sign_off ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from accepting to retro on sign_off"
 until_true 120 "the daemon's retro status on the Dispatch board" dispatch_status_is "$tree1" retro
-note "once the last issue beneath it had left, the architect's sign_off moved $tree1 to retro (workflow: phase changed from=accepting to=retro trigger=sign_off), the board retro"
+note "on the head the review approved, tested after the wait on $pr_base's tip, the architect's sign_off moved $tree1 to retro (workflow: phase changed from=accepting to=retro trigger=sign_off), the board retro"
 # The sign-off, the last of tree 1's default steps, starts the implementer's retro, whose task names the phase; the resumed implementer
 # may finish it before the proof's instruction reaches it, so the prompt goes only while the issue
 # sits in retro.
@@ -5006,7 +5100,7 @@ if issue_phase "$tree1" retro >/dev/null; then
   send_agent "$tree1" implementer "Stage 4b proof retro: write the required retro handoff for pull request #$pr_number and complete the phase. Do not change the approved implementation."
 fi
 on_tree "$tree1" wait_for_phase "$tree1" merging 1800
-note "$tree1 moved planner → implementer → tester → reviewer (changes requested) → implementer → tester → reviewer (approved) → accepting (the architect's sign_off, held until $child3 and $child4 left) → retro → merging with real agents; $repo#$pr_number changes $smoke_file"
+note "$tree1 moved planner → implementer → tester → reviewer (changes requested) → implementer → tester → reviewer (approved) → accepting → awaiting_children (while $child3 and $child4 were open) → tester (the head merged with the base's tip) → reviewer (approved) → accepting → retro → merging with real agents; $repo#$pr_number changes $smoke_file"
 pass
 
 begin review-thread
@@ -6481,57 +6575,27 @@ await_merger_merge "$repo" "$pr_number" --delete-branch
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge is recorded and the root waits for the rest of its tree (INFRA-229).
-merge_recorded() {
-  daemon_state | jq -e --arg issue "$tree1" '.issues[$issue] | .phase == "merging" and .pullRequest.state == "merged"' >/dev/null
-}
-on_tree "$tree1" until_true 600 "the daemon to record pull request #$pr_number merged on $tree1, which stays in merging" merge_recorded
-waiting_for=$(log_lines "workflow: a merged root's close waits for the rest of its tree" |
-  jq -r -s --arg issue "$tree1" '[.[] | select(.issue == $issue)] | last | .waitingFor // empty')
-[ "$waiting_for" = "$child3, $child4" ] ||
-  fail "the daemon logged $tree1's merged close waiting for '${waiting_for:-nothing}', want \"$child3, $child4\""
-until_true 300 "the pr-merged notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle pr-merged "$tree1")"
-merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-for want in "#$pr_number" "$child3" "$child4"; do
-  grep -qF -- "$want" <<<"$merged_notice" ||
-    fail "the pr-merged notice on $tree1's architect does not name $want: $(cut -c1-300 <<<"$merged_notice")"
-done
-state_file merged-waiting
-jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and .issues[$issue].check == null' "$evidence/merged-waiting.json" >/dev/null ||
-  fail "the merge left $tree1 holding an admission slot in merging, which keeps none, or opened its production check while its tree still ran: $(jq -c --arg issue "$tree1" '{active: .admission.active, check: .issues[$issue].check}' "$evidence/merged-waiting.json")"
-dispatch_status_is "$tree1" retro >/dev/null ||
-  fail "the board shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at its merge, want the retro it stands in: the done is the close's"
-lingered=$(log_lines "workflow: tree lingers" | jq -c --arg tree "$tree1" 'select(.tree == $tree)' | grep -c . || true)
-[ "$lingered" = 0 ] ||
-  fail "the daemon lingered tree $tree1 at its merge ($lingered times) while $child3 and $child4 were still in the workflow"
-merge_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
-case $merge_claims in *suspended*) fail "the merge suspended a claim of $tree1 while its tree still ran: $merge_claims" ;; esac
-note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the daemon recorded the merge and left $tree1 in merging (claims $merge_claims, no slot as merging keeps none, Dispatch retro, no linger, no production check), telling its architect once that the close waits for $waiting_for"
-# The children leave one at a time, and only the last park closes the root. A parked child leaves
-# the workflow (phase done) with its claims suspended, and the park deletes its Sandbox with the six
-# role Secrets it owned once its pod is gone, the disk going with that pod: the path child-release
-# took for child 2, read the same way (child_parked).
-for child in "$child3" "$child4"; do
-  if [ "$child" = "$child3" ]; then child_pod=$child3_pod; else child_pod=$child4_pod; fi
-  set_status "$child" backlog
-  until_true 600 "$child to leave the workflow" issue_phase "$child" "done"
-  until_true "$phase_seconds" "$child's park to suspend its planner" issue_worker_state "$child" planner suspended
-  until_true 600 "$child's Sandbox, pod and disk to be gone after its backlog" child_parked "$child" "$child_pod"
-  note "the proof human parked $child (backlog): it left the workflow, its planner is suspended, and it has no Sandbox, no pod and no disk (its pod $child_pod took the disk $child_pod-issue with it)"
-  [ "$child" = "$child4" ] || issue_phase "$tree1" merging >/dev/null ||
-    fail "$tree1 left merging on $child3's park, with $child4 still in the workflow"
-done
-# The last park closes the root, as the merge of a finished tree's root does.
+# The merge closes tree 1 at once: children 3 and 4 left the workflow at children-first-acceptance,
+# so the close finds nothing beneath the root (closeMerged's openBeneath) and waits for nothing,
+# writes no "a merged issue's close waits" line and sends no pr-merged notice.
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-closed_last=$(log_lines "workflow: a merged root closes once its last child left the workflow" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
-[ "$closed_last" = 1 ] ||
-  fail "the daemon logged \"a merged root closes once its last child left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
+close_waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+[ "$close_waited" = 0 ] ||
+  fail "the daemon logged \"a merged issue's close waits for the issues beneath it\" for $tree1 $close_waited times, want none: nothing of its tree was in the workflow at the merge"
+# The count reads the architect's session, and notice_deliveries counts 0 for a session it cannot
+# read, so the read is proven first: a count of 0 then comes from a session that holds none.
+claim_session_text "$tree1" architect >/dev/null ||
+  fail "tree 1's architect has no readable session, so its pr-merged notices cannot be counted"
+merged_notices=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
+[ "$merged_notices" = 0 ] ||
+  fail "$tree1's architect holds $merged_notices pr-merged notices, want none: the merge closed the root at once"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
-# No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached
-# accepting, which keeps none, its children's at their parks, and the close frees whatever is left.
+# No issue of tree 1 holds an admission slot once it closes: the root's row went when it last
+# reached accepting, which keeps none, its children's at their moves to the backlog, and the close
+# frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||
   fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"

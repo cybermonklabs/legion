@@ -163,15 +163,25 @@ func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record
 			return answered, err
 		}
 		if waitGateOpen(e.cfg.Steps, gates, root.Awaiting.Artifact) {
-			version := root.Awaiting.GateVersion
+			version, reviewed := root.Awaiting.GateVersion, 0
 			var step record.DesignStep
-			if gate := gateOfDocument(gates, root.Awaiting.Artifact); gate != nil {
+			gate := gateOfDocument(gates, root.Awaiting.Artifact)
+			if gate != nil {
 				version, step = gate.LatestVersion, gate.Step
+			} else {
+				// A wait on a question names no document: the step its resume speaks of says
+				// whether an ancestor's approval opened it (approvalDetail).
+				gate = gateOf(gates, stepInQuestion(e.cfg.Steps, gates))
+			}
+			// A step an ancestor's approval opened records no version reviewed: no person approved
+			// the root's version, and the resume asks no person's word of it (answeredDecision).
+			if gate == nil || !gate.OnBasis() {
+				reviewed = version
 			}
 			e.logOnCommit(ctx, "workflow: the design gate of a root waiting on a person is open, which answers its wait", "issue", root.Key,
 				"version", version, "ask", root.Awaiting.Ask)
-			if err := e.answerWait(ctx, tx, root, waitAnswer{by: record.AnsweredByApproval, detail: fmt.Sprintf("version %d", version),
-				document: record.AnsweredDocument{Artifact: root.Awaiting.Artifact, Step: step, Version: version}}); err != nil {
+			if err := e.answerWait(ctx, tx, root, waitAnswer{by: record.AnsweredByApproval, detail: approvalDetail(version, gate),
+				document: record.AnsweredDocument{Artifact: root.Awaiting.Artifact, Step: step, Version: reviewed}}); err != nil {
 				return answered, err
 			}
 			answered = true
@@ -221,8 +231,53 @@ func (e *Engine) leaveGateOff(ctx context.Context, tx pgx.Tx, root record.Issue,
 // That answer is recorded, and shown on the API, as AnsweredByApproval: the contract's answeredBy
 // enum, which refuses a value it does not list, has no value of its own for it. But no person
 // approved anything, so the detail tells the resume (resumeTask) never to say so, should the gate
-// be on again by then.
+// be on again by then. This mark, basisOpenedAnswer, basisEndedAfter and basisEndedAnswer are
+// stored in the wait's answered detail (record.Awaiting.AnsweredDetail) and parsed back from it
+// at the resume (resumeTask), which can come after a deploy, so a release that changes the words
+// of any of them must go on reading the words a release before it stored as well.
 const gateOffAnswer = ", answered with the design gate off"
+
+// basisOpenedAnswer marks the detail of a wait answered as an approval where an ancestor's
+// approval opened the step (dispatch://INFRA-3320, R1 and R2), as gateOffAnswer marks the gate-off
+// answer. That answer is recorded, and shown on the API, as AnsweredByApproval: the contract's
+// answeredBy enum has no value of its own for it. No person approved the root's version, so the
+// detail names the ancestor's approval after this mark (approvalDetail), and the resume
+// (resumeTask) names that approval and never a person's approval of the root's document, also
+// where the step has closed again since.
+const basisOpenedAnswer = ", opened on an ancestor's approval: "
+
+// approvalDetail is the detail of a wait that an open step answered as an approval at version:
+// the version and, where gate stands open on an ancestor's approval, the root's version registered
+// and that approval (basisOpenedAnswer, basisApproval). Every answer of a wait by an open step
+// writes it (answerOpenGates, answerRegisteredGate).
+func approvalDetail(version int, gate *record.DesignGate) string {
+	if gate == nil || !gate.OnBasis() {
+		return fmt.Sprintf("version %d", version)
+	}
+	return fmt.Sprintf("version %d", gate.LatestVersion) + basisOpenedAnswer + basisApproval(*gate)
+}
+
+// basisEndedAfter joins, to the detail of a wait already answered, what then ended its step's
+// wait on an ancestor's request (tellPendingEnded): an act on the root's own document can answer
+// the wait and end that step's wait at once, as a person's approval of the root's own document
+// does, and the resume names both (dispatch://INFRA-3320, R1). A newline joins them, since the
+// detail of no act holds one: a review's reason is quoted (changesDetail).
+const basisEndedAfter = "\n" + basisEndedAnswer
+
+// answeredAct is the detail of the act that answered a wait, with what ended a step's wait on an
+// ancestor's request after it (basisEndedAfter) left out. Every reader that compares or prints the
+// act's detail reads this.
+func answeredAct(detail string) string {
+	act, _, _ := strings.Cut(detail, basisEndedAfter)
+	return act
+}
+
+// basisEndsAfter is what ended a step's wait on an ancestor's request after the act that answered
+// the wait, one entry for each end, oldest first; none for a detail that holds none
+// (basisEndedAfter).
+func basisEndsAfter(detail string) []string {
+	return strings.Split(detail, basisEndedAfter)[1:]
+}
 
 // act is what ReconcileAwaiting does with one root.
 type act int
@@ -661,9 +716,9 @@ func ResumeAwaitedRootTask(ctx context.Context, tx pgx.Tx, store record.Store, k
 // (classify.StandingGate), which is the one the resume answers for; else the first required step
 // that is not open, which nobody has registered and whose document the architect has still to
 // register; and when every required step is open the first required step, whose version the
-// resume says the work runs at. The required steps are the ones the tree is gated on
-// (classify.TreeSteps), as in the two rules it reads. It need not be the step whose document the
-// review that answered the wait was of, which resumeTask reads from the wait itself.
+// resume says the work runs at. The required steps are the ones the tree's work waits on
+// (record.TreeGate.Required), as in the two rules it reads. It need not be the step whose document
+// the review that answered the wait was of, which resumeTask reads from the wait itself.
 func stepInQuestion(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) record.DesignStep {
 	if gate, standing := classify.StandingGate(steps, gates); standing {
 		return gate.Step
@@ -671,7 +726,7 @@ func stepInQuestion(steps []record.DesignStep, gates map[record.DesignStep]recor
 	if step, _, closed := classify.FirstClosedStep(steps, gates); closed {
 		return step
 	}
-	return classify.RequiredSteps(classify.TreeSteps(steps, gates))[0]
+	return record.TreeGate{Steps: steps, Rows: gates}.Required()[0]
 }
 
 // DesignApprovedWake is the phrase a resume task carries when the root's design gate is open at
@@ -702,6 +757,16 @@ const DesignApprovedWake = "this resume is your design-approved wake"
 // be approved, nor asked about as a person's approval: under an armed gate it is said as answered
 // while the gate was off.
 //
+// A step on an ancestor's approval (dispatch://INFRA-3320, R1 and R2) is never said to be approved
+// by a person. A wait an ancestor's approval answered (basisOpenedAnswer) names that approval and
+// says that no person approved the root's version, and a step that stands open on such an approval
+// at the resume is said so, as the design-approved wake. A step that still waits on an ancestor's
+// open approval request names that request, and the task asks for no approval request of the
+// root's own. A wait that the end of such a wait answered (basisEndedAnswer) names what ended it:
+// the act, the ancestor's document and its version, and not a person's changes request on the
+// root's document. An end that came after the act that answered the wait (basisEndedAfter) is
+// named after that act.
+//
 // Every sentence about the gate names step's own document (record.DesignStep.Document), which is
 // the document gate holds and the one whose version it prints: under a deployment that gates the
 // decisions or the criteria step first, the step in question is not the spec, and a task saying
@@ -716,8 +781,15 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	document := step.Document()
 	gateOpen := gate != nil && classify.DesignGateOpen(*gate)
 	gateClosed := gate != nil && !gateOpen
-	version, gateOff := strings.CutSuffix(waiting.AnsweredDetail, gateOffAnswer)
+	onBasis := gateOpen && gate.OnBasis()
+	pending := gate != nil && gate.PendingOnBasis()
+	answer := answeredAct(waiting.AnsweredDetail)
+	version, gateOff := strings.CutSuffix(answer, gateOffAnswer)
 	gateOff = gateOff && waiting.AnsweredBy == record.AnsweredByApproval
+	version, openedBy, openedOnBasis := strings.Cut(version, basisOpenedAnswer)
+	openedOnBasis = openedOnBasis && waiting.AnsweredBy == record.AnsweredByApproval
+	basisEnded, endedByBasis := strings.CutPrefix(answer, basisEndedAnswer)
+	endedByBasis = endedByBasis && waiting.AnsweredBy == record.AnsweredByChanges
 	// The act that answered the wait is named by the document it was of, and a person's review
 	// among them is asked of the gate of that document's step (answeredStep).
 	act, actGate := answeredStep(waiting, step, gates)
@@ -728,9 +800,11 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	// document the review was of alone (answeredStep), so an approval of a document registered on
 	// the step since answers nothing of a changes request; armed says a person approves that step
 	// (record.TakesStep), since the review answered a wait on that step's document or on a question
-	// of a tree gated on it. approved says a person's approval answered the wait.
-	superseded := SupersedingApproval(actGate, armed, answeredDecision(act, waiting, actGate, gateOff))
-	approved := waiting.AnsweredBy == record.AnsweredByApproval && armed && !gateOff
+	// of a tree gated on it. An opening on an ancestor's approval and the end of a step's wait on an
+	// ancestor's request are no person's review of the root's document, so neither is asked as one.
+	// approved says a person's approval answered the wait.
+	superseded := SupersedingApproval(actGate, armed, answeredDecision(act, waiting, actGate, gateOff || openedOnBasis || endedByBasis))
+	approved := waiting.AnsweredBy == record.AnsweredByApproval && armed && !gateOff && !openedOnBasis
 	var task strings.Builder
 	switch waiting.AnsweredBy {
 	case record.AnsweredByApproval:
@@ -738,6 +812,9 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		case armed && gateOff:
 			fmt.Fprintf(&task, "The design gate on %s was off when your wait was answered, so no person approved your %s %s then; the design gate is on again.",
 				key, actDocument, version)
+		case armed && openedOnBasis:
+			fmt.Fprintf(&task, "An ancestor's approval opened the %s step of %s at %s: %s. No person approved your %s at that version.",
+				act, key, version, openedBy, actDocument)
 		case armed:
 			fmt.Fprintf(&task, "Your %s %s on %s was approved.", actDocument, version, key)
 			writeApprovalReplaced(&task, superseded, waiting, actGate, actDocument)
@@ -747,45 +824,55 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 			fmt.Fprintf(&task, "The design gate on %s is off, so no approval of your %s %s is asked for.", key, document, version)
 		}
 	case record.AnsweredByChanges:
+		if endedByBasis {
+			fmt.Fprintf(&task, "The wait of your %s step on an ancestor's approval request ended: %s", step, basisEnded)
+			break
+		}
 		// A review the gate's own approval followed is not named: the person's word is that
-		// approval, and the sentences after this one say how the document stands. Only an
+		// approval, and the sentences after this one say how the document stands. Only a person's
 		// approval replaces a changes request, so the sentence names its version
-		// (Supersession.By).
-		if superseded != nil {
+		// (Supersession.By). An ancestor's approval that opened the step since asks for no
+		// revision either, and is no person's word in the review's place.
+		other, replaced := documentReplaced(waiting, actGate)
+		switch {
+		case superseded != nil:
 			fmt.Fprintf(&task, "A person's review answered your wait on %s, and the %s was "+
 				"approved at version %d after it, so the review asks for no revision now.",
 				key, actDocument, superseded.By.Version)
-		} else {
+		case armed && !replaced && actGate != nil && actGate.OnBasis():
+			fmt.Fprintf(&task, "A person requested changes to your %s on %s at %s. An ancestor's approval opened the %s step after that review, "+
+				"so it asks for no revision now; read it.", actDocument, key, answer, act)
+		default:
 			fmt.Fprintf(&task, "A person requested changes to your %s on %s at %s. Read the review, and revise the %s as they ask.",
-				actDocument, key, waiting.AnsweredDetail, actDocument)
-			if other, ok := documentReplaced(waiting, actGate); ok {
+				actDocument, key, answer, actDocument)
+			if replaced {
 				fmt.Fprintf(&task, " The review was of a document since replaced: another document, %s, is now registered as your %s.",
 					other, actDocument)
 			}
 		}
 	case record.AnsweredByVersion:
-		fmt.Fprintf(&task, "A newer version of your %s on %s, %s, handed the approval request back to you. Read it and the request's thread.", actDocument, key, waiting.AnsweredDetail)
+		fmt.Fprintf(&task, "A newer version of your %s on %s, %s, handed the approval request back to you. Read it and the request's thread.", actDocument, key, answer)
 	case record.AnsweredByRetraction:
 		fmt.Fprintf(&task, "Your ask %s on %s was retracted when its decision block left the spec, so no person will answer it. "+
 			"Read the spec as it stands; if you still need the decision, ask again.", waiting.Ask, key)
 	case record.AnsweredByClosed:
 		fmt.Fprintf(&task, "Your ask %s on %s was closed by %s, so no person will answer it. Read its thread; if you still need the decision, ask again.",
-			waiting.Ask, key, waiting.AnsweredDetail)
+			waiting.Ask, key, answer)
 	case record.AnsweredByAsk:
 		fmt.Fprintf(&task, "A person answered your ask %s on %s, or replied in its thread; read it.", waiting.Ask, key)
 	case record.AnsweredByReply:
-		fmt.Fprintf(&task, "A person answered or replied in the thread of ask %s on %s; read that thread.", waiting.AnsweredDetail, key)
+		fmt.Fprintf(&task, "A person answered or replied in the thread of ask %s on %s; read that thread.", answer, key)
 	case record.AnsweredByTurn:
 		fmt.Fprintf(&task, "A session's reply handed your question %s on %s to your turn, so no person is asked anything there; read its thread.",
-			waiting.AnsweredDetail, key)
+			answer, key)
 	case record.AnsweredByDecline:
 		// The sentences and the note are Dispatch's record of the decline, printed as the mirror
 		// row holds them (record.RootAsk.Decline): the daemon writes neither, so the architect
 		// reads the person's words and not the daemon's paraphrase of them. The note is quoted,
 		// as a review's reason is (changesDetail), so the architect reads where the person's own
 		// words begin and end. A decline the person wrote no note with ends after the sentences.
-		fmt.Fprintf(&task, "A person declined to answer your ask %s on %s.", waiting.AnsweredDetail, key)
-		if decline := recordedDecline(asks, waiting.AnsweredDetail); decline != nil {
+		fmt.Fprintf(&task, "A person declined to answer your ask %s on %s.", answer, key)
+		if decline := recordedDecline(asks, answer); decline != nil {
 			if decline.Words != "" {
 				fmt.Fprintf(&task, " %s", decline.Words)
 			}
@@ -796,23 +883,38 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	default:
 		fmt.Fprintf(&task, "A person acted on %s; read the issue's asks and its spec.", key)
 	}
+	for _, ended := range basisEndsAfter(waiting.AnsweredDetail) {
+		fmt.Fprintf(&task, " The wait of your %s step on an ancestor's approval request also ended: %s", step, ended)
+	}
 	switch {
 	case gate == nil:
 	case gateOpen && !armed:
 		fmt.Fprintf(&task, " The design gate is open at version %d: %s, so act on it as on design-approved.",
 			gate.LatestVersion, DesignApprovedWake)
+	case onBasis && openedOnBasis && openedBy == basisApproval(*gate):
+		fmt.Fprintf(&task, " The step stands open on that approval at version %d, and the design gate is open: %s, so act on it as on design-approved.",
+			gate.LatestVersion, DesignApprovedWake)
+	case onBasis:
+		fmt.Fprintf(&task, " Your %s step stands open at version %d on an ancestor's approval: %s. No person approved that version of your %s. "+
+			"The design gate is open: %s, so act on it as on design-approved.", step, gate.LatestVersion, basisApproval(*gate), document, DesignApprovedWake)
 	case gateOpen:
 		fmt.Fprintf(&task, " Your %s is approved at version %d and the design gate is open: %s, so act on it as on design-approved.",
 			document, gate.LatestVersion, DesignApprovedWake)
 	case !armed:
 		fmt.Fprintf(&task, " The design gate is closed at version %d, as no registration of that version has opened it: when the %s is ready, "+
 			"register it at its current version, which opens the gate with no approval.", gate.LatestVersion, document)
+	case pending:
+		fmt.Fprintf(&task, " Your %s step is closed at version %d. It waits on approval request %s of version %d of %s. "+
+			"A person's approval of that version opens the step. Do not request approval of your own %s.",
+			step, gate.LatestVersion, gate.Basis.Pending.Ask, gate.Basis.Version, documentOf(gate.Basis.Issue, step), document)
 	case approved && superseded == nil && act == step && gate.ApprovedVersion != nil:
 		// The approval that answered still stands, and the gate is closed: a newer version of the
 		// document, which no person has approved, closed it. An approval of another step's
 		// document says nothing of this gate.
 		fmt.Fprintf(&task, " The approval of version %d stands, and the %s is now at version %d, which is not approved.",
 			*gate.ApprovedVersion, document, gate.LatestVersion)
+	case openedOnBasis:
+		fmt.Fprintf(&task, " That opening no longer stands: the %s is at version %d, and the step is closed.", document, gate.LatestVersion)
 	default:
 		fmt.Fprintf(&task, " Your %s is not approved at version %d.", document, gate.LatestVersion)
 	}
@@ -820,7 +922,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		gate.ToldChangesMark.After(waiting.Since) && SupersedingApproval(gate, armed, Decision{Kind: record.DecisionDesignChangesRequested,
 		Step: step, Version: *gate.ToldChangesVersion, Mark: gate.ToldChangesMark}) == nil {
 		detail := changesDetail(*gate.ToldChangesVersion, gate.ToldChangesReason)
-		if waiting.AnsweredBy != record.AnsweredByChanges || act != step || waiting.AnsweredDetail != detail {
+		if waiting.AnsweredBy != record.AnsweredByChanges || act != step || answer != detail {
 			fmt.Fprintf(&task, " A person then requested changes to your %s at %s. Read the review, and revise the %s as they ask.", document, detail, document)
 		}
 	}
@@ -855,12 +957,18 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case len(still) > 0 && !gateOpen:
 		fmt.Fprintf(&task, " Still with the person: %s. Hand each one back once you have done what the answer asks — a reply in its thread that "+
 			"leaves the turn with the person", strings.Join(still, ", "))
-		if armed && gateClosed {
+		if armed && gateClosed && !pending {
 			task.WriteString(", or request approval again and register that version with register_gate")
 		}
 		task.WriteString(" — or close it if you no longer need it. Handing one back starts your next wait; then end your turn.")
 	case len(still) > 0:
 		fmt.Fprintf(&task, " Still with the person: %s. Continue.", strings.Join(still, ", "))
+	case pending && armed:
+		task.WriteString(" The daemon tells you when the step opens or its wait ends. Continue.")
+	case gateClosed && armed && endedByBasis:
+		fmt.Fprintf(&task, " Read that document before you register the %s step again. You can register the step on a later version of that document, "+
+			"with register_gate's basis. Or you can request approval of your own %s and register that version with register_gate. "+
+			"A request you hand to the person starts your next wait. Then end your turn.", step, document)
 	case gateClosed && armed:
 		fmt.Fprintf(&task, " When the %s is ready, hand the request back to the person: request approval again and register that version with register_gate", document)
 		if requestOpen {
@@ -875,9 +983,11 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 
 // answeredDecision is the act that answered waiting as the resume asks SupersedingApproval about
 // it, once for every answer: its kind is the person's review the answer names (AnsweredBy), an
-// approval or a changes request, and none for every other answer and for an approval the
-// gates.design: off rule gave (gateOff), which is no person's approval, so the predicate answers
-// nil for it. The review is of step's document, the document it was of (answeredDocument; "" for
+// approval or a changes request, and none for every other answer and for an answer that is no
+// person's review of the root's document (noReview): an approval the gates.design: off rule gave
+// (gateOffAnswer), an opening on an ancestor's approval (basisOpenedAnswer) and the end of a step's
+// wait on an ancestor's request (basisEndedAnswer), so the predicate answers nil for each. The
+// review is of step's document, the document it was of (answeredDocument; "" for
 // an answer an earlier release wrote of a wait on a question, which is asked of the document the
 // gate holds), so, for a changes request, an approval of a document registered on the step since
 // answers nothing of it, as every other sender asks, and an approval of a document the step no
@@ -893,16 +1003,17 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 // review applied to the gate clears the approval it held then (classify.ApplyDesignGateEvent). A
 // wait whose start has no mark — one recorded before waits were placed — is asked at the gate's
 // approval itself, for the same reason.
-func answeredDecision(step record.DesignStep, waiting record.Awaiting, gate *record.DesignGate, gateOff bool) Decision {
+func answeredDecision(step record.DesignStep, waiting record.Awaiting, gate *record.DesignGate, noReview bool) Decision {
 	decision := Decision{Step: step, Artifact: answeredDocument(waiting)}
 	if waiting.AnsweredDocument != nil {
 		decision.Version = waiting.AnsweredDocument.Version
 	}
+	if noReview {
+		return decision
+	}
 	switch waiting.AnsweredBy {
 	case record.AnsweredByApproval:
-		if !gateOff {
-			decision.Kind = record.DecisionDesignApproved
-		}
+		decision.Kind = record.DecisionDesignApproved
 	case record.AnsweredByChanges:
 		decision.Kind, decision.Mark = record.DecisionDesignChangesRequested, waiting.Since
 		if decision.Mark == (record.EventMark{}) && gate != nil {

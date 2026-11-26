@@ -257,7 +257,7 @@ func TestAResumeAndTheCatchUpOfItsLaunchStateOneGateVersion(t *testing.T) {
 // is sent.
 func TestAKeptApprovalALaterApprovalSupersededIsDroppedFromTheHeldTask(t *testing.T) {
 	t.Parallel()
-	const sentence = "request approval of version 3"
+	const sentence = "A person approved version 2 of the primary document"
 	for _, approved := range []bool{true, false} {
 		t.Run(fmt.Sprintf("approved since %t", approved), func(t *testing.T) {
 			r := newMainPathRig(t, true)

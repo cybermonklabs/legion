@@ -139,15 +139,25 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 // promotion hands it, not the task of a run that ended. The number stays because it counts the
 // entries the role has been handed on this issue and nothing of a re-admission unhands one: the
 // promotion raises it again (StartPromotedWorker), so the entry the new work is sent under is
-// above every entry a completion still in flight could name.
+// above every entry a completion still in flight could name. The task the role was last given for
+// an entry, with that entry and the issue's generation it was given in (record.PhaseRow.Given,
+// record.GivenTask), is read back as it was written, and goes with the entry's task: it was the old
+// run's. The generation alone would not retire it on a member of a re-admitted tree, which keeps
+// its own generation.
 func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-287")
 	raised := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	const retried = "Continue the change. Issue: LEGION-287. Phase: implementing. Reason: the runner is back."
+	given := record.GivenTask{Task: retried, Entry: 3, Generation: issue.Generation}
 	seedIssue(t, pool, issue)
 	seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer",
-		Entry: 3, EntryTask: "Continue the change. Issue: LEGION-287. Phase: implementing.", EntryRaisedAt: raised})
+		Entry: 3, EntryTask: "Continue the change. Issue: LEGION-287. Phase: implementing.", EntryRaisedAt: raised, Given: given})
+	if rows := issuePhases(t, pool, issue.Key); len(rows) != 1 || rows[0].Given != given {
+		t.Fatalf("phases before ClearGeneration = %#v, want the one row carrying the retry's task %q for entry 3 in generation %d as it was put",
+			rows, retried, issue.Generation)
+	}
 	clearIssueGeneration(t, pool, issue)
 	rows := issuePhases(t, pool, issue.Key)
 	if len(rows) != 1 {
@@ -157,6 +167,10 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 	if row.EntryTask != "" {
 		t.Fatalf("the implementer's row still names the work %q of the generation that ended, want none: its promotion writes the task it is given",
 			row.EntryTask)
+	}
+	if row.Given != (record.GivenTask{}) {
+		t.Fatalf("the implementer's row still names the retry's task %q for entry %d in generation %d of the generation that ended, want none",
+			row.Given.Task, row.Given.Entry, row.Given.Generation)
 	}
 	if row.Entry != 3 || !row.EntryRaisedAt.Equal(raised) {
 		t.Fatalf("the implementer's row after ClearGeneration = entry %d raised at %s, want the entry 3 raised at %s it stood on",

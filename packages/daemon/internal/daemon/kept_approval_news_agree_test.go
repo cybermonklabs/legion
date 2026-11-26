@@ -27,7 +27,7 @@ func TestAKeptApprovalAndANewsItemAgreeOnThePersonsWord(t *testing.T) {
 	const (
 		tree     = "LEGION-208"
 		document = "artifact-208"
-		sentence = "is approved at version 2"
+		sentence = "A person approved version 2 of the primary document"
 	)
 	gate := record.DesignGate{Issue: tree, Step: record.DesignStepSpec, ArtifactID: document, LatestVersion: 2}
 	approved := classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, 2, record.EventMark{Seq: 10})
@@ -67,7 +67,7 @@ func TestAKeptApprovalAndANewsItemAgreeOnThePersonsWord(t *testing.T) {
 				t.Fatalf("the kept approval's task %q names %q = %t and keeps approval %d, want named %t",
 					task, sentence, named, kept.Approved, tc.word)
 			}
-			if word := workflow.StepApprovalStands(gates, record.DesignStepSpec, document, 2); word != tc.word {
+			if word := workflow.StepApprovalStands(gates, record.DesignStepSpec, document, 2, true); word != tc.word {
 				t.Fatalf("the news asks the predicate of the item and hears %t, want %t, as the kept approval hears it", word, tc.word)
 			}
 			item := record.DeliveryNewsItem{Issue: tree, Audience: record.AudienceArchitect, Step: record.DesignStepSpec,

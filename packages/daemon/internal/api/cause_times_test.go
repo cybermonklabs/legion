@@ -292,14 +292,21 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// A caller below causeTimesContract is below dispatchCredentialContract and
-	// repositoryCorrectionContract too, the two rows above it, so it is told of each of the three
-	// rows, in the table's order.
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
+	// above it, and below each entry's band, so it is told of each of those rows, in the table's
+	// order: this band's line, the Dispatch credential's, then the line of each entry's band that
+	// found its keys on the golden (narrowingsExpected), which holds no entry to be the newest.
+	golden := populatedState(t)
+	_, narrowings := stateNarrowedStating(t, golden, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) == 0 || narrowings[0].Dropped != dropped || narrowings[0].PluginContract != causeTimesContract-1 {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want its first line saying it dropped %q",
-			narrowings, causeTimesContract-1, dropped)
+	want := narrowingsExpected(golden, causeTimesContract-1)
+	if len(want) < 2 || want[0] != dropped || want[1] != "dispatchCredential" {
+		t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q and then one that dropped %q first",
+			causeTimesContract-1, want, dropped, "dispatchCredential")
 	}
-	wantNarrowings(t, narrowings, causeTimesContract-1, narrowingsExpected(populatedState(t), causeTimesContract-1))
+	wantNarrowings(t, narrowings, causeTimesContract-1, want)
+	if narrowings[0].PluginContract != causeTimesContract-1 {
+		t.Errorf("the line that dropped %q names contract %d, want the caller's %d",
+			dropped, narrowings[0].PluginContract, causeTimesContract-1)
+	}
 }

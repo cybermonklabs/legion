@@ -49,6 +49,8 @@ var storedTaskReaders = map[string]string{
 	"(*" + senderModule + "workflow.Engine).sendOwedEntry": "a phase worker's entry, whose task its transition composed from the " +
 		"phase (workflow's task and Engine.ResumeTask) and which names no person's review; a root architect's entry is sent by " +
 		"workflow.Engine.SendArchitectStart, which sends none of it",
+	senderModule + "workflow.entryWork": "StopForChildren reads only a phase worker's entry for the held start; " +
+		"acceptance uses a separate builder and no architect entry with a person's answered wait comes through here",
 	"(*" + senderModule + "workflow.Engine).enter": "the raise of an entry, which writes the task its caller composed and reads it " +
 		"back only to add a reviewer's round sentences (workflow.namingTheReviewRound) and hand that text to its caller; for a root " +
 		"architect's entry the caller (workflow.Engine.EnterArchitect) keeps the entry's number alone, and a resume's entry is " +
@@ -105,7 +107,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 	// The decisions kept while nobody in the tree could hear them.
 	{"a person decided on the tree", "workflow.KeptDecisionsTask"},
 	// The kept approval of a version the document has moved past.
-	{"and is now at version", "workflow.KeptDecisionsTask"},
+	{"of the %s, and the %s is now at version", "workflow.KeptDecisionsTask"},
 }
 
 // Every sender of a person's design decision asks the one predicate whether that decision is

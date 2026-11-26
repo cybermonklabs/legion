@@ -235,7 +235,8 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer)
+		_, err := engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer, false)
+		return err
 	})
 
 	starts := superviseRowsOf(t, pool, entryIssue, "start")

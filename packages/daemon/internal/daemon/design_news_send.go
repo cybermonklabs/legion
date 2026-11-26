@@ -469,7 +469,7 @@ func readNewsTree(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 //   - a fact of the audience: its told row holds a version of that step below the item's, or none
 //     it knows, so the item is still news to it.
 func itemStands(item record.DeliveryNewsItem, gates map[record.DesignStep]record.DesignGate, told record.DesignTold) bool {
-	if !workflow.StepApprovalStands(gates, item.Step, item.Artifact, item.To) {
+	if !workflow.StepApprovalStands(gates, item.Step, item.Artifact, item.To, true) {
 		return false
 	}
 	if _, held := gates[item.Step]; !held {
@@ -692,6 +692,8 @@ func untoldReason(reason record.UntoldReason) workflow.NewsState {
 		return workflow.NewsAwaitingPerson
 	case record.UntoldHeld:
 		return workflow.NewsStopped
+	case record.UntoldAwaitingChildren:
+		return workflow.NewsAwaitingChildren
 	}
 	return workflow.NewsGateClosed
 }

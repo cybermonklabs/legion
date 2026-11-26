@@ -164,7 +164,7 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // later still; the record is what the workflow writes in the very transaction that takes a
 // completion or moves a phase. So a role whose phase has finished owes nothing whatever it was
 // handed or remembers: the issue has moved on to another role's phase (RoleFor names another
-// role), to one no role works (awaiting_person, done, held), or its tree lingers, where a
+// role), to one no role works (awaiting_person, awaiting_children, done, held), or its tree lingers, where a
 // completion records nothing; or the phase is merging and its pull request is merged, which is
 // what finishes that phase (workflow.PhaseFinished) while a merged root stands in merging until
 // the rest of its tree leaves.
