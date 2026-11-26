@@ -16,7 +16,6 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
 - `admission.p0Holders` and `admission.p0Bound`: how many holders in `admission.active` are P0, and the P0 bound in force (`bound`, null for none) with `legion.yaml`'s `configured` value and any `live` value.
   An issue is P0 when its `resolvedPriority` is 0, or, where `resolvedPriority` is absent, its own `priority` is 0.
   A P0 issue starts outside the cap while fewer than `bound` P0 issues hold a slot, or always when `bound` is null.
-  Free slots are `admission.cap`, less the holders of `admission.active` that are not P0 (its length less `admission.p0Holders`), less each issue of `admission.waiting` that is not P0 and is in neither `admission.active` nor `admission.blocked`.
 
 - The live trees: a root is a record whose `tree` is its own key (`read_state` with `issues`).
   Its tree is live while the root stands in `admission.active` or `admission.waiting`, waits on a person, stands past `admitted` and not `done`, or waits under live work above it, and never while its record carries `lingerUntil`.
@@ -73,7 +72,8 @@ Name them in the day's report and take nothing for them.
 
 ## Free slots
 
-A slot is one issue the daemon started, a root or a child. Count free slots as "The lists" says under `admission.p0Holders` and `admission.p0Bound`; a P0 issue takes no slot of the cap. The line is ordered by Dispatch priority first; within one priority a returned issue goes before an unstarted one whatever their ranks, by design (the site's concepts page, "Admission and the `legion` label").
+A slot is one issue the daemon started, a root or a child.
+Free slots are `admission.cap`, less the holders of `admission.active` that are not P0 (its length less `admission.p0Holders`), less each issue of `admission.waiting` that is not P0 and is in neither `admission.active` nor `admission.blocked`.
 
 ## Your moves to `todo`
 
