@@ -760,16 +760,26 @@ export default defineConfig({
     // a trace of a green run and leave the failure none. Locally, with `retries: 0`, the first
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
     //
-    // The trace records every action, a DOM snapshot before and after each, the network and the
-    // console, and leaves out one thing: the screencast, a stream of JPEG frames of the page
-    // (`screenshots: false`). A trace is recorded on every first attempt and kept for the few that
-    // fail, so what recording costs, every row pays, and the screencast was nearly all of that
-    // cost: inbox.e2e.ts's 28 rows in the chromium project, on one worker in an issue pod at
-    // a8a344b7 (dispatch://INFRA-1109/artifact/measurement-md), took 450 s with the screencast,
-    // 379 s without it and 357 s with no trace at all, and the browser's CPU went from 73 s to
-    // 31 s, Playwright's own processes from 83 s to 55 s. The shard machines are CPU-bound, so
-    // that CPU is the lane's machine time. What a failure's trace still shows is the page as a
-    // DOM snapshot at each action, which the trace viewer draws, and its network and console.
+    // The trace records every action, the network, the console and the sources, and leaves out
+    // two things: the screencast, a stream of JPEG frames of the page (`screenshots: false`), and
+    // the DOM snapshot Playwright takes before and after each action (`snapshots: false`). So a
+    // failed row's trace lists what the row did with no view of the page; the `screenshot` below
+    // is that view. A trace is recorded on every first attempt and kept for the few that fail, so
+    // what recording costs, every row pays, and the shard machines are CPU-bound, so that CPU is
+    // the lane's machine time. The screencast: inbox.e2e.ts's 28 rows in the chromium project, on
+    // one worker in an issue pod at a8a344b7 (dispatch://INFRA-1109/artifact/measurement-md),
+    // took 450 s with the screencast, 379 s without it and 357 s with no trace at all, and the
+    // browser's CPU went from 73 s to 31 s, Playwright's own processes from 83 s to 55 s. The DOM
+    // snapshots: the 46 rows of inbox.e2e.ts, board.e2e.ts and issue-page-q.e2e.ts in the
+    // chromium project, on 3 workers on the tree of 1fe87cb2, took 145.8 s and 157.0 s of row
+    // time, summed over the rows, in two rounds with the snapshots, and 138.4 s and 139.1 s
+    // without them (dispatch://INFRA-1109/artifact/r24-cost-diagnosis-tgz).
+    //
+    // Playwright 1.64.1 applies one `snapshots` value to every attempt it records, so recording
+    // DOM snapshots on a retry alone would take a fixture of our own, and the suite has none. A
+    // trace with the DOM comes from a local run of the row with `snapshots: true` here:
+    // `--trace on` replaces this option's mode and keeps the rest of it
+    // (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/common/index.js:583-585).
     //
     // Recording every first attempt leaves each worker's trace files in its artifacts directory
     // (`<outputDir>/.playwright-artifacts-<n>/traces`) until the worker exits: about 5,500 files
@@ -782,16 +792,17 @@ export default defineConfig({
     trace: {
       mode: "retain-on-first-failure",
       screenshots: false,
-      snapshots: true,
+      snapshots: false,
       sources: true,
     },
-    // A picture of the page when a row fails, because the trace above sets screenshots to false
-    // and carries no screencast frame. Each time a context closes during a row, Playwright 1.64.1
-    // takes a temporary picture of every page still open in it, and keeps those pictures only
-    // when the row failed (`captureTemporary` and `persistTemporary`,
-    // node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/index.js:585-600); a failed
-    // row's pages still open when its function ends are pictured then. So a passing row still
-    // pays one picture for each page open at each context's close, and keeps none of them.
+    // The one picture of the page when a row fails: the trace above records neither screencast
+    // frames (`screenshots: false`) nor DOM snapshots (`snapshots: false`). Each time a context
+    // closes during a row, Playwright 1.64.1 takes a temporary picture of every page still open
+    // in it, and keeps those pictures only when the row failed (`captureTemporary` and
+    // `persistTemporary`, node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/
+    // index.js:585-600); a failed row's pages still open when its function ends are pictured
+    // then. So a passing row still pays one picture for each page open at each context's close,
+    // and keeps none of them.
     screenshot: "only-on-failure",
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and

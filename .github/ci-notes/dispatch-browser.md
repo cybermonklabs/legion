@@ -1056,6 +1056,15 @@ it. The trace it carries is of the attempt that failed: the config's
 `trace: 'retain-on-first-failure'` records the first attempt and keeps it when that
 attempt failed. A green run's upload is small.
 
+A failed row leaves its trace and the failure screenshot here. The trace holds the row's
+actions, network, console and sources, and has no DOM view: the config records it with
+`snapshots: false` and `screenshots: false`, since a trace is recorded on every row's first
+attempt and either one costs every row on a CPU-bound machine (the config's comment gives
+the measurements). The screenshot is the one picture of the page at the failure. A trace with
+the DOM comes from a local run of that row with `snapshots: true` in the config's `trace`
+option. `--trace on` alone does not give one: it replaces the option's mode and keeps its
+`snapshots: false`.
+
 ## The alone job, and what it keeps the same as the shard job
 
 The three projects whose rows are read from the wall clock, on one machine. They run one
@@ -1275,7 +1284,9 @@ is retried and none is reported flaky.
 The traces of the rows that failed, which the "What the run left behind" step does not collect: they are
 under the checkout, so this path needs no translation and stays as it was. A row that
 fails fails the leg, and the trace it carries is of its one attempt, which the config's
-`trace: 'retain-on-first-failure'` keeps. A green run's upload is small.
+`trace: 'retain-on-first-failure'` keeps. That trace has no DOM view, as
+[the shard job's section](#why-the-shard-job-uploads-the-failed-rows-traces-always) says.
+A green run's upload is small.
 
 ## What the two-process job runs
 
