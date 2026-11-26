@@ -192,8 +192,49 @@ const worstPhasePoll = 3 * durableBindInterval
 // hold live, and the next read found the hold free and took it, which makes it the standby's last,
 // since the standby holds the hold from then on. A miss of either, of what the hooks place or of
 // what rests on timing, is a miss of the row's own setup, never a pass and never a breach of the
-// bound: the row fails at once, as UNARRANGED and with what it observed, and does not try again.
+// bound: the try ends there, and the row sets the phase up again from the start, on a fresh
+// holder, standby, database and NATS account (worstPhaseTry, one subtest each), up to
+// worstPhaseTries times. It fails as UNARRANGED, with what each try observed, only when every try
+// missed. The bound is asserted on the first try that met the phase, and a take-over past it fails
+// the row at once, with no further try. Each run logs the try that met the phase.
 func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) {
+	var misses []string
+	for try := 1; try <= worstPhaseTries; try++ {
+		met, missed := false, false
+		if !t.Run(fmt.Sprintf("try %d", try), func(t *testing.T) {
+			miss, arranged := worstPhaseTry(t)
+			if !arranged {
+				missed = true
+				misses = append(misses, fmt.Sprintf("try %d: %s", try, miss))
+				t.Skipf("the try missed the worst phase: %s", miss)
+			}
+			met = true
+		}) {
+			return
+		}
+		if met {
+			t.Logf("the worst phase was met on try %d of %d", try, worstPhaseTries)
+			return
+		}
+		if !missed {
+			// The try skipped itself, as its database does with no DISPATCH_TEST_DATABASE_URL.
+			t.Skip("the try skipped itself before it set the phase up")
+		}
+	}
+	t.Fatalf("UNARRANGED: every one of the %d tries missed the worst phase, so the row never reached its precondition:\n%s", worstPhaseTries, strings.Join(misses, "\n"))
+}
+
+// worstPhaseTries is how many times the worst-phase row sets its phase up before it fails as
+// UNARRANGED. A try misses when a tick, a renewal or a read lands outside the row's margins
+// (worstPhaseLead, worstPhaseEarly), which a loaded run makes likelier, the race detector's above
+// all; a miss says nothing of the take-over, so another try costs the row nothing but its time,
+// about intakeHoldTTL each.
+const worstPhaseTries = 5
+
+// worstPhaseTry is one try of the worst-phase row, on a fresh holder, standby, database and NATS
+// account: it reports whether the phase was met and, when it was not, what the try observed. A try
+// that met the phase asserts the bound, and fails t when the take-over came past it.
+func worstPhaseTry(t *testing.T) (miss string, arranged bool) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -229,7 +270,7 @@ func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) 
 	select {
 	case abandoned = <-death:
 	case <-time.After(2 * intakeHoldRenew):
-		t.Fatalf("UNARRANGED: no renewal of the holder's hold landed within %s of the standby's start, so the holder never died the instant after one", 2*intakeHoldRenew)
+		return fmt.Sprintf("no renewal of the holder's hold landed within %s of the standby's start, so the holder never died the instant after one", 2*intakeHoldRenew), false
 	}
 	last := readHold(t, ctx, pool)
 	reads.holdUntil(last.lapse.Add(-worstPhaseLead), worstPhasePoll)
@@ -246,8 +287,8 @@ func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) 
 	if died > worstPhaseLead || live < 0 || live != len(noted)-2 ||
 		noted[live].err != nil || noted[live].left <= 0 || last.lapse.Sub(noted[live].forwarded) > 2*worstPhaseLead ||
 		noted[live+1].err != nil || noted[live+1].left > 0 {
-		t.Fatalf("UNARRANGED: the row did not force the worst phase: the holder died %s after its last renewal landed, and the standby's reads of the hold, from the lapse: %s; want the holder dead within %s of its last renewal, the standby's last read before the lapse going out within %s of it and finding the hold live, and the next read, its last, finding the hold free; the standby took the durable over %s after the holder died",
-			died, readsFrom(noted, last.lapse), worstPhaseLead, 2*worstPhaseLead, took)
+		return fmt.Sprintf("the holder died %s after its last renewal landed, and the standby's reads of the hold, from the lapse: %s; want the holder dead within %s of its last renewal, the standby's last read before the lapse going out within %s of it and finding the hold live, and the next read, its last, finding the hold free; the standby took the durable over %s after the holder died",
+			died, readsFrom(noted, last.lapse), worstPhaseLead, 2*worstPhaseLead, took), false
 	}
 	poll, next := noted[live], noted[live+1]
 	t.Logf("worst phase forced: the holder died %s after its last renewal landed; the standby's poll, sent %s before the lapse, went out %s before it and found the hold live with %s left, and its next read, %s after the lapse, found the hold free and took it; the standby took the durable over %s after the holder died",
@@ -257,6 +298,7 @@ func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) 
 		t.Fatalf("the standby took the durable over %s after the holder died the instant after a renewal, its poll just before the lapse; want within intakeHoldTTL plus one durableBindInterval (%s)",
 			took.Round(time.Millisecond), bound)
 	}
+	return "", true
 }
 
 // readsFrom is each of reads as a failure reports it, from at: when it went out, when the standby
