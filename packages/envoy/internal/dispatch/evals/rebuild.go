@@ -184,6 +184,16 @@ func (rb *rebuildState) walksOf(family string) []walkKey {
 	return keys
 }
 
+// holds reports whether rb, the rebuild that is building (nil for none), walks key: its flip
+// writes what it staged of that walk's rows or figures, and records it built.
+func (rb *rebuildState) holds(key walkKey) bool {
+	if rb == nil {
+		return false
+	}
+	_, held := rb.walks[key]
+	return held
+}
+
 // releaseWatch is what a process's refresher keeps of the release rule from one pass to the next:
 // whether its first pass has read whom the stored rows are served by, the builds it found there
 // and the build of the rebuild building then (seen), whether this process rebuilds them (want),
@@ -1784,9 +1794,11 @@ func (r *refresh) walkBack(ctx context.Context, rb *rebuildState, family dayFami
 // readings write moved since is left as it stands), their rows locked in that order first; an
 // eval_days change of each eval whose figures the rebuild staged, which widens the change its rows
 // logged in the transaction where they moved; and the serving records, the walks and the figures'
-// marker. The refresher's lease keeps every other writer of the rebuild's record out of the
-// transaction. A staged row of a project deleted since is left; an owner key's (owners.go) belongs
-// to its repository, no project, and is written.
+// marker, with the union cut's mark of each project whose figures it folded (union_through,
+// moved on to the end day it folded them through: its staged figures held every union row of
+// them, migration 20261126125956). The refresher's lease keeps every other writer of the
+// rebuild's record out of the transaction. A staged row of a project deleted since is left; an
+// owner key's (owners.go) belongs to its repository, no project, and is written.
 var flipStatements = []struct{ what, sql string }{
 	{"rebuild flipped", `update eval_rebuilds set state = 'flipped', updated_at = now() where id = $1 and state = 'building'`},
 	{"day rows written", `
@@ -1915,6 +1927,11 @@ var flipStatements = []struct{ what, sql string }{
 		order by w.project_key
 		on conflict (project_key) do update set through = excluded.through, updated_at = excluded.updated_at
 		where eval_figures_built.through < excluded.through`},
+	{"union figures built", `
+		update eval_figures_built f set union_through = greatest(f.union_through, w.next_day - 1)
+		from eval_rebuild_walks w
+		where w.rebuild_id = $1 and w.family = '` + walkFigures + `' and w.next_day is not null and f.project_key = w.project_key
+			and f.union_through is distinct from greatest(f.union_through, w.next_day - 1)`},
 }
 
 // flipRebuild makes what rb staged visible in one transaction of flipStatements, marked a
@@ -1939,6 +1956,9 @@ func (r *refresh) flipRebuild(ctx context.Context, rb *rebuildState) (bool, erro
 			return nil
 		}
 		if err := MarkRebuild(ctx, tx); err != nil {
+			return err
+		}
+		if err := markUnionFigures(ctx, tx); err != nil {
 			return err
 		}
 		for _, statement := range flipStatements {

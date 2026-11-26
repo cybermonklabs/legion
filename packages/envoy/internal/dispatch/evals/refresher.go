@@ -712,11 +712,15 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // and the page read a change of the settings row (work.settingsApplied, syncSettings), the commit
 // says that the day rows stand at the settings (markSettingsApplied); a rewrite of one
 // repository's rows says so in no transaction of its own (rewriteSettings). Where a project's
-// default repository moved (work.defaults, syncDefaults), the commit publishes it, with the marks
-// of the stored cuts it moves and the first paints of those whose evals are all computed
-// (publishDefaults). It takes no eval lock, whose place in the eval tables' lock order is before
-// every row lock (defaults.go): the day rows and stored figures it writes are of computed evals,
-// whose rows are the refresher's alone. The event cursor
+// default repository moved (work.defaults, syncDefaults), the commit publishes it, and where it
+// records the rules or publishes a default it marks the stored cuts the move of what a read
+// selects moves, read in the transaction before its first write and after its last, and folds the
+// first paints of those whose evals are all computed (publishDefaults): a source added, removed or
+// moved, the switch, an owner change and a default move under a source that names none move the
+// deploy repositories a read folds and the readers of their source keys, and the repositories the
+// page builds anew (freshRepos) are folded by their own writes. It takes no eval lock, whose place
+// in the eval tables' lock order is before every row lock (defaults.go): the day rows and stored
+// figures it writes are of computed evals, whose rows are the refresher's alone. The event cursor
 // is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
 // page last read the change log to its end (page), which the lost-cursor rule reads and which a
 // full page leaves where it stood. Once the transaction commits, the pass records what the spans
@@ -741,6 +745,16 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// What a read selects is read before the first write, which a move of the sources or of a
+	// default moves, so the commit marks the cuts the move moves (publishDefaults).
+	var selected *selectionRead
+	if work.record || work.defaults != nil {
+		read, err := readSelection(ctx, tx)
+		if err != nil {
+			return err
+		}
+		selected = &read
+	}
 	// The rules are recorded before the spans' rows are written: the project a rule names reads the
 	// repository's source key (eval_project_owners), so the change trigger logs the rows' changes,
 	// and the spans' folds fold them, for the project the new rule names.
@@ -786,8 +800,8 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		}
 	}
 	var published *movePublished
-	if work.defaults != nil {
-		move, err := publishDefaults(ctx, tx, r.build, work.defaults)
+	if selected != nil {
+		move, err := publishDefaults(ctx, tx, r.build, r.projects, work.defaults, *selected, freshRepos(work))
 		if err != nil {
 			return err
 		}
@@ -811,6 +825,22 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	return nil
 }
 
+// freshRepos is the repositories whose every row the page's commit writes (work.kept against
+// work.keptWas, syncKept): each kept now that the rows stood built for none of, a repository whose
+// first runs arrived or that a source reads under its first rule, whose days the commit's span
+// builds from its start on (writeNamed), after the commit records the rules, so the span's folds
+// fold its rows into every cut their readers read (foldFiguresInTx). None where the kept set
+// stands.
+func freshRepos(work *pageWork) map[string]bool {
+	fresh := map[string]bool{}
+	for _, repo := range work.kept {
+		if !slices.ContainsFunc(work.keptWas, func(was keptRepo) bool { return was.name == repo.name }) {
+			fresh[repo.name] = true
+		}
+	}
+	return fresh
+}
+
 // walkKey names one walk: its family and its project (the empty string for the delivery walk).
 type walkKey struct {
 	family  string
@@ -828,9 +858,10 @@ func walkColumns(keys []walkKey) (families, projects []string) {
 }
 
 // walkState is one walk's record: the first day it has not built, nil while it is to begin at its
-// first input day.
+// first input day, and the build whose process last moved it (built_by).
 type walkState struct {
-	next *time.Time
+	next  *time.Time
+	build string
 }
 
 // staleRebuild is how long a rebuild stands unmoved before another build's refresher abandons it
@@ -840,14 +871,14 @@ const staleRebuild = 48 * time.Hour
 
 // readWalks is every record of a walk, whichever build's process last moved it.
 func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {
-	rows, err := s.database.Pool.Query(ctx, `select family, project_key, next_day from eval_days_walks`)
+	rows, err := s.database.Pool.Query(ctx, `select family, project_key, next_day, built_by from eval_days_walks`)
 	if err != nil {
 		return nil, fmt.Errorf("read the walks of the day rows: %w", err)
 	}
 	walks := map[walkKey]walkState{}
 	var key walkKey
 	var state walkState
-	if _, err := pgx.ForEachRow(rows, []any{&key.family, &key.project, &state.next}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&key.family, &key.project, &state.next, &state.build}, func() error {
 		kept := state
 		if state.next != nil {
 			next := measures.Midnight(*state.next)

@@ -238,8 +238,10 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 	t.Logf("%d shapes over %d projects, %d series in all (%d values of the Legion evals), answered alike by the stored figures and the day rows",
 		len(shapes), len(r.projects), figures, legionValues)
 
+	// The marks go back as the walk left them: the figures and each project's union cut built
+	// through the same end day (evals.markFiguresBuilt).
 	for project, through := range marks {
-		exec(`insert into eval_figures_built (project_key, through, built_by) values ($1, $2, $3)`, project, through, testServerBuild)
+		exec(`insert into eval_figures_built (project_key, through, built_by, union_through) values ($1, $2, $3, $2)`, project, through, testServerBuild)
 	}
 	broken := evals.EvalID(r.delivery, evals.SlugDeployFrequency)
 	exec(`update eval_range_figures set figures = '\x0000'::bytea where eval_id = $1`, broken)

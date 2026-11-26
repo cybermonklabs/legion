@@ -1264,7 +1264,11 @@ func TestAMoveLocksThePublishedDefaultsInTheOrderOfTheirKeys(t *testing.T) {
 	committed := make(chan error, 1)
 	go func() {
 		committed <- pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			_, err := publishDefaults(ctx, tx, r.build, work.defaults)
+			before, err := readSelection(ctx, tx)
+			if err != nil {
+				return err
+			}
+			_, err = publishDefaults(ctx, tx, r.build, nil, work.defaults, before, nil)
 			return err
 		})
 	}()
@@ -1428,7 +1432,11 @@ func TestAMoveJudgesByTheDeployRepositoryTheDeliverySettingsName(t *testing.T) {
 	}
 	seq := r.latestSeq(t)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		_, err := publishDefaults(ctx, tx, r.build, work.defaults)
+		before, err := readSelection(ctx, tx)
+		if err != nil {
+			return err
+		}
+		_, err = publishDefaults(ctx, tx, r.build, nil, work.defaults, before, nil)
 		return err
 	}); err != nil {
 		t.Fatalf("commit the move: %v", err)
@@ -1969,4 +1977,313 @@ func TestADefaultMoveUnderASourceNamingNoRepositoryWritesNoDayRow(t *testing.T) 
 				step.repo, got.n, got.via, step.deploys.n, step.deploys.via)
 		}
 	}
+}
+
+// opsSources is ALPHA's two GitHub sources of the three-source history with its second on repo:
+// the first names no repository (acme/alpha-app, its default, under alphaJob), the second names
+// repo, under opsJob.
+func opsSources(repo string) []delivery.SourceInput {
+	return []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(repo))}
+}
+
+// seedOpsMoveBack writes the three-source history (seedSources) with an issue of OMEGA's that owns
+// acme/alpha-ops, OMEGA-2, and a pull request of acme/alpha-ops that names it, merged on sourcesDay
+// before acme/alpha-ops' deploy 2001, which ships it, so 2001 counts for OMEGA in its own rows under
+// acme/alpha-ops' deploy repository (a deploy counts for the projects of the pull requests it ships,
+// dispatch://INFRA-978 A8), a repository whose source is ALPHA's; and a posted deploy of OMEGA, so
+// OMEGA's read selects its events repository; and builds it whole. ALPHA's second source is then
+// saved on acme/alpha-next, whose first rule builds its rows in the commit that records it, and the
+// refresher settles; and it is saved back on acme/alpha-ops, which kept its rows and its rule, and
+// which no pass has read yet.
+func (r *refresherRig) seedOpsMoveBack(t *testing.T) {
+	t.Helper()
+	r.seedSources(t)
+	r.exec(t, "OMEGA's issue of acme/alpha-ops", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
+		values ('OMEGA-2', 'OMEGA', 2, 'Omega work shipped through ops', 'in_progress', '00000002', $1, '{"kind":"system","id":"sources-test"}', $2)`,
+		alphaOps, sourcesDay.AddDate(0, 0, -1))
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: alphaOps, Number: 7, Title: "OMEGA-2: ship through ops", URL: "https://github.com/" + alphaOps + "/pull/7",
+		Author: "dev-ana", CreatedAt: new(sourcesDay.Add(8 * time.Hour)), MergedAt: new(sourcesDay.Add(9 * time.Hour)), Sessions: []string{},
+		Attribution: &delivery.AttributionInputs{TitleKeys: []string{"OMEGA-2"}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}},
+	}); err != nil {
+		t.Fatalf("write OMEGA-2's pull request of %s: %v", alphaOps, err)
+	}
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(15*time.Hour))
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, opsSources(alphaNext)...)
+	r.settle(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Fatalf("the passes after ALPHA's move to %s settled with the cuts %v stale", alphaNext, marks)
+	}
+	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, opsSources(alphaOps)...)
+}
+
+// sourceState is what the evals' reads select as the store holds it: the deploy repositories
+// recorded with the rows (DeployReposIn) and the owner keys each project reads, with whether
+// through the repository (readOwnerPairs).
+type sourceState struct {
+	repos  *DeployRepos
+	owners map[string]map[string]bool
+}
+
+// sourceStateNow is the store's sourceState.
+func (r *refresherRig) sourceStateNow(t *testing.T) sourceState {
+	t.Helper()
+	repos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners, err := readOwnerPairs(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sourceState{repos: repos, owners: owners}
+}
+
+// marksOfSourceMove is the marks a commit that moves what the evals' reads select from before to
+// after names, by cut, read from every stored day row as the commit reads them, fresh being the
+// repositories whose every row the commit wrote (a repository's first rule or first runs): of the
+// cuts of each owner key a project gains, loses or reads otherwise, those marksOfMove names, but
+// for a fresh repository's source key; of each cut that holds a row of a deploy repository a
+// project's read gains or loses (DeployRepos.Of, a fresh one aside) among the rows the project
+// reads (its own and its owner keys'), its eval of each such row's slug that reads the deploy
+// repository; and, of each project either of those marks, its failure evals in each cut their
+// rows stand in. Each in byte order, and no cut that holds no row the commit moved.
+func (r *refresherRig) marksOfSourceMove(t *testing.T, before, after sourceState, fresh ...string) map[staleCut][]string {
+	t.Helper()
+	skip := func(pairs map[string]map[string]bool) map[string]map[string]bool {
+		kept := map[string]map[string]bool{}
+		for project, owners := range pairs {
+			kept[project] = maps.Clone(owners)
+			for _, repo := range fresh {
+				delete(kept[project], sourceKey(repo))
+			}
+		}
+		return kept
+	}
+	named := map[staleCut]map[string]bool{}
+	touched := map[string]bool{}
+	note := func(cut staleCut, evalID string) {
+		if named[cut] == nil {
+			named[cut] = map[string]bool{}
+		}
+		named[cut][evalID] = true
+		touched[cut.project] = true
+	}
+	for cut, evals := range r.marksOfMove(t, nil, skip(before.owners), skip(after.owners)) {
+		for _, evalID := range evals {
+			note(cut, evalID)
+		}
+	}
+	projects, err := r.registry.Projects(t.Context())
+	if err != nil {
+		t.Fatalf("read the projects: %v", err)
+	}
+	rows := r.dayRows(t)
+	for _, project := range projects {
+		moved := map[string]bool{}
+		for _, repo := range slices.Concat(before.repos.Of(project), after.repos.Of(project)) {
+			moved[repo] = slices.Contains(before.repos.Of(project), repo) != slices.Contains(after.repos.Of(project), repo) && !slices.Contains(fresh, repo)
+		}
+		keys := map[string]bool{project: true}
+		for _, owners := range []map[string]bool{before.owners[project], after.owners[project]} {
+			for owner := range owners {
+				keys[owner] = true
+			}
+		}
+		for _, row := range rows {
+			slug := slugOf(row.ProjectKey, row.EvalID)
+			if keys[row.ProjectKey] && moved[row.DeployRepo] && row.Repo != legionfacts.DefaultRepo && readsDeployRepo(slug) {
+				note(staleCut{project: project, repo: row.Repo}, EvalID(project, slug))
+			}
+		}
+	}
+	for _, row := range rows {
+		if touched[row.ProjectKey] && slices.Contains(failureDaySlugs, slugOf(row.ProjectKey, row.EvalID)) {
+			note(staleCut{project: row.ProjectKey, repo: row.Repo}, row.EvalID)
+		}
+	}
+	marks := make(map[staleCut][]string, len(named))
+	for cut, evals := range named {
+		marks[cut] = slices.Sorted(maps.Keys(evals))
+	}
+	return marks
+}
+
+// expectSelectionCommit checks that the page that published a source move wrote the rules of repos
+// it records (eval_days_rules), every stale mark and every stored figure written since figures
+// (figureXmins, read before the page) in the transaction that moved the refresher's change cursor:
+// the page's one commit (commitPage), so a read sees all of them or none. It answers how many
+// stored figures that transaction wrote.
+func (r *refresherRig) expectSelectionCommit(t *testing.T, what string, figures map[string]string, repos ...string) int {
+	t.Helper()
+	commit := r.xmins(t, `select name, xmin::text from eval_days_cursor where name = '`+changesCursor+`'`)[changesCursor]
+	if commit == "" {
+		t.Fatalf("%s: no page moved the refresher's change cursor", what)
+	}
+	for name, xmin := range r.xmins(t, `select 'the rule of ' || repo, xmin::text from eval_days_rules where repo = any('{`+strings.Join(repos, ",")+`}')
+		union all
+		select 'the mark of ' || project_key || '''s cut ' || quote_literal(repo), xmin::text from eval_figure_cuts_stale`) {
+		if xmin != commit {
+			t.Errorf("%s: %s was written by transaction %s, and the page's commit is %s", what, name, xmin, commit)
+		}
+	}
+	written := 0
+	for name, xmin := range r.xmins(t, figureXmins) {
+		if figures[name] == xmin {
+			continue
+		}
+		written++
+		if xmin != commit {
+			t.Errorf("%s: the stored figure %s was written by transaction %s, and the page's commit is %s", what, name, xmin, commit)
+		}
+	}
+	return written
+}
+
+// publishOpsMoveBack writes seedOpsMoveBack's history and has a page alone publish the move of
+// ALPHA's source back to acme/alpha-ops (pageAlone), the pass stopping before the rest of its work,
+// so the refold of the cuts the move marks has not begun. It answers the marks that move calls for
+// (marksOfSourceMove, read from the rows around the page), and checks the fixture: the move moves
+// OMEGA's own rows of acme/alpha-ops, in its own cut and in its cut of acme/alpha-ops, a cut of no
+// repository OMEGA's own sources read, and ALPHA's cut of acme/alpha-ops, whose source key it
+// reads again; and it moves no other cut of OMEGA's, its events repository's read standing as it
+// stood, and not ALPHA's cut of acme/alpha-app.
+func (r *refresherRig) publishOpsMoveBack(t *testing.T, figures *map[string]string) map[staleCut][]string {
+	t.Helper()
+	r.seedOpsMoveBack(t)
+	before := r.sourceStateNow(t)
+	if figures != nil {
+		*figures = r.xmins(t, figureXmins)
+	}
+	r.pageAlone(t)
+	want := r.marksOfSourceMove(t, before, r.sourceStateNow(t))
+	for _, cut := range []staleCut{{project: "OMEGA"}, {project: "OMEGA", repo: alphaOps}, {project: "ALPHA", repo: alphaOps}} {
+		if len(want[cut]) == 0 {
+			t.Fatalf("the move of ALPHA's source back to %s moves no row of %s's cut %q (%v), and the check needs it", alphaOps, cut.project, cut.repo, want)
+		}
+	}
+	for cut := range want {
+		if cut.project == "OMEGA" && cut.repo != "" && cut.repo != alphaOps || cut == (staleCut{project: "ALPHA", repo: alphaApp}) {
+			t.Fatalf("the move of ALPHA's source back to %s moves rows of %s's cut %q (%v), and the check needs it untouched", alphaOps, cut.project, cut.repo, want)
+		}
+	}
+	return want
+}
+
+// TestASourceMoveMarksOnlyTheCutsItTouches (dispatch://INFRA-978, R14; plan T19 path 3): over
+// seedOpsMoveBack's history, ALPHA's second source moved to acme/alpha-next and is saved back on
+// acme/alpha-ops, and a page alone publishes the move (publishOpsMoveBack). Its commit marks stale
+// the cuts the move moves rows of and no other, each naming the evals whose rows it moved there
+// (marksOfSourceMove), with its first paint folded in the same commit: ALPHA's cuts of the source
+// keys it reads again and no longer, and OMEGA's own cut and its cut of acme/alpha-ops, whose rows
+// of 2001, which ships OMEGA-2's pull request, OMEGA's read of the deploy evals selects again,
+// though no source of OMEGA's reads acme/alpha-ops: OMEGA's events repository and acme/omega-app
+// move nothing. The rules, every mark and every stored figure the page wrote are of the transaction
+// that moved the refresher's change cursor (expectSelectionCommit), and it wrote some figures.
+// Every stored figure the move leaves other than the fold of the rows that stand is of an eval a
+// mark names in its cut. A page that then reads a posted deploy of OMEGA, whose events repository
+// its read selects before and after, marks nothing. Once the refresher settles no cut is marked
+// and the stored figures are the fold of the rows that stand. Red where the page that records a
+// source move marks no cut (the union cuts `*` then stand folded over the repositories the read
+// selected before the move), where it marks the cuts of the requesting project alone, or every
+// cut, and where its marks or first paints land in a transaction of their own.
+func TestASourceMoveMarksOnlyTheCutsItTouches(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	var figures map[string]string
+	want := r.publishOpsMoveBack(t, &figures)
+	what := "the page that published ALPHA's move back to " + alphaOps
+	if written := r.expectSelectionCommit(t, what, figures, alphaOps, alphaNext); written == 0 {
+		t.Errorf("%s wrote no stored figure, and the check needs the first paints its commit folds", what)
+	}
+	r.expectMarks(t, what, want)
+	marked := markedEvals(r.staleMarks(t))
+	for cut, evals := range staleFiguresOf(t, r.storedFigures(t), r.truthFigures(t)) {
+		for _, evalID := range slices.Sorted(maps.Keys(evals)) {
+			if !slices.Contains(marked[cut], evalID) {
+				t.Errorf("the move left %s's stored figures of %s's cut %q other than the fold of the rows that stand, and no mark names it", evalID, cut.project, cut.repo)
+			}
+		}
+	}
+	r.settle(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the passes after the move settled with the cuts %v stale", marks)
+	}
+	r.post(t, "OMEGA", "release-2", refresherToday.Add(2*time.Hour))
+	r.pageAlone(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the page that read a posted deploy of OMEGA, whose events repository its read selects before and after, marked the cuts %v", marks)
+	}
+	r.settle(t)
+	expectTruth(t, "once the refresher settled", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAReadOfAMovedSourcesCutBeforeItsRefoldFoldsTheDayRows (dispatch://INFRA-978, R14; plan T19
+// path 3): right after the page that publishes the move of ALPHA's source back to acme/alpha-ops
+// (publishOpsMoveBack), the refold of the cuts it marks not begun, a read of the past (pastShapes)
+// of each touched cut states each eval the move moved there from the fold of its day rows, and a
+// first paint's read (moveShapes) states it from the stored figures its commit folded, each the
+// fold of the rows that stand; a cut the move does not touch (OMEGA's acme/omega-app, ALPHA's
+// acme/alpha-app) states every eval from the stored figures throughout. Red where the move leaves
+// the cuts unmarked: a read of the past then states OMEGA's deploy evals, and ALPHA's, from union
+// cuts still folded over the repositories the read selected before the move.
+func TestAReadOfAMovedSourcesCutBeforeItsRefoldFoldsTheDayRows(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	want := r.publishOpsMoveBack(t, nil)
+	never, always := func(staleCut) bool { return false }, func(staleCut) bool { return true }
+	r.expectReads(t, "right after the page that published the move, of the past", want, readsOf(pastShapes()), never)
+	r.expectReads(t, "right after the page that published the move, over a first paint", want, readsOf(moveShapes()), always)
+	untouched := map[staleCut][]string{{project: "OMEGA", repo: omegaApp}: nil, {project: "ALPHA", repo: alphaApp}: nil}
+	r.expectReads(t, "right after the page that published the move, of a cut it does not touch", untouched, readsOf(slices.Concat(moveShapes(), pastShapes())), always)
+}
+
+// TestTheRefoldOfAMovedSourceEndsWithEveryCutsFiguresEqualToItsDayRows (dispatch://INFRA-978,
+// R14; plan T19 path 3): after the page that publishes the move of ALPHA's source back to
+// acme/alpha-ops (publishOpsMoveBack), with batches of one end day (refresherRig.batch) and every
+// pass run under an owed wake (owedPass), so each pass folds one batch, the refold of the cuts the
+// move marked goes on pass after pass, each first paint read from the stored figures throughout,
+// until no mark is left; then the stored figures of every cut, the union cuts `*` among them, are
+// the fold of the rows that stand, and every read of each cut the move touched, of a first paint
+// and of the past, states every eval from them. Red where the refold of a cut leaves its union cut
+// out, or the marks are cleared before it is folded.
+func TestTheRefoldOfAMovedSourceEndsWithEveryCutsFiguresEqualToItsDayRows(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	want := r.publishOpsMoveBack(t, nil)
+	r.batch = 1
+	always := func(staleCut) bool { return true }
+	for passes := 0; len(r.staleMarks(t)) > 0; passes++ {
+		if passes > 1000 {
+			t.Fatalf("%d passes left the cuts %v stale", passes, r.staleMarks(t))
+		}
+		r.expectReads(t, fmt.Sprintf("%d passes after the move's commit, over a first paint", passes), want, readsOf(moveShapes()), always)
+		r.owedPass(t, &gapBatch{})
+	}
+	expectTruth(t, "once the refold of the move was done", r.storedFigures(t), r.truthFigures(t))
+	r.expectReads(t, "once the refold of the move was done", want, readsOf(slices.Concat(moveShapes(), pastShapes())), always)
+}
+
+// TestTheFirstPaintOfAMovedSourceIsFoldedInItsCommit (dispatch://INFRA-978, R14; plan T19 path
+// 3): the commit of the page that publishes the move of ALPHA's source back to acme/alpha-ops
+// (publishOpsMoveBack) folds the first paint of every cut it marks, in the transaction that moves
+// the refresher's change cursor (expectSelectionCommit), with no later batch of the refold: every
+// stored row of each first paint is the fold of the rows that stand under the new selection
+// (expectPaintTruth), and every read a first paint of each cut names (firstPaintReads, and
+// windowBackReads one window back) states every eval from the stored figures, each the fold of its
+// day rows. Red where the commit folds no first paint, or folds it in a transaction of its own:
+// the reads then fold the day rows, or, served the stored figures anyway, state the union cuts as
+// they were folded before the move.
+func TestTheFirstPaintOfAMovedSourceIsFoldedInItsCommit(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	var figures map[string]string
+	want := r.publishOpsMoveBack(t, &figures)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	r.expectSelectionCommit(t, "the page that published the move", figures, alphaOps, alphaNext)
+	r.expectMarks(t, "the page that published the move", want)
+	expectPaintTruth(t, "right after the move's commit", through, want, r.storedFigures(t), r.truthFigures(t))
+	r.expectReads(t, "right after the move's commit", want, append(firstPaintReads(through), windowBackReads(through)...), func(staleCut) bool { return true })
 }

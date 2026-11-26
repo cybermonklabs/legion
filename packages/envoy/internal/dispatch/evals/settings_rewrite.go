@@ -677,7 +677,11 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     rows moved folded again, over each eval's span of the days whose rows moved or went
 //     (foldFiguresInTx, whose quantiles read each rank across the days' sorted samples,
 //     measures.SortedSamples); and the rule recorded as the one the repository's rows stand built
-//     under, the repositories they stand built for left as they are (syncKept's).
+//     under, the repositories they stand built for left as they are (syncKept's). Where the rule
+//     moves the repository's source to another project, which moves the reader of its source key,
+//     the same transaction marks the cuts that move moves rows into or out of and folds their
+//     first paints (publishDefaults, read before the rule is recorded and after the figures are
+//     folded), as a page's commit does for a move of the source alone.
 //     Its eval_days changes are one per eval, as every transaction's are (migration
 //     20261117100014), each under the project that reads the eval (an owner key's under each
 //     project that reads the key), so the evals views of each project whose rows moved hear of the
@@ -1053,6 +1057,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		moved[row.ProjectKey][row.EvalID] = moved[row.ProjectKey][row.EvalID].widen(measures.Midnight(row.Day))
 	}
 
+	began := time.Now()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the rewrite of a settings change: %w", err)
@@ -1069,6 +1074,17 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	before, err := readRewriteCounts(ctx, tx)
 	if err != nil {
 		return err
+	}
+	// A rewrite that also moves the repository's source to another project moves the reader of its
+	// source key, read before the rule is recorded, and its commit marks the cuts that moves
+	// (publishDefaults), as a page's commit marks those of a move of the sources alone.
+	var owned *selectionRead
+	if prev.Project != next.Project {
+		read, err := readSelection(ctx, tx)
+		if err != nil {
+			return err
+		}
+		owned = &read
 	}
 	// The rule is recorded before any row is written: the project it names reads the repository's
 	// source key (eval_project_owners), so the change trigger logs the rows' changes, and the fold
@@ -1233,6 +1249,14 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		return err
 	}
 	times.figureScope = times.lap() - times.figures.moved - times.figures.plan - times.figures.fold
+	var published *movePublished
+	if owned != nil {
+		move, err := publishDefaults(ctx, tx, r.build, r.projects, nil, *owned, nil)
+		if err != nil {
+			return err
+		}
+		published = &move
+	}
 	// A rebuild that is building may have staged rows the new settings move: it begins again,
 	// under them (rebuild.go).
 	if err := replaceRebuild(ctx, tx, "", "", nil); err != nil {
@@ -1247,6 +1271,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		return fmt.Errorf("commit the rewrite of a settings change: %w", err)
 	}
 	times.commit = times.lap()
+	if published != nil {
+		published.log(began, time.Now())
+	}
 	r.store.drainChanges(ctx)
 	times.drain = times.lap()
 	times.log(after.minus(before), builtDays, builtRows, sent)

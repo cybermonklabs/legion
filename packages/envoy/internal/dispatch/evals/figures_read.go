@@ -77,18 +77,23 @@ type StoredFigures struct {
 // its evals a stale mark of the cut names and what the mark's generation has folded again of them
 // (figuresThrough), answering at once where no eval is left whose project's figures are built
 // through the end of both ranges and which the stored rows of the cut this read reads answer
-// (builtCut.serves); then of those evals alone, which it serves, the range rows of the window and
-// of the compare range, the `union all` of two ranges of eval_range_figures' primary key, and the
-// day rows of the window of those with a headline series, one range of eval_day_figures' primary
-// key for each project. Every other eval the caller folds from the day rows: those of a project not
-// built yet, and those a move of a default repository or a source change moved rows of in the cut,
-// until the refresher or the boot has folded again the stored rows this read reads of them: a first
-// paint's from its first-paint batch on, and those of an older window and compare range once the
-// refold, newest end day first, has come down past them. A refresher pass rewrites the stored rows
-// and the marks in one transaction, so in one answer's snapshot (BeginSnapshot), as the eval list
-// reads them, an eval's window figures are the fold of the days read beside them, and an eval read
-// as served is one no move has marked since the figures it reads were folded; on the pool each
-// statement reads the rows that stand when it runs.
+// (builtCut.serves), an eval keyed by the deploy repository only where its project's union cut is
+// folded through them too (builtCut.unionServes); then of those evals alone, which it serves, the
+// range rows of the window and of the compare range, the `union all` of two ranges of
+// eval_range_figures' primary key, and the day rows of the window of those with a headline series,
+// one range of eval_day_figures' primary key for each project. Every other eval the caller folds
+// from the day rows: those of a project not built yet, those keyed by the deploy repository whose
+// union cut no build that folds it has folded through the ranges (the database of the release
+// before this one, which folds none and marks the figures built all the same, until this release's
+// rebuild flips or its figures walk folds them, and the end days a process of that release folded
+// or deleted the union rows of since), and those a move of a default repository or a source change
+// moved rows of in the cut, until the refresher or the boot has folded again the stored rows this
+// read reads of them: a first paint's from its first-paint batch on, and those of an older window
+// and compare range once the refold, newest end day first, has come down past them. A refresher
+// pass rewrites the stored rows and the marks in one transaction, so in one answer's snapshot
+// (BeginSnapshot), as the eval list reads them, an eval's window figures are the fold of the days
+// read beside them, and an eval read as served is one no move has marked since the figures it
+// reads were folded; on the pool each statement reads the rows that stand when it runs.
 func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) (StoredFigures, error) {
 	repo := ""
 	if len(repos) == 1 {
@@ -104,7 +109,8 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 	for _, entry := range entries {
 		definition := entry.Definition
 		cut, held := built[definition.ProjectKey]
-		if !held || cut.through.Before(window.To) || compare != nil && cut.through.Before(compare.To) || !cut.serves(definition.EvalID, window, compare) {
+		if !held || cut.through.Before(window.To) || compare != nil && cut.through.Before(compare.To) || !cut.serves(definition.EvalID, window, compare) ||
+			KeyedByDeployRepo(definition) && !cut.unionServes(window, compare) {
 			continue
 		}
 		read.served[definition.EvalID] = true
@@ -192,10 +198,11 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 // holding none, until the refresher's next pass folds the days it relisted (figureChanges). ok is
 // false where the stored figures cannot answer the eval, which the caller answers from its day
 // rows: the read did not serve it (its project's figures are not built through the end of both
-// ranges, or a stale mark of its cut names it and its generation has not folded again the stored
-// rows the read reads; builtCut.serves), a stored row it would read was folded under another fold
-// key than the eval's definition now has (a register write the refresher has not folded yet), or
-// one does not decode.
+// ranges, its union cut is not folded through them where it is keyed by the deploy repository
+// (builtCut.unionServes), or a stale mark of its cut names it and its generation has not folded
+// again the stored rows the read reads; builtCut.serves), a stored row it would read was folded
+// under another fold key than the eval's definition now has (a register write the refresher has
+// not folded yet), or one does not decode.
 func (f StoredFigures) SeriesValues(entry Entry, firsts map[string]time.Time, window Range, compare *Range) ([]SeriesValues, *time.Time, bool) {
 	definition := entry.Definition
 	if !f.served[definition.EvalID] {

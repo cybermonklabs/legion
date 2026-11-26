@@ -146,10 +146,12 @@ func values(t *testing.T, answer evalListResponse) []string {
 }
 
 // heldRow is what written reads of a day row, member, stored figure or walk record: the
-// transaction that last wrote it, and the deploy repository its key names ("" for a row of an eval
-// no deploy repository moves, and for a walk record).
+// transaction that last wrote it, its kind (`day`, `member`, `range`, `figure` or `walk`), the
+// project or owner key its key names, the deploy repository its key names ("" for a row of an eval
+// no deploy repository moves, and for a walk record), and its eval ("" for a member and a walk
+// record).
 type heldRow struct {
-	xmin, deployRepo string
+	xmin, kind, project, deployRepo, evalID string
 }
 
 // written is each day row, member, stored figure and walk record by its key (heldRow): a write
@@ -157,22 +159,22 @@ type heldRow struct {
 func (r *deployRepoRig) written(t *testing.T) map[string]heldRow {
 	t.Helper()
 	rows, err := r.database.Pool.Query(t.Context(), `
-		select 'day ' || project_key || ' ' || eval_id || ' ' || deploy_repo || ' ' || series || ' ' || repo || ' ' || day, deploy_repo, xmin::text from eval_days
+		select 'day ' || project_key || ' ' || eval_id || ' ' || deploy_repo || ' ' || series || ' ' || repo || ' ' || day, 'day', project_key, deploy_repo, eval_id, xmin::text from eval_days
 		union all
-		select 'member ' || project_key || ' ' || family || ' ' || deploy_repo || ' ' || row_key, deploy_repo, xmin::text from eval_day_members
+		select 'member ' || project_key || ' ' || family || ' ' || deploy_repo || ' ' || row_key, 'member', project_key, deploy_repo, '', xmin::text from eval_day_members
 		union all
-		select 'range ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || days || ' ' || end_day || ' ' || eval_id, deploy_repo, xmin::text from eval_range_figures
+		select 'range ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || days || ' ' || end_day || ' ' || eval_id, 'range', project_key, deploy_repo, eval_id, xmin::text from eval_range_figures
 		union all
-		select 'figure ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || day || ' ' || eval_id, deploy_repo, xmin::text from eval_day_figures
+		select 'figure ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || day || ' ' || eval_id, 'figure', project_key, deploy_repo, eval_id, xmin::text from eval_day_figures
 		union all
-		select 'walk ' || family || ' ' || project_key || ' ' || built_by, '', xmin::text from eval_days_walks`)
+		select 'walk ' || family || ' ' || project_key || ' ' || built_by, 'walk', project_key, '', '', xmin::text from eval_days_walks`)
 	if err != nil {
 		t.Fatalf("read what the passes wrote: %v", err)
 	}
 	held := map[string]heldRow{}
 	var key string
 	var row heldRow
-	if _, err := pgx.ForEachRow(rows, []any{&key, &row.deployRepo, &row.xmin}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&key, &row.kind, &row.project, &row.deployRepo, &row.evalID, &row.xmin}, func() error {
 		held[key] = row
 		return nil
 	}); err != nil {
@@ -181,22 +183,27 @@ func (r *deployRepoRig) written(t *testing.T) map[string]heldRow {
 	return held
 }
 
-// rewritten is the keys of before and after whose rows a write made, deleted or moved, of a deploy
-// repository none of repos names (a walk record's none), the first ten, sorted.
-func rewritten(before, after map[string]heldRow, repos ...string) []string {
-	var moved []string
+// rewritten is each row of before and after a write made, deleted or moved, by its key, as after
+// holds it, or as before held it where a write deleted it.
+func rewritten(before, after map[string]heldRow) map[string]heldRow {
+	moved := map[string]heldRow{}
 	for key, row := range after {
-		if was, held := before[key]; (!held || was.xmin != row.xmin) && !slices.Contains(repos, row.deployRepo) {
-			moved = append(moved, key)
+		if was, held := before[key]; !held || was.xmin != row.xmin {
+			moved[key] = row
 		}
 	}
 	for key, row := range before {
-		if _, held := after[key]; !held && !slices.Contains(repos, row.deployRepo) {
-			moved = append(moved, key)
+		if _, held := after[key]; !held {
+			moved[key] = row
 		}
 	}
-	slices.Sort(moved)
-	return moved[:min(len(moved), 10)]
+	return moved
+}
+
+// firstKeys is the first ten of keys, sorted.
+func firstKeys(keys []string) []string {
+	slices.Sort(keys)
+	return keys[:min(len(keys), 10)]
 }
 
 // firstDeployDay is the UTC day of other's first deploy run.
@@ -365,15 +372,30 @@ func TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore(t *testing
 	t.Logf("%d shapes read alike before the move and after the move back; %d read otherwise in between, %d of them moved by the pull request's first commit", len(shapes), differs, changed)
 }
 
-// TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone (dispatch://INFRA-978,
-// plan T19 path 1): the source is moved to a second repository with runs of its own and back once,
-// so the rows of each stand built under its rule, and then again. Each move's passes write and
-// delete no row, of either repository or any other: no day row, member, stored figure or walk
-// record, since each repository keeps its rows and its rule once no source reads it, and the move
-// is a selection the pass records (eval_days_rules); and the list read of every shape a page asks
-// for states, under the second repository, each eval's values as a second database answers them
-// whose whole walk ran under it, and after the move back the values it stated before.
-func TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone(t *testing.T) {
+// deployKeyedSlugs is the evals (by slug) whose rows are kept per deploy repository, and whose
+// stored figures a project's union cut (`deploy_repo` `*`) folds (evals.KeyedByDeployRepo).
+var deployKeyedSlugs = []string{
+	evals.SlugMergeToProduction, evals.SlugFirstCommitToProduction, evals.SlugOpenToProduction, evals.SlugDeployFrequency,
+	evals.SlugDeployRunSuccess, evals.SlugPRCI, evals.SlugStagingE2E, evals.SlugStagingDeploy, evals.SlugProductionDeploy,
+}
+
+// TestAMoveOfTheDeployRepositoryAwayAndBackWritesNoDayRowAndRefoldsOnlyTheCutsItMoves
+// (dispatch://INFRA-978, plan T19 paths 1 and 3): the source is moved to a second repository with
+// runs of its own and back once, so the rows of each stand built under its rule, and then again.
+// Each move's passes write and delete no day row, member or walk record, of either repository or
+// any other, since each repository keeps its rows and its rule once no source reads it, and the
+// move is a selection the pass records (eval_days_rules); rows of both repositories stand. The
+// stored figures they write are the moved project's, of the evals keyed by the deploy repository,
+// in the cuts the move moves rows of, which its commit marks stale and the refold folds again: its
+// union cut (`deploy_repo` `*`), which folds the newly selected repository's rows in place of the
+// old one's, and some of it; and the cuts of the two repositories' own rows, the one the source
+// leaves and the one it reads, each of which folds that repository's source key (its deploys that
+// ship no pull request) for the project whose source reads it and no other. No other stored figure,
+// of another deploy repository, an eval no deploy repository moves or another project, is written
+// or deleted. The list read of every shape a page asks for states, under the second repository,
+// each eval's values as a second database answers them whose whole walk ran under it, and after
+// the move back the values it stated before.
+func TestAMoveOfTheDeployRepositoryAwayAndBackWritesNoDayRowAndRefoldsOnlyTheCutsItMoves(t *testing.T) {
 	t.Parallel()
 	r := newDeployRepoRig(t, true, nil)
 	walked := newDeployRepoRig(t, true, func(w *deployRepoRig) { w.saveSource(t, w.other) })
@@ -385,6 +407,14 @@ func TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone(
 		answer, _ := r.read(t, shape)
 		original[shape.name] = values(t, answer)
 	}
+	project := r.fixture.Project
+	// refolds reports whether row is a stored figure of project's, of an eval keyed by the deploy
+	// repository, under one of deployRepos: the rows a move's refold rewrites.
+	refolds := func(row heldRow, deployRepos ...string) bool {
+		slug, ofProject := strings.CutPrefix(row.evalID, project+"/")
+		return (row.kind == "range" || row.kind == "figure") && row.project == project && slices.Contains(deployRepos, row.deployRepo) &&
+			ofProject && slices.Contains(deployKeyedSlugs, slug)
+	}
 	for _, move := range []struct {
 		from, repo string
 		want       func(evalShape) []string
@@ -395,8 +425,29 @@ func TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone(
 		held := r.written(t)
 		r.moveTo(t, move.repo)
 		now := r.written(t)
-		if moved := rewritten(held, now); len(moved) > 0 {
-			t.Errorf("the move to %s wrote or deleted rows: %v", move.repo, moved)
+		var retained, figures []string
+		union, own := 0, 0
+		for key, row := range rewritten(held, now) {
+			switch {
+			case row.kind == "day" || row.kind == "member" || row.kind == "walk":
+				retained = append(retained, key)
+			case refolds(row, "*"):
+				union++
+			case refolds(row, move.from, move.repo):
+				own++
+			default:
+				figures = append(figures, key)
+			}
+		}
+		if len(retained) > 0 {
+			t.Errorf("the move to %s wrote or deleted %d day rows, members or walk records, first ones: %v", move.repo, len(retained), firstKeys(retained))
+		}
+		if len(figures) > 0 {
+			t.Errorf("the move to %s wrote or deleted %d stored figures outside %s's cuts of %s, %s and its union of the evals keyed by the deploy repository, first ones: %v",
+				move.repo, len(figures), project, move.from, move.repo, firstKeys(figures))
+		}
+		if union == 0 {
+			t.Errorf("the move to %s refolded no stored figure of %s's union cut, which folds the repository it moves to", move.repo, project)
 		}
 		kept := map[string]int{}
 		for _, row := range now {
@@ -415,6 +466,8 @@ func TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone(
 					move.repo, shape.name, index, len(want), lineAt(got, index), lineAt(want, index))
 			}
 		}
+		t.Logf("the move to %s rewrote %d stored figures of %s's union cut and %d of its cuts of %s and %s, and no other row",
+			move.repo, union, project, own, move.from, move.repo)
 	}
 }
 

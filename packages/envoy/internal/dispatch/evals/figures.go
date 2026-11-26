@@ -1766,8 +1766,16 @@ func upsertRangeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, rows 
 // upserts a range row, only where its fold key, figures or stamp moved and recording scope.build,
 // and deletes each gone day. Every statement takes its rows in the byte order of their keys, the
 // day upsert in the order it is sent them (compareDayFigureKeys), as upsertRangeFigures' does.
+// Where it deletes a row of a union cut (unionDeployRepo) it first says tx folds union cuts
+// (markUnionFigures), so the delete leaves the union cut's mark as it stands.
 func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figureWrites) error {
 	project := scope.project
+	if slices.ContainsFunc(w.goneRanges, func(key rangeFigureKey) bool { return key.deployRepo == unionDeployRepo }) ||
+		slices.ContainsFunc(w.goneDays, func(key dayFigureKey) bool { return key.deployRepo == unionDeployRepo }) {
+		if err := markUnionFigures(ctx, tx); err != nil {
+			return err
+		}
+	}
 	for args := range rangeDeletes(project, w.goneRanges) {
 		if _, err := tx.Exec(ctx, `
 			delete from eval_range_figures f
@@ -1802,6 +1810,18 @@ func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figur
 		`, args...); err != nil {
 			return fmt.Errorf("delete the stored day figures of %s that hold no row: %w", project, err)
 		}
+	}
+	return nil
+}
+
+// markUnionFigures says, in tx, that tx folds the union cuts (unionDeployRepo): the
+// transaction-local setting dispatch.union_figures, which the figures tables' delete triggers read
+// (migration 20261126125956), so a delete of union rows in tx leaves each project's mark of its
+// union cut (eval_figures_built.union_through) as it stands. A build that folds no union cut
+// deletes them with no such word, and its deletes take the marks back before them.
+func markUnionFigures(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `select set_config('dispatch.union_figures', 'on', true)`); err != nil {
+		return fmt.Errorf("say the transaction folds the union cuts: %w", err)
 	}
 	return nil
 }

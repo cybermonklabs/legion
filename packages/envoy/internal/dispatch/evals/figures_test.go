@@ -3696,3 +3696,115 @@ func TestAReleaseRebuildKeepsTheUnionCutsStoredFigures(t *testing.T) {
 		}
 	}
 }
+
+// windowDeploys is the window value of the deploys series of deploy-frequency values as the eval
+// list states them (SeriesValues, JSON), nil where they hold none.
+func windowDeploys(t *testing.T, stated string) *float64 {
+	t.Helper()
+	var values []SeriesValues
+	if err := json.Unmarshal([]byte(stated), &values); err != nil {
+		t.Fatalf("decode deploy-frequency's values: %v", err)
+	}
+	for _, series := range values {
+		if series.Series.Series == "deploys" {
+			return series.Window["deploys"]
+		}
+	}
+	return nil
+}
+
+// TestAPrecedingBuildsFiguresReadTheDayRowsOfTheUnionCutUntilItsReleaseFoldsIt (dispatch://INFRA-978,
+// R14; plan T19 path 2; cmd/dispatch/README.md, "Two builds at once"): the release before this one
+// stores no union cut (`deploy_repo` `*`) and marks each project's figures built all the same. Over
+// the settled three-source history (ALPHA reads two GitHub deploy repositories, OMEGA a GitHub
+// source and an events source with a posted deploy), its database is made: every union row gone,
+// the repositories' own stored rows standing, and OMEGA's figures marked built by the release
+// before's own statement, which names no union cut. A process of this release then serves it: from
+// before its first pass, through the pass that begins the release's rebuild, until the rebuild
+// flips, every deploy-keyed eval of both projects is stated from its day rows, each the fold of
+// them, deploy-frequency counting each project's two deploys; once the flip has landed the union
+// cuts, each project's union cut is marked folded through its figures' last end day and every such
+// eval is stated from the stored figures again, the fold of the rows that stand. A union row a
+// process of the release before then deletes, as its fold of a day it writes does, takes its
+// project's mark back before that day, so ALPHA's read of the day states its deploy evals from the
+// day rows again, OMEGA's from the stored figures, and the refresher's next passes fold ALPHA's
+// union cut again from there and mark it folded. Red where a read of a project whose figures are
+// marked built serves its union cut whether or not one is folded: the reads of the release
+// before's database then state no data of the deploy evals, which the day rows count.
+func TestAPrecedingBuildsFiguresReadTheDayRowsOfTheUnionCutUntilItsReleaseFoldsIt(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(15*time.Hour))
+	r.now = refresherToday.AddDate(0, 0, 6).Add(12 * time.Hour)
+	r.settle(t)
+	window, compare := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 7)}, Range{From: sourcesDay.AddDate(0, 0, -7), To: sourcesDay}
+	// expect checks that each deploy-keyed eval of ALPHA and OMEGA over window and compare is stated
+	// from the stored figures where stored says so of its project, from its day rows otherwise, each
+	// the fold of its day rows, and that deploy-frequency counts the project's two deploys.
+	expect := func(what string, stored map[string]bool) {
+		t.Helper()
+		for _, project := range []string{"ALPHA", "OMEGA"} {
+			state := r.readListState(t, project, nil, window, compare)
+			stated, folded, fromFigures := state.values(t, window, &compare)
+			keyed := 0
+			for _, entry := range state.entries {
+				id := entry.Definition.EvalID
+				if !KeyedByDeployRepo(entry.Definition) {
+					continue
+				}
+				keyed++
+				if fromFigures[id] != stored[project] {
+					t.Errorf("%s: %s is stated from the stored figures %t, want %t", what, id, fromFigures[id], stored[project])
+				}
+				if stated[id] != folded[id] {
+					t.Errorf("%s: %s is stated in %d bytes that differ from the fold of its day rows' %d at byte %d", what, id, len(stated[id]), len(folded[id]),
+						firstDiffering(stated[id], folded[id]))
+				}
+			}
+			if keyed == 0 {
+				t.Fatalf("%s: %s holds no eval keyed by the deploy repository, and the check needs some", what, project)
+			}
+			if got := windowDeploys(t, stated[EvalID(project, SlugDeployFrequency)]); got == nil || *got != 2 {
+				t.Errorf("%s: %s's deploy-frequency counts %v deploys over %s, want 2", what, project, got, daysText(window))
+			}
+		}
+	}
+	both := func(stored bool) map[string]bool { return map[string]bool{"ALPHA": stored, "OMEGA": stored} }
+	expect("built whole", both(true))
+	built := r.figuresBuilt(t)
+	r.exec(t, "drop every union row of the stored ranges, as the release before stores none", `delete from eval_range_figures where deploy_repo = '*'`)
+	r.exec(t, "drop every union row of the stored days", `delete from eval_day_figures where deploy_repo = '*'`)
+	r.exec(t, "drop OMEGA's mark of built figures", `delete from eval_figures_built where project_key = 'OMEGA'`)
+	r.exec(t, "mark OMEGA's figures built by the release before's statement", `
+		insert into eval_figures_built (project_key, through, built_by, updated_at) values ('OMEGA', $1, 'release-before', now())
+		on conflict (project_key) do update set through = excluded.through, updated_at = excluded.updated_at
+		where eval_figures_built.through < excluded.through`, built["OMEGA"])
+	if again := r.figuresBuilt(t); !maps.EqualFunc(again, built, time.Time.Equal) {
+		t.Fatalf("the release before's database marks the figures built through %v, want %v as they stood", again, built)
+	}
+	if n := r.count(t, `select count(*) from eval_range_figures where project_key in ('ALPHA', 'OMEGA') and deploy_repo not in ('', '*') and eval_id = any($1)`,
+		[]string{EvalID("ALPHA", SlugDeployFrequency), EvalID("OMEGA", SlugDeployFrequency)}); n == 0 {
+		t.Fatal("the release before's database holds no stored range row of a deploy repository of deploy-frequency, and the check needs those it serves")
+	}
+	r.release("union-build")
+	expect("the release before's database, before the release's first pass", both(false))
+	r.pass(t)
+	if r.count(t, `select count(*) from eval_rebuilds where state = 'building'`) > 0 {
+		expect("while the release's rebuild builds", both(false))
+	} else {
+		t.Log("the release's first pass flipped its rebuild")
+	}
+	r.settle(t)
+	if n := r.count(t, `select count(*) from eval_figures_built where project_key in ('ALPHA', 'OMEGA') and union_through is distinct from through`); n != 0 {
+		t.Errorf("once the release's rebuild flipped, %d projects' union cuts stand marked folded other than through their figures' last end day", n)
+	}
+	expect("once the release's rebuild flipped", both(true))
+	expectTruth(t, "once the release's rebuild flipped", r.storedFigures(t), r.truthFigures(t))
+	r.exec(t, "delete a union row of ALPHA's, as the release before's fold of a day it writes deletes it",
+		`delete from eval_day_figures where project_key = 'ALPHA' and deploy_repo = '*' and day = $1`, sourcesDay)
+	expect("after the release before deleted a union row of ALPHA's", map[string]bool{"ALPHA": false, "OMEGA": true})
+	r.settle(t)
+	expect("once the refresher folded ALPHA's union cut again", both(true))
+	expectTruth(t, "once the refresher folded ALPHA's union cut again", r.storedFigures(t), r.truthFigures(t))
+}
