@@ -273,3 +273,50 @@ test("an address of a comment anchored in an undrawn block under the issue opens
     client.clear();
   }
 });
+
+// R8, decision 452 (G2): the address of a comment on a constraint's words opens Graph, since
+// Conversation draws no row of a constraint (`CONVERSATION_KINDS` holds none) and Graph does. The
+// browser row reads the address of a risk's comment, which stays in Conversation, on the real stack:
+// a lens and its risk come from the lenses read, which a hand-made tree answer does not carry.
+test("the address of a comment on a constraint's words opens Graph", async () => {
+  const host = "constraint-1";
+  const comment = readComment("on-constraint", 11);
+  stubs = answerSeededReads({ posts: [comment], threads: [] });
+  stubs.push(
+    spyOn(api, "getIssueTree").mockImplementation(async () =>
+      treeOf(
+        [
+          ...seededNodes([]),
+          treeNode(host, "constraint", KEY, {
+            attributes: { standard: "The standard holds." },
+            text: "The standard holds where the standard is read.",
+          }),
+          treeNode(comment.id, "comment", host, {
+            anchor: {
+              node: { id: host, kind: "constraint", state: "live" },
+              occurrence: 1,
+              orphaned: false,
+              quote: "standard",
+            },
+            author: [comment.author],
+            made_at: comment.created_at,
+            text: comment.body,
+          }),
+        ],
+        SERVES
+      )
+    )
+  );
+  quietConsoleError();
+  const client = newClient();
+  const view = drawPage(client, "conversation", { after: `?comment=${comment.id}` });
+  try {
+    await focusInThread(view, comment.id, "the constraint's comment");
+    expect(addressOf(view), "the address of the constraint's comment").toBe(
+      `/issues/${KEY}/graph?node=${comment.id}`
+    );
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});

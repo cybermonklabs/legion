@@ -74,8 +74,14 @@ function threadTargetOf(id: string, input: ThreadTargetInput): ThreadTarget | un
     const chain = pathTo(root, host);
     const node = chain?.at(-1);
     if (chain === undefined || node === undefined) return { kind: "none" };
-    // Conversation draws no row of a plan task with no step or of a result (`filterOfUndrawn`).
-    if (preset === "conversation" && filterOfUndrawn(node) !== undefined) return { kind: "graph" };
+    // Conversation draws no row of a plan task with no step, of a result (`filterOfUndrawn`) or of
+    // a constraint, which Graph alone draws (`CONVERSATION_KINDS` holds no constraint).
+    if (
+      preset === "conversation" &&
+      (filterOfUndrawn(node) !== undefined || node.type === "constraint")
+    ) {
+      return { kind: "graph" };
+    }
     return { kind: "here", reveal: chain };
   }
   // An item that is on text and stands in no margin: the read hangs it under no node a view draws
