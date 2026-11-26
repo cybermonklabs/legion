@@ -1728,10 +1728,10 @@ def go_top_level_spans(code: str, path) -> list:
 # The ten static checks of internal/dispatch/api, keyed by their path in this repository: the
 # nine source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all twenty-two of their tests in the plain step; they are left out of it instead,
+# below would put all twenty-three of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
 # tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# twenty-third such test cannot quietly rejoin the plain step: a file named here that does not
+# twenty-fourth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1747,6 +1747,7 @@ TEXT_CHECK_TESTS = {
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
         "TestOnlyTheBrokerInsertsEvents"},
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
+        "TestNoServerPackageImportsTheFixtureWriters",
         "TestOnlyTheIssuePatchWritesTheRoute",
         "TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent",
         "TestTheJudgedWriterGuardSeesAPlantedWriter",
@@ -1976,12 +1977,12 @@ DAEMON_STAMPED_GATE_SCRIPT = (
     "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
 
 
-# The text-check job: the three modules' text checks, and the twenty-two tests of the Dispatch API's
+# The text-check job: the three modules' text checks, and the twenty-three tests of the Dispatch API's
 # ten static checks - its nine source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-two out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-three out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
