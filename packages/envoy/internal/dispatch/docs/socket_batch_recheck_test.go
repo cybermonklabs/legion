@@ -26,6 +26,7 @@ import (
 // Control: the connection asking nothing before a batch (revocableSocketWriter hands ygo the
 // connection as it is); carol's copy holds "after" and her socket stays open.
 func TestADocumentSocketAsksItsRuleBeforeEachBatchOfFrames(t *testing.T) {
+	t.Parallel()
 	const carol = "carol@example.com"
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")

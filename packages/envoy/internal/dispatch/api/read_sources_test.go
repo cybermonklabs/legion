@@ -21,6 +21,8 @@ import (
 // The sub-tests are the walk's negative controls: a GET row with no entry, and an entry that
 // names no row, each fail it, named.
 func TestEveryGETRouteHasAReadClass(t *testing.T) {
+	// Not parallel: its last sub-test replaces readSources, the read classes every server of the
+	// package reads at Register, to show the server's start refuses an unclassed GET row.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	if undecided := undecidedReads(routes, readSources); len(undecided) > 0 {
 		t.Fatalf("%d GET row(s) or entries the read check cannot decide:\n%s", len(undecided), strings.Join(undecided, "\n"))
