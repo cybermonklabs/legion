@@ -16,9 +16,9 @@ const mintedBlock = `"proxy": {"hosts": ["dispatch.example.com"], "headers": ["A
 
 // TestADPoPProfileIsANameAndAProxyBlockAlone: a profile whose proxy block is of kind dpop names a
 // capability the broker mints from no stored secret, so a field that scopes or limits a stored
-// secret's grant - source, tier, requesters, maxGrant, a github or a google block - is refused,
-// naming that field, since it would read as a limit that holds nothing; a name and the dpop block
-// alone parse, and so does a block of no kind beside such fields.
+// secret's grant - source, tier, requesters, maxGrant, a github or a google block, an allow of its
+// own - is refused, naming that field, since it would read as a limit that holds nothing; a name
+// and the dpop block alone parse, and so does a profile behind a kind beside such fields.
 func TestADPoPProfileIsANameAndAProxyBlockAlone(t *testing.T) {
 	for field, profile := range map[string]string{
 		"source":     `{"name": "TEST_MINTED_TOKEN", "source": "LEGION_IMPLEMENT_APP", ` + mintedBlock + `}`,
@@ -27,6 +27,7 @@ func TestADPoPProfileIsANameAndAProxyBlockAlone(t *testing.T) {
 		"maxGrant":   `{"name": "TEST_MINTED_TOKEN", "maxGrant": "15m", ` + mintedBlock + `}`,
 		"github":     `{"name": "TEST_MINTED_TOKEN", ` + acmeRead + `, ` + mintedBlock + `}`,
 		"google":     `{"name": "TEST_MINTED_TOKEN", "google": {"scopes": ["cloud-platform"]}, ` + mintedBlock + `}`,
+		"allow":      `{"name": "TEST_MINTED_TOKEN", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], ` + mintedBlock + `}`,
 	} {
 		t.Run(field, func(t *testing.T) {
 			_, err := policy.ParseProfiles([]byte(policytest.ProfilesFile(profile)))
@@ -38,8 +39,8 @@ func TestADPoPProfileIsANameAndAProxyBlockAlone(t *testing.T) {
 	if _, err := policy.ParseProfiles([]byte(policytest.ProfilesFile(`{"name": "TEST_MINTED_TOKEN", ` + mintedBlock + `}`))); err != nil {
 		t.Fatalf("ParseProfiles of a name and a dpop block = %v; want it parsed", err)
 	}
-	if _, err := policy.ParseProfiles([]byte(policytest.ProfilesFile(readProfile))); err != nil {
-		t.Fatalf("ParseProfiles of a profile of no kind with a source and a github block = %v; want it parsed", err)
+	if _, err := policy.ParseProfiles([]byte(policytest.KindsFile(readProfile))); err != nil {
+		t.Fatalf("ParseProfiles of a profile behind a kind with a source and a github block = %v; want it parsed", err)
 	}
 }
 
