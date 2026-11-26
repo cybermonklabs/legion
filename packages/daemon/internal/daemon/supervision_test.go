@@ -1260,6 +1260,12 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}},
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model"},
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model"}},
+		// Every member of the error object the machine decides on, Oh My Pi's class of the
+		// failure among them: a cyber_policy code dropped here is a refusal the ladder re-sends.
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+			HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"},
+			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+				HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"}},
 		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."},
 			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."}},
 		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},

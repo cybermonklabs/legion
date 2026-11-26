@@ -156,7 +156,7 @@ const refusal400 = "400 invalid_request_error: messages: unexpected role"
 // refuseTurns works the claim's pending task through turns its provider refuses, each reported
 // refused by the claim's producer, and then answers the task's prompt with a provider error that
 // cannot clear: an HTTP 400, a client error that is none of 401, 403, 408 and 429, which fails the
-// claim (supervise's holdsTheIssue). The reports fail nothing, however many there are
+// claim (supervise's classifyProviderError). The reports fail nothing, however many there are
 // (dispatch://INFRA-4508): they are the claim's run of refused turns, which the daemon answers each
 // report with and which decides nothing.
 func (r *freshSessionRig) refuseTurns(turns int) {

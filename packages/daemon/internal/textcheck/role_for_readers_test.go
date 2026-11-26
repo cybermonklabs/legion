@@ -157,6 +157,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// of the running step at step (record.Issue.RoleAt).
 	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{
 		"TestOnlyAPhaseWorkerHoldsAMembersPhase", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
+	// The role of a held claim's start that meets its phase waiting on it, read with the issue, so
+	// at step it is the role of the running step.
+	{file: "internal/daemon/outbox.go", fn: "outbox.heldStartRefused"}: {calls: 1, tests: []string{
+		"TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt"}},
 	{file: "internal/daemon/design_news_send.go", fn: "memberDraft.told"}: {calls: 1, tests: []string{
 		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
 	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 1, tests: []string{
