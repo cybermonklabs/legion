@@ -1062,9 +1062,11 @@ actions, console and sources. It has no DOM view and no network: the config reco
 attempt and either one costs every row on a CPU-bound machine (the config's comment gives
 the measurements), and Playwright 1.64.1 records a trace's network only beside its DOM
 snapshots. The screenshot is the one picture of the page at the failure. A trace with the DOM
-and the network comes from a local run of that row with `snapshots: true` in the config's
-`trace` option. `--trace on` alone does not give one: it replaces the option's mode and keeps
-its `snapshots: false`.
+and the network comes from a local run of that row: set `snapshots: true` in the config's
+`trace` option, then, from `packages/dispatch`, run
+`bunx playwright test --config e2e/playwright.config.ts --project=<project> e2e/<file>:<line> --retries=0 --trace on`.
+`--trace on` alone does not give one: it replaces the option's mode and keeps its
+`snapshots: false`.
 
 ## The alone job, and what it keeps the same as the shard job
 

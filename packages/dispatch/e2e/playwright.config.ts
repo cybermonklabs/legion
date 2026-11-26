@@ -780,8 +780,10 @@ export default defineConfig({
     //
     // Playwright 1.64.1 applies one `snapshots` value to every attempt it records, so recording
     // DOM snapshots on a retry alone would take a fixture of our own, and the suite has none. A
-    // trace with the DOM comes from a local run of the row with `snapshots: true` here:
-    // `--trace on` replaces this option's mode and keeps the rest of it
+    // trace with the DOM and the network comes from a local run of the row with `snapshots: true`
+    // set here, from packages/dispatch: `bunx playwright test --config e2e/playwright.config.ts
+    // --project=<project> e2e/<file>:<line> --retries=0 --trace on`. `--trace on` alone, without
+    // that edit, replaces this option's mode and keeps the rest of it
     // (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/common/index.js:583-585).
     //
     // Recording every first attempt leaves each worker's trace files in its artifacts directory
