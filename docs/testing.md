@@ -49,11 +49,15 @@ A measurement script carries in its first 15 lines the tool line: `legion: tool 
 
 ### When CI runs each job
 
-The merge queue runs every job of `ci.yaml` on the merged tree, except `worker-image` and `dispatch-browser-pr`.
-`worker-image` runs on a pull request whose change its filter selects, and in the release; in the merge queue, `kind / image` builds the same image with the same build probe, and the `kind` job's leak-guard leg runs the image's leak-guard test on that image.
-`dispatch-browser-pr` runs the `@pr` rows of the browser lane on a pull request alone; the merge queue runs the full lane of `dispatch-browser`, which runs every row.
-On a pull request, a job runs when its area's filter selects the change and the job is not held to the merge queue.
-A held job runs on a pull request only while the pull request carries the label `full-ci` or that job's own `lane:<output>` label; `daemon-live` and `agent-harness` are held, and `.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue", names the others.
+On a pull request and in a merge group, the `changes` job of `ci.yaml` computes each job's filter when it runs, and a job runs when its filter selects the change.
+A merge group selects over its whole diff against its base.
+A filter comes from the import graph (`go list`), the TypeScript programs, the job's gate file under `.github/ci-gates/`, and the `//ci:reads` and `//ci:builds` lines with which a test file declares what it reads outside its package; `.github/ci-notes/ci.md`, "How a filter is computed", says how.
+A job joins the selection with a gate file of its own.
+A merge group runs neither `worker-image` nor `dispatch-browser-pr`.
+`worker-image` runs on a pull request whose change its filter selects, and in the release; in a merge group that selects `kind`, `kind / image` builds the same image with the same build probe, and the `kind` job's leak-guard leg runs the image's leak-guard test on that image.
+`dispatch-browser-pr` runs the `@pr` rows of the browser lane on a pull request alone; the full lane of `dispatch-browser`, which runs every row, runs in each merge group that its filter selects.
+On a pull request, a job held to the merge queue also needs its label: it runs only while the pull request carries the label `full-ci` or that job's own `lane:<output>` label.
+`daemon-live` and `agent-harness` are held, and `.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue", names the others.
 No label runs `kind`: no pull request runs it.
 
 ## The fixtures a test takes rather than copies
