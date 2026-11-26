@@ -99,14 +99,16 @@ const (
 	speedPriorityFullName = "the whole priorities body"
 )
 
-// The statements each priorities read is written as and the round trips they go in: first the
-// read of the projects its caller sees (VisibleProjectsSQL, which the route's read gate makes
-// before any handler runs), then readPriorities's: the live priorities (prioritystore.List), then
-// their relations (priorityRelationsQuery), then one batch of the statements that rest on them,
-// which for the whole body is the counts, the newest event under each priority and the two
-// faults, and for the summary the two faults alone. The corpus holds twenty priorities and 400
-// relations, so a read that sent a statement for each priority or each relation would send dozens
-// more.
+// The statements each priorities read is written as and the round trips they go in, the
+// statement that resolves the caller's viewer counted among them: first that read of the projects
+// its caller sees (VisibleProjectsSQL, through readerOf, which the route's read gate makes before
+// any handler runs), then readPriorities's: the live priorities (prioritystore.List), then their
+// relations (priorityRelationsQuery), then one batch of the statements that rest on them, which
+// for the whole body is the counts, the newest event under each priority and the two faults, and
+// for the summary the two faults alone. Main's reads, which bound no viewer, were six and four
+// statements in three round trips: the viewer's statement is the one statement and the one round
+// trip each count adds. The corpus holds twenty priorities and 400 relations, so a read that sent
+// a statement for each priority or each relation would send dozens more.
 const (
 	priorityBodyStatements    = 7
 	prioritySummaryStatements = 5
