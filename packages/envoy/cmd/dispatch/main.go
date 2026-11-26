@@ -724,10 +724,9 @@ func main() {
 	//     never arrived, a delivery that failed: the delivery reconcile and the architecture
 	//     import every 5 minutes, each starting after a random delay within one interval
 	//     (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at start
-	//     (redeliver.Sweeper.Run). While delivery settings are saved, a push of a source's branch
-	//     imports that source at once (delivery.PushImports, architecture.Importer.Pushed; the
-	//     delivery intake runs only then), so the architecture import's timer repairs a push that
-	//     never arrived, and is the only automatic import where no settings are saved. Each then
+	//     (redeliver.Sweeper.Run). A push of a source's branch imports that source at once
+	//     (delivery.PushImports, architecture.Importer.Pushed), so the architecture import's
+	//     timer repairs a push that never arrived. Each then
 	//     waits its interval less up to a tenth of it, drawn afresh every time
 	//     (duty.JitteredWithin), so no wait is longer than
 	//     the interval and two processes' ticks drift apart rather than staying in step. Under
@@ -1284,11 +1283,11 @@ func main() {
 		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
 		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
 		// connects in the background as the publisher does, and its poll takes the durable's hold once
-		// it has. While delivery settings are saved (the intake runs only then), the intake hands each
-		// push of a branch to the ticker's architecture importer, on the background pool and
-		// sharing the routes' importer's flights, which imports the enabled sources on that
-		// repository and branch at once; a push it hands over once the importer's Close has begun
-		// starts nothing (architecture.Importer.Pushed).
+		// it has, whether or not delivery settings are saved. The intake hands each push of a branch
+		// to the ticker's architecture importer, on the background pool and sharing the routes'
+		// importer's flights, which imports the enabled sources on that repository and branch at
+		// once; a push it hands over once the importer's Close has begun starts nothing
+		// (architecture.Importer.Pushed).
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
