@@ -51,8 +51,7 @@ Each finding gives:
   Verification document must settle. For a requirement that nothing checks, give a check that a
   machine can run. Say if the code settles it, or only the owner of the issue can.
 
-Report the findings that change the work. Report each finding of kind 4. If nothing changes the
-work, say so in one line.
+Report the findings that change the work. Report each finding of kind 4.
 
 ## Constraints
 

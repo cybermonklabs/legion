@@ -65,10 +65,8 @@ A rejection names at most three blocking issues, the most severe first. Each giv
 ### Output
 
 Give the verdict alone on a line: `approved` or `rejected`. Give one line on the goal and the
-requirements (check 6), outside the count of three. Give one or two sentences on why. On
-`rejected`, give the numbered blocking issues.
-
-Write nothing else.
+requirements (check 6), outside the count of three. On `rejected`, give the numbered blocking
+issues.
 
 ## A spec
 
