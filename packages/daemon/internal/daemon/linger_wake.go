@@ -53,7 +53,8 @@ func (l *lingerWake) next() time.Time {
 
 // fired takes deadline off once its timer has fired, unless a later report has named another one
 // meanwhile: the pass the timer applies reports the deadline after it, and a pass that fails to
-// apply leaves no deadline to fire on again at once, the next pass of any fact reporting one.
+// apply leaves no deadline to fire on again at once, the next fact that judges the block
+// reporting one (admit's block rule, Admission.Apply).
 func (l *lingerWake) fired(deadline time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -103,7 +104,7 @@ func (w *workflowRuntime) wakeAtLingerDeadlines(ctx context.Context) {
 // clock moved. Its event id is its own — the word, the project, this boot and the moment the timer
 // fired — so a deadline the timer fires on twice, a pass that read a clock just short of it having
 // reported it again, is applied twice and never taken for a duplicate. A failed apply is logged; the
-// next pass of any fact reports the deadline again.
+// next fact that judges the block (admit's block rule, Admission.Apply) reports the deadline again.
 func (w *workflowRuntime) applyLingerDeadline(ctx context.Context, at time.Time) {
 	eventID := fmt.Sprintf("linger-deadline:%s:%s:%d", w.dispatchProject, w.bootID, at.UnixNano())
 	if _, err := intake.ApplyFact(ctx, w.pool, "linger-deadline", eventID, intake.LingerDeadline{}, w.handlers...); err != nil {

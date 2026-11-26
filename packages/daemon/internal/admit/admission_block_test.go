@@ -231,6 +231,42 @@ func TestAnAdmissionPassQueuesTheBlockOnlyWhenItChanges(t *testing.T) {
 	})
 }
 
+// A fact that writes no record judges no admission block, though the state events are on: a push
+// to a branch no issue records runs no pass (the pass rule, Apply), and the block rule (Apply)
+// judges no block for it either, so the push reads none of the project's live records and queues
+// no state_admission row. A root waits in the line with a slot free and no pass has written the
+// first block, so a judgement would read the project and queue that first block; the tick after
+// the push, which judges the block whatever it wrote, queues the block its promotion leaves. So a
+// push, most of what GitHub sends, pays no read of the whole project under the lock every fact
+// takes.
+func TestAFactThatWritesNoRecordJudgesNoAdmissionBlock(t *testing.T) {
+	const root, unrecorded = "LEGION-101", "LEGION-102"
+	pool := migratedPool(t)
+	// The pass's reads are counted (passCounted) over a store with the state events on
+	// (publishingStore), as a daemon with a workflow runs it.
+	admission, reads := passCounted(t, 1)
+	reads.Store = publishingStore()
+	seedWaiting(t, pool, root, "A")
+
+	applyAsTheDaemon(t, pool, admission, "github", "push", intake.Push{Repo: "acme/widgets", Branch: "legion/" + unrecorded,
+		Before: "1111111", After: "2222222", Pusher: "someone", Sender: "someone"}, admission.engine)
+
+	if reads.live != 0 {
+		t.Errorf("the push read the project's live records %d times, want 0: a fact that writes no record judges no block", reads.live)
+	}
+	events := admissionEvents(t, pool)
+	if len(events) != 0 {
+		t.Errorf("the push queued %d admission events, want none: a fact that writes no record judges no block", len(events))
+	}
+
+	tick(t, pool, admission, "tick")
+	if after := admissionEvents(t, pool); len(after) != len(events)+1 {
+		t.Fatalf("the tick after the push queued %d admission events, want one: the tick judges the block and the store publishes it",
+			len(after)-len(events))
+	}
+	assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
+}
+
 // A pass's block is judged once, after the pass's last write, and that one judgement is both the
 // block the pass publishes and the block the state route serves of the same store after the pass.
 // A pass that promotes writes a slot after the judgement it promoted from, and a pass that releases
