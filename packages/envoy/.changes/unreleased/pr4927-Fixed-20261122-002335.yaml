@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A session relay's hand-over (`bus.SessionPull.Release`) on a link that is live but slow
+  returns every message its pull held. It gave the drain of the pull's inbox at most 1 s, then
+  read what the pull held while nats.go still held more, and those messages reached the session's
+  next owner only after the consumer's 60 s ack wait. The hand-over now waits for nats.go to end
+  the drain, which nats.go bounds at its 10 s flush timeout, and confirms with the server that the
+  drain took: a hand-over the server did not confirm is logged as failed, not whole. When the
+  listener stops, every relay hand-over still waiting 1 s after the stop began ends then, whether
+  the stop began it or another cancellation did, and is logged as failed, so a stop on a hub that
+  answers nothing spends no more than that on them.
+time: 2026-11-22T00:23:35Z
+custom:
+    Issue: pr4927

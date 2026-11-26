@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -233,6 +234,19 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
+	// handOver is the context every run's hand-over waits under, whatever cancelled the run, and
+	// handOverEnd ends it: stop does, handOverWait (bus.SessionPullDrainWait) after the stop
+	// began, so a hand-over still waiting then on a hub that answers nothing, one the stop
+	// cancelled or one already under way for another reason, ends at once, and the stop spends
+	// no longer on them. Until a stop, a hand-over waits as long as nats.go makes the drain take.
+	// A test lengthens handOverWait, so a row about a hand-over that a live hub confirms does not
+	// turn on how fast the machine is, and sets handOverBegins, which a hand-over calls once it
+	// knows its reason and before it waits (nil in production). Both are set before the first
+	// relay starts and read-only after.
+	handOverWait   time.Duration
+	handOver       context.Context
+	handOverEnd    context.CancelCauseFunc
+	handOverBegins func(sessionID string, reason relayCancelReason)
 	// repositories is the edge listener's repository reader (edge_repositories.go), which holds
 	// each GitHub frame to its session's projects (relayNATS); nil on every listener but an edge
 	// one, which relays every frame as it always has. Set before the first relay starts and
@@ -588,29 +602,31 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 		delivery.consumers.SetMaxAckPending(relayEdgeInFlight)
 	}
 	m := &sessionRelays{
-		delivery:    delivery,
-		cfg:         cfg,
-		registry:    cfg.registry,
-		sessions:    cfg.sessions,
-		machineID:   cfg.machineID,
-		logger:      cfg.logger,
-		inbox:       inbox,
-		replyPrefix: inbox + ".",
-		pauseFirst:  relayPauseFirst,
-		pauseMax:    relayPauseMax,
-		receiptWait: relayReceiptWait,
-		loopDone:    make(chan struct{}),
-		events:      map[string]relayNotice{},
-		wake:        make(chan struct{}, 1),
-		relays:      map[string]*relayRun{},
-		restarts:    make(chan struct{}, relayRestartLimit),
-		frames:      map[string]*relayFrame{},
+		delivery:     delivery,
+		cfg:          cfg,
+		registry:     cfg.registry,
+		sessions:     cfg.sessions,
+		machineID:    cfg.machineID,
+		logger:       cfg.logger,
+		inbox:        inbox,
+		replyPrefix:  inbox + ".",
+		pauseFirst:   relayPauseFirst,
+		pauseMax:     relayPauseMax,
+		receiptWait:  relayReceiptWait,
+		handOverWait: bus.SessionPullDrainWait,
+		loopDone:     make(chan struct{}),
+		events:       map[string]relayNotice{},
+		wake:         make(chan struct{}, 1),
+		relays:       map[string]*relayRun{},
+		restarts:     make(chan struct{}, relayRestartLimit),
+		frames:       map[string]*relayFrame{},
 	}
 	m.reMark = m.reMarkWithheldGap
 	if err := delivery.consumers.SubscribeReplies(inbox+".>", m.onReply); err != nil {
 		return nil, err
 	}
 	m.ctx, m.cancel = context.WithCancelCause(context.Background())
+	m.handOver, m.handOverEnd = context.WithCancelCause(context.Background())
 	m.stopChange = cfg.sessions.OnChange(m.onChange)
 	delivery.relay = m
 	go m.loop()
@@ -673,10 +689,12 @@ func (m *sessionRelays) signal() {
 }
 
 // stop stops every relay and waits, within ctx, for the relay loop and every run to return; a run
-// stopped while it pulls returns the messages it holds with a nak before it ends (release). When
-// ctx ends first, stop warns and returns while that work still runs, so a run still going may
-// then publish a frame, have one acked on the session's done reply (onReply) or nak what it
-// holds. The session-consumer connection is drained after it (sessionDelivery.drain).
+// stopped while it pulls returns the messages it holds with a nak before it ends (release). The
+// hand-overs' one wait ends handOverWait after the stop began, or when stop returns, so a stop on a
+// hub that answers nothing spends no longer on them than that. When ctx ends first, stop warns and
+// returns while that work still runs, so a run still going may then publish a frame, have one acked
+// on the session's done reply (onReply) or nak what it holds. The session-consumer connection is
+// drained after it (sessionDelivery.drain).
 func (m *sessionRelays) stop(ctx context.Context) {
 	if m == nil {
 		return
@@ -685,6 +703,12 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	m.eventsMu.Lock()
 	m.events = nil
 	m.eventsMu.Unlock()
+	ended := fmt.Errorf("the listener's stop gave its relays' hand-overs %s", m.handOverWait)
+	end := time.AfterFunc(m.handOverWait, func() { m.handOverEnd(ended) })
+	defer func() {
+		end.Stop()
+		m.handOverEnd(ended)
+	}()
 	m.cancel(relayCancelListenerStopping)
 	if !closedWithin(ctx, m.loopDone) {
 		m.logger.Warn("session relay loop still running at shutdown")
@@ -1116,6 +1140,19 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			pull.Stop()
 			return
 		}
+		// What the line says depends on the reason, because a session with no record is
+		// delivered these messages only when it registers again, and not at all where the
+		// delete that took the record took its consumer: the line for every other reason
+		// promises the delivery of a next pull that neither case makes (relayHandOverLines).
+		reason := relayCancelledFor(ctx)
+		whole, failed := relayHandOverLines(reason)
+		// Every hand-over waits under the one context a stop ends (handOver), whatever cancelled
+		// its run, so a stop also ends one already under way. A hand-over that wait ended is
+		// written as failed, naming what the server had not confirmed.
+		if m.handOverBegins != nil {
+			m.handOverBegins(sessionID, reason)
+		}
+		handOver := m.handOver
 		// The pull is detached before anything is naked. A cancelled pull still has a pull
 		// request standing at the server, so a nak sent while that pull is subscribed can be
 		// delivered straight back into the pull this run is giving up; its drain queues the
@@ -1126,19 +1163,13 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder
 		// holds that order. The detach's error is not read here: Release calls Detach again,
 		// which answers the same result, and joins it into the error it returns.
-		_ = pull.Detach()
+		_ = pull.Detach(handOver)
 		// Every frame the run published was read from the pull's queue before anything still in
 		// it, so the frames are naked first and the queue after, each in the order it was sent or
 		// queued.
 		returned, err := m.release(run)
-		fromPull, pullErr := pull.Release()
+		fromPull, pullErr := pull.Release(handOver)
 		returned += fromPull
-		// What the line says depends on the reason, because a session with no record is
-		// delivered these messages only when it registers again, and not at all where the
-		// delete that took the record took its consumer: the line for every other reason
-		// promises the delivery of a next pull that neither case makes (relayHandOverLines).
-		reason := relayCancelledFor(ctx)
-		whole, failed := relayHandOverLines(reason)
 		// The run writes its hand-over line itself rather than the loop that cancelled it: only
 		// once the run's goroutine has given the messages back is it true that this listener
 		// relays the session no more, so a reader, and a test waiting for the hand-over, can

@@ -171,7 +171,8 @@ type SessionConsumers struct {
 	// own where that was nil (sessionConsumersOn): where create and recordResumeFloorAt write
 	// their lines.
 	logger *slog.Logger
-	// pendingMu guards pending, createFault, deleteAnswerFault and infoFault.
+	// pendingMu guards pending, createFault, deleteAnswerFault, deleteSendFault, infoFault and
+	// flushEnded.
 	pendingMu sync.Mutex
 	// pending holds, by consumer name, the start of each consumer a restart (RestartAtFloor) read
 	// the floor of and may have deleted, until a create at that start is confirmed: the position
@@ -190,6 +191,9 @@ type SessionConsumers struct {
 	deleteAnswerFault func(consumer string) error
 	deleteSendFault   func(consumer string) error
 	infoFault         func(consumer string) error
+	// flushEnded, when not nil, is told how each pull started after it was set ended the flush
+	// its Detach sends. It is nil outside tests (SetFlushObserver).
+	flushEnded func(SessionPullFlushEnd)
 	// narrowed, when not nil, hears each change of a consumer's filter that drops a subject the
 	// new filter does not contain while the stream holds messages on it from the consumer's
 	// position on (SetNarrowed), with the count of them read on each such subject just before the
@@ -309,6 +313,16 @@ func (s *SessionConsumers) SetInfoFault(fault func(consumer string) error) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	s.infoFault = fault
+}
+
+// SetFlushObserver has every pull started after it tell observe how the flush its Detach sends
+// after the drain's UNSUB ended (SessionPullFlushEnd); nil removes it. It is a seam for tests,
+// which tell a hand-over a caller's wait ended from one that waited out nats.go's own bound;
+// nothing else sets it.
+func (s *SessionConsumers) SetFlushObserver(observe func(SessionPullFlushEnd)) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.flushEnded = observe
 }
 
 // SetMaxAckPending makes every consumer this handle creates or updates deliver at most n of its

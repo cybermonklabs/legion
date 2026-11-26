@@ -1177,10 +1177,18 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 		t.Fatalf("ack %d: %v", first.StreamSeq, err)
 	}
 	// One pull request asks for a whole batch, so the server delivered all three: the two this
-	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	// row never read are what the consumer awaits, and Release returns them once the pull holds
+	// them, so the row waits for the pull itself to hold both (waitForQueued). The server's count
+	// of the two awaiting an ack is no wait for that: nats-server counts a message delivered and
+	// awaiting its ack when the consumer queues it (consumer.deliverMsg), and the stream's own loop
+	// sends it to the pull's inbox after that, so a Release begun on that count can take the
+	// inbox's interest away first. The server then finds no interest for that message and puts it
+	// back for the consumer's next pull itself (consumer.didNotDeliver), and Release, which never
+	// held it, returns one (CI's envoy-go-race job 133892644405).
+	waitForQueued(t, pull, 2)
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
-	if returned, err := pull.Release(); returned != 2 || err != nil {
+	if returned, err := pull.Release(ctx); returned != 2 || err != nil {
 		t.Fatalf("Release returned %d messages, %v; want the two the pull held unread and no error", returned, err)
 	}
 	again := pullSession(t, consumers, session)
@@ -1249,14 +1257,14 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 	waitForQueued(t, pull, 2)
 	mine.Close()
 
-	detachErr := pull.Detach()
+	detachErr := pull.Detach(ctx)
 	if detachErr == nil {
 		t.Fatal("Detach on a closed connection reported nothing, while nats.go threw away every message the pull's inbox held unread")
 	}
 	if !strings.Contains(detachErr.Error(), "could not be drained") {
 		t.Fatalf("Detach reported %q, want it naming the drain that failed", detachErr)
 	}
-	returned, err := pull.Release()
+	returned, err := pull.Release(ctx)
 	if returned != 0 {
 		t.Fatalf("Release returned %d messages on a closed connection, want none: no nak of it reached the server", returned)
 	}
@@ -1268,6 +1276,56 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 	}
 	t.Logf("Detach reported: %v", detachErr)
 	t.Logf("Release reported: %v", err)
+}
+
+// A Release on a link that has stopped answering still ends, and says the server never confirmed
+// the drain: the drain Detach waits for ends at nats.go's own bound on the flush it opens with (10 s
+// in nats.go v1.55.0), and Detach sets no span of its own beside it; Detach's own flush gets no
+// answer within that bound either, so the caller's hand-over line cannot claim a whole hand-over.
+// The naks of the two messages the pull held go into the connection's buffer, so Release counts
+// them. The row runs on a server of its own, whose relay it freezes, so neither flush is answered
+// while the connection stays CONNECTED; it waits for Release with testwait.Receive, so a Release
+// that never ended would fail the row by name before the test binary's deadline.
+func TestAReleaseOnALinkThatStopsAnsweringEndsAtTheDrainsOwnBound(t *testing.T) {
+	t.Parallel()
+	srv, uri := testnats.Start(t)
+	owner, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+	if err != nil {
+		t.Fatalf("connect session consumers: %v", err)
+	}
+	t.Cleanup(consumers.Close)
+	const session = "ses_stuck"
+	agent := contracts.LegacyAgentSubject(session)
+	if _, err := consumers.Ensure(context.Background(), session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	for i := range 2 {
+		publishStored(t, owner, agent, strconv.Itoa(i))
+	}
+	pull := pullSession(t, consumers, session)
+	waitForQueued(t, pull, 2)
+	t.Cleanup(srv.Freeze(t))
+
+	type answer struct {
+		returned int
+		err      error
+	}
+	answered := make(chan answer, 1)
+	started := time.Now()
+	go func() {
+		returned, err := pull.Release(context.Background())
+		answered <- answer{returned, err}
+	}()
+	got := testwait.Receive(t, "Release on a link that stopped answering to end", answered)
+	t.Logf("Release on the frozen link ended after %s", time.Since(started).Round(time.Millisecond))
+	if got.returned != 2 || got.err == nil || !strings.Contains(got.err.Error(), "did not confirm the end of the inbox subscription") {
+		t.Fatalf("Release on a link that stopped answering returned %d messages, %v; want the two the pull held, and an error saying the server did not confirm the drain", got.returned, got.err)
+	}
 }
 
 // A session the stream holds no consumer for: its info, a restart of it and a pull of it all

@@ -53,14 +53,19 @@ const (
 	// to deliver. A pull that hears nothing from the server for twice as long ends with
 	// ErrSessionPullStalled.
 	sessionPullHeartbeat = 15 * time.Second
-	// sessionPullDrainWait and sessionPullDrainPoll bound how long Detach waits for the pull's
-	// inbox subscription to go invalid, which is nats.go having handed over every message it held
-	// unread. A subscription on a local server drains in well under a millisecond, so the wait is
-	// reached only by a connection that is gone, and a run that ends costs it once. The poll is
-	// the 10 ms the connection's own drain waits at (Client.drainDeliveries): nats.go runs a
+	// SessionPullDrainWait is how long a caller that must not wait out a silent server -- a
+	// listener that is stopping -- gives its pulls' hand-overs to end (Detach's ctx). It was the
+	// bound Detach put on every drain, so it is what a stop on a silent hub spent on its relays'
+	// hand-overs.
+	SessionPullDrainWait = time.Second
+	// sessionPullFlushBound is nats.go's own bound on a flush (Conn.Flush, 10 s in nats.go
+	// v1.55.0), which Detach's flush keeps for a ctx that has no deadline.
+	sessionPullFlushBound = 10 * time.Second
+	// sessionPullDrainPoll is how often Detach reads whether the pull's inbox subscription has
+	// gone invalid, which is nats.go having handed over every message it held unread. It is the
+	// 10 ms the connection's own drain waits at (Client.drainDeliveries): nats.go runs a
 	// subscription's drain on a goroutine that flushes once and then re-checks on a 100 ms sleep,
 	// so a finer poll observes nothing sooner and only takes the subscription's mutex oftener.
-	sessionPullDrainWait = time.Second
 	sessionPullDrainPoll = 10 * time.Millisecond
 	// sessionPullDroppedLogEvery is how often a pull writes its line for a message on its inbox
 	// that its consumer did not deliver (SessionPull.receive): the first, then at most one a
@@ -115,6 +120,37 @@ type SessionPull struct {
 	// droppedHeld how many it has dropped since without one (sessionPullDroppedLogEvery).
 	droppedLoggedAt time.Time
 	droppedHeld     int
+
+	// flushEnded is the SessionConsumers' flush observer when the pull started (SetFlushObserver),
+	// nil outside tests.
+	flushEnded func(SessionPullFlushEnd)
+}
+
+// SessionPullFlushEnd is how the flush Detach sends after its drain's UNSUB ended, as a flush
+// observer is told (SessionConsumers.SetFlushObserver).
+type SessionPullFlushEnd int
+
+const (
+	// SessionPullFlushAnswered: the server answered, so it took the UNSUB.
+	SessionPullFlushAnswered SessionPullFlushEnd = iota + 1
+	// SessionPullFlushEndedByCaller: Detach's caller's context ended before the server answered.
+	SessionPullFlushEndedByCaller
+	// SessionPullFlushEndedOtherwise: anything else ended it before the server answered, nats.go's
+	// own bound on a flush (sessionPullFlushBound) or the connection's close among them.
+	SessionPullFlushEndedOtherwise
+)
+
+// String is the flush end's name, as a test's failure names it.
+func (e SessionPullFlushEnd) String() string {
+	switch e {
+	case SessionPullFlushAnswered:
+		return "answered"
+	case SessionPullFlushEndedByCaller:
+		return "ended by the caller's context"
+	case SessionPullFlushEndedOtherwise:
+		return "ended otherwise"
+	}
+	return "unknown"
 }
 
 // Pull starts pulling sessionID's consumer on the connection, without reading it first: the first
@@ -139,10 +175,13 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 		return nil, err
 	}
 	conn := s.client.Connection()
+	s.pendingMu.Lock()
+	flushEnded := s.flushEnded
+	s.pendingMu.Unlock()
 	p := &SessionPull{
 		conn: conn, sessionID: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(),
 		ack: "$JS.ACK." + Stream + "." + name + ".", request: request, logger: s.logger, heartbeat: s.pullHeartbeat,
-		wake: make(chan struct{}, 1),
+		wake: make(chan struct{}, 1), flushEnded: flushEnded,
 	}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err
@@ -342,49 +381,108 @@ func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
 // again, as a further delivery and out of stream order. Release detaches by itself, so a caller
 // that only returns what the pull holds needs this not at all.
 //
-// It is idempotent: the drain runs once and every call answers its result.
-func (p *SessionPull) Detach() error {
-	p.detachOnce.Do(func() {
-		// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds
-		// unread, which is what Release returns. A drain hands those messages to receive, which
-		// queues them.
-		if err := p.sub.Drain(); err != nil {
-			// Drain fails only on a closed connection (nats.go v1.55.0: ErrConnectionClosed;
-			// its other error, a subscription with no connection, cannot arise here). The close
-			// has already ended the subscription and thrown away what nats.go held unread, so
-			// those messages reach neither Release nor the server and are delivered again only
-			// once their ack wait has passed. The poll below would end at once on the invalid
-			// subscription and report nothing, so the failure is returned here instead. Stop is
-			// kept as a guard for any other drain failure; on a closed connection it does
-			// nothing.
-			p.Stop()
-			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
-			return
-		}
-		for deadline := time.Now().Add(sessionPullDrainWait); p.sub.IsValid() && time.Now().Before(deadline); {
-			time.Sleep(sessionPullDrainPoll)
-		}
-		if p.sub.IsValid() {
-			// The caller is about to nak messages of this consumer in the belief that no
-			// interest of this pull's is left to take them, so a drain that never finished is
-			// reported.
-			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q did not drain within %s", p.name, sessionPullDrainWait)
-		}
-	})
+// It is idempotent: the drain runs once, under the first call's ctx, and every call answers its
+// result. It returns once nats.go has ended the drain, or once ctx ends: a caller that gives no
+// deadline waits as long as nats.go makes the drain take, which nats.go bounds (the flush the
+// drain opens with carries 10 s in nats.go v1.55.0, and a link that drops releases it at once). It
+// reports a drain it stopped waiting for, and one the server did not confirm, on a link that
+// stopped answering or across a reconnect: the server may then still deliver into the inbox, and
+// what it delivers there is not returned.
+func (p *SessionPull) Detach(ctx context.Context) error {
+	p.detachOnce.Do(func() { p.detachErr = p.detach(ctx) })
 	return p.detachErr
 }
 
+// detach is Detach's one drain.
+func (p *SessionPull) detach(ctx context.Context) error {
+	reconnects := p.conn.Stats().Reconnects
+	// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds unread,
+	// which is what Release returns. A drain hands those messages to receive, which queues them.
+	if err := p.sub.Drain(); err != nil {
+		// Drain fails only on a closed connection (nats.go v1.55.0: ErrConnectionClosed; its
+		// other error, a subscription with no connection, cannot arise here). The close has
+		// already ended the subscription and thrown away what nats.go held unread, so those
+		// messages reach neither Release nor the server and are delivered again only once their
+		// ack wait has passed. The poll below would end at once on the invalid subscription and
+		// report nothing, so the failure is returned here instead. Stop is kept as a guard for
+		// any other drain failure; on a closed connection it does nothing.
+		p.Stop()
+		return fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
+	}
+	// The server reads a connection in order, so its answer to a PING sent after the drain's
+	// UNSUB confirms it took the UNSUB. nats.go's drain flushes too but ends the drain whether or
+	// not the server answered, so Detach asks for itself.
+	confirmed := p.flushWithin(ctx)
+	// The wait sets no span of its own; nats.go ends every drain (checkDrained): after the flush
+	// it opens with, at the first pass in which receive has taken what nats.go held, or once the
+	// subscription or the connection is closed. A span of Detach's own on every drain (1 s,
+	// SessionPullDrainWait, until this wait replaced it) also ended the wait on a link that was
+	// live but slow, and Release then read the queue while nats.go still held messages: the
+	// drain queued them after that read, nobody returned them, and the next owner had them only
+	// once SessionConsumerAckWait had passed. Only a caller that must not wait gives one now.
+	tick := time.NewTicker(sessionPullDrainPoll)
+	defer tick.Stop()
+	for p.sub.IsValid() {
+		select {
+		case <-ctx.Done():
+			if confirmed != nil {
+				return fmt.Errorf("bus: the server had not confirmed the end of the inbox subscription of the pull of consumer %q when its caller stopped waiting (%w), so it may still deliver into it, and what nats.go still held there is not returned", p.name, context.Cause(ctx))
+			}
+			return fmt.Errorf("bus: the drain of the inbox subscription of the pull of consumer %q had not ended when its caller stopped waiting (%w), so what nats.go still held there is not returned", p.name, context.Cause(ctx))
+		case <-tick.C:
+		}
+	}
+	switch {
+	case confirmed != nil:
+		return fmt.Errorf("bus: the server did not confirm the end of the inbox subscription of the pull of consumer %q, so it may still deliver into it what is then not returned: %w", p.name, confirmed)
+	case p.conn.Stats().Reconnects != reconnects:
+		// nats.go writes no UNSUB while it reconnects, and sends the draining subscription again
+		// once it has, so the server keeps the inbox's interest.
+		return fmt.Errorf("bus: the connection of the pull of consumer %q reconnected while its inbox subscription drained, so the server may still deliver into it what is then not returned", p.name)
+	}
+	return nil
+}
+
+// flushWithin is the server's answer to a PING sent now: nil once it answered, else why it did
+// not before ctx ended, or before nats.go's own bound on a flush (sessionPullFlushBound) for a ctx
+// with no deadline of its own. It tells the pull's flush observer, if any, how the flush ended.
+func (p *SessionPull) flushWithin(ctx context.Context) error {
+	bounded := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		bounded, cancel = context.WithTimeout(ctx, sessionPullFlushBound)
+		defer cancel()
+	}
+	err := p.conn.FlushWithContext(bounded)
+	if p.flushEnded != nil {
+		p.flushEnded(flushEndOf(ctx, err))
+	}
+	return err
+}
+
+// flushEndOf is how a flush that ended with err ended, caller being Detach's caller's context:
+// FlushWithContext answers the context's own error once that context ends.
+func flushEndOf(caller context.Context, err error) SessionPullFlushEnd {
+	switch {
+	case err == nil:
+		return SessionPullFlushAnswered
+	case caller.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
+		return SessionPullFlushEndedByCaller
+	}
+	return SessionPullFlushEndedOtherwise
+}
+
 // Release ends the pull and returns to the server, at once, every message it holds that Next did
-// not read, and reports how many it returned. It detaches the pull (Detach) before it naks any of
-// them, so the server has no interest of this pull's left to deliver them back into. The
-// consumer's next pull is delivered those messages at once rather than after
+// not read, and reports how many it returned. It detaches the pull (Detach, under ctx) before it
+// naks any of them, so the server has no interest of this pull's left to deliver them back into.
+// The consumer's next pull is delivered those messages at once rather than after
 // SessionConsumerAckWait, in the server's own order; a restart of the consumer at its ack floor
 // (RestartAtFloor) delivers them in stream order.
 //
 // Its error carries both halves of what can go wrong: the detach, and the naks, as how many of
 // them failed and the first of their errors. Every message is tried whatever the others did.
-func (p *SessionPull) Release() (int, error) {
-	detachErr := p.Detach()
+func (p *SessionPull) Release(ctx context.Context) (int, error) {
+	detachErr := p.Detach(ctx)
 	p.mu.Lock()
 	queue := p.queue
 	p.queue = nil

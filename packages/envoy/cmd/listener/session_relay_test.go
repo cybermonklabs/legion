@@ -68,7 +68,13 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 // bus.RelayReplyPrefix.
 func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge *edgeGrant) *relayRig {
 	t.Helper()
-	url := testnats.URL(t)
+	return newRelayRigUnownedOn(t, testnats.URL(t), first, max, edge)
+}
+
+// newRelayRigUnownedOn is newRelayRigUnownedAs on the server at url, for a row that needs a server
+// of its own, one it can freeze (testnats.Server.Freeze) without touching another test's link.
+func newRelayRigUnownedOn(t *testing.T, url string, first, max time.Duration, edge *edgeGrant) *relayRig {
+	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)

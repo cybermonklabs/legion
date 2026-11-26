@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -73,11 +75,15 @@ func awaitPushBound(t *testing.T, client *bus.Client, consumer string, want bool
 	})
 }
 
-func publishReleaseProbe(t *testing.T, client *bus.Client, subject string) {
+// publishReleaseProbe publishes a message to subject through JetStream and returns its stream
+// sequence.
+func publishReleaseProbe(t *testing.T, client *bus.Client, subject string) uint64 {
 	t.Helper()
-	if _, err := client.JS().Publish(subject, []byte(`{}`)); err != nil {
+	ack, err := client.JS().Publish(subject, []byte(`{}`))
+	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
+	return ack.Sequence
 }
 
 // awaitPendingForTheNextBind waits for the durable consumer to report the one message published
@@ -423,6 +429,21 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 // A caller that gives its subscription up while the client's connection is live still drains it:
 // the handle comes back for the caller to wait on, the handler is handed what the client had
 // buffered, and the client holds no subscription once the drain ends.
+//
+// What a drain hands over, and an unsubscribe drops, is a message the client holds and the handler
+// has not yet been handed. So the handler is held inside the first message until the drain has
+// begun, and the second waits behind it in the client's buffer, where Subscription.Pending counts
+// it: nats.go counts a message pending until its handler returns. The drain must hand the handler
+// that second message. A row whose handler took its one message before the drain began would pass
+// an unsubscribe in the drain's place.
+//
+// Each wait reads the client's own count, not the durable's: nats-server counts a delivery (v2.15.1
+// consumer.go:5809, o.dseq++) before it queues the message for the stream's send loop (:5838,
+// o.outq.send), so a drain begun on the durable's count can reach the server first, and the message
+// then finds no subscriber and stays with the server. The row asserts which messages the handler
+// was handed, not how often: a second delivery of the held first message, which the durable makes
+// once its ack wait (the server's 30 s; releaseDurable sets none) has passed, is the broker's
+// at-least-once delivery and no part of the drain. The hold lasts one publish and one delivery.
 func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
 	t.Parallel()
 	_, uri := startNATS(t)
@@ -433,19 +454,37 @@ func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
 	defer client.Close()
 	consumer := releaseDurable(t, client, "released")
 
-	var handled atomic.Int32
-	sub := bindCounting(t, client, consumer, &handled)
+	var (
+		handedMu sync.Mutex
+		handed   = map[uint64]bool{}
+	)
+	handling := make(chan struct{}, 1)
+	held := make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(held) })
+	defer letGo()
+	var hold sync.Once
+	sub, err := client.Subscribe("", func(msg *natsgo.Msg) {
+		if meta, err := msg.Metadata(); err == nil {
+			handedMu.Lock()
+			handed[meta.Sequence.Stream] = true
+			handedMu.Unlock()
+		}
+		hold.Do(func() {
+			handling <- struct{}{}
+			<-held
+		})
+		_ = msg.Ack()
+	}, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
+	if err != nil {
+		t.Fatalf("bind the durable: %v", err)
+	}
 	awaitPushBound(t, client, consumer, true, "the durable to take the subscription's binding")
-	publishReleaseProbe(t, client, "notifications.github.test.released")
-	// The drain hands the handler what the client has buffered and nothing new, so the message must
-	// be the client's before the drain's UNSUB reaches the server. The consumer's own count of what it
-	// delivered does not say so: nats-server counts a delivery (v2.15.1 consumer.go:5809, o.dseq++)
-	// before it queues the message for the stream's send loop (:5838, o.outq.send), and a drain whose
-	// UNSUB the server takes in between leaves the message off this subscription. So the row waits
-	// for the client's own fact: the message queued on the subscription, or already handed over.
-	testwait.Until(t, "the subscription to hold the message or to have handed it over", func() (string, bool) {
-		queued, _, err := sub.Pending()
-		return fmt.Sprintf("%d queued (%v), %d handled", queued, err, handled.Load()), err == nil && queued+int(handled.Load()) >= 1
+	first := publishReleaseProbe(t, client, "notifications.github.test.released")
+	testwait.Receive(t, "the handler to be handed the first message, which it holds", handling)
+	second := publishReleaseProbe(t, client, "notifications.github.test.released")
+	testwait.Until(t, "the client to hold the second message behind the held handler", func() (string, bool) {
+		pending, _, err := sub.Pending()
+		return fmt.Sprintf("%d pending (%v)", pending, err), err == nil && pending >= 2
 	})
 
 	drained, err := client.DrainSubscription(sub)
@@ -455,9 +494,13 @@ func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
 	if drained != sub {
 		t.Fatalf("DrainSubscription returned %p to wait on, want the handle Subscribe returned (%p)", drained, sub)
 	}
+	letGo()
 	waitFor(t, "the drain to end", func() bool { return !drained.IsValid() })
-	if got := handled.Load(); got != 1 {
-		t.Fatalf("the drained subscription's handler was handed %d message(s), want the one published before the drain", got)
+	handedMu.Lock()
+	got := slices.Sorted(maps.Keys(handed))
+	handedMu.Unlock()
+	if !slices.Contains(got, first) || !slices.Contains(got, second) {
+		t.Fatalf("the drained subscription's handler was handed stream sequences %v, want %d, which it held as the drain began, and %d, which the client held buffered behind it", got, first, second)
 	}
 	if client.SubOK() {
 		t.Fatal("SubOK reports a subscription bound after it was drained")
