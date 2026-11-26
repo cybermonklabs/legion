@@ -1108,7 +1108,8 @@ function InboxBody({
   // stays with the ask for every control drawn for it. Under the Blocked on you narrowing
   // (`?section=needs-you`), which lists no snoozed ask, the optimistic moment drops the row at
   // once, and only the reader's hand keeps it.
-  const snoozing = useInboxWrites(AskSnoozeContext).out;
+  const snoozeWrites = useInboxWrites(AskSnoozeContext);
+  const snoozing = snoozeWrites.out;
   /** The rows the reader can see, in the order they see them, as this list last rendered them:
    *  what the motion hold is read against, what the selection steps through, and the rows a
    *  write out may keep. Written on every render below, and read before that as the record of
@@ -1274,6 +1275,7 @@ function InboxBody({
     barShown: bulkBarShown,
     clearSelection,
     dismissedHere,
+    forgetDismissed,
     dismissPick,
     dismissRows,
     dismissWrite,
@@ -1285,6 +1287,7 @@ function InboxBody({
     selectedThreads,
     snoozePick,
     snoozeRefusal,
+    snoozeRefused,
     snoozing: bulkSnoozing,
   } = useInboxSelection({
     asOf: narrowingMark,
@@ -1858,9 +1861,10 @@ function InboxBody({
     },
   ]);
 
-  /** The rows a Snooze of this view took, by id, from the pick until the list no longer holds the
-   *  row in the band the reader saw it in. Written where the held rows are read, below. */
-  const snoozedHere = useRef<Set<string>>(new Set());
+  /** The rows a Snooze of this view is taking, by id, each with the read the list drew while its
+   *  write was out: from the pick until the first read the list adopts after that write, which
+   *  places the row, or until Dispatch refuses it. Written where the held rows are read, below. */
+  const snoozedHere = useRef<Map<string, unknown>>(new Map());
   // The bar's hand-off (`useLastMarkedPlace`): the mark of the row the reader marked last while
   // the list draws it and no press is taking it away, out of sight or not. After a press that took
   // that row away: a row the reader can see at its place, else before it. With no row marked: the
@@ -1893,6 +1897,13 @@ function InboxBody({
     list: () => listScroller.current,
     order: () => rows().map((row) => row.dataset.inboxRow ?? ""),
     shown: bulkBarShown,
+  });
+  // After every commit: a row a Dismiss of the reader's took that the page no longer draws has
+  // been let go of, so its name ends (`forgetDismissed`), and not before - a read that has not
+  // dropped the row yet still draws it, and the hand hold reads that name.
+  useLayoutEffect(() => {
+    const drawn = new Set(rows().map((row) => row.dataset.inboxRow ?? ""));
+    forgetDismissed((id) => drawn.has(id));
   });
 
   // The bar's Snooze is held from its pick through the commit after its write's answer
@@ -1967,14 +1978,14 @@ function InboxBody({
   // leaving, as it is told of the rows an ask write keeps.
   const replying = new Set<string>();
   let handHeld: PlacedRow | undefined;
-  // The rows a Snooze of this view took, by id, from the pick until the list no longer holds the
-  // row in the band the reader saw it in. The bar's hand-off is told of them as it is told of the
-  // rows a Dismiss took (`leaving` below), because the band keeps such a row only until the write
-  // lands: its move into a folded Later then is no press's doing, so a focus put on it falls to
-  // the page's body (builds Job `infra-3135-infra-3135-r29v-land-6wg77` measured exactly that).
-  // The ids outlive `snoozing` and `bulkSnoozing`, which empty when the write settles, whereas the
-  // row stands until the read that drops it lands, however long that takes.
-  const snoozedStill = new Set<string>();
+  // The rows a Snooze of this view is taking, by id (`snoozedHere`). The bar's hand-off is told of
+  // them as it is told of the rows a Dismiss took (`leaving` below), because the band keeps such a
+  // row only until the write lands: its move into a folded Later then is no press's doing, so a
+  // focus put on it falls to the page's body (builds Job `infra-3135-infra-3135-r29v-land-6wg77`
+  // measured exactly that). The ids outlive `snoozing` and `bulkSnoozing`, which empty when the
+  // write settles, whereas the row stands until the read that places it lands, however long that
+  // takes: in WebKit the bar's hand-off read the row marked last still listed in its band, and
+  // named by nothing, in four of eight repeats (builds Job `infra-3135-infra-3135-r30f-s70p`).
   for (const placed of presented.current) {
     const id = rowId(placed.row);
     const inHand = seen !== undefined && rowId(seen.row) === id;
@@ -1984,7 +1995,7 @@ function InboxBody({
         ? askWriteOut(id)
         : placed.row.thread.kind === "ask" && repliesOut.has(placed.row.thread.thread_id);
     if (written && placed.row.kind !== "ask") replying.add(id);
-    if (out) snoozedHere.current.add(id);
+    if (out) snoozedHere.current.set(id, adoptedInbox);
     if (!inHand && !out && !written) continue;
     const listed = byId.get(id);
     const kept = heldRow(
@@ -2001,17 +2012,25 @@ function InboxBody({
       { kept: inHand || written, snoozeOut: out }
     );
     if (kept === undefined) continue;
-    if (snoozedHere.current.has(id)) snoozedStill.add(id);
     held.push(kept);
     if (sameLayout && ((inHand && listed !== undefined) || out || written)) {
       keptBands.add(kept.group);
     }
     if (inHand) handHeld = kept;
   }
-  // A snoozed row the list no longer holds where the reader saw it has left its band, so the
-  // hand-off may land on it again: the refusal that rolls one back puts it there too.
-  for (const id of snoozedHere.current) {
-    if (!snoozedStill.has(id)) snoozedHere.current.delete(id);
+  // A snooze's name ends at the first read the list adopts after its write: that read places the
+  // row, out of its band where Dispatch took the snooze. No read begun before Dispatch took it can
+  // be that read: each snooze write cancels the Inbox's reads in flight at the pick and holds back
+  // every read asked while it is out until Dispatch has taken it (`useAskSnooze.tsx`: the row's
+  // write through `holds` and `cancelQueries` in `onMutate`, the bar's through `holdBackReads` and
+  // `cancelQueries` in `submit`). So a row that read leaves in its band is staying, as a list with
+  // no Later band leaves it. The name ends at once where Dispatch refused the snooze - the row's
+  // own write or the bar's pick - since the rollback has put the row's moment back and the row is
+  // staying, so the hand-off may land on it again.
+  for (const [id, readOut] of snoozedHere.current) {
+    if (sameLayout && (snoozing.has(id) || bulkSnoozing.has(id))) continue;
+    const refused = snoozeWrites.of(id).error !== undefined || snoozeRefused(id);
+    if (refused || adoptedInbox !== readOut) snoozedHere.current.delete(id);
   }
   heldUnder.current =
     handHeld === undefined ? undefined : { id: rowId(handHeld.row), words: typed };

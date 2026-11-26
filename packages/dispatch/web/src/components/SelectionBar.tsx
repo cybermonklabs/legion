@@ -26,6 +26,7 @@ import {
   isRowMark,
   landNearest,
   outOfSight,
+  pressIsArmedOwn,
   pressMadeIn,
   pressOnRowMark,
   repeatTookFocusFrom,
@@ -219,8 +220,15 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       cancel();
       owed.current = { drawing, last };
       const acted = new AbortController();
+      // A press the armed press counts as its own - the second press on a control its write
+      // holds - is still that press, not the reader's next act (`pressIsArmedOwn`). A wheel is
+      // never a press.
+      const onAct = (event: Event) => {
+        if (event.type !== "wheel" && pressIsArmedOwn(event.target)) return;
+        cancel();
+      };
       for (const kind of READER_ACTS) {
-        document.addEventListener(kind, cancel, {
+        document.addEventListener(kind, onAct, {
           capture: true,
           passive: true,
           signal: acted.signal,
@@ -279,8 +287,9 @@ export interface MarkedPlace {
   readonly own: (id: string) => void;
 }
 
-/** What the reader does that ends a landing's owed reading (`useLastMarkedPlace`): a press, a key
- *  or a wheel of theirs, read on the document's capture so nothing can stop it on the way. */
+/** What the reader does that ends a landing that is owed (`useLastMarkedPlace`): a press, a key or
+ *  a wheel of theirs, read on the document's capture so nothing can stop it on the way. A press
+ *  the armed press counts as its own is not one (`pressIsArmedOwn`). */
 const READER_ACTS = ["pointerdown", "keydown", "wheel"] as const;
 
 /** Parks the focus while a landing is owed, with no scroll, and answers the mark it left it on.
