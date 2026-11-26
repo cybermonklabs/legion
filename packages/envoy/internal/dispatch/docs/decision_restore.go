@@ -347,8 +347,8 @@ type issueRestore struct {
 	// `## Decisions` part (blockMarkdown), "" for none, headingAdded whether that write added the
 	// part's heading to a spec that held no such part, and shapedAdded each `shaped` pointer the
 	// pass's writes gave an answered ask block a document held already, by the document's id and
-	// then the block's: with the blocks the spec's write added, what each version's mark names
-	// (stepCasesFor).
+	// then the block's: with the blocks the spec's write added, what each version names as the
+	// step's own write (stepCasesFor).
 	pointerLine  string
 	headingAdded bool
 	shapedAdded  map[string]map[string][]string
@@ -395,8 +395,8 @@ func (r *issueRestore) presentIn(document string) *presentEdits {
 func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue string, work []graphcensus.RestoreWork, convert bool) (DecisionIssue, error) {
 	result := DecisionIssue{Issue: issue}
 	// The step's own write, which alone the restore's and the conversion's carry cases reach
-	// (restoreCase, conversionCase): every version this pass writes carries the step's mark, with
-	// what this pass added to that document (writeVersion, stepCasesFor).
+	// (restoreCase, conversionCase): every version this pass writes is written as the step's own,
+	// with what this pass added to that document (writeVersion, stepCasesFor).
 	ctx = withOwnerVerified(ctx)
 	r := &issueRestore{
 		service: s, tx: tx, issue: issue, convert: convert, result: &result, present: map[string]*presentEdits{},
@@ -1967,12 +1967,12 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 // under a `## Decisions` heading the write adds where the spec holds no such part; and, in each
 // answered ask block it holds already, the shaped pointers and the readings the conversion gives
 // it. It records the pointer line it took out (pointerLine) and whether it added the heading
-// (headingAdded), which its version's mark names. On a fleet of one build - which the phase runs
-// on alone - the same write cuts every ask block of the spec to the attributes a version keeps
-// (writePresent), as the first accepted write of the document does (R10), a block that has no ask
-// row and is no copy of an ask to none of them, and gives each restored answered ask's block
-// those of its row (keptAskState). It answers the event of the version it wrote, NoEvent where the
-// spec did not change.
+// (headingAdded), which its version names as the step's own. On a fleet of one build - which the
+// phase runs on alone - the same write cuts every ask block of the spec to the attributes a
+// version keeps (writePresent), as the first accepted write of the document does (R10), a block
+// that has no ask row and is no copy of an ask to none of them, and gives each restored answered
+// ask's block those of its row (keptAskState). It answers the event of the version it wrote,
+// NoEvent where the spec did not change.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
@@ -2124,10 +2124,10 @@ func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string
 // provenance settlement keeps in step with each ask, and every attribute a version can store off
 // each other ask block, which has no ask row and is no copy of an ask and keeps none of the eight
 // (R10, withoutStoredAskAttributes). It records each pointer it gave a block that
-// the block did not hold (shapedAdded), which the version's mark names, and each reading it wrote
-// (readingsWritten), and reports whether it changed the tree. It visits every ask block of the
-// tree: pmdoc.Walk stops at the first node its visit answers false for, so the visit answers true
-// at an ask block too, and the blocks after the first are written as well.
+// the block did not hold (shapedAdded), which the version names as the step's own, and each
+// reading it wrote (readingsWritten), and reports whether it changed the tree. It visits every
+// ask block of the tree: pmdoc.Walk stops at the first node its visit answers false for, so the
+// visit answers true at an ask block too, and the blocks after the first are written as well.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *presentEdits, twoBuilds bool, withAsk map[string]bool) bool {
@@ -2638,15 +2638,16 @@ func movedAskBlock(node *pmdoc.Node, restore *restoredBlock) (*pmdoc.Node, error
 	return block, nil
 }
 
-// writeVersion writes the version of document the pass's live write left (SnapshotVersion), under
-// the step's mark naming what the pass added to document (stepCasesFor), and its artifact.version
-// event, under which the version's block index states its facts (graphstore.Caused) and its
-// references are stamped, as every version a route writes is. It records the version's number in
-// *number and answers the event, NoEvent where no version was written.
+// writeVersion writes the version of document the pass's live write left (snapshotVersion, as
+// SnapshotVersion writes it), with what the pass added to document (stepCasesFor) as the
+// decisions step's own write, and its artifact.version event, under which the version's block
+// index states its facts (graphstore.Caused) and its references are stamped, as every version a
+// route writes is. It records the version's number in *number and answers the event, NoEvent
+// where no version was written.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument, number *int) (int64, error) {
-	written, err := r.service.SnapshotVersion(withDecisionStepWrite(ctx, r.stepCasesFor(document.id)), document.id, DecisionStepActor)
+	written, err := r.service.snapshotVersion(ctx, document.id, DecisionStepActor, false, r.stepCasesFor(document.id))
 	if err != nil {
 		return graphstore.NoEvent, err
 	}
@@ -2671,7 +2672,8 @@ func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument,
 	return event.ID, nil
 }
 
-// stepCasesFor is the mark of the version of document this pass writes (decisionStepCases): the
+// stepCasesFor is what the version of document this pass writes names as the decisions step's
+// own write (decisionStepCases, which writeVersion hands snapshotVersion): the
 // restore's phase, the conversion's where it converts, and what the pass added to document - for
 // the spec, the ask blocks the restore wrote, the decisions the conversion wrote, the
 // `## Decisions` heading where it added one and the pointer line it took out; for any document,

@@ -746,10 +746,11 @@ func closeWithdrawn(ask model.Ask) bool {
 // step with it and the rest of the seven a version can store taken out (keptAskState). A block
 // settlement cannot read keeps whatever a browser wrote onto it - a forged state or answerer
 // among them - so once the fleet is one build it is given its row's kept state where a row
-// indexes it, and none of the seven where none does. `invalid` is written into the live tree
-// either way (G1): onto a block that fails the strict read, and off one that reads again, and
-// where the block has an ask row its node holds the reason too, until the block reads again
-// (stateInvalidReasons).
+// indexes it, its source's, provenance and all, where it is a copy flagged for a reading its
+// source holds no answer for, and none of the seven where it is neither. `invalid` is written
+// into the live tree either way (G1): onto a block that fails the strict read, and off one that
+// reads again, and where the block has an ask row its node holds the reason too, until the block
+// reads again (stateInvalidReasons).
 //
 // issueClosed is whether the issue row, as the settlement's transaction locked it, reads closed
 // (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew every ask of
@@ -897,24 +898,33 @@ func (s *Service) reconcileAskBlocks(
 			))
 		}
 		// Once the fleet is one build, an invalid block keeps none of the attributes a version can
-		// store where it has no ask row (R10), which stays, and an indexed one what a version keeps
-		// of its ask, which goes with that form; the roll window's branch goes with it.
+		// store where it has no ask row and is no copy (R10), which stays, an indexed one what a
+		// version keeps of its ask, and a copy - one flagged for a reading its source holds no
+		// answer for - what a version keeps of its source, its provenance among it whatever the
+		// source's state, both of which go with that form; the roll window's branch goes with it.
 		// kept for one release: roll-window-attributes
 		if twoBuilds {
 			continue
 		}
 		unread := withoutStoredAskAttributes
 		// kept for one release: stored-ask-state
-		if indexed {
+		switch source, copied := sources[invalid.id]; {
+		case indexed:
 			unread = keptAskState(shown(ask), "")
+		case copied:
+			unread = keptAskState(shown(source.ask), source.document)
 		}
 		reconciled.repair(invalid.node, invalid.id, unread)
 	}
 	// Every ask block of the tree, readable or not, names the ask it is a copy of, or none, for
-	// claimCopies once the version's blocks are indexed.
+	// claimCopies once the version's blocks are indexed: a copy flagged for a reading is still a
+	// copy of its source (R3).
 	reconciled.copiedFrom = make(map[string]string, len(blocks)+len(invalidBlocks))
 	for _, invalid := range invalidBlocks {
 		reconciled.copiedFrom[invalid.id] = ""
+		if source, copied := sources[invalid.id]; copied {
+			reconciled.copiedFrom[invalid.id] = source.ask.ID
+		}
 	}
 	for _, block := range blocks {
 		reconciled.copiedFrom[block.id] = ""

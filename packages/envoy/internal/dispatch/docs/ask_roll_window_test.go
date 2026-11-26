@@ -233,7 +233,7 @@ func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoT
 			// The release before's settlement of its answer, onto the live block; then the change of
 			// prose, this build's first write of the document on a fleet of one build.
 			editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
-				if !rollWindowAskAttributes(true, answered, "")(firstAsk(tree)) {
+				if !rollWindowAskAttributes(answered, "")(firstAsk(tree)) {
 					t.Fatal("the release before's settlement wrote nothing onto the block")
 				}
 				return tree
