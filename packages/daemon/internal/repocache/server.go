@@ -329,25 +329,36 @@ func (opts Options) check() error {
 // names under the prefix the cache does not write that it has logged, and lone the names of the
 // clone's packs without an index, and indexes without a pack, that it has logged leaving out of the
 // set (leaveOut). clock is the time the switches and retirement read, the real one but in a test.
+//
+// packsGate orders each /packs answer against every change of what /packs may answer: an answer
+// holds its read side from its last check of health and listed through its write (servePacks), and
+// the cache going unready and the listed set dropped or replaced take its write side (lockPacks).
+// It is no lock /tar or a refresh holds otherwise, so /packs answers 503 during a repack rather
+// than wait for it. packsChecked and packsGateBlocked are a test's seams, nil outside tests: the
+// first runs in an answer after its last check, holding the read side; the second runs where a
+// change finds the gate held.
 type cache struct {
-	opts       Options
-	dir        string
-	lock       sync.RWMutex
-	owned      bool
-	narrowed   bool
-	maint      sync.Mutex
-	health     atomic.Pointer[Health]
-	room       room
-	lastRepack time.Time
-	streams    chan struct{}
-	inFlight   atomic.Int64
-	listed     atomic.Pointer[listedSet]
-	store      *bucket
-	digests    map[string]packDigest
-	absent     map[string]absence
-	foreign    map[string]bool
-	lone       map[string]bool
-	clock      clock.Clock
+	opts             Options
+	dir              string
+	lock             sync.RWMutex
+	owned            bool
+	narrowed         bool
+	maint            sync.Mutex
+	health           atomic.Pointer[Health]
+	room             room
+	lastRepack       time.Time
+	streams          chan struct{}
+	inFlight         atomic.Int64
+	listed           atomic.Pointer[listedSet]
+	store            *bucket
+	digests          map[string]packDigest
+	absent           map[string]absence
+	foreign          map[string]bool
+	lone             map[string]bool
+	clock            clock.Clock
+	packsGate        sync.RWMutex
+	packsChecked     func()
+	packsGateBlocked func()
 }
 
 // room is the time of the fetch's and of the repack's last failure for lack of space since that
@@ -571,7 +582,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	served := c.health.Load()
 	defer func() {
 		if !c.narrowed {
-			c.health.Store(&Health{Repo: c.opts.Repo.String()})
+			c.markUnready()
 		}
 	}()
 	cloned, err := workspace.OwnCacheRepository(c.dir, c.opts.Repo, time.Now(), c.opts.Log)
@@ -591,7 +602,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	if first {
 		// A fresh fill replaces whatever clone a set listed before it was made from (one this
 		// process removed): /packs answers none until the sync after the fill lists its packs.
-		c.listed.Store(nil)
+		c.setListed(nil)
 		bound = workspace.CacheFetchTimeout
 		if interrupted {
 			if err := c.clear(defaultBranchFetchFile); err != nil {
