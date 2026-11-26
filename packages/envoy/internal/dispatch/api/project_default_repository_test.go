@@ -166,8 +166,8 @@ func TestADefaultRepositoryThatIsNoRepositoryIsRefused(t *testing.T) {
 	}
 }
 
-// The default belongs to the deployment: a credential that may write one project is refused it
-// by name, though the path names that very project. A person writes it, and so does the
+// The default belongs to the deployment: a credential that names one project is refused it by
+// name, though the path names that very project. A person writes it, and so does the
 // credential the deployment configured, which acts for no person and names no project.
 func TestTheDefaultRepositoryIsADeploymentWrite(t *testing.T) {
 	t.Parallel()

@@ -7,7 +7,7 @@
 // The same token endpoint runs the RFC 8693 token exchange: a pod, a continuous-integration
 // workflow run or a dev box session presents the identity its platform already gave it and is
 // answered a short-lived Dispatch access token, bound to its own key, saying which session is
-// writing, which person it acts for and which project it may write. Those tokens stay opaque, so
+// writing, which person it acts for and which project it names. Those tokens stay opaque, so
 // Dispatch reads one back through Introspect, the RFC 7662 answer.
 package oauth
 
@@ -64,6 +64,9 @@ type Config struct {
 	// Exchange is what the RFC 8693 token exchange decides and verifies with: the listed
 	// identities, and the issuers whose tokens it accepts as a subject token.
 	Exchange ExchangeConfig
+	// Approve is the approve capability a person's sign-in is traded for (ApproveSettings), nil for
+	// a broker that serves none: such a broker refuses every trade that asks for a placeholder.
+	Approve *ApproveSettings
 }
 
 // Provider runs the machine login's device authorization and token endpoints, and the token
@@ -74,6 +77,10 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
+	// approve is Config.Approve, and accessLifetime Config.AccessLifetime, which an approve
+	// grant's lifetime is bounded by (approveGrantLifetime).
+	approve        *ApproveSettings
+	accessLifetime time.Duration
 	// verificationURL is Config.VerificationURL, and "" when it named no page, so the RFC 8628
 	// factories are not composed: what the broker mounts its device authorization route on, what
 	// its metadata document says, and the page a device authorization on the broker's own address
@@ -294,6 +301,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	}
 	p := &Provider{
 		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
+		approve: c.Approve, accessLifetime: c.AccessLifetime,
 		verificationURL: c.VerificationURL, grantTypes: grantTypes,
 		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
 		// Read from the configuration the provider was composed with rather than written down

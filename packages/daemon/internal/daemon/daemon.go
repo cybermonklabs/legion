@@ -275,6 +275,23 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// holdOutbox answers whether the workflow's outbox leaves row unrun for now (outbox.hold):
+	// the row is put back, due again a moment later, and runs on the first claim the hook lets
+	// through. A test holds the rows of one kind — a gate seed, a pending-basis seed — until it
+	// has done what it needs done before them, and releases them by answering false. nil, in
+	// production, holds nothing.
+	holdOutbox func(record.OutboxRow) bool
+	// gateRegistrationRead is api.Options.GateRegistrationRead: told of each register_gate call
+	// once its Dispatch reads are made and before its fact is applied, on the route's goroutine,
+	// so a test can act on Dispatch between the two and release the call by returning. nil, in
+	// production, tells no one.
+	gateRegistrationRead func(ctx context.Context, issue string)
+	// dropConsumedEvent answers whether the workflow's handlers skip a fact the intake consumers
+	// delivered (workflowRuntime.consumerHandlers): the event is acknowledged and recorded as
+	// applied (processed_events), as every delivered event is, and nothing of the workflow acts
+	// on it, so a test reads what the daemon does with an event it missed. nil, in production,
+	// drops nothing.
+	dropConsumedEvent func(intake.Fact) bool
 	// supervising hands a whole-daemon test the supervisor run built and a function that applies
 	// one fact with the workflow's own handlers (intake.ApplyFact over the workflow's pool, as the
 	// daemon's consumers, its API and its own passes apply each fact), once run has built both and
@@ -626,11 +643,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		st.Close()
 		return err
 	}
-	// The Sandbox runtime's launches read the update round over a pod they would keep through the
-	// supervision, which exists only now; the runtime was built inside openSupervision before it
-	// (launchRounds). No machine exists yet, so no launch has asked.
+	// The Sandbox runtime's launches read the update round over a pod they would keep, record what
+	// a launch's own replacement of an issue pod is about to take, and tell what it took, through
+	// the supervision, which exists only now; the runtime was built inside openSupervision before
+	// it (launchRounds). No machine exists yet, so no launch has asked.
 	if plan.launchRounds != nil {
-		plan.launchRounds.bind(s.roundPodEndsAtLaunch)
+		plan.launchRounds.bind(s.roundPodEndsAtLaunch, s.recordLaunchTakes, s.tellLaunchTook)
 	}
 	if plan.probe != nil {
 		report, err := plan.probe(ctx, s.runtime)
@@ -968,7 +986,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
 	}
 	transport := cipherclient.NewTokenTransport(client, http.DefaultTransport)
-	daemonDispatch := dispatch.New(cfg.DispatchURL, transport)
+	daemonDispatch := daemonDispatchClient(cfg, transport)
 	var caller dispatch.Caller
 	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
 		var err error
@@ -988,6 +1006,20 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 	}
 	log.Info(dispatchCredentialLine, attrs...)
 	return transport, nil
+}
+
+// daemonDispatchClient is the daemon's Dispatch client of cfg, whose every request goes through
+// transport (dispatchCredential). Under dispatch_token_broker every write names the session the
+// daemon's broker token proves, legion-daemon:<its own project> (dispatch.WritesAs). Dispatch
+// refuses a write whose actor names another session (403 ACTOR_SESSION_MISMATCH), and the daemon
+// writes the issues of other projects too, when it runs a claim on one (legion claims spawn). With
+// the setting off the bearer proves no session, and each write names the session of the daemon of
+// the issue's project (dispatch.DaemonSession), as it did before the setting.
+func daemonDispatchClient(cfg config.Config, transport http.RoundTripper) *dispatch.HTTPClient {
+	if !cfg.DispatchTokenBroker {
+		return dispatch.New(cfg.DispatchURL, transport)
+	}
+	return dispatch.New(cfg.DispatchURL, transport, dispatch.WritesAs(dispatch.DaemonSession(cfg.Project)))
 }
 
 // renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
@@ -1056,12 +1088,14 @@ func tradeTransient(err error) bool {
 	return !(errors.As(err, &refused) && refused.Permanent())
 }
 
-// checkDaemonCaller refuses a broker token Dispatch takes for a caller whose every write it would
-// refuse: another session than the daemon's (403 ACTOR_SESSION_MISMATCH, every write of the
-// daemon's naming its own session as the actor), another project than the daemon's (403
-// PROJECT_SCOPE) or no person (SIGN_IN_REQUIRED). The outbox reads a 401 and a 403 as an outage
-// (dispatch.PermanentRefusal), so it would wait on each such write for ever; each is a fault of
-// the secrets broker's exchange entry for the daemon's own account, which the refusal names.
+// checkDaemonCaller refuses a broker token that is not the daemon's own, as GET /api/v1/whoami
+// reads it. Dispatch refuses every write of a token whose session is not the daemon's (403
+// ACTOR_SESSION_MISMATCH, every write of the daemon's naming its own session as the actor). The
+// outbox reads a 401 and a 403 as an outage (dispatch.PermanentRefusal), so it would wait on each
+// such write for ever. A token whose project is not the daemon's, and one that names no owner (an
+// exchange entry that names a project names the person it acts for), are not the daemon's own
+// either. Each of the three is a fault of the secrets broker's exchange entry for the daemon's own
+// account, which the refusal names.
 func checkDaemonCaller(caller dispatch.Caller, project string) error {
 	session := dispatch.DaemonSession(project)
 	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
@@ -1070,10 +1104,10 @@ func checkDaemonCaller(caller dispatch.Caller, project string) error {
 		return fmt.Errorf("GET /api/v1/whoami answers the session %s for the daemon's broker token, not %s, and Dispatch refuses every write the daemon makes as %s with it (403 ACTOR_SESSION_MISMATCH): %s so that it fixes the session %s",
 			whoamiValue(caller.Session), session, session, entry, session)
 	case caller.Project == nil || *caller.Project != project:
-		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s, and Dispatch refuses every write of the daemon's to %s with it (403 PROJECT_SCOPE): %s so that it names the project %s",
-			whoamiValue(caller.Project), project, project, entry, project)
+		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s: the token's project is not the daemon's, which is a fault of the exchange entry that gave it, and %s so that it names the project %s",
+			whoamiValue(caller.Project), project, entry, project)
 	case caller.Owner == nil:
-		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, and Dispatch refuses every write of a token that acts for no person (SIGN_IN_REQUIRED): %s so that it names the person the daemon acts for",
+		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, which names the daemon's project, and an exchange entry that names a project names the person it acts for: %s so that it names the person the daemon acts for",
 			entry)
 	}
 	return nil
@@ -1266,6 +1300,11 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// holdOutbox, gateRegistrationRead and dropConsumedEvent are the overrides of those names;
+	// nil holds, tells and drops nothing.
+	holdOutbox           func(record.OutboxRow) bool
+	gateRegistrationRead func(ctx context.Context, issue string)
+	dropConsumedEvent    func(intake.Fact) bool
 	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
@@ -1405,6 +1444,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
@@ -1792,20 +1832,6 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
-	// podUpdateWorkspaceMu guards podUpdateWorkspace, what the update-round sweep keeps between
-	// ticks of a round's read of its issue's workspace: the one read that a round made before its
-	// pod's replacement (readRoundWorkspace), by issue, naming the round it was made for and
-	// holding the answer or the read's error. A replacement the read stood in front of can be
-	// refused under the pod's launch turn or can fail, and the next sweep that reaches the same
-	// round's replacement reuses the answer rather than read again, so the round reads the
-	// workspace once and its line and message name that read. The entry goes where the sweep ends
-	// the round (endPodUpdates) and where the sweep finds the issue in another round or in none
-	// (forgetWorkspaceReads). Nothing of it is in the store, because it decides nothing: the
-	// replacement is made whatever the read found. A restart forgets it, and the round's next
-	// replacement reads the workspace again. A mutex of its own, because it has nothing to do with
-	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
-	podUpdateWorkspaceMu sync.Mutex
-	podUpdateWorkspace   map[string]workspaceRead
 	// podUpdateEndedMu guards podUpdateEnded, what the update-round sweep keeps between ticks of
 	// the rounds it has ended: by issue, the round whose end the sweep last posted to the round's
 	// members (endPodUpdates). The post is asynchronous (supervisor.post), and a member whose
@@ -1817,7 +1843,8 @@ type supervision struct {
 	// machine's queue is never lost (inbox), so the end reaches every member. Nothing of it is in
 	// the store: a restart forgets it with the posts not taken yet, and the next boot makes the end
 	// once more for a claim the store still holds in the round (dispatch://INFRA-3276 R5). A mutex
-	// of its own, for the reason podUpdateWorkspaceMu has one.
+	// of its own, because it has nothing to do with the pace podUpdateMu guards; the sweep is its
+	// one goroutine all the same.
 	podUpdateEndedMu sync.Mutex
 	podUpdateEnded   map[string]string
 	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
@@ -1830,11 +1857,12 @@ type supervision struct {
 	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
 	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
 	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
-	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
-	// replaced as a pod gone, whose message names the members by the same rule (lostClaims), where
-	// each machine built over its stored claim reads its set of pods as unknown wherever the stored
-	// claim shows a session (supervise's bootRegisteredPods). A mutex of its own, never held across
-	// a runtime call, because the hook runs on a launching machine's goroutine beside the sweep.
+	// Nothing of it is in the store: a restart forgets it, and the sweep then ends the round as the
+	// replacement from the record the launch wrote in the store (finishReplacements), whose end
+	// names the members by the same rule (lostClaims), where each machine built over its stored
+	// claim reads its set of pods as unknown wherever the stored claim shows a session (supervise's
+	// bootRegisteredPods). A mutex of its own, never held across a runtime call, because the hook
+	// runs on a launching machine's goroutine beside the sweep.
 	podUpdateLaunchMu       sync.Mutex
 	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
@@ -3135,7 +3163,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
-		Pause:              pauses,
+		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
+		GateRegistrationRead: p.gateRegistrationRead,
+		Pause:                pauses,
 	})
 
 	group, serving := errgroup.WithContext(ctx)

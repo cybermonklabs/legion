@@ -1,0 +1,19 @@
+# go-method-parameter-nul-kept: check does not cut a decoded query parameter name at its first
+# NUL, so "_method%00=DELETE", which PHP and Symfony read as "_method", gets through under an
+# allow list. Caught by the comparison fuzz test: the model cuts the name and still answers
+# "request carries a method override parameter". Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -534,9 +534,8 @@
+ 		if err != nil {
+ 			return true
+ 		}
+-		if i := strings.IndexByte(name, 0); i >= 0 {
+-			name = name[:i]
+-		}
++		// MUTANT: the decoded name is not cut at its first NUL, so "_method%00=DELETE", which PHP
++		// and Symfony read as "_method", gets through.
+ 		read := []byte(strings.TrimLeft(name, " "))
+ 		for i, c := range read {
+ 			if c == '.' || c == ' ' || c == '[' {

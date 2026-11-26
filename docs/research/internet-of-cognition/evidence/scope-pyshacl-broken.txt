@@ -1,0 +1,203 @@
+# Recorded by test-scope.md, requirement r7, claims ts-bites-content and ts-bites-custom.
+# The shapes graph is the one scope-pyshacl.txt builds, $TMPDIR/scope-shapes.ttl.
+
+=== break 1: take the one mandatory triple off the State that holds the answer to the issue's ask ===
+$ grep -v 'mas:content "Approve" ;' dispatch-issue.ttl > $TMPDIR/broken-content.ttl
+$ diff dispatch-issue.ttl $TMPDIR/broken-content.ttl
+316d315
+<     mas:content "Approve" ;
+exit status: 1
+$ uvx pyshacl -s $TMPDIR/scope-shapes.ttl -sf turtle -df turtle -f human --allow-warnings $TMPDIR/broken-content.ttl
+Validation Report
+Conforms: False
+Results (26):
+Constraint Violation in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Violation
+	Source Shape: mas:content
+	Focus Node: d:s-ask-answer
+	Result Path: mas:content
+	Message: Less than 1 values on d:s-ask-answer->mas:content
+Constraint Violation in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Violation
+	Source Shape: mas:content
+	Focus Node: d:s-ask-answer
+	Result Path: mas:content
+	Message: Less than 1 values on d:s-ask-answer->mas:content
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-1
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-1
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-2
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-2
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-controller
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-controller
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-daemon
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-daemon
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-human
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-human
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-planner
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-planner
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-1
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-1
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-2
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-2
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-controller
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-controller
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-daemon
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-daemon
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-human
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-human
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-planner
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-planner
+exit status: 1
+# (the twenty-four sh:Warning results for mas:hasLLMCall and mas:hasToolCall are cut from this listing; they are in scope-pyshacl.txt in full)
+
+=== break 2: point the Session's initial State at a State no other execution element claims ===
+# This is their hand-written sh:sparql shape mas:SessionInitialStateSharedShape in mas-shapes-custom.ttl.
+$ awk 'BEGIN{d=0} /mas:hasInitialState d:s-comment-f5c09aec ;/ && d==0 {sub(/d:s-comment-f5c09aec/,"d:s-comment-4fc169ce"); d=1} {print}' dispatch-issue.ttl > $TMPDIR/broken-session.ttl
+$ diff dispatch-issue.ttl $TMPDIR/broken-session.ttl
+94c94
+<     mas:hasInitialState d:s-comment-f5c09aec ;
+---
+>     mas:hasInitialState d:s-comment-4fc169ce ;
+exit status: 1
+$ uvx pyshacl -s $TMPDIR/scope-shapes.ttl -sf turtle -df turtle -f human --allow-warnings $TMPDIR/broken-session.ttl
+Validation Report
+Conforms: False
+Results (25):
+Constraint Violation in SPARQLConstraintComponent (http://www.w3.org/ns/shacl#SPARQLConstraintComponent):
+	Severity: sh:Violation
+	Source Shape: mas:SessionInitialStateSharedShape
+	Focus Node: d:session
+	Value Node: d:session
+	Source Constraint: [ sh:message Literal("A Session's initial State must also be claimed as the initial state of at least one other ExecutionElement (e.g. the AgentCall or ProcessingCall that actually starts the session).") ; sh:prefixes mas:CustomShapesPrefixes ; sh:select Literal("
+            SELECT $this
+            WHERE {
+                $this mas:hasInitialState ?initial .
+                FILTER NOT EXISTS {
+                    ?other mas:hasInitialState ?initial .
+                    FILTER (?other != $this)
+                }
+            }
+        ") ]
+	Message: A Session's initial State must also be claimed as the initial state of at least one other ExecutionElement (e.g. the AgentCall or ProcessingCall that actually starts the session).
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-1
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-1
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-2
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-2
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-controller
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-controller
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-daemon
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-daemon
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-human
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-human
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-planner
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-planner
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-1
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-1
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-2
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-architect-2
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-controller
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-controller
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-daemon
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-daemon
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-human
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-human
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-planner
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Focus Node: d:ac-planner
+exit status: 1
+# (the same twenty-four sh:Warning results are cut from this listing)
