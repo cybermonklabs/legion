@@ -36,6 +36,7 @@
 # the base and why, a refusal as an ::error:: line, and git's own output. Any other command that
 # fails, a fetch among them, exits with that command's status, so the check fails closed.
 #
+# Every fetch reads the base into the checkout before the check runs.
 # Run inside the checkout: .github/scripts/edited-migrations-base.sh
 # Its tests are in edited-migrations-base.test.sh, which ci.yaml's test job runs.
 set -euo pipefail

@@ -697,6 +697,7 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
                                      f"of this repository reads"))
 
 
+# (The merge-group rule follows.)
 # ------------------------------------------------- the one workflow a merge group runs
 MERGE_GROUP = "merge_group"
 
