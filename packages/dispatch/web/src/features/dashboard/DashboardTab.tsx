@@ -17,13 +17,13 @@ import { Tiles } from "./ProgressTiles";
 import { threadQuery } from "./ThreadItem";
 import { useDashboardNames } from "./useDashboardNames";
 import { dashboardRepliesQuery, openAsksQuery, useWaitingItems } from "./useWaitingItems";
-import { WAITING_STEP, WaitingList } from "./WaitingList";
+import { type DashboardPage, WAITING_STEP, WaitingList } from "./WaitingList";
 
 export interface DashboardTabProps {
   readonly issueKey: string;
   /** The page Dashboard is drawn on: today's issue page, as its first tab, or the new page, as
    *  its opening view. */
-  readonly page: "today" | "new";
+  readonly page: DashboardPage;
 }
 
 /** What a thread's own read holds of the texts its item draws. */
@@ -50,15 +50,17 @@ function threadTexts(read: unknown): readonly string[] {
 }
 
 /**
- * Dashboard (dispatch://INFRA-5702/spec#b-r-today-tab): one screen of where the issue stands for
- * the reader, drawn from the top as R3, R4, R6 and R7 say - the phase track, what waits on the
- * reader, the four tiles and the agents at work - inside `NoTooltips`, so its words and colours
- * are the issue page's, with no `data-issue-page`. Its text is drawn with `RowText`, and the names
- * of what that text cites come from its own batched read, which it publishes into the provider
- * the app mounts (`useDashboardNames`). It is the default export a `lazy` import loads, a chunk of
- * its own that the browser fetches only when the reader opens it.
+ * Dashboard (dispatch://INFRA-5702/spec#b-r-today-tab, #b-r-new-page): one screen of where the
+ * issue stands for the reader, drawn from the top as R3, R4, R6 and R7 say - the phase track,
+ * what waits on the reader, the four tiles and the agents at work - inside `NoTooltips`, so its
+ * words and colours are the issue page's; on today's page it carries no `data-issue-page`, and on
+ * the new page it is that page's opening view (`issue-page/slots/view-dashboard.tsx`). Its text
+ * is drawn with `RowText`, and the names of what that text cites come from its own batched read,
+ * which it publishes into the provider the app mounts (`useDashboardNames`). It is the default
+ * export a `lazy` import loads, a chunk of its own that the browser fetches only when the reader
+ * opens it.
  */
-export default function DashboardTab({ issueKey }: DashboardTabProps): ReactNode {
+export default function DashboardTab({ issueKey, page }: DashboardTabProps): ReactNode {
   const issue = useQuery({ ...issueQuery(issueKey), ...EVENT_FRESH });
   const legion = useQuery(legionIssueQuery(issueKey)).data;
   const handoffs = useQuery({
@@ -155,6 +157,7 @@ export default function DashboardTab({ issueKey }: DashboardTabProps): ReactNode
             items={loaded ? items : undefined}
             names={names}
             onMore={() => setDrawn((count) => count + WAITING_STEP)}
+            page={page}
             viewer={viewer.data?.login}
           />
           {issue.data === undefined ? null : (

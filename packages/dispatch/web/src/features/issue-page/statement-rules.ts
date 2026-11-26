@@ -61,8 +61,8 @@ export function nodeIdOf(
  * not answered, and no other block is one: not a `requirement` block of the spec that read does
  * not hold, which its row draws as a statement all the same (`Draft.statement`), nor a block of
  * any other document. It is the one rule both readers of the list read, the tree's `waiting`
- * (`tree-drafts.ts`'s `addDecisions`) and the header's count, whose caller hands it to
- * `waitingOnReader`, so the count counts the very decisions the tree marks.
+ * (`tree-drafts.ts`'s `addDecisions`) and the header's count, which reads it through
+ * `features/dashboard/useWaitingItems.ts`, so the count counts the very decisions the tree marks.
  */
 export function coverageStatements(
   issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">,

@@ -8,6 +8,7 @@ import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";
 import { ReferenceHostIs } from "../refs/reference-host";
 import type { TextSource } from "../refs/text-references";
+import { CachedAuthor } from "./CachedAuthor";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
@@ -44,6 +45,7 @@ export function passageItem<T extends { readonly id: string }>(
  *  The author is drawn by `AgentName`, whose name links to the agent, so it sits outside the
  *  quote's link, which holds the rest: the body, or with no author the whole line. */
 export function ReplyQuote({
+  agentNames = "live",
   author,
   block,
   className = "",
@@ -54,6 +56,11 @@ export function ReplyQuote({
   source,
   to,
 }: {
+  /** How the author is named: `live`, as everywhere, draws `AgentName`, whose session form reads
+   *  the live agent registry and starts the agents poll; `cache` names the author from the
+   *  registry the cache already holds (`useAgentText`) and starts no read, for a caller that
+   *  sends no agents read when it draws (dispatch://INFRA-5702/spec#b-r-reads). */
+  agentNames?: "live" | "cache";
   author: Actor | undefined;
   /** The block of the parent the reply answers; null or absent when it answers the whole. */
   block?: ReplyBlockWithTrees | null;
@@ -102,6 +109,29 @@ export function ReplyQuote({
         tree={quotedTree}
       />
     ) : null;
+  if (agentNames === "cache") {
+    return (
+      <span className={`${quoteClasses} gap-1 ${className}`}>
+        {author === undefined ? null : (
+          <span className="min-w-0 truncate">
+            Replying to <CachedAuthor actor={author} />
+            {passage ? "'s passage" : ""}
+            <EditedMark at={edited} deleted={deleted} />
+            {quoted === null ? "" : " "}
+          </span>
+        )}
+        {quoted === null ? null : to === undefined ? (
+          <span className="min-w-0 flex-1">{quoted}</span>
+        ) : (
+          <ReferenceHostIs host="control">
+            <Link className={`min-w-0 flex-1 ${linkHoverText}`} to={to}>
+              {quoted}
+            </Link>
+          </ReferenceHostIs>
+        )}
+      </span>
+    );
+  }
   return (
     <span className={`${quoteClasses} gap-1 ${className}`}>
       {author === undefined ? null : (

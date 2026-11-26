@@ -163,6 +163,7 @@ function CommentThread({
           onTouchStart={reach}
         >
           <MentionComposer
+            agentNames="cache"
             agents={agents}
             box="inbox-thread-reply"
             closed={closed}
@@ -235,6 +236,7 @@ function MessageThread({
           onTouchStart={reach}
         >
           <MentionComposer
+            agentNames="cache"
             agents={agents}
             box="inbox-thread-reply"
             closed={closed}

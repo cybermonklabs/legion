@@ -640,9 +640,10 @@ function addDecisions(
   );
   // A decision waits for the reader's review where it is on their review list (R35), which
   // reads a statement as a requirement the coverage read holds (`coverageStatements`), the rule
-  // the header's count is handed too (`waitingOnReader`), and not as the rows read one
-  // (`Draft.statement`): a spec's `requirement` block that read does not hold - each one, before
-  // it answers - is a statement on its row, and a tie to it puts no decision on the list.
+  // the header's count reads too (`features/dashboard/useWaitingItems.ts`), and not as the rows
+  // read one (`Draft.statement`): a spec's `requirement` block that read does not hold - each
+  // one, before it answers - is a statement on its row, and a tie to it puts no decision on the
+  // list.
   const isCoverageStatement = coverageStatements(reads.issue, reads.coverage);
   (reads.decisions?.decisions ?? []).forEach((decision, index) => {
     const id = context.nodeIdOf(decision.ref);

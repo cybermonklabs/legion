@@ -290,3 +290,31 @@ export function useWaitingItems(issueKey: string): readonly WaitingItem[] {
     [asks, changes, coverage, decisions, issue, replies, viewer]
   );
 }
+
+/** An approval request that waits on the reader, as `waitingItems` answers it. */
+export type WaitingRequest = Extract<WaitingItem, { kind: "approval" }>;
+
+/**
+ * The approval requests that wait on the reader on issue `issueKey`: the approval-request items
+ * of the one rule (`waitingItems`), over the two reads they come from alone - the reader's login
+ * and the issue's open asks - so Details, which places the approval controls by them
+ * (`issue-page/IssueMargin.tsx`, dispatch://INFRA-5702/spec#b-r-header-count), sends none of the
+ * rule's other reads. A stale approval is no request.
+ */
+export function useWaitingRequests(issueKey: string): readonly WaitingRequest[] {
+  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const asks = useQuery({ ...openAsksQuery(issueKey), ...EVENT_FRESH }).data;
+  return useMemo(
+    () =>
+      waitingItems({
+        asks,
+        changes: undefined,
+        coverage: undefined,
+        decisions: undefined,
+        issue: undefined,
+        replies: undefined,
+        viewer,
+      }).filter((item): item is WaitingRequest => item.kind === "approval"),
+    [asks, viewer]
+  );
+}

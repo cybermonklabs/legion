@@ -15,6 +15,7 @@ import {
   pagePaperBg,
   pageQuietText,
 } from "../../theme/classes";
+import { buildIssuePath } from "../refs/routes";
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
@@ -30,9 +31,10 @@ import type { PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
- * The view row (R2, R11, R20, and the prototype's view tabs): five
- * controls, Conversation - the page with no view on - then Spec, Verification, Plan and
- * Decisions, each with its signal; and Keys at its right end.
+ * The view row (R2, R11, R20, and the prototype's view tabs): six controls, Dashboard - the
+ * page's opening view, which draws no signal (dispatch://INFRA-5702/spec#b-r-new-page) - and
+ * Conversation - the page with no view on - then Spec, Verification, Plan and Decisions, each
+ * with its signal; and Keys at its right end.
  *
  * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
  * At 760 px and below the row is the one control and Outline,
@@ -77,8 +79,10 @@ export function IssuePresets({
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). Undefined while
    *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
    *  reader's login): then no control draws a signal - no count, no unit word, no flag - and no
-   *  control's description or name points at one, so none names an element that is not drawn. */
-  signals?: Readonly<Record<Preset, PresetSignal>>;
+   *  control's description or name points at one, so none names an element that is not drawn.
+   *  A control with no entry draws none either: Dashboard, whose count of what waits on the
+   *  reader is the header's (dispatch://INFRA-5702/spec#b-r-header-count). */
+  signals?: Readonly<Partial<Record<Preset, PresetSignal>>>;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -104,6 +108,8 @@ export function IssuePresets({
   const nameId = (preset: Preset) => `${ids}-name-${preset}`;
   const signalId = (preset: Preset) => `${ids}-signal-${preset}`;
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
+  // The signal the one control draws beside the name of the view that is on, where it has one.
+  const activeSignal = signals?.[active];
 
   useEffect(() => {
     const opened = wasOpen.current === undefined && open === "presets";
@@ -160,11 +166,20 @@ export function IssuePresets({
   }, [open]);
 
   // A press on a view turns it on, or off where it is the one on; Conversation turns every view
-  // off, and is a press that changes nothing only on the issue's own address, which is
-  // Conversation's: from any other address of the issue - `/collaborators` among them - it goes
-  // to the issue's own.
+  // off, and is a press that changes nothing only where Conversation is on at its own address or
+  // at the issue's own one naming a node or words: from any other address of the issue -
+  // Dashboard's, `/collaborators` among them - it goes to Conversation's own. Pressing Dashboard
+  // while it is on returns to Conversation, as every view does
+  // (dispatch://INFRA-5702/spec#b-r-new-page).
   const press = (preset: Preset) => {
-    if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
+    if (
+      preset === "conversation" &&
+      active === "conversation" &&
+      (pathname === presetPath(issueKey, "conversation") ||
+        pathname === buildIssuePath({ key: issueKey, kind: "issue" }))
+    ) {
+      return;
+    }
     navigate(
       presetPath(issueKey, preset === active && preset !== "conversation" ? "conversation" : preset)
     );
@@ -251,41 +266,46 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              {signals === undefined ? null : <Signal preset={active} signal={signals[active]} />}
+              {activeSignal === undefined ? null : <Signal preset={active} signal={activeSignal} />}
             </span>
             <MenuMark />
           </button>
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
-              {PRESET_ORDER.map((preset) => (
-                // Named by its name and its signal, which it draws inside it; and checked
-                // where it is the one on, which its dot draws.
-                <button
-                  aria-checked={preset === active}
-                  aria-labelledby={
-                    signals === undefined ? nameId(preset) : `${nameId(preset)} ${signalId(preset)}`
-                  }
-                  className={`${pageMenuItem} flex items-baseline gap-1.5`}
-                  key={preset}
-                  onClick={() => {
-                    setOpen(undefined);
-                    if (preset !== active || preset === "conversation") press(preset);
-                  }}
-                  role="menuitemradio"
-                  tabIndex={-1}
-                  type="button"
-                >
-                  <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
-                    {preset === active ? "●" : ""}
-                  </span>
-                  <span id={nameId(preset)} {...pageChrome}>
-                    {PRESET_NAMES[preset]}
-                  </span>
-                  {signals === undefined ? null : (
-                    <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
-                  )}
-                </button>
-              ))}
+              {PRESET_ORDER.map((preset) => {
+                const signal = signals?.[preset];
+                return (
+                  // Named by its name and its signal, which it draws inside it; and checked
+                  // where it is the one on, which its dot draws.
+                  <button
+                    aria-checked={preset === active}
+                    aria-labelledby={
+                      signal === undefined
+                        ? nameId(preset)
+                        : `${nameId(preset)} ${signalId(preset)}`
+                    }
+                    className={`${pageMenuItem} flex items-baseline gap-1.5`}
+                    key={preset}
+                    onClick={() => {
+                      setOpen(undefined);
+                      if (preset !== active || preset === "conversation") press(preset);
+                    }}
+                    role="menuitemradio"
+                    tabIndex={-1}
+                    type="button"
+                  >
+                    <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
+                      {preset === active ? "●" : ""}
+                    </span>
+                    <span id={nameId(preset)} {...pageChrome}>
+                      {PRESET_NAMES[preset]}
+                    </span>
+                    {signal === undefined ? null : (
+                      <Signal id={signalId(preset)} preset={preset} signal={signal} />
+                    )}
+                  </button>
+                );
+              })}
             </div>
           ) : null}
         </div>
@@ -311,6 +331,7 @@ export function IssuePresets({
       >
         {PRESET_ORDER.map((preset) => {
           const on = preset === active;
+          const signal = signals?.[preset];
           return (
             // The prototype's `.tab`: the name and the signal on one baseline, the rule under
             // both, ink and semibold for the one on.
@@ -323,7 +344,7 @@ export function IssuePresets({
               key={preset}
             >
               <button
-                aria-describedby={signals === undefined ? undefined : signalId(preset)}
+                aria-describedby={signal === undefined ? undefined : signalId(preset)}
                 aria-labelledby={nameId(preset)}
                 aria-pressed={on}
                 className="pt-[7px] pb-1.5 pl-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-page-ink"
@@ -362,8 +383,8 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                {signals === undefined ? null : (
-                  <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                {signal === undefined ? null : (
+                  <Signal id={signalId(preset)} preset={preset} signal={signal} />
                 )}
               </label>
             </span>

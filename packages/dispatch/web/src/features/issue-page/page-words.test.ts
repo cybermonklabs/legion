@@ -386,8 +386,9 @@ test("every answer to the reader's own act is one sentence with no schema token"
   ).toEqual([]);
 });
 
-test("the five controls are named in the order the row draws them, and none is called Tree", () => {
+test("the six controls are named in the order the row draws them, and none is called Tree", () => {
   expect(PRESET_ORDER.map((preset) => PRESET_NAMES[preset])).toEqual([
+    "Dashboard",
     "Conversation",
     "Spec",
     "Verification",

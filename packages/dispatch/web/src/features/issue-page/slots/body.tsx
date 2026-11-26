@@ -18,7 +18,6 @@ import {
 } from "../../../theme/classes";
 import { ItemMatchList } from "../../issue/ItemMatchList";
 import type { ItemLanding, ItemRoute } from "../../issue/useItemLanding";
-import { buildIssuePath } from "../../refs/routes";
 import {
   type AddressFallback,
   landingPath,
@@ -28,7 +27,7 @@ import {
 } from "../address-target";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
-import { issueAddress } from "../issue-address";
+import { issueAddress, presetPath } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineReads } from "../outline-reads";
@@ -396,7 +395,8 @@ const ABSENT_LINES: Readonly<
 /**
  * What an address names that this issue's page does not hold - an item the issue holds none of,
  * a block no node carries, the children of an issue with none - said where the outline would
- * be, with the focus on its heading (`useFocusOnDraw`) and a way back to the issue's own address.
+ * be, with the focus on its heading (`useFocusOnDraw`) and a way back to the outline of the
+ * issue, Conversation's own address (`presetPath`, dispatch://INFRA-5702/spec#b-r-new-page).
  *
  * A copy of the missing line of `issue/IssuePage.tsx`'s `ItemLandingFailure`, which that file
  * keeps to itself, with its words, as `IssueOutlinePage.tsx` copies today's failed states: today's
@@ -425,7 +425,7 @@ function NotFoundLine({
       <p className={textSecondaryOnCanvas}>{line}</p>
       <Link
         className={`mt-4 inline-block rounded-lg px-3 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonHoverBg}`}
-        to={buildIssuePath({ key: issueKey, kind: "issue" })}
+        to={presetPath(issueKey, "conversation")}
       >
         {`Back to ${issueKey}`}
       </Link>

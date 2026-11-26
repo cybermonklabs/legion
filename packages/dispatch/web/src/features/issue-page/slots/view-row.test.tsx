@@ -61,8 +61,9 @@ function blocksWithStep(id: string): never {
 }
 
 /** What the row draws once every read has answered: the spec's two statements, and the two
- *  threads the reader began, which are Conversation's entries. */
-const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
+ *  threads the reader began, which are Conversation's entries. Dashboard draws no count: what
+ *  waits on the reader is counted in the header. */
+const ANSWERED_COUNTS: Readonly<Partial<Record<Preset, string>>> = {
   conversation: "2",
   decisions: "0",
   plan: "0",
@@ -103,7 +104,7 @@ function answerReads() {
  *  the row of five. */
 function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation")) {
   const issue = issueDetails();
-  const route = { key: issue.key, kind: "issue" } as const;
+  const route = { key: issue.key, kind: "conversation" } as const;
   return render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>

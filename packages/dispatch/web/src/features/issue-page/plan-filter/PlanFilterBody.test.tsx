@@ -726,7 +726,7 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
     // Enter on a step goes to it in the conversation, where it is edited.
     act(() => rowOf(view, "t2").focus());
     await user.keyboard("{Enter}");
-    expect(place?.getAttribute("data-path")).toBe(`/issues/${KEY}#b-t2`);
+    expect(place?.getAttribute("data-path")).toBe(`/issues/${KEY}/conversation#b-t2`);
   } finally {
     view.unmount();
   }

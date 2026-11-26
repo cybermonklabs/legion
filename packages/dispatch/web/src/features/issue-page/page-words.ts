@@ -285,6 +285,7 @@ export function sentenceCase(name: string): string {
  *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). The page opens on
  *  Conversation. */
 export const PRESET_ORDER = freeze([
+  "dashboard",
   "conversation",
   "spec",
   "verification",
@@ -300,6 +301,7 @@ export type Preset = (typeof PRESET_ORDER)[number];
  *  draws the checks (2026-11-11 21:57Z), and nothing is called Tree (R2). */
 export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   conversation: "Conversation",
+  dashboard: "Dashboard",
   decisions: "Decisions",
   plan: "Plan",
   spec: "Spec",

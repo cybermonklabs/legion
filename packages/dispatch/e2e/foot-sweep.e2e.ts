@@ -620,7 +620,7 @@ test("the floats leave the foot of the new issue page's frame clear in every com
     const page = await context.newPage();
     await sweepSurface(page, refused.key, {
       name: "issue-frame",
-      path: `/issues/${reviewed}`,
+      path: `/issues/${reviewed}/conversation`,
       ready: async () => {
         await expect(page.locator("[data-issue-page]")).toHaveCount(1);
         await expect(page.locator("[data-issue-page]")).toContainText(MARGIN_WORDS.at(-1) ?? "");

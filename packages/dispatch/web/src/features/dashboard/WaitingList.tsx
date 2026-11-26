@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo } from "react";
+import { type FocusEvent, type ReactNode, useMemo } from "react";
 
 import { primarySpec } from "../../api/issue-cache";
 import type { Decision, IssueAskRow, IssueDetails } from "../../api/types";
@@ -20,10 +20,17 @@ import { useDecisionWrites } from "../decision-card/useDecisionWrites";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { useAskAnswerForm } from "../inbox/useAskAnswerForm";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
-import { DASHBOARD_WORDS, EMPTY_STATE_LINES, PRESET_NAMES } from "../issue-page/page-words";
+import { useSetFocusedNode } from "../issue-page/focused-node";
+import { DETAILS_ATTRIBUTE } from "../issue-page/margin-slot";
+import {
+  DASHBOARD_WORDS,
+  EMPTY_STATE_LINES,
+  NODE_STATE_WORDS,
+  PRESET_NAMES,
+} from "../issue-page/page-words";
 import { RowText } from "../issue-page/RowText";
 import { blockFragment } from "../refs/block-reference";
-import { buildIssuePath, documentItemPath } from "../refs/routes";
+import { buildDispatchReference, buildIssuePath, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { answerAsk, createReply, declineAsk, getAskThread } from "./ask-writes";
 import { rowText } from "./row-text";
@@ -31,12 +38,27 @@ import { ThreadItem } from "./ThreadItem";
 import type { DashboardNames } from "./useDashboardNames";
 import type { WaitingItem } from "./useWaitingItems";
 
+/** The page Dashboard is drawn on: today's issue page, as its first tab, or the new page, as its
+ *  opening view. */
+export type DashboardPage = "today" | "new";
+
 /** How many items the list draws at a time (R4). */
 export const WAITING_STEP = 5;
 
 /** A question or an approval request, by the ask body, answered in place. The ask is the issue's
- *  open asks read, which the item draws from: the form reads no thread of its own. */
-function AskItem({ ask }: { ask: IssueAskRow }): ReactNode {
+ *  open asks read, which the item draws from: the form reads no thread of its own. On the new
+ *  page, the focus going inside the item sets the page's focused node to the ask, so Details
+ *  draws that ask's facts where it draws a focused node's (dispatch://INFRA-5702/spec#b-r-reads);
+ *  today's page draws no Details panel. */
+function AskItem({
+  ask,
+  issueKey,
+  page,
+}: {
+  ask: IssueAskRow;
+  issueKey: string;
+  page: DashboardPage;
+}): ReactNode {
   const form = useAskAnswerForm({
     answer: answerAsk,
     ask,
@@ -44,7 +66,8 @@ function AskItem({ ask }: { ask: IssueAskRow }): ReactNode {
     getAskThread,
     readThread: false,
   });
-  return (
+  const setFocusedNode = useSetFocusedNode();
+  const body = (
     <AskBody
       agentNames="cache"
       ask={ask}
@@ -55,6 +78,36 @@ function AskItem({ ask }: { ask: IssueAskRow }): ReactNode {
       renderText={rowText}
       urgencyWord
     />
+  );
+  if (page === "today") return body;
+  // The ask as the page's focused node reads it: the ask by its own id, its address, its words,
+  // who asked it and how it stands, which is open for every ask the list holds.
+  const focus = () =>
+    setFocusedNode({
+      author: ask.author,
+      id: ask.id,
+      item: { id: ask.id, kind: "ask" },
+      reference: buildDispatchReference({ id: ask.id, key: issueKey, kind: "ask" }),
+      source: textSourceOf("ask", ask.id, issueKey),
+      state: NODE_STATE_WORDS.ask.open,
+      text: ask.question,
+      ...(ask.question_tree === undefined ? {} : { tree: ask.question_tree }),
+      type: "ask",
+    });
+  // The focus leaving the item hands the page back to the issue itself, as the outline does
+  // (`IssueTree.tsx`'s `useReleaseFocus`), unless it went to Details, where the reader reads the
+  // ask's facts, or stays inside the item.
+  const release = (event: FocusEvent<HTMLDivElement>) => {
+    const to = event.relatedTarget;
+    if (to instanceof Node && event.currentTarget.contains(to)) return;
+    if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
+    setFocusedNode(undefined);
+  };
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: this observes focus bubbling from the ask body's own controls to publish the page's focused node for Details; the wrapper itself is not interactive.
+    <div onBlur={release} onFocus={focus}>
+      {body}
+    </div>
   );
 }
 
@@ -166,18 +219,20 @@ function ItemBody({
   issue,
   item,
   names,
+  page,
   viewer,
 }: {
   decisionsDocument: string | undefined;
   issue: IssueDetails;
   item: WaitingItem;
   names: DashboardNames;
+  page: DashboardPage;
   viewer: string | undefined;
 }): ReactNode {
   switch (item.kind) {
     case "question":
     case "approval":
-      return <AskItem ask={item.ask} />;
+      return <AskItem ask={item.ask} issueKey={issue.key} page={page} />;
     case "stale":
       return <StaleItem document={item.document} issue={issue} />;
     case "decision":
@@ -215,6 +270,7 @@ export function WaitingList({
   items,
   names,
   onMore,
+  page,
   viewer,
 }: {
   /** The issue's decisions document, as the decisions read names it. */
@@ -227,6 +283,8 @@ export function WaitingList({
   items: readonly WaitingItem[] | undefined;
   names: DashboardNames;
   onMore: () => void;
+  /** The page the list is drawn on. */
+  page: DashboardPage;
   viewer: string | undefined;
 }): ReactNode {
   const shown = items?.slice(0, drawn) ?? [];
@@ -261,6 +319,7 @@ export function WaitingList({
                 issue={issue}
                 item={item}
                 names={names}
+                page={page}
                 viewer={viewer}
               />
             </li>

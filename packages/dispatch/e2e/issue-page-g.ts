@@ -118,7 +118,7 @@ export async function phase<T>(
  *  opening to put the focus on a row of it (`expectOpeningLanded`), so a row that leaves the
  *  focus for the page after this (`focusThePage`, `unfoldEveryBranch`) leaves it for good. */
 export async function openIssue(page: Page, key: string): Promise<void> {
-  await page.goto(`/issues/${key}`);
+  await page.goto(`/issues/${key}/conversation`);
   await expectIssuePageDrawn(page);
   await expectOpeningLanded(page);
 }

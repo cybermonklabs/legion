@@ -100,8 +100,8 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
- *  header, which draws the key and the title, the view row, the outline's one line for an issue
- *  that holds nothing, and nothing else. */
+ *  header, which draws the key and the title, the view row, Dashboard at the issue's own address,
+ *  and nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -110,16 +110,21 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
   // A part that fills another slot adds its selector here: so far the header
-  // (`[data-issue-header]`) and the view row (`[data-filter-row]`) are filled, the outline draws
-  // its one line for an issue that holds nothing at the issue's own address, and each other slot
+  // (`[data-issue-header]`) and the view row (`[data-filter-row]`) are filled, the issue's own
+  // address draws Dashboard (`[data-dashboard]`, dispatch://INFRA-5702/spec#b-r-new-page), which
+  // for an issue that holds nothing says that nothing waits on the reader, and each other slot
   // drawn so far adds no text or control: a view's address (`/spec`) draws nothing in the body
   // until that view's own slot is filled.
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
+  const dashboard = newPage.locator("[data-dashboard]");
   await expect(header).toHaveCount(1);
   await expect(row).toHaveCount(1);
   const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
-  const body = atIssue ? EMPTY_STATE_LINES.conversation : "";
+  await expect(dashboard).toHaveCount(atIssue ? 1 : 0);
+  if (atIssue) {
+    await expect(dashboard.getByText(EMPTY_STATE_LINES.dashboard, { exact: true })).toBeVisible();
+  }
   await expect
     .poll(
       () =>
@@ -127,20 +132,27 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
           const headerText =
             root.querySelector<HTMLElement>("[data-issue-header]")?.innerText ?? "";
           const rowText = root.querySelector<HTMLElement>("[data-filter-row]")?.innerText ?? "";
+          const dashboardText =
+            root.querySelector<HTMLElement>("[data-dashboard]")?.innerText ?? "";
           return (root as HTMLElement).innerText
             .replace(headerText, " ")
             .replace(rowText, " ")
+            .replace(dashboardText, " ")
             .replace(/\s+/g, " ")
             .trim();
         }),
-      { message: "the new page draws text outside its header and its view row" }
+      { message: "the new page draws text outside its header, its view row and Dashboard" }
     )
-    .toBe(body);
+    .toBe("");
   const controls = "button, a, input, select, textarea";
   expect(
     await newPage.locator(controls).count(),
-    "the new page draws a control outside its header and its view row"
-  ).toBe((await header.locator(controls).count()) + (await row.locator(controls).count()));
+    "the new page draws a control outside its header, its view row and Dashboard"
+  ).toBe(
+    (await header.locator(controls).count()) +
+      (await row.locator(controls).count()) +
+      (await dashboard.locator(controls).count())
+  );
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on

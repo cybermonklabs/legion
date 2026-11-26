@@ -172,6 +172,7 @@ function Harness({ store }: { store: Store }): ReactNode {
         items={items}
         names={names}
         onMore={() => setDrawn((count) => count + WAITING_STEP)}
+        page="new"
         viewer={READER}
       />
     </PublishedReferenceNames>

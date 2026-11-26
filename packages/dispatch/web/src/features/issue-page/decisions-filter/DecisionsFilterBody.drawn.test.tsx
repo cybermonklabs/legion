@@ -621,7 +621,7 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   await waitFor(() => expect(pressedRow.querySelector("[data-node-body]")).not.toBeNull());
   expect(focusedRow(view)).toBe(D("kept"));
   expect(rowOf(view, D("first")).querySelector("[data-node-body]")).toBeNull();
-  expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}#b-kept`);
+  expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}/conversation#b-kept`);
 
   // The foot unfolds from its own control, which is a plain button in the tab order, and
   // folds again. Its rows stand after it and are the tree's own.
@@ -1601,9 +1601,9 @@ test("a decision reaches each statement it shaped, and every entry links to its 
     // Each statement named as a chip names a block (`chipName`): the first line of its own
     // words, "The page draws sN. It draws nothing else.", cut by R1's first-line rule and then
     // by the chips' rule within 32 characters.
-    ["The page draws s1.", `/issues/${KEY}#b-s1`],
-    ["The page draws s2.", `/issues/${KEY}#b-s2`],
-    ["The page draws s3.", `/issues/${KEY}#b-s3`],
+    ["The page draws s1.", `/issues/${KEY}/conversation#b-s1`],
+    ["The page draws s2.", `/issues/${KEY}/conversation#b-s2`],
+    ["The page draws s3.", `/issues/${KEY}/conversation#b-s3`],
   ]);
   // A decision tied to nothing names nothing.
   expect(rowOf(view, D("minor")).querySelector("[data-decision-informs]")).toBeNull();
@@ -1614,8 +1614,8 @@ test("a decision reaches each statement it shaped, and every entry links to its 
   };
   expect(link("q-open")).toEqual([IN_CONVERSATION, `/issues/${KEY}/asks/q-open`]);
   expect(link("a-answered")).toEqual([IN_CONVERSATION, `/issues/${KEY}/asks/a-answered`]);
-  expect(link(D("first"))).toEqual([IN_CONVERSATION, `/issues/${KEY}#b-first`]);
-  expect(link(D("minor"))).toEqual([IN_CONVERSATION, `/issues/${KEY}#b-minor`]);
+  expect(link(D("first"))).toEqual([IN_CONVERSATION, `/issues/${KEY}/conversation#b-first`]);
+  expect(link(D("minor"))).toEqual([IN_CONVERSATION, `/issues/${KEY}/conversation#b-minor`]);
   // Every row the body draws carries one.
   expect(
     [...view.container.querySelectorAll("[data-node-row]")].filter(
@@ -2607,7 +2607,7 @@ test("the body draws the entries the filter's view left", async () => {
   await act(async () => rowOf(decisionOut, "q-open").focus());
   await user.keyboard("w");
   await waitFor(() =>
-    expect(decisionOut.getByTestId("where").textContent).toBe(`/issues/${KEY}#b-first`)
+    expect(decisionOut.getByTestId("where").textContent).toBe(`/issues/${KEY}/conversation#b-first`)
   );
   decisionOut.unmount();
 

@@ -73,9 +73,13 @@ export interface IssueAddress {
   readonly version: number | undefined;
 }
 
-/** Which filter each kind of route opens (R20). Every route not named here is the page with no
- *  filter on, Conversation, whose own address is the issue's. */
+/** Which view each kind of route opens (R20): Dashboard's and Conversation's own addresses, and
+ *  each filter's. Every route not named here is Conversation, but for the issue's own address,
+ *  which opens Dashboard where it names no node and no words filter (`issueAddress`,
+ *  dispatch://INFRA-5702/spec#b-r-new-page). */
 const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
+  conversation: "conversation",
+  dashboard: "dashboard",
   decisions: "decisions",
   plan: "plan",
   spec: "spec",
@@ -83,9 +87,11 @@ const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
 };
 
 /** The address of `preset` on `key`, which is the address its own control carries (R2, R20):
- *  each filter its old tab's, and Conversation, the page with no filter on, the issue's own. */
+ *  each filter its old tab's, Conversation `/conversation` and Dashboard `/dashboard`
+ *  (dispatch://INFRA-5702/spec#b-r-new-page). Every place of the page that writes an address for
+ *  Conversation writes it through here. */
 export function presetPath(key: string, preset: Preset): string {
-  return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
+  return buildIssuePath({ key, kind: preset });
 }
 
 /** A positive integer `?v=` holds, or undefined for anything else. */
@@ -177,6 +183,21 @@ export function issueAddress(
   const documentItem = documentItemOf(addressed, item, version, marked);
   const outlineItem = documentItem === undefined && item !== null && item !== undefined;
   const namesSpecBlock = route.kind === "spec" && named?.kind === "block";
+  const filter = query.get("q") ?? "";
+  const target: AddressTarget | undefined =
+    documentItem === undefined
+      ? outlineItem
+        ? { id: item.id, kind: "item" }
+        : named
+      : { id: documentItem.id, kind: "item" };
+  // The issue's own address opens Dashboard where it names no node (`#b-`, `?ask=`, `?comment=`)
+  // and no words filter (`?q=`); one that names either opens Conversation at it, as every other
+  // route no view owns does (dispatch://INFRA-5702/spec#b-r-new-page).
+  const preset =
+    ROUTE_PRESETS[route.kind] ??
+    (route.kind === "issue" && target === undefined && filter === ""
+      ? "dashboard"
+      : "conversation");
   return {
     document: outlineItem
       ? undefined
@@ -184,15 +205,10 @@ export function issueAddress(
         ? addressed
         : undefined,
     documentItem,
-    filter: query.get("q") ?? "",
+    filter,
     nodeMenu: route.kind === "artifacts",
-    preset: ROUTE_PRESETS[route.kind] ?? "conversation",
-    target:
-      documentItem === undefined
-        ? outlineItem
-          ? { id: item.id, kind: "item" }
-          : named
-        : { id: documentItem.id, kind: "item" },
+    preset,
+    target,
     version,
   };
 }

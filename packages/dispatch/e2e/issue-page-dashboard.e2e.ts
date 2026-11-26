@@ -474,8 +474,10 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
       await expect(page).toHaveURL(atView(key, "conversation"));
       await expectConversation(page, `the press that leaves Dashboard ${at}`);
 
-      // `t w` draws Dashboard, and `t c` Conversation.
-      await expectOpeningLanded(page);
+      // `t w` draws Dashboard, and `t c` Conversation. A choice from the one control's menu (below
+      // 1280 px) hands the focus back to the control by design, so the outline's opening, which
+      // takes only a focus nobody holds, is waited for only where the press left it loose.
+      if (width >= TOOLBAR_FROM) await expectOpeningLanded(page);
       await chord(page, "w");
       await expect(page, `t w did not open Dashboard ${at}`).toHaveURL(atView(key, "dashboard"));
       await expectDashboard(page, `t w ${at}`);
@@ -621,12 +623,19 @@ test("the header counts Dashboard's items on every view and drops one per act", 
 
     // The approval request, answered with Approve.
     const request: WaitingItem = { id: seed.asks.approval.id, kind: "approval" };
-    await itemOf(waiting, request).getByRole("button", { exact: true, name: "Approve" }).click();
+    // The ask body answers an approval request as every surface does: its Approve option, then
+    // Answer.
+    await itemOf(waiting, request)
+      .getByRole("radio", { name: /^Approve/ })
+      .check();
+    await itemOf(waiting, request).getByRole("button", { exact: true, name: "Answer" }).click();
     await gone(request);
 
     // The stale Verification approval, approved again at the newest version.
     const stale: WaitingItem = { id: seed.verificationArtifactId, kind: "stale" };
-    await itemOf(waiting, stale).getByRole("button", { exact: true, name: "Approve" }).click();
+    await itemOf(waiting, stale)
+      .getByRole("button", { name: /^Approve v\d+$/ })
+      .click();
     await gone(stale);
 
     // A Change on the second decision.
@@ -830,6 +839,15 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
     const shell = watchApiRequests(control);
     await gotoIssue(control, viewPath(seed.key, "spec"));
     await expectLoadSettled(shell);
+    // The shell's own polls - the reads of no issue that the control tab made as it loaded, the
+    // agents registry among them - repeat on their own clock in either tab: a window the control
+    // tab polled in is no window this tab polls in. A read of the issue is held to the windows
+    // below.
+    const shellPolls = new Set(
+      shell.requests
+        .filter((sent) => !sent.route.includes("/issues/"))
+        .map((sent) => `${sent.method} ${sent.route}`)
+    );
 
     const dashboard = presetRow(page).getByRole("button", { exact: true, name: DASHBOARD });
     await expect(dashboard, "Spec's view row draws no Dashboard control").toHaveCount(1);
@@ -855,7 +873,11 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
     const shellRoutes = new Set(shell.requests.map((sent) => `${sent.method} ${sent.route}`));
     expect(
       reads.requests
-        .filter((sent) => !shellRoutes.has(`${sent.method} ${sent.route}`))
+        .filter(
+          (sent) =>
+            !shellRoutes.has(`${sent.method} ${sent.route}`) &&
+            !shellPolls.has(`${sent.method} ${sent.route}`)
+        )
         .filter((sent) => !namedByR8(seed, sent.method, new URL(sent.path, "http://dashboard")))
         .map((sent) => `${sent.method} ${sent.path}`),
       "the press on Dashboard sent reads R8 does not name"

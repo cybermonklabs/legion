@@ -12,7 +12,7 @@ import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
-import { filterSignals, isFilter, presetView } from "../presets";
+import { filterSignals, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
 
@@ -72,7 +72,11 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
-        outline={paned || isFilter(address.preset) ? undefined : <OutlineSheet slot={props} />}
+        // The Outline control stands only beside the outline: every filter draws its own view, and
+        // Dashboard draws none.
+        outline={
+          paned || address.preset !== "conversation" ? undefined : <OutlineSheet slot={props} />
+        }
         signals={signals}
       />
     </div>

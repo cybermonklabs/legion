@@ -10,18 +10,20 @@ import type {
   IssueDecisions,
   IssueDetails,
 } from "../../api/types";
+import { waitingItems } from "../dashboard/useWaitingItems";
 import { anchorQuote, changeAnchor } from "../decision-card/change-anchor";
 import { wordsOf } from "../refs/tree-fragment";
 import { decisionChangeComments } from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
-import { coverageStatements } from "./statement-rules";
 import { nodesInOrder } from "./tree-keys";
-import { waitingOnReader } from "./waiting";
 
 /**
- * What waits on the reader, read two ways from the same reads: the header's count
- * (`waitingOnReader`) and the tree's own `waiting` on each node. The two must agree, or the
- * count puts the focus on a node that does not wait, or counts one it can never reach.
+ * What waits on the reader, read two ways from the same reads: the header's count, which is the
+ * number of Dashboard's items (`features/dashboard/useWaitingItems.ts`'s `waitingItems`,
+ * dispatch://INFRA-5702/spec#b-r-header-count), and the tree's own `waiting` on each node. The
+ * two must agree, or the count puts the focus on a node that does not wait, or counts one it can
+ * never reach. Dashboard's other kinds - a stale approval and a thread - are no node the tree
+ * marks, and `features/dashboard/waiting-items.test.ts` reads them.
  */
 
 const KEY = "CORE-1";
@@ -219,9 +221,29 @@ const change: Comment = {
   turn: null,
 };
 
-/** Which addresses name a statement of the issue, as the header's count is handed them: by the
- *  one rule the tree's review list reads (`coverageStatements`). */
-const isCoverageStatement = coverageStatements(issue, coverage);
+/** What waits on the reader by Dashboard's rule, which the header's count counts
+ *  (`waitingItems`): over the issue's open asks and the decisions, the coverage and the Changes
+ *  the tree reads, with no blocks read, as the count reads none. Each item as `<kind>:<id>`, in
+ *  the order of their names. */
+function waitingOf(
+  viewer: string | undefined,
+  over: IssueDetails,
+  read: IssueDecisions,
+  statements: IssueCoverage | undefined,
+  changes: readonly Comment[]
+): string[] {
+  return waitingItems({
+    asks: over.open_asks ?? [],
+    changes,
+    coverage: statements,
+    decisions: read,
+    issue: over,
+    replies: undefined,
+    viewer,
+  })
+    .map((item) => `${item.kind}:${item.id}`)
+    .sort();
+}
 
 /** The issue's plan, whose `requirement` blocks no coverage row holds, and the issue with it. */
 const plan = issueDocument("artifact-plan", "plan-md");
@@ -369,29 +391,15 @@ function changePlaces(
 // open approval request whose turn is theirs. The tree marks the same question and the same
 // decision; an approval request is no node of it. While the login is not known, nothing waits.
 test("what waits on the reader is their open questions, the review list and their approval requests", () => {
-  const counted = waitingOnReader(
-    issue,
-    "alice",
-    decisions,
-    isCoverageStatement,
-    [change],
-    undefined
-  );
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
+  const counted = waitingOf("alice", issue, decisions, coverage, [change]);
+  expect(counted).toEqual(["approval:approve-spec", "decision:listed", "question:mine"]);
 
   const root = buildIssueTree({ comments: [change], coverage, decisions, issue, viewer: "alice" });
   // The decisions no question holds are drawn above the conversation (`ROOT_ORDER`).
   expect(waitingIn(root)).toEqual(["decisions-md#b-listed", "mine"]);
 
-  const unknown = waitingOnReader(
-    issue,
-    undefined,
-    decisions,
-    isCoverageStatement,
-    [change],
-    undefined
-  );
-  expect(unknown.total).toBe(0);
+  const unknown = waitingOf(undefined, issue, decisions, coverage, [change]);
+  expect(unknown).toEqual([]);
   expect(waitingIn(buildIssueTree({ comments: [change], coverage, decisions, issue }))).toEqual([]);
 });
 
@@ -406,15 +414,13 @@ test("a Change its author deleted leaves its decision on the review list and in 
     deleted_at: "2026-11-05T12:00:00Z",
     deleted_by: { id: "alice", kind: "user" },
   };
-  const counted = waitingOnReader(
-    issue,
-    "alice",
-    decisions,
-    isCoverageStatement,
-    [deleted],
-    undefined
-  );
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4 });
+  const counted = waitingOf("alice", issue, decisions, coverage, [deleted]);
+  expect(counted).toEqual([
+    "approval:approve-spec",
+    "decision:changed",
+    "decision:listed",
+    "question:mine",
+  ]);
 
   const root = buildIssueTree({ comments: [deleted], coverage, decisions, issue, viewer: "alice" });
   expect(waitingIn(root)).toEqual(["decisions-md#b-listed", "decisions-md#b-changed", "mine"]);
@@ -429,12 +435,14 @@ test("a Change its author deleted leaves its decision on the review list and in 
 // R3, R7 and R13: a Change belongs to the decision whose section of the decisions document holds
 // the block the person wrote it in (`Anchor.block_id`), though another decision holds its words
 // too. Here the first decision holds the second's words and is tied to no statement, so it is on
-// no review list, and the Change is written in the second's paragraph: the second decision then
-// waits on its agent, and nothing waits on the reader, in the count as in the tree. A count that
-// read the quote alone would put the Change on the first decision and count the second as
-// waiting. Where the anchor stores no block, the quote alone decides: the first decision whose
-// words hold it.
-test("waitingOnReader counts a Change under the decision whose block holds its anchor", () => {
+// no review list, and the Change is written in the second's paragraph: the tree, which reads the
+// decisions document's blocks, puts it under the second, which then waits on its agent, and
+// nothing waits on the reader there. Where the anchor stores no block, or no blocks are read, the
+// quote alone decides: the first decision whose words hold it. The header's count reads no blocks
+// (dispatch://INFRA-5702/spec#b-r-header-count: a Change is matched by its anchor as
+// `decision-review.ts` matches it with no blocks read), so it counts the second as waiting, as the
+// tree does with no blocks read.
+test("a Change goes under the decision whose block holds its anchor, and the count, which reads no blocks, places it by its quote", () => {
   const worded = (blockId: string, shaped: readonly string[], text: string): Decision => ({
     ...waitingDecision(blockId, shaped),
     text,
@@ -473,7 +481,9 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
       ],
     },
   ];
-  const counted = waitingOnReader(issue, "alice", both, isCoverageStatement, [moved], documents);
+  const counted = waitingOf("alice", issue, both, coverage, [moved]).filter((one) =>
+    one.startsWith("decision:")
+  );
   const root = buildIssueTree({
     comments: [moved],
     coverage,
@@ -484,9 +494,7 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
   });
   const waitingDecisions = waitingIn(root).filter((id) => id.startsWith("decisions-md#"));
 
-  expect(counted.decisions).toBe(0);
   expect(waitingDecisions).toEqual([]);
-  expect(counted.decisions).toBe(waitingDecisions.length);
   expect(parentsOf(root, moved.id)).toEqual(["decisions-md#b-d2"]);
   expect(decisionChangeComments(both, [moved], issue.artifacts, documents)).toEqual(
     new Map([["c-change", second.ref]])
@@ -496,6 +504,18 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
   expect(decisionChangeComments(both, [unplaced], issue.artifacts, documents)).toEqual(
     new Map([["c-change", first.ref]])
   );
+
+  const unread = buildIssueTree({
+    comments: [moved],
+    coverage,
+    decisions: both,
+    issue,
+    viewer: "alice",
+  });
+  expect(waitingIn(unread).filter((id) => id.startsWith("decisions-md#"))).toEqual([
+    "decisions-md#b-d2",
+  ]);
+  expect(counted).toEqual(["decision:d2"]);
 });
 
 // R7, R13 and R35: a statement is a requirement the coverage read holds, as the header's count is
@@ -532,13 +552,15 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
       })
     ).filter((id) => id.startsWith("decisions-md#"));
 
+  /** The decisions the count counts, under the coverage read `read`. */
+  const countedDecisions = (read: IssueCoverage | undefined): string[] =>
+    waitingOf("alice", planned, both, read, []).filter((one) => one.startsWith("decision:"));
+
   expect(waitingDecisions(coverage)).toEqual(["decisions-md#b-listed"]);
-  const listed = coverageStatements(planned, coverage);
-  expect(waitingOnReader(planned, "alice", both, listed, [], documents).decisions).toBe(1);
+  expect(countedDecisions(coverage)).toEqual(["decision:listed"]);
 
   expect(waitingDecisions(undefined)).toEqual([]);
-  const unanswered = coverageStatements(planned, undefined);
-  expect(waitingOnReader(planned, "alice", both, unanswered, [], documents).decisions).toBe(0);
+  expect(countedDecisions(undefined)).toEqual([]);
 });
 
 // R7, R13 and R35: the count and the tree read a tie by one rule for a statement
@@ -590,14 +612,15 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
 
   const waitingDecisions = waitingIn(root).filter((id) => id.startsWith("decisions-md#"));
   expect(waitingDecisions).toEqual(["decisions-md#b-short", "decisions-md#b-slugged"]);
-  const listed = coverageStatements(planned, coverage);
   const tied = reviewed.decisions ?? [];
   expect(tied).toHaveLength(5);
   for (const decision of tied) {
     const alone: IssueDecisions = { ...reviewed, decisions: [decision] };
-    const counted = waitingOnReader(planned, "alice", alone, listed, [], documents);
+    const counted = waitingOf("alice", planned, alone, coverage, []).filter((one) =>
+      one.startsWith("decision:")
+    );
     const marked = waitingDecisions.includes(`decisions-md#b-${decision.block_id}`);
-    expect(counted.decisions, decision.block_id).toBe(marked ? 1 : 0);
+    expect(counted.length, decision.block_id).toBe(marked ? 1 : 0);
   }
 });
 

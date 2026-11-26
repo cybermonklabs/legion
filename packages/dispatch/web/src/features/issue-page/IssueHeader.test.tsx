@@ -196,7 +196,10 @@ function stubHeader(
 }
 
 /** The header's other reads, each answered with the API's empty shape: the coverage, whose
- *  statements the count's decisions are read against, the decisions and the document's record. */
+ *  statements the count's decisions are read against, the decisions and the document's record;
+ *  and the issue's open asks, which the count reads as Dashboard does (`useWaitingItems`,
+ *  dispatch://INFRA-5702/spec#b-r-header-count), answered with the open asks of the issue the
+ *  file's stub answers for. */
 function answerHeaderReads(): void {
   answerRequests(
     http.get("/api/v1/issues/:key/coverage", ({ params }) =>
@@ -207,6 +210,9 @@ function answerHeaderReads(): void {
         requirements: [],
         spec_artifact_id: "",
       } satisfies IssueCoverage)
+    ),
+    http.get("/api/v1/issues/:key/asks", () =>
+      Response.json((stubbedIssue.open_asks ?? []).filter((ask) => ask.state === "open"))
     ),
     artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id)),
     ...decisionsAndReadMarkHandlers()
@@ -300,6 +306,11 @@ test("the header updates whose turn when a human clarification is latest", async
           },
         ],
       });
+      // The reply's event refreshes the open asks the header's count reads too.
+      queryClient.setQueryData(
+        ["asks", "CORE-1", "open"],
+        queryClient.getQueryData<IssueDetails>(["issue", "CORE-1"])?.open_asks
+      );
     });
     await waitFor(() =>
       expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on agents (1)")
@@ -331,7 +342,7 @@ test("the header hides whose turn when the server sent open asks without waiting
 // projects for its gated steps, under the key the shell's sidebar reads them by. The header mounts
 // again each time the reader comes back to the issue's page, and under the app's `staleTime` a
 // read is stale 30 s after it answered (`main.tsx`), each observer judging it by its own options:
-// read with the app's defaults, the header mounted again past that would send all five and the
+// read with the app's defaults, the header mounted again past that would send all six and the
 // projects read again, although the feed's events keep them fresh (decision 180).
 test("the header mounted again past 30 s sends none of its count's reads, nor the projects read, again", async () => {
   const decisionsDocument = {
@@ -344,11 +355,13 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
   };
   const restore = stubHeader({ ...issue, artifacts: [...issue.artifacts, decisionsDocument] });
   // The issue's own read keeps the app's 30 s, so the header mounted again reads it again: that is
-  // what says the mount came past the age the five and the projects read would go stale at.
+  // what says the mount came past the age the six and the projects read would go stale at.
   const getIssue = spyOn(api, "getIssue");
-  // The login, the decisions and the blocks answered here, and the coverage and the comments by
-  // what the file already answers them with; the decisions name the issue's decisions document,
-  // so its blocks are read too.
+  // The count's reads are Dashboard's (`useWaitingItems`, dispatch://INFRA-5702/spec#b-r-header-count):
+  // the login and the decisions answered here, and the coverage, the decisions document's
+  // comments, the open asks and the reader's unread threads by what the file and the suite
+  // already answer them with. The decisions name the issue's decisions document, so its comments
+  // are read, and no blocks are.
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -358,7 +371,8 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
     }),
     spyOn(api, "getIssueCoverage"),
     spyOn(api, "listComments"),
-    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks"),
+    spyOn(api, "listMyReplies"),
   ];
   // The issue has no parent, so its header reads the projects, answered by `stubHeader`'s list.
   const listProjects = spyOn(api, "listProjects");
@@ -371,7 +385,7 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
 
   try {
     // The login is the one the shell already holds, and each other read is sent once.
-    await waitFor(() => expect(sent()).toEqual([0, 1, 1, 1, 1]));
+    await waitFor(() => expect(sent()).toEqual([0, 1, 1, 1, 1, 1]));
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     const issueReads = getIssue.mock.calls.length;
@@ -384,7 +398,7 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
     await waitFor(() => expect(getIssue.mock.calls.length).toBeGreaterThan(issueReads));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     expect(sent(), "the header mounted again sent a read of its count's again").toEqual([
-      0, 1, 1, 1, 1,
+      0, 1, 1, 1, 1, 1,
     ]);
     expect(listProjects.mock.calls.length, "the header mounted again read the projects again").toBe(
       1
@@ -395,6 +409,94 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
     for (const read of reads) read.mockRestore();
     listProjects.mockRestore();
     getIssue.mockRestore();
+    restore();
+  }
+});
+
+/** The address the page is on, drawn where a case can read it. */
+function Address(): ReactNode {
+  return <output aria-label="address">{useLocation().pathname}</output>;
+}
+
+// dispatch://INFRA-5702/spec#b-r-header-count (R10): the count is the number of Dashboard's
+// items, so a thread the reader has not read and an approval of theirs a newer version made
+// stale are counted, though neither is a question, a decision or a request. Until part N moves
+// the count's press onto Dashboard's list (dispatch://INFRA-3940 R5), the press stays as it was:
+// it opens the Decisions address only for a question or a decision, and focuses a document's
+// chip only for a request, so here it moves neither the address nor the focus.
+test("a press of the count where only a thread and a stale approval wait moves neither the address nor the focus", async () => {
+  const user = userEvent.setup();
+  const stale = {
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: {
+          at: "2026-09-10T00:00:00Z",
+          by: { id: "alice", kind: "user" as const },
+          latest_version: 3,
+          state: "stale",
+          version: 2,
+        },
+      },
+    ],
+  };
+  const restore = stubHeader(stale);
+  answerRequests(
+    http.get("/api/v1/me/replies", () =>
+      Response.json({
+        limit: 0,
+        offset: 0,
+        rows: [
+          {
+            issue: { key: "CORE-1", title: issue.title },
+            kind: "comment",
+            project: "CORE",
+            read_through: "2026-09-10T00:00:00Z",
+            ref: "/issues/CORE-1/comments/comment-thread",
+            reply: {
+              author: { id: "session-1", kind: "session" },
+              created_at: "2026-09-11T00:00:00Z",
+              first_line: "A reply the reader has not read.",
+              id: "comment-reply",
+              kind: "reply",
+            },
+            root_author: { id: "alice", kind: "user" },
+            subject: "A thread the reader began.",
+            thread_id: "comment-thread",
+            unread: true,
+            unread_count: 1,
+            version: 1,
+          },
+        ],
+        total: 1,
+      })
+    )
+  );
+  const queryClient = headerClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const path = "/issues/CORE-1/conversation";
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueScope />
+          <Routes>
+            <Route path="/issues/:key/*" element={<HeaderAlone />} />
+          </Routes>
+          <Address />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const count = await screen.findByTestId("issue-whose-turn");
+    await waitFor(() => expect(count.textContent).toBe("Waiting on you (2)"));
+    await user.click(count);
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(path);
+    expect(document.activeElement, "the press moved the focus off the count").toBe(count);
+  } finally {
+    view.unmount();
     restore();
   }
 });
@@ -1335,6 +1437,8 @@ test.each([
         ["issue", "CORE-1"],
         answeredApprovalIssue("approved")
       );
+      // The ask's event refreshes the open asks the header's count and its actions read too.
+      queryClient.setQueryData(["asks", "CORE-1", "open"], []);
     });
     await waitFor(() => expect(headerReviewActions(stateActions)).toEqual([]));
     expect(dialog).toBeInTheDocument();
