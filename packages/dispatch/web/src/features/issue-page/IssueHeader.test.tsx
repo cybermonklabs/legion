@@ -17,12 +17,14 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -3375,5 +3377,286 @@ test("where the header scrolls away it draws neither", async () => {
     restore();
     window.matchMedia = originalMatchMedia;
     restoreScrollY(scrollY);
+  }
+});
+
+/** Twenty labels, the most Dispatch lets an issue hold, as part P's rows write them
+ *  (`e2e/issue-page-p.ts`): more than the header's line holds. */
+const TWENTY_LABELS = [
+  "dispatch",
+  "layout",
+  "redesign",
+  "header",
+  "details",
+  "keyboard",
+  "phone",
+  "typeface",
+  "accessibility",
+  "approval",
+  "outline",
+  "presets",
+  "contents",
+  "composer",
+  "decisions",
+  "verification",
+  "plan",
+  "children",
+  "routing",
+  "web",
+] as const;
+
+/** The header's properties line as `labelsLaidOut` lays it out: a character of a chip's or the
+ *  count's words 7 px wide, a chip 16 px wider for its padding and its border, the chips 6 px
+ *  apart (`gap-1.5`) on lines 26 px apart, the line's items 12 px apart on rows 30 px apart, and
+ *  the line 600 px across inside 14 px of padding. */
+const LINE = {
+  across: 600,
+  character: 7,
+  chipGap: 6,
+  chipPadding: 16,
+  itemGap: 12,
+  padding: 14,
+  row: 30,
+} as const;
+
+/**
+ * Where a browser lays the header's labels out, which the unit DOM does not, on a properties line
+ * whose first row has `room` px left after its other properties: the labels' box, which grows
+ * into them from no width, unless it holds a least width wider than that (`min-width`) and so
+ * goes on to the next row, first on it; the count after the box on its row where it fits there,
+ * and on the next row where it does not; and the box's chips, which wrap inside it, the first
+ * chip of the box's first line wrapping too, after the empty item that begins it. Answers the
+ * box of the line, of the labels' box, of the count and of each chip.
+ */
+function labelsLaidOut(room: number): Map<Element, DOMRect> {
+  const laid = new Map<Element, DOMRect>();
+  const line = document.querySelector('[data-testid="issue-state-actions"]');
+  const box = document.querySelector<HTMLElement>('[data-testid="issue-header-labels"]');
+  if (line === null || box === null) return laid;
+  const count = document.querySelector<HTMLElement>('[data-testid="issue-labels-left"]');
+  const { across, character, chipGap, chipPadding, itemGap, padding, row } = LINE;
+  const words = (element: Element) => (element.textContent ?? "").length * character;
+  const least = (element: HTMLElement) => {
+    const capped = /^min\(([\d.]+)px, 100%\)$/u.exec(element.style.minWidth);
+    return capped === null
+      ? Number.parseFloat(element.style.minWidth) || 0
+      : Math.min(Number(capped[1]), across);
+  };
+  const boxLeast = least(box);
+  const moved = boxLeast > room;
+  const left = moved ? 0 : across - room;
+  const top = (moved ? row : 0) + 2;
+  const space = moved ? across : room;
+  const countWidth = count === null ? 0 : Math.max(words(count), least(count));
+  const beside = count !== null && boxLeast + itemGap + countWidth <= space;
+  const width = beside ? space - itemGap - countWidth : space;
+  laid.set(line, new DOMRect(-padding, 0, across + 2 * padding, 3 * row));
+  laid.set(box, new DOMRect(left, top, width, 20));
+  if (count !== null) {
+    laid.set(
+      count,
+      beside
+        ? new DOMRect(left + width + itemGap, top - 2, countWidth, 24)
+        : new DOMRect(0, top - 2 + row, countWidth, 24)
+    );
+  }
+  let x = 0;
+  let y = 0;
+  for (const chip of box.querySelectorAll("[data-header-label]")) {
+    const chipWidth = words(chip) + chipPadding;
+    if (x + chipWidth > width && (y === 0 || x > 0)) {
+      x = 0;
+      y += 20 + chipGap;
+    }
+    laid.set(chip, new DOMRect(left + x, top + y, chipWidth, 20));
+    x += chipWidth + chipGap;
+  }
+  return laid;
+}
+
+/** Has `getBoundingClientRect` answer the header's labels where `labelsLaidOut` places them at
+ *  `room.width`, read at each call, and every other element with the empty box the DOM gives it,
+ *  and `getComputedStyle` answer the gaps and the padding `LINE` gives the labels' box and the
+ *  line. Counts the reads of a chip's box. */
+function layOutLabels(room: { width: number }): {
+  readonly chipReads: () => number;
+  readonly restore: () => void;
+} {
+  let chipReads = 0;
+  // Stubbed on Element, the prototype that owns the method: patching HTMLElement would leave an
+  // own property behind that shadows every later spy on Element.
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.matches("[data-header-label]")) chipReads += 1;
+    return labelsLaidOut(room.width).get(this) ?? new DOMRect();
+  });
+  const computed = window.getComputedStyle;
+  const styles = spyOn(window, "getComputedStyle").mockImplementation((element, pseudo) => {
+    if (element.matches('[data-testid="issue-header-labels"]')) {
+      return { columnGap: `${LINE.chipGap}px` } as CSSStyleDeclaration;
+    }
+    if (element.matches('[data-testid="issue-state-actions"]')) {
+      return {
+        borderLeftWidth: "0px",
+        borderRightWidth: "0px",
+        columnGap: `${LINE.itemGap}px`,
+        paddingLeft: `${LINE.padding}px`,
+        paddingRight: `${LINE.padding}px`,
+      } as CSSStyleDeclaration;
+    }
+    return computed(element, pseudo);
+  });
+  return {
+    chipReads: () => chipReads,
+    restore: () => {
+      boxes.mockRestore();
+      styles.mockRestore();
+    },
+  };
+}
+
+/** The header's labels as drawn at `room` px of room (`labelsLaidOut`): the chips, by their
+ *  words; those of them not wholly on the box's first line and inside its end; and the count's
+ *  words, null where no count is drawn. */
+function labelsDrawn(room: number): {
+  readonly count: string | null;
+  readonly hidden: readonly string[];
+  readonly shown: readonly string[];
+} {
+  const laid = labelsLaidOut(room);
+  const box = screen.getByTestId("issue-header-labels");
+  const outer = laid.get(box) ?? new DOMRect();
+  const chips = [...box.querySelectorAll("[data-header-label]")];
+  return {
+    count: screen.queryByTestId("issue-labels-left")?.textContent ?? null,
+    hidden: chips
+      .filter((chip) => {
+        const drawn = laid.get(chip);
+        return drawn === undefined || drawn.top !== outer.top || drawn.right > outer.right;
+      })
+      .map((chip) => chip.textContent ?? ""),
+    shown: chips.map((chip) => chip.textContent ?? ""),
+  };
+}
+
+// Part P's rules for the labels (dispatch://INFRA-3940 R21's c-header-labels, the plan's g24):
+// the line draws the chips its box's first line holds whole beside the count and no other, and
+// the count names every chip it leaves out, in a room that holds five chips beside the count, in
+// one that holds one, and in one that holds no chip and not the count either, where the labels go
+// on to the count's row. The unit DOM lays nothing out, so the labels are laid out as a browser
+// lays them (`labelsLaidOut`), and each `ResizeObserver` notification a frame brings is sent by
+// hand.
+test("with 20 labels the line draws no chip it hides and the count names every chip left out", async () => {
+  const sizes = installResizeObserver();
+  const room = { width: 480 };
+  const layout = layOutLabels(room);
+  const restore = stubHeader({ ...issue, labels: [...TWENTY_LABELS] });
+  const view = renderHeader();
+  try {
+    const box = await screen.findByTestId("issue-header-labels");
+    // The frame that lays the chips out notifies the observer, which reads them.
+    sizes.resize(box);
+    expect(labelsDrawn(room.width), "in 480 px of room").toEqual({
+      count: "+15 labels",
+      hidden: [],
+      shown: TWENTY_LABELS.slice(0, 5),
+    });
+    // The count keeps the width it had in the reading, where it read "+20 labels".
+    expect(screen.getByTestId("issue-labels-left").style.minWidth).toBe("70px");
+
+    // The room narrows: the frame it narrows in notifies the box's new width, and the next frame,
+    // which lays the chips out again, notifies the observer, which reads them.
+    await act(nextFrame);
+    room.width = 200;
+    sizes.resize(box);
+    sizes.resize(box);
+    expect(labelsDrawn(room.width), "in 200 px of room").toEqual({
+      count: "+19 labels",
+      hidden: [],
+      shown: TWENTY_LABELS.slice(0, 1),
+    });
+
+    await act(nextFrame);
+    room.width = 60;
+    sizes.resize(box);
+    sizes.resize(box);
+    expect(labelsDrawn(room.width), "in 60 px of room").toEqual({
+      count: "+13 labels",
+      hidden: [],
+      shown: TWENTY_LABELS.slice(0, 7),
+    });
+    expect(box.style.minWidth, "the labels did not go on to the count's row").toBe(
+      "min(72px, 100%)"
+    );
+  } finally {
+    view.unmount();
+    restore();
+    layout.restore();
+    sizes.restore();
+  }
+});
+
+// Each reading of the labels is one `issue-header-labels` measure, read off `performance` as the
+// row of `c-header-labels` reads it, in which each chip's box is read once: the first reading,
+// one after the room changes and one after the labels change, each taken in the notification of
+// the frame that laid the chips out for it, and none in the commit that laid them out. A
+// notification that owes no reading takes none: the one the first fit's own move of the box
+// brings in its frame, and one in a frame where nothing changed.
+test("each reading of the labels is one `issue-header-labels` measure", async () => {
+  const measures = () => performance.getEntriesByName("issue-header-labels", "measure");
+  performance.clearMeasures("issue-header-labels");
+  const sizes = installResizeObserver();
+  // A room that holds no chip and not the count either, so the first fit moves the box on to the
+  // count's row, where it is 518 px wide.
+  const room = { width: 60 };
+  const layout = layOutLabels(room);
+  const restore = stubHeader({ ...issue, labels: [...TWENTY_LABELS] });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  try {
+    const box = await screen.findByTestId("issue-header-labels");
+    expect(measures(), "the commit that laid the chips out read them").toHaveLength(0);
+    sizes.resize(box);
+    expect(measures(), "the first reading").toHaveLength(1);
+    expect(layout.chipReads(), "the first reading read each chip's box once").toBe(20);
+    // The same frame notifies the width the fit gave the box, which is no change to read for.
+    sizes.resize(box);
+    expect(measures(), "the fit's own width was read again").toHaveLength(1);
+    expect(box.querySelectorAll("[data-header-label]"), "the fit was let go").toHaveLength(7);
+
+    await act(nextFrame);
+    room.width = 480;
+    sizes.resize(box);
+    expect(measures(), "the chips were read before they were laid out again").toHaveLength(1);
+    sizes.resize(box);
+    expect(measures(), "the reading after the room changed").toHaveLength(2);
+    expect(layout.chipReads(), "the second reading read each chip's box once").toBe(40);
+
+    await act(nextFrame);
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...issue,
+        labels: TWENTY_LABELS.slice(0, 19),
+      });
+    });
+    expect(measures(), "the commit that laid the new labels out read them").toHaveLength(2);
+    sizes.resize(box);
+    expect(measures(), "the reading after the labels changed").toHaveLength(3);
+    expect(layout.chipReads(), "the third reading read each chip's box once").toBe(59);
+
+    await act(nextFrame);
+    sizes.resize(box);
+    expect(measures(), "a frame where nothing changed read the labels").toHaveLength(3);
+    for (const entry of measures()) {
+      expect(entry.entryType).toBe("measure");
+      expect(entry.duration).toBeGreaterThanOrEqual(0);
+    }
+  } finally {
+    view.unmount();
+    restore();
+    layout.restore();
+    sizes.restore();
+    performance.clearMeasures("issue-header-labels");
   }
 });

@@ -236,6 +236,7 @@ import {
   TWENTY_LABELS as HEADER_LABELS,
   IPHONE_13,
   issueHeader,
+  labelsAgainstTheCount,
   lineOrder,
   MEASURED_TITLE,
   propertiesLine,
@@ -254,7 +255,7 @@ import {
   referenceAgent,
   seedReferenceWorld,
 } from "./reference-surfaces";
-import { seedScale } from "./scale-seed";
+import { seedLargestScaleCopy, seedScale } from "./scale-seed";
 import { navigateInApp } from "./sends";
 import { settledValue } from "./settled";
 import {
@@ -3058,6 +3059,90 @@ test("the page keeps its load bound on the largest issues under each control of 
         await context.close();
       }
     }
+  }
+});
+
+/** The measure each reading of the header's labels is in the shipped code (`HeaderLabels`'s
+ *  `measured`, `web/src/features/issue-page/IssuePropertiesRow.tsx`). */
+const HEADER_LABELS_MEASURE = "issue-header-labels";
+
+// c-header-labels (R21, decision 500 (3), the plan's g24): on production's build the header's
+// reading of which label chips its line holds (`HeaderLabels`, `IssuePropertiesRow.tsx`) took
+// about 1.1 s of a load of INFRA-1196 with 20 labels, several forced layouts a reading on a page
+// that large. Each reading is one `issue-header-labels` measure, and the row sums them over one
+// cold load of the copy of INFRA-3149, the largest copy `e2e/scale-seed.ts` writes, written alone
+// (`seedLargestScaleCopy`) with 20 labels, signed in as its reader, who never read it: at 1440 px
+// under chromium and at 390 px under iphone, each project seeding a copy of its own. The sum is
+// read at network idle (`expectLoadSettled`) and one second more, and printed; then the line, at
+// rest, holds no chip past its first line or its end, and its count names every chip it leaves
+// out.
+// SLOW(>=2s): the copy of INFRA-3149 written - 69 documents of 45,738 blocks, 39 files and 113
+// comments - and the block index's drain waited for, then one cold load of it.
+test("the header fits its labels within 50 ms of a load @phone", async ({ browser }) => {
+  // Not measured in a browser yet. Estimated from R21's row: under 2 min of writing the copy and
+  // waiting for the block index's cursor and drain (`e2e/scale-seed.ts`), and one cold load of
+  // about 10 s. The bound is about three times that, until the first e2e-rows Job measures the
+  // row and this line says what it took.
+  test.setTimeout(420_000);
+  const viewport = test.info().project.name === "iphone" ? IPHONE_13 : DESKTOP;
+  const { copy, reader } = await seedLargestScaleCopy();
+  await patchIssue(copy.key, { labels: [...HEADER_LABELS] });
+  const where = `the cold load of ${copy.key}, the copy of ${copy.census} with ${HEADER_LABELS.length} labels, at ${viewport.width} px`;
+  expect(
+    (await getMyState(reader))[copy.key]?.last_read_seq ?? 0,
+    `${reader} has read ${copy.key} before ${where}, so it is no load of a person who never read it`
+  ).toBe(0);
+  const context = await asReader(browser, reader);
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(viewport);
+    const traffic = watchApiRequests(page);
+    await gotoIssue(page, `/issues/${copy.key}`);
+    await expectHeaderDrawn(page);
+    await expectLoadSettled(traffic);
+    // The second past network idle that c-header-labels names: a reading the load's last answers
+    // set off, by a width they changed or a typeface that finished loading, is taken and
+    // measured in the frames of that second.
+    await page.waitForTimeout(1_000);
+    const readings = await page.evaluate(
+      (name) => performance.getEntriesByName(name, "measure").map((entry) => entry.duration),
+      HEADER_LABELS_MEASURE
+    );
+    const sum = readings.reduce((total, duration) => total + duration, 0);
+    const each = readings.map((duration) => duration.toFixed(1)).join(", ");
+    const said = `SCALE header labels ${copy.census} ${viewport.width} px: ${readings.length} readings, ${sum.toFixed(1)} ms (${each})`;
+    console.log(said);
+    test.info().annotations.push({ description: said, type: "header-labels" });
+    expect(
+      readings.length,
+      `${where} took no ${HEADER_LABELS_MEASURE} measure, so the header read none of its labels`
+    ).toBeGreaterThan(0);
+    expect(
+      sum,
+      `the header's label reading took ${sum.toFixed(1)} ms of ${where}, more than 50 ms, in ${readings.length} readings: ${each} ms`
+    ).toBeLessThanOrEqual(50);
+
+    // The line once it is at rest: the chips it holds, those of them drawn whole and those cut,
+    // and the number its count names.
+    const drawn = await settledValue(`the header's labels after ${where}`, async () => ({
+      ...(await labelsAgainstTheCount(page)),
+      held: await propertiesLine(page).evaluate(
+        (properties) =>
+          properties.querySelectorAll('[data-testid="issue-header-labels"] > [data-header-label]')
+            .length
+      ),
+    }));
+    expect(drawn.cut, `${where}: the labels' box cuts a chip the line holds`).toEqual([]);
+    expect(
+      drawn.held,
+      `${where}: the line holds ${drawn.held} chips and draws ${drawn.whole} of them whole on its first line`
+    ).toBe(drawn.whole);
+    expect(
+      drawn.whole + drawn.left,
+      `${where}: ${drawn.whole} chips drawn whole and a count of ${drawn.left}, of ${HEADER_LABELS.length} labels`
+    ).toBe(HEADER_LABELS.length);
+  } finally {
+    await context.close();
   }
 });
 

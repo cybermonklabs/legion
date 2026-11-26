@@ -647,3 +647,27 @@ export async function seedScale(): Promise<ScaleSeed> {
   for (const copy of written) copies.push(await expectCopyWritten(copy));
   return { copies, reader: SCALE_READER };
 }
+
+/**
+ * Writes the copy of INFRA-3149 alone, the largest of the three, as `seedScale` writes each copy
+ * and checks it, for a row that reads one copy: the header's reading of its labels (the plan's
+ * g24, check `c-header-labels`), of which the other two copies, minutes more of writing and of the
+ * block index's drain, change nothing. The reader has read none of it.
+ */
+export async function seedLargestScaleCopy(): Promise<{
+  readonly copy: ScaleCopy;
+  readonly reader: string;
+}> {
+  const shape = COPIES.find((each) => each.census === "INFRA-3149");
+  if (shape === undefined) throw new Error("the scale seed holds no copy of INFRA-3149");
+  await createProject({ key: PROJECT, name: "The largest issues" });
+  const cursor = await awaitBlockIndexCursor();
+  console.log(`SCALE cursor: the block index's event cursor stood after ${cursor / 1000} s`);
+  const written = await writeCopy(shape);
+  await expectCommentsWritten(written);
+  const drained = await awaitBlockIndexDrained([written.key]);
+  console.log(
+    `SCALE drain: the block index took in the copy of ${shape.census} in ${drained / 1000} s`
+  );
+  return { copy: await expectCopyWritten(written), reader: SCALE_READER };
+}
