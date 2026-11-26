@@ -827,7 +827,7 @@ func (b *bridge) result(res resultLine) {
 		// words, the same the message_end above carries, and the status is the one Claude Code
 		// named in api_error_status, zero when it named none — a content filter's refusal names
 		// none (testdata/refusal-turn.jsonl:5). Retryable stays false: the daemon decides from
-		// the status alone (supervise's holdsTheIssue).
+		// the status alone (supervise's classifyProviderError).
 		b.promptRun = ""
 		result := shimwire.PromptResult{ID: prompt, AgentInvoked: true}
 		if providerFailed(res) {
