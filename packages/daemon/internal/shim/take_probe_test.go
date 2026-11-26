@@ -31,18 +31,23 @@ var probeCandidates = []struct {
 	// Names: no shell or revset characters, since each names a temporary directory the shim's
 	// recording jj writes to unquoted.
 	{"P1 duplicate base", workspace.BesideTakeCommands},
-	{"P7 P6 with the task fetched and its head among the heads", func(dir, prefix, own, task string) []string {
-		onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin") | remote_bookmarks(exact:"` + task + `", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
-		return []string{shellprefix.Command([]string{"jj", "-R", dir, "git", "fetch", "--remote", "origin", "--branch", task, "--branch", prefix + "*"}),
-			shellprefix.Command([]string{"jj", "-R", dir, "bookmark", "track", "exact:" + own, "--remote", "exact:origin"}),
-			shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
+	{"P8 P7 then a commit of an undescribed merge at the working copy", func(dir, prefix, own, task string) []string {
+		merge := shellprefix.Command([]string{"jj", "-R", dir, "log", "-r", `@ & merges() & description(exact:"")`, "--no-graph", "-T", "commit_id"})
+		commit := shellprefix.Command([]string{"jj", "-R", dir, "commit", "-m", "merge: the work of the steps beside the fix"})
+		return append(p7(dir, prefix, own, task), `if [ -n "$(`+merge+`)" ]; then `+commit+`; fi`)
 	}},
-	{"P6 P5 with own tracked first", func(dir, prefix, own, task string) []string {
-		onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
-		return []string{fetchBeside(dir, prefix),
-			shellprefix.Command([]string{"jj", "-R", dir, "bookmark", "track", "exact:" + own, "--remote", "exact:origin"}),
-			shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
+	{"P9 P7 then a duplicate and a describe of an undescribed merge", func(dir, prefix, own, task string) []string {
+		return append(p7(dir, prefix, own, task),
+			shellprefix.Command([]string{"jj", "-R", dir, "duplicate", `@ & merges() & description(exact:"")`, "--insert-before", "@"}),
+			shellprefix.Command([]string{"jj", "-R", dir, "describe", "-r", `@- & merges() & description(exact:"")`, "-m", "merge: the work of the steps beside the fix"}))
 	}},
+}
+
+func p7(dir, prefix, own, task string) []string {
+	onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin") | remote_bookmarks(exact:"` + task + `", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
+	return []string{shellprefix.Command([]string{"jj", "-R", dir, "git", "fetch", "--remote", "origin", "--branch", task, "--branch", prefix + "*"}),
+		shellprefix.Command([]string{"jj", "-R", dir, "bookmark", "track", "exact:" + own, "--remote", "exact:origin"}),
+		shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
 }
 
 type probeCase struct {
@@ -69,6 +74,7 @@ var probeCases = []probeCase{
 	{takeCase: takeCase{name: "I: a merge forward in the fix's stack, then the take again", tester: true}, mergeForward: true},
 	{takeCase: takeCase{name: "J: no commit of the fix's own, one step beside, then the take again", tester: true}, noOwn: true},
 	{takeCase: takeCase{name: "K: no commit of the fix's own, two steps beside, then the take again", tester: true}, noOwn: true, second: true},
+	{takeCase: takeCase{name: "K2: K, then a push of F", tester: true}, noOwn: true, second: true, pushAgain: true},
 	{takeCase: takeCase{name: "M: the prompt's rebase before each take", tester: true}, promptRebase: true},
 	{takeCase: takeCase{name: "N: I with the prompt's rebase before each take", tester: true}, mergeForward: true, promptRebase: true},
 	{takeCase: takeCase{name: "O: C with a later tester commit, then the fresh pod's take and its push of F", tester: true, push: true, fresh: true}, later: true, pushAgain: true},
@@ -251,9 +257,10 @@ func probeRun(t *testing.T, jj string, take takeCommands, c probeCase) string {
 		shared = "MOVED to " + parent
 	}
 	ownAt, _ := taker.try(taker.fixDir, "file", "list", "-r", own+"@origin")
-	return fmt.Sprintf("exits=%s bySubject=%d (empty %d) byContent=%d conflicted=%d divergent=%d firstChanged=%v secondChanged=%v opChanged=%v @-files=[%s] red@-=%q shared=%s F@origin-files=[%s]",
+	under, _ := taker.try(taker.fixDir, "log", "-r", "@-", "--no-graph", "-T", `"parents=" ++ parents.len() ++ " " ++ description.first_line()`)
+	return fmt.Sprintf("exits=%s bySubject=%d (empty %d) byContent=%d conflicted=%d divergent=%d firstChanged=%v secondChanged=%v opChanged=%v @-=[%s] @-files=[%s] red@-=%q shared=%s F@origin-files=[%s]",
 		strings.Join(exits, ","), bySubject, empty, byContent, conflicted, divergent, !slices.Equal(first, afterFirst), !slices.Equal(before, after), opBefore != opAfter,
-		strings.Join(strings.Fields(files), " "), redAt, shared, strings.Join(strings.Fields(ownAt), " "))
+		strings.Join(strings.Fields(under), " "), strings.Join(strings.Fields(files), " "), redAt, shared, strings.Join(strings.Fields(ownAt), " "))
 }
 
 // probeFacts reads what jj records of a duplicate and how it answers an empty -A.
@@ -280,6 +287,10 @@ func probeFacts(t *testing.T, jj string) {
 	t.Logf("a predecessors revset: %v\n%s", err, out)
 	out, err = r.try(r.fixDir, "bookmark", "track", "exact:legion-beside/ACME-42/1/a/fix-1/implementer", "--remote", "exact:origin")
 	t.Logf("bookmark track of a branch origin does not hold: %v\n%s", err, out)
+	out, err = r.try(r.fixDir, "describe", "-r", "none()", "-m", "x")
+	t.Logf("describe of no commit: %v\n%s", err, out)
+	out, err = r.try(r.fixDir, "duplicate", "none()", "--insert-before", "@")
+	t.Logf("duplicate of no commit: %v\n%s", err, out)
 	out, err = r.try(r.fixDir, "op", "log", "-n3")
 	t.Logf("op log: %v\n%s", err, out)
 }
