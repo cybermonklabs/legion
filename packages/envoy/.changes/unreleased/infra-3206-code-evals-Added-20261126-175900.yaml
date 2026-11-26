@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  Two evals join each project's catalogue, measured from GitHub's patches of the project's default
+  repository. `code-survival-30d`, Code survival at 30 days, is the share of the lines a code
+  group's merged changes added that is still on the default branch 30 days after each change.
+  `post-merge-rework-30d`, Post-merge rework at 30 days, is the share of those lines that a later
+  change of the same group for a different issue removed within the 30 days, with the shares that
+  changes of the same issue, changes with no issue and other changes removed beside it. Each eval
+  has a series for each code group (`survival:<g>`; `rework:<g>`, `iteration:<g>`, `noissue:<g>`
+  and `other:<g>`) and a `status` series that counts the measured, marked, blocked and waiting
+  days. A window reads "no data", never 0, where it holds no measured day, a day that a force-push
+  changed after it was measured, a day blocked by a commit whose patch GitHub did not give whole,
+  or where the GitHub App cannot read the default repository. `GET
+  /api/v1/projects/{key}/evals/{slug}/items` answers their `change`, `pair` and `absent` rows. The
+  Evals tab draws one card for each in Deploys and lead time: each group's share, "replay reading,
+  not blame · GitHub diff", the days still waiting, and why a window reads no data. Neither is
+  Rework share, which still counts pull requests by their titles.
+time: 2026-11-26T17:59:00Z
+custom:
+    Issue: INFRA-3206

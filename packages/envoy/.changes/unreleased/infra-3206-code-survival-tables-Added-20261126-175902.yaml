@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  Migration `20261126103753_code_survival` creates the code survival run's results: `code_repos`,
+  each repository the run reads and its state; `code_changes`, each measured change's counts, pull
+  request, head branch, author login and issue; `code_pairs`, each pair of a change and a later
+  change that removed its lines; `code_days`, each replayed day's count of first-parent commits,
+  the sha256 of their SHAs and its state; and `code_projects`, the code groups each project's day
+  rows stand built under. No column holds a patch, a file's text or a list of a branch's commits,
+  and no change kind is added: the run's and the regroup's writes of the evals' day rows log
+  `eval_days` changes. Migration `20261126103900_github_read_attempts_code_survival` admits
+  `code_survival` in `github_read_attempts.read`. Neither reads or rewrites a stored row, both
+  censuses answer 0, and the release before them serves beside them. The boot's rename pass
+  rewrites a renamed repository in `code_repos`, `code_changes` and `code_days`, and each change's
+  pairs follow it.
+time: 2026-11-26T17:59:02Z
+custom:
+    Issue: INFRA-3206

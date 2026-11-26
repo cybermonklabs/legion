@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  Each project names its code groups in its delivery settings, `code_groups` (migration
+  `20261126133047_project_delivery_code_groups`): an ordered list of `{name, branch_prefixes,
+  author_logins}`, which `GET` and `PUT /api/v1/projects/{key}/settings/delivery` answer and take
+  and the project settings tab edits. A change belongs to the first group with a head-branch
+  prefix that starts its branch or a login equal to the one that opened its pull request, and a
+  last group with neither takes every change no group before it took. A `PUT` without
+  `code_groups` keeps the stored groups and `[]` clears them; a refused group, and a list that
+  would give a code eval more series than an eval holds, is `400 DELIVERY_SETTINGS_INPUT` naming
+  `code_groups`.
+time: 2026-11-26T17:59:04Z
+custom:
+    Issue: INFRA-3206

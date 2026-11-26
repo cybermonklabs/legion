@@ -1,6 +1,6 @@
 ---
 title: Delivery
-description: Each project's delivery settings, the record of its deploys and failed changes, the Delivery page's timeline and measures, the Pipeline page's step timings, what each figure counts, the targets, and the routes an agent reads.
+description: Each project's delivery settings, the record of its deploys and failed changes, the Delivery page's timeline and measures, the Pipeline page's step timings, what each figure counts, the targets, code survival and post-merge rework, and the routes an agent reads.
 sidebar:
   order: 7
 ---
@@ -38,6 +38,10 @@ They are:
 - **Failure sources** (`failure_sources`): any of `check_results`, `reverts`, `incident_label` and `events`, the signals the project's failure measures count (The failure measures, below).
   `failures_measured_since` is the first UTC day they count, and a save that names a failure source must name it.
 
+- **Code groups** (`code_groups`): the groups whose changes the code survival and post-merge rework numbers count, in order, each a name with its head-branch prefixes and its author logins (Code survival and post-merge rework, below).
+  A group with no prefix and no login takes every change that no group before it took, and only the last group may be such a group.
+  A save that leaves the field out keeps the stored groups, and `[]` clears them.
+
 - **Targets** (`targets`): the target of each of the project's evals `deploy-frequency`, `change-fail-rate`, `merge-to-production`, `pr-open-to-merge`, `deploy-run-success`, `failed-deploy-recovery` and `unowned-p0`, a number or `"off"`.
   No settings column holds a target.
   A save writes each target it changes as a new version of the project's eval row, in the save's own transaction, and every read takes the target back from that row.
@@ -63,6 +67,7 @@ A refused save writes nothing, and its body is `{code, error, field?, source?, p
 
 - `400 DELIVERY_SETTINGS_INPUT`: a field no reader could read, named in `field`, with the source's index in `source` for a field of a source.
   Delivery on with no source, more than 50 sources, a kind that is neither `github_workflow` nor `events`, a `github_workflow` source with no deploy workflow, no production job, an empty production job name or no pull-request checks workflow, a repository that is not `owner/name`, a second `events` source or one that names a repository or a workflow field, two sources that read one repository, a failure source that is not one of the four or is named twice, a failure source with no `failures_measured_since` or a day that is not `YYYY-MM-DD`, and a target of another eval, of an eval the project does not hold, or that is neither a number nor `"off"` are each refused this way.
+  So is a code group whose name is blank, longer than 64 characters, held by another group in any case, or holds a space, a control character or a full stop; a blank prefix or login; and a group with no prefix and no login that is not the last.
 
 - `409 DELIVERY_SETTINGS_ACCESS`: with delivery on, a `github_workflow` source whose repository Dispatch's GitHub App cannot read, named in `source`.
   Dispatch asks GitHub before it writes anything, and a save that turns delivery off asks nothing, so a project whose repository the App can no longer read can still turn delivery off.
@@ -306,6 +311,85 @@ Each delivery and CI eval counts its rows for projects by one rule, and the fail
   A deploy posted to any other project stays in the record and counts in no eval.
 
 Each series of an eval read carries `via_repository`: how many of the rows its window counts reached the project through a repository rather than an issue, such as a pull request with no issue and a deploy that ships no pull request.
+
+## Code survival and post-merge rework
+
+Two evals of each project follow the lines that merged changes add, read from the patches on GitHub.
+They count lines, not pull requests.
+
+- **Code survival at 30 days** (`code-survival-30d`): of the lines a code group's changes added, the share still on the default branch 30 days after each change.
+
+- **Post-merge rework at 30 days** (`post-merge-rework-30d`): of the lines a code group's changes added, the share that a later change of the same group, made for a different issue, removed within those 30 days.
+
+A change is the commit that a merged pull request put on the default branch of a project's default repository.
+Its group is the first of the project's code groups (Delivery settings, above) with a head-branch prefix that starts the pull request's branch, case included, or with the login that opened the pull request, in any case; a GitHub App's login ends in `[bot]`.
+A change that no group takes counts in neither number, and a commit that merged no pull request is no change.
+A change's day is the UTC date of its commit time, and its 30-day mark is that time plus 30 days.
+A line is still there at the mark when no commit dated at or before the mark removed it.
+
+Each time a later change removes some of a change's lines by the mark, the removal is of one of four kinds:
+
+- **Rework**: the later change is of the same group, for a different issue.
+
+- **Iteration**: the later change is of the same group, for the same issue.
+
+- **No issue**: the later change is of the same group, and one of the two changes has no issue.
+
+- **Other**: the later change is of another group or of none, or the lines were removed by a commit that merged no pull request.
+
+Post-merge rework counts rework alone, and its card shows the other three kinds beside it.
+A change's issue is the one Dispatch's attribution gives its pull request, as for every delivery eval.
+A change counts for the project of its issue, and a change with no issue counts for each project whose default repository holds it.
+
+What the two numbers are not:
+
+- Neither is **Rework share**, which counts the pull requests whose titles start with `fix`, `revert` or `hotfix`.
+  These two count lines and read no title.
+
+- Neither is git blame.
+  Dispatch applies each commit's patch in order, as GitHub's diff with three lines of context, and follows each line by its place in its file, never by its text.
+  Its share differs from one read with blame, by a different amount for each group, so the two do not compare.
+
+- Neither says whether the work was right.
+  A line that a later change improved counts as removed, as a wrong line does, and one changed character removes the whole line.
+
+### When a day is measured
+
+Each day Dispatch reads, through its GitHub App, the first-parent commits of the default branch of each project's default repository, and, when a run starts, the merged pull requests and each commit's patch.
+A day can be measured from 33 days after it began: by then the 30-day mark of its last change has passed, with two days to spare for a commit that reaches the branch later than the time it is dated.
+A run starts once at least seven days can be measured, a force-push has changed a measured day, or a blocked day (below) is due its weekly try, and it measures up to 28 days.
+A measured day is measured again only when a force-push changes the commits of that day or of the 31 days after it.
+Dispatch keeps each change's counts, its pull request, branch, login and issue, and never a patch.
+A run stops before it reads the pull requests and the patches, and stores no measurement, when the requests GitHub still allows the App, less those the run would make, fall below a quarter of GitHub's limit; it stops the same way when they fall that low while it reads, and its next hourly try after GitHub's limit resets runs it again.
+
+A window reads "no data", never 0, when:
+
+- it holds no measured day, for example because its days still wait;
+
+- it holds a day that a force-push changed after it was measured, until a run measures that day again;
+
+- one of its days is blocked: a commit made that day or in the 31 days after it has a patch that GitHub gave neither as a diff nor whole as a list of files; a run tries that day again a week later at the earliest;
+
+- Dispatch's GitHub App cannot read the project's default repository;
+
+- the project names no code group.
+
+The cards and the rows below name the day, the commit, the repository or the missing setting.
+
+### Where they are drawn
+
+A project's **Evals** tab (`/projects/<KEY>/evals`) draws one card for each in **Deploys and lead time**, after that section's charts; the tab shows that section while the project has delivery on.
+Each card has one line for each code group, in the order the settings name them: the group's share, the lines kept or removed out of the lines its changes added, and how many changes there were.
+The rework card puts the iteration, no issue and other shares beside each group's rework share.
+Beside the values the card says "replay reading, not blame · GitHub diff", how many days of the window still wait, if any, and how many changes with no issue reached the project through its default repository.
+A window that reads no number says why instead, and links to the settings where a setting is missing.
+The card's title opens the eval's method.
+
+`GET /api/v1/projects/{key}/evals/{slug}/items` lists the rows behind each number.
+Code survival lists `change` rows, one for each change, with its lines added and still there.
+Post-merge rework lists `pair` rows, one for each change and later change that removed some of its lines, with the lines, the days between the two and both issues.
+Both list `absent` rows, one for each reason the window reads "no data" other than days that still wait.
+A save of the code groups counts the stored changes again under the new groups within seconds, with no read of GitHub.
 
 ## For agents
 

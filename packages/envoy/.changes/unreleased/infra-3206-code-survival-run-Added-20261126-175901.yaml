@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  A daily run measures the two code evals (`internal/dispatch/codesurvival`), on every server that
+  holds the GitHub App's private key, under the lease `code-survival` with an hourly tick, the
+  first at start. Once a UTC day for each project's default repository it reads the default
+  branch's first-parent commits. When at least seven days are 33 days old, a force-push has
+  changed a measured day, or a blocked day is due its weekly try, it reads the merged pull
+  requests and each commit's patch as GitHub's diff, eight at a time, within 32 MiB and 60 s a
+  patch (`githubapp.DiffTimeout`): a merge commit through the compare route from its first parent,
+  and a commit's `files[]` where GitHub refuses the diff. It replays the patches in order,
+  measures up to 28 days, and stores counts and keys alone, never a patch, with the evals' day
+  rows in the same transaction. A day that a force-push changed marks the measured days it
+  touches in a transaction of its own before any pull request or patch is read, and they read "no
+  data" until they are measured again. A run stops, storing no result, when GitHub's remaining
+  budget less the requests it would make falls below a quarter of the limit, and goes again at the
+  first hourly tick after the reset. Each repository's pass logs one `codesurvival: run` line, and
+  `GET /healthz` names the run's newest attempt as `github.code_survival`. A save of a project's
+  code groups rebuilds its day rows from the stored results within seconds, on every server, with
+  no GitHub request (`codesurvival.Regroup`).
+time: 2026-11-26T17:59:01Z
+custom:
+    Issue: INFRA-3206

@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The lease pool reserves a connection for the code survival run's lease, `code-survival`, on
+  every server whether or not it runs the run: 31 lease connections in all, so one server opens at
+  most 122 connections to Postgres at its ceiling, and four app pods at once 488. Read `SHOW
+  max_connections` on the database before the release that brings it, as for any change of these
+  counts.
+time: 2026-11-26T17:59:03Z
+custom:
+    Issue: INFRA-3206

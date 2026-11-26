@@ -2,7 +2,7 @@
 title: Eval registry
 parent: dispatch-server
 depends_on: [dispatch-delivery, dispatch-docs, dispatch-duty, dispatch-events, dispatch-legion, dispatch-model, dispatch-pmdoc, dispatch-refs, dispatch-store]
-paths: [packages/envoy/internal/dispatch/evals]
+paths: [packages/envoy/internal/dispatch/evals, packages/envoy/internal/dispatch/codesurvival]
 ---
 The eval registry: every number a project's pages show is an eval, with its definition, its series and its readings (`evals.go`, migration `20261117100005_eval_registry`).
 A definition is append-only: each change, a target's among them, writes the next version, and a reader reads the newest, so every version a reader once saw stays readable (`Register`, `Current`).
@@ -12,6 +12,7 @@ A read folds each listed series of a computed eval through the one fold its sour
 The seeded catalogue is every computed eval: the delivery and CI evals, the six Legion evals and `unowned-p0` (`catalogue.go`), each with its method in `methods/<slug>.md`.
 A project's `evals-md` document holds one section per eval, a `##` heading of its slug and the method block its version's `doc_block` names (`document.go`).
 The package serves no request and makes none: the routes are `api`'s, and its own files import no HTTP client (`imports_test.go`).
+`internal/dispatch/codesurvival`, which this note holds too, is the writer of the two code evals' day rows (`code-survival-30d`, `post-merge-rework-30d`, `code_days.go`): its daily run reads GitHub's patches and its regroup reads only the stored results, as `dispatch-delivery` says.
 
 Its tables are created by these migrations, whose headers say what each column holds (`dispatch-store`).
 `20261117100005_eval_registry`: `eval_versions`, one row per version of one definition, never updated, whose newest per eval the view `evals_current` reads; `eval_series`, one row per version of one series of one eval, the newest in `eval_series_current`; and `eval_readings`, one row per value logged under an eval, where a correction names the reading it corrects in `replaces` and its write sets `superseded_at` on that reading.
