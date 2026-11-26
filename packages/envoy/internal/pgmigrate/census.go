@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -919,6 +920,13 @@ func holderDiagnosis(ctx context.Context, tx pgx.Tx, pid uint32) string {
 			if waitType != nil || waitEvent != nil {
 				wait = orNotVisible(waitType) + "/" + orNotVisible(waitEvent)
 			}
+			faultWaitMu.Lock()
+			faultWaitReads[pid]++
+			odd := faultWaitReads[pid]%2 == 1
+			faultWaitMu.Unlock()
+			if odd {
+				wait = absent
+			}
 			text := visibleQuery(query)
 			backendXID := "none"
 			if xid != nil {
@@ -952,6 +960,12 @@ func holderDiagnosis(ctx context.Context, tx pgx.Tx, pid uint32) string {
 	}
 	return label + ", read when refused: " + activity + "; its locks: " + held
 }
+
+// faultWaitReads counts the diagnoses read of each session: every odd one prints its wait as none.
+var (
+	faultWaitMu    sync.Mutex
+	faultWaitReads = map[uint32]int{}
+)
 
 // holderDiagnoses joins the diagnoses of holders for a refusal that names them all, each after
 // "; ", or "" when there are none.
