@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stale_binding is set by a holder that subscribed beside a push binding it did not wait out;
@@ -311,8 +313,15 @@ func TestLeaseAHandBackCandidateIsJudgedByItsMarkAlone(t *testing.T) {
 			replaced := putLease(t, kv, row.record)
 			time.Sleep(row.after)
 			a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
-			a.step()
-			status := a.Status()
+			// A step whose read or write of the record fails under a loaded run (the -race build of
+			// the whole package) takes nothing and leaves the record as it stands, so the row steps
+			// until pod-a holds, as the lease's own loop does at its next round: what the row judges
+			// is how the term that takes the record reads it, not which step took it.
+			status := testwait.Until(t, "pod-a to take the released record", func() (leaseStatus, bool) {
+				a.step()
+				s := a.Status()
+				return s, s.Holding
+			})
 			if !status.Holding || status.How != leaseTakenReleased || !status.Settle || status.HandBack != row.candidate {
 				t.Fatalf("pod-a status = %+v, want held from a released record, settling, hand-back candidate %v", status, row.candidate)
 			}
