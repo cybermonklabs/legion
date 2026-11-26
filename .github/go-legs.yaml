@@ -203,10 +203,10 @@ packages/envoy:
       - internal/cipher/store                   # 62 s
       - internal/cipherclient                   # 49 s
       - internal/cipherclient/repeatprobe
-      - internal/cipher/hold
       - internal/cipher/approval                # 33 s
       - internal/cipher/judge                   # 30 s
       - internal/cipher/proxy                   # 18 s
+      - internal/cipher/hold                    # 15 s (run 45862794170, job 140058256929)
       - internal/cipher/machine                 # 12 s
       - internal/cipher/oauthstore              # 12 s
       - internal/ciphertoken                    # 8 s
