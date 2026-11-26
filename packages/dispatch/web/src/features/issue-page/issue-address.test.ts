@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { screen, waitFor } from "@testing-library/react";
 
 import type { Message } from "../../api/types";
-import { KEY } from "./decisions-filter/decisions-fixtures";
+import { KEY } from "../decision-card/decision-fixture";
 import { conversationPath } from "./decisions-filter/decisions-parts";
 import { agentsOnlyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";

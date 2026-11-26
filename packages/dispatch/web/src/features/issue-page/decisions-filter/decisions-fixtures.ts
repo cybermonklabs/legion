@@ -7,7 +7,7 @@ import type {
   IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
-import { DECISIONS_SLUG, decision, decisionRef, KEY } from "../../decision-card/decision-fixture";
+import { DECISIONS_SLUG, decisionRef, KEY } from "../../decision-card/decision-fixture";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 import type { DecisionsAsk } from "./decisions-parts";
@@ -23,11 +23,11 @@ import type { DecisionsAsk } from "./decisions-parts";
  * rule written here.
  *
  * The issue's key, the decisions document's slug, a decision's address and one decision of the
- * decisions read are the decision card's own fixture (`decision-card/decision-fixture.ts`),
- * which its tests read without importing this file (R22), exported again here.
+ * decisions read are the decision card's own fixture (`decision-card/decision-fixture.ts`), which
+ * its tests read without importing this file (R22). This file builds on the first three and
+ * exports none of them: a test that wants one imports it from there.
  */
 
-export { DECISIONS_SLUG, decision, decisionRef, KEY };
 export const SPEC_SLUG = "spec";
 
 /** Who is reading, whose own words read as theirs (R34). */

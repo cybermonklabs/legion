@@ -3,7 +3,6 @@ import { type ReactNode, useCallback, useMemo } from "react";
 
 import { issueQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
-import { QueryError } from "../../components/QueryError";
 import {
   card,
   decisionUnsureBorder,
@@ -23,6 +22,7 @@ import {
   type DecisionCardProps,
   type DecisionText,
 } from "../decision-card/DecisionCard";
+import { StatementNamesError } from "../decision-card/StatementNamesError";
 import { useStatementExcerpts } from "../decision-card/useStatementExcerpts";
 import { WritableDecisionCard } from "../decision-card/WritableDecisionCard";
 import { issueDecisionsQuery } from "../doc/spec-marks";
@@ -190,8 +190,8 @@ const decisionKey = (item: DecisionMarginItem): string => item.id;
  * is two cards, which both read `["decisions", <key>]`, so a write from one settles both. The
  * one read the margin sends of its own is the names of the statements the cards' decisions
  * shaped, which their read holds no words for: one for the whole list (`useStatementExcerpts`).
- * Where it fails, the list says so below its cards as the margin says of its other failed reads
- * (`QueryError`), and each card still draws each statement as a link.
+ * Where it fails, the list says so below its cards, as the Decisions tab does
+ * (`StatementNamesError`), and each card still draws each statement as a link.
  */
 export function DecisionList({
   blockPlacements,
@@ -260,12 +260,7 @@ export function DecisionList({
           </div>
         ))}
       </section>
-      {namesFailure === undefined ? null : (
-        <QueryError
-          message="Could not load the statements these decisions shaped."
-          {...namesFailure}
-        />
-      )}
+      <StatementNamesError failure={namesFailure} />
     </>
   );
 }
