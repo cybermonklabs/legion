@@ -775,13 +775,15 @@ drive() {
 # runs as the session starts, before the turn's first request, so the wait ends at the record, or
 # at RUN's first model log line after that request (`whoami`, or `end`) with the records read once
 # more after it: a record that is not there then never comes. SECONDS bounds the wait where the
-# turn makes no later request.
+# turn makes no later request. The records are read once before the bound is: a look of a loaded
+# machine can take longer than a short SECONDS, and a wait that ended before its first look would
+# say that no record came without having read one.
 session_of() {
   local deadline each past
   session_found=''
   record_ended="within $2 s of its turn's start"
   deadline=$(($(now) + $2))
-  while [ -z "$session_found" ] && [ "$(now)" -lt "$deadline" ]; do
+  while :; do
     # The log is read before the records, so a record filed before the line is read after it.
     past=''
     [ -z "$(logged "$1" whoami)$(logged "$1" end)" ] || past=yes
@@ -796,6 +798,7 @@ session_of() {
       record_ended="by its turn's next request, after which no record comes"
       break
     fi
+    [ "$(now)" -lt "$deadline" ] || break
     pause
   done
 }
@@ -877,14 +880,17 @@ listed=''
 list_answer=''
 list_read=''
 if [ -n "$session" ]; then
+  # The list is read once before the bound is, as session_of reads the records.
   deadline=$(($(now) + list_seconds))
-  while [ -z "$listed" ] && [ "$(now)" -lt "$deadline" ] && codex_alive main; do
+  while codex_alive main; do
     list_answer=$(probe sessions)
     if [ -z "$(unknown_of "$list_answer")" ] && [ "$(json_field status "$list_answer")" = 200 ]; then
       list_read=yes
       case $list_answer in *"\"$session\""*) listed=yes ;; esac
     fi
-    [ -n "$listed" ] || sleep 2
+    [ -z "$listed" ] || break
+    [ "$(now)" -lt "$deadline" ] || break
+    sleep 2
   done
 fi
 control_answer=''
