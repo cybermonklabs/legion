@@ -30,6 +30,7 @@ import (
 // the third scan sends the same batch and records it again, and the store has to hold no second
 // row of that delivery.
 func TestDeliveredToIsAPointFactTheFenceDoesNotDrop(t *testing.T) {
+	t.Parallel()
 	const role = "point-fact-role"
 	database := storetest.Open(t)
 	ctx := context.Background()

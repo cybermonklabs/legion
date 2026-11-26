@@ -7,15 +7,18 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 
-// `dispatch artifact` under a name its owner already holds is refused before anything is sent,
-// and the refusal names only a remedy Dispatch takes and prints no token. Of the stored kind, a
-// file or picture is replaced with --force and the token the writer's own `dispatch doc-read`
-// printed, so a writer whose read is stale is refused 409 rather than handed the newest token;
-// where the standing version states no token, --force alone. Of another kind, by Dispatch's rule
-// (declared Markdown is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a
-// file), the name cannot take it, so the refusal names another name and nothing else. Each row
-// runs the command whole, through runDispatchCli, against a stub Dispatch that keeps DSP-1's
-// artifacts and answers reads and uploads as Dispatch does.
+// `dispatch artifact` under a name its owner already holds is refused before the upload is sent,
+// and the refusal names only a remedy Dispatch takes and prints no token. The command checks a
+// Markdown text first, with a round trip that stores nothing, and then reads what the owner holds;
+// this stub answers that round trip 404, as a Dispatch without the route does, so the text goes
+// unchecked and the read of the held name decides. Of the stored kind, a file or picture is
+// replaced with --force and the token the writer's own `dispatch doc-read` printed, so a writer
+// whose read is stale is refused 409 rather than handed the newest token; where the standing
+// version states no token, --force alone. Of another kind, by Dispatch's rule (declared Markdown
+// is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file), the name cannot
+// take it, so the refusal names another name and nothing else. Each row runs the command whole,
+// through runDispatchCli, against a stub Dispatch that keeps DSP-1's artifacts and answers reads
+// and uploads as Dispatch does.
 
 const makeDirectory = temporaryDirectories("artifact-held-file-name");
 

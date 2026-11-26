@@ -144,6 +144,26 @@ func readOnlyAnswer(session, service, jkt string) ciphertoken.Introspection {
 	}
 }
 
+// jobService is the service a job's token names: the identity its job entry lists, here a pod's
+// Kubernetes service account as the exchange spells its subject.
+const jobService = "system:serviceaccount:example-ns:example-job"
+
+// jobAnswer is the broker's answer about a job's token, as the exchange mints it from a job
+// entry: the entry's identity as its service and no person, the entry's project scope - named
+// with its one project, or public with the private projects its entry lists - and its whole list,
+// and no OAuth scope.
+func jobAnswer(session, scope, jkt string, projects ...string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
+		Active:       true,
+		Session:      session,
+		Service:      jobService,
+		ProjectScope: scope,
+		Projects:     projects,
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
 // brokerTokenRequest is the request a caller holding token sends to path, signed as its real
 // client signs one: the proof the caller's own DPoP transport produced, on a request carrying
 // this listener's JSON body.
@@ -204,16 +224,20 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 	caller := ciphertokentest.NewCaller(t)
 	stranger := ciphertokentest.NewCaller(t)
 	const (
-		personToken   = "access-token-of-a-person"
-		serviceToken  = "access-token-of-a-service"
-		readOnlyToken = "access-token-that-only-reads"
-		revokedToken  = "access-token-that-was-revoked"
-		unknownToken  = "access-token-the-broker-never-issued"
-		strangerToken = "access-token-bound-to-another-key"
-		machineToken  = "access-token-of-a-machine-login"
+		personToken    = "access-token-of-a-person"
+		serviceToken   = "access-token-of-a-service"
+		jobNamedToken  = "access-token-of-a-named-job"
+		jobPublicToken = "access-token-of-a-public-job"
+		readOnlyToken  = "access-token-that-only-reads"
+		revokedToken   = "access-token-that-was-revoked"
+		unknownToken   = "access-token-the-broker-never-issued"
+		strangerToken  = "access-token-bound-to-another-key"
+		machineToken   = "access-token-of-a-machine-login"
 	)
 	broker.Says(personToken, sessionAnswer("ses_person", "ada@example.com", caller.JKT()))
 	broker.Says(serviceToken, serviceAnswer("ses_service", "example-fleet", caller.JKT()))
+	broker.Says(jobNamedToken, jobAnswer("ses_job_named", ciphertoken.ProjectScopeNamed, caller.JKT(), "ACME"))
+	broker.Says(jobPublicToken, jobAnswer("ses_job_public", ciphertoken.ProjectScopePublic, caller.JKT(), "PRIVA", "PRIVB"))
 	broker.Says(readOnlyToken, readOnlyAnswer("ses_reader", "example-reader", caller.JKT()))
 	broker.Says(revokedToken, ciphertoken.Introspection{Active: false})
 	broker.Says(strangerToken, sessionAnswer("ses_person", "ada@example.com", caller.JKT()))
@@ -255,6 +279,24 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			wantService: "example-fleet",
 		},
 		{
+			name:        "admits a job's named token",
+			configured:  true,
+			started:     true,
+			token:       jobNamedToken,
+			wantStatus:  http.StatusOK,
+			wantSession: "ses_job_named",
+			wantService: jobService,
+		},
+		{
+			name:        "admits a job's public token",
+			configured:  true,
+			started:     true,
+			token:       jobPublicToken,
+			wantStatus:  http.StatusOK,
+			wantSession: "ses_job_public",
+			wantService: jobService,
+		},
+		{
 			name:       "refuses a revoked token",
 			configured: true,
 			started:    true,
@@ -290,10 +332,10 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 		{
 			// R4: the listener serves a read-only token on no route, and its code does not
 			// change for that: its verifier is built without the read-only switch, so the token
-			// is refused as a build before the switch refuses it. The row "admits a token naming
-			// a service and no person" sends the same request under a token of the same kind — a
-			// session and a service, no person and no project — whose project scope is person
-			// and which holds no scope read, and it is admitted, so the refusal is the scope's.
+			// is refused as a build before the switch refuses it. The row "admits a job's named
+			// token" sends the same request under a token of the same kind — a session and a
+			// service, no person — whose project scope is named, with a project and no scope
+			// read, and it is admitted, so the refusal is the scope's.
 			name:       "refuses a token that only reads",
 			configured: true,
 			started:    true,

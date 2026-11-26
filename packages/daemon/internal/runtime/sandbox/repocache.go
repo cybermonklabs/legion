@@ -338,7 +338,7 @@ func (r *Runtime) ensureRepositoryCache(ctx context.Context, repo ghrepo.Reposit
 // (cacheSandboxShape), or is another project's; waited out, within the boot timeout, while it is
 // being deleted (the sweep retiring it), and then created afresh.
 func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghrepo.Repository) (*sandbox, error) {
-	deadline := time.Now().Add(r.bootTimeout)
+	deadline := r.clock.Now().Add(r.bootTimeout)
 	for {
 		u, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
@@ -347,7 +347,7 @@ func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghre
 				return nil, err
 			}
 			created, err := r.sandboxClient().Create(ctx, manifest, metav1.CreateOptions{})
-			if apierrors.IsAlreadyExists(err) && time.Now().Before(deadline) {
+			if apierrors.IsAlreadyExists(err) && r.clock.Now().Before(deadline) {
 				continue
 			}
 			if err != nil {
@@ -382,7 +382,7 @@ func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghre
 			}
 			return err == nil && current.GetUID() != uid, err
 		}
-		if err := r.await(ctx, time.Until(deadline), fmt.Sprintf("sandbox %s (uid %s) to be deleted", name, uid), gone); err != nil {
+		if err := r.await(ctx, deadline.Sub(r.clock.Now()), fmt.Sprintf("sandbox %s (uid %s) to be deleted", name, uid), gone); err != nil {
 			return nil, err
 		}
 	}
