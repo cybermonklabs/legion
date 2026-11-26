@@ -4538,9 +4538,28 @@ function evalToolCalls(code: string) {
 
 /** A string literal a statement binds to a name, from the statement's start to the literal's
  * quote: JavaScript's `const`, `let` or `var NAME = "…"`, and Python's `NAME = "…"` at a line's
- * start, a string prefix (`r`, `f`) before its quote. */
+ * start, a string prefix (`r`, `f`) before its quote; and either one in parentheses, the `(`
+ * (its own group) before the first of a run of literals (`boundEnd`). */
 const BOUND_LITERAL =
-  /\b(?:const|let|var)[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*(?=['"`])|^[ \t]*([A-Za-z_]\w*)[ \t]*=[ \t]*[rRbBuUfF]{0,2}(?=['"])/gm;
+  /\b(?:const|let|var)[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*(\(\s*)?(?=['"`])|^[ \t]*([A-Za-z_]\w*)[ \t]*=[ \t]*(\(\s*)?[rRbBuUfF]{0,2}(?=['"])/gm;
+
+/** The end (one past it) of what a binding BOUND_LITERAL matches binds, from its first literal's
+ * quote at `at`: that literal's end (`literalEnd`); or, in parentheses, the last literal's end of
+ * a run of them, a string prefix before each, that only whitespace parts and a `)` ends (Python's
+ * implicit concatenation, `msg = ("…"\n"…")`, and JavaScript's `const msg = ("…")`). -1 for a
+ * literal that does not end, and for anything else in the parentheses (`("a" + b)`, `("a", "b")`). */
+function boundEnd(code: string, at: number, parenthesized: boolean): number {
+  let end = literalEnd(code, at);
+  const next = /\s*([rRbBuUfF]{0,2})(['"`)])/y;
+  while (parenthesized && end >= 0) {
+    next.lastIndex = end;
+    const hit = next.exec(code);
+    if (hit === null || (hit[2] === ")" && hit[1] !== "")) return -1;
+    if (hit[2] === ")") return end;
+    end = literalEnd(code, next.lastIndex - 1);
+  }
+  return end;
+}
 
 /** Whether the variable a statement of an eval cell's `code` binds in `[from, to)` is text only a
  * text tool is given: its `name` is used, and each use of it but the binding's lies in the
@@ -4585,7 +4604,8 @@ function textOnly(
  * gives no URL of plain text that names a host (`{url: u}`, a template's `${base}/x`), whose host
  * the reader cannot tell (`unreadUrl`); then the rest of the cell, those calls blanked, and each
  * string literal of no expression a statement binds to a variable only text tools are given
- * blanked too (BOUND_LITERAL, `textOnly`: `const msg = "… https://…"` that only
+ * blanked too, or each of a parenthesized run of them (BOUND_LITERAL, `boundEnd`, `textOnly`:
+ * `const msg = "… https://…"` or `msg = ("…"\n"… https://…")` that only
  * `tool.envoy_publish({message: msg})` reads), as a program (`programHosts`: every network URL in
  * it, and each fetch of it whose URL the reader cannot tell). A cell with a call whose brackets or
  * literals do not end is read whole as code. */
@@ -4621,11 +4641,11 @@ function evalHosts(
   const blanked = rest.join("");
   for (const hit of blanked.matchAll(BOUND_LITERAL)) {
     const quote = (hit.index ?? 0) + hit[0].length;
-    const end = literalEnd(blanked, quote);
+    const end = boundEnd(blanked, quote, (hit[2] ?? hit[4]) !== undefined);
     if (
       end >= 0 &&
       literalArgs(blanked.slice(hit.index, end))?.code.length === 0 &&
-      textOnly(code, calls, hit[1] ?? hit[2] ?? "", hit.index ?? 0, end)
+      textOnly(code, calls, hit[1] ?? hit[3] ?? "", hit.index ?? 0, end)
     )
       rest.fill(" ", quote, end);
   }

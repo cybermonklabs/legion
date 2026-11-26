@@ -1027,6 +1027,62 @@ describe("health: rule 13, off-world network, an eval cell's tool calls (door 1)
       )
     ).toContain("reaches api.github.com");
   });
+
+  // Catches (INFRA-764 round 36's run f3a817b2f784): a health that reads a URL in a message an eval
+  // cell binds to a variable as a parenthesized run of string literals, one a line (Python's
+  // implicit concatenation), and gives only to `tool.envoy_publish`, as a reach: the binding opens
+  // with `(`, which the reader of a bound literal did not take, so `programHosts` over the rest of
+  // the cell read the pull request comment's URL as a reach of github.com. And one that, to pass
+  // it, stops reading a URL that such a binding hands to a fetch or a shell, or that literals
+  // joined by `+` hold.
+  test("a message bound as a parenthesized run of literals and sent by a text tool is no reach, and the same binding given to a fetch or a shell is", () => {
+    const comment = "https://github.com/fernbrook/widgets/pull/1004#issuecomment-8001";
+    const msg = [
+      `msg = ("Implementer, WID-1 PR #1004: I accept your text commit c630fa301691fbc291b02fd655ee0f107818581b. "`,
+      `"My three checks: (1) the commit changes only docs/cli.md, no running code; "`,
+      `"(2) both reworded sentences are true ... "`,
+      `"PR comment: ${comment} . No text change and no push from me.")`,
+    ].join("\n");
+    const loop = (publish: string) =>
+      [
+        msg,
+        `for topic in ["notifications.role.legion-fernbrookwidgets1d01153c6684-wid-1-reviewer",`,
+        `              "notifications.role.legion-fernbrookwidgets1d01153c6684-wid-1-architect"]:`,
+        `    r = await ${publish}`,
+        `    print(topic, "->", r)`,
+      ].join("\n");
+    const published = loop("tool.envoy_publish(topic=topic, message=msg)");
+    expect(reach(cell("py", published))).toBeUndefined();
+    expect(
+      reach(
+        cell(
+          "py",
+          loop(
+            `tool.envoy_publish(content=__import__("json").dumps({"topic": topic, "message": msg}))`
+          )
+        )
+      )
+    ).toBeUndefined();
+    expect(
+      reach(
+        cell(
+          "js",
+          `const msg = ("PR comment: ${comment}");\nawait tool.envoy_publish({ message: msg });`
+        )
+      )
+    ).toBeUndefined();
+    expect(reach(cell("py", `${published}\nimport requests\nrequests.get(msg)`))).toContain(
+      "reaches github.com"
+    );
+    expect(
+      reach(cell("py", `${published}\nimport subprocess\nsubprocess.run(["curl", "-s", msg])`))
+    ).toContain("reaches github.com");
+    expect(
+      reach(
+        cell("py", `msg = ("PR comment: " + "${comment}")\nawait tool.envoy_publish(message=msg)`)
+      )
+    ).toContain("reaches github.com");
+  });
 });
 
 // Round 32's c8ef305c3eab (reviewer-text-findings, text-only, base), as the tester's evidence
