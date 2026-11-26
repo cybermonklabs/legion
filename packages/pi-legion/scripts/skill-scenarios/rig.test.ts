@@ -12143,10 +12143,11 @@ sleep() { command sleep 0.05; }`;
 
   /** The directory, on the disk TMPDIR names and never under this file's work directory, of what
    * composeRuns' batches hold that a tmpfs of a pod's size cannot: each batch's work directory,
-   * where its label's build of daemon-pane.go goes, and the native module cache its label installs
-   * link their homes' .omp/natives to (make_omp_home reads $XDG_DATA_HOME/omp/natives where
-   * $XDG_DATA_HOME/omp exists), where Oh My Pi extracts its addon, 123 MiB a version. A pod's
-   * /dev/shm of 64 MiB refused both (`ENOSPC`, 2026-11-25). */
+   * where its label's build of daemon-pane.go goes, and the cache directory (XDG_CACHE_HOME) whose
+   * omp/natives is the native module cache its label installs link their homes' .omp/natives to
+   * (make_omp_home's `omp_natives_dir` picks $XDG_CACHE_HOME/omp/natives where $XDG_CACHE_HOME/omp
+   * exists), where Oh My Pi extracts its addon, 123 MiB a version. A pod's /dev/shm of 64 MiB
+   * refused both (`ENOSPC`, 2026-11-25). */
   const onDisk = temporaryDirectory("suite");
   /** Composes each run `runs` names (`<scenario>:<case>:<label>:<the case's variable>:<n>`, then
    * `:plant` for a run with PLANT set) as cmd_run composes it, with rig.sh sourced whole, over
@@ -12161,8 +12162,8 @@ sleep() { command sleep 0.05; }`;
    * (onDisk's), as a batch's does: the route is the provider route, on a provider file of the
    * row's own whose key command no run calls, since the gateway and key-file routes need
    * credentials no test holds; and no superpowers skills are copied, which a model's read probes.
-   * Returns bash's result, the batch's work directory (under onDisk) and each run as the rig left
-   * it, archived (stop_run), by the name its record gives it. */
+   * Returns bash's result, the batch's work directory and cache directory (each under onDisk) and
+   * each run as the rig left it, archived (stop_run), by the name its record gives it. */
   function composeRuns(
     dir: string,
     labels: readonly string[],
@@ -12171,10 +12172,11 @@ sleep() { command sleep 0.05; }`;
     env: Record<string, string>
   ) {
     const rigWork = path.join(onDisk, path.basename(dir), "work");
-    const natives = path.join(onDisk, "natives");
+    const cache = path.join(onDisk, "cache");
     const bin = path.join(dir, "bin");
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
-    mkdirSync(path.join(natives, "omp"), { recursive: true });
+    // omp_natives_dir reads the cache's omp/natives only where its omp directory exists.
+    mkdirSync(path.join(cache, "omp"), { recursive: true });
     writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     writeFileSync(
       path.join(bin, "mise"),
@@ -12262,9 +12264,10 @@ sleep() { command sleep 0.05; }`;
         INSTALL_MISE_DATA_DIR:
           process.env.MISE_DATA_DIR ??
           path.join(process.env.XDG_DATA_HOME ?? path.join(homedir(), ".local", "share"), "mise"),
-        // The host's native module cache, as make_omp_home and the launch guard read it
-        // (run-names.ts's `hostProvided`): $XDG_DATA_HOME/omp/natives.
-        XDG_DATA_HOME: natives,
+        // The host's cache directory, whose omp/natives is the native module cache make_omp_home
+        // and the launch guard read (omp-home.sh's `omp_natives_dir`, run-names.ts's
+        // `hostProvided`): $XDG_CACHE_HOME/omp/natives.
+        XDG_CACHE_HOME: cache,
         PROVIDER_FILE: providerFile,
         LABELS: labels.join(" "),
         SKILL_SCENARIOS_WORK: rigWork,
@@ -12282,7 +12285,7 @@ sleep() { command sleep 0.05; }`;
           JSON.parse(readFileSync(path.join(archive, file), "utf8")).name,
           path.join(archive, file.slice(0, -".json".length))
         );
-    return { result, composed, rigWork, natives };
+    return { result, composed, rigWork, cache };
   }
 
   // Catches: a word of the measurement in any file rig.sh writes, copies or builds into a run
@@ -12341,7 +12344,7 @@ sleep() { command sleep 0.05; }`;
           "",
         ].join("\n")
       );
-      const { result, composed, rigWork, natives } = composeRuns(
+      const { result, composed, rigWork, cache } = composeRuns(
         dir,
         labels,
         runs.map(({ argument }) => argument),
@@ -12353,7 +12356,7 @@ sleep() { command sleep 0.05; }`;
       );
       // Every file of each run as the guard reads it at the first launch, through its own walker
       // (run-names.ts's `worldFiles`), by its path and its text, with the trees the run's label
-      // and the host provide as the guard reads them (the batch's XDG_DATA_HOME, whose
+      // and the host provide as the guard reads them (the batch's XDG_CACHE_HOME, whose
       // omp/natives make_omp_home linked the install's natives to).
       const vocab = vocabulary(labels);
       const named: string[] = [];
@@ -12365,7 +12368,7 @@ sleep() { command sleep 0.05; }`;
         try {
           for (const { file, text, link } of worldFiles(
             run,
-            hostProvided(installOf(rigWork, label), { ...childEnv, XDG_DATA_HOME: natives })
+            hostProvided(installOf(rigWork, label), { ...childEnv, XDG_CACHE_HOME: cache })
           )) {
             if (file.startsWith("home/")) home.add(`${link ? "link" : "file"} <run>/${file}`);
             const inName = textWords(file, vocab);

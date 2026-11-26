@@ -556,8 +556,9 @@ by `lstat`, reads the path each link names for the guard's words, and judges whe
 A path inside the run is read as itself and no further. One inside the label's
 install (`<work>/installs/<id>/`, the install `load_label` records, which `launch` passes to the
 guard), the host's native module cache (where `make_omp_home` links each install's
-`.omp/natives`: `$XDG_DATA_HOME/omp/natives` where `$XDG_DATA_HOME/omp` is a directory, else
-`~/.omp/natives`) or the host's git exec path (`git --exec-path`, whose programs `world_remote`
+`.omp/natives`, the directory `omp-home.sh`'s `omp_natives_dir` prints:
+`$XDG_CACHE_HOME/omp/natives` where `XDG_CACHE_HOME` is set and `$XDG_CACHE_HOME/omp` exists,
+else `~/.omp/natives`) or the host's git exec path (`git --exec-path`, whose programs `world_remote`
 links into `<run>/lib/git-core`) is not read. One anywhere else refuses the launch, naming the
 link. The guard holds one file's text at a time. In INFRA-764's round 31 at `c42409bc` the walker
 went through the HOME's links, since Bun's recursive `readdirSync` enters a link to a directory:

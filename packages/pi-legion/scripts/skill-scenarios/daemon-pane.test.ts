@@ -1574,8 +1574,9 @@ describe("the label's build and its facts", () => {
       mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
       cpSync(path.join(DAEMON_MODULE, file), path.join(daemon, file), { recursive: true });
     }
-    // The routes table, and the list of released contracts the daemon's contract is counted from
-    // since #5399 (daemon-pane.ts's `statesContract`).
+    // The routes table, and the list of released contracts and the entry fixtures the daemon's
+    // contract is counted from since #5399 (daemon-pane.ts's `statesContract`); a tree that holds
+    // no entry has no directory of them.
     for (const file of [
       path.join("packages", "envoy", "internal", "dispatch", "api", "routes_table.go"),
       path.join("packages", "contracts", "fixtures", "daemon-api", "released-contracts.json"),
@@ -1583,6 +1584,11 @@ describe("the label's build and its facts", () => {
       mkdirSync(path.dirname(path.join(checkout, file)), { recursive: true });
       cpSync(path.join(DAEMON_MODULE, "..", "..", file), path.join(checkout, file));
     }
+    const entries = path.join("packages", "contracts", "fixtures", "daemon-api", "contracts");
+    if (existsSync(path.join(DAEMON_MODULE, "..", "..", entries)))
+      cpSync(path.join(DAEMON_MODULE, "..", "..", entries), path.join(checkout, entries), {
+        recursive: true,
+      });
     const help = path.join(daemon, "cmd", "legion", "gh_help.go");
     writeFileSync(help, edit(readFileSync(help, "utf8")));
     return checkout;
@@ -1735,11 +1741,12 @@ describe("the label's build and its facts", () => {
 // (labelShapes): main's since the change that brought it, by its own marker, or main `ff2a10ef`'s,
 // which predates it, by the code it has in its place. A marker it cannot find refuses the batch,
 // naming the marker and its file, and is never read as an older daemon (the architect's ruling of
-// 2026-11-18). Each source here is a copy of the twenty-eight files the readers read, so a row
-// reads them and nothing else.
+// 2026-11-18). Each source here is a copy of the files the readers read (SOURCES) and of the
+// checkout's entry fixtures (ENTRY_FIXTURES), so a row reads them and nothing else.
 describe("the shapes of a label's daemon source", () => {
   const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
-  /** The files labelShapes reads, under a checkout's `packages/`. */
+  /** The files labelShapes reads, under a checkout's `packages/`, beside the entry fixtures
+   * (ENTRY_FIXTURES), a directory copyWith copies whole. */
   const SOURCES = [
     "daemon/internal/api/handoff.go",
     "daemon/internal/api/claims.go",
@@ -1778,14 +1785,17 @@ describe("the shapes of a label's daemon source", () => {
   const ROUND_WORDS = "daemon/internal/reviewround/reviewround.go";
   const REVIEW = "daemon/internal/workflow/review.go";
   const FACTS = "daemon/internal/intake/facts.go";
+  /** Where a checkout holds one fixture for each entry of the contract after the numbered ones. */
+  const ENTRY_FIXTURES = "contracts/fixtures/daemon-api/contracts";
   let copies = 0;
-  /** A checkout holding SOURCES of `from` alone, with `marker` written as `renamed` in `file`,
-   * which must hold it. */
+  /** A checkout holding SOURCES and the entry fixtures of `from` alone, with `marker` written as
+   * `renamed` in `file`, which must hold it. */
   function copyOf(from: string, file = "", marker = "", renamed = ""): string {
     return copyWith(from, file === "" ? [] : [[file, marker, renamed]]);
   }
-  /** A checkout holding SOURCES of `from` alone, with each edit `[file, marker, renamed]` of
-   * `edits` made in turn, each file holding its marker when its edit is made. */
+  /** A checkout holding SOURCES and the entry fixtures of `from` alone, with each edit `[file,
+   * marker, renamed]` of `edits` made in turn, each file holding its marker when its edit is
+   * made. The entry fixtures are copied unedited: `statesContract` counts one for each. */
   function copyWith(from: string, edits: readonly (readonly [string, string, string])[]): string {
     const dir = path.join(rig, `source-shapes-${++copies}`);
     for (const one of SOURCES) {
@@ -1802,6 +1812,10 @@ describe("the shapes of a label's daemon source", () => {
       mkdirSync(path.dirname(path.join(dir, "packages", one)), { recursive: true });
       writeFileSync(path.join(dir, "packages", one), text);
     }
+    // main ff2a10ef, before #5399, holds no entry fixtures, so a copy of it has none.
+    const entries = path.join("packages", ENTRY_FIXTURES);
+    if (existsSync(path.join(from, entries)))
+      cpSync(path.join(from, entries), path.join(dir, entries), { recursive: true });
     return dir;
   }
   // The words of the decoder's refusal of a body holding U+0000: main's since #4463, and #4488's
@@ -1817,8 +1831,6 @@ describe("the shapes of a label's daemon source", () => {
       readFileSync(path.join(CHECKOUT, "packages", "daemon/internal/api/contracts.go"), "utf8")
     )?.[1]
   );
-  /** Where a checkout holds one fixture for each entry of the contract after the numbered ones. */
-  const ENTRY_FIXTURES = "contracts/fixtures/daemon-api/contracts";
   /** The contract this checkout's daemon states: the one its registry gives a build with no stamp
    * (contracts.go), which is `LastNumberedContract` plus one for each entry fixture. Counted here
    * from the two, apart from the `daemonContract` the rig reads the number with. */
@@ -1867,8 +1879,8 @@ describe("the shapes of a label's daemon source", () => {
   // taken from any session and one taken on its `commit_id`, no step record, a rating taken where
   // the daemon refuses it, a body holding U+0000 taken or refused in #4488's words, a pull
   // request counting fix attempts main's daemon keeps no count of, answers stating no contract
-  // and a completion's `ready: true` taken; and a reader that needs a file the twenty-eight are
-  // not.
+  // and a completion's `ready: true` taken; and a reader that needs a file a copy (copyOf) does
+  // not hold.
   test("this checkout's daemon source posts a backward move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone, holds a review to its footer's head, records each step, refuses an unasked rating and a body holding U+0000 in main's words since #4463, counts no fix attempt, states its contract and refuses ready", () => {
     expect(DAEMON_API_VERSION).toBeGreaterThan(188);
     expect(labelShapes(CHECKOUT)).toEqual(MAIN);
@@ -2412,7 +2424,7 @@ describe("the shapes of a label's daemon source", () => {
       writeFileSync(path.join(entries, "packages", ENTRY_FIXTURES, name), "{}");
     for (const name of ["notes.txt", "2099010100000_short.json", "20990303030303.json"])
       writeFileSync(path.join(entries, "packages", ENTRY_FIXTURES, name), "");
-    expect(labelShapes(entries).statesContract).toBe(LAST_NUMBERED + 2);
+    expect(labelShapes(entries).statesContract).toBe(DAEMON_API_VERSION + 2);
     const unlisted = copyOf(CHECKOUT);
     rmSync(
       path.join(unlisted, "packages", "contracts/fixtures/daemon-api/released-contracts.json")

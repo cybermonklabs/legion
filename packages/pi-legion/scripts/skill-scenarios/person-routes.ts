@@ -31,13 +31,14 @@ const PERSON_SCOPE = "model.ScopePerson";
  * literal for a fixed segment and any other expression for one of the caller's values. */
 const CLIENT_PATH = /\[\s*"api",\s*"v1"\s*[,\]]/g;
 /** The calls a path is sent by, read off the text before the path: `this.#json`,
- * `this.#jsonAnswer` or `this.#form` with the method before it; `this.#upload` and
- * `this.#writingNothing`, which post it; and a `const` the path is bound to, directly, as either
- * arm of a `? :`, or as the URL `this.#url` makes of it, which a later call of the same method of
- * the client sends: one of those first three or `this.#send` given the method and the const, or
- * `this.#writingNothing` given the const, which posts it. */
+ * `this.#jsonAnswer` or `this.#form` with the method before it; `this.#upload`,
+ * `this.#writingNothing` and `this.#roundTrip` (which hands its path to `this.#writingNothing`),
+ * which post it; and a `const` the path is bound to, directly, as either arm of a `? :`, or as
+ * the URL `this.#url` makes of it, which a later call of the same method of the client sends: one
+ * of those first three or `this.#send` given the method and the const, or `this.#writingNothing`
+ * given the const, which posts it. */
 const SENT = /this\.#(?:json|jsonAnswer|form)(?:<[^()]*>)?\(\s*"([A-Z]+)",\s*$/;
-const POSTED = /this\.#(?:upload|writingNothing)(?:<[^()]*>)?\(\s*$/;
+const POSTED = /this\.#(?:upload|writingNothing|roundTrip)(?:<[^()]*>)?\(\s*$/;
 const BOUND = /\bconst (\w+) = (?:this\.#url\(|(?:[^;]*[?:] )?)$/;
 /** The end of a method of the client: its closing brace, alone on its line at the class's
  * indentation. */
@@ -155,7 +156,7 @@ function clientRequests(checkout: string): Sent[] {
     }
     if (method === undefined)
       throw new Error(
-        `${CLIENT_TS}:${line} spells the route path ${text.slice(open, spelled.end).replace(/\s+/g, " ")}, which no call this reads sends: this.#json, this.#jsonAnswer or this.#form given "<METHOD>" and it, this.#upload or this.#writingNothing given it, or a const it is bound to that one of the first three or this.#send given "<METHOD>", or this.#writingNothing, sends later in the same method`
+        `${CLIENT_TS}:${line} spells the route path ${text.slice(open, spelled.end).replace(/\s+/g, " ")}, which no call this reads sends: this.#json, this.#jsonAnswer or this.#form given "<METHOD>" and it, this.#upload, this.#writingNothing or this.#roundTrip given it, or a const it is bound to that one of the first three or this.#send given "<METHOD>", or this.#writingNothing, sends later in the same method`
       );
     sent.push({ method, segments: spelled.segments });
   }

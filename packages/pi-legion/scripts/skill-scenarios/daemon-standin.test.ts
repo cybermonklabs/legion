@@ -1,5 +1,5 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
 import { LegionActivityRequest, LegionStateResponse } from "@legion/contracts/legion-api";
@@ -4367,8 +4367,8 @@ test.skipIf(skip)(
  * with `state` (this checkout's where none is given: daemon-pane.ts's `servesFixAttempts` and
  * `repositoriesLive`), and this checkout's api sources the contract its answers state is read
  * from beside it (`statesContract`, and shaping.go for `repositoriesLive`), with the list of
- * released contracts that number is counted from since #5399, under this file's work
- * directory. */
+ * released contracts and the entry fixtures that number is counted from since #5399, under this
+ * file's work directory. */
 function contractCheckout(name: string, source: string, state?: string): string {
   const checkout = path.join(work, name);
   const dir = path.join(checkout, "packages", "contracts", "src");
@@ -4389,6 +4389,11 @@ function contractCheckout(name: string, source: string, state?: string): string 
     path.join(CHECKOUT, released, "released-contracts.json"),
     path.join(checkout, released, "released-contracts.json")
   );
+  // A tree that holds no entry has no directory of entry fixtures.
+  if (existsSync(path.join(CHECKOUT, released, "contracts")))
+    cpSync(path.join(CHECKOUT, released, "contracts"), path.join(checkout, released, "contracts"), {
+      recursive: true,
+    });
   return checkout;
 }
 /** A contract of a label whose daemon runs its claims in tmux panes alone: it describes a state

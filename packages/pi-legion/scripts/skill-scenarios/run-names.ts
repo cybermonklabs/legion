@@ -894,19 +894,18 @@ export interface Provided {
 
 /** The trees the label and the host provide a run (Provided), with `install` the label's install
  * and the host's two as the rig made its links into them, read from `env`: the native module cache
- * as make_omp_home picks it (scripts/e2e/lib/omp-home.sh), $XDG_DATA_HOME/omp/natives where
- * $XDG_DATA_HOME/omp is a directory and $HOME/.omp/natives otherwise, and the exec path as
- * world_remote reads it, `git --exec-path`. A throw, naming why, where git names none. */
+ * as make_omp_home picks it (scripts/e2e/lib/omp-home.sh's `omp_natives_dir`),
+ * $XDG_CACHE_HOME/omp/natives where XDG_CACHE_HOME is set and $XDG_CACHE_HOME/omp exists and
+ * $HOME/.omp/natives otherwise, and the exec path as world_remote reads it, `git --exec-path`. A
+ * throw, naming why, where git names none. */
 export function hostProvided(
   install: string,
   env: Readonly<Record<string, string | undefined>> = process.env
 ): Provided {
-  const data = env.XDG_DATA_HOME ?? "";
+  const cache = env.XDG_CACHE_HOME ?? "";
   const natives =
-    data !== "" &&
-    existsSync(path.join(data, "omp")) &&
-    statSync(path.join(data, "omp")).isDirectory()
-      ? path.join(data, "omp", "natives")
+    cache !== "" && existsSync(path.join(cache, "omp"))
+      ? path.join(cache, "omp", "natives")
       : path.join(env.HOME ?? "", ".omp", "natives");
   const git = Bun.spawnSync(["git", "--exec-path"], {
     env: { ...env },
