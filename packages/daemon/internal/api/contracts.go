@@ -48,9 +48,9 @@ const contractOrderForm = "v1:"
 // Each other field is rows the entry adds to one table, which the registry appends to that
 // table's frozen rows in the build's order. A row names the entry by its constant wherever the
 // row holds a contract — a band's or a stand-in's contract, an Answer's Since, an
-// EnumeratedValue's Since, a TypedSetting's Since and Until, a RemovedRoutes value, an
-// AcceptedField's LeftAt — and the registry resolves each such value to the entry's number, so
-// a row moves verbatim from a frozen table into an entry's file.
+// EnumeratedField's Until, an EnumeratedValue's Since, a TypedSetting's Since and Until, a
+// RemovedRoutes value, an AcceptedField's LeftAt — and the registry resolves each such value to
+// the entry's number, so a row moves verbatim from a frozen table into an entry's file.
 type contractEntry struct {
 	id   int
 	slug string
@@ -340,6 +340,7 @@ func (r *contractRegistry) deriveTables(ordered []contractEntry) error {
 			values[at].Since = resolved(values[at].Since)
 		}
 		fields[place].Values = values
+		fields[place].Until = resolved(fields[place].Until)
 	}
 	for place := range r.typedSettings {
 		r.typedSettings[place].Since = resolved(r.typedSettings[place].Since)

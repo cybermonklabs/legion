@@ -73,5 +73,11 @@ func init() {
 				dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
 					"stranded claims, waiting wakes and pause stops of a deployment's roles"},
 		},
+		enumeratedValues: []enumeratedValues{
+			{answer: AnswerState, keyPath: "issues.*.phase", values: valuesFrom(deploymentRolesContract, "step")},
+			{answer: AnswerState, keyPath: "issues.*.heldFrom", values: valuesFrom(deploymentRolesContract, "step")},
+			{answer: AnswerState, keyPath: "issues.*.architect.pendingTask.phase", values: valuesFrom(deploymentRolesContract, "step")},
+			{answer: AnswerState, keyPath: "issues.*.workers.*.claim.pendingTask.phase", values: valuesFrom(deploymentRolesContract, "step")},
+		},
 	})
 }
