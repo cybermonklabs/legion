@@ -37,9 +37,9 @@ says) and builds from nothing.
 The fill used to build each test binary with `go test -c -o /dev/null ./...`, and that left out
 one compile per package that envoy-go then made on every run: the compile of the package's test
 main. go test compiles the test main of a binary it runs and then deletes without DWARF, and the
-test main of a binary `-c` writes with it (cmd/go/internal/test/test.go of go1.27.3:
-`pmain.Internal.OmitDebug = !testC && !testNeedBinary()`), and the compile's action ID hashes
-that choice (cmd/go/internal/work/exec.go: `omitdebug %v`), so the two are different entries of
+test main of a binary `-c` writes with it (cmd/go/internal/test/test.go of go1.27.3 sets the test
+main's OmitDebug to `!testC && !testNeedBinary()`), and the compile's action ID hashes that
+choice (cmd/go/internal/work/exec.go: `omitdebug %v`), so the two are different entries of
 the build cache. The fill now runs `go test -count=1 -run '^$'`, which builds and starts each
 binary as envoy-go's go test does, to the last cached action, and runs no test, since `^$`
 matches none. Every TestMain of the module opens a database, a NATS server or a build only when
@@ -55,8 +55,10 @@ after the `-c` fill the unit step compiled 157 of its 162 test mains again, and 
 none (jobs 139586633736 and 139586508026). The compiles are small, 4.9 s of compiler time in all,
 so the unit step's wall time moved within its noise (1,224 s, then 1,211 s). Its 162 links run
 either way, 78 to 80 s of linker time, since Go caches no test binary. From an empty cache this
-fill's test binaries took 212 s and 199 s (x64, arm64), against 274 s and 214 s for the `-c`
-fill.
+fill's test binaries took 212 s and 199 s (x64, arm64; jobs 139585272567 and 139585272758, the
+whole jobs 4.5 and 4.2 min), against 274 s and 214 s for the `-c` fill (jobs 139585274552 and
+139585275017). On main's entry this fill's jobs took 2.9 and 2.7 min, an 8 s save included (jobs
+139585272770 and 139585272357).
 
 ## Why the go-envoy-test fill deletes the module zips
 
