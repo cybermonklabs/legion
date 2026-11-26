@@ -1,0 +1,170 @@
+diff --git a/packages/daemon/internal/prompts/go/worker-common.md b/packages/daemon/internal/prompts/go/worker-common.md
+index 81e712d1a46..79bd2a7a7de 100644
+--- a/packages/daemon/internal/prompts/go/worker-common.md
++++ b/packages/daemon/internal/prompts/go/worker-common.md
+@@ -24,7 +24,7 @@ A news task tells you that a person approved a new version of your tree's design
+ - If your work is current, write a `dispatch comment` on the issue that names the version and says why your work is current.
+ Write no comment for a news task or a message that says that nothing your issue holds changed. An issue whose pull request has merged never moves back: the daemon refuses that move.
+ 
+-Never change an issue's lifecycle status (`dispatch issue-update` with a `--status`): the daemon owns it. It moves a phase on only from the `legion` tool's `handoff_complete`, `request_backward_move` and the architect's `sign_off`. It also moves one on from the GitHub events your role part names, such as the reviewer's review and the merge. A status written by a session holding a claim in the issue's own tree is undone. On the root of another tree the daemon is running it is undone too, and that root's architect gets a `status-reasserted` notice naming the session. Only on a child of another tree, or a root waiting for the first slot of its generation or lingering, is it taken for a person's move. You write one lifecycle status yourself: the controller's report issue, when no controller answers and that issue is closed or missing. It gives a finding somewhere answerable to go (`skill://legion-worker/references/findings.md`, "When no controller takes it"). The report issue is in no tree and carries no `legion` label, so the daemon re-asserts nothing on it. `sessionStatusWrite` acts only for a session that claims the issue's tree, or for an admitted root.
++Never change an issue's lifecycle status (`dispatch issue-update` with a `--status`): the daemon owns it. It moves a phase on only from the `legion` tool's `handoff_complete`, `request_backward_move` and the architect's `sign_off`. It also moves one on from the GitHub events your role part names, such as the reviewer's review and the merge. The `legion` tool's `report_defect` moves no phase, and your step goes on after it. A status written by a session holding a claim in the issue's own tree is undone. On the root of another tree the daemon is running it is undone too, and that root's architect gets a `status-reasserted` notice naming the session. Only on a child of another tree, or a root waiting for the first slot of its generation or lingering, is it taken for a person's move. You write one lifecycle status yourself: the controller's report issue, when no controller answers and that issue is closed or missing. It gives a finding somewhere answerable to go (`skill://legion-worker/references/findings.md`, "When no controller takes it"). The report issue is in no tree and carries no `legion` label, so the daemon re-asserts nothing on it. `sessionStatusWrite` acts only for a session that claims the issue's tree, or for an admitted root.
+ 
+ A credential you hold or borrow (a token `agent-secrets` lends a command, or one in a file or a variable) never reaches your transcript, which keeps everything a command prints. Check a plain value's shape by its length and its prefix alone, printing only the number and whether the prefix matches, and compare two by printing only whether they are equal: never print, echo, slice or diff a credential's characters. A secret `agent-secrets` lends exists only in the environment of the command it runs, so the check runs there, and `--reason` says why, which a person reads if the secret needs a decision: `agent-secrets NAME --reason 'check the shape of this credential' -- sh -c 'echo "${#NAME}"; case "$NAME" in ghp_*) echo prefix-ok;; *) echo prefix-no;; esac'`.
+ 
+diff --git a/packages/daemon/internal/prompts/roles/core/common.md b/packages/daemon/internal/prompts/roles/core/common.md
+index 041e0d9afcb..6c9ee22233d 100644
+--- a/packages/daemon/internal/prompts/roles/core/common.md
++++ b/packages/daemon/internal/prompts/roles/core/common.md
+@@ -2,6 +2,6 @@
+ 
+ Before you change or design anything, read the code that already does the nearest thing: the callers of what you will touch, the existing helper that may already exist, and the test that exercises the path. State what you read. A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one.
+ 
+-Nothing needed for correctness is deferred. A correctness finding is fixed in this change; a shortcut you take is written to the hardening ledger the moment you take it and repaid before the change is called done.
++Nothing needed for correctness is deferred. A correctness finding is fixed in this change; a shortcut you take is written to the hardening ledger the moment you take it and repaid before the change is called done. After the task's last step passed, a correctness finding goes to `report_defect`, and the issue's next change fixes it: that is no deferral.
+ 
+ Give a person no estimated date or duration: say what work is left and what decides when it ends.
+diff --git a/packages/daemon/internal/prompts/roles/core/implementer.md b/packages/daemon/internal/prompts/roles/core/implementer.md
+index 790405d2650..ac657be1336 100644
+--- a/packages/daemon/internal/prompts/roles/core/implementer.md
++++ b/packages/daemon/internal/prompts/roles/core/implementer.md
+@@ -8,7 +8,7 @@ Your behaviour-preserving simplify pass covers every file of the change — docu
+ 
+ If the tester handed you a red test: make the tester's red test pass; do not modify it. Weakening, rewriting, or deleting it is a ledger entry, never a quiet fix.
+ 
+-Implement what the issue requires and run every check of it, except a check whose `run` is a whole test suite: its words are wrong, so send it to the architect. A check carrying `ci_check` is CI's: you do not run or record it, and `dispatch results` prints its pull request line. Open the PR; write the PR body as you go. Reply on every review thread you answer, one disposition reply per thread, `Fixed in <commit>: <one line>` or `Declined: <reason>`, then resolve each thread you have answered, and each bot thread the reviewer tells you it accepted — GitHub lets the pull request author's account resolve its threads, and you opened it — with `gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>`, one thread per call, never in bulk, never a thread you have not read, and, where your task has a reviewer step, never a bot thread the reviewer did not name. Where your task has no reviewer step, nobody adjudicates a bot's finding for you: answer each bot thread still unresolved, at your retro too, the threads you find there, naming in its message each run still going, which may open more; resolve each one you fixed or declined, with your reason in the reply; send one whose finding needs a fix at the retro, which pushes nothing, back to implementing with a reason naming the thread; and name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message. Correctness fixes go in this PR. Freeze a stacked base; never rewrite it. Read the plan first. Exercise the changed behavior through its real surface before reporting it.
++Implement what the issue requires and run every check of it, except a check whose `run` is a whole test suite: its words are wrong, so send it to the architect. A check carrying `ci_check` is CI's: you do not run or record it, and `dispatch results` prints its pull request line. Open the PR; write the PR body as you go. Reply on every review thread you answer, one disposition reply per thread, `Fixed in <commit>: <one line>` or `Declined: <reason>`, then resolve each thread you have answered, and each bot thread the reviewer tells you it accepted — GitHub lets the pull request author's account resolve its threads, and you opened it — with `gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>`, one thread per call, never in bulk, never a thread you have not read, and, where your task has a reviewer step, never a bot thread the reviewer did not name. Where your task has no reviewer step, nobody adjudicates a bot's finding for you: answer each bot thread still unresolved, at your retro too, the threads you find there, naming in its message each run still going, which may open more; resolve each one you fixed or declined, with your reason in the reply; and name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message. At the retro, which pushes nothing and sends no thread back, report a thread whose finding needs a fix with `report_defect`. Reply `Reported as defect <id>: <one line>` on it, and resolve it. Correctness fixes go in this PR. Freeze a stacked base; never rewrite it. Read the plan first. Exercise the changed behavior through its real surface before reporting it.
+ 
+ Merge the base forward only on one of three triggers. GitHub reports the pull request conflicting. The change needs something only the base has, such as a fix for its only red check. The pull request was retargeted. A merge the pull request does not need makes a new head, reruns CI and can void a review (the operator's answer on that case: make no merge with the base that is not needed). A merge-forward message on your role topic is the first trigger: the daemon sends it for a conflict that two reads of GitHub report. Outside `implementing`, the merge-forward message is the only trigger: the workspace is the phase's, and the daemon asks for the merge once the next step needs it. From `accepting` on, the merge with the base is the merger's, and the daemon asks the merger, not you: there you merge only for a merge-forward message the daemon already sent you, or when the merger asks you to. The issue keeps its phase, so you merge in the issue workspace while another role may hold the phase, and push with no handoff and no completion for the merge (in `implementing` your own assignment and its completion stand). Any other message that asks for a merge and names no conflict GitHub reports is no trigger: answer it with this rule, and merge nothing. Before you race another tree on shared files, ask it when its next push lands. Merge the branch's bookmark forward with the destination (`jj new legion/<KEY> <destination> -m "<message>"`) rather than rebasing — a rebase rewrites every descendant of the chain's fork point, including another tree's branch stacked on it, while the merge touches nothing existing and is a genuine fast-forward — and post a comment that names the condition the merge meets. After the merge, build the branch. On any new head, read what changed since the head your checks' passes name (`git diff <that head> <new head>`), and run again each check that the change can affect. For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in. A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry. Record each other check again at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'`, and do not run it again.
+ 
+diff --git a/packages/daemon/internal/prompts/roles/implementer.md b/packages/daemon/internal/prompts/roles/implementer.md
+index d658cdee3c5..55c520c3787 100644
+--- a/packages/daemon/internal/prompts/roles/implementer.md
++++ b/packages/daemon/internal/prompts/roles/implementer.md
+@@ -27,7 +27,7 @@ An issue whose Verification document holds no `after_merge` check gives such a l
+ 
+ ## Review threads
+ 
+-After every push that answers a review, and before you complete, answer and resolve each thread as the thread rule above says — one `Fixed in <commit>: <one line>` or `Declined: <reason>` reply, then one `resolveReviewThread` call per thread you answered — and record each thread's id and reply in the PR body's `Threads` section, stamped with the head you just pushed. A thread a bot opened (a CI bot's, or an App-routed person's) you answer the same way. Where the task has a review step, the reviewer adjudicates the finding, and a reviewer that disagrees with a resolution replies and unresolves it. The reviewer cannot resolve a thread as its own App, so it names the bot threads it accepted to you, by node id, in an Envoy message to your role topic or in its review body: resolve each one it names with the same `resolveReviewThread` call, one per thread, as soon as the message reaches you (a review bot that is red on an open thread runs again only on your next push, once its threads are resolved) or as part of answering that review, and record those ids in the `Threads` section too; never one it did not name. On a task whose `Steps:` line names no reviewer, nobody adjudicates a bot's finding for you: before each completion, your retro's included, list the pull request's threads (`skill://legion-worker/references/review-threads.md`), answer each bot thread still unresolved, resolve each one you fixed or declined, with your reason in the reply, and record each in the `Threads` section. At your retro, answer the bot threads you find, and name in its Dispatch message each run still going, with its name and the time you read it, since it may open more; the retro pushes nothing, so send a thread whose finding needs a fix back with `request_backward_move` to `implementing`, its `reason` naming the thread. Name each thread you declined, by node id with its reason, to your architect, the owner of the task, in your completion's `summary`; at your retro, name them in the Dispatch message of `skill://legion-retro` step 5 instead, since a retro summary holds two sentences. When GitHub refuses a resolution, report the thread and GitHub's message to the architect with `envoy_publish`; never skip it.
++After every push that answers a review, and before you complete, answer and resolve each thread as the thread rule above says — one `Fixed in <commit>: <one line>` or `Declined: <reason>` reply, then one `resolveReviewThread` call per thread you answered — and record each thread's id and reply in the PR body's `Threads` section, stamped with the head you just pushed. A thread a bot opened (a CI bot's, or an App-routed person's) you answer the same way. Where the task has a review step, the reviewer adjudicates the finding, and a reviewer that disagrees with a resolution replies and unresolves it. The reviewer cannot resolve a thread as its own App, so it names the bot threads it accepted to you, by node id, in an Envoy message to your role topic or in its review body: resolve each one it names with the same `resolveReviewThread` call, one per thread, as soon as the message reaches you (a review bot that is red on an open thread runs again only on your next push, once its threads are resolved) or as part of answering that review, and record those ids in the `Threads` section too; never one it did not name. On a task whose `Steps:` line names no reviewer, nobody adjudicates a bot's finding for you: before each completion, your retro's included, list the pull request's threads (`skill://legion-worker/references/review-threads.md`), answer each bot thread still unresolved, resolve each one you fixed or declined, with your reason in the reply, and record each in the `Threads` section. At your retro, answer the bot threads you find, and name in its Dispatch message each run still going, with its name and the time you read it, since it may open more. The retro pushes nothing and sends no thread back. For a thread whose finding needs a fix, call the `legion` tool's `report_defect` with a `defect` that names the thread. Reply `Reported as defect <id>: <one line>`, with the id that the call answered, and resolve the thread. Name each thread you declined, by node id with its reason, to your architect, the owner of the task, in your completion's `summary`; at your retro, name them in the Dispatch message of `skill://legion-retro` step 5 instead, since a retro summary holds two sentences. When GitHub refuses a resolution, report the thread and GitHub's message to the architect with `envoy_publish`; never skip it.
+ 
+ ## Forward merges
+ 
+diff --git a/packages/daemon/internal/prompts/roles/merger.md b/packages/daemon/internal/prompts/roles/merger.md
+index 3302139152b..0de053f2ab9 100644
+--- a/packages/daemon/internal/prompts/roles/merger.md
++++ b/packages/daemon/internal/prompts/roles/merger.md
+@@ -94,6 +94,10 @@ You may ask the implementer, the tester or the reviewer what they know, with `en
+ 
+ Read its log, and the same check on the base branch, and decide its cause. A check that fails on the base too, or passes when re-run at the same head, says nothing about this change: re-run it, or wait for the base's fix. A failure the base's newer code causes, where the change no longer fits code that landed after it was reviewed, is part of the merge: fix it as above. Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves, and say in its reason why no merge resolves it.
+ 
++### A defect you see in the change
++
++A defect you see in the change goes to the issue's next change, where no check shows it and no conflict explains it. Call the `legion` tool's `report_defect` with `issue`, `defect` and `head`, then merge as the steps above say. `defect` says what is wrong and gives its evidence: a file and line, or a command and what it printed. `head` is the head you read in step 1. Do not call `request_backward_move` for such a defect. You send the issue back for two causes only. One is a check that failed, as the part above says. The other is a news task whose new version makes the head stale. When you send it back, name that cause in its `reason`, and each defect you saw beside it. Do not report those defects with `report_defect`.
++
+ ## A closed design gate
+ 
+ The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed: version <n> of its <step> document (<id>)` says a new version of one gated document is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
+diff --git a/skills/legion-retro/SKILL.md b/skills/legion-retro/SKILL.md
+index 5ff4d4ea7a2..6a3f205e9b5 100644
+--- a/skills/legion-retro/SKILL.md
++++ b/skills/legion-retro/SKILL.md
+@@ -14,7 +14,6 @@ Retro commits nothing and pushes nothing: the merger merges the branch's head, a
+ Outside a forward merge of the base, no Legion check compares the head that merges with a review's head.
+ Never rebase the branch or make another branch or bookmark.
+ Retro writes no handoff.
+-In the workspace it changes nothing; outside it, it writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and, with no reviewer step, the review-thread replies and resolutions of step 1.
+ It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon.
+ What the work taught is a `dispatch comment` for the skill librarian; no role writes to `docs/solutions/`.
+ 
+@@ -22,9 +21,23 @@ What the work taught is a `dispatch comment` for the skill librarian; no role wr
+ 
+ When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do not call `handoff_complete`:
+ send the command and its output to the architect's topic on your `Legion addressing` line.
+-A defect you find in the work, other than a bot thread that step 1 sends back, goes to the architect with its evidence, and you hold your completion until it answers:
+-while retro holds the phase, `request_backward_move` is yours, and `handoff_complete` takes it away.
+-End each turn of that hold with a WAITING line naming the defect and the answer you wait on.
++
++## A defect you find
++
++A defect you find in the change goes to the issue's next change, and your retro goes on.
++Call the `legion` tool's `report_defect` with `issue`, `defect` and `head`, the head you read in step 1.
++`defect` says what is wrong, with a file and line or a command and what it printed.
++Then do the remaining steps and complete: no `request_backward_move` for it, no wait for an answer.
++Only these send the work back:
++
++- a check with no pass standing at the head (step 1)
++
++- a news task whose approved new version makes the work stale
++
++- a check of the goal that another of your texts gives retro, for an unmet requirement
++
++That move's `reason` names each defect you found, and none goes to `report_defect`.
++A refused `report_defect` is a failed step: stop as *When retro stops* says.
+ 
+ ## Steps
+ 
+@@ -48,7 +61,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer
+      name the check's block id in the reason.
+ 
+    - With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
+-     For a thread that needs a fix, `request_backward_move` with `to: implementing`, the thread's URL in its `reason`.
++     For a thread that needs a fix, call `report_defect` with the thread's URL in its `defect`.
++     Reply `Reported as defect <id>: <one line>` on the thread, with the id that the call answered, and resolve it.
+ 
+ 2. **Get a second reading.**
+    First list in your session the constraints the issue did not state, choices between two working options, abandoned approaches and reusable code.
+diff --git a/skills/legion-worker/SKILL.md b/skills/legion-worker/SKILL.md
+index 09d930a3395..efb638174f5 100644
+--- a/skills/legion-worker/SKILL.md
++++ b/skills/legion-worker/SKILL.md
+@@ -47,8 +47,6 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
+ 
+   - a reviewer on a half of the round that has no review, on a required check with no run at the head, or on the architect's rewrite of a check whose `run` is a whole test suite (`skill://legion-worker/references/merge-gate.md`);
+ 
+-  - retro on the architect's answer to a defect it reported;
+-
+   - a pushing role whose second push still did not carry the pull request onto its commit.
+ 
+ - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
+@@ -85,6 +83,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
+ - No deferrals.
+   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
+   So is any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
++  After the last step passed, `report_defect` sends a defect to the next change: no deferral.
+   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
+ 
+ - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
+diff --git a/skills/legion-worker/references/findings.md b/skills/legion-worker/references/findings.md
+index f4614d90f58..229ab635de9 100644
+--- a/skills/legion-worker/references/findings.md
++++ b/skills/legion-worker/references/findings.md
+@@ -10,7 +10,7 @@ A finding outside your issue never becomes a `dispatch issue` you file. Take the
+ 2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or files a Legion root when none does.
+ 3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, who owns it, a change of scope, cost or risk) is a `dispatch ask` with one recommendation (*What the ask says*).
+ 
+-A fix you are not sure of is not step 1. A problem inside your issue is fixed in your change. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names.
++A fix you are not sure of is not step 1. A problem inside your issue is fixed in your change while a step of your task is still to pass. After your task's last step passed, it goes to the `legion` tool's `report_defect`, and the next change of your issue fixes it. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names.
+ 
+ Search first (`skill://dispatch-first`). An open issue that tracks the problem gets your evidence as a comment. An open ask on the report issue about it (`dispatch open-asks --project <PROJECT>`) gets your evidence as a reply (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`); open no second one.
+ 
+diff --git a/skills/legion-worker/references/review-threads.md b/skills/legion-worker/references/review-threads.md
+index 0f0cee057c9..f47830f8065 100644
+--- a/skills/legion-worker/references/review-threads.md
++++ b/skills/legion-worker/references/review-threads.md
+@@ -2,13 +2,14 @@
+ 
+ Read it when you reply on, list or resolve a review thread, or judge a bot's finding.
+ With no reviewer step, the implementer lists unresolved bot threads before each completion, including retro;
+-it replies to and resolves each it fixes or declines, and records it in `Threads`.
++it replies to and resolves each it fixes, declines or, at retro, reports with `report_defect`, and records it in `Threads`.
+ It names each declined thread to the task's architect, by node id with its reason, in its completion summary when it implements.
+ It names them at retro in the Dispatch message of `skill://legion-retro` step 5, since a retro summary holds two sentences.
+ At retro it answers the threads it finds; a run still going may open more, so retro's message names each such run (`skill://legion-retro` step 5).
+ 
+ - Reply on each thread you answer, one disposition reply per thread:
+-  the implementer's `Fixed in <commit>: <one line>` or `Declined: <reason>`, the reviewer's reason in its own words.
++  the implementer's `Fixed in <commit>: <one line>` or `Declined: <reason>`, and the reviewer's reason in its own words.
++  At retro, the implementer's reply can also be `Reported as defect <id>: <one line>`.
+   No reply resolves anything.
+ 
+ - Only the pull request's author can resolve its threads, and the implementer opens every Legion pull request.

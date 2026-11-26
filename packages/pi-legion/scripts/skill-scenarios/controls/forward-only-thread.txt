@@ -1,0 +1,4 @@
+# forward-only, the label ctl-thread (the control of the review-thread world): the head with the
+# second group of sentences taken out, the ones that tell the retro to report a thread that needs
+# a fix rather than send it back. The patch is that group's own commit.
+unpatch controls/patches/forward-only-thread.patch

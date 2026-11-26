@@ -188,6 +188,79 @@ forward_control() {
   esac
 }
 
+# The texts that the implementer in retro or the merger reads, which ctl-main-texts takes out
+# (C6). Every other control label takes out one commit of the texts pull request.
+forward_text_paths=(
+  packages/daemon/internal/prompts/roles/core/common.md
+  packages/daemon/internal/prompts/roles/core/implementer.md
+  packages/daemon/internal/prompts/roles/implementer.md
+  packages/daemon/internal/prompts/go/worker-common.md
+  packages/daemon/internal/prompts/roles/merger.md
+  skills/legion-retro
+  skills/legion-worker
+)
+
+# forward_patch_group LABEL prints what the label's patch is the diff of: the subject of the one
+# commit of the texts pull request, and `texts` for the diff of every text of the list above. A
+# subject names its commit, so the patch is made again after a rebase gives it a new id.
+forward_patch_group() {
+  case $1 in
+  ctl-main-texts) printf 'texts\n' ;;
+  ctl-forward-only) printf '%s\n' 'docs(prompts): the retro and the merger report a defect after the last step and go on' ;;
+  ctl-thread) printf '%s\n' 'docs(prompts): at the retro, a review thread that needs a fix is reported, not sent back' ;;
+  ctl-owner) printf '%s\n' 'docs(prompts): the architect asks no role to move reviewed work back past the last step' ;;
+  esac
+}
+
+# forward_commit_of SUBJECT prints the one commit of the label checkout's history whose subject is
+# SUBJECT. None, or more than one, is no commit to make a patch from, and it fails.
+forward_commit_of() {
+  local found count
+  found=$(git -C "$checkout" log --format='%H%x09%s' -n 400 HEAD | awk -F'\t' -v want="$1" '$2 == want { print $1 }')
+  count=$(printf '%s' "$found" | grep -c . || true)
+  [ "$count" = 1 ] || {
+    say "the history holds $count commits whose subject is '$1', and a patch is made from one"
+    return 1
+  }
+  printf '%s\n' "$found"
+}
+
+# forward_patch_made LABEL writes the patch the pull request's own commits make at this head. Each
+# flag is given rather than read from the configuration, so the patch a dev box committed and the
+# patch a pod makes again are the same bytes.
+forward_patch_made() {
+  local group commit first
+  group=$(forward_patch_group "$1")
+  if [ "$group" != texts ]; then
+    commit=$(forward_commit_of "$group") || return 1
+    git -C "$checkout" diff --no-color --no-ext-diff --no-renames --unified=3 --diff-algorithm=myers \
+      --src-prefix=a/ --dst-prefix=b/ "$commit^" "$commit"
+    return
+  fi
+  # The texts patch is the pull request's own diff of those files: from the parent of its first
+  # commit to the head. A merge of the base into the texts branch brings other changes of those
+  # files into that range, so the patch stops holding and this check says so.
+  first=$(forward_commit_of "$(forward_patch_group ctl-forward-only)") || return 1
+  git -C "$checkout" diff --no-color --no-ext-diff --no-renames --unified=3 --diff-algorithm=myers \
+    --src-prefix=a/ --dst-prefix=b/ "$first^" HEAD -- "${forward_text_paths[@]}"
+}
+
+# forward_patch_holds LABEL PATCH: the committed patch is the diff that the pull request's own
+# commits make at this head (C6, row 1). The manifest's own checks do not hold this. `label-tree`
+# asks only that the patch applies in reverse, and `unpatch-holds` asks only that the tree differs
+# from its commit in the patch's own lines. A patch one file short of the change, or one file
+# longer, passes both, and its label's cells then measure another change.
+forward_patch_holds() {
+  local made=$SKILL_SCENARIOS_WORK/$1-made.patch
+  if ! forward_patch_made "$1" >"$made" 2>"$made.err"; then
+    say "the patch of $1 could not be made again: $(cat "$made.err")"
+    return 1
+  fi
+  cmp -s "$made" "$2" && return 0
+  say "the committed patch of $1 is not the diff its own commits make; that diff is $made"
+  return 1
+}
+
 forward_job() {
   local label=$group worlds=() world control=() tree dir
   local -a batch_env=()
@@ -226,7 +299,8 @@ forward_job() {
   tree=$checkout
   if [ "$label" != head ]; then
     mapfile -t control < <(forward_control "$label")
-    if ! bash "$rig" label-tree "$label" "$commit" "$here/${control[0]}" ||
+    if ! forward_patch_holds "$label" "$here/${control[1]}" ||
+      ! bash "$rig" label-tree "$label" "$commit" "$here/${control[0]}" ||
       ! bash "$rig" unpatch-holds "$label" "$here/${control[1]}"; then
       echo "UNKNOWN: ${control[1]} is not the pull request's diff at $commit"
       exit 3
