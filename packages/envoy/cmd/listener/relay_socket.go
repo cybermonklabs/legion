@@ -1022,7 +1022,8 @@ func (socket *relaySocket) subscribed() bool {
 //   - the broker answers the token's person held (ciphertoken.Caller.Held): 4403 membership_held,
 //     the class apiAuth refuses such a token's upgrade 401 MEMBERSHIP_HELD under
 //     (refuseHeldBrokerToken), so a socket closes at its next check after the broker answers the
-//     hold, as Dispatch's own socket closes at its next heartbeat;
+//     hold (Dispatch's own socket reads no hold yet: its heartbeat asks only whether the token is
+//     live, callerStillResolves);
 //   - the broker answers the person not held only until a deadline that has passed
 //     (ciphertoken.Verifier.Lapsed): 1013 deadline_passed, the class apiAuth answers such a
 //     token's upgrade 503 under (refuseLapsedBrokerToken), so the client comes back rather than
