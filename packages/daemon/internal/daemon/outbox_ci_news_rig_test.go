@@ -383,6 +383,23 @@ func (d *ciDaemon) until(token claim.Token, what string, condition func() bool) 
 	})
 }
 
+// laneRan waits until the issue's lane of role messages, the lane its CI news rows run on, has run
+// once past every row of the issue on it that was due before the call. It queues a row of that
+// lane that no pause holds and that changes nothing, due now (dueNow): a second read of the head
+// of the issue's pull request whose first read the record does not hold (record.ConflictConfirm),
+// which finishes without a read (conflictReadLeft). It waits within ciDaemonWait for that row to
+// finish, and moves no clock. A lane runs its due rows one at a time, in the order they came due
+// and were written (outbox's drain, record's DueRows), so by then each row due before it that the
+// lane may run has had its attempt, and a row the lane may not run, one a pause holds, has had
+// none. It answers the row's id.
+func (d *ciDaemon) laneRan() int64 {
+	d.t.Helper()
+	id := d.queue(record.ConflictConfirm{Number: ciPullRequest, Head: ciHeadX, FirstReadAt: d.dueNow()})
+	testwait.WithinPolling(d.t, testwait.Bounded(d.t, ciDaemonWait, time.Second), 100*time.Millisecond,
+		fmt.Sprintf("row %d, queued behind the issue's due rows of its lane, to finish", id), func() bool { return !d.rowLeft(id) })
+	return id
+}
+
 // ciLines is each line of the daemon's log whose message is msg and that names row id.
 func (d *ciDaemon) ciLines(msg string, id int64) []map[string]any {
 	var of []map[string]any

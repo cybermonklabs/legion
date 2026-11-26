@@ -60,9 +60,11 @@ const fixRigFactPrefix = "RIG FACT:"
 // that Dispatch's events on the run's NATS server and its App on the fake GitHub of check runs
 // (checks), its own database open (dispatchDB), the daemon's GitHub stand-in (pulls), the daemon's
 // log (logs), the clock GitHub's events of the pull requests are stamped with (clock), the seam a
-// control sets on the daemon's engine at each boot (engine, nil for none), and the watcher that
-// logs each fact as it arrives (watch). Its steps act on one issue of the run at a time, as
-// ownerStepsRig's do (on).
+// control sets on the daemon's engine at each boot (engine, nil for none), the watcher that logs
+// each fact as it arrives (watch), and the outbox of the daemon booted last (lanes), which each
+// boot hands the rig before the outbox's lanes run (overrides.outbox), so a step that writes a row
+// in the store wakes its lane as the commit of a row the workflow writes does. Its steps act on
+// one issue of the run at a time, as ownerStepsRig's do (on).
 type fixRig struct {
 	*ownerStepsRig
 	natsURL    string
@@ -74,6 +76,9 @@ type fixRig struct {
 	clock      time.Time
 	engine     func(*workflow.Engine)
 	watch      *fixRigWatch
+
+	lanesMu sync.Mutex
+	lanes   *outbox
 }
 
 // fixRigIssue is one issue a fix rig files: its title, which no other issue of the run shares a
@@ -215,7 +220,8 @@ func (r *fixRig) fileIssue(issue fixRigIssue) {
 // boot starts the whole daemon on the store as it stands, over a fake runtime of its own that
 // provisions each claim's workspace itself, with GitHub the rig's stand-in, its log at debug in
 // logs, and the rig's seam set on its engine before the engine serves a fact. The boot's gh is
-// this test binary, named through the environment the boot reads.
+// this test binary, named through the environment the boot reads. The boot hands the rig its
+// outbox (lanes).
 func (r *fixRig) boot() {
 	t := r.t
 	t.Helper()
@@ -231,6 +237,11 @@ func (r *fixRig) boot() {
 	o.controllerFirstWake = time.Hour
 	o.environ = append(os.Environ(), "LEGION_GH_PATH="+executable)
 	o.engine = r.engine
+	o.outbox = func(lanes *outbox) {
+		r.lanesMu.Lock()
+		defer r.lanesMu.Unlock()
+		r.lanes = lanes
+	}
 	r.d = startDaemonWithin(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})), stepRecordsWait)
 }
 
@@ -246,6 +257,20 @@ func (r *fixRig) restart() {
 	for _, c := range r.claims {
 		c.reconnect()
 	}
+}
+
+// wake wakes the lane that runs kind for issue on the daemon booted last, as the commit of a row
+// the workflow writes does: a lane that waits for its next due row learns of a row the rig wrote
+// in the store only by a wake or by the next sweep, a lease later.
+func (r *fixRig) wake(issue string, kind record.OutboxKind) {
+	r.t.Helper()
+	r.lanesMu.Lock()
+	lanes := r.lanes
+	r.lanesMu.Unlock()
+	if lanes == nil {
+		r.t.Fatalf("the daemon handed the rig no outbox, so the lane of %s's %s rows cannot be woken", issue, kind)
+	}
+	lanes.wake(issue, kind)
 }
 
 // prTitle is the title of the pull request of the issue the rig's steps act on: the issue's key,
