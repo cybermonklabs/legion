@@ -8744,6 +8744,11 @@ The wakes are these:
     A daemon of an earlier release ends the row at the `404` of a listener that refuses the keep, so the prompt is lost: the daemon that waits ships to every deployment that publishes to the listener before that listener does (`scripts/e2e/hook-prompt-two-builds.sh` proves both outcomes).
     Before a listener pin moves to that listener, run `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>` with the commit that carries the waiting daemon, and move the pin only when it prints `GATE OPEN`: it reads each project's running daemon image and opens only when every one holds that commit.
 
+  - A phase-ended message, which tells a parent's worker that the admission pass ended its phase, is published with keep and names no source session as a hook prompt is, so the listener that refuses such a keep answers it `404` too.
+    Its row waits the same way, for the same hour and under the same pod-hold rule, and reaches a session that holds the role inside it.
+    At its end it finishes with the log line `outbox phase-ended message finished undelivered: no live session holds the role` and a reason, and with no message on the issue, since the role's next task from the daemon names its phase anyway.
+    A listener of an earlier release kept the message on the role's kept lane for the role's next holder, and the row ended there.
+
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.

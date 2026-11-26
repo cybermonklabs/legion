@@ -25,6 +25,10 @@ body: |-
   data (`hook_prompts`) and is found by them, so a restart inside the hour adds to it. A row a post
   already tried is no longer an open window, and a lock on the window keeps two prompts that end
   together from opening two messages.
+  A phase-ended message, which tells a parent's worker that the admission pass ended its phase,
+  also publishes with keep and names no source session, so its row waits the same way, for the
+  same hour and under the same pod-hold rule. At its end it finishes with its log line and no
+  message on the issue, since the role's next task from the daemon names its phase anyway.
   Ship this daemon to every deployment that publishes to a listener before that listener runs the
   release that refuses such a keep: an earlier daemon ends the row at the listener's 404 and the
   prompt is lost (`scripts/e2e/hook-prompt-two-builds.sh`). Before a listener pin moves, run

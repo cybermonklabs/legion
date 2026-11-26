@@ -29,8 +29,9 @@ body: |-
   again meets the withdrawn frame as a duplicate and is answered `200`, and if that holder's relay
   acknowledged the frame while another session, or none, held the role, no session receives the
   message. A later change closes that.
-  Ship order: the Legion daemon's hook prompts name no source session, and a daemon before this
-  change ends a hook prompt at this listener's 404, so the prompt is lost. Run this listener only
+  Ship order: the Legion daemon's hook prompts and phase-ended messages name no source session,
+  and a daemon before this change ends such a row at this listener's 404, so the message is lost.
+  Run this listener only
   after every Legion daemon that publishes to it runs this change's daemon part. Before a listener
   pin moves, run
   `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>`

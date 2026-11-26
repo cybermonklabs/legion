@@ -723,6 +723,73 @@ func TestAHookPromptHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *testin
 	}
 }
 
+// A phase-ended message's row waits up to an hour for a session to hold its role, as a hook
+// prompt's does (the daemon's phaseEndedUnheld and keptRoleMessageEnded), so it holds the issue's
+// pod, and cancels a release at its boundary, under the same rule (idleWaitingRow): only while its
+// role has a claim this pod answers. The rows are each other's control: a term that let every
+// phase-ended row go would fail the rows that hold, and the term before it named phase_ended, which
+// held the pod for every such row, fails the rest.
+func TestAPhaseEndedMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		unclaimed bool
+		state     supervise.ClaimState
+		by        supervise.SuspendSource
+		holds     bool
+	}{
+		{name: "an idle claim", state: supervise.StateIdle, holds: true},
+		{name: "a claim an idle release suspended", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, holds: true},
+		{name: "no claim", unclaimed: true},
+		{name: "a claim the daemon suspended", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
+		{name: "a failed claim", state: supervise.StateFailed},
+		{name: "a retired claim", state: supervise.StateRetired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			claims := []supervise.Claim{{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue,
+				Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateIdle}}
+			if !tc.unclaimed {
+				claims = append(claims, supervise.Claim{Token: claim.Token("legion-legion-legion-208-tester"), Project: "legion",
+					Tree: rootIssue, Issue: rootIssue, Role: claim.RoleTester, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+					State: tc.state, SuspendedBy: tc.by})
+			}
+			for _, c := range claims {
+				if err := st.PutClaim(ctx, c); err != nil {
+					t.Fatal(err)
+				}
+			}
+			row, err := record.NewOutboxRow(rootIssue, record.PhaseEnded{Role: claim.RoleTester, From: "testing", To: "awaiting_children",
+				Reason: "the admission pass stopped the tester's testing phase"}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+				values ($1, $2, $3, 3, now() + interval '1 minute', 'no live session holds the role')`,
+				string(row.Kind), rootIssue, row.Payload); err != nil {
+				t.Fatal(err)
+			}
+
+			if view := idleViewOf(t, st, rootIssue); view.Waiting != tc.holds {
+				t.Fatalf("the view reads a row waiting for a role of the pod = %t, with a phase-ended message to a tester with %s, want %t", view.Waiting, tc.name, tc.holds)
+			}
+			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+			decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+			if err != nil {
+				t.Fatalf("IssueReleaseStop: %v", err)
+			}
+			want := ReleaseActs
+			if tc.holds {
+				want = ReleaseCancel
+			}
+			if decision.Act != want {
+				t.Fatalf("the boundary = %s for %s, with a phase-ended message to a tester with %s queued before the mark, want %s", decision.Act, decision.Cause, tc.name, want)
+			}
+		})
+	}
+}
+
 // A step record is history: its row reaches no session of the pod, so a record Dispatch has not
 // taken yet, due now or backing off for an hour behind a Dispatch that is down, keeps no idle pod
 // standing and cancels no release at its boundary, whether it was queued before the release's rows

@@ -14,12 +14,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// hookPromptHoldBound is how long after its row was made a hook prompt waits for a session to hold
-// its role (hookPromptUnheld, hookPromptEnded): the hour the Envoy listener kept the prompt for (its
-// keep window, roleKeepWindow in packages/envoy/cmd/listener/role_keep.go) before it refused to
-// keep a publish that names no source session. So a session of the role that comes within the hour
-// gets the prompt, as it got the kept copy, and one that comes later does not, as it did not.
-const hookPromptHoldBound = time.Hour
+// keptRoleMessageHoldBound is how long after its row was made a message the daemon publishes with
+// keep to a role and no source session, a hook prompt (hookPrompt) or a phase-ended message
+// (phaseEnded), waits for a session to hold its role (keptRoleMessageEnded): the hour the Envoy
+// listener kept such a message for (its keep window, roleKeepWindow in
+// packages/envoy/cmd/listener/role_keep.go) before it refused to keep a publish that names no
+// source session. So a session of the role that comes within the hour gets the message, as it got
+// the kept copy, and one that comes later does not, as it did not.
+const keptRoleMessageHoldBound = time.Hour
 
 // hookPromptUndelivered is a hook prompt's row ending undelivered (hookPromptEnded): why is the
 // clause that says why no session of its role will be handed it, which the message on the issue
@@ -59,51 +61,84 @@ var (
 	errHookPromptRoleNotComing = errors.New("the role's claim failed or was retired")
 )
 
-// hookPromptEnded is the end of a hook prompt's row that no attempt to publish it can change, and
-// nil while the prompt may still be delivered. It runs at the top of every attempt (hookPrompt),
-// before anything wakes the role or publishes. Two ends:
+// keptRoleMessageEnd is how keptRoleMessageEnded ends the row of a message the daemon publishes
+// with keep to a role (hookPrompt, phaseEnded), or keptRoleMessageMayArrive while it may still be
+// delivered.
+type keptRoleMessageEnd int
+
+const (
+	// keptRoleMessageMayArrive: a session of the role may still hold it in time.
+	keptRoleMessageMayArrive keptRoleMessageEnd = iota
+	// keptRoleMessageRoleNotComing: the role's claim has failed or was retired.
+	keptRoleMessageRoleNotComing
+	// keptRoleMessagePastItsHour: keptRoleMessageHoldBound has passed with no session of the role
+	// handed the message.
+	keptRoleMessagePastItsHour
+)
+
+// keptRoleMessageEnded is the end of a row that publishes with keep to the role of token, and
+// that no attempt to publish it can change, with the claim's state where the claim ended it. Each
+// caller runs it at the top of every attempt, before anything wakes the role or publishes, and
+// words the end itself: a hook prompt ends undelivered with a message on the issue
+// (hookPromptEnded), and a phase-ended message with a log line (phaseEnded). Two ends:
 //   - A role whose claim has failed or was retired gets no session that holds the role again.
-//   - A prompt whose hour has passed: hookPromptHoldBound from the later of the row's making and
-//     the role's last ready (supervise.Claim.LastReady). So the hour a woken session has is its
+//   - A message whose hour has passed: keptRoleMessageHoldBound from the later of the row's making
+//     and the role's last ready (supervise.Claim.LastReady). So the hour a woken session has is its
 //     own, as the kept copy's was counted from its publish. While the role is being woken
 //     (wakeInFlight), the row waits for the woken session, as the architect's ruling has it: the
 //     row waits while the role is being woken, and the hour does not end it then.
 //
-// Either way the row ends undelivered (hookPromptUndelivered) with the message on the issue. So a
-// session that held the role all along is not handed a prompt past its hour, and a failed or
-// retired role is never published to.
-func (r *outbox) hookPromptEnded(ctx context.Context, row record.OutboxRow, payload record.HookPrompt, token claim.Token) (*hookPromptUndelivered, error) {
+// So a session that held the role all along is not handed a message past its hour, and a failed
+// or retired role is never published to.
+func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow, token claim.Token) (keptRoleMessageEnd, supervise.ClaimState, error) {
 	start := row.CreatedAt
 	if r.supervisor != nil {
 		held := r.supervisedClaim(token)
 		if supervise.FailedOrRetired(held.State) {
-			return &hookPromptUndelivered{cause: errHookPromptRoleNotComing,
-				why: fmt.Sprintf("the %s's claim is %s, so no session of it will hold the role again", payload.Role, held.State)}, nil
+			return keptRoleMessageRoleNotComing, held.State, nil
 		}
 		woken, err := r.wakeInFlight(ctx, row.Issue, held)
 		if err != nil || woken {
-			return nil, err
+			return keptRoleMessageMayArrive, held.State, err
 		}
 		if held.LastReady.After(start) {
 			start = held.LastReady
 		}
 	}
-	if r.now().Sub(start) >= hookPromptHoldBound {
+	if r.now().Sub(start) >= keptRoleMessageHoldBound {
+		return keptRoleMessagePastItsHour, "", nil
+	}
+	return keptRoleMessageMayArrive, "", nil
+}
+
+// hookPromptEnded is the end of a hook prompt's row that no attempt to publish it can change
+// (keptRoleMessageEnded), and nil while the prompt may still be delivered. It runs at the top of
+// every attempt (hookPrompt). Either end finishes the row undelivered (hookPromptUndelivered) with
+// the message on the issue.
+func (r *outbox) hookPromptEnded(ctx context.Context, row record.OutboxRow, payload record.HookPrompt, token claim.Token) (*hookPromptUndelivered, error) {
+	end, state, err := r.keptRoleMessageEnded(ctx, row, token)
+	switch {
+	case err != nil:
+		return nil, err
+	case end == keptRoleMessageRoleNotComing:
+		return &hookPromptUndelivered{cause: errHookPromptRoleNotComing,
+			why: fmt.Sprintf("the %s's claim is %s, so no session of it will hold the role again", payload.Role, state)}, nil
+	case end == keptRoleMessagePastItsHour:
 		return &hookPromptUndelivered{cause: errHookPromptPastItsHour,
 			why: fmt.Sprintf("the hour after the hook fired passed and no session of the %s took it", payload.Role)}, nil
 	}
 	return nil, nil
 }
 
-// wakeInFlight is whether held's role on issue is being woken, which holds its hook prompt's row
-// past the row's hour (hookPromptEnded): a released claim of an issue a wake can still reach
-// (wakeableIssue), which the row's own attempt wakes (wakeForDelivery); a launch the wake pacing
-// parked over no process (parkedLaunch); or a launch under a resume of the role that has had no
-// first turn yet (store.Store.OpenPodResume), which a wake opened. A released claim of an issue
-// that has left the workflow, or whose tree lingers, is a close's to stop and no wake comes to it,
-// and a launch no wake opened is the role starting as any role starts, so the hour holds for both:
-// without it, a row of an issue moved out of the workflow would be tried about once a minute for
-// as long as the issue stayed out, and its message would never post.
+// wakeInFlight is whether held's role on issue is being woken, which holds a kept role message's
+// row past the row's hour (keptRoleMessageEnded): a released claim of an issue a wake can still
+// reach (wakeableIssue), which the row's own attempt wakes (wakeForDelivery); a launch the wake
+// pacing parked over no process (parkedLaunch); or a launch under a resume of the role that has
+// had no first turn yet (store.Store.OpenPodResume), which a wake opened. A released claim of an
+// issue that has left the workflow, or whose tree lingers, is a close's to stop and no wake comes
+// to it, and a launch no wake opened is the role starting as any role starts, so the hour holds
+// for both: without it, a row of an issue moved out of the workflow would be tried about once a
+// minute for as long as the issue stayed out, and its end would never come.
 func (r *outbox) wakeInFlight(ctx context.Context, issue string, held supervise.ClaimView) (bool, error) {
 	switch {
 	case held.Released():
