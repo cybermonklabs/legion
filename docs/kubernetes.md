@@ -9210,23 +9210,25 @@ The release does five things, in this order:
    Once the mark is set, the release waits for an orphan sweep that began before the mark to end its orphan reconciliation, its stale-plugin refresh and its pod update rounds, before it records itself or reads, asks or deletes anything; every sweep after reads the mark and skips those three (`sweepOnce`, `packages/daemon/internal/daemon/daemon.go`).
    So no pod update round writes the record of a replacement after the release has settled the records of the round's pod (step 4), and none ends as a replacement over a pod the release deleted, which would tell the issue's architect of a replacement that never took the pod.
    A command stopped while the release waits for that sweep ends the wait: the daemon clears the mark again and records nothing, and every sweep after runs those three again.
-   A record that does not commit clears the mark again, and the command prints the daemon's refusal: so does one whose transaction finds that a pause committed after the first read of the pause, which the release answers `409 PROJECT_PAUSED` as above.
-   The record's start is the moment of the write that commits, and the bound counts from that start.
-   The daemon tries to record the release for a tenth of the bound, and for at least 2 seconds, and waits up to 2 seconds more for a commit it has already sent.
-   A record whose commit the daemon has not sent by then, or that the store says did not commit, is refused as one that does not commit, above.
-   A record whose commit the daemon has sent, and whose outcome the store has still not said by then, is refused too: the daemon clears the mark, and the command prints the daemon's refusal, which says `the store did not say whether the transaction committed`.
-   But that record may have committed, or may still commit, and a record that commits so has no release that runs it.
-   It refuses every pause (`409 PROJECT_RELEASING`) until a release that the operator runs again finishes, and every idle release until the daemon's next boot.
-   No backstop is armed for the claims that the idle releases it took over had stopped, so each of those claims waits for a delivery alone.
-   So run `legion project release` again: since the earlier start was refused, the daemon sets the mark again and records and runs a new release, as at a first run.
-   Once that release has finished, its record is the project's newest, and a pause is taken again; the earlier record stays unfinished until the next boot ends it.
-   From the mark until the daemon's process ends, the daemon starts nothing of the project: it creates no Sandbox, pod, repository cache or image probe, starts no role process, and hands no claim a task.
-   The operator's spawn, retry, resume and deliver, a fresh session and a compaction, and the controller's `retry`, `resume_agent` and `replace_pod` (`POST /legion/v1/agents/retry`, `agents/resume` and `issues/pod-update`) are refused `409 PROJECT_RELEASED` (`… refused: the project release holds every start until the daemon's next boot`), except at the agent door, whose read of an operator's hold (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`) answers an agent that hold is over `409 SUSPENDED_BY_OPERATOR` first, at every action but the compaction, which the door lets past that hold; the controller's `stop`, `suspend`, `set_p0_bound` and `clear_p0_bound`, and the operator's `legion project set-p0-bound` and `clear-p0-bound`, start nothing directly and still run (any start a P0 bound change's pass queues waits in the outbox until the next boot).
-   A pause is refused `409 PROJECT_RELEASING` until the release has finished, and taken once it has ([Pausing a project](#pausing-a-project)), so a project is paused under the mark only once the release has finished.
-   A project that is paused as well gets the same refusal, not the pause's `PROJECT_PAUSED`, because each of those routes asks the release's refusal first ([Pausing a project](#pausing-a-project)).
-   A task, notice, message, backstop or start that comes due waits in the database until after the next boot.
-   An idle release still in flight is taken over and stops nothing more, and so is the queued workspace check of the close of a pod whose issue left the workflow: the first idle pass after the next boot checks again each such pod that still stands.
-   The daemon still serves its API, and `legion state --json` shows the release and its result as `projectRelease`.
+
+   - A record that does not commit clears the mark again, and the command prints the daemon's refusal: so does one whose transaction finds that a pause committed after the first read of the pause, which the release answers `409 PROJECT_PAUSED` as above.
+     The record's start is the moment of the write that commits, and the bound counts from that start.
+     The daemon tries to record the release for a tenth of the bound, and for at least 2 seconds, and waits up to 2 seconds more for a commit it has already sent.
+     A record whose commit the daemon has not sent by then, or that the store says did not commit, is refused as one that does not commit, above.
+     A record whose commit the daemon has sent, and whose outcome the store has still not said by then, is refused too: the daemon clears the mark, and the command prints the daemon's refusal, which says `the store did not say whether the transaction committed`.
+     But that record may have committed, or may still commit, and a record that commits so has no release that runs it.
+     It refuses every pause (`409 PROJECT_RELEASING`) until a release that the operator runs again finishes, and every idle release until the daemon's next boot.
+     No backstop is armed for the claims that the idle releases it took over had stopped, so each of those claims waits for a delivery alone.
+     So run `legion project release` again: since the earlier start was refused, the daemon sets the mark again and records and runs a new release, as at a first run.
+     Once that release has finished, its record is the project's newest, and a pause is taken again; the earlier record stays unfinished until the next boot ends it.
+
+   - From the mark until the daemon's process ends, the daemon starts nothing of the project: it creates no Sandbox, pod, repository cache or image probe, starts no role process, and hands no claim a task.
+     The operator's spawn, retry, resume and deliver, a fresh session and a compaction, and the controller's `retry`, `resume_agent` and `replace_pod` (`POST /legion/v1/agents/retry`, `agents/resume` and `issues/pod-update`) are refused `409 PROJECT_RELEASED` (`… refused: the project release holds every start until the daemon's next boot`), except at the agent door, whose read of an operator's hold (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`) answers an agent that hold is over `409 SUSPENDED_BY_OPERATOR` first, at every action but the compaction, which the door lets past that hold; the controller's `stop`, `suspend`, `set_p0_bound` and `clear_p0_bound`, and the operator's `legion project set-p0-bound` and `clear-p0-bound`, start nothing directly and still run (any start a P0 bound change's pass queues waits in the outbox until the next boot).
+     A pause is refused `409 PROJECT_RELEASING` until the release has finished, and taken once it has ([Pausing a project](#pausing-a-project)), so a project is paused under the mark only once the release has finished.
+     A project that is paused as well gets the same refusal, not the pause's `PROJECT_PAUSED`, because each of those routes asks the release's refusal first ([Pausing a project](#pausing-a-project)).
+     A task, notice, message, backstop or start that comes due waits in the database until after the next boot.
+     An idle release still in flight is taken over and stops nothing more, and so is the queued workspace check of the close of a pod whose issue left the workflow: the first idle pass after the next boot checks again each such pod that still stands.
+     The daemon still serves its API, and `legion state --json` shows the release and its result as `projectRelease`.
 
 2. It reads each issue pod's workspace through the shim of one running role, each pod on its own and all pods at the same time.
    The read counts the issue's unpushed commits (`unpushedRevset`, `packages/daemon/internal/shim/unpushed.go`).
@@ -9279,21 +9281,23 @@ The release does five things, in this order:
    A claim held by the daemon's own suspension keeps it, since that source ranks above `project_release`, and the next boot does not start that claim.
    A pod no read through a role reached, since no role process ran there at any read, is read through its launcher now, once its claims are stopped (step 2), and that read is its last.
    Then it deletes the pod's Sandbox, with the pod and its disk.
-   Under the pod's launch turn, which the delete holds, and before the delete writes anything, it settles each standing record of a replacement of the pod that an update round or a launch wrote before acting (`pod_replacements`, [The disk dies with its pod](#the-disk-dies-with-its-pod)), reading each act from the Kubernetes API as the next boot's sweep would.
-   A record whose act was not made, the pod still running as the issue's own, is forgotten, and the daemon logs one line naming the issue, the pod and the record's operation: such a record is one the release's mark left standing, a launch that read the round's pod as replaced just before the mark and was then refused, or a round's replacement whose call failed, one that ran out waiting for the pod's launch turn among them, which no sweep reads while the mark holds.
-   Left standing, it would read as made once the pod is gone, and the next boot would tell the issue's architect of a replacement that never took the pod.
-   A record whose act was made took an earlier pod, and it stands: the next boot tells the architect of it, as before.
-   A record the daemon cannot say was made, or whose read failed, leaves the pod, with a reason that names the record's operation and what was uncertain or failed, and the release forgets no record of the pod then, since it reads every record of the pod before it forgets any.
-   A forget that fails leaves the pod too, with a reason that names that record's operation and the error, and each record the release forgot before it stays forgotten.
-   When the daemon cannot read the records from its database, the pod is left with a reason that says the records could not be read, with the error, and names no record.
-   A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is a volume claim the Sandbox owns, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
-   Then it ends the pod's hold streaks; when it cannot end them, it logs the error and goes on, and the streaks stand until the idle pass reads the issue after the next boot.
-   A pod it asked nothing is deleted as soon as its last read and its stop are done.
-   A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
-   The daemon pushes nothing for a role.
-   The release opens no pod update round, replaces no pod, and takes each claim it stops out of any round it was in.
-   A pod update round still open over the pod passes over a claim the release stopped, as it passes over every claim the daemon suspended: it neither asks that claim nor waits for it, since only the next boot starts it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
-   A claim of the project whose issue has no Sandbox, one whose role is starting where no pod stands yet, is stopped at the same time as the pods and waited for in the same way, and its line says so when it was not stored suspended in that time.
+
+   - Under the pod's launch turn, which the delete holds, and before the delete writes anything, it settles each standing record of a replacement of the pod that an update round or a launch wrote before acting (`pod_replacements`, [The disk dies with its pod](#the-disk-dies-with-its-pod)), reading each act from the Kubernetes API as the next boot's sweep would.
+     A record whose act was not made, the pod still running as the issue's own, is forgotten, and the daemon logs one line naming the issue, the pod and the record's operation: such a record is one the release's mark left standing, a launch that read the round's pod as replaced just before the mark and was then refused, or a round's replacement whose call failed, one that ran out waiting for the pod's launch turn among them, which no sweep reads while the mark holds.
+     Left standing, it would read as made once the pod is gone, and the next boot would tell the issue's architect of a replacement that never took the pod.
+     A record whose act was made took an earlier pod, and it stands: the next boot tells the architect of it, as before.
+     A record the daemon cannot say was made, or whose read failed, leaves the pod, with a reason that names the record's operation and what was uncertain or failed, and the release forgets no record of the pod then, since it reads every record of the pod before it forgets any.
+     A forget that fails leaves the pod too, with a reason that names that record's operation and the error, and each record the release forgot before it stays forgotten.
+     When the daemon cannot read the records from its database, the pod is left with a reason that says the records could not be read, with the error, and names no record.
+     A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is a volume claim the Sandbox owns, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
+
+   - Then it ends the pod's hold streaks; when it cannot end them, it logs the error and goes on, and the streaks stand until the idle pass reads the issue after the next boot.
+     A pod it asked nothing is deleted as soon as its last read and its stop are done.
+     A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
+     The daemon pushes nothing for a role.
+     The release opens no pod update round, replaces no pod, and takes each claim it stops out of any round it was in.
+     A pod update round still open over the pod passes over a claim the release stopped, as it passes over every claim the daemon suspended: it neither asks that claim nor waits for it, since only the next boot starts it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+     A claim of the project whose issue has no Sandbox, one whose role is starting where no pod stands yet, is stopped at the same time as the pods and waited for in the same way, and its line says so when it was not stored suspended in that time.
 
 5. Once every issue pod ended, it lists the project's Sandboxes again, from the Kubernetes API rather than the daemon's watch of it, since a Sandbox whose create the daemon sent just before the mark can land after the first list.
    Each Sandbox that the first list did not hold gets a line: an issue's pod is taken as in steps 2 to 4, from its claims as they stand then, and every other Sandbox goes with the rest of this step.
