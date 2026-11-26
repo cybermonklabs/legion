@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "//": [
-    "test: its third command runs web/src/app-sign-out.test.tsx alone at --timeout 410000, six times, rounded up, the slowest of its two sign-out rows at the calibrated load: 68 199 ms ('the sign-out question names every tab's unsent changes, and says when a tab did not answer', 20 runs at the 96 rung, Job infra-1580-soh-pgv4s of the cluster's builds namespace, two CPUs and 8 GiB, 140 busy loops, row A 38.5 s, at 2a77b2b8). That is inside the dispatch-ui job's room for one hang: its 15 minutes less its 416 s in CI run 45640169750 at c95dcbdc, 484 s. At 97bc3646 the two rows were 20 of 20 each at the 96 rung, at most 46 115 ms (Job infra-1580-r31so-zmpqq, 53 busy loops, row A 31.6 s). The rest of web/src runs in the second command at the web lane's 60 000, as before."
+    "test: its third command runs web/src/app-sign-out.test.tsx alone at --timeout 410000, six times, rounded up, the slowest of its two sign-out rows at the calibrated load: 68 199 ms ('the sign-out question names every tab's unsent changes, and says when a tab did not answer', 20 runs at the 96 rung, Job infra-1580-soh-pgv4s of the cluster's builds namespace, two CPUs and 8 GiB, 140 busy loops, row A 38.5 s, at 2a77b2b8). That is inside the dispatch-ui job's room for one hang: its 15 minutes less its 453 s in CI run 45708521634 at 97bc3646, the first run in which the file had its own command, 447 s. At 97bc3646 the two rows were 20 of 20 each at the 96 rung, at most 46 115 ms (Job infra-1580-r31so-zmpqq, 53 busy loops, row A 31.6 s). The rest of web/src runs in the second command at the web lane's 60 000, as before."
   ],
   "scripts": {
     "dev": "vite --config web/vite.config.ts",
