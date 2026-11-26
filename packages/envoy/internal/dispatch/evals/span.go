@@ -877,8 +877,10 @@ func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered 
 // other values or is missing, each stored row of a span day of its key that the day no longer
 // builds, and the stored members of the days whose members the span built (covered). It
 // widens b's figure spans and its report by the days whose rows moved. The refresher lease allows
-// one refresher pass at a time, but the boot's repository rename pass also rewrites rows and
-// members and can commit between this read and the span write.
+// one refresher pass at a time, but two writers outside it change rows and members and can commit
+// between this read and the span write: the boot's repository rename pass renames an owner key
+// (store.RewriteRenamedRepositories), and a project's delete deletes the project's rows
+// (eval_days_project_deleted, migration 20261117100006).
 func (r *refresh) compareSpan(ctx context.Context, b *spanWrite, built spanBuilt, covered map[string]daySpan) error {
 	type scope struct {
 		evals, repos map[string]bool
