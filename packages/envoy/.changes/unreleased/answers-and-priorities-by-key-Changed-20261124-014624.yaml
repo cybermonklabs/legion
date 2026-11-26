@@ -2,12 +2,15 @@ kind: Changed
 body: |-
   Dispatch's agent answers read (`GET /api/v1/agents/{session_id}/answers`) now finds the
   session's events in its window through a new partial GIN index of their destinations and time,
-  `events_person_words_destinations` (migration `20261125131000`), and no longer reads every
-  event a person wrote in the window to keep the few delivered to the session. The priorities read
-  (`GET /api/v1/priorities`) takes the newest time under each priority from each member issue's
-  event of `last_seq`, read by the unique `(issue_key, seq)`, in place of a join to every event of
-  every member. That time can be earlier than before only when two writes of one issue overlap,
-  and then by less than the time from the start of the earlier write to the commit of the other.
+  `events_person_words_destinations` (migration `20261125131000`), on a database of production's
+  size and shape, and there no longer reads every event a person wrote in the window to keep the
+  few delivered to the session. Where the window holds far fewer such events, the planner can
+  still read them all through `events_person_words_with_declines`, which costs less there. The
+  priorities read (`GET /api/v1/priorities`) takes the newest time under each priority from each
+  member issue's event of `last_seq`, read by the unique `(issue_key, seq)`, in place of a join to
+  every event of every member. That time can be earlier than before only when two writes of one
+  issue overlap, and then by less than the time from the start of the earlier write to the commit
+  of the other.
   Its list of work in backlog or icebox, and the issue listing's `?moved=true`, read each such
   issue's move there through a new partial index, `events_backlog_moves` (migration
   `20261125131100`), and stop at the newest move. Both indexes are built concurrently before the

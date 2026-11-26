@@ -18,15 +18,18 @@ import (
 )
 
 // personWordsEvent is the SQL predicate, on the event aliased e, that holds for a person's event
-// of the five types that the answers read lists (sessionanswers.query, reached_by_destination;
+// of the five types that the answers read reads (sessionanswers.query, reached_by_destination;
 // model.PersonWordsEventTypesSQL): an answer, a comment, a new message, a reply to a message, and
-// a decline (an ask.resolved whose resolution is of kind declined).
+// every ask.resolved. It tests the type alone, so it holds for every resolution of an ask, where
+// the read lists only the declines among them (an ask.resolved whose resolution is of kind
+// declined). The seed writes declines alone, so on a seeded database the two agree.
 const personWordsEvent = `e.actor->>'kind' = 'user' and e.type in ` + model.PersonWordsEventTypesSQL
 
 // DeliveredPersonEvent is the SQL predicate, on the event aliased e, that holds for a person's
 // event of the five types (personWordsEvent) whose published_destinations name at least one
-// session's topic (contracts.AgentTopicPrefix): a delivery of a person's words to a session, which
-// is what the answers read lists.
+// session's topic (contracts.AgentTopicPrefix): a delivery of a person's words to a session, the
+// events the answers read reads. Of those it lists every one but a resolution that is not a
+// decline, so on data that holds other resolutions this predicate counts more than the list holds.
 const DeliveredPersonEvent = personWordsEvent + `
 	  and exists (select 1 from unnest(e.published_destinations) reached (topic)
 	              where reached.topic like '` + contracts.AgentTopicPrefix + `%')`
