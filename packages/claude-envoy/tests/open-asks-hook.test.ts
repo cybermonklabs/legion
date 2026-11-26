@@ -1997,7 +1997,7 @@ async function projectedTokenFile(scratch: string): Promise<string> {
 //
 // These rows' rung is 32 busy loops, 16 per CPU, below the 80 this file's other rows hold at. Above
 // it the hook's own 3 s bound on the Dispatch read (`OPEN_ASKS_TIMEOUT_MS`), a production budget no
-// per-test limit guards, can end the read before a starved host has traded the credential: the
+// guard can widen, can end the read before a starved host has traded the credential: the
 // credential's share of it (`credentialDeadline`) fires, and the census then holds none of the
 // route's waits. That lost a correct run of the device-login rows 1 time in 5 runs of this file
 // whole at the 80 rung (the Job infra-1580-r27ow-46ct9 of the cluster's `builds` namespace, two

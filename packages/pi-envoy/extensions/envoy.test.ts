@@ -1821,11 +1821,11 @@ async function onFakeTimers<T>(body: () => Promise<T>): Promise<T> {
  * it says the work is waiting on it: before its first request, the accept reads the session's
  * envoy.json, which is real I/O, while the accept's bound (an `AbortSignal.timeout`, on the
  * test's clock) already runs, and a step moved then would be one the code under test never
- * waited. That wait is on real turns with no bound of its own: the row's limit ends it, and it
+ * waited. That wait is on real turns with no bound of its own: the command's guard ends it, and it
  * stops once its row has ended (`stillOn`).
  *
  * A pending that has not settled when the steps run out fails here, at once and with real timers
- * already restored. Left to the row's own limit instead, Bun abandons the row with fake timers
+ * already restored. Left to the command's guard instead, Bun abandons the row with fake timers
  * still on, and every later row's `setTimeout` and `Bun.sleep` stop with them: measured on bun
  * 1.4.4, one such defect in the `session_shutdown` row failed six correct rows after it and cost
  * the file about 145 s more. Each move of the clock throws instead once the row has ended
@@ -8714,7 +8714,7 @@ console.log(JSON.stringify(args));
     // throws here, before it sets anything for the row after it.
     const ownRow = rowCheck();
     stillOn(ownRow, "setting the fixture's pass deadline");
-    // An hour, past the row's limit (`UNRACED_PASS_DEADLINE_MS`), unless the row named its own
+    // An hour, past the command's guard (`UNRACED_PASS_DEADLINE_MS`), unless the row named its own
     // deadline before it called the fixture (`withEnvoyTimings`): the extension reads it at
     // `session_start`, below.
     process.env.ENVOY_PASS_DEADLINE_MS ??= String(UNRACED_PASS_DEADLINE_MS);
@@ -14435,7 +14435,7 @@ console.log(JSON.stringify(args));
     // A listener restart that outlasts the envoy_sessions TTL: the durable claim is intact, but
     // until this session re-registers the listener answers "no holder" for it, and the daemon's
     // publishes in that window went undelivered. The re-registration itself is the regain.
-    // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+    // An hour, past the command's guard, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
     process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
     const role = "legion-controller";
     let registryDown = false;
@@ -14589,7 +14589,7 @@ console.log(JSON.stringify(args));
     // clock (`Date.now() - registeredAt`), so a tick inside that interval posts nothing: the row
     // waits on the registration reaching the listener, and ticks again until it does, rather than
     // reading the count after a sleep a loaded machine outruns.
-    // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+    // An hour, past the command's guard, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
     // The wedged pass then holds the queue until the row answers it, and only the tick's own
     // refresh can move the count meanwhile. At the 5 s deadline the row had before, the wedged
     // pass was abandoned on the real clock, and an ordinary pass behind it moved the count, so
@@ -14661,7 +14661,7 @@ console.log(JSON.stringify(args));
     // the 25 ms interval posts nothing: the row ticks again until the refresh shows at the
     // listener (`heartbeatTicks`), rather than reading the count after a sleep a loaded machine
     // outruns.
-    // An hour, past the row's limit, so no deadline ends the pass or its move
+    // An hour, past the command's guard, so no deadline ends the pass or its move
     // (`UNRACED_PASS_DEADLINE_MS`). The move then stays parked until the row answers it, and only
     // the tick's own refresh can move the count meanwhile. At the 5 s deadline the row had
     // before, a loaded host could reach that deadline. The move was then abandoned, and an
@@ -14738,7 +14738,7 @@ console.log(JSON.stringify(args));
     // the row ticks again until the refresh shows at the listener (`heartbeatTicks`). So each
     // refresh the row counts is a tick that met the stall, which a count read after a sleep a
     // loaded machine outruns could not show.
-    // An hour, past the row's limit, so no deadline ends the wedged pass
+    // An hour, past the command's guard, so no deadline ends the wedged pass
     // (`UNRACED_PASS_DEADLINE_MS`): the stall lasts until the row answers it. At the 5 s deadline
     // the row had before, a loaded host could reach that deadline. The episode then ended early,
     // and an ordinary pass could refresh the registration in place of the tick.
@@ -15341,7 +15341,7 @@ console.log(JSON.stringify(args));
     // Tick N: registration fails (the listener may now answer "no holder" for this session).
     // Tick N+1: registration lands but the role read errors. Tick N+2: healthy. The regain owed
     // since tick N must still fire exactly once at N+2, or the daemon's held work stays stranded.
-    // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+    // An hour, past the command's guard, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
     process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
     const role = "legion-controller";
     let registryDown = false;
@@ -25758,7 +25758,7 @@ console.log(JSON.stringify(args));
     // The extension captures fetch by value at creation, so the blip must be
     // flipped inside the same function object rather than by reassigning
     // globalThis.fetch afterwards.
-    // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+    // An hour, past the command's guard, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
     process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
     let registryDown = false;
     globalThis.fetch = async (input, init) => {
@@ -26039,7 +26039,7 @@ console.log(JSON.stringify(args));
     // only as `onTestClock` advances it, and the handler's own end is what stops it. A deadline
     // used wrongly, or one more step waiting on a timer, ends past the cap and reddens here; a
     // handler that waits the hanging drain out never ends, and `onTestClock` fails it at once,
-    // with real timers restored, rather than at this row's limit. What the test's clock cannot
+    // with real timers restored, rather than at the command's guard. What the test's clock cannot
     // see is synchronous work: a `Bun.sleepSync(1_500)` added to the handler still passes this
     // row, because no timer is waited on there.
     const { elapsedMs } = await onTestClock(
@@ -27680,7 +27680,7 @@ describe("consumer delivery", () => {
     // same event by its own consumer. The request that session makes must state when the event
     // reached it, from its own ledger record, and never when the session before it was shown it.
     test("an event in the session the host moved to reads that session's own delivery time", async () => {
-      // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+      // An hour, past the command's guard, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
       process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
       const session = await bootConsumer("card-age-moved", { turn: "streaming" });
       session.relay(1, peer("card-age-moved"));
