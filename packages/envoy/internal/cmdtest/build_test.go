@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testexec"
 	"golang.org/x/sys/unix"
 )
 
@@ -103,7 +104,7 @@ func runBuildChild(t *testing.T, mode string, env ...string) buildRun {
 	if err := os.Mkdir(stand, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stand, "go"), []byte(goStandIn), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(stand, "go"), []byte(goStandIn), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	paths, log := filepath.Join(dir, "paths"), filepath.Join(dir, "builds")
