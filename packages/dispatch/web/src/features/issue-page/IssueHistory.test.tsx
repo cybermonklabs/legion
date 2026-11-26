@@ -1005,6 +1005,59 @@ test("a history whose first page holds exactly 20 entries reads the older page b
   }
 });
 
+// The first entries are drawn from the log's first page as soon as it holds more than 20, before
+// the comments, messages and asks the threads are drawn from have answered. A press of Show more
+// made then, with 20 or fewer entries left to draw, reads the older page and keeps the entries on
+// screen, the control reading busy, rather than taking them away for the loading line the first
+// view draws: the reader's focus is on that control and the place under it.
+test("a press of Show more made before the threads' reads answer keeps the entries drawn while it reads the older page", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 400);
+  const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(100 - index, 300 + index));
+  const threads = Promise.withResolvers<never[]>();
+  // The older page is held out until the case lets it land.
+  const older = Promise.withResolvers<DispatchEvent[]>();
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? [...firstPage] : older.promise
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockImplementation(() => threads.promise),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    more.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(getIssueEvents.mock.calls.some(([, options]) => options?.before !== undefined)).toBe(
+        true
+      )
+    );
+    expect(
+      drawnEntries(),
+      "the press took the entries away for the loading line while it read the older page"
+    ).toHaveLength(PAGE_SIZE);
+    expect(screen.queryByText(ANSWER_LINES.loading_history)).toBeNull();
+    await act(async () => {
+      threads.resolve([]);
+      older.resolve([...olderPage]);
+    });
+    await waitFor(() =>
+      expect(drawnEntries(), "the press drew no more entries once the page landed").toHaveLength(
+        2 * PAGE_SIZE
+      )
+    );
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
 // Where the whole log holds fewer than 20 entries, the history reads every page, one at a time,
 // and draws each entry with no control under them.
 test("a history whose log ends with fewer than 20 entries reads each older page and draws every entry with no Show more", async () => {
@@ -1069,11 +1122,11 @@ test("a control of the history that goes away under the focus leaves the focus i
     const active = document.activeElement;
     expect(
       active !== null && list.contains(active) && !before.has(active),
-      "Show more went away with the log's end and the focus did not go to the page it read"
+      "Show more went away with the log's end and the focus did not go to the first entry the press drew"
     ).toBe(true);
     expect(
       drawnEntries()[PAGE_SIZE]?.contains(active),
-      "the focus is not on the first entry the page added"
+      "the focus is not on the first entry the press drew"
     ).toBe(true);
     expect(focus.mock.calls.at(-1), "handing the focus on scrolled Details").toEqual([
       { preventScroll: true },
@@ -1102,12 +1155,12 @@ test("a control of the history that goes away under the focus leaves the focus i
 // The reader keeps their place in the history. A failed next page
 // is said where Show more stood, and its Retry reads that page: it does Show more's work in
 // Show more's place, at the foot of the list, so once the page lands the focus goes where Show
-// more hands it - to the first entry the page added - and never to the history's heading at the
+// more hands it - to the first entry it drew - and never to the history's heading at the
 // top, from which the reader's next Tab scrolls Details back to the head of the list. Found by
 // the tester on a running build of 3bd86200 with a copy of a large real issue: with 81 entries
 // drawn, the next page answered 500 once, and its Retry pressed by keyboard put the focus on
 // the heading "History" once the page landed.
-test("the Retry of a failed next page hands the focus to the page it read, as Show more does", async () => {
+test("the Retry of a failed next page hands the focus to the first entry it draws, as Show more does", async () => {
   const firstPage = pageOf(PAGE_SIZE + 1, 400);
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
   let down = true;
@@ -1141,11 +1194,11 @@ test("the Retry of a failed next page hands the focus to the page it read, as Sh
     const active = document.activeElement;
     expect(
       active !== null && list.contains(active) && !before.has(active),
-      "the Retry of the next page went away once it landed and the focus did not go to the page it read"
+      "the Retry of the next page went away once it landed and the focus did not go to the first entry the press drew"
     ).toBe(true);
     expect(
       drawnEntries()[PAGE_SIZE]?.contains(active),
-      "the focus is not on the first entry the page added"
+      "the focus is not on the first entry the press drew"
     ).toBe(true);
   } finally {
     unmount?.();
@@ -1390,7 +1443,7 @@ test("a first read of the log that failed keeps its line and its Retry, with the
 // left of the first page and the page's newest, and hands the focus on to the first of them, as
 // it does when the log's end takes it away; it says how many entries read are left, with "+" as
 // the log holds pages older than it.
-test("Show more pressed by keyboard keeps the focus while its page is read, then hands it to the page it read", async () => {
+test("Show more pressed by keyboard keeps the focus while its page is read, then hands it to the first entry it draws", async () => {
   const firstPage = pageOf(PAGE_SIZE + 1, 600);
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   // The next page is held out until the case lets it land.
@@ -1436,7 +1489,7 @@ test("Show more pressed by keyboard keeps the focus while its page is read, then
     const active = document.activeElement;
     expect(
       active !== null && list.contains(active) && !before.has(active),
-      "Show more kept the focus once its page landed, rather than handing it to a control that page added"
+      "Show more kept the focus once its page landed, rather than handing it to a control the press drew"
     ).toBe(true);
   } finally {
     restoreFocus?.();
@@ -1502,7 +1555,7 @@ test("two presses of the log's Retry before a render send one read, and the focu
   }
 });
 
-test("two presses of Show more before a render read its page once, and the focus still goes to the page it read", async () => {
+test("two presses of Show more before a render read its page once, and the focus still goes to the first entry it drew", async () => {
   const firstPage = pageOf(PAGE_SIZE + 1, 600);
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   // The next page is held out until the case lets it land.
@@ -1548,7 +1601,7 @@ test("two presses of Show more before a render read its page once, and the focus
     const active = document.activeElement;
     expect(
       active !== null && list.contains(active) && !before.has(active),
-      "Show more pressed twice kept the focus once its page landed, rather than handing it to a control that page added"
+      "Show more pressed twice kept the focus once its page landed, rather than handing it to a control the press drew"
     ).toBe(true);
   } finally {
     unmount?.();
@@ -1556,7 +1609,7 @@ test("two presses of Show more before a render read its page once, and the focus
   }
 });
 
-test("two presses of the next page's Retry before a render read that page once, and the focus still goes to the page it read", async () => {
+test("two presses of the next page's Retry before a render read that page once, and the focus still goes to the first entry it drew", async () => {
   const firstPage = pageOf(PAGE_SIZE + 1, 400);
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
   let readOlder = async (): Promise<DispatchEvent[]> => {
@@ -1608,7 +1661,7 @@ test("two presses of the next page's Retry before a render read that page once, 
     const active = document.activeElement;
     expect(
       active !== null && list.contains(active) && !before.has(active),
-      "the next page's Retry pressed twice went once its page landed, and the focus did not go to the page it read"
+      "the next page's Retry pressed twice went once its page landed, and the focus did not go to the first entry the press drew"
     ).toBe(true);
   } finally {
     unmount?.();

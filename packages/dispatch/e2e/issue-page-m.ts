@@ -117,16 +117,19 @@ export function historyShowMoreState(
   ]);
 }
 
+/** Whether `url` is a read of a page of issue `key`'s log older than the first (`GET
+ *  /api/v1/issues/<key>/events` with `before`), the read the history sends for entries it holds
+ *  too few of. */
+export function isOlderPageRead(url: URL, key: string): boolean {
+  return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
+}
+
 /** The answer to the history's read of a page of issue `key`'s log older than the first, the
  *  read the history sends before it draws where it holds too few entries, and the one Show more
- *  sends where its press reads the next page first (`historyNextPage`) (`GET
- *  /api/v1/issues/<key>/events` with `before`), waited for from the call on: a row calls it
- *  before what sends that read. */
+ *  sends where its press reads the next page first (`historyNextPage`), waited for from the call
+ *  on: a row calls it before what sends that read. */
 export function olderPageAnswered(page: Page, key: string): Promise<Response> {
-  return page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
-  });
+  return page.waitForResponse((response) => isOlderPageRead(new URL(response.url()), key));
 }
 
 /** One turn of an agents' thread in the history, by the comment's or the message's id. */

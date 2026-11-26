@@ -127,6 +127,7 @@ import {
   historyPanel,
   historyShowMore,
   historyShowMoreState,
+  isOlderPageRead,
   newestHistoryEntry,
   olderPageAnswered,
   putStepExperiment,
@@ -1524,9 +1525,8 @@ test("the history reads older pages before it draws, so its first view draws 20 
     // Each read of a page of the log older than the first that the page sends.
     const olderReads: string[] = [];
     page.on("request", (request) => {
-      const url = new URL(request.url());
-      if (url.pathname === `/api/v1/issues/${issue.key}/events` && url.searchParams.has("before")) {
-        olderReads.push(url.search);
+      if (isOlderPageRead(new URL(request.url()), issue.key)) {
+        olderReads.push(new URL(request.url()).search);
       }
     });
     await gotoIssue(page, `/issues/${issue.key}/activity`);
@@ -1554,17 +1554,6 @@ test("the history reads older pages before it draws, so its first view draws 20 
     await context.close();
   }
 });
-
-/** The event of the upload of `name` on `key`, among the newest 200 of its log, the page the
- *  history reads first. */
-async function uploadEvent(key: string, name: string): Promise<DispatchEvent> {
-  const event = (await getIssueEvents(key, { limit: 200, order: "desc" })).find(
-    (one) => one.type === "artifact.created" && one.payload.artifact.name === name
-  );
-  if (event === undefined)
-    throw new Error(`${key} recorded no upload of ${name} on its first page`);
-  return event;
-}
 
 /**
  * An issue of `title` whose log's first page of 200 events ends in a run of ten uploads by one
@@ -1606,12 +1595,12 @@ async function seedRunAcrossPage(
   for (let index = 0; index < 200 - 2 - between; index += 1) {
     await createMessage(key, { body: `Later message ${index}` }, asDaemon);
   }
-  return {
-    between: newestBetween,
-    events: await allEvents(key),
-    key,
-    newestUpload: await uploadEvent(key, "shot-9.png"),
-  };
+  const events = await allEvents(key);
+  const newestUpload = events.find(
+    (one) => one.type === "artifact.created" && one.payload.artifact.name === "shot-9.png"
+  );
+  if (newestUpload === undefined) throw new Error(`${key} recorded no upload of shot-9.png`);
+  return { between: newestBetween, events, key, newestUpload };
 }
 
 // Show more, where it reads the log's next page, adds entries under the reader, and the line

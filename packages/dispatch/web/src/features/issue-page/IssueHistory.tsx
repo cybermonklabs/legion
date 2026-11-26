@@ -29,7 +29,6 @@ import {
   type HistoryPlace,
   historyBlocks,
   historyDownTo,
-  leftAfterNext,
   placeUnder,
   turnPlace,
 } from "./history-model";
@@ -250,12 +249,13 @@ export function IssueHistory({
   // draw leaves an entry read and not drawn while an older page is unread, and Show more says
   // how many. A history drawn down to every entry read, as to the turn an address names, reads
   // on as well.
-  const short = older && (asked ? leftAfterNext(days, shownEnd) === 0 : drawn.left === 0);
+  const short = older && (asked ? drawn.left <= HISTORY_PAGE : drawn.left === 0);
   // A failed read of the log stops the reading on: the history draws what it holds, and the next
   // page's Retry reads on from there (`failed` below).
   const stopped = log.isError && !log.isFetching;
-  // The first entries wait under the loading line while the history reads on for them.
-  const firstFill = end === undefined && short && !stopped;
+  // The first entries wait under the loading line while the history reads on for them; a press
+  // of Show more made before the threads' reads answer finds them drawn, and keeps them.
+  const firstFill = end === undefined && !asked && short && !stopped;
   const listDrawn = log.data !== undefined && !firstFill;
   // Whether a press waits for the pages its next entries are read from.
   const pressWaits = asked && !stopped;
@@ -692,7 +692,7 @@ export function IssueHistory({
             // entries at once where more than `HISTORY_PAGE` are read and not drawn, or the log
             // has ended, and else reads older pages first until it can (`short`).
             const control = event.currentTarget;
-            const reads = log.hasNextPage && leftAfterNext(days, shownEnd) === 0;
+            const reads = log.hasNextPage && drawn.left <= HISTORY_PAGE;
             if (document.activeElement === control && pressed.current?.control !== control) {
               pressed.current = { before: heldParts(), control, kind: "more", reads };
             }
