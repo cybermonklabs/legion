@@ -31,7 +31,6 @@ import type {
   IssueTreeRead,
   IssueTreeTuple,
 } from "../../../api/types";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
@@ -58,13 +57,19 @@ export type TreeAnswer = IssueTreeRead;
 export type TreeAnswerNode = IssueTreeNode;
 export type TreeTuple = IssueTreeTuple;
 
+/** Every view of the tree a read asks for (`?view=`), in the order the filters read them: a
+ *  role document's, one for each filter (`TREE_FILTERS`, Spec's, Verification's and Plan's),
+ *  then the decisions view, the issue's decisions wherever they are written. That view plays no
+ *  role, so `blocksOf` takes no such name. */
+export const TREE_VIEWS = [...TREE_FILTERS, "decisions"] as const;
+
+/** One view of the tree, a member of `TREE_VIEWS` by its type, so that list holds every view. */
+export type TreeView = (typeof TREE_VIEWS)[number];
+
 /** One view's key: under the tree's (`issueTreeKey`), so every event of the issue reaches it
  *  too (`event-refresh.ts`). */
-export function viewKey(
-  key: string,
-  filter: TreeFilter
-): readonly ["issue-tree", string, TreeFilter] {
-  return [...issueTreeKey(key), filter] as const;
+export function viewKey(key: string, view: TreeView): readonly ["issue-tree", string, TreeView] {
+  return [...issueTreeKey(key), view] as const;
 }
 
 /** Resets every view of issue `key` the cache holds (`resetQueries`) for a load of the issue
@@ -75,8 +80,8 @@ export function viewKey(
  *  refreshes each held view through `refreshQueries`, and the view keeps what it draws until its
  *  new answer lands. */
 export function resetViews(queryClient: QueryClient, key: string): void {
-  for (const filter of TREE_FILTERS) {
-    const queryKey = viewKey(key, filter);
+  for (const name of TREE_VIEWS) {
+    const queryKey = viewKey(key, name);
     const view = queryClient.getQueryCache().find({ exact: true, queryKey });
     if (view === undefined) continue;
     droppedWhileHeld.delete(view);
@@ -86,14 +91,15 @@ export function resetViews(queryClient: QueryClient, key: string): void {
 }
 
 /** Drops every view of issue `key` for a write's own callback, as Dispatch answers the write,
- *  after which a held view could be older than the tree the page draws. The write whose callback
- *  drops them has landed, so a view it drops is read at once, as a load's; but one it drops after
- *  a read of it while another write of the issue is out, which holds it, is a refresh: held as an
- *  answered one and read once as the last write settles (`droppedWhileHeld`, `mayReadNow`). One
- *  never read reads at once. */
+ *  after which a held view could be older than the tree the page draws: a Keep, however it ends,
+ *  and a Change once Dispatch took it (`DecisionActions.tsx`), each of which reads the tree again
+ *  besides. The write whose callback drops them has landed or been refused, so a view it drops is
+ *  read at once, as a load's; but one it drops after a read of it while another write of the
+ *  issue is out, which holds it, is a refresh: held as an answered one and read once as the last
+ *  write settles (`droppedWhileHeld`, `mayReadNow`). One never read reads at once. */
 export function dropViews(queryClient: QueryClient, key: string): void {
-  for (const filter of TREE_FILTERS) {
-    const queryKey = viewKey(key, filter);
+  for (const name of TREE_VIEWS) {
+    const queryKey = viewKey(key, name);
     const view = queryClient.getQueryCache().find({ exact: true, queryKey });
     if (view === undefined) continue;
     if (heldByWrites.has(view)) {
@@ -346,7 +352,7 @@ export const outlineQuery = (key: string, outline: Outline) =>
 /** The issue's whole tree: Graph's read, with no view. */
 export const issueTreeQuery = (key: string) => outlineQuery(key, "graph");
 
-function viewRouteQuery(view: TreeFilter, version: number | undefined): TreeQuery {
+function viewRouteQuery(view: TreeView, version: number | undefined): TreeQuery {
   return version === undefined ? { view } : { view, v: version };
 }
 
@@ -360,14 +366,14 @@ function viewRouteQuery(view: TreeFilter, version: number | undefined): TreeQuer
  *  own: its key is the view's with `{ v: version }` after it, still under the tree's, so every
  *  event of the issue reaches it, while the read at none sends no `v` and keeps the view's key
  *  (`viewKey`). */
-export const viewQuery = (key: string, filter: TreeFilter, version?: number) =>
+export const viewQuery = (key: string, view: TreeView, version?: number) =>
   queryOptions({
     ...TREE_FRESH,
     queryKey:
       version === undefined
-        ? viewKey(key, filter)
-        : ([...viewKey(key, filter), { v: version }] as const),
-    queryFn: (context) => readTree(key, viewRouteQuery(filter, version), context),
+        ? viewKey(key, view)
+        : ([...viewKey(key, view), { v: version }] as const),
+    queryFn: (context) => readTree(key, viewRouteQuery(view, version), context),
   });
 
 /** Which outline read a load of `preset` holds (R1, R4, R13): Graph's in Graph (R10),
@@ -584,6 +590,14 @@ export function useBlocksRunning(key: string, role: TreeFilter): boolean {
   return role === choice.filter ? view.isFetching : read.isFetching;
 }
 
+/** The answer of the outline read the page holds (`OutlineChoice`) of issue `key`, watched and
+ *  never sent, since `useTreeRead` sends it: for a surface that holds the issue's key and not its
+ *  read, as a decision's Keep and Change do (`DecisionActions.tsx`), which find their decision in
+ *  the read the rows are drawn from. */
+export function useOutlineAnswer(key: string): TreeAnswer | undefined {
+  return useQuery({ ...observedOutline(key, useOutlineChoice()), enabled: false }).data;
+}
+
 /** Whether the outline read the page holds answers older comments it has not read
  *  (`OlderComments.remain`), and how to read the next page of them. */
 export interface OlderComments {
@@ -689,8 +703,8 @@ export function readOlderComments(
 }
 
 /** A read whose pages past the first the page reads one at a time (R15): an outline's
- *  (`Outline`) or a filter's view (`TreeFilter`). */
-type PagedRead = Outline | TreeFilter;
+ *  (`Outline`) or a view's (`TreeView`), the decisions view among them. */
+type PagedRead = Outline | TreeView;
 
 /** What `read` asks the tree route for beside a page's `cursor`, and the key its answer stands
  *  under in the cache: a view's at `version` where it is read at one (`viewQuery`). */
@@ -778,12 +792,12 @@ export function useNextTreePage(issue: IssueDetails): NextTreePage | undefined {
   return useNextPage(issue.key, choice.outline, answer);
 }
 
-/** The next page of `filter`'s view read of issue `key`, for the control after the view's last
+/** The next page of `view`'s view read of issue `key`, for the control after the view's last
  *  row; undefined while the view holds no answer, or one that names none. Its observer is never
  *  enabled, so it sends nothing: the view is read where `ViewReadProvider` reads it. */
-export function useNextViewPage(key: string, filter: TreeFilter): NextTreePage | undefined {
-  const answer = useQuery({ ...viewQuery(key, filter), enabled: false }).data;
-  return useNextPage(key, filter, answer);
+export function useNextViewPage(key: string, view: TreeView): NextTreePage | undefined {
+  const answer = useQuery({ ...viewQuery(key, view), enabled: false }).data;
+  return useNextPage(key, view, answer);
 }
 
 /** The next page of `read`'s `answer` (`NextTreePage`), the same value while the answer names the
@@ -897,8 +911,8 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  * or was refused, so a write that goes out as it settles keeps it (`settle`), and each owed read
  * is asked for then, once: one observed is read once, and one nothing observes when something
  * next does. With the live feed down nothing tells of what the writes did, nor of an event lost
- * meanwhile, so that settle asks for the tree, every view and the decisions read besides; with the
- * feed up a write's event tells, and a write Dispatch refused, which changed nothing, reads
+ * meanwhile, so that settle asks for the tree and every view, the decisions view among them; with
+ * the feed up a write's event tells, and a write Dispatch refused, which changed nothing, reads
  * nothing. A surface's callback that runs once its write has landed (TanStack's `onSuccess`)
  * runs after the hold ended.
  *
@@ -936,6 +950,18 @@ export function subscribeTreeFreshness(queryClient: QueryClient, key: string): (
   };
 }
 
+/** Each outline read the page may hold of issue `key`, each by its own key (`outlineKey`):
+ *  Graph's, the tree read, and Conversation's (`OUTLINE_QUERIES`). Each is kept fresh as the tree
+ *  read is (`subscribeTreeFreshness`), and a view follows whichever the page holds; a write whose
+ *  answer changes what the outline draws reads them again by the same targets
+ *  (`DecisionActions.tsx`). */
+export function outlineTargets(key: string): readonly RefreshTarget[] {
+  return (Object.keys(OUTLINE_QUERIES) as Outline[]).map((outline) => ({
+    exact: true,
+    queryKey: outlineKey(outline, key),
+  }));
+}
+
 /** One issue's subscription (`subscribeTreeFreshness`), and how many stages hold it. */
 interface TreeFreshness {
   holders: number;
@@ -957,17 +983,11 @@ function watchTree(
   // Each outline read the page may hold: Graph's, the tree read, and Conversation's
   // (`OUTLINE_QUERIES`). Each is kept fresh as the tree read is, and a view follows whichever the
   // page holds.
-  const outlines: readonly RefreshTarget[] = (Object.keys(OUTLINE_QUERIES) as Outline[]).map(
-    (outline) => ({ exact: true, queryKey: outlineKey(outline, key) })
-  );
-  const decisions: RefreshTarget = {
-    exact: true,
-    queryKey: issueDecisionsQuery(key, true).queryKey,
-  };
+  const outlines = outlineTargets(key);
   // Each view's reads, by the view's key as a prefix: its read at no version, under that key, and
   // each read of it at a version (`viewQuery`), under that key with `{ v }` after it.
-  const views: readonly RefreshTarget[] = TREE_FILTERS.map((filter) => ({
-    queryKey: viewKey(key, filter),
+  const views: readonly RefreshTarget[] = TREE_VIEWS.map((view) => ({
+    queryKey: viewKey(key, view),
   }));
   const treeAndViews: readonly RefreshTarget[] = [...outlines, ...views];
   // The tree's query and each view's, by the prefix they share.
@@ -987,9 +1007,6 @@ function watchTree(
   // with its gap replayed whole, asked for every refused one (`askRefused`): each is asked for
   // once more where it ends refused.
   const owedOnRefusal = new Set<string>();
-  // Whether the last write of the hold landed with the store refreshing every query
-  // (`onIssueWrite`'s `refreshedAll`), which read every read the hold did not hold.
-  let refreshedAll = false;
   // Marks a refused read valid, so its next ask is heard: TanStack marks a refused read stale,
   // and tells of no stale mark put on a query already stale, so an event's ask, or a refresh of
   // every query, of a refused read nothing observes would leave its next observer nothing to read
@@ -1104,9 +1121,8 @@ function watchTree(
   // write that goes out in the write store's telling of that settle keeps the hold. It lets the
   // tree and its views go, and asks for what the writes held, each once, so one observed is read
   // once and one nothing observes when something next does: with the live feed down, which tells
-  // nothing of what the writes did nor of an event lost meanwhile, the tree, every view and the
-  // decisions read - the decisions not where the last write's landing refreshed every query,
-  // which read them already; with it up, each tree and view read owed - sent or asked for while
+  // nothing of what the writes did nor of an event lost meanwhile, the tree and every view, the
+  // decisions view among them; with it up, each tree and view read owed - sent or asked for while
   // a write was out (`owedReads`), or marked stale meanwhile - and nothing for a write that
   // changed nothing.
   const settle = (): void => {
@@ -1115,7 +1131,7 @@ function watchTree(
     if (stopped) return;
     releaseReads();
     const owed = !liveFeedUp(queryClient)
-      ? [...outlines, ...(refreshedAll ? [] : [decisions]), ...views]
+      ? treeAndViews
       : treeAndViews
           .flatMap((target) => cache.findAll(target))
           .filter((query) => owedReads.has(query.queryHash) || query.state.isInvalidated)
@@ -1126,7 +1142,7 @@ function watchTree(
   // The hold, as the write store tells of the issue's writes: the first going out while none is
   // begins it and holds the tree and its views (`heldByWrites`); the last landing, refused or let
   // go ends it (`settle`).
-  const unwrite = writes.onIssueWrite(key, (phase, write, refreshed) => {
+  const unwrite = writes.onIssueWrite(key, (phase, write) => {
     if (phase === "out") {
       const begins = !holding();
       writesOut.add(write.id);
@@ -1136,7 +1152,6 @@ function watchTree(
       return;
     }
     if (!writesOut.delete(write.id) || writesOut.size > 0) return;
-    refreshedAll = refreshed;
     settling = true;
     queueMicrotask(settle);
   });

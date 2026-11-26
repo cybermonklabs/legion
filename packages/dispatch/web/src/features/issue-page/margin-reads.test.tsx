@@ -123,10 +123,11 @@ const BESIDE = [
 // On the new issue page the outline reads the issue's asks and comments under the margin's keys
 // and keeps them fresh by events (`useIssueTree.ts`), so the margin in the Details drawer holds
 // them the same way: a window focus past the app's 30 s staleness reads neither again. Beside the
-// shown spec it reads the decisions too, which the outline also reads under this key and keeps
-// fresh by events, and the same focus reads them again no more than it reads the asks and the
-// comments. The inbox and the reader's state keep the app's defaults there too, so their second
-// read shows the focus was handled.
+// shown spec it reads the decisions too, which the outline no longer reads, since its decisions
+// are nodes of the tree read, but which the margin keeps fresh by events under the page's same
+// rule (`useNewIssuePageFreshness`), and the same focus reads them again no more than it reads the
+// asks and the comments. The inbox and the reader's state keep the app's defaults there too, so
+// their second read shows the focus was handled.
 test.each(
   BESIDE
 )("in Details beside %s, a focus past 30 s sends no read of the margin's asks, comments or decisions", async (_beside, spec) => {

@@ -49,12 +49,14 @@ function withoutVersion(reference: string): string {
   return reference.replace(/@v\d+/g, "");
 }
 
+export { withoutVersion };
+
 /**
  * The decision behind the node `id`: the first decision of the tree, in reading order, that
- * names that node among its chips. A decision names every node its `shaped` edge reaches, the
- * decisions read's links (`tree-drafts.ts`'s `addDecisions`), which is the one edge the model
- * holds between a decision and what it shaped. An agent's decision is a node of its own; a
- * person's is the answered ask itself, whose node carries those chips.
+ * names that node among its chips. A decision names every block its `shaped` tuples point at
+ * (`tree-read/tree-nodes.ts`), and that chip is the one edge the model holds between a decision
+ * and what it shaped. An agent's decision is a node of its own; a person's is the answered ask
+ * itself, whose node carries those chips.
  *
  * A check no decision names reaches back through the chain it sits in (R10): the decision
  * behind a requirement it is drawn under, which is the decision that informed what the check

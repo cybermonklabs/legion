@@ -73,12 +73,12 @@ export interface WriteBase<D = unknown> {
    *  go: a form the reader is still in front of, holding their draft. */
   readonly inline: boolean;
   readonly target: string | undefined;
-  /** The issue the write changes, where it names one: its press's (`WriteSpec.issue`), or the
-   *  issue of a request under `/api/v1/issues/{key}`, known from the press for a write made from
-   *  its request and from its first attempt's request for one made by an attempt. It is kept with
-   *  the write, so one resumed after a reload names it again, and one kept before the issue was
-   *  kept names the issue of its kept request's path. A write of an issue is told to that issue's
-   *  listeners from going out to settling (`onIssueWrite`). */
+  /** The issue whose tree read holds while the write is out, where it names one: its press's
+   *  (`WriteSpec.issue`), else the issue of a request under `/api/v1/issues/{key}`, known from the
+   *  press for a write made from its request and from its first attempt's request for one made by
+   *  an attempt. It is kept with the write, so one resumed after a reload names it again, and one
+   *  kept before the issue was kept names the issue of its kept request's path. A write of an
+   *  issue is told to that issue's listeners from going out to settling (`onIssueWrite`). */
   readonly issue: string | undefined;
   readonly pressedAt: number;
   /** Its place in its target's line, in the order writes joined it; a Retry joins at the back. */
@@ -285,8 +285,10 @@ interface WriteSpecBase<D, K> {
    *  being tried. A write of a kind that is made again from its request (no `resume`) is made
    *  from its `request` alone when it names a target. */
   readonly target?: string;
-  /** The issue the write changes, for a write whose request does not name it in its path (a
-   *  comment's resolve, a Keep): the issue page's tree read is held while it is out. */
+  /** The issue whose tree read holds while the write is out, where it is not the one its
+   *  request's path names: a write whose path names no issue (a comment's resolve, a Keep), or a
+   *  settle of another issue's node from the tree drawn for this one. By default the issue its
+   *  request's path names. */
   readonly issue?: string;
   /** The key of a write the surface makes again after it ended without Dispatch's verdict (the
    *  reader stopped it): that write's own, so Dispatch answers it with what the first did. Left

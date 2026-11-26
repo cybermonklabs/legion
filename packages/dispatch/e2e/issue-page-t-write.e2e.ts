@@ -10,7 +10,6 @@ import { drawnRowReadings } from "./issue-page-t";
 import {
   expectOneOrTwoReads,
   firstLoad,
-  idReadsOf,
   KEPT_BY_ALICE,
   parentOfWords,
   pressFilter,
@@ -20,7 +19,6 @@ import {
 } from "./issue-page-t-rows";
 import {
   decisionsReadOf,
-  decisionsViewGate,
   footLineGate,
   headerStatus,
   heldAnswer,
@@ -30,6 +28,7 @@ import {
   treeReadGate,
   treeReads,
 } from "./issue-page-t-tree";
+import { decisionsViewServedGate, heldDecisionsRead, idReadsOf } from "./issue-page-u";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -126,10 +125,12 @@ test("a write is drawn without a reload", async ({ browser }) => {
   });
 });
 
-// c-fresh's Keep clause, owed on the model's decisions view of the tree read
-// (`decisionsViewGate`) for the Decisions view read, and on the page drawing the decisions from
+// c-fresh's Keep clause, owed until the server serves the Decisions view
+// (`decisionsViewServedGate`), and on the page drawing the decisions from
 // the tree read's nodes (`partUGate`), which records it once decisions are nodes on this
-// branch's base.
+// branch's base. The load sends no decisions read, so the decisions read that gate reads is
+// `heldDecisionsRead`'s: the one the page received, and where it received none the Decisions
+// view the row reads itself.
 // SLOW(>=2s): a seeded issue, its load waited out, a Keep in the outline waited for, Decisions
 // pressed and a second Keep there waited for.
 test("a write is drawn without a reload, and Keep is drawn kept in the outline and in the Decisions view @owed", async ({
@@ -138,12 +139,17 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
   test.setTimeout(ROW_MS);
   await phase(browser, seedReviewList, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await decisionsViewServedGate(page, seeded.key));
     const tree = treeAnswerOf(page);
     const decisions = decisionsReadOf(page, seeded.key);
     const traffic = watchApiRequests(page);
-    const load = await firstLoad(page, traffic, seeded.key);
-    owedUnless(decisionsViewGate(load, seeded.key));
-    owedUnless(partUGate(await heldAnswer(tree, "the tree read"), decisions.read()));
+    await firstLoad(page, traffic, seeded.key);
+    owedUnless(
+      partUGate(
+        await heldAnswer(tree, "the tree read"),
+        await heldDecisionsRead(seeded.key, decisions)
+      )
+    );
     await unfoldEveryBranch(page);
     const waiting = new Set(
       (await drawnRowReadings(page, { bodies: false })).flatMap((row) =>

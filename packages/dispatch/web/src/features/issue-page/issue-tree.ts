@@ -1,16 +1,13 @@
 import type { TreeFilter } from "../../api/queries";
 import type {
   Actor,
-  ArtifactBlock,
   Ask,
   AskWithTrees,
   Comment,
-  CommentWithTrees,
   DisplayTree,
   IssueCheckResults,
   IssueChild,
   IssueCoverage,
-  IssueDecisions,
   IssueDetails,
   MessageRead,
   ReferenceTarget,
@@ -21,11 +18,13 @@ import type { DispatchReferenceRoute } from "../refs/routes";
 import { referenceTargetKind } from "../refs/target-id";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
+import type { LensFacts } from "./lenses/lens-drafts";
 import { chipWords } from "./node-row-chip";
+import { closeOvertaken } from "./node-states/node-states";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { storedReading } from "./stored-reading";
-import { addDecisions, type Draft, titleReading, treeContext } from "./tree-drafts";
-import { askNodeIds, nextTreeCursor, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
+import { type Draft, titleReading, treeContext } from "./tree-drafts";
+import { nextTreeCursor, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -56,11 +55,9 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  *
  * The tree read (`IssueTreeReads.tree`), whose answer the page keeps whole, and the reads that
  * tell what the answer does not, each matched to its node by its address: the issue read, the
- * coverage read, the decisions read, the results read, the asks, and the one batched reference
- * read, which names what a chip points at outside the answer. The decisions read also draws each
- * agent's decision no node of the answer holds - a section of `decisions.md` a server of the
- * release before answers - as the outline drew it from that read (`tree-drafts.ts`'s
- * `addDecisions`). No document's blocks are read.
+ * coverage read, the results read, the asks, and the one batched reference read, which names
+ * what a chip points at outside the answer. Every decision is a node of the answer, with its
+ * review state on it. No document's blocks are read.
  */
 
 /** One tie of a node that places nothing, drawn beside the node as its target's name. */
@@ -100,6 +97,13 @@ export interface NodeChip {
   /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
+  /** The life of the node this chip names, where it has one (`TreeNode.life`), which the chip
+   *  draws after its name. Absent for a target that is live or settled, and for one the tree does
+   *  not hold. */
+  readonly life?: NodeLife;
+  /** Whether the node this chip names is reserved for its author, who is the reader
+   *  (`TreeNode.onlyYou`). Absent for every other target. */
+  readonly onlyYou?: true;
   /** How the target is named, by the batched reference read and the issue's own documents
    *  (`treeContext`): the reading the page publishes for it, which the shared reader projects
    *  into the name every surface reads the target by, as a link to it reads it
@@ -192,6 +196,17 @@ export interface ParentLine {
    *  absent for every other parent. */
   readonly editedAt?: string;
   readonly id: string;
+  /** The parent's life, where it has one (`TreeNode.life`), which the line draws after the
+   *  parent's words. Absent for a parent that is live or settled. */
+  readonly life?: NodeLife;
+  /** Whether the parent is reserved for its author, who is the reader (`TreeNode.onlyYou`).
+   *  Absent for every other parent. */
+  readonly onlyYou?: true;
+  /** The read id by which the line takes the parent's states (`node-states.ts`' `stateIdOf`):
+   *  the parent's own (`TreeNode.readId`), its ask's for a question the tree draws from a block
+   *  and its ask, and the id a view's answer names it by where the view holds it only by that
+   *  id. Absent for a parent drawn from another read. */
+  readonly readId?: string;
   /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
    *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */
   readonly reference?: string;
@@ -203,6 +218,14 @@ export interface ParentLine {
   readonly tree?: DisplayTree;
   readonly type: NodeType;
 }
+
+/**
+ * A node's life, where it has one: its `state` in the tree read where that is `proposed` (put
+ * forward and not yet settled by a person) or `overtaken` (a later node took its place); a live
+ * or settled node has none and draws nothing. The page reads it through `isProposed` and
+ * `isOvertaken` (`issue-address.ts`) and draws it in its own words.
+ */
+export type NodeLife = "proposed" | "overtaken";
 
 /** The line a filter's row names `node` by on its child's row (`ParentLine`): its id, its kind,
  *  its address where it has one, the words a row projects its one line from, and a comment's or
@@ -237,6 +260,9 @@ export interface TreeNode {
   readonly author?: Actor;
   readonly children: readonly TreeNode[];
   readonly chips: readonly NodeChip[];
+  /** Whether this node is overtaken or sits under an overtaken one, at any depth: it draws no
+   *  gap, and no count treats it as open or unproved. Absent on every other node. */
+  readonly closed?: true;
   /** What the coverage read counts for a requirement. */
   readonly counts?: NodeCounts;
   /** The coverage read's own lines a requirement draws in its body where its gaps are, each in the
@@ -269,9 +295,19 @@ export interface TreeNode {
    *  title as its words, how it stands, what blocks it and who holds it, and its key as the tag
    *  (R12, `IssueChildren.tsx`). Absent for every other node. */
   readonly child?: IssueChild;
+  /** The person whose Change this decision waits on (the first author of the newest Change the
+   *  tree read hangs under it, `decision-review.ts`' `decisionNodeChanges`), whose name the row
+   *  draws after "Changed by" (R2, R3); absent for every other node. */
+  readonly changedBy?: Actor;
   /** The person who kept this decision as it reads now (`DecisionKeep.kept_by`), whose name the
    *  row draws after "Kept by" (R2); absent for every other node. */
   readonly keptBy?: Actor;
+  /** The node's life, where it has one (`NodeLife`): what its row draws in its state line, and
+   *  every chip and parent line naming it after its name. */
+  readonly life?: NodeLife;
+  /** What a lens, a finding, a risk or a constraint carries beyond these fields, and the chips of
+   *  a statement a constraint names; absent on every other node. */
+  readonly lens?: LensFacts;
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
@@ -282,6 +318,10 @@ export interface TreeNode {
   readonly moreToRead?: true;
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
+  /** Whether this node is reserved for its author, who is the reader: its `visibility` in the
+   *  tree read is `author`, so every place that draws it says so. No other reader's tree holds
+   *  the node at all. */
+  readonly onlyYou?: true;
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
@@ -314,29 +354,26 @@ export interface TreeNode {
    *  every other node, a `requirement` block of any other document among them. */
   readonly statement?: true;
   /** The node's words as the read that carried them holds them: the tree read's `text` for every
-   *  node it answers, and a decision's own words, its `decision` block's content (its entry's
-   *  `text` with the lines that open and close the block left out), for a decision of the
-   *  decisions read, as stored; a deleted comment's and message's deleted line in place of its
+   *  node it answers, as stored; a deleted comment's and message's deleted line in place of its
    *  body (`deletedAt`); the issue's title for the issue itself, its key being its id
    *  (`assemble`). `""` where the model holds none. */
   readonly text: string;
   /** The server's reading of `text`, where the read that carried the text sends one: the tree
-   *  read's `text_tree` for every node it answers, and a decision's own content (its entry's
-   *  `text_tree` with its block's content at the top level) for a decision of the decisions read.
-   *  The row draws the node's words from it, so stored markdown is drawn as what it says and the
-   *  browser parses none of it (R20). A node whose read sends none draws `text` as stored. A
-   *  deleted comment or message carries none (`deletedAt`): its `text` is the deleted line, and
-   *  no reading of its body. Neither the issue nor a child issue carries one: its `text`
-   *  names it by its title, which is no markdown, so such a node draws `text` as written, and its
-   *  one line is projected from that text read as one text run (`lineReading`). */
+   *  read's `text_tree` for every node it answers. The row draws the node's words from it, so
+   *  stored markdown is drawn as what it says and the browser parses none of it (R20). A node
+   *  whose read sends none draws `text` as stored. A deleted comment or message carries none
+   *  (`deletedAt`): its `text` is the deleted line, and no reading of its body. Neither the issue
+   *  nor a child issue carries one: its `text` names it by its title, which is no markdown, so
+   *  such a node draws `text` as written, and its one line is projected from that text read as
+   *  one text run (`lineReading`). */
   readonly tree?: DisplayTree;
   /** Whether this placement is a transclusion rather than the node's edited place. */
   readonly transcluded: boolean;
   readonly type: NodeType;
   /** Whether the model marks this decision unsure, which its row says in one word (R9). */
   readonly unsure?: true;
-  /** The view reads the page holds (`?view=`), with the decisions read, on the issue's own node
-   *  alone: what each filter draws once its view has answered (`presets.ts`). Absent on every
+  /** The view reads the page holds (`?view=`), on the issue's own node alone: what each filter
+   *  draws once its view has answered (`presets.ts`, `decisions-entries.ts`). Absent on every
    *  other node, and on the issue's until a view is held. */
   readonly views?: TreeViews;
   /** Whether this node waits on the reader: a decision waiting for their review, which is where
@@ -348,10 +385,10 @@ export interface TreeNode {
   readonly waiting: boolean;
 }
 
-/** The view answers the page holds, by filter, and the decisions read the Decisions filter
- *  draws (`TreeNode.views`). */
+/** The view answers the page holds, by filter (`TreeNode.views`): the Decisions filter's is the
+ *  decisions view, the issue's decisions wherever they are written. */
 export interface TreeViews {
-  readonly decisions?: IssueDecisions;
+  readonly decisions?: TreeAnswer;
   readonly plan?: TreeAnswer;
   readonly spec?: TreeAnswer;
   /** The tree each view answer held builds alone (`buildIssueTree` over the same reads, with that
@@ -386,15 +423,6 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
 export function isCheck(node: Pick<TreeNode, "state" | "type">): boolean {
   return node.type === "check" && node.state !== undefined;
 }
-
-/** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them: what the
- *  Decisions filter reads its Changes' sections from (`decision-review.ts`), while decisions are
- *  sections of `decisions.md`. */
-export interface DocumentBlocks {
-  readonly artifactId: string;
-  readonly blocks: readonly ArtifactBlock[];
-}
-
 /** An ask as the tree reads it: the issue read's open asks and the asks read both send the
  *  server's reading of the question, of each option's label and description, of the answer and
  *  of the reason it was closed with beside them, which `Ask` leaves out. */
@@ -407,15 +435,11 @@ export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
   readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
-  /** The decisions read. The tree reads its `entries` and nothing else of it: the review state of
-   *  each decision node of the tree read (`tree-read/tree-nodes.ts`' `draftDecision`), and each
-   *  agent's decision no node holds, which it draws itself (`tree-drafts.ts`'s `addDecisions`,
-   *  `isDecisionEntry`), with who decided it (`decided_by`), which is the decision's author, and
-   *  the questions it settles (`from_ask`). */
-  readonly decisions?: IssueDecisions;
-  /** The issue's comments with each body's reading: what a Change of a decision the tree read
-   *  holds no node for is found among (`addDecisions`). */
-  readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
+  /** The issue's comments: what a comment's author did to one - deleted it or last replaced its
+   *  body - which the tree read answers no mark of (`tree-read/tree-nodes.ts`'s `postMarksOf`),
+   *  and so which Changes ask nothing any more (`decision-review.ts`'s `decisionNodeChanges`). The
+   *  tree read answers each comment as a node. */
+  readonly comments?: readonly Comment[];
   readonly issue: IssueDetails;
   /** The issue's messages with their replies: what a message's author did to one - deleted it or
    *  last replaced its body - which the tree read answers no mark of
@@ -709,9 +733,9 @@ export function chipName(route: DispatchReferenceRoute | undefined, name: string
  * `# 1 rule`, and a stored text's marks are no word of it either: a plan task stored as
  * `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`. A title
  * node's line is its title read as one text run (`titleReading`), so nothing in it is parsed.
- * White space collapses to single spaces. A `TreeNode` passes as it is, and a decision as its
- * own content (`decision-review.ts`'s `decisionContent`). The node holds its stored text's
- * reading, so it is remembered while the node lives.
+ * White space collapses to single spaces. A `TreeNode` passes as it is, and a decision as
+ * `{ text, tree: text_tree }`. The node holds its stored text's reading, so it is remembered
+ * while the node lives.
  */
 export function lineWordsRaw(node: {
   readonly text: string;
@@ -778,19 +802,18 @@ export function treeWordsOf(reads: IssueTreeReads): TreeWords {
 
 /**
  * The issue's whole tree, from the reads it was given: the drafts of the tree read
- * (`treeDraftsFrom`), each where the read places it, with the outline's drafts of each decision
- * of today's decisions read that no node of the answer holds (`addDecisions`, while decisions are
- * sections of `decisions.md`). Until the tree read has answered its first page
- * (`IssueTreeReads.tree`), the tree is the issue alone. While the answer names a next page the
- * issue's node says so (`TreeNode.moreToRead`), so each count over the tree carries "+".
+ * (`treeDraftsFrom`), each where the read places it. Until the tree read has answered its first
+ * page (`IssueTreeReads.tree`), the tree is the issue alone. While the answer names a next page
+ * the issue's node says so (`TreeNode.moreToRead`), so each count over the tree carries "+".
+ * Each node carries the life and visibility the tree read answers for it, and a node at or
+ * under an overtaken one is closed (`node-states.ts`'s `closeOvertaken`).
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const words = treeWordsOf(reads);
   const tree = reads.tree;
   if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
   const drafts = treeDraftsFrom(tree, reads, words);
-  addDecisions(drafts, reads, words, () => askNodeIds(drafts, tree, reads));
-  const root = assemble(reads.issue, [...drafts.values()], words.chipOf);
+  const root = closeOvertaken(assemble(reads.issue, [...drafts.values()], words.chipOf), tree);
   return nextTreeCursor(tree) === undefined ? root : { ...root, moreToRead: true };
 }
 
@@ -934,7 +957,9 @@ export function assemble(
       held: heldBy(children),
       id: draft.id,
       ...(draft.child === undefined ? {} : { child: draft.child }),
+      ...(draft.changedBy === undefined ? {} : { changedBy: draft.changedBy }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
+      ...(draft.lens === undefined ? {} : { lens: draft.lens }),
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,

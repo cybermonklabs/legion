@@ -45,16 +45,24 @@ import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
+import { standingParts } from "./decisions-filter/entry-standing";
 import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
-import { presetNodePath } from "./issue-address";
+import { isProposed, presetNodePath } from "./issue-address";
 import { chipName, isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
+import { LensChain } from "./lenses/LensChain";
+import { LensLines } from "./lenses/LensLines";
+import { LensMenu } from "./lenses/LensMenu";
+import { lensChipWords } from "./lenses/lens-drafts";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { DeletedLine, FirstLine, NodeParentLine } from "./node-line";
 import { documentWord } from "./node-row-chip";
+import { NodeMarks } from "./node-states/NodeMarks";
+import { marksOf } from "./node-states/node-states";
+import { SettleAct } from "./node-states/SettleAct";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
@@ -68,9 +76,9 @@ import {
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
+  LENS_WORDS,
   NODE_TYPE_NAMES,
   type NodeType,
-  nodeStateWord,
 } from "./page-words";
 import { isThreadContext, tagFilter } from "./presets";
 import { RowText, useOutOfTabOrder } from "./RowText";
@@ -153,10 +161,10 @@ export function NodeRow({
    *  `path` on a row above it on its path while its own row is folded away (R12); undefined on
    *  every other row. */
   current?: PointMark;
-  /** The document this row's node is a block of, which its face writes against: a decision's
-   *  Keep and Change are writes on the document its `decision` block stands in, the spec or
-   *  another of the issue's (R7). Undefined for a node that is no block of a document of this
-   *  issue. */
+  /** The document this row's node is a block of, which names the issue whose tree read holds
+   *  the node: a decision's Keep and Change write on the decision node's own document
+   *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. Undefined for a node that
+   *  is no block of a document of this issue. */
   document?: Artifact;
   /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
    *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
@@ -229,6 +237,8 @@ export function NodeRow({
   const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
 
   const depth = indentOf(level);
+  // A lens with no verdict draws `LENS_WORDS.no_verdict` in its words' place.
+  const noVerdict = node.type === "lens" && node.text === "";
   const edges = node.alsoUnder.length > 0 || node.chips.length > 0 || node.gaps.length > 0;
   // The node's ties and its gap words, at the end of its words, on their line, as the
   // prototype's `.trail` stands inside its `.body` (ruling 5). Where the words are being edited,
@@ -258,6 +268,7 @@ export function NodeRow({
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
+      data-node-read-id={node.readId}
       data-node-row=""
       data-node-state={node.state}
       data-node-type={node.type}
@@ -289,12 +300,20 @@ export function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              {deleted === null ? (
-                <FirstLine node={node} />
-              ) : (
-                <span data-node-first-line="" {...authorText}>
-                  <DeletedLine deleted={deleted} />
+              {noVerdict ? (
+                <span data-node-first-line="" {...pageChrome}>
+                  {LENS_WORDS.no_verdict}
                 </span>
+              ) : (
+                <>
+                  {deleted === null ? (
+                    <FirstLine node={node} />
+                  ) : (
+                    <span data-node-first-line="" {...authorText}>
+                      <DeletedLine deleted={deleted} />
+                    </span>
+                  )}
+                </>
               )}
               {folded === undefined ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>
@@ -324,13 +343,19 @@ export function NodeRow({
                   <DeletedLine deleted={deleted} />
                 </p>
               ) : node.child === undefined ? (
-                <RowText
-                  focused={focused}
-                  markdown={node.text}
-                  source={node.source}
-                  tabStops={tabStops}
-                  tree={node.tree}
-                />
+                noVerdict ? (
+                  <p className="break-words" {...pageChrome}>
+                    {LENS_WORDS.no_verdict}
+                  </p>
+                ) : (
+                  <RowText
+                    focused={focused}
+                    markdown={node.text}
+                    source={node.source}
+                    tabStops={tabStops}
+                    tree={node.tree}
+                  />
+                )
               ) : (
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
@@ -363,6 +388,7 @@ export function NodeRow({
           {node.parentLine === undefined ? null : (
             <NodeParentLine line={node.parentLine} tabStops={tabStops} />
           )}
+          {oneLine ? null : <LensLines node={node} tabStops={tabStops} />}
           {oneLine ? null : (
             <NodeFace
               author={author}
@@ -372,11 +398,14 @@ export function NodeRow({
               tabStops={tabStops}
             />
           )}
+          {oneLine ? null : <LensChain node={node} tabStops={tabStops} />}
           <RowActs
+            focused={focused}
             node={node}
             ownAnswer={ownAnswer}
             ownComment={own && node.type === "comment"}
             replies={!(context && isThreadContext(node))}
+            settles={focused}
             tabStops={tabStops}
             writer={writer}
           />
@@ -578,6 +607,10 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return author === "person" ? "person" : "agent";
     case "decision":
       return "decision";
+    case "finding":
+    case "lens":
+    case "risk":
+      return "lens";
     // A reading is an agent's reading of a person's answer, inside the ask or the decision it
     // reads, and always an agent's words: it takes an agent's quiet grey, never the colour of the
     // question or the decision it reads, so it never reads as the person's decision itself (R9).
@@ -588,6 +621,10 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "criterion":
       // A criterion's bullet is in the statements' colour wherever it stands (R1): it carries no
       // `statement` mark, which only the spec's own requirement does (`isStatement`).
+      return "statement";
+    // A constraint, a standard or a measurement the issue's statements are held to, takes a
+    // statement's colour, though it is no block of the spec and so never `isStatement`.
+    case "constraint":
       return "statement";
     case "requirement":
       // Only the spec's own requirement is a statement (`isStatement`); one of any other
@@ -710,6 +747,11 @@ export const NODE_EDITED_MARKS: Readonly<Record<string, string>> = freeze({
  * 761 px up it is a column as wide as its first line; on a phone it is one small line under the
  * words (ruling 4). Where `tagTo` is given, the tag is a link that opens the node in its own view
  * (R9), out of the tab order unless `tabStops` holds: `f` steps to it and Enter follows it.
+ * A lens's tag is its kind's words whole, so it wraps inside that column or line, with its shape
+ * beside its first line (`KindTag`).
+ * After the state, on that line, stand the node's marks - proposed or overtaken, then reserved
+ * for its author - each by a word and a shape (`NodeMarks`), on a line of their own where the
+ * node has no state.
  */
 export function RowMargin({
   author,
@@ -736,6 +778,10 @@ export function RowMargin({
   const time = node.at === undefined ? "" : shortDay(node.at);
   const authored = author.kind !== "unknown";
   const agentText = useAgentText();
+  // How the decision stands, with the person its state names: its keeper after "Kept by", and
+  // whoever asked to change it after "Changed by", in place of its state's own word
+  // (`standingParts`, R2, R3).
+  const standing = node.state === undefined ? undefined : standingParts(node.state, node);
   if (node.child !== undefined) {
     // A child issue's tag is its key, which opens the child in the children's section above the
     // outline (R9, R14), where its entry links to its own page; its row names no author, no time
@@ -849,9 +895,16 @@ export function RowMargin({
           </span>
         )}
       </div>
+      {/* A node's marks stand where a state stands, on its own line where it has no state, so a
+          proposed statement's mark is never drawn between its bullet and its words. */}
+      {node.state === undefined && node.unsure !== true && marksOf(node) !== undefined ? (
+        <div className={NODE_ROW_LAYOUT.marginState}>
+          <NodeMarks marks={node} />
+        </div>
+      ) : null}
       {node.state === undefined && node.unsure !== true ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
-          {node.state === undefined ? null : (
+          {standing === undefined ? null : (
             <span
               className={`inline-flex items-center gap-1 ${context ? "" : pageStateText[stateTone(node)]}`}
             >
@@ -859,16 +912,21 @@ export function RowMargin({
                 <NodeGlyph className="size-3 shrink-0" token={stateGlyph} />
               )}
               <span data-node-state={node.state} {...pageChrome}>
-                {nodeStateWord(node.state)}
-                {/* "Kept by" names the person who kept it, by the page's one name for them (R2). */}
-                {node.state === "kept" && node.keptBy !== undefined ? (
+                {standing.word}
+                {/* "Kept by" names the person who kept it, and "Changed by" the person whose
+                    Change it waits on, by the page's one name for them (R2, R3). */}
+                {standing.person === undefined ? null : (
                   <>
                     {" "}
-                    <span data-kept-by="" {...authorText}>
-                      {agentText.author(node.keptBy)}
+                    <span
+                      data-changed-by={node.state === "kept" ? undefined : ""}
+                      data-kept-by={node.state === "kept" ? "" : undefined}
+                      {...authorText}
+                    >
+                      {agentText.author(standing.person)}
                     </span>
                   </>
-                ) : null}
+                )}
               </span>
             </span>
           )}
@@ -877,6 +935,7 @@ export function RowMargin({
               {CONTROL_LABELS.unsure}
             </span>
           ) : null}
+          <NodeMarks marks={node} />
         </div>
       )}
     </div>
@@ -886,6 +945,22 @@ export function RowMargin({
 /** A typed node's kind, as its tag draws it: its type's word and shape, and the word alone for a
  *  `requirement` block of a document other than the spec, which is no statement. */
 function KindTag({ node }: { node: TreeNode }): ReactNode {
+  // A lens's tag is its kind's words, which run as long as the author wrote them: they wrap
+  // inside the margin's column, `whitespace-normal` over the tag's own `whitespace-nowrap`, and
+  // the shape stands at the top, beside their first line.
+  const kindTag = node.lens?.kind === undefined ? undefined : lensChipWords(node.lens.kind).words;
+  if (kindTag !== undefined) {
+    return (
+      <>
+        <span className="flex h-lh shrink-0 items-center self-start">
+          <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
+        </span>
+        <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]" {...authorText}>
+          {kindTag}
+        </span>
+      </>
+    );
+  }
   return node.type === "requirement" && !isStatement(node) ? (
     <span {...pageChrome}>{BLOCK_TYPE_NAMES.requirement}</span>
   ) : (
@@ -1039,20 +1114,32 @@ export function NodeOptions({
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer
  * is, and it carries a mark of its own (`data-row-copy`) rather than `data-row-act`, which names
- * the writer's acts alone. Its answer, copied or failed, is said after it in the page's words.
+ * the writer's acts and Settle. Its answer, copied or failed, is said after it in the page's words.
+ * Settle (`SettleAct`), on a proposed row where `settles` holds (R4), carries `data-row-act` but
+ * needs no writer: a cookie proves a person.
+ *
+ * On the focused row alone (`focused`), after Copy reference and its answer, a node of this issue
+ * that the invoke route takes draws the Lens act and its menu of lens kinds
+ * (`lenses/LensMenu.tsx`), in Conversation and in Graph, which `LensMenu` reads from the context
+ * `TreeRows.tsx` provides (R4). It writes as the reader, whether or not a writer is, and carries
+ * `data-row-lens` rather than `data-row-act`.
  *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
  * order unless `tabStops` holds (`NodeRow`'s).
  */
 export function RowActs({
+  focused = false,
   node,
   ownAnswer,
   ownComment = false,
   replies = true,
+  settles = true,
   tabStops = false,
   writer,
 }: {
+  /** Whether the row has the focus: only the focused row offers the Lens act (`LensMenu`). */
+  focused?: boolean;
   node: TreeNode;
   ownAnswer: boolean;
   /** Whether the row is the reader's own comment, which carries Edit. */
@@ -1060,6 +1147,10 @@ export function RowActs({
   /** Whether the row carries Reply where its node takes one: not on a message's context row,
    *  whose thread is replied to in Threads (R9, `presets.ts`' `isThreadContext`). */
   replies?: boolean;
+  /** Whether the row offers Settle where it is proposed: every row RowActs is drawn on, but the
+   *  outline's `NodeRow`, which draws RowActs on every row and offers Settle on its focused row
+   *  alone (R4). */
+  settles?: boolean;
   tabStops?: boolean;
   writer: OutlineWriter | undefined;
 }): ReactNode {
@@ -1115,6 +1206,7 @@ export function RowActs({
           {label}
         </button>
       ))}
+      {settles && isProposed(node) ? <SettleAct node={node} tabStops={tabStops} /> : null}
       {reference === undefined ? null : (
         <button
           className={`dispatch-inline-link ${pageRowAct}`}
@@ -1137,6 +1229,7 @@ export function RowActs({
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
+      {focused ? <LensMenu node={node} tabStops={tabStops} /> : null}
     </p>
   );
 }
@@ -1430,6 +1523,7 @@ function Chip({
           {shown}
         </Link>
       )}
+      <NodeMarks compact marks={chip} />
     </span>
   );
 }

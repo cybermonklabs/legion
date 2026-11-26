@@ -79,6 +79,7 @@ import {
   PROPERTY_LABELS,
 } from "./page-structure";
 import { joinWords, PART_ANSWER_SOURCES, PART_UNASKED_SOURCES } from "./page-words-parts";
+import { ROW_MARK_WORDS, type RowMark } from "./page-words-x";
 
 export * from "./page-words-j";
 export * from "./page-words-l";
@@ -165,11 +166,13 @@ export const BLOCK_TYPE_NAMES = joinWords("BLOCK_TYPE_NAMES", {
  * A decision's states are spec R2's, "wherever a decision is drawn": `waiting_review` is an
  * agent's decision that waits for a person's review, `kept` one a person kept as it reads now -
  * the row draws the name of who kept it after the word - and `replaced` one a later decision
- * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by `tree-drafts.ts`'s
- * `decisionState`). `change_requested` is a decision the reader sent a Change on since it last
- * changed, which waits on its agent and no longer on the reader (`decision-review.ts`). A
- * decision in none of them - an agent's that nobody has reviewed and nothing replaced, or a
- * person's own section - draws no state.
+ * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by
+ * `decision-review.ts`' `reviewState`). `change_requested` is a decision a person sent a Change
+ * on since it last changed, which waits on its agent and no longer on the reader
+ * (`decision-review.ts`): the page draws it as "Changed by" and the name of that person
+ * (`DECISIONS_WORDS.changed_by`), and its word here stays as it is, since a file the Dashboard
+ * chunk loads takes additions only (root R33). A decision in none of them - an agent's that
+ * nobody has reviewed and nothing replaced, or a person's own section - draws no state.
  */
 export const NODE_STATE_WORDS = joinWords("NODE_STATE_WORDS", {
   ask: {
@@ -392,9 +395,10 @@ export const SPEC_WORDS = joinWords("SPEC_WORDS", {
  * `NODE_STATE_WORDS.decision`, which the outline draws too.
  */
 export const DECISIONS_WORDS = joinWords("DECISIONS_WORDS", {
-  /** The fourth part's heading, which is the control that unfolds it, after the count of the
-   *  decisions it holds; the words agree with the count (R2: "folded at the foot, the agents'
-   *  decisions that no statement rests on"). */
+  /** The fourth part's heading, which is the control that folds and unfolds it, after the count
+   *  of the decisions it holds; the words agree with the count (R2: "at the foot and unfolded,
+   *  the agents' decisions no statement rests on, which the page folds only when the reader
+   *  folds them"). */
   agents_many: "agent decisions that no statement rests on",
   agents_one: "agent decision that no statement rests on",
   /** Before the reader's words of a Change they sent on a decision, under that decision. */
@@ -702,14 +706,14 @@ export const STATE_LINES = joinWords("STATE_LINES", {
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
-   *  which checks serve each statement, the issue's decisions, the checks' results, the
-   *  questions, the comments and the messages. The spec's, the plan's and the verification
-   *  document's lines, last, are what the Plan and the Verification views say of a tree read
-   *  refused before it first answered, each named by the part the document whose blocks the view
-   *  waits on plays (`PlanFilterBody`, `VerificationFilterBody`). */
+   *  which checks serve each statement, the checks' results, the questions, the comments and the
+   *  messages; the issue's decisions are nodes of the tree read, whose own failed line says so.
+   *  The spec's, the plan's and the verification document's lines, last, are what the Plan and
+   *  the Verification views say of a tree read refused before it first answered, each named by
+   *  the part the document whose blocks the view waits on plays (`PlanFilterBody`,
+   *  `VerificationFilterBody`). */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
-  issue_decisions_unreadable: "Could not load this issue's decisions.",
   results_unreadable: "Could not load the checks' results.",
   asks_unreadable: "Could not load the questions.",
   comments_unreadable: "Could not load the comments.",
@@ -717,6 +721,9 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
+  /** What the Decisions view says, beside one Retry, where the reads its decisions come from stand
+   *  failed: the tree read and its Decisions view (`decisions-filter/DecisionsFilterBody.tsx`). */
+  issue_decisions_unreadable: "Could not load this issue's decisions.",
 } as const);
 
 /**
@@ -1477,6 +1484,7 @@ export const GLYPH_TOKENS = joinWords("GLYPH_TOKENS", {
   },
 } as const) satisfies {
   readonly authors: Record<AuthorKind, string>;
+  readonly marks: Record<RowMark, string>;
   readonly no_check: string;
   readonly states: {
     readonly ask: Record<AskState, string>;
@@ -1529,6 +1537,10 @@ function glyphNames(): Readonly<Record<string, string>> {
   for (const kind of keysOf(GLYPH_TOKENS.authors)) {
     names[GLYPH_TOKENS.authors[kind]] = `${CONTROL_LABELS.written_by} ${AUTHOR_KIND_WORDS[kind]}`;
   }
+  // A mark's shape is named by the mark's own word, which the row draws beside it.
+  for (const mark of keysOf(GLYPH_TOKENS.marks)) {
+    names[GLYPH_TOKENS.marks[mark]] = ROW_MARK_WORDS[mark];
+  }
   return names;
 }
 
@@ -1560,6 +1572,8 @@ function phrasesIn(value: unknown): readonly string[] {
   }
   return [];
 }
+
+export { phrasesIn };
 
 /**
  * What the page says unasked: every name, state, label and empty line it may draw on load. None

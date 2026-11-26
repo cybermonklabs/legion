@@ -14,6 +14,7 @@ import {
   type TreeNode,
   type TreeViews,
 } from "./issue-tree";
+import { closeOvertaken, marksOf, stateIdOf } from "./node-states/node-states";
 import {
   type FILTER_SIGNAL_WORDS,
   NODE_TYPE_NAMES,
@@ -22,6 +23,7 @@ import {
   type Preset,
 } from "./page-words";
 import { storedReading } from "./stored-reading";
+import { outOfCounts } from "./tree-fold";
 import { nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
@@ -122,8 +124,8 @@ export interface PresetView {
    *  the row's id: in the view read of Spec, Verification or Plan, a decision or a constraint is
    *  a line of a row and never a row itself. Empty where the view is read off the tree. */
   readonly lines: ReadonlyMap<string, readonly PresetLine[]>;
-  /** How many distinct nodes of the view's main kind it draws: a check drawn under two
-   *  requirements is one node, so this is what the control's own count says. */
+  /** How many distinct nodes of the view's main kind it matched, closed ones too: a check drawn
+   *  under two requirements is one node, so this is what the control's own count says. */
   readonly matches: number;
   /** How the view names each other parent of a row that the page's names read gave no words,
    *  by the parent's reference: by the parent's own words, read off the tree that holds it
@@ -207,9 +209,13 @@ export function presetView(
   // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members.
   if (preset === "decisions") return filterView(root, preset, wanted, named);
   const held = root.views?.[preset];
-  return held === undefined
-    ? filterView(root, preset, wanted, named)
-    : heldFilterView(root, preset, held, wanted, named);
+  // A view's rows carry the states its own answer gives them, and a node it holds by its id alone
+  // those the outline's node of that id carries.
+  if (held !== undefined) {
+    const view = heldFilterView(root, preset, held, wanted, named);
+    return { ...view, root: closeOvertaken(view.root, held, root) };
+  }
+  return filterView(root, preset, wanted, named);
 }
 
 /** The kinds Conversation draws no row of (R9), each with the filter whose rows they are, which
@@ -388,10 +394,10 @@ function lift(
 }
 
 /** The rows `parts` give the place of `node`, which the filter draws as no row: each row of its
- *  own children carrying it as its parent's line (`parentLineOf`), so a drawn node whose parent
+ *  own children carrying it as its parent's line (`lineOfParent`), so a drawn node whose parent
  *  is no row is drawn where that parent stood, and each row from deeper as it came. */
 function liftPast(node: TreeNode, parts: readonly Lifted[]): TreeNode[] {
-  const line = parts.some((part) => part.drawn) ? parentLineOf(node) : undefined;
+  const line = parts.some((part) => part.drawn) ? lineOfParent(node) : undefined;
   return parts.flatMap((part) =>
     part.drawn && line !== undefined
       ? part.rows.map((row) => ({ ...row, parentLine: line }))
@@ -733,7 +739,7 @@ function heldFilterView(
 
 /**
  * The line a row the view draws at the top carries for its parent in the view read, where that
- * parent is no row: the tree's node for it (`parent`), drawn as `parentLineOf` draws it, where the
+ * parent is no row: the tree's node for it (`parent`), drawn as `lineOfParent` draws it, where the
  * tree holds it, and else the parent's id, kind and first line the view read answers beside the
  * node (`parent`), for a kind the page has a word for. The issue is no row's parent line.
  */
@@ -743,12 +749,13 @@ function viewParentLine(
   parent: TreeNode | undefined
 ): ParentLine | undefined {
   if (node.parent === null || node.parent.id === root.id) return undefined;
-  if (parent !== undefined) return parentLineOf(parent);
+  if (parent !== undefined) return lineOfParent(parent);
   const read = node.parent;
   const types: readonly string[] = NODE_TYPES;
   if (read.supertag === "issue" || !types.includes(read.supertag)) return undefined;
   return {
     id: read.id,
+    readId: read.id,
     text: read.first_line,
     type: read.supertag as NodeType,
   };
@@ -787,6 +794,21 @@ function viewLines(
   return lines;
 }
 
+/** The line a node that is no row of a filter is drawn as on the row of each child the filter
+ *  draws (`TreeNode.parentLine`), as `parentLineOf` builds it, with the node's marks and the id
+ *  its line takes its states by (`ParentLine.readId`). */
+function lineOfParent(node: TreeNode): ParentLine {
+  const readId = stateIdOf(node);
+  return {
+    ...parentLineOf(node),
+    // The parent's marks, as the outline's stamp left them on it, so a filter's parent line says
+    // what its row would.
+    ...marksOf(node),
+    // The id the parent takes its states by, which for a question is its ask's.
+    ...(readId === undefined ? {} : { readId }),
+  };
+}
+
 /** How a chip names `node`, a node of a tree whose chip the names read gave no words: by the
  *  reading of its words, its read's own else its stored text's (`storedReading`), with the page's
  *  word for its kind where those words project to none, as a chip names a block
@@ -802,8 +824,8 @@ function nodeReading(node: TreeNode): ReferenceNameReading {
 /** What one control of the filter row draws after its name (R2): its count, then, where the
  *  picture draws one, the noun the count is in or what of it waits on the reader. */
 export interface PresetSignal {
-  /** How many nodes of the view's main kind it draws (R2), or for Conversation how many entries
-   *  the Contents list holds, as the prototype's signal counts them. */
+  /** How many nodes of the view's main kind it matched (R2), closed ones too, or for Conversation
+   *  how many entries the Contents list holds, as the prototype's signal counts them. */
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. */
@@ -820,6 +842,22 @@ export interface PresetSignal {
 function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boolean): number {
   const found = new Set<string>();
   const walk = (node: TreeNode): void => {
+    // No flag counts a node at or under an overtaken one, since a later node took its place, nor
+    // a proposed check, which is only put forward; what hangs under a proposed check is walked
+    // all the same, and a proposed decision that waits is still counted. The view's own count,
+    // `matches`, keeps both: it counts the query's every node.
+    if (node.closed === true) return;
+    if (outOfCounts(node)) {
+      for (const child of node.children) {
+        // A check under a proposed statement serves that statement, which no count reads, so no
+        // flag counts it there, as the Verification summary counts a check only under a statement
+        // it counts or under none (`inCounts`). One that serves a counted statement too is drawn
+        // under that one as well (`filterView`'s `everyPlacement`), and is counted there.
+        if (isStatement(node) && kindOf(child) === "check") continue;
+        walk(child);
+      }
+      return;
+    }
     if (kindOf(node) === type && counts(node)) found.add(node.id);
     for (const child of node.children) walk(child);
   };
@@ -861,16 +899,17 @@ export function filterSignals(
   const verification = view("verification");
   const decisions = view("decisions");
   // A check's state is the page's one reading of it, as the server reads its results
-  // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
-  // checks as failed.
+  // (`tree-drafts.ts`'s `checkStanding`), and neither a check no count reads nor one that serves
+  // only statements no count reads is counted (`countOf`), so this flag and the Verification body
+  // count the same checks as failed.
   const failing = countOf(verification.root, "check", (node) => node.state === "failed");
   // The decisions of the review list (R35): an agent's decision that waits and that a link ties
   // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s
   // `inReviewList`), so the signal, the list and the header's count cannot disagree.
   const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
   // Each ask and each decision is one entry of the count: a person's decision is the answered
-  // ask itself (`tree-drafts.ts`'s `addDecisions`), so no decision node restates an answer, and
-  // a decision under an answered question is an agent's own that settles it.
+  // ask itself (`decision-nodes.ts`' `decisionNodes`), so no decision node restates an answer,
+  // and a decision under an answered question is an agent's own that settles it.
   return {
     decisions: {
       count: decisions.matches,

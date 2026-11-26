@@ -55,6 +55,7 @@ import {
   PROGRESS_NOUNS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
+  ROW_MARK_WORDS,
   SPEC_WORDS,
   STATE_LINES,
   UNASKED_SOURCES,
@@ -209,6 +210,15 @@ test("a type the model gives no state has no state words, and the ask, the check
   expect(nodeStateWord("replaced")).toBe("Replaced");
 });
 
+// R2, R3: a decision a person asked to change reads "Changed by" and their name wherever the page
+// draws it, the outline's row as much as the Decisions view, while its state keeps its own word:
+// a file the Dashboard chunk loads takes additions only (root R33), so "Change requested" stays.
+test("a decision with a Change reads Changed by, and its state's own word stays Change requested", () => {
+  expect(DECISIONS_WORDS.changed_by).toBe("Changed by");
+  expect(NODE_STATE_WORDS.decision.change_requested).toBe("Change requested");
+  expect(nodeStateWord("change_requested")).toBe("Change requested");
+});
+
 // A row draws its node's state through `nodeStateWord`, which takes the state alone, so a
 // state token two types share must draw the one word: `retracted` is a question its asker took
 // back and a check whose results were all withdrawn, and both read "Retracted". Every state of
@@ -260,6 +270,8 @@ test("every glyph token has an accessible name", () => {
     GLYPH_TOKENS.no_check,
     // One shape per kind of author, so a person and an agent never share one (R9).
     ...Object.values(GLYPH_TOKENS.authors),
+    // One shape per mark a row carries, each named by its mark's word.
+    ...Object.values(GLYPH_TOKENS.marks),
   ];
   for (const token of tokens) {
     expect(GLYPH_NAMES[token]).toMatch(/\S/);
@@ -307,6 +319,7 @@ test("every glyph token key is one the page's own tables name, and no other", ()
   const offenders = [
     ...keyOffenders("GLYPH_TOKENS", GLYPH_TOKENS, [
       "authors",
+      "marks",
       "no_check",
       "states",
       "statements",
@@ -314,6 +327,7 @@ test("every glyph token key is one the page's own tables name, and no other", ()
     ]),
     ...keyOffenders("GLYPH_TOKENS.types", GLYPH_TOKENS.types, NODE_TYPES),
     ...keyOffenders("GLYPH_TOKENS.authors", GLYPH_TOKENS.authors, Object.keys(AUTHOR_KIND_WORDS)),
+    ...keyOffenders("GLYPH_TOKENS.marks", GLYPH_TOKENS.marks, Object.keys(ROW_MARK_WORDS)),
     ...keyOffenders(
       "GLYPH_TOKENS.statements",
       GLYPH_TOKENS.statements,

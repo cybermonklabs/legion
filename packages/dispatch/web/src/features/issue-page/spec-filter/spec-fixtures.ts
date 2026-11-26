@@ -1,25 +1,26 @@
 import type {
   Actor,
   Artifact,
-  Decision,
   DecisionLink,
   IssueCoverage,
-  IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
 import {
   artifact,
-  DECISIONS_SLUG,
   KEY,
   node,
   READER,
   READER_ACTOR,
   SPEC_SLUG,
+  treeAnswer,
 } from "../decisions-filter/decisions-fixtures";
 import type { TreeAsk, TreeNode } from "../issue-tree";
+import { type TreeNodeExtra, treeNode } from "../tree-read/tree-fixtures";
+import type { TreeAnswerNode } from "../tree-read/tree-read";
 
 /**
- * What the Spec filter's two unit tests are given: one issue, one tree and one decisions read,
+ * What the Spec filter's two unit tests are given: one issue, one tree and one answer of the
+ * Spec view read, whose decision nodes are the decisions the column draws (`decisionNodes`),
  * built by hand, so the model and the body are read without a server
  * (`spec-decided-by.test.ts`, `SpecFilterBody.drawn.test.tsx`). A case that needs the tree as
  * the page's model places its nodes builds it with `buildIssueTree` from the reads below
@@ -28,16 +29,21 @@ import type { TreeAsk, TreeNode } from "../issue-tree";
  * The issue's key, the reader, a document, a node and the issue's tree are the Decisions
  * filter's own fixtures (`decisions-filter/decisions-fixtures.ts`), the same in value and in
  * what they build. What is here differs from that module's fixture of the same name, and is the
- * Spec view's own: the issue's decisions document is `artifact-dec`, which `decisionsRead` names
- * as its document, and its `artifacts` is typed as present, so a case can add a document; a
- * statement is marked a statement, carries its counts and opens with its number; a `shaped` tie
- * names a requirement; a decision is given its kind and waits for no review.
+ * Spec view's own: the issue's decisions document is `artifact-dec`, which each decision node
+ * here names as its document, and its `artifacts` is typed as present, so a case can add a
+ * document; a statement is marked a statement, carries its counts and opens with its number; a
+ * `shaped` tie names a requirement; a decision is given its kind and waits for no review.
  *
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
  * a decision a block of `decisions.md`, and an ask its own id, so a tie resolves through the
  * page's own rule for addressing a node (`tree-drafts.ts`'s `treeContext`) rather than through
  * a rule written here.
  */
+
+/** The slug of the issue's decisions document, whose blocks the decisions here are. The
+ *  Decisions filter's own fixtures name no such document: their decisions are blocks of the
+ *  spec. */
+export const DECISIONS_SLUG = "decisions-md";
 
 /** The issue, with its spec and its decisions document, which is all the addressing rule reads
  *  of it. Its `artifacts` is typed as present, so a case can add a document to the list. */
@@ -111,31 +117,36 @@ export function shaped(ref: string): DecisionLink {
   };
 }
 
-/** One decision of the issue's decisions document, as the decisions read answers it. */
-export function decision(
-  partial: Partial<Decision> & { block_id: string; kind: "agent" | "person" }
-): Decision {
-  return {
-    asks: [],
-    changed_at: "2026-11-14T12:00:00Z",
-    changed_version: 1,
-    heading: partial.block_id,
-    kept: null,
-    links: [],
-    ref: `dispatch://${KEY}/artifact/${DECISIONS_SLUG}#b-${partial.block_id}`,
-    replaced: false,
-    text: partial.block_id,
-    text_sha256: "",
-    unsure: false,
-    waiting_review: false,
-    ...partial,
-  };
+/** One node of a read of the issue's tree, under the issue, with the fields a case needs on it,
+ *  as the route sends it (`tree-read/tree-fixtures.ts`' `treeNode`). */
+export function answerNode(
+  id: string,
+  supertag: string,
+  extra: TreeNodeExtra = {}
+): TreeAnswerNode {
+  return treeNode(id, supertag, KEY, extra);
 }
 
-/** The decisions read over `made`. */
-export function decisionsRead(made: readonly Decision[]): IssueDecisions {
-  return { decisions: [...made], document: "artifact-dec", entries: [], open_questions: [] };
+/** One decision of the issue's decisions document as the Spec view read answers it, as context
+ *  (`role: "context"`): a decision block, carrying the model's decision the read answers on it
+ *  (`decision`), an agent's that waits for no review unless the case says otherwise. */
+export function decision(block: string, extra: TreeNodeExtra = {}): TreeAnswerNode {
+  const { decision: members, ...rest } = extra;
+  return answerNode(block, "decision", {
+    document: { artifact_id: "artifact-dec", position: 0, slug: DECISIONS_SLUG },
+    made_at: "2026-11-14T12:00:00Z",
+    role: "context",
+    text: block,
+    ...rest,
+    decision: { changed_at: "2026-11-14T12:00:00Z", ...members },
+  });
 }
+
+/** The Spec view read's answer (`?view=spec`), on one page: the Decisions filter's own answer
+ *  of the issue's tree (`decisions-filter/decisions-fixtures.ts`' `treeAnswer`), `nodes` under
+ *  the issue's own node with `tuples` between them. It is what the page holds on the issue's node
+ *  (`TreeNode.views.spec`), whose decisions the column draws. */
+export const specViewAnswer = treeAnswer;
 
 /** The address of one statement, which is one block of the issue's spec. */
 export const statementRef = (block: string) => `dispatch://${KEY}/spec#b-${block}`;
@@ -179,8 +190,8 @@ export function answeredAsk(
   });
 }
 
-/** One decision of the decisions document as the tree draws it: the node the decisions read's
- *  own entry is addressed to. */
+/** One decision of the decisions document as the tree draws it: the node the Spec view's
+ *  decision of the same block (`decision`) is addressed to. */
 export function decisionNode(block: string, partial: Partial<TreeNode> = {}): TreeNode {
   return node({
     at: "2026-11-13T07:00:00Z",

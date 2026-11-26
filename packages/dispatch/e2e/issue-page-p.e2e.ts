@@ -11,12 +11,12 @@ import {
   getArtifactVersion,
   getAsk,
   getIssue,
-  getIssueDecisions,
   patchIssue,
   requestApproval,
   reviewArtifact,
   setGatedSteps,
 } from "./api";
+import { readTree } from "./issue-layout-seed-support";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
@@ -1028,14 +1028,21 @@ test("the count of what waits is a control that opens the Decisions address @pho
       },
       asAgent
     );
-    // The read's entries for the issue's `decision` blocks - an entry that names no document is
-    // an ask's - each with the blocks its `shaped` attribute names.
+    // The tree read's decision nodes of the issue - a node of another issue is none of its
+    // blocks - each with the blocks its `shaped` ties name, by the block id each tie's node
+    // carries.
+    const tree = await readTree(decided.key, null);
+    const blockOf = new Map((tree.nodes ?? []).map((node) => [node.id, node.block_id ?? node.id]));
     expect(
-      ((await getIssueDecisions(decided.key)).entries ?? [])
-        .filter((entry) => entry.document !== null)
+      (tree.nodes ?? [])
+        .filter((node) => node.supertag === "decision" && node.issue === undefined)
         .map((decision) => ({
-          names: (decision.shaped ?? []).map((link) => link.to.block_id),
-          waiting: decision.waiting_review,
+          names: (tree.tuples ?? []).flatMap((tuple) =>
+            tuple.kind === "shaped" && tuple.from.id === decision.id
+              ? [blockOf.get(tuple.to.id)]
+              : []
+          ),
+          waiting: decision.decision?.waiting_review,
         })),
       "the server does not read the agent's decision as waiting for review"
     ).toEqual([{ names: ["r1"], waiting: true }]);

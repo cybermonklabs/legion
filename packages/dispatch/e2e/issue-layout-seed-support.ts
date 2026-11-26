@@ -1,14 +1,24 @@
 // What every seed of `e2e/issue-layout-seed.ts` stands on: the project, the fake GitHub's
 // component model and pull request, the fake Envoy's sessions, the polls that wait for the
-// server's own indexing, and the one issue-with-documents builder the whole issue and the request
-// baseline differ from each other only by size in. The gaps between what the page is specified to
-// draw and what today's model holds are recorded in `issue-layout-seed.ts`'s doc comment.
+// server's own indexing, the issue's tree read as alice reads it, and the one issue-with-documents
+// builder the whole issue and the request baseline differ from each other only by size in. The
+// gaps between what the page is specified to draw and what today's model holds are recorded in
+// `issue-layout-seed.ts`'s doc comment.
+//
+// The tree read's helpers (`treePath`, `readTree`, `blockNodeIn`, `decisionNodesOf`,
+// `decisionSumOf`, `decisionSum`) are the decision rows' readers too (`e2e/issue-page-u.ts`). They
+// stand here because a seed keeps a decision by the sum `decisionSum` reads, and
+// `e2e/issue-page-u.ts` imports the seeds through `e2e/issue-page-t.ts`: a seed that imported
+// that file would close an import cycle, and this one imports neither of them nor a seed.
 
-import type { Actor } from "../web/src/api/types";
+import type { Actor, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import type { Filter } from "../web/src/features/issue-page/presets";
 import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
+import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
+  baseUrl,
   claimIssue,
   createComment,
   createHandoff,
@@ -23,6 +33,7 @@ import {
   recordCheckResult,
   replyToCommentBlock,
   syncArchitectureSource,
+  userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -144,6 +155,91 @@ export async function awaitBlockAsk(issueKey: string, block: string): Promise<st
     }
     await pause(100);
   }
+}
+
+/** The path of issue `key`'s tree read. `e2e/issue-page-t-tree.ts` holds the same function and
+ *  does not export it, so this is the one copy the reads below and the decision rows' gate on
+ *  the tree read's Decisions view (`e2e/issue-page-u.ts`' `decisionsViewServedGate`) use. */
+export function treePath(key: string): string {
+  return `/api/v1/issues/${encodeURIComponent(key)}/tree`;
+}
+
+/**
+ * Issue `key`'s tree read, or the read of one of its views (`view`, one of the four filters), as
+ * alice reads it: every page its cursor names, the pages merged as the page merges them
+ * (`mergeTreePages`). A cursor the read names twice fails the read rather than walk the same
+ * pages again.
+ */
+export async function readTree(key: string, view: Filter | null): Promise<IssueTreeRead> {
+  const headers = await userHeaders("alice");
+  const pages: IssueTreeRead[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const url = new URL(treePath(key), baseUrl);
+    if (view !== null) url.searchParams.set("view", view);
+    if (cursor !== null) url.searchParams.set("cursor", cursor);
+    const response = await fetch(url, { headers });
+    if (!response.ok) {
+      throw new Error(
+        `GET ${url.pathname}${url.search} failed: ${response.status} ${await response.text()}`
+      );
+    }
+    const answered = (await response.json()) as IssueTreeRead;
+    pages.push(answered);
+    cursor = answered.cursor;
+    if (cursor !== null && cursors.has(cursor)) {
+      throw new Error(`${url.pathname} names the cursor ${cursor} twice`);
+    }
+    if (cursor !== null) cursors.add(cursor);
+  } while (cursor !== null);
+  const [first, ...rest] = pages;
+  if (first === undefined) throw new Error(`${treePath(key)} answered no page`);
+  return mergeTreePages([first, ...rest]);
+}
+
+/** The node of this issue tagged `supertag` whose block is `block`, out of `nodes`, the nodes
+ *  `what` answers: the read names a block by its store id and carries its block id beside it
+ *  (`block_id`). A block no node of `nodes` is fails, naming the block. */
+export function blockNodeIn(
+  nodes: readonly IssueTreeNode[],
+  supertag: string,
+  block: string,
+  what: string
+): IssueTreeNode {
+  const node = nodes.find(
+    (one) =>
+      one.supertag === supertag && one.issue === undefined && (one.block_id ?? one.id) === block
+  );
+  if (node === undefined) throw new Error(`${what} holds no ${supertag} node "${block}"`);
+  return node;
+}
+
+/** The decision nodes of issue `key` whose blocks are `blocks`, in that order, from one tree
+ *  read as it answers now. */
+export async function decisionNodesOf(
+  key: string,
+  blocks: readonly string[]
+): Promise<IssueTreeNode[]> {
+  const nodes = (await readTree(key, null)).nodes ?? [];
+  return blocks.map((block) => blockNodeIn(nodes, "decision", block, `${key}'s tree read`));
+}
+
+/** The `text_sha256` the tree read answers on `node`, a decision node of issue `key`, in the
+ *  model's decision it carries (`decision`): the sum a Keep of the words the node holds carries. */
+export function decisionSumOf(key: string, node: IssueTreeNode): string {
+  const sum = node.decision?.text_sha256;
+  if (sum === undefined || sum === "") {
+    throw new Error(`${key}'s tree read answers no text_sha256 on its decision node ${node.id}`);
+  }
+  return sum;
+}
+
+/** The `text_sha256` the tree read answers on issue `key`'s decision node `block`, every page its
+ *  cursor names read: the sum a Keep of the words as they stand now carries. */
+export async function decisionSum(key: string, block: string): Promise<string> {
+  const [node] = await decisionNodesOf(key, [block]);
+  return decisionSumOf(key, node);
 }
 
 /** The imported component model, the repository and the pull request the results are measured

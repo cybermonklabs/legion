@@ -308,3 +308,20 @@ export function pathToTarget(
   const address = `/${target.id}`;
   return pathToNode(root, (node) => node.reference?.endsWith(address) === true);
 }
+
+/** Whether the node is proposed: put forward and not yet settled by a person. The page draws it
+ *  with its mark and no gap, and it opens no path of the fold as an open statement or check
+ *  would. It and `isOvertaken` are every place's one reading of a node's life. They stand here
+ *  because this module imports no value of `issue-tree.ts`, which reads a node's life too, through
+ *  `node-states.ts` (and `tree-fold.ts` imports one), and because `issue-tree.ts` already imports
+ *  `tree-read/tree-nodes.ts` on one line, which a second import of them would have to join. */
+export function isProposed(node: TreeNode): boolean {
+  return node.life === "proposed";
+}
+
+/** Whether the node is overtaken: a later node took its place. It is a row as any node is, and it
+ *  and every node under it are `closed`. A parent line or a chip carries its node's life, so it
+ *  is read the same way. */
+export function isOvertaken(node: Pick<TreeNode, "life">): boolean {
+  return node.life === "overtaken";
+}

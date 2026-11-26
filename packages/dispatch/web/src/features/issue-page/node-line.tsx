@@ -10,6 +10,7 @@ import { usePlainHeadline } from "../refs/plain-text";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { parseNodeReference, referenceHref } from "../refs/routes";
 import { drawnLine, firstLineOf, lineReading, type ParentLine, type TreeNode } from "./issue-tree";
+import { NodeMarks } from "./node-states/NodeMarks";
 import { authorText, pageChrome } from "./page-structure";
 import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
 
@@ -99,8 +100,9 @@ export function FirstLine({ node }: { node: TreeNode }): ReactNode {
 
 /** Under a filter, the one line a row draws for its node's parent where the filter draws that
  *  parent as no row (R2, R1's first-line rule): the page's word for the parent's kind, then its
- *  one line (`ParentLink`). The outline's row draws it (`NodeRow.tsx`) and so do the
- *  Verification view's statement and other rows, `spaced` from the words above them. */
+ *  one line (`ParentLink`), then the parent's marks in the line's own size (`NodeMarks`). The
+ *  outline's row draws it (`NodeRow.tsx`) and so do the Verification view's statement and other
+ *  rows, `spaced` from the words above them. */
 export function NodeParentLine({
   line,
   spaced = false,
@@ -124,6 +126,7 @@ export function NodeParentLine({
         {NODE_TYPE_NAMES[line.type]}
       </span>
       <ParentLink line={line} tabStops={tabStops} />
+      <NodeMarks compact marks={line} />
     </p>
   );
 }

@@ -2,6 +2,7 @@ import { createContext, type ReactNode, useContext, useState } from "react";
 
 import type { Actor, DisplayTree } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
+import type { NodeLife } from "./issue-tree";
 import type { NodeType } from "./page-words";
 
 /**
@@ -21,6 +22,10 @@ export interface FocusedNode {
    *  resolve are written to (`outline-writer.ts`'s `conversationItem`); absent for every other
    *  node. */
   readonly item?: { readonly id: string; readonly kind: "ask" | "comment" | "message" };
+  /** The node's life, where it has one (`TreeNode.life`). */
+  readonly life?: NodeLife;
+  /** Whether the node is reserved for its author, who is the reader (`TreeNode.onlyYou`). */
+  readonly onlyYou?: true;
   /** The node's own `dispatch://` address (`TreeNode.reference`), where the model gives it one:
    *  what references it is read under that address, in Details
    *  (`node-references/NodeReferences.tsx`). */
@@ -29,6 +34,12 @@ export interface FocusedNode {
   readonly source?: TextSource;
   /** How it stands, as the page's own word for that state, where its type has one. */
   readonly state?: string;
+  /** The person the state names after its word, where it names one: the keeper of a decision
+   *  after "Kept by", or the person whose Change it waits on after "Changed by" (R2, R3,
+   *  `decisions-filter/entry-standing.ts`' `standingParts`), for the panel to name after the
+   *  state's word by the page's one rule for naming a person (`AgentText.author`), as part M's
+   *  `FocusedNodeFacts.tsx` draws it. */
+  readonly stateBy?: Actor;
   /** The node's own words as the tree holds them (`TreeNode.text`), or an issue's title: the
    *  author's words, which the panel names the node by as every place that names a node by its
    *  one line does - projected by the shared plain-text projection, each reference in them read

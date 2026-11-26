@@ -99,9 +99,9 @@ test("the decision behind a node is the first that names it, whatever version it
 });
 
 // A person's decision is the answered question itself, whose node carries a chip for each node
-// the decision shaped (`tree-drafts.ts`'s `addDecisions`): the decision behind what it shaped is
-// that question. A question still open, or one closed without an answer, decided nothing, so a
-// chip it carries puts no decision behind anything.
+// its `shaped` tuples point at (`tree-read/tree-nodes.ts`' `draftAsk`): the decision behind what
+// it shaped is that question. A question still open, or one closed without an answer, decided
+// nothing, so a chip it carries puts no decision behind anything.
 test("the decision behind a node may be the answered question that shaped it", () => {
   const shaped = {
     answered: true,
@@ -222,4 +222,42 @@ test("every row of a node drawn under two parents has a key of its own", () => {
     "CORE-1>spec#b-r1",
     "CORE-1>spec#b-r1>spec#b-q1",
   ]);
+});
+
+/** What the model says of a node a later one took the place of. */
+const OVERTAKEN = { closed: true, life: "overtaken" } as const;
+
+// What `q` and `w` look for, `nextQuestion` and `decisionBehind`, walks the tree (`nodesInOrder`),
+// so each names an overtaken question or decision as it names any other, and each of those is a
+// row at its place with a key of its own, its path, as every row is. That the keys take the reader
+// there is the tree's own (`node-states.test.ts`).
+test("the finders name an overtaken question and decision, each a row with its own key", () => {
+  const root = node("CORE-1", "issue", [
+    node("spec", "document", [
+      node("spec#b-r1", "requirement", [], { reference: "dispatch://CORE-1/spec#b-r1" }),
+      node("spec#b-q1", "ask", [], { ...OVERTAKEN, question: true, state: "open" }),
+    ]),
+    node("decisions-md#b-d1", "decision", [], {
+      ...OVERTAKEN,
+      chips: [
+        {
+          answered: true,
+          gone: false,
+          reading: { words: "R1" },
+          ref: "dispatch://CORE-1/spec#b-r1",
+        },
+      ],
+    }),
+  ]);
+  const keys = treeRows(root).map(rowKeyOf);
+  expect(keys).toEqual([
+    "CORE-1",
+    "CORE-1>spec",
+    "CORE-1>spec>spec#b-r1",
+    "CORE-1>spec>spec#b-q1",
+    "CORE-1>decisions-md#b-d1",
+  ]);
+
+  expect(nextQuestion(root, undefined)?.id).toBe("spec#b-q1");
+  expect(decisionBehind(root, "spec#b-r1")?.id).toBe("decisions-md#b-d1");
 });

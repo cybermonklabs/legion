@@ -81,10 +81,6 @@ const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 
-// A document's approval reason comes with its reading (`doc`), which the engine makes, so the file
-// waits for the engine at its top level: it is ready before any test reads that reason.
-await warmMarkdownRenderer();
-
 /** The header and the Details panel of one issue page: two callers of the hook on one client. */
 function useBothCallers() {
   const first = useIssueHeaderWrites(issue, state);

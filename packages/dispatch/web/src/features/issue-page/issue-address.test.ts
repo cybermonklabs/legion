@@ -4,6 +4,8 @@ import type { Message } from "../../api/types";
 import { agentsOnlyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
+import { NOTHING_OPENED, treeRows } from "./tree-fold";
+import { rowKeyOf } from "./tree-keys";
 
 /** A message of the issue, which the rows below give an author and an id. */
 const messageFixture: Message = {
@@ -351,6 +353,48 @@ test("the children's address names the first row of their group, and the documen
   const documents = issueAddress({ key: "CORE-1", kind: "artifacts" }, "", "", "spec");
   expect(documents.nodeMenu).toBe(true);
   expect(documents.target).toBeUndefined();
+});
+
+// An address that names an overtaken node, or a node under one, is the path to that node's row:
+// the path runs through the overtaken node as through any other, and the page's own rule for an
+// address's path - each node above the one it names unfolded - draws the named node as a row at
+// its end, keyed by that path, as it draws a live one. Each kind of address: a `#b-` block, an
+// item's own route (`/asks/<id>`), a node under an overtaken one, and a live block beside them.
+test("a path through an overtaken node is the path to its row", () => {
+  const overtakenAsk = node("spec#b-q8", "ask", {
+    life: "overtaken",
+    reference: "dispatch://CORE-1/ask/ask-8",
+  });
+  const under = node("comment-9", "comment", {
+    closed: true,
+    reference: "dispatch://CORE-1/comment/comment-9",
+  });
+  const overtaken = node("spec#b-r8", "requirement", { children: [under], life: "overtaken" });
+  const root = node("CORE-1", "issue", {
+    children: [
+      node("spec", "document", {
+        children: [node("spec#b-r7", "requirement"), overtaken, overtakenAsk],
+      }),
+    ],
+  });
+  const cases = [
+    [issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r8", "spec"), "spec#b-r8"],
+    [issueAddress({ id: "ask-8", key: "CORE-1", kind: "ask" }, "", "", "spec"), "spec#b-q8"],
+    [
+      issueAddress({ id: "comment-9", key: "CORE-1", kind: "comment" }, "", "", "spec"),
+      "spec#b-r8>comment-9",
+    ],
+    [issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r7", "spec"), "spec#b-r7"],
+  ] as const;
+  for (const [address, below] of cases) {
+    const ids = ["CORE-1", "spec", ...below.split(">")];
+    const path = pathToTarget(root, address.target);
+    expect(path?.map((found) => found.id)).toEqual(ids);
+    const rows = treeRows(root, NOTHING_OPENED, [], ids.slice(-1));
+    const row = rows.find((drawn) => drawn.kind === "node" && drawn.node.id === ids.at(-1));
+    expect(row, `${below} is no row`).toBeDefined();
+    expect(row === undefined ? undefined : rowKeyOf(row)).toBe(ids.join(">"));
+  }
 });
 
 // `?node=` names a node by its id in the tree read, the row a store address in a row's words

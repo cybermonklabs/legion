@@ -2,8 +2,7 @@ import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { IssueDetails, MessageRead } from "../../api/types";
-import { issueDecisionsQuery } from "../doc/spec-marks";
+import type { Comment, IssueDetails, MessageRead } from "../../api/types";
 import type { PublishedReferences } from "../refs/reference-names";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
@@ -25,7 +24,7 @@ import {
  *  answer under its set, a first read of a new set included. */
 export interface FailedRead {
   /** Whether the questions come from the read, as of the reads here they come from the asks':
-   *  the issue's own read brings its open asks too (`tree-read/tree-nodes.ts`'s `asksOf`), so a
+   *  the issue's own read brings its open asks too (`decision-nodes.ts`' `issueAsks`), so a
    *  question that waits on the reader is drawn while this read stands failed where the issue's
    *  read holds it, and the page's first focus goes to that question (`IssueTree`'s opening).
    *  Where none is drawn as the reads settle, it goes to this line's Retry before any other's,
@@ -63,7 +62,7 @@ export interface OutlineReads {
   readonly blocksOf: IssueTreeView["blocksOf"];
   /** The line of each read the tree's rows come from that stands failed (`standsFailed`), and
    *  the names' line while it stands (`IssueTreeView.namesFailure`), in the order the reads are
-   *  given: the six reads (`reads`), and the names last, as the tree reads them last
+   *  given: the five reads (`reads`), and the names last, as the tree reads them last
    *  (`useIssueTree`). A tree read refused before it first answered draws a line of its own
    *  (`tree-read/view-read.tsx`'s `TreeReadFailed`). Empty while no line stands. */
   readonly failed: readonly FailedRead[];
@@ -80,12 +79,13 @@ export interface OutlineReads {
    *  outline hands its rows in the render that draws them (`IssueTree`'s `published`). */
   readonly published: PublishedReferences;
   /** The reads of the issue's conversation, each undefined until it has answered, which tell a
-   *  turn the outline leaves out (`useAddressFallback`), and whether each of the six reads the
-   *  tree is built from beside the tree read - the coverage, the decisions, the results, the
-   *  asks, the comments and the messages - holds its answer (`held`). */
+   *  turn the outline leaves out (`useAddressFallback`), and whether each of the five reads the
+   *  tree is built from beside the tree read - the coverage, the results, the asks, the comments
+   *  and the messages - holds its answer (`held`). Every decision is a node of the tree read, so
+   *  no decisions read is among them. */
   readonly reads: {
     readonly asks: IssueTreeReads["asks"];
-    readonly comments: IssueTreeReads["comments"];
+    readonly comments: readonly Comment[] | undefined;
     readonly held: boolean;
     readonly messages: readonly MessageRead[] | undefined;
   };
@@ -93,7 +93,7 @@ export interface OutlineReads {
    *  holding its answer (`IssueTreeView.blocksHeld`). */
   readonly readsHeld: boolean;
   /** Whether every read the tree's rows come from has answered, with its data or with its
-   *  failure: the six reads here and the tree read (`TreeRead.pending`). It is what the page's
+   *  failure: the five reads here and the tree read (`TreeRead.pending`). It is what the page's
    *  first focus waits on, since until then a read still out can draw rows above the row it would
    *  land on, and a failed read answers too, where `readsHeld` would wait for ever. */
   readonly readsSettled: boolean;
@@ -120,29 +120,24 @@ export const NO_FAILED_READS: readonly FailedRead[] = [];
 const TREE_READ_LINE = "tree";
 
 /** The key the line of a read rows come from is drawn under (`FailedRead.key`). */
-export type ReadKey = ReturnType<typeof sixReads>[number]["line"] | typeof TREE_READ_LINE;
+export type ReadKey = ReturnType<typeof fiveReads>[number]["line"] | typeof TREE_READ_LINE;
 
 /** The key a view tells the line of the document `id`'s blocks by (`useTellsAddressDrawn`): the
  *  tree read's line for every document, whichever read holds its blocks (`TreeRead.blocksOf`). */
 export const blocksKey = (_id: string): ReadKey => TREE_READ_LINE;
 
-/** The six reads the tree is built from beside the tree read, in the order they are given, each
+/** The five reads the tree is built from beside the tree read, in the order they are given, each
  *  under the key and with the freshness `useIssueTree` reads it by, so they cost no request of
  *  their own; and the key each one's line is drawn under, what it says, and whether the questions
- *  come from it (`failedLines`). */
-function sixReads(key: string) {
+ *  come from it (`failedLines`). Every decision is a node of the tree read, so no decisions read
+ *  is among them. */
+function fiveReads(key: string) {
   return [
     {
       bringsQuestions: false,
       line: "coverage",
       message: STATE_LINES.coverage_unreadable,
       query: { ...issueCoverageQuery(key), ...EVENT_FRESH },
-    },
-    {
-      bringsQuestions: false,
-      line: "issue-decisions",
-      message: STATE_LINES.issue_decisions_unreadable,
-      query: { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
@@ -241,7 +236,7 @@ function useNamesLine(namesFailure: NamesFailure | undefined): readonly FailedRe
  * (`NO_FAILED_READS`) while none does.
  *
  * Whether every read the tree is built from holds its answer (`readsHeld`): the tree read, which
- * answers every node (`blocksHeld`), and the six reads here, read under the keys `useIssueTree`
+ * answers every node (`blocksHeld`), and the five reads here, read under the keys `useIssueTree`
  * reads them by, so they cost no request of their own; no document's blocks are read. A read that
  * stands failed holds nothing either (`standsFailed`): the page cannot say what it would have
  * held, so the outline says that the read failed (`failed`). One whose refresh failed holds the
@@ -269,17 +264,17 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     root,
   } = useIssueTree(issue);
   const key = issue.key;
-  const six = sixReads(key);
+  const five = fiveReads(key);
   const own = useQueries({
     combine: (
       answers
     ): { failed: readonly FailedRead[]; reads: OutlineReads["reads"]; settled: boolean } => {
-      const [, , , asks, comments, messages] = answers;
+      const [, , asks, comments, messages] = answers;
       return {
         failed: failedLines(answers, (index) => ({
-          bringsQuestions: six[index].bringsQuestions,
-          key: six[index].line,
-          message: six[index].message,
+          bringsQuestions: five[index].bringsQuestions,
+          key: five[index].line,
+          message: five[index].message,
         })),
         reads: {
           asks: asks.data,
@@ -290,7 +285,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
         settled: answers.every((answer) => !answer.isPending),
       };
     },
-    queries: queriesOf(six),
+    queries: queriesOf(five),
   });
   const names = useNamesLine(namesFailure);
   const failed = useMemo(

@@ -14,7 +14,6 @@ import { ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { decision, decisionsRead } from "./decisions-filter/decisions-fixtures";
 import { IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
@@ -640,21 +639,16 @@ function fullyReadIssue(): TreeNode {
       ],
       spec_artifact_id: specDocument.id,
     },
-    // An agent's decision that waits for no review: an entry of the decisions read, and a
-    // `decision` block of the spec in the tree read.
-    decisions: decisionsRead([
-      decision("d1", {
-        changed_at: null,
-        heading: "Ship behind a flag",
-        text: `:::decision{#d1}\n${words}\n:::\n`,
-        text_sha256: "sha256:one",
-        waiting_review: false,
-      }),
-    ]),
+    // An agent's decision that waits for no review: a `decision` block of the spec in the tree
+    // read, carrying the model's decision the read answers on it.
     tree: treeAnswer([
       block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
       block("r1", "requirement", 1, "The page draws the whole issue in one reading."),
-      block("d1", "decision", 2, words),
+      answerNode("d1", "decision", KEY, {
+        decision: { heading: "Ship behind a flag", text_sha256: "sha256:one" },
+        document: { artifact_id: specDocument.id, position: 2, slug: "spec" },
+        text: words,
+      }),
     ]),
     issue: issueDetails(),
     targets: [summaryTarget()],

@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -23,16 +23,15 @@ import {
   AskAnswer,
   BodyAuthor,
   KeepOpen,
-  MoreWords,
   NODE_ROW_LAYOUT,
   NodeOptions,
   RowActs,
   RowMargin,
   type Tone,
-  useClamp,
   useRowOnScreen,
 } from "../NodeRow";
 import { DeletedLine, lineOrKindWord, NodeParentLine, useNodeLine } from "../node-line";
+import { NodeMarks } from "../node-states/NodeMarks";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -70,15 +69,14 @@ interface RowPerson {
  * on one line, at the right end of the first line from 761 px up and under the words on a
  * phone, with how it stands under them.
  *
- * An ask draws what its row in the conversation draws, by the same parts: its question, cut at
- * six lines once it is answered, its options, which are the choices of its answer while it is
- * open, and the person's answer as the store holds it, drawn by the row's own reader
- * (`RowText`), a paragraph to each block of its words, with no sentence of the page's beside
- * it. A declined ask says who declined it, and draws their note where they wrote one: a
- * question the person declined, never an answer.
+ * An ask draws what its row in the conversation draws, by the same parts: its question, whole,
+ * its options, which are the choices of its answer while it is open, and the person's answer as
+ * the store holds it, drawn by the row's own reader (`RowText`), a paragraph to each block of its
+ * words, with no sentence of the page's beside it. A declined ask says who declined it, and draws
+ * their note where they wrote one: a question the person declined, never an answer.
  *
- * A decision draws its words - whole where it waits for the reader's review, cut as an agent's
- * words are anywhere else (ruling 6) - how it stands in the states the page declares
+ * A decision draws its words whole, as every entry does, with no cut and no control that opens
+ * the rest (R2, decision 424), how it stands in the states the page declares
  * (`NODE_STATE_WORDS.decision`), and the statements its `shaped` ties name, each by the name
  * the body gives it (`DecisionsFilterBody.tsx`) and each a link to that statement. A decision
  * of the review list draws Keep and Change with no focus, as the picture does; no other row
@@ -147,8 +145,10 @@ export function DecisionsRow({
   /** Whether this row draws what its focus adds: it has the focus, the reader pinned it open,
    *  or the cycle key opens every body. */
   body: boolean;
-  /** The document a decision's `decision` block stands in - the spec, or another document of the
-   *  issue - which its Keep writes against. */
+  /** The document the row's decision stands in - the spec, or another document of the issue -
+   *  which names the issue whose tree read holds the decision: its Keep and Change write on the
+   *  decision node's own document (`decision-nodes.ts`' `DecisionNode.document`), never this
+   *  one. */
   document?: Artifact;
   /** The document this row's own text is being edited in, while this is the row edited (the
    *  list's `editing`): its one editor is drawn on the row's stage in place of the words. */
@@ -202,25 +202,10 @@ export function DecisionsRow({
   const standing = entryStanding(entry, agentText.author);
   const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
   const row = useRef<HTMLDivElement | null>(null);
-  const words = useRef<HTMLDivElement | null>(null);
   // Where the reader writes: an open question's options and Answer set it (R16).
   const writer = useOutlineWriter();
   const press = useRowOnScreen(row, focused);
   const stage = useDocumentStage(editing);
-  // An answered question and an agent's decision are cut at six lines, as an agent's words are
-  // on every row; a question that waits on the reader and a decision that waits for their
-  // review are drawn whole, since they are what the reader is asked to read (rulings 1 and 6).
-  // So is the node an address names, which the reader was sent to read: R5 (d) cuts no other
-  // words.
-  const cuttable =
-    entry.kind === "ask"
-      ? standing?.token === "answered" && !node.waiting
-      : entry.kind === "decision"
-        ? !review
-        : false;
-  const clamp = useClamp(words, cuttable);
-  const [opened, setOpened] = useState(false);
-  const clamped = clamp !== undefined && !opened && !body;
   const tone = toneOf(entry);
   // Each statement the entry shaped by its name, and none whose node holds no words: no
   // address, slug or id is drawn in a statement's place (R22).
@@ -266,13 +251,11 @@ export function DecisionsRow({
           <div
             className={`relative text-[15px] leading-6 ${
               standing?.token === "replaced" ? `line-through ${pageQuietText}` : pageWordsText
-            } ${clamped ? "overflow-clip" : ""}`}
+            }`}
             data-node-words=""
             onClick={(event) => {
               if (pressAsksCaret(event, editing)) onPressWords();
             }}
-            ref={words}
-            style={clamped ? { maxHeight: clamp.height } : undefined}
           >
             {editing !== undefined ? (
               <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
@@ -288,24 +271,7 @@ export function DecisionsRow({
                 <DeletedLine deleted={deleted} />
               </p>
             )}
-            {clamped && !clamp.pictures ? (
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-[linear-gradient(transparent,var(--color-page-paper))]"
-              />
-            ) : null}
           </div>
-          {/* G's control under cut words, the one every view that cuts a node's words draws,
-              so it opens and closes the rest as the outline's rows do. The body draws the words
-              whole, so it offers nothing to open there. */}
-          {clamp === undefined || body ? null : (
-            <MoreWords
-              hidden={clamp.hidden}
-              onToggle={() => setOpened((held) => !held)}
-              opened={opened}
-              tabStops={false}
-            />
-          )}
           {node.options === undefined ? null : (
             <NodeOptions body={body} node={node} writer={writer} />
           )}
@@ -350,6 +316,10 @@ export function DecisionsRow({
                       {name}
                     </Link>
                   )}
+                  {/* The statement's marks, after its name in the chip's own size: the
+                      statement node's own, which its shape holds, since an answered question's
+                      chips are none of the ties of the decision that restates it. */}
+                  <NodeMarks compact marks={shape.node} />
                 </span>
               ))}
             </p>
@@ -397,8 +367,7 @@ export function DecisionsRow({
               not say it whole - "Author unknown", with its own shape, where the model holds no
               author, and an agent's whole session title where the margin names it by its role's
               word alone (ruling 5) - and the control that keeps the body open (R6). The open
-              body also draws the rest of a cut text and what each option says beside its name,
-              in their own places above. */}
+              body also draws what each option says beside its name, in its own place above. */}
           {body ? (
             <div
               className="mt-1 flex min-w-0 flex-col gap-1 text-sm"
@@ -425,10 +394,11 @@ export function DecisionsRow({
         </div>
         {/* The outline's own margin (`NodeRow.tsx`), given how the entry stands as its node's
             state: the token of the one reading `entryStanding` gives the row and the panel alike.
-            So a decision shows its standing with the reader, not the tree's state, and "Kept
-            by" with the keeper this list holds. A decision waits on the reader where it is an
-            entry of the review list, which draws its state in the decisions' violet: one rule
-            decides the list, and a second decides the mark on a row. An ask waits as the
+            So a decision shows its standing with the reader, not the tree's state, "Kept by"
+            with the keeper this list holds, and "Changed by" with the person whose Change it
+            waits on. A decision waits on the reader where it is an entry of the review list,
+            which draws its state in the decisions' violet: one rule decides the list, and a
+            second decides the mark on a row. An ask waits as the
             conversation says. The node an address names stands in no state here and is drawn
             for its context: in its grey, with no reader's ink on its author, and a child issue
             by its key, as the outline's row draws one. */}
@@ -437,6 +407,7 @@ export function DecisionsRow({
           context={tone === "context"}
           node={{
             ...node,
+            changedBy: entry.kind === "decision" ? entry.change?.by : undefined,
             keptBy: entry.kind === "decision" ? entry.keptBy : undefined,
             state: standing?.token,
             waiting: entry.kind === "decision" ? review : node.waiting,
@@ -536,6 +507,7 @@ function Declined({
  * says ` · edited` after its line (deleted-post R2 and R3). A parent with no words of its own is
  * named by its kind's word once, as plain text with no link, which is the line G gives it
  * (`lineOrKindWord`), and never by its id (R7); an edited one says ` · edited` after that word.
+ * Either line draws the parent's marks after its words, in the line's own size (`NodeMarks`).
  * Nothing follows the word until the projection answers, one pre-paint commit on a page whose
  * engine is loaded.
  */
@@ -557,6 +529,8 @@ function EntryParentLine({ parent }: { parent: ParentLine }): ReactNode {
         <EditedMark at={parent.editedAt} />
       </span>
       {reads}
+      {/* After the parent's words, in the line's own size, as `NodeParentLine` draws them. */}
+      <NodeMarks compact marks={parent} />
     </p>
   );
 }
@@ -569,8 +543,8 @@ function EntryParentLine({ parent }: { parent: ParentLine }): ReactNode {
  * `AskAnswer`), by the row's own reader (`RowText`): from the server's reading of it, and where
  * the read sent none from the page's own parse of it. The reader's own words carry the ink rule
  * (R34). A change its author edited says ` · edited` after the words (`EditedMark`, deleted-post
- * R2), in the page's own words; a deleted one is no change of the decision (`decisionChanges`)
- * and is not drawn here.
+ * R2), in the page's own words; a deleted one is no change of the decision
+ * (`decisionNodeChanges`) and is not drawn here.
  */
 function Changed({
   by,

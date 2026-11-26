@@ -12,7 +12,6 @@ import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import {
-  decisionsRead,
   issueDetails,
   KEY,
   SPEC_DOCUMENT,
@@ -91,14 +90,14 @@ const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
 /** The row's text with each control's name alone, which is all it draws with no signals. */
 const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
 
-/** Answers every read the row reaches: the tree's six reads, the issue's tree read, the reader
- *  and the names. A case changes the answer of the read it holds out or fails. */
+/** Answers every read the row reaches: the tree's five reads, the issue's tree read, the reader
+ *  and the names. No decisions read: every decision is a node of the tree read. A case changes
+ *  the answer of the read it holds out or fails. */
 function answerReads() {
   return {
     asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     names: spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
     results: spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),

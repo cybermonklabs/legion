@@ -190,10 +190,6 @@ interface Stubs {
   readonly whoAmI: Mock<typeof api.whoAmI>;
 }
 
-// A document's approval reason comes with its reading (`doc`), which the engine makes, so the file
-// waits for the engine at its top level: it is ready before any test reads that reason.
-await warmMarkdownRenderer();
-
 let stubs: Stubs;
 
 // A reviewer's reason and a components reason are drawn by the renderer, which draws a short

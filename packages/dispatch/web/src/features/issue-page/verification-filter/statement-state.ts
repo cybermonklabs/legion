@@ -2,6 +2,7 @@ import type { CheckBlock } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
 import type { CheckState, StatementState } from "../page-words";
 import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../tree-drafts";
+import { outOfCounts } from "../tree-fold";
 
 /**
  * How each statement of the issue stands, and the one commit the page names for its results.
@@ -172,6 +173,11 @@ export function verificationReading({
  * (`coverage.go`, `TreeNode.counts`).
  */
 function carriesCheck(node: TreeNode, checks: readonly CheckReading[]): boolean {
+  // A proposed statement carries no check, and a proposed check, or one at or under an
+  // overtaken node, covers no statement. The coverage read's count below leaves out a proposed
+  // check as well, since it serves nothing yet (`queueServingBlockCounts` in `coverage.go`).
+  if (outOfCounts(node)) return false;
+  checks = inCounts(checks);
   return checks.length > 0 || (node.counts?.checks ?? 0) > 0;
 }
 
@@ -215,6 +221,9 @@ export function statementStandings(
  * names for it, and where a check stands in any of the other five states.
  */
 export function statementState(checks: readonly CheckReading[]): StatementState {
+  // A proposed check, and one at or under an overtaken node, serves no statement: it is neither
+  // evidence for it nor against it.
+  checks = inCounts(checks);
   if (checks.length === 0) return "unknown";
   if (checks.every((check) => check.state === "passed")) return "met";
   if (checks.some((check) => check.state === "failed")) return "not_met";
@@ -225,9 +234,19 @@ export function statementState(checks: readonly CheckReading[]): StatementState 
 export function statementCounts(
   statements: readonly StatementReading[]
 ): Readonly<Record<StatementState, number>> {
+  // A proposed statement, and one at or under an overtaken node, is in none of the three.
+  statements = inCounts(statements);
   const counts: Record<StatementState, number> = { met: 0, not_met: 0, unknown: 0 };
   for (const statement of statements) counts[statement.state] += 1;
   return counts;
+}
+
+/** What a count reads of `readings`: each one but those whose node is a proposed statement or
+ *  check or sits at or under an overtaken node (`outOfCounts`). */
+export function inCounts<Reading extends { readonly node: TreeNode }>(
+  readings: readonly Reading[]
+): readonly Reading[] {
+  return readings.filter((reading) => !outOfCounts(reading.node));
 }
 
 /** How one check node of the tree reads (`checkReading`): the node is tied to its block by its

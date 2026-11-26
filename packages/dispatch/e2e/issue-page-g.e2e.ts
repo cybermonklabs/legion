@@ -4,9 +4,9 @@ import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
+  DECISIONS_WORDS,
   GLYPH_TOKENS,
   issueStatusWord,
-  NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
 } from "../web/src/features/issue-page/page-words";
 import { getAsk, getIssue, listComments } from "./api";
@@ -47,6 +47,8 @@ import {
   unfoldEveryBranch,
   WIDE_NOTE_COLUMNS,
 } from "./issue-page-g";
+import { owedUnless } from "./issue-page-t-tree";
+import { sessionTitleGate } from "./issue-page-u";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -82,8 +84,13 @@ interface DrawnAuthor {
   readonly shape: string;
 }
 
+/** The planner, whom the registry does not list, as a row's group draws it from the title its
+ *  session stamped on each write the seed made as it: by its role's word, in an agent's shape. */
+const PLANNER_AUTHOR: DrawnAuthor = { author: "Planner", shape: GLYPH_TOKENS.authors.agent };
+
 /** The kinds of node the model holds no author for, whose rows draw none (R3, R5). A decision is
- *  none of them: its row draws who decided it, as the decisions read's entry names them. */
+ *  none of them: its row draws who decided it, the person or the session the far end of its
+ *  node's `decided_by` tuple in the tree read names. */
 const AUTHORLESS: readonly string[] = ["check", "child_issue", "plan_task", "requirement"];
 
 /** Each row that draws an author other than the one `stored` gives its node, or that draws one
@@ -798,41 +805,39 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     const reader = { author: READER, shape: GLYPH_TOKENS.authors.person };
-    // The planner, whom the registry does not list, by the title its session stamped on each
-    // write the seed made as it: its messages and asks, and the decisions it wrote, whose
-    // decider the decisions read names with that title (`DecisionEntry.decided_by.title`).
-    const plannerAuthor = { author: "Planner", shape: GLYPH_TOKENS.authors.agent };
     // An agent the registry does not list and whose own record stamps no title: the recorder of
     // the result, whom the page names by its own word for an agent nothing names.
     const unnamedAgent = {
       author: CONTROL_LABELS.unnamed_author,
       shape: GLYPH_TOKENS.authors.agent,
     };
+    // The planner by the title its session stamped on each write the seed made as it: its
+    // messages and asks. The decisions it wrote are drawn by their decider, the session their
+    // node's `decided_by` tuple names in the tree read, which answers the title that session
+    // stamped only from INFRA-1253's v168 on: their authors are the next row's, owed until then,
+    // and this row compares none (`authorOffences` leaves out a decision `stored` names no
+    // author for).
     const stored = new Map<string, DrawnAuthor>([
       [seeded.comment, reader],
       [seeded.longComment, reader],
       [seeded.pictured, reader],
       [seeded.change, reader],
       ...seeded.replies.map((reply): [string, DrawnAuthor] => [reply, reader]),
-      [seeded.linked, plannerAuthor],
-      [seeded.longMessage, plannerAuthor],
-      [seeded.answered, plannerAuthor],
-      [seeded.answeredLong, plannerAuthor],
-      [seeded.waitingLong, plannerAuthor],
-      [seeded.openQuestion, plannerAuthor],
+      [seeded.linked, PLANNER_AUTHOR],
+      [seeded.longMessage, PLANNER_AUTHOR],
+      [seeded.answered, PLANNER_AUTHOR],
+      [seeded.answeredLong, PLANNER_AUTHOR],
+      [seeded.waitingLong, PLANNER_AUTHOR],
+      [seeded.openQuestion, PLANNER_AUTHOR],
       [seeded.result, unnamedAgent],
-      [seeded.shaping, plannerAuthor],
-      [seeded.changed, plannerAuthor],
-      [seeded.unsure, plannerAuthor],
-      [seeded.raw, plannerAuthor],
     ]);
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize(size);
       await openIssue(page, seeded.key);
       await expectSeedDrawn(page, seeded);
       // A person by their login and an agent by its role's word, or by the page's word for one
-      // that names none, each by its kind's shape: people share one, agents another. A decision
-      // draws who decided it. A node the model holds no author for draws none.
+      // that names none, each by its kind's shape: people share one, agents another. A node the
+      // model holds no author for draws none.
       await expect
         .poll(async () => authorOffences(await drawnRows(page), stored), {
           message: "a row draws its author other than by the stored actor's name and kind",
@@ -899,6 +904,48 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
   });
 });
 
+// c-author's clause on an agent's decision, owed until the tree read answers the title the
+// decider's session stamped (`sessionTitleGate`): the page draws a decision by the session its
+// node's `decided_by` tuple names, by the registry's title, else by the title the tree read
+// answers that session stamped (INFRA-1253's v168), else by its word for an agent nothing names.
+// SLOW(>=2s): a seeded issue of every kind of node, loaded and read at two widths with its rows
+// and their names waited for each time.
+test("an author is drawn by name and shape, and an agent's decision by its uncertainty: an agent's decision by the title its session stamped @owed @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedRows, async (page, seeded) => {
+    owedUnless(await sessionTitleGate(seeded.key));
+    // The four decisions the planner wrote, which the tree read says its session decided: each
+    // is drawn by the title that session stamped, as its messages and asks are.
+    const decisions = [seeded.shaping, seeded.changed, seeded.unsure, seeded.raw];
+    const stored = new Map(decisions.map((id): [string, DrawnAuthor] => [id, PLANNER_AUTHOR]));
+    for (const size of [DESKTOP, PHONE]) {
+      await page.setViewportSize(size);
+      await openIssue(page, seeded.key);
+      await expectSeedDrawn(page, seeded);
+      // Each of the four is drawn and draws the planner, so the row never passes on fewer.
+      await expect
+        .poll(
+          async () => {
+            const rows = (await drawnRows(page)).filter((row) => stored.has(row.id ?? ""));
+            const undrawn = decisions.filter((id) => rowOf(rows, id) === undefined);
+            return [
+              ...undrawn.map((id) => `the decision ${id} is not drawn`),
+              ...authorOffences(rows, stored),
+            ];
+          },
+          {
+            message:
+              `at ${size.width} px an agent's decision draws its author other than by the ` +
+              "title its session stamped",
+          }
+        )
+        .toEqual([]);
+    }
+  });
+});
+
 // c-writer: R7 and R10 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
 // six rows focused, three presses waited out for the writer's frames, and a read of the API.
@@ -957,13 +1004,13 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     const shaping = await focusRow(page, seeded.shaping);
     await expect(shaping.locator("button[data-row-action]")).toHaveCount(2);
 
-    // The decision a person asked to change says so, and draws no Keep and no Change (R10, F6).
-    // The change is a comment on the decision's words, which Conversation draws beside its node
-    // and not as a row.
+    // The decision a person asked to change reads "Changed by" and the name of the person who
+    // asked, and draws no Keep and no Change (R10, F6). The change is a comment on the decision's
+    // words, which Conversation draws beside its node and not as a row.
     const changed = rowOf(await drawnRows(page), seeded.changed);
     expect(changed).toMatchObject({
       state: "change_requested",
-      stateWord: NODE_STATE_WORDS.decision.change_requested,
+      stateWord: `${DECISIONS_WORDS.changed_by} alice`,
     });
     expect(
       (await listComments(seeded.key)).some((one) => one.id === seeded.change),

@@ -1717,6 +1717,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
+  /** The block schema this Dispatch installed, and beside it the lens catalogue (`lens_kinds`):
+   *  each kind by id, with its address, its words and the standard of its first source. */
+  getBlockSchema() {
+    return this.read("/api/v1/schema/blocks", {});
+  }
+
   /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
    *  its spec holds, and each decision with the spec nodes it shaped. */
   getIssueDecisions(key: string) {
@@ -1848,6 +1854,12 @@ export class DispatchApiClient {
    *  which a document's read otherwise leaves out. */
   getReferences(reference: string, options: { kind?: string } = {}) {
     return this.read("/api/v1/references", {}, { kind: options.kind, to: reference });
+  }
+
+  /** The lenses invoked on the node `on` names, by its `dispatch://` address, and each chain of
+   *  triggered lenses they stand in; a node that is gone or hidden is `404 NOT_FOUND`. */
+  getLenses(on: string) {
+    return this.read("/api/v1/lenses", {}, { on });
   }
 
   /** The question map of the document one reference source's text belongs to: every question

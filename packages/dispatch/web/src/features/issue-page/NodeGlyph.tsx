@@ -30,12 +30,17 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   check: "M2 8 l4 5 l8 -11",
   "child-issue": "M3 2 v8 a3 3 0 0 0 3 3 h7 M10 10 l3 3 l-3 3",
   comment: "M2 3 h12 v8 h-7 l-5 4 Z",
+  /** A constraint, two upright bars; a finding, a small diamond; a lens, a ring with a short
+   *  handle; a risk, a triangle. */
+  constraint: "M5 2 v12 M11 2 v12",
   criterion: "M8 2 a6 6 0 1 0 0.01 0 Z M8 6 a2 2 0 1 0 0.01 0 Z",
   decision: "M8 1 L15 5 v6 L8 15 L1 11 V5 Z",
   document: "M3 1 h7 l3 3 v11 h-10 Z",
+  finding: "M8 4 L12 8 L8 12 L4 8 Z",
   handoff: "M1 8 h10 M8 4 l4 4 l-4 4 M14 2 v12",
   image: "M2 3 h12 v10 h-12 Z M2 11 l4 -4 l3 3 l2 -2 l3 3",
   issue: "M8 1 a7 7 0 1 0 0.01 0 Z",
+  lens: "M7 2 a5 5 0 1 0 0.01 0 Z M10.5 10.5 l4 4",
   message: "M1 4 h14 v8 h-14 Z M1 4 l7 5 l7 -5",
   "plan-task": "M2 2 h12 v12 h-12 Z M5 8 h6",
   prose: "M3 4 h10 M3 8 h10 M3 12 h6",
@@ -43,6 +48,7 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   reading: "M1 3 h5 l2 2 l2 -2 h5 v10 h-5 l-2 2 l-2 -2 h-5 Z M8 5 v10",
   requirement: "M3 1 h10 v14 l-5 -4 l-5 4 Z",
   result: "M8 2 l2 4 l4 1 l-3 3 l1 4 l-4 -2 l-4 2 l1 -4 l-3 -3 l4 -1 Z",
+  risk: "M8 2 L15 14 H1 Z",
   /** Who wrote the node, one shape per kind of author, drawn beside the author's name. */
   "author-agent": "M3 5 h10 v9 h-10 Z M8 5 v-3 M6 9 v1 M10 9 v1",
   "author-person": "M8 1.5 a2.5 2.5 0 1 0 0.01 0 Z M3 15 v-2 a5 4 0 0 1 10 0 v2 Z",
@@ -71,6 +77,11 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   "decision-kept": "M8 1 L15 5 v6 L8 15 L1 11 V5 Z M5 8 l2 2 l4 -4",
   "decision-replaced": "M2 11 h12 M4 4 l8 4 l-8 4 Z",
   "decision-waiting-review": "M1 8 a7 4 0 0 0 14 0 a7 4 0 0 0 -14 0 Z M8 6 v4",
+  /** A row's marks (`ROW_MARK_WORDS`), each beside its word: a proposal is a circle left open,
+   *  an overtaken row a line struck through, and a row only its author reads a closed lock. */
+  "mark-only-you": "M3 7 h10 v7 h-10 Z M5 7 v-2 a3 3 0 0 1 6 0 v2 M8 10 v1.5",
+  "mark-overtaken": "M2 8 h12 M5 13 l6 -10",
+  "mark-proposed": "M8 2 a6 6 0 1 0 6 6",
   /** How a statement stands at the commit the page names, in the Verification filter and at the
    *  right of its row in the Spec filter (R17): the statement's own pennant with the mark of how
    *  it stands inside it, so no two of the three share a shape and none is told apart by colour

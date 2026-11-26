@@ -48,6 +48,8 @@ import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
 import { NODE_EDITED_MARKS } from "../NodeRow";
 import { DeletedLine, NodeParentLine } from "../node-line";
+import { NodeMarks } from "../node-states/NodeMarks";
+import { marksOf } from "../node-states/node-states";
 import { shortDay } from "../node-time";
 import type { OutlineReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
@@ -68,10 +70,12 @@ import {
 import { type Press, trackPress } from "../press-focus";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
+import { outOfCounts } from "../tree-fold";
 import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
+  inCounts,
   STATEMENT_STATES,
   type StatementReading,
   shortCommit,
@@ -243,13 +247,51 @@ export function VerificationFilterBody({
    *  whatever the query left of it. The summary, the chips' counts, each statement's state and
    *  its count of checks elsewhere, and every check drawn are read from it. A query is typed
    *  where it is not empty once trimmed, as `presetView` reads it, so a query of spaces alone is
-   *  none. Where none is typed it is `undefined`: the body reads all of that from `view`, and no
-   *  result counts as kept by a query. */
+   *  none. Where none is typed it is `undefined`: the body reads all of that from `view` as it
+   *  comes, before a pressed chip narrows it into another one, which then holds no result of its
+   *  own (`withoutResults`), so no result counts as kept by a query. */
   whole: TreeNode | undefined;
 }): ReactNode {
+  // What the issue holds, which the summary, the chips and every check drawn are read from: the
+  // view as it came, whatever a chip leaves of it.
+  const issueView = whole ?? view;
+  // The state chip the reader pressed, as `only` below holds it: read here, before the view is
+  // read, and set to `only` as each drawing begins. Under a chip the view draws no statement the
+  // chip's count leaves out - a proposed one, or one at or under an overtaken node
+  // (`outOfCounts`) - so what a chip counts and what it draws agree: its reading holds each such
+  // one as no statement but as a row a chip draws none of (`others`), so the query's view still
+  // holds a row, and the table says that no statement stands in that state where the chip holds
+  // no other, as it says where the issue holds none in it.
+  const [chosen, setChosen] = useState<StatementState | undefined>(undefined);
+  const counted = useMemo(
+    () =>
+      chosen === undefined
+        ? view
+        : {
+            ...view,
+            children: view.children.map((child) =>
+              child.type === "requirement" && outOfCounts(child)
+                ? { ...child, statement: undefined }
+                : child
+            ),
+          },
+    [chosen, view]
+  );
+  // With no query typed - no `whole` given - the issue's reading keeps no result of a check
+  // (`keptChecks`). A chip narrows the view into another one, so its checks are read with no
+  // result of their own there, and that reading keeps none either: each check drawn is read from
+  // `issueView`.
+  const narrowed = useMemo(
+    () => (whole !== undefined || counted === issueView ? counted : withoutResults(counted)),
+    [counted, issueView, whole]
+  );
+  view = narrowed;
   // The query's reading, which says which rows the body draws, and the issue's, which every row
   // drawn is read from and which says how the issue stands. With no query typed `whole` is not
-  // given, and the two are one reading.
+  // given: the two are one reading, or, where a chip narrows the view, the issue's is read from
+  // the view as it came (`issueView`), and the rows are drawn from it as under a query
+  // (`queried`), since the narrowed reading holds no result of its own to keep.
+  if (view !== issueView) whole = issueView;
   const queried = whole !== undefined;
   const read = useMemo(() => verificationReading({ checks, view }), [checks, view]);
   const issue = useMemo(
@@ -261,6 +303,7 @@ export function VerificationFilterBody({
   // Which state the reader narrowed the body to, as the picture's chips do; nothing is
   // narrowed until they press one.
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
+  if (chosen !== only) setChosen(only);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
   const shown = useMemo(
     () => (only === undefined ? statements : statements.filter(({ state }) => state === only)),
@@ -647,9 +690,11 @@ interface DrawnStatement extends StatementReading {
  * state, with its checks as `keptChecks` draws them. Its count of checks elsewhere is the checks
  * the coverage read counts for it less the distinct checks the issue's reading draws under it,
  * so a query never calls this issue's own checks "elsewhere". A statement the issue's reading
- * does not hold is read from the query's reading alone. With no query typed (`queried` false)
- * the two readings are one, which keeps no result: every result is a child of its check there,
- * and counted as kept each would be drawn.
+ * does not hold is read from the query's reading alone. With no query typed and nothing that
+ * narrows the view (`queried` false) the two readings are one, which keeps no result: in it every
+ * result is a child of its check, and counted as kept each would be drawn. Where a chip narrows
+ * the view with no query typed, `queried` is true too: the query's reading then holds no result
+ * (`withoutResults`), so each check is drawn from the issue's reading and none is kept.
  */
 function drawnStatements(
   read: VerificationReading,
@@ -692,8 +737,9 @@ interface DrawnTable {
  * that reading holds them: the query's own, and each one a result the query kept alone is lifted
  * from. Such a result stands at the top of the query's view with its check as its parent line,
  * where the query's reading holds it among its other rows; it is drawn with its check instead,
- * and not as a row of its own. With no query typed the two readings are one, and the rows are
- * drawn as they read.
+ * and not as a row of its own. With no query typed and nothing that narrows the view the rows are
+ * drawn as they read, the two readings being one; where a chip narrows it, `queried` is true too,
+ * and the query's reading holds no result to keep or lift (`withoutResults`).
  */
 function drawnTable(
   read: VerificationReading,
@@ -802,6 +848,21 @@ function treeRows(
  *  under each, so its node's id names two rows, and the statement's id beside it names one. */
 function checkRowId(statement: string, check: string): string {
   return `${statement} ${check}`;
+}
+
+/**
+ * `view` with no result under any node of it: a view no words query was typed over, as a chip
+ * narrows it, read so that its reading keeps no result of a check, as the issue's own reading of
+ * the same view with no query keeps none (`keptChecks`). Each check it draws is read from the
+ * issue's reading, with every result of its own.
+ */
+function withoutResults(view: TreeNode): TreeNode {
+  return {
+    ...view,
+    children: view.children.flatMap((child) =>
+      child.type === "result" ? [] : [withoutResults(child)]
+    ),
+  };
 }
 
 /** What the body says of each read that failed before it first answered, in the outline's own
@@ -962,6 +1023,23 @@ function Summary({
   reading: VerificationReading;
 }): ReactNode {
   const { commit, covered } = reading;
+  // What the summary counts: every statement and check but those
+  // `outOfCounts` leaves out - a proposed statement or check, and each one at or under an
+  // overtaken node. `counts` and the covered count leave them out already; this leaves them out
+  // of what the covered count is out of and of the legend's count of how the checks stand,
+  // while the table still draws every row.
+  const drawn = reading;
+  reading = useMemo(
+    () => ({
+      ...drawn,
+      loose: inCounts(drawn.loose),
+      statements: inCounts(drawn.statements).map((statement) => ({
+        ...statement,
+        checks: inCounts(statement.checks),
+      })),
+    }),
+    [drawn]
+  );
   const total = reading.statements.length;
   // How many of the issue's checks stand in each state, counted once for each reading rather
   // than once for each state the legend draws.
@@ -1227,6 +1305,7 @@ function Statement({
           <span data-statement-state={statement.state} {...pageChrome}>
             {VERIFICATION_WORDS.states[statement.state]}
           </span>
+          <NodeMarks marks={node} />
         </p>
         <div
           className={`relative min-w-0 text-[15px] leading-6 ${pageWordsText}`}
@@ -1577,8 +1656,16 @@ function Check({
             <span data-node-state={check.state} {...pageChrome}>
               {NODE_STATE_WORDS.check[check.state]}
             </span>
+            <NodeMarks marks={node} />
           </p>
         )}
+        {/* A check whose state the page has not read draws no state line, so its marks stand on
+            a line of their own where that line would. */}
+        {check.state === undefined && marksOf(node) !== undefined ? (
+          <p className="flex items-center gap-1.5 text-xs leading-5">
+            <NodeMarks marks={node} />
+          </p>
+        ) : null}
         {check.latest === undefined ? null : (
           <LatestResult
             opened={opened}
@@ -1756,6 +1843,8 @@ function AlsoUnder({
     return words === "" ? [] : [{ ref: chip.ref, words }];
   });
   if (named.length === 0) return null;
+  // The statements each chip names, whose marks it draws after their words.
+  const marked = new Map(chips.map((chip) => [chip.ref, chip]));
   return (
     <p
       className={`mt-0.5 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
@@ -1766,6 +1855,7 @@ function AlsoUnder({
         <span data-node-chip="" key={chip.ref}>
           {place === 0 ? null : <span {...pageChrome}>, </span>}
           <span {...authorText}>{chip.words}</span>
+          <NodeMarks compact marks={marked.get(chip.ref) ?? {}} />
         </span>
       ))}
     </p>
@@ -1853,6 +1943,8 @@ function OtherRow({
     >
       <p className={`text-xs leading-5 ${pageQuietText}`}>
         <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+        {/* After the kind's word, in that line's own size. */}
+        <NodeMarks compact marks={node} />
         <EditedMark at={node.editedAt} marks={NODE_EDITED_MARKS} />
       </p>
       {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a

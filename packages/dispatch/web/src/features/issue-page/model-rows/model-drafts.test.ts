@@ -3,13 +3,7 @@ import { beforeAll, expect, test } from "bun:test";
 import type { Actor, IssueDetails } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { parseNodeReference } from "../../refs/routes";
-import {
-  artifact,
-  DECISIONS_SLUG,
-  issueDetails,
-  KEY,
-  SPEC_DOCUMENT,
-} from "../decisions-filter/decisions-fixtures";
+import { artifact, issueDetails, KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { artifactsBySlug } from "../issue-artifacts";
 import { assemble, type IssueTreeReads, type TreeNode, treeWordsOf } from "../issue-tree";
 import { blockNodeId } from "../tree-drafts";
@@ -198,11 +192,11 @@ test("a statement under a criterion walks up to it", () => {
 test("a reading stands under its decision or its answered ask", () => {
   const { drafts, root } = drawn(
     answer([
-      treeNode("d1", "decision", KEY, { in: DECISIONS_SLUG, text: "Keep one room." }),
+      treeNode("d1", "decision", KEY, { in: SPEC_DOCUMENT.slug, text: "Keep one room." }),
       treeNode("q1", "ask", KEY, { author: [BOB], decision: {}, text: "One room or two?" }),
       treeNode("rd-decision", "reading", "d1", {
         author: [AGENT],
-        in: DECISIONS_SLUG,
+        in: SPEC_DOCUMENT.slug,
         made_at: "2026-11-05T12:00:00Z",
       }),
       treeNode("rd-question", "reading", "q1", {

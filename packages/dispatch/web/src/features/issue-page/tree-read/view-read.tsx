@@ -9,7 +9,6 @@ import {
   useState,
 } from "react";
 
-import { TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
 import { pageQuietText } from "../../../theme/classes";
@@ -28,6 +27,8 @@ import {
   outlineQuery,
   resetViews,
   subscribeTreeFreshness,
+  TREE_VIEWS,
+  type TreeView,
   useNextViewPage,
   useStartOutlineRead,
   useTreeRead,
@@ -35,17 +36,17 @@ import {
 } from "./tree-read";
 
 /**
- * The filters' view reads of one load of the issue, around the stage. Each of Spec, Verification
- * and Plan is read the first time its filter is on in a load, and then held for the rest of it,
- * never stale by age. A filter's observer here watches its view only while the filter is on
- * (`ViewRead`), and `useIssueTree`'s, which never read, keep every view in the cache for the
- * load, so a filter turned off and on again finds its answer held and sends nothing; it finds a
- * refused view refused, whether it holds an answer or not, and sends nothing either, unless
- * something asked for that view again while the filter was off (`TREE_FRESH`): an event of the
- * issue, which reaches the views through its own target (`event-refresh.ts`). Once the stage
- * goes, the views are collected as any query nothing observes is.
- * `useIssueTree` watches the three reads without ever sending one, and sets what they hold on the
- * tree's root (`TreeNode.views`), which is what each filter draws from.
+ * The filters' view reads of one load of the issue, around the stage. Each filter's view is read
+ * the first time its filter is on in a load, and then held for the rest of it, never stale by
+ * age. A filter's observer here watches its view only while the filter is on (`ViewRead`), and
+ * `useIssueTree`'s, which never read, keep every view in the cache for the load, so a filter
+ * turned off and on again finds its answer held and sends nothing; it finds a refused view
+ * refused, whether it holds an answer or not, and sends nothing either, unless something asked
+ * for that view again while the filter was off (`TREE_FRESH`): an event of the issue, which
+ * reaches the views through its own target (`event-refresh.ts`). Once the stage goes, the views
+ * are collected as any query nothing observes is. `useIssueTree` watches the four reads without
+ * ever sending one, and sets what they hold on the tree's root (`TreeNode.views`), which is what
+ * each filter draws from.
  *
  * A filter whose own nodes Conversation's read does not hold has its view read sent with a load
  * of Conversation or of a filter, and held as the others are, for its count and, for Plan, for
@@ -105,15 +106,15 @@ export function ViewReadProvider({
   return (
     <>
       {dropped &&
-        TREE_FILTERS.map((filter) => (
+        TREE_VIEWS.map((view) => (
           <ViewRead
-            filter={filter}
             issueKey={key}
-            key={filter}
+            key={view}
             on={
-              preset === filter ||
-              sentWithLoad(filter, preset, issue, conversation !== undefined, holdsChildCheck)
+              preset === view ||
+              sentWithLoad(view, preset, issue, conversation !== undefined, holdsChildCheck)
             }
+            view={view}
           />
         ))}
       {children}
@@ -121,25 +122,29 @@ export function ViewReadProvider({
   );
 }
 
-/** Whether a load of `preset` sends `filter`'s view read with it (`ViewReadProvider`): a load of
+/** Whether a load of `preset` sends `view`'s read with it (`ViewReadProvider`): a load of
  *  Conversation or of a filter, for Plan always, for Spec where the issue is a child, and for
  *  Verification where the issue has children and Conversation's answer holds no check of an
- *  issue under it, which is not known until that answer is held. */
+ *  issue under it, which is not known until that answer is held. The decisions view is never
+ *  one: Conversation's read holds the decisions, and the Decisions filter's count is read off the
+ *  tree (`presets.ts`' `filterSignals`). */
 function sentWithLoad(
-  filter: TreeFilter,
+  view: TreeView,
   preset: Preset,
   issue: IssueDetails,
   conversationHeld: boolean,
   holdsChildCheck: boolean
 ): boolean {
   if (outlineOf(preset) !== "conversation") return false;
-  switch (filter) {
+  switch (view) {
     case "plan":
       return true;
     case "spec":
       return issue.parent !== null;
     case "verification":
       return (issue.children ?? []).length > 0 && conversationHeld && !holdsChildCheck;
+    case "decisions":
+      return false;
   }
 }
 
@@ -151,16 +156,8 @@ function sentWithLoad(
  * press of its filter. A subscribed one reads it as a new observer of the tree's reads does
  * (`TREE_FRESH`).
  */
-function ViewRead({
-  filter,
-  issueKey,
-  on,
-}: {
-  filter: TreeFilter;
-  issueKey: string;
-  on: boolean;
-}): null {
-  useQuery({ ...viewQuery(issueKey, filter), subscribed: on });
+function ViewRead({ issueKey, on, view }: { issueKey: string; on: boolean; view: TreeView }): null {
+  useQuery({ ...viewQuery(issueKey, view), subscribed: on });
   return null;
 }
 
@@ -243,7 +240,7 @@ export function NextViewPage({
   filter,
   issueKey,
 }: {
-  filter: TreeFilter;
+  filter: TreeView;
   issueKey: string;
 }): ReactNode {
   const next = useNextViewPage(issueKey, filter);

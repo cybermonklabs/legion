@@ -1,5 +1,6 @@
-import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from "../../../api/types";
+import type { Actor, CheckBlock, DisplayTree } from "../../../api/types";
 import type { TextSource } from "../../refs/text-references";
+import type { DecisionNode } from "../decision-nodes/decision-nodes";
 import { askIdOf } from "../decisions-filter/decisions-parts";
 import {
   drawnLine,
@@ -34,10 +35,11 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    line is drawn whether or not" other decisions apply, so it heads the statement's run and
  *    its parent line and its decision line stay one line.
  * 2. **Each `shaped` tie.** A decision whose link names the statement shaped it
- *    (`Decision.links[].to`). The first decision of the statement
- *    heads its run; every other one is named at the end of the statement's own line, since R5
- *    draws "the decisions that informed it" and a statement may rest on several. A replaced
- *    decision draws no line at all (R5).
+ *    (`Decision.links[].to`): a decision node, or a question a person
+ *    answered that carries `shaped` ties, which is that person's decision (`decisionNodes`). The
+ *    first decision of the statement heads its run; every other one is named at the end of the
+ *    statement's own line, which draws "the decisions that informed it", and a statement may
+ *    rest on several. A replaced decision draws no line at all.
  * 3. **Nothing.** A statement no decision shaped is drawn as such, which is what makes a
  *    missing tie visible (R35).
  *
@@ -46,9 +48,9 @@ import { statementStandings } from "../verification-filter/statement-state";
  * with each reference in it named in plain words once the sentence is cut
  * (`referenceStandIns`), or, where they wrote none, the options they chose; the whole answer is
  * carried beside it as stored, for the focus on the line to draw character for character (R5).
- * A section of `decisions.md` the server marks a person's whose answered question this tree
- * does not hold is the agent's record of that decision, so it is drawn as an agent's words and
- * never quoted as the person's (R9).
+ * A decision node the server marks a person's whose answered question this tree does not hold
+ * is the agent's record of that decision, so it is drawn as an agent's words and never quoted as
+ * the person's (R9).
  *
  * An agent's decision carries its own text whole, which the cell draws as a row draws a node's
  * words (`RowText`), and is quoted by its first line, by R1's one-line rule (`lineWordsRaw`,
@@ -72,8 +74,8 @@ import { statementStandings } from "../verification-filter/statement-state";
  * the model says nothing of it yet, so the view draws nothing of it.
  *
  * One part of R5 today's reads do not hold, which the body draws nothing in the place of: an
- * agent's level of uncertainty and its reason. The decisions read answers one boolean,
- * `unsure`; the level and the reason arrive with the work that adds them to that read.
+ * agent's level of uncertainty and its reason. A decision node answers one boolean, `unsure`;
+ * the level and the reason arrive with the work that adds them to that node.
  */
 
 /** Whose words a run of statements came from, which the column's heading says: the reader's own,
@@ -81,8 +83,9 @@ import { statementStandings } from "../verification-filter/statement-state";
 export type SpecSaid = "agent" | "person" | "you";
 
 /** The mark at the right of a statement's row: how its checks stand, each at the commit the
- *  server names for it, in the Verification filter's own reading, or that no check serves it
- *  (R10, R17). */
+ *  server names for it, in the Verification filter's own reading, or that no check a count
+ *  reads serves it, as for any statement no count reads, checks or none (`carriesCheck`, R10,
+ *  R17). */
 export type SpecMark = StatementState | "no_check";
 
 /** The decision that shaped a run of statements, as the left column draws it (R5). */
@@ -91,6 +94,9 @@ export interface SpecDecision {
   readonly at?: string;
   /** Who decided it, where the model holds an author. */
   readonly by?: Actor;
+  /** The person whose Change it waits on, where it stands asked to change
+   *  (`TreeNode.changedBy`), whom its line names after "Changed by". */
+  readonly changedBy?: Actor;
   /** How a line names the decision among others, after "informed by": its quote cut to a chip's
    *  length as a chip names its target (`chipWords`), cut with each reference it cites unnamed
    *  and each named after the cut (`referenceStandIns`), so the cut never falls inside a name. */
@@ -101,9 +107,12 @@ export interface SpecDecision {
   /** The node that holds the whole of it, which the link to it names: the answered ask whose
    *  answer this is, or the decision. */
   readonly id: string;
+  /** The person who kept it, where it stands kept (`TreeNode.keptBy`), whom its line names after
+   *  "Kept by". */
+  readonly keptBy?: Actor;
   /** The decision node the tie came from, where the tree holds it: the node the cell is drawn
    *  as, which Details draws while the cell holds the focus. A person's decision is drawn by
-   *  their answer (`id`), and this is the section of `decisions.md` that names it. */
+   *  their answer (`id`), and this is the question itself (`decisionNodes`). */
   readonly node?: string;
   /** The question the words answer, its first line as R1 cuts a row's with each reference
    *  named after the cut; absent where the words answer no question. */
@@ -156,6 +165,8 @@ export interface SpecRun {
    *  decision does until what decided each statement is held (`SpecFilterBody.tsx`'s
    *  `decidedHeld`). */
   readonly decision?: SpecDecision;
+  /** The key the runs are split by: the head tie's `key`; absent where no decision heads it. */
+  readonly key?: string;
   readonly statements: readonly SpecStatement[];
 }
 
@@ -202,11 +213,13 @@ export interface SpecReading {
  * `view` is the Spec filter's own view of the tree (`presetView`), whose rows are the
  * statements in the order the page draws them; `root` is the whole tree, which holds the asks,
  * the decisions and each statement's checks, none of which the Spec filter draws as rows (R2).
- * `nodeIdOf` is how this issue addresses a node, which is the one rule the tree is built with
- * (`tree-drafts.ts`'s `treeContext`), so a tie resolves to the node it names however its
- * address is written. `nameOf` is how the page names a reference a plain line cites
- * (`one-line.ts`'s `useReferenceNames`). `checks` is the issue's results read, which each
- * statement's mark is read from as the Verification filter reads it (`statement-state.ts`).
+ * `decisions` are the decisions of the Spec view read (`?view=spec`) as every reader of a
+ * decision reads them (`decisionNodes`), in that answer's order. `nodeIdOf` is how this issue
+ * addresses a node, which is the one rule the tree is built with (`tree-drafts.ts`'s
+ * `treeContext`), so a tie resolves to the node it names however its address is written.
+ * `nameOf` is how the page names a reference a plain line cites (`one-line.ts`'s
+ * `useReferenceNames`). `checks` is the issue's results read, which each statement's mark is
+ * read from as the Verification filter reads it (`statement-state.ts`).
  */
 export function specDecidedBy({
   asksHeld,
@@ -224,7 +237,7 @@ export function specDecidedBy({
    *  whose question the tree does not hold is drawn. */
   readonly asksHeld: boolean;
   readonly checks: readonly CheckBlock[];
-  readonly decisions: IssueDecisions | undefined;
+  readonly decisions: readonly DecisionNode[];
   readonly nameOf: (reference: string) => string | undefined;
   readonly nodeIdOf: (reference: string) => string | undefined;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
@@ -256,10 +269,8 @@ export function specDecidedBy({
   const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
-    runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
+    runs: { decision?: SpecDecision; key?: string; statements: SpecStatement[] }[];
   }[] = [];
-  // The key of the last run built, which the next statement's head is matched against.
-  let runKey: string | undefined;
   // A criterion of the view is a row of the statements' list as well, in the view's order: what
   // a person wants to be able to do, drawn as a statement is (`SpecFilterBody.tsx`'s
   // `Statement`). So here a statement is every row `isListed` names.
@@ -295,18 +306,18 @@ export function specDecidedBy({
     };
     const fresh = {
       ...(head?.decision === undefined ? {} : { decision: head.decision }),
+      ...(head === undefined ? {} : { key: head.key }),
       statements: [statement],
     };
     const group = groups.at(-1);
     const run = group?.runs.at(-1);
     if (group === undefined || group.parent?.id !== parent?.id) {
       groups.push({ ...(parent === undefined ? {} : { parent }), runs: [fresh] });
-    } else if (run === undefined || runKey !== head?.key) {
+    } else if (run === undefined || run.key !== head?.key) {
       group.runs.push(fresh);
     } else {
       run.statements.push(statement);
     }
-    runKey = head?.key;
   }
   return { groups, others: rows.filter((row) => !isStatement(row)) };
 }
@@ -378,8 +389,8 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
   return asks;
 }
 
-/** The decisions that shaped each statement, by the statement's node id, in the order the
- *  decisions read answers them: each drawn, but a person's while the asks read holds no answer
+/** The decisions that shaped each statement, by the statement's node id, in the order the Spec
+ *  view read answers them: each drawn, but a person's while the asks read holds no answer
  *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie with no decision drawn. */
 function shapedBy({
   asks,
@@ -392,14 +403,14 @@ function shapedBy({
 }: {
   asks: ReadonlyMap<string, TreeNode>;
   asksHeld: boolean;
-  decisions: IssueDecisions | undefined;
+  decisions: readonly DecisionNode[];
   nameOf: (reference: string) => string | undefined;
   nodeIdOf: (reference: string) => string | undefined;
   nodes: ReadonlyMap<string, TreeNode>;
   reader: string | undefined;
 }): ReadonlyMap<string, readonly Tie[]> {
   const shaped = new Map<string, Tie[]>();
-  for (const decision of decisions?.decisions ?? []) {
+  for (const decision of decisions) {
     // A replaced decision draws no line (R5): it is drawn where it sits in the outline, and a
     // statement it shaped is no longer standing on it.
     if (decision.replaced) continue;
@@ -429,7 +440,7 @@ function tieOf(decision: SpecDecision): Tie {
 /** One decision as the column draws it: a person's by the answer they gave, an agent's by its
  *  own words. */
 function decisionOf(
-  decision: Decision,
+  decision: DecisionNode,
   {
     asks,
     nameOf,
@@ -446,7 +457,7 @@ function decisionOf(
 ): SpecDecision {
   const node = nodes.get(nodeIdOf(decision.ref) ?? "");
   // A person's decision is their answer to a question, so the words the column quotes are the
-  // answer's own and never the decision's restatement of them (R4): a person's section that
+  // answer's own and never the decision's restatement of them (R4): a person's decision that
   // names an answered ask of this issue is drawn by the first of its asks the tree holds an
   // answer for.
   if (decision.kind === "person") {
@@ -460,10 +471,10 @@ function decisionOf(
       };
     }
   }
-  // Every other section is drawn by its own words, which are an agent's: its decision, or its
-  // record of a person's decision whose answered question this tree does not hold - one the
-  // tree places elsewhere, or one whose read failed. That record is never put in the person's
-  // mouth (R9: "no agent's words are drawn under a person's name").
+  // Every other decision is drawn by its own words, which are an agent's: an agent's decision,
+  // or an agent's record of a person's decision whose answered question this tree does not hold
+  // - one the tree places elsewhere, or one whose read failed. That record is never put in the
+  // person's mouth (R9: "no agent's words are drawn under a person's name").
   const at = node?.at ?? decision.changed_at ?? undefined;
   const tree = decision.text_tree ?? node?.tree;
   // The one line is cut from the words `lineWordsRaw` reads, as every one-line place cuts a
@@ -477,9 +488,11 @@ function decisionOf(
   return {
     ...(at === undefined ? {} : { at }),
     ...(node?.author === undefined ? {} : { by: node.author }),
+    ...(node?.changedBy === undefined ? {} : { changedBy: node.changedBy }),
     chip: references.named(chipWords(line)),
     chose: [],
     id: node?.id ?? decision.ref,
+    ...(node?.keptBy === undefined ? {} : { keptBy: node.keptBy }),
     ...(node === undefined ? {} : { node: node.id }),
     quote: references.named(line),
     reference: decision.ref,

@@ -42,6 +42,7 @@ import {
   NODE_TYPE_NAMES,
   sentenceCase,
 } from "./page-words";
+import * as treeFold from "./tree-fold";
 import { pathTo } from "./tree-fold";
 import { CAP } from "./verification-filter/VerificationFilterBody";
 
@@ -64,12 +65,13 @@ export interface ContentsEntry {
  * place, so they are neither listed nor counted again.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
- * to it, so a node counts once, on the entry whose branch it is read in (the prototype's
- * `branchCounts`): its statements, its decisions waiting for the reader's review, its child
- * issues, and its statements a check under them failed. A statement and a check are what the
- * filter row counts as one (`isStatement`, `isCheck`): a `requirement` or `check` block of any
- * other document is counted as neither. What sits under the issue and under no entry is counted
- * on none, since the issue has no entry; the filter row's signals count it.
+ * to it, and at or under no overtaken node, so a node counts once, on the entry whose branch it
+ * is read in (the prototype's `branchCounts`): its statements, its decisions waiting for the
+ * reader's review, its child issues, and its statements a check under them failed, of the checks
+ * a count reads (`outOfCounts`). A statement and a check are what the filter row counts as one
+ * (`isStatement`, `isCheck`): a `requirement` or `check` block of any other document is counted
+ * as neither. What sits under the issue and under no entry is counted on none, since the issue
+ * has no entry; the filter row's signals count it.
  */
 export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
   const tally = (): Record<ContentsMark, number> => ({
@@ -79,6 +81,17 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
     statements: 0,
   });
   const count = (node: TreeNode, marks: Record<ContentsMark, number>): void => {
+    if (node.closed === true) return;
+    // A check no count reads - proposed, or at or under an overtaken node - marks no statement
+    // failing, nor does any check of a statement no count reads - a proposed one - as the
+    // Verification view and the failing flag leave them out: the statement is read once more with
+    // the checks a count reads alone. It is still one of the entry's statements.
+    const counted = (child: TreeNode): boolean =>
+      !isCheck(child) || !(treeFold.outOfCounts(node) || treeFold.outOfCounts(child));
+    if (isStatement(node) && !node.children.every(counted)) {
+      count({ ...node, children: node.children.filter(counted) }, marks);
+      return;
+    }
     if (isStatement(node)) {
       marks.statements += 1;
       if (node.children.some((child) => isCheck(child) && child.state === "failed")) {
@@ -95,6 +108,8 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
   ): void => {
     for (const child of node.children) {
       if (child.transcluded) continue;
+      // The list keeps each entry that Conversation counts, even at or under an overtaken
+      // node, because the entry rule reads what kind of node it is, not what its branch holds.
       if (isContentsEntry(node, child, viewer)) {
         const children: ContentsEntry[] = [];
         const own = tally();

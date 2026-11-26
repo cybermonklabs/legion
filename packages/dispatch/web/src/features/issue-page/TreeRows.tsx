@@ -10,6 +10,7 @@ import type { PointMark } from "./current-point";
 import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
+import { LensActContext, useLensAct } from "./lenses/LensMenu";
 import { takesCaret, useRoomFacts } from "./model-rows/room-target";
 import { IndentGuides, NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
@@ -109,6 +110,9 @@ export function TreeRows({
   // The room of the issue's tree read, read once for every row as Enter reads it
   // (`useNodeEditing.ts`), by the issue the page's writer is of; with no writer there is none.
   const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  // The Lens act the focused row offers in Conversation and in Graph, one value while the
+  // address stands (`useLensAct`).
+  const lensAct = useLensAct();
   return (
     <>
       {onOlder === undefined ? null : (
@@ -116,71 +120,73 @@ export function TreeRows({
           {CONTROL_LABELS.older_comments}
         </PageControl>
       )}
-      {rows.map((row) => {
-        const key = rowKeyOf(row);
-        if (row.kind === "page") {
-          return (
-            <PageControl
-              current={points.get(key)}
-              key={key}
-              kind="page"
-              level={row.level}
-              onPress={() => onPage(row)}
-            >
-              {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which
+      <LensActContext.Provider value={lensAct}>
+        {rows.map((row) => {
+          const key = rowKeyOf(row);
+          if (row.kind === "page") {
+            return (
+              <PageControl
+                current={points.get(key)}
+                key={key}
+                kind="page"
+                level={row.level}
+                onPress={() => onPage(row)}
+              >
+                {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which
                   lays the count's own span and the words after it out as two boxes side by
                   side, the space that opens the words dropped at the start of theirs. */}
-              <span>
-                <span {...authorText}>{row.left.toLocaleString()}</span>{" "}
-                {row.left === 1 ? CONTROL_LABELS.page_row : CONTROL_LABELS.page_rows}
-              </span>
-            </PageControl>
+                <span>
+                  <span {...authorText}>{row.left.toLocaleString()}</span>{" "}
+                  {row.left === 1 ? CONTROL_LABELS.page_row : CONTROL_LABELS.page_rows}
+                </span>
+              </PageControl>
+            );
+          }
+          const place = documentOfNode(row.node.id, artifacts);
+          const mark = threads.get(row.node.id);
+          const current = points.get(key);
+          return (
+            <NodeRow
+              {...(row.node.answer === undefined
+                ? {}
+                : { answerer: agentText.author(row.node.answer.by) })}
+              author={{
+                kind: authorKind(row.node.author),
+                name: agentText.author(row.node.author),
+                reader: isReader(row.node.author, reader),
+              }}
+              context={context.has(row.node.id)}
+              {...(current === undefined ? {} : { current })}
+              {...(place === undefined ? {} : { document: place.artifact })}
+              editable={nodeEditable(place, isClosed, admissions)}
+              // Where the room is read, the row carries the typing cue wherever Enter puts a
+              // caret, a criterion's row among them: a node written into the issue, such as a
+              // criterion, takes its place from the room rather than from a document.
+              {...(room === undefined
+                ? {}
+                : { editable: takesCaret(row.node, artifacts, room, isClosed, admissions) })}
+              {...(editing?.row === key ? { editing: editing.artifactId } : {})}
+              expanded={row.expanded}
+              focused={focused === key}
+              foldable={!(row.level === 1 && row.node.id === zoomRoot)}
+              folded={row.folded}
+              foldedMore={foldedMore}
+              isClosed={isClosed}
+              key={key}
+              level={row.level}
+              node={row.node}
+              onFocus={() => onFocus(key, row.node)}
+              onToggle={() => onToggle(row.node, row.expanded)}
+              ownAnswer={isReader(row.node.answer?.by, reader)}
+              placesItself={unplaced !== key}
+              {...(report?.row === key ? { report: report.line } : {})}
+              rowKey={key}
+              tabStop={tabStop === key}
+              {...(mark === undefined ? {} : { threadRead: mark })}
+            />
           );
-        }
-        const place = documentOfNode(row.node.id, artifacts);
-        const mark = threads.get(row.node.id);
-        const current = points.get(key);
-        return (
-          <NodeRow
-            {...(row.node.answer === undefined
-              ? {}
-              : { answerer: agentText.author(row.node.answer.by) })}
-            author={{
-              kind: authorKind(row.node.author),
-              name: agentText.author(row.node.author),
-              reader: isReader(row.node.author, reader),
-            }}
-            context={context.has(row.node.id)}
-            {...(current === undefined ? {} : { current })}
-            {...(place === undefined ? {} : { document: place.artifact })}
-            editable={nodeEditable(place, isClosed, admissions)}
-            // Where the room is read, the row carries the typing cue wherever Enter puts a caret,
-            // a criterion's row among them: a node written into the issue, such as a criterion,
-            // takes its place from the room rather than from a document.
-            {...(room === undefined
-              ? {}
-              : { editable: takesCaret(row.node, artifacts, room, isClosed, admissions) })}
-            {...(editing?.row === key ? { editing: editing.artifactId } : {})}
-            expanded={row.expanded}
-            focused={focused === key}
-            foldable={!(row.level === 1 && row.node.id === zoomRoot)}
-            folded={row.folded}
-            foldedMore={foldedMore}
-            isClosed={isClosed}
-            key={key}
-            level={row.level}
-            node={row.node}
-            onFocus={() => onFocus(key, row.node)}
-            onToggle={() => onToggle(row.node, row.expanded)}
-            ownAnswer={isReader(row.node.answer?.by, reader)}
-            placesItself={unplaced !== key}
-            {...(report?.row === key ? { report: report.line } : {})}
-            rowKey={key}
-            tabStop={tabStop === key}
-            {...(mark === undefined ? {} : { threadRead: mark })}
-          />
-        );
-      })}
+        })}
+      </LensActContext.Provider>
       {more === undefined ? null : (
         <PageControl kind="more" level={1} onPress={more.onPress}>
           <NextPageWords left={more.left} />

@@ -865,3 +865,178 @@ test("a commit is drawn in the short form the picture draws", () => {
   expect(shortCommit(COMMIT)).toHaveLength(10);
   expect(shortCommit("abc")).toBe("abc");
 });
+
+/** What the model says of a node put forward and not yet settled. */
+const PROPOSED = { life: "proposed" } as const;
+
+/** What the model says of a node a later one took the place of; each node under it is `closed`
+ *  too. */
+const OVERTAKEN = { closed: true, life: "overtaken" } as const;
+
+// A proposed check is only put forward, so it is no evidence for its statement or against it, and
+// neither is a check an overtaken one replaced. Each statement stands on its other checks, and one
+// whose only check is proposed is Unknown and not covered; every check is still read under its
+// statement, as the body draws it.
+test("a proposed check serves no statement", () => {
+  const passed = passing("c-one");
+  const failedAt = (blockId: string) =>
+    check({
+      block_id: blockId,
+      pass_stands: { answer: "no" },
+      results: [
+        result({ check_block_id: blockId, failed: 1, id: `result-${blockId}`, verdict: "fail" }),
+      ],
+    });
+  const proposedFail = failedAt("c-two");
+  const overtakenFail = failedAt("c-three");
+  const proposedPass = passing("c-four");
+  const read = reading(
+    [
+      statementNode("r1", "The page draws the checks.", [
+        checkNode(passed),
+        { ...checkNode(proposedFail), ...PROPOSED },
+      ]),
+      statementNode("r2", "The page draws them again.", [
+        { ...checkNode(passed), transcluded: true },
+        { ...checkNode(overtakenFail), ...OVERTAKEN },
+      ]),
+      statementNode("r3", "The page may draw it.", [{ ...checkNode(proposedPass), ...PROPOSED }]),
+    ],
+    [passed, proposedFail, overtakenFail, proposedPass]
+  );
+
+  expect(read.statements.map((held) => held.checks.map((one) => one.state))).toEqual([
+    ["passed", "failed"],
+    ["passed", "failed"],
+    ["passed"],
+  ]);
+  expect(read.statements.map((held) => held.state)).toEqual(["met", "met", "unknown"]);
+  expect(read.covered).toBe(2);
+  expect(statementCounts(read.statements)).toEqual({ met: 2, not_met: 0, unknown: 1 });
+});
+
+// The Spec filter's mark is `statementStandings` over the whole tree and the Verification filter's
+// is this reading over its view. On a statement whose only check is proposed both say it carries
+// no check and stands on none: not covered, and Unknown. The same statement with that check live
+// is covered and Met in both.
+test("the Spec and Verification views agree on a statement whose only check is proposed", () => {
+  const block = passing("c-one");
+  const issueOf = (statement: TreeNode) =>
+    node({ children: [statement], id: ISSUE_KEY, text: "An issue", type: "issue" });
+  const proposed = statementNode("r1", "The page may draw it.", [
+    { ...checkNode(block), ...PROPOSED },
+  ]);
+  const read = reading([proposed], [block]);
+
+  expect([...statementStandings(issueOf(proposed), [block])]).toEqual([
+    [proposed.id, { covered: false, state: "unknown" }],
+  ]);
+  expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
+  expect(read.covered).toBe(0);
+
+  const live = statementNode("r1", "The page may draw it.", [checkNode(block)]);
+  expect([...statementStandings(issueOf(live), [block])]).toEqual([
+    [live.id, { covered: true, state: "met" }],
+  ]);
+  expect(reading([live], [block]).statements.map((held) => held.state)).toEqual(["met"]);
+  expect(reading([live], [block]).covered).toBe(1);
+});
+
+// A proposed statement is put forward and not yet settled, and a statement at or under an
+// overtaken node was replaced, so none of them is in the covered count or in Met, Not met and
+// Unknown, though the check under each passed; each one's standing says it is not covered.
+test("a proposed statement is neither covered nor counted", () => {
+  const passed = passing("c-one");
+  // The passed check drawn again under another statement, with `extra` over it.
+  const placed = (extra: Partial<TreeNode>) => ({
+    ...checkNode(passed),
+    transcluded: true,
+    ...extra,
+  });
+  const proposed = {
+    ...statementNode("r1", "The page may draw it.", [checkNode(passed)]),
+    ...PROPOSED,
+  };
+  const overtaken = {
+    ...statementNode("r2", "The page drew it.", [placed({ closed: true })]),
+    ...OVERTAKEN,
+  };
+  const under = {
+    ...statementNode("r3", "The page drew that.", [placed({ closed: true })]),
+    closed: true as const,
+  };
+  const replaced = node({ children: [under], id: "ask-1", type: "ask", ...OVERTAKEN });
+  const live = statementNode("r4", "The page draws it.", [placed({})]);
+  const read = reading([proposed, overtaken, replaced, live], [passed]);
+
+  expect(read.statements.map((held) => held.node.id)).toEqual([
+    proposed.id,
+    overtaken.id,
+    under.id,
+    live.id,
+  ]);
+  expect(read.covered).toBe(1);
+  expect(statementCounts(read.statements)).toEqual({ met: 1, not_met: 0, unknown: 0 });
+  const standings = statementStandings(
+    node({ children: [proposed, overtaken, replaced, live], id: ISSUE_KEY, type: "issue" }),
+    [passed]
+  );
+  expect([...standings].map(([id, standing]) => [id, standing.covered])).toEqual([
+    [proposed.id, false],
+    [overtaken.id, false],
+    [under.id, false],
+    [live.id, true],
+  ]);
+});
+
+// What leaves proposed and overtaken nodes out of the counts leaves the rows alone: the
+// Verification filter draws every row of its query, so the reading hands the body each statement,
+// check and other row the filter kept, proposed and overtaken ones among them. Only the counts
+// leave them out.
+test("the reading keeps every row, proposed and overtaken ones included", () => {
+  const proposedCheck = passing("c-one");
+  const replacedCheck = passing("c-two");
+  const proposedLoose = passing("c-loose");
+  const overtakenLoose = passing("c-gone");
+  const proposed = {
+    ...statementNode("r1", "The page may draw it.", [{ ...checkNode(proposedCheck), ...PROPOSED }]),
+    ...PROPOSED,
+  };
+  const overtaken = {
+    ...statementNode("r2", "The page drew it.", [
+      { ...checkNode(replacedCheck), closed: true as const },
+    ]),
+    ...OVERTAKEN,
+  };
+  const named = node({
+    id: "comment-1",
+    text: "A comment an address named.",
+    type: "comment",
+    ...OVERTAKEN,
+  });
+  const read = verificationReading({
+    checks: [proposedCheck, replacedCheck, proposedLoose, overtakenLoose],
+    view: verificationView(
+      [
+        proposed,
+        overtaken,
+        { ...checkNode(proposedLoose), ...PROPOSED },
+        { ...checkNode(overtakenLoose), ...OVERTAKEN },
+        named,
+      ],
+      [named.id]
+    ),
+  });
+
+  expect(read.statements.map((held) => held.node.id)).toEqual([proposed.id, overtaken.id]);
+  expect(read.statements.map((held) => held.checks.map((one) => one.node.id))).toEqual([
+    [checkNode(proposedCheck).id],
+    [checkNode(replacedCheck).id],
+  ]);
+  expect(read.loose.map((held) => held.node.id)).toEqual([
+    checkNode(proposedLoose).id,
+    checkNode(overtakenLoose).id,
+  ]);
+  expect(read.others.map((held) => held.id)).toEqual(["comment-1"]);
+  expect(read.covered).toBe(0);
+});

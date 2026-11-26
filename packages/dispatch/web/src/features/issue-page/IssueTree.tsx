@@ -20,19 +20,23 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { pointMarks } from "./current-point";
 import { ChangeDraftsProvider } from "./DecisionActions";
+import { standingParts } from "./decisions-filter/entry-standing";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
+import { NodeStatesProvider } from "./node-states/NodeMarks";
+import { marksOf, statesByReference } from "./node-states/node-states";
+import { SettleIssueProvider } from "./node-states/settle-write";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { editWords, NoteOwnAct, noteAfterDraw, type OwnAct } from "./own-act";
 import { authorText, KEY_REPORTS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, nodeStateWord } from "./page-words";
+import { CONTROL_LABELS } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { useFollowing } from "./slots/following";
@@ -195,12 +199,13 @@ export function IssueTree({
    *  draws a row that reads what its page asks for. */
   published: PublishedReferences;
   /** Whether each read the tree's nodes come from holds an answer, which a failed read never
-   *  does: the six reads - the coverage, the decisions, the results, the asks, the comments and
-   *  the messages - and each document's blocks (`outline-reads.ts`'s `readsHeld`). Until then a
-   *  node the tree lacks may not have arrived yet, so a tree with no node draws no `emptyLine`,
-   *  and `q` and `w` with nowhere to go say nothing (`useTreeKeymap.ts`). The names are no part
-   *  of it: the page gives no `emptyLine` that reads the nodes' words until they are held
-   *  (`slots/body.tsx`). Held unless the page says otherwise. */
+   *  does: the tree read, which answers every node (`blocksHeld`), and the five reads - the
+   *  coverage, the results, the asks, the comments and the messages (`outline-reads.ts`'s
+   *  `readsHeld`). Until then a node the tree lacks may not have arrived yet, so a tree with no
+   *  node draws no `emptyLine`, and `q` and `w` with nowhere to go say nothing
+   *  (`useTreeKeymap.ts`). The names are no part of it: the page gives no `emptyLine` that reads
+   *  the nodes' words until they are held (`slots/body.tsx`). Held unless the page says
+   *  otherwise. */
   readsHeld?: boolean;
   /** Whether every read the tree's rows come from has answered, with its data or its failure
    *  (`outline-reads.ts`): the page's first focus waits for it, so it lands once, where every
@@ -1276,6 +1281,9 @@ export function IssueTree({
     };
   }, [landing]);
 
+  // The marks of each node of the tree, by reference, for each place in a row that names a node
+  // by its address alone - an entry of a lens's chain.
+  const nodeStates = useMemo(() => statesByReference(root), [root]);
   const outline = (
     <div className="mb-3 flex min-w-0 flex-col">
       {/* Over the tree and never in it: an alert inside the tree would break its structure of
@@ -1374,32 +1382,36 @@ export function IssueTree({
         {/* A decision's Change and the words typed in it outlive its row, which a read draws
             again under a new key: the drafts are the tree's. */}
         <ChangeDraftsProvider>
-          <TreeRows
-            artifacts={artifacts}
-            context={context}
-            editing={editing}
-            focused={focused}
-            foldedMore={root.moreToRead === true}
-            isClosed={isClosed}
-            {...(more === undefined ? {} : { more: { left: more.left, onPress: readMore } })}
-            onFocus={(row, node) => press.focus({ node, row })}
-            {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
-            onPage={(page) => drawPage(page, false)}
-            onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
-            points={points}
-            {...(report === undefined
-              ? {}
-              : { report: { line: report.line, row: report.row ?? tabStop } })}
-            rows={rows}
-            tabStop={tabStop}
-            threads={threads}
-            // The row the reader is editing in places nothing of its own: the editor keeps its
-            // caret on screen as they write, and grows the row, and the row put back at its top
-            // at each change of its size took the caret off the screen - a new line written deep
-            // in the spec moved the page from 3120 px to 89 px.
-            unplaced={editing?.row ?? unplaced}
-            zoomRoot={zoomRoot}
-          />
+          <NodeStatesProvider value={nodeStates}>
+            <SettleIssueProvider value={root.type === "issue" ? root.id : undefined}>
+              <TreeRows
+                artifacts={artifacts}
+                context={context}
+                editing={editing}
+                focused={focused}
+                foldedMore={root.moreToRead === true}
+                isClosed={isClosed}
+                {...(more === undefined ? {} : { more: { left: more.left, onPress: readMore } })}
+                onFocus={(row, node) => press.focus({ node, row })}
+                {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
+                onPage={(page) => drawPage(page, false)}
+                onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
+                points={points}
+                {...(report === undefined
+                  ? {}
+                  : { report: { line: report.line, row: report.row ?? tabStop } })}
+                rows={rows}
+                tabStop={tabStop}
+                threads={threads}
+                // The row the reader is editing in places nothing of its own: the editor keeps its
+                // caret on screen as they write, and grows the row, and the row put back at its top
+                // at each change of its size took the caret off the screen - a new line written deep
+                // in the spec moved the page from 3120 px to 89 px.
+                unplaced={editing?.row ?? unplaced}
+                zoomRoot={zoomRoot}
+              />
+            </SettleIssueProvider>
+          </NodeStatesProvider>
         </ChangeDraftsProvider>
       </div>
       {root.children.length === 0 && readsHeld && emptyLine !== undefined ? (
@@ -1601,16 +1613,22 @@ function landingParent(
 
 /** The facts of `node` the panel draws while its row has the focus: who wrote it, the item it
  *  is, its own address and its state, and its own words, which the panel names it by as every
- *  place that names a node by its one line does (`FocusedNode.text`). */
+ *  place that names a node by its one line does (`FocusedNode.text`). Its state is the standing
+ *  word: a decision reads "Kept by", or "Changed by" where the person whose Change it waits on
+ *  is known, and `stateBy` is that person or its keeper, whom the panel names after the word
+ *  (`standingParts`, R2, R3). */
 export function focusedNodeOf(node: TreeNode): FocusedNode {
   const item = conversationItem(node);
+  const standing = node.state === undefined ? undefined : standingParts(node.state, node);
   return {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     ...(item === undefined ? {} : { item }),
+    ...marksOf(node),
     ...(node.reference === undefined ? {} : { reference: node.reference }),
     ...(node.source === undefined ? {} : { source: node.source }),
-    ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
+    ...(standing === undefined ? {} : { state: standing.word }),
+    ...(standing?.person === undefined ? {} : { stateBy: standing.person }),
     text: node.text,
     ...(node.tree === undefined ? {} : { tree: node.tree }),
     type: node.type,

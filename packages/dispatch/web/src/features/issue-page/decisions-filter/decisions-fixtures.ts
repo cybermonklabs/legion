@@ -2,29 +2,42 @@ import type {
   Actor,
   Artifact,
   AskResolutionWithTrees,
-  Decision,
-  DecisionEntry,
   DecisionLink,
-  IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
+import {
+  type DecisionNode,
+  decisionNodes,
+  tieTargetReference,
+} from "../decision-nodes/decision-nodes";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
+import {
+  treeAnswer as answerOf,
+  TREE_KEY,
+  type TreeNodeExtra,
+  treeNode,
+  treeTuple,
+} from "../tree-read/tree-fixtures";
+import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import type { DecisionsAsk } from "./decisions-parts";
 
 /**
- * What the Decisions filter's two unit tests are given: one issue, one tree, one decisions read
- * and the issue's asks, built by hand, so the model and the body are read without a server
- * (`decisions-parts.test.ts`, `DecisionsFilterBody.drawn.test.tsx`).
+ * What the Decisions filter's unit tests are given: one issue, one tree, the decision nodes of
+ * the tree read and of its decisions view, and the issue's asks, built by hand, so the model and
+ * the body are read without a server (`decisions-parts.test.ts`, `decisions-entries.test.tsx`,
+ * `DecisionsFilterBody.drawn.test.tsx`).
  *
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
- * an agent's decision a `decision` block of the spec, a person's decision the answered ask
- * itself, named by the ask's own address, and an ask its own id, so a tie resolves through the
- * page's own rule for addressing a node (`tree-drafts.ts`'s `treeContext`) and not through a
- * rule written here.
+ * an agent's decision a `decision` block of the spec, addressed as the tree read addresses a
+ * typed block of a document (`decision-nodes.ts`), a person's decision the answered ask itself,
+ * named by the ask's own address, and an ask its own id, so a tie resolves through the page's
+ * own rule for addressing a node (`tree-drafts.ts`'s `treeContext`) and not through a rule
+ * written here. The tree read's nodes are built as the route sends them, by the tree read's one
+ * fixture builder (`tree-read/tree-fixtures.ts`).
  */
 
-export const KEY = "CORE-1";
+export const KEY = TREE_KEY;
 export const SPEC_SLUG = "spec";
 
 /** Who is reading, whose own words read as theirs (R34). */
@@ -60,11 +73,6 @@ export function artifact(id: string, slug: string, primary = false): Artifact {
 /** The issue's spec, whose `decision` blocks are the agent's decisions: the document a Keep is
  *  written against and a Change is anchored in. */
 export const SPEC_DOCUMENT = artifact("artifact-spec", SPEC_SLUG, true);
-
-/** The slug of a decisions document an earlier release stored, and that document: what the
- *  Decisions and Spec views' cases of decisions as sections of it read (parts Q and J). */
-export const DECISIONS_SLUG = "decisions-md";
-export const DECISIONS_DOCUMENT = artifact("artifact-decisions", DECISIONS_SLUG);
 
 /** The issue, with its spec and no decisions document, which is all the addressing rule reads
  *  of it. */
@@ -136,11 +144,15 @@ export function issueTree(children: readonly TreeNode[]): TreeNode {
   return node({ children: [...children], id: KEY, type: "issue" });
 }
 
-/** The address of one block of the issue's spec: a statement, or an agent's decision. */
+/** The address of one block of the issue's spec: a statement. */
 export const specRef = (block: string) => `dispatch://${KEY}/spec#b-${block}`;
 
 /** The address of one ask of the issue, which is a person's decision once it is answered. */
 export const askRef = (id: string) => `dispatch://${KEY}/ask/${id}`;
+
+/** The address of one decision, a decision block of the spec, as the tree read addresses a
+ *  typed block of a document (`decision-nodes.ts`). */
+export const decisionRef = (block: string) => `dispatch://${KEY}/artifact/${SPEC_SLUG}#b-${block}`;
 
 /** One statement of the spec, by its block id. */
 export function statement(block: string, partial: Partial<TreeNode> = {}): TreeNode {
@@ -197,11 +209,11 @@ export function closing(
   return { id, resolution: { actor: READER_ACTOR, reason: "", ...resolution } };
 }
 
-/** One agent's decision, a `decision` block of the spec, as the tree draws it. */
+/** One decision of the spec as the tree draws it. */
 export function decisionNode(block: string, partial: Partial<TreeNode> = {}): TreeNode {
   return node({
     id: `${SPEC_SLUG}#b-${block}`,
-    reference: specRef(block),
+    reference: decisionRef(block),
     text: `The decision ${block}.`,
     type: "decision",
     ...partial,
@@ -232,102 +244,104 @@ export function shaped(ref: string, stale = false): DecisionLink {
   };
 }
 
-/** One agent's decision, a `decision` block of the spec, as the decisions read answers it: it
- *  waits for review unless the case says otherwise. */
-export function decision(block: string, partial: Partial<Decision> = {}): Decision {
-  return {
-    asks: [],
-    block_id: block,
-    changed_at: "2026-11-10T12:00:00Z",
-    changed_version: 1,
-    heading: `The decision ${block}.`,
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: specRef(block),
-    replaced: false,
-    text: `:::decision{#${block}}\nThe decision ${block}.\n:::\n`,
-    text_sha256: `sha256:${block}`,
-    unsure: false,
-    waiting_review: true,
-    ...partial,
-  };
-}
-
-/** A person's decision, as the decisions read answers it: the answered ask `id` itself, named by
- *  the ask's own address, whose words are its question; it never waits for review. */
-export function personDecision(id: string, partial: Partial<Decision> = {}): Decision {
-  return decision("", {
-    asks: [id],
-    heading: `Question ${id}?`,
-    kind: "person",
-    ref: askRef(id),
-    text: `Question ${id}?`,
-    text_sha256: `sha256:${id}`,
-    waiting_review: false,
-    ...partial,
+/** One decision block of the spec as the tree read answers it (`treeNode`), carrying the model's
+ *  decision as the route answers it (`decision`): an agent's, which waits for review unless the
+ *  case says otherwise, with the sum `sha256:<block>` and words that last changed at one time.
+ *  Its words are the node's (`text`), which its `decision` answers too. */
+export function decision(block: string, extra: TreeNodeExtra = {}): TreeAnswerNode {
+  const { decision: members, ...rest } = extra;
+  const text = rest.text ?? `The decision ${block}.`;
+  return treeNode(block, "decision", KEY, {
+    document: { artifact_id: SPEC_DOCUMENT.id, position: 0, slug: SPEC_SLUG },
+    made_at: "2026-11-10T12:00:00Z",
+    ...rest,
+    decision: {
+      changed_at: "2026-11-10T12:00:00Z",
+      text,
+      text_sha256: `sha256:${block}`,
+      waiting_review: true,
+      ...members,
+    },
+    text,
   });
 }
 
-/** The entry the decisions read answers beside `row` (`api/decisions.go`'s `decisionEntry`): an
- *  agent's decision by the spec's block node that holds it, with the asks its `from_ask`
- *  settles, a person's by the ask's own node, and each member the node holds none of null. */
-export function entryOf(row: Decision): DecisionEntry {
-  const person = row.kind === "person";
-  const block = `${SPEC_DOCUMENT.ref_key}#${row.block_id}`;
-  return {
-    answer: null,
-    answer_state: person ? "answered" : null,
-    answered_at: null,
-    answered_by: null,
-    changed_at: row.changed_at,
-    changed_version: row.changed_version,
-    decided_by: person ? { id: READER, kind: "user" } : { id: AGENT.id, kind: "session" },
-    declined: false,
-    declined_note: null,
-    document: person
-      ? null
-      : {
-          artifact_id: SPEC_DOCUMENT.id,
-          block,
-          block_id: row.block_id,
-          ref: `dispatch://${KEY}/spec`,
-        },
-    from_ask: person ? [] : (row.asks ?? []),
-    kept: row.kept,
-    kept_by: row.kept?.kept_by ?? null,
-    kept_text_sum: row.kept === null ? null : row.text_sha256,
-    kind: row.kind,
-    multiple: null,
-    node: person ? { id: row.asks?.[0] ?? "", kind: "ask" } : { id: block, kind: "block" },
-    options: null,
-    question: person ? row.heading : null,
-    readings: [],
-    ref: row.ref,
-    replaced: row.replaced,
-    resolution: null,
-    selected: null,
-    shaped: row.links,
-    text: row.text,
-    text_sha256: row.text_sha256,
-    ...(row.text_tree === undefined ? {} : { text_tree: row.text_tree }),
-    uncertainty: row.unsure ? "high" : null,
-    uncertainty_reason: null,
-    urgency: null,
-    waiting_review: row.waiting_review,
-  };
+/** A comment a person wrote that the tree read hangs under the decision block `block`: the
+ *  Change they asked of it, where it is newer than the decision's words and its Keep
+ *  (`decision-review.ts`). */
+export function changeComment(
+  id: string,
+  block: string,
+  at: string,
+  body: string,
+  by: Actor = READER_ACTOR
+): TreeAnswerNode {
+  return treeNode(id, "comment", block, { author: [by], made_at: at, text: body });
 }
 
-/** The decisions read over `made`, as this build's server answers it (`api/decisions.go`): an
- *  entry for each, which is all a reader of this build reads of it, so the old `decisions` member
- *  holds none of them, and no decisions document, which is retired. A Change's anchor names the
- *  spec by its id, which the issue's documents tie to the decision's address
- *  (`decisionDocumentId`). */
-export function decisionsRead(made: readonly Decision[]): IssueDecisions {
-  return {
-    decisions: [],
-    document: null,
-    entries: made.map(entryOf),
-    open_questions: [],
-  };
+/** A person's decision as the tree read answers it: the answered ask `id` itself, an ask of the
+ *  conversation, carrying the person's decision the route answers on it (`decision`, of the kind
+ *  `person`, naming the ask by its own address), whose words are its question; it never waits for
+ *  review. Its links are the statements it shaped, which the route answers as its `shaped` tuples
+ *  only beside an answer that holds those statements (`shapedTuples`). */
+export function personDecision(id: string, extra: TreeNodeExtra = {}): TreeAnswerNode {
+  const { decision: members, ...rest } = extra;
+  return treeNode(id, "ask", KEY, {
+    made_at: "2026-11-10T08:00:00Z",
+    text: `Question ${id}?`,
+    ...rest,
+    decision: { text_sha256: `sha256:${id}`, ...members },
+  });
+}
+
+/** The `shaped` tuples the route answers beside `nodes`: one from each node that carries the
+ *  model's decision to each node of `nodes` its links name by the address a tie names its far end
+ *  by (`tieTargetReference`), since a decision's links are its current `shaped` tuples
+ *  (`decisionread`'s `Links`). The route sends a tuple only where the answer holds its far end
+ *  (`issue_tree_read.go`'s `answer`), so a link to a node `nodes` does not hold is no tuple: the
+ *  tree read, which holds the statements, sends a decision's ties to them, and the decisions view,
+ *  which holds no statement, sends none. */
+export function shapedTuples(nodes: readonly TreeAnswerNode[]): TreeTuple[] {
+  const held = new Map<string, TreeAnswerNode>();
+  for (const one of nodes) {
+    const ref = tieTargetReference(one, KEY, undefined, SPEC_SLUG);
+    if (ref !== undefined && !held.has(ref)) held.set(ref, one);
+  }
+  return nodes.flatMap((one) =>
+    (one.decision?.links ?? []).flatMap((link) => {
+      const to = link.to.ref === undefined ? undefined : held.get(link.to.ref);
+      return to === undefined ? [] : [treeTuple("shaped", one.block_id ?? one.id, to.id)];
+    })
+  );
+}
+
+/** One answer of a read of the issue's tree - the tree read itself, or its decisions view -
+ *  holding `nodes` under the issue's own node, with `tuples` between them, on one page
+ *  (`tree-fixtures.ts`' `treeAnswer`). */
+export function treeAnswer(
+  nodes: readonly TreeAnswerNode[],
+  tuples: readonly TreeTuple[] = []
+): TreeAnswer {
+  return answerOf(
+    [treeNode(KEY, "issue", null, { text: "The issue page draws one ordered body" }), ...nodes],
+    tuples
+  );
+}
+
+/** The decisions of `made` as every reader of a decision reads them (`decisionNodes`), from an
+ *  answer that holds `made` alone - the decisions view's, where `made` holds no statement - with
+ *  the `shaped` tuples the route sends beside it (`shapedTuples`): none to a node it does not
+ *  hold. */
+export function decisionsOf(made: readonly TreeAnswerNode[]): DecisionNode[] {
+  return decisionNodes(treeAnswer(made, shapedTuples(made)), {
+    asks: undefined,
+    issue: { key: KEY },
+  });
+}
+
+/** The one decision `made` is, as every reader of a decision reads it (`decisionsOf`). */
+export function decisionOf(made: TreeAnswerNode): DecisionNode {
+  const [one] = decisionsOf([made]);
+  if (one === undefined) throw new Error(`the read answers no decision for ${made.id}`);
+  return one;
 }

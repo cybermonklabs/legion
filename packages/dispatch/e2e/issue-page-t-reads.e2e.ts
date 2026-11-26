@@ -5,15 +5,15 @@ import { coverageNotes, PRESET_NAMES } from "../web/src/features/issue-page/page
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { createIssueArtifact, getIssue, getIssueCoverage } from "./api";
 import { seedNoChildren, seedWholeIssue } from "./issue-layout-seed";
-import { closeDetails, gotoIssue, issuePage, openDetails, phase } from "./issue-page";
+import { closeDetails, gotoIssue, issuePage, openDetails, phase, presetCount } from "./issue-page";
 import { nodeRow } from "./issue-page-g";
-import { fixtureSeed, seedKeys } from "./issue-page-t";
+import { decisionsFoot } from "./issue-page-q";
+import { fixtureSeed, seedKeys, steadily } from "./issue-page-t";
 import {
   awaitIndexedCoverage,
   checksOutOfPlace,
   editNoticesSent,
   firstLoad,
-  idReadsOf,
   idSet,
   idsOfType,
   LOAD_BOUND,
@@ -32,7 +32,7 @@ import {
   blocksReads,
   coverageIndexEventGate,
   decisionsReadOf,
-  decisionsViewGate,
+  drawnNodes,
   headerStatus,
   heldAnswer,
   linksTo,
@@ -47,6 +47,7 @@ import {
   viewCount,
   viewNodeIds,
 } from "./issue-page-t-tree";
+import { decisionsViewServedGate, heldDecisionsRead, idReadsOf } from "./issue-page-u";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -157,35 +158,35 @@ test("the first load reads the tree once and a filter its view once", async ({ b
   });
 });
 
-// c-tree-requests' Decisions clause, owed on the model's decisions view of the tree read
-// (`decisionsViewGate`): the decisions read moves onto the tree read's `view=decisions`, which the
-// load reads once whoever asks, and the Decisions filter reads no blocks at all, since decisions
-// are nodes of the spec.
+// c-tree-requests' Decisions clause, owed until the server serves the tree read's Decisions view:
+// the load sends no Decisions view read, the first press of Decisions in a load sends it once, and
+// no press reads any document's blocks.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, and Decisions
 // pressed on and off twice with each press waited out.
-test("the first load reads the tree once and a filter its view once, and the load reads the Decisions view once @owed", async ({
+test("the first load reads the tree once and a filter its view once, and Decisions reads its view once when pressed @owed", async ({
   browser,
 }) => {
   test.setTimeout(ROW_MS);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await decisionsViewServedGate(page, seeded.key));
     const traffic = watchApiRequests(page);
     const load = await firstLoad(page, traffic, seeded.key);
-    owedUnless(decisionsViewGate(load, seeded.key));
-    expect(
-      treeReads(load, seeded.key, "decisions"),
-      "the load reads the Decisions view once, whoever asks"
-    ).toBe(1);
-    for (let press = 0; press < 2; press += 1) {
+    for (const press of [1, 2]) {
       const from = traffic.requests.length;
       await pressFilter(page, traffic, "decisions");
       const pressed = traffic.requests.slice(from);
+      if (press === 1) {
+        expect(
+          treeReads(load, seeded.key, "decisions"),
+          "the load sends no Decisions view read"
+        ).toBe(0);
+      }
       expect(
         treeReads(pressed, seeded.key, "decisions"),
-        "Decisions turned on sends no view read beside the load's"
-      ).toBe(0);
-      const blocks = blocksReads(pressed);
-      expect(blocks, "Decisions reads no blocks").toEqual([]);
+        "Decisions sends its view read once, on its first press in the load"
+      ).toBe(press === 1 ? 1 : 0);
+      expect(blocksReads(pressed), "Decisions reads no document's blocks").toEqual([]);
       await releaseFilter(page, "decisions");
     }
   });
@@ -285,14 +286,17 @@ test("each filter draws its view read's rows", async ({ browser }) => {
   }
 });
 
-// c-views' decision lines, owed until the page draws the decisions from the tree read's nodes,
-// once decisions are nodes of the tree read on this branch's base (`partUGate`): each decision,
-// not replaced, whose `shaped` tie names a statement under Spec is named on that statement's line
-// (`[data-spec-because]` in its row), never a row of its own, and the page links each decision it
-// names there to its block (`spec-decided-by.ts`). So a decision is on the line where the line
-// holds a link that `linksTo` reads as the decision's row id (`idOf`, as the row has it). A
-// decision the model marks replaced (its node's `decision.replaced`) draws no line at all (root
-// R5), so the row counts none.
+// c-views' decision lines, owed until the server serves the tree read's Decisions view
+// (`decisionsViewServedGate`) and the page draws the decisions from the tree read's nodes, once
+// decisions are nodes of the tree read on this branch's base (`partUGate`, over
+// `heldDecisionsRead`'s decisions read: the load sends none, so where the page received none it
+// is the Decisions view the row reads itself): each decision, not replaced, whose `shaped` tie
+// names a statement under Spec is named on that statement's line (`[data-spec-because]` in its
+// row), never a row of its own, and the page links each decision it names there to its block
+// (`spec-decided-by.ts`). So a decision is on the line where the line holds a link that
+// `linksTo` reads as the decision's row id (`idOf`, as the row has it). A decision the model
+// marks replaced (its node's `decision.replaced`) draws no line at all (root R5), so the row
+// counts none.
 // SLOW(>=2s): two seeded issues, each load waited out, and Spec pressed and read until it holds
 // still.
 test("each filter draws its view read's rows, and each decision that shaped a statement is a line on its row @owed", async ({
@@ -302,12 +306,18 @@ test("each filter draws its view read's rows, and each decision that shaped a st
   for (const [, seed] of VIEW_SEEDS) {
     await phase(browser, seed, async (page, seeded) => {
       owedUnless(await treeReadGate(page, seeded.key));
+      owedUnless(await decisionsViewServedGate(page, seeded.key));
       const tree = treeAnswerOf(page);
       const decisions = decisionsReadOf(page, seeded.key);
       const spec = viewAnswerOf(page, "spec");
       const traffic = watchApiRequests(page);
       await firstLoad(page, traffic, seeded.key);
-      owedUnless(partUGate(await heldAnswer(tree, "the tree read"), decisions.read()));
+      owedUnless(
+        partUGate(
+          await heldAnswer(tree, "the tree read"),
+          await heldDecisionsRead(seeded.key, decisions)
+        )
+      );
       const reads = await idReadsOf(seeded.key);
       const drawn = await pressFilter(page, traffic, "spec");
       const answer = await heldAnswer(spec, "the Spec view read");
@@ -357,12 +367,12 @@ test("each filter draws its view read's rows, and each decision that shaped a st
   }
 });
 
-// c-views for Decisions, owed on the model's decisions view of the tree read
-// (`decisionsViewGate`): once the load reads the decisions as the tree read's `view=decisions`,
-// the Decisions filter draws that view read's rows, as Spec, Verification and Plan draw theirs,
-// which is how the root issue settled row 3's gap for Decisions.
+// c-views for Decisions, owed until the server serves the tree read's Decisions view
+// (`decisionsViewServedGate`, read before Decisions is pressed): the Decisions filter draws its
+// view read's rows, as Spec, Verification and Plan draw theirs, which is how the root issue
+// settled row 3's gap for Decisions, and a press that sends no view read fails the row.
 // SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
-// still, and released.
+// still with its foot drawn unfolded as the view opens, and released.
 test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
   browser,
 }) => {
@@ -370,14 +380,28 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
   for (const [name, seed] of VIEW_SEEDS) {
     await phase(browser, seed, async (page, seeded) => {
       owedUnless(await treeReadGate(page, seeded.key));
+      owedUnless(await decisionsViewServedGate(page, seeded.key));
       const decisions = viewAnswerOf(page, "decisions");
       const traffic = watchApiRequests(page);
-      const load = await firstLoad(page, traffic, seeded.key);
-      owedUnless(decisionsViewGate(load, seeded.key));
+      await firstLoad(page, traffic, seeded.key);
       const reads = await idReadsOf(seeded.key);
       const view = PRESET_NAMES.decisions;
       const where = `${name} under ${view}`;
-      const drawn = await pressFilter(page, traffic, "decisions");
+      await pressFilter(page, traffic, "decisions");
+      const foot = decisionsFoot(page);
+      // `pressFilter` above read the view once its rows and count held still with the network
+      // quiet, so its foot is drawn by now or not at all, and one read says which. The foot is
+      // drawn unfolded as the view opens (part U's R2), so its rows are read with nothing pressed.
+      if ((await foot.count()) > 0) {
+        await expect(
+          foot,
+          `${where}, the view's foot is drawn unfolded as the view opens`
+        ).toHaveAttribute("aria-expanded", "true");
+      }
+      const drawn = await steadily(page, traffic, `${where} with its foot open`, async () => ({
+        count: await presetCount(page, "decisions").textContent(),
+        nodes: await drawnNodes(page),
+      }));
       const answer = await heldAnswer(decisions, `the ${view} view read`);
       const expected = viewNodeIds(answer, "decisions", reads);
       expect(
