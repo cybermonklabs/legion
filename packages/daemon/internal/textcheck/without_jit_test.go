@@ -19,6 +19,8 @@ import (
 var createdWithoutJITExempt = map[string]string{
 	"internal/launcher/testpg.go CheckTestPostgres": "the pod check of the test server creates a probe database " +
 		"and drops it at once, running no statement in it",
+	"internal/launcher/testpg_test.go TestCheckTestPostgresRunsEveryStepAndStopsTheServer": "it holds the probe's " +
+		"command as the line it expects a stand-in psql to record; no database is created",
 }
 
 // Every database a Go file of this module creates runs with JIT off, as a Cloud SQL store's does
