@@ -584,6 +584,29 @@ test("every other decision that shaped a statement is named after the first", ()
   ]);
 });
 
+// R5: a person's decision stands beside every statement it shaped. The Spec view read answers an
+// answered ask as context after the spec's decision blocks, so an agent's decision that shaped
+// the same statement comes first in it, and is named after the person's all the same.
+test("a person's decision heads every statement it shaped, before an agent's the read answers first", () => {
+  const ask = answeredAsk("ask-1", { text: "Keep every address the old page answered." });
+  const groups = bodyOf(issueTree([ask, statement("r1"), statement("r2"), decisionNode("d1")]), [
+    decision("d1", { decision: { kind: "agent", links: [shaped(statementRef("r2"))] } }),
+    decision("d2", {
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      },
+    }),
+  ]);
+  const runs = groups[0]?.runs ?? [];
+  expect(runs.map((run) => [run.decision?.id, run.statements.length])).toEqual([["ask-1", 2]]);
+  expect(runs[0]?.statements.map((one) => one.alsoShapedBy.map((by) => by.id))).toEqual([
+    [],
+    ["decisions-md#b-d1"],
+  ]);
+});
+
 // R5: "The line is drawn whether or not" other decisions apply: the answered question a
 // statement hangs under heads its run, so its parent line and its decision line stay one, and a
 // decision whose tie names the statement is named after it, not in its place.

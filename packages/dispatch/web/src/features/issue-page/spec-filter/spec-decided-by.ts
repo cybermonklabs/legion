@@ -36,9 +36,10 @@ import { statementStandings } from "../verification-filter/statement-state";
  * 2. **Each `shaped` tie.** A decision whose link names the statement shaped it
  *    (`Decision.links[].to`): a decision node, or a question a person
  *    answered that carries `shaped` ties, which is that person's decision (`decisionNodes`). The
- *    first decision of the statement heads its run; every other one is named at the end of the
- *    statement's own line, which draws "the decisions that informed it", and a statement may
- *    rest on several. A replaced decision draws no line at all.
+ *    first decision of the statement heads its run, a person's before an agent's; every other
+ *    one is named at the end of the statement's own line, which draws "the decisions that
+ *    informed it", and a statement may rest on several. A replaced decision draws no line at
+ *    all.
  * 3. **Nothing.** A statement no decision shaped is drawn as such, which is what makes a
  *    missing tie visible (R35).
  *
@@ -333,8 +334,11 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
   return asks;
 }
 
-/** The decisions that shaped each statement, by the statement's node id, in the order the Spec
- *  view read answers them: each drawn, but a person's while the asks read holds no answer
+/** The decisions that shaped each statement, by the statement's node id: a person's first, then
+ *  an agent's, each in the order the Spec view read answers them. So a person's decision heads
+ *  every statement it shaped, and an agent's that also shaped one is named after it, whichever
+ *  the read answers first: the read places an answered ask as context after the decision blocks
+ *  of the spec. Each is drawn, but a person's while the asks read holds no answer
  *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie with no decision drawn. */
 function shapedBy({
   asks,
@@ -354,7 +358,9 @@ function shapedBy({
   reader: string | undefined;
 }): ReadonlyMap<string, readonly Tie[]> {
   const shaped = new Map<string, Tie[]>();
-  for (const decision of decisions) {
+  const people = decisions.filter((decision) => decision.kind === "person");
+  const agents = decisions.filter((decision) => decision.kind !== "person");
+  for (const decision of [...people, ...agents]) {
     // A replaced decision draws no line (R5): it is drawn where it sits in the outline, and a
     // statement it shaped is no longer standing on it.
     if (decision.replaced) continue;
