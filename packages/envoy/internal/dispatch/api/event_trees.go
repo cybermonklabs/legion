@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -43,10 +44,11 @@ func attachEventTrees(events []model.Event, reader *displayTreeReader) {
 }
 
 // eventDisplayTrees is the display tree of every stored text one event's payload carries, keyed
-// by that text's path: the body a comment or a message event carries, and an ask event's
-// question, options, answer text and resolution reason, the question and options an edit
-// replaced among them. The texts themselves are found by eventPayloadTexts, which the publish
-// path reads the same payload with to store those trees (storeEventDisplayTrees).
+// by that text's path: the body a comment or a message event carries, the question of the ask a
+// comment event replies to, and an ask event's question, options, answer text and resolution
+// reason, the question and options an edit replaced and the text and chosen labels of the answer
+// a change replaced among them. The texts themselves are found by eventPayloadTexts, which the
+// publish path reads the same payload with to store those trees (storeEventDisplayTrees).
 //
 // It reads each text where it stands rather than from the table: its one caller is a live
 // frame, which is no request and has no reader of its own, and whose event the publish path is
@@ -63,11 +65,13 @@ func eventDisplayTrees(event model.Event) map[string]json.RawMessage {
 }
 
 // eventPayloadTexts calls visit for every stored text the event's payload carries, under that
-// text's path rooted at the envelope: the body a comment or a message event carries, and an ask
-// event's question, options, answer text and resolution reason, the question and options an edit
-// replaced among them. A payload is read as the JSON it is rather than as its Go type, because a
-// read serves it as the database stored it (readEvents) and a publish as the type the write
-// built, and both have to answer the same keys.
+// text's path rooted at the envelope: the body a comment or a message event carries, the
+// question of the ask a comment event replies to (`ask_question`, model.CommentEventPayload),
+// and an ask event's question, options, answer text and resolution reason, the question and
+// options an edit replaced and the text and chosen labels of the answer a change replaced among
+// them. A payload is read as the JSON it is rather than as its Go type, because a read serves it
+// as the database stored it (readEvents) and a publish as the type the write built, and both have
+// to answer the same keys.
 //
 // The event's type says which fields can hold a text, and only those are read: the whole payload
 // of a feed's event is several times the size of its body, and a decode of all of it -
@@ -88,14 +92,18 @@ func eventPayloadTexts(event model.Event, visit func(path, text string)) {
 		askEventPayloadTexts(payload, visit)
 		return
 	}
-	visitText(visit, eventPayloadPrefix, "body", eventBodyText(payload))
+	question := !strings.HasPrefix(event.Type, "message.")
+	body, askQuestion := eventBodyTexts(payload, question)
+	visitText(visit, eventPayloadPrefix, "body", body)
+	visitText(visit, eventPayloadPrefix, "ask_question", askQuestion)
 }
 
 // eventTypeHoldsBody reports whether an event of this type can carry a stored body. The comment
-// and suggestion events carry the comment itself (model.CommentEventPayload) and the message
-// events the message (model.MessageEventPayload); those are the only payloads Dispatch appends
-// that hold a markdown body, so an event of any other type - an issue update, a child's status,
-// a document version - carries no stored text and no tree.
+// and suggestion events carry the comment itself (model.CommentEventPayload), with the question
+// of the ask it replies to, and the message events the message (model.MessageEventPayload);
+// those are the only payloads Dispatch appends that hold markdown outside an ask's, so an event
+// of any other type - an issue update, a child's status, a document version - carries no stored
+// text and no tree.
 func eventTypeHoldsBody(eventType string) bool {
 	return strings.HasPrefix(eventType, "comment.") ||
 		strings.HasPrefix(eventType, "message.") ||
@@ -123,6 +131,12 @@ type askEventTexts struct {
 // comment is hundreds of them, and its texts stand in five places, so its payload is decoded in
 // one pass into the fields that can hold one rather than scanned for each.
 //
+// The superseded answer's texts are its text and each label it chose, under
+// `payload.previous_answer.selected.<n>`, which the Activity tab's `was:` line draws: such a
+// label can name an option the ask no longer holds, so no option's tree in the same payload
+// stands for it. The current answer's labels are not visited, because the tab draws the option
+// each one names, from that option's own tree.
+//
 // A payload no text can be read from - one that is not a JSON object, which no payload Dispatch
 // appends is - decodes to no texts, and a field of an unexpected type is left as it stood, which
 // for a text is the empty string and is visited for nothing: a malformed field costs its own
@@ -137,8 +151,13 @@ func askEventPayloadTexts(raw json.RawMessage, visit func(path, text string)) {
 			visit, eventPayloadPrefix+".previous", texttrees.AskEditPreviousContent(*payload.Previous),
 		)
 	}
-	if payload.PreviousAnswer != nil && payload.PreviousAnswer.Text != nil {
-		visitText(visit, eventPayloadPrefix+".previous_answer", "text", *payload.PreviousAnswer.Text)
+	if previous := payload.PreviousAnswer; previous != nil {
+		if previous.Text != nil {
+			visitText(visit, eventPayloadPrefix+".previous_answer", "text", *previous.Text)
+		}
+		for index, label := range previous.Selected {
+			visitText(visit, eventPayloadPrefix+".previous_answer.selected", strconv.Itoa(index), label)
+		}
 	}
 }
 
@@ -173,18 +192,24 @@ func eventPayloadJSON(event model.Event) json.RawMessage {
 	return encoded
 }
 
-// quotedBodyName is the member a comment's or a message's text stands in, as the payload writes
-// it: the scan below compares a member's name against these bytes, which costs it no string of
-// its own. Neither Postgres's jsonb nor Go's encoder writes an escape in a name of ASCII
-// letters, so the two are the same bytes wherever the member is there at all.
-const quotedBodyName = `"body"`
+// quotedBodyName and quotedAskQuestionName are the members a comment's or a message's text and
+// the question of the ask a comment replies to stand in, as the payload writes them: the scan
+// below compares a member's name against these bytes, which costs it no string of its own.
+// Neither Postgres's jsonb nor Go's encoder writes an escape in a name of ASCII letters and
+// underscores, so the two are the same bytes wherever the member is there at all.
+const (
+	quotedBodyName        = `"body"`
+	quotedAskQuestionName = `"ask_question"`
+)
 
-// eventBodyText is the text the payload's body member holds, and the empty string where it holds
-// none. It reads the payload only as far as that member and no further: an event's payload is
-// several times its body in bytes, and Postgres orders a jsonb object's members by the length of
-// their names and then by their bytes, so `body` stands among the first of a comment's or a
-// message's and the rest of them are never parsed.
-func eventBodyText(raw json.RawMessage) string {
+// eventBodyTexts is the text the payload's body member holds and, when question is set, the
+// text its ask_question member holds, each the empty string where the payload holds none. It
+// reads the payload only as far as it must: a message's, which holds no question, as far as its
+// body, and a comment's as far as both, so a comment that replies to no ask is read to its end.
+// Every member read past is skipped as bytes, never decoded, so even that read allocates nothing
+// but the two texts. The order the members stand in is not relied on: Postgres's jsonb puts them
+// by the length of their names, a write's type by its fields, and a map's encoding by name.
+func eventBodyTexts(raw json.RawMessage, question bool) (body, askQuestion string) {
 	scanner, held := eventPayloadScanners.Get().(*eventPayloadScanner)
 	if !held {
 		scanner = &eventPayloadScanner{}
@@ -196,33 +221,37 @@ func eventBodyText(raw json.RawMessage) string {
 	// A payload that is not a JSON object - no payload Dispatch appends is anything else - holds
 	// no member at all, and the opening brace is read past so the members follow.
 	if scanner.decoder.PeekKind() != '{' {
-		return ""
+		return "", ""
 	}
 	if _, err := scanner.decoder.ReadToken(); err != nil {
-		return ""
+		return "", ""
 	}
-	for scanner.decoder.PeekKind() == '"' {
+	foundBody, foundQuestion := false, !question
+	for scanner.decoder.PeekKind() == '"' && !(foundBody && foundQuestion) {
 		name, err := scanner.decoder.ReadValue()
 		if err != nil {
-			return ""
+			return body, askQuestion
 		}
-		if string(name) != quotedBodyName {
+		var into *string
+		switch {
+		case string(name) == quotedBodyName:
+			into, foundBody = &body, true
+		case question && string(name) == quotedAskQuestionName:
+			into, foundQuestion = &askQuestion, true
+		default:
 			if err := scanner.decoder.SkipValue(); err != nil {
-				return ""
+				return body, askQuestion
 			}
 			continue
 		}
 		value, err := scanner.decoder.ReadValue()
 		if err != nil {
-			return ""
+			return body, askQuestion
 		}
-		var text string
-		if err := json.Unmarshal(value, &text); err != nil {
-			return ""
-		}
-		return text
+		// A member of an unexpected type is read as no text, and the scan goes on to the other.
+		_ = json.Unmarshal(value, into)
 	}
-	return ""
+	return body, askQuestion
 }
 
 // eventPayloadScanner reads one payload's members in the order they stand, far enough to answer
