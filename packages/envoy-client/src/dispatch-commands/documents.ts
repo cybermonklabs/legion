@@ -37,6 +37,12 @@ import {
 } from "./context";
 import { refuseOpenDecisionBlocks, refuseRemovingOpenDecisionBlocks } from "./decision-blocks";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
+import {
+  OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_WAIVED,
+  refuseOpenDecisionBlocks,
+  refuseRemovingOpenDecisionBlocks,
+} from "./open-decision-blocks";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -445,6 +451,18 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
+/** `dispatch request-approval`'s words around the open blocks it refuses over. */
+const APPROVAL_REQUEST_OPEN_BLOCKS = {
+  effect:
+    "Answering one writes a new version, which would move this request to that version and leave it waiting on you.",
+  remedy:
+    "Do not request approval over an open block, even when a human asked for it. " +
+    OPEN_BLOCK_ASK_THE_HUMAN +
+    " When the human approved an earlier version and their answer is the whole change since it, Dispatch carries the approval to the new version in their name: request nothing. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval again once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since the earlier approval. On a document nobody has approved, wait for that version, then request. " +
+    OPEN_BLOCK_WAIVED +
+    ", write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
+} as const;
+
 /** `dispatch request-approval`: ask the human to approve this version of a document. */
 export async function requestApprovalCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, ownerArguments, documentOwner, resolveDocument } = context;
@@ -454,7 +472,10 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
       ? ownerArguments.ref.id
       : undefined);
   const resolved = await resolveDocument(documentOwner(), artifactReference);
-  await refuseOpenDecisionBlocks(client, input.tool, resolved);
+  await refuseOpenDecisionBlocks(client, resolved, {
+    call: `dispatch ${commandName(input.tool)}`,
+    ...APPROVAL_REQUEST_OPEN_BLOCKS,
+  });
   const includeVerification = optionalBoolean(args, "include_verification") === true;
   const result = await client.requestApproval(resolved.artifact.id, {
     actor,

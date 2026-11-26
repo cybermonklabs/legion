@@ -45,7 +45,7 @@ It names the steps every root must register (the deployment's `gates.design`), a
 root registers holds its tree too. A line that names `spec` and not `criteria` still lets the
 Verification document gate the tree. A root with one registers it as `criteria`. One
 `--include-verification` request asks for both documents, and one approval of it opens both steps.
-Each step it names holds this tree's work until a person approves that step's document, so apply
+Each step it names holds the tree's start and merge until a person's approval opens it, so apply
 the gate in the skill before the tree's work starts: extend the issue's own primary document in
 place as the root specification (never post a second "spec" artifact — that replaces the human's
 document), written as `skill://dispatch-writing-specs` says. Before you design, research how
@@ -65,7 +65,7 @@ claims. File every child issue of your
 decomposition before you request approval, and, where your `Design gate steps` line gates no
 step, before `register_gate`: the gate's opening starts the root's own first phase unless the root
 waits on another issue, an open child under it or a `blocked_by` link to an issue that is not
-`done`, so a child filed later leaves the root working beside its children. Give the root its
+`done`, so a child filed later holds the root's phases until it is done. Give the root its
 plan with `register_plan` (`issue`, `artifactId`, `version`) before `register_gate`, and each
 child its plan before `release_children` releases it
 (`skill://legion-architect/references/plan.md`): the gate's opening starts the root's first
@@ -73,7 +73,9 @@ step, and a child's first step can start in the admission pass that releases it.
 project's experiment drew into a group whose issues run the default steps takes no plan
 (`PLAN_NOT_TAKEN`), and `read_record` shows a recorded issue's group. Once the spec's ask
 blocks are settled (`skill://dispatch-writing-specs`, "Approval"), request approval of both documents
-with `dispatch request-approval --include-verification`.
+with `dispatch request-approval --include-verification`. A view on an approved ancestor
+holds no `requirement` block and registers on its approval instead
+(register_gate's `basis`, `skill://legion-architect/references/design-gate.md`).
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
 to them, end your turn: that hand-back moves the root to `awaiting_person`, which keeps its
 admission slot, while you stay live to
@@ -126,15 +128,20 @@ Read an approval in two places. The question `dispatch request-approval` prints 
 of each document it asks approval of (`… (version N)`): register each document at that version. If
 the request answers that a document is already approved, register it at its current version. The
 daemon records the greater of two versions: the version you register, and Dispatch's latest
-version. `gatedSteps` in your own issue record (the `legion` tool's `read_record`) shows whether
-each step reads `approved` at its current version. A `design-approved`, `design-changes-requested`
-or `carried-gate-opened` notice names a version and a reason, never the step it is of, so when more
-than one step holds your tree (your addressing line names more than one, or you registered
-`criteria`), read `gatedSteps` to see which step the review was of before you act on it. An
-approval is of one version: `skill://legion-architect/references/design-gate.md`, "After
-approval", says which later versions keep it and when the root spec changes. Request approval
-again, as that guide says, when a step does not read `approved` at a newer version, or when a
-version you wrote moved an open request back to your turn.
+version. `gatedSteps` in your own issue record (the `legion` tool's `read_record`) shows each
+step's `status` at its current version: `approved` for a person's approval, and, for a step you
+registered with register_gate's `basis`, `open_on_basis` while it stands open on the ancestor's
+approval or `pending_on_basis` while it waits on the ancestor's open approval request. A
+`design-approved`, `design-changes-requested` or `carried-gate-opened` notice names a version and a
+reason, never the step it is of, so when more than one step holds your tree (your addressing line
+names more than one, or you registered `criteria`), read `gatedSteps` to see which step the review
+was of before you act on it. An approval is of one version:
+`skill://legion-architect/references/design-gate.md`, "After approval", says which later versions
+keep it and when the root spec changes. Request approval again, as that guide says, when a step
+reads `waiting` at a newer version, or when a version you wrote moved an open request back to your
+turn. A step that reads `open_on_basis` or `pending_on_basis` opens or waits on the ancestor's
+approval, which no request of yours replaces: request no approval of its document while it reads
+either.
 
 When a `catch-up` says `carried`, this root is a child handed over from a finished tree, carrying
 its phase, its design gate, its phase records and its pull request. Register each step the
@@ -149,9 +156,8 @@ approves the old document at the carried version or a later one; you are told so
 `carried-gate-opened`, never `design-approved`, and start nothing for it. Do nothing else about
 an old root's document: never revise it, request its approval, or register it; when the tree's
 work waits on that approval, tell the controller. Resume the tree from there; a root carried in
-`accepting` is yours to accept with `sign_off`, after its last round when it has children its
-criteria need (`skill://legion-architect/references/acceptance.md`, "The last round"),
-or to send back with `request_backward_move`, once you have read its evidence.
+`accepting` is yours to accept with `sign_off`, as above, or to send back with
+`request_backward_move`, once you have read its evidence.
 
 A `catch-up` that says `handed_over` but not `carried` is a child handed over from a tree that had
 no design gate to carry (a root reopened in its linger loses its gate, and its second close hands
@@ -174,7 +180,7 @@ It can also conflict with the default branch.
 Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
-A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
+A child is never a place for a to-do, a review fix of the issue's own code, a proof of the root's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A repeated change is one child, never one per instance.
 A child that duplicates another issue and is not yet released is never released.
 A duplicate child, recorded or not, takes your `done`, with a `--reason` that names the issue you keep, also where `skill://dispatch-first` says to comment instead.
@@ -212,29 +218,31 @@ for another issue when neither its own architect nor an architect between it and
 role. You then read `dispatch results --issue <issue>` at the head that step passed, the tester's
 handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA
 where a reviewer step comes before yours (the daemon refuses a sign-off while an issue beneath it
-is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
-`skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
+is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that
+carries every needed child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
 its last step passing starts the retro, or holds a parent before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from
-you: Legion holds it before its retro while issues beneath it are still in the workflow
-(`retro-held`) and starts the retro once they have left, so give a parent whose finished work
-you want to read the step `acceptance:owner`.
+you: Legion holds it before its retro while what refuses its sign-off still holds
+(`retro-held`), and starts the retro once nothing does, so give a parent whose finished work you
+want to read the step `acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then
 `sign_off` (which moves the task to its next step, or to retro where your acceptance is its last
 step) or send it back with `request_backward_move` (`issue`, `to` the phase of an earlier step of
-the task, and `reason`). Your acceptance comment names each check with its result.
+the task, and `reason`), a parent whose pass names an older base commit,
+or none, to `testing` (`implementing` where no tester step comes before acceptance); a parent's code fix goes to a child.
+Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
 checks proves nothing for the root, and a child that carries part of a root requirement proves
 that part with a check on the child's own Verification document whose `serves` names the
-requirement, which clears the root's coverage flag for it. The root's own checks are proven in
-the root's last round, at the root's own head, or on the default branch where its pull request
-merged before that round; no `after_merge` result is asked there, since the production check
-records it after the close.
+requirement, which clears the root's coverage flag for it. The root's own checks are proven after
+the merges of every child its checks need, at the root's own head, or on the default branch where
+its pull request merged before those merges; no `after_merge` result is asked there, since the
+production check records it after the close.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 that a tester step and a reviewer step name and neither refuses, so your acceptance is the only
 gate on it: give such an issue the step `acceptance:owner`, and

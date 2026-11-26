@@ -86,6 +86,11 @@ For each gated step, once every child is filed:
   The version carries an approval only when the person's answer, resolve or decline is its whole change.
   If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
 - `already approved at version <N>`: still `register_gate` that id and version.
+- A view (no requirement block of its own; each check `serves` the nearest reviewed ancestor's spec
+  at its latest version) skips steps 4 and 6: register with `basis` (that ancestor's document for
+  the step, as `dispatch://<KEY>/spec`), `basisVersion` and `reason`. `open_on_basis` and
+  `pending_on_basis` are no person's approval: request none. A root needing its own approval takes
+  steps 4 to 6.
 - Refusals record nothing: `VERSION_NOT_IN_DISPATCH` (register the latest version),
   `GATE_STEP_REQUIRED` (name the step),
   `GATE_STEP_NOT_CONFIGURED` (register only gated steps, and `criteria` where the line names `spec` and not `criteria`),
@@ -104,8 +109,8 @@ server-owned ask attribute or the decisions step's `## Decisions` write; and, af
 reopen, the approved text with only the questions the close withdrew open again. A close's own
 version keeps none, so the approval reads stale until the reopen's. For each, Dispatch records an
 `approved` review, the daemon sends `design-approved`, and you request nothing. Where the step
-does not read `approved` at such a version (`gatedSteps` in `read_record`), request approval as
-after any change.
+reads `waiting` at such a version (`gatedSteps` in `read_record`), request approval as after any
+change.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as an ask block at the end of the section it
