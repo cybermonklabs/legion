@@ -18,7 +18,7 @@ import (
 // recursion over `comments`, so the two can be read against each other; query_plan_test.go pins
 // both from there.
 
-func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskEdit, error) {
+func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskEdit, error) {
 	edits := make(map[string][]model.AskEdit, len(askIDs))
 	for _, askID := range askIDs {
 		edits[askID] = []model.AskEdit{}
@@ -117,7 +117,7 @@ func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []s
 	if err != nil {
 		return nil, err
 	}
-	edits, err := s.loadInboxAskEdits(ctx, q, who, askIDs)
+	edits, err := s.loadInboxAskEdits(ctx, q, askIDs)
 	if err != nil {
 		return nil, err
 	}

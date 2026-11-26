@@ -23,7 +23,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 		query += ` and issue_key is null`
 	}
 	query += ` order by created_at, id`
-	s.writeArtifactList(w, r, who, query, project)
+	s.writeArtifactList(w, r, query, project)
 }
 
 func (s *server) uploadProjectArtifact(w http.ResponseWriter, r *http.Request) {

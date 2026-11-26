@@ -704,7 +704,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, who, r.PathValue("key"))
+	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

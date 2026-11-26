@@ -373,7 +373,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// report no review.
 	if advice != nil && owner.IssueKey != nil {
 		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, who, routeOpenAsk, *owner.IssueKey,
+			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
@@ -519,7 +519,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask, err := s.readAskForTransition(documentCtx, tx, who, unlockedAsk.ID)
+	ask, err := s.readAskForTransition(documentCtx, tx, unlockedAsk.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -905,7 +905,7 @@ func (s *server) attachIssueAskThreads(ctx context.Context, who model.Actor, row
 	if err != nil {
 		return err
 	}
-	answers, err := s.loadAskAnswersByAsk(ctx, s.deps.Store.Pool, who, askIDs)
+	answers, err := s.loadAskAnswersByAsk(ctx, s.deps.Store.Pool, askIDs)
 	if err != nil {
 		return err
 	}
@@ -982,12 +982,12 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	edits, err := s.loadAskEdits(r.Context(), s.deps.Store.Pool, who, ask.ID)
+	edits, err := s.loadAskEdits(r.Context(), s.deps.Store.Pool, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	answers, err := s.loadAskAnswers(r.Context(), s.deps.Store.Pool, who, ask.ID)
+	answers, err := s.loadAskAnswers(r.Context(), s.deps.Store.Pool, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1029,7 +1029,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 
 // loadAskEdits reads every rewording of an ask back from its ask.edited events,
 // oldest first, so a reader can see each version the question went through.
-func (s *server) loadAskEdits(ctx context.Context, q queryer, who model.Actor, askID string) ([]model.AskEdit, error) {
+func (s *server) loadAskEdits(ctx context.Context, q queryer, askID string) ([]model.AskEdit, error) {
 	rows, err := q.Query(ctx, `
 		select payload->'previous', payload->'edited_by', created_at
 		from events
@@ -1068,7 +1068,7 @@ func (s *server) loadAskEdits(ctx context.Context, q queryer, who model.Actor, a
 // answer event under its editor, so only an event whose actor is the user the answer names counts,
 // and the repeats of one answer (its ask and its `at`) collapse to the earliest event. columns is
 // the select list; filter narrows the events further. loadAskAnswers and listMyAnswers share it.
-func answerEventsQuery(columns, filter, viewerParam string) string {
+func answerEventsQuery(columns, filter string) string {
 	return `select distinct on (e.payload->>'id', e.payload->'answer'->>'at') ` + columns + `
 		from events e
 		where e.type = 'ask.answered' and e.actor->>'kind' = 'user'
@@ -1080,7 +1080,7 @@ func answerEventsQuery(columns, filter, viewerParam string) string {
 // events (answerEventsQuery), oldest first, keyed by ask id; an ask nobody answered gets an
 // empty slice. One query for the whole list: the ask read batches one ask, an issue's ask list
 // asked for a thread a page of them.
-func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskAnswer, error) {
+func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskAnswer, error) {
 	answers := make(map[string][]model.AskAnswer, len(askIDs))
 	for _, askID := range askIDs {
 		answers[askID] = []model.AskAnswer{}
@@ -1090,7 +1090,7 @@ func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, who model.A
 	}
 	rows, err := q.Query(ctx, answerEventsQuery(
 		`e.payload->>'id', e.payload->'answer', e.id`,
-		`e.payload->>'id' = any($1::text[])`, "",
+		`e.payload->>'id' = any($1::text[])`,
 	), askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load ask answers: %w", err)
@@ -1129,9 +1129,9 @@ func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, who model.A
 	return answers, nil
 }
 
-// loadAskAnswers reads every real answer to one ask, oldest first, of the events who may read.
-func (s *server) loadAskAnswers(ctx context.Context, q queryer, who model.Actor, askID string) ([]model.AskAnswer, error) {
-	answers, err := s.loadAskAnswersByAsk(ctx, q, who, []string{askID})
+// loadAskAnswers reads every real answer to one ask, oldest first.
+func (s *server) loadAskAnswers(ctx context.Context, q queryer, askID string) ([]model.AskAnswer, error) {
+	answers, err := s.loadAskAnswersByAsk(ctx, q, []string{askID})
 	if err != nil {
 		return nil, err
 	}
@@ -1268,7 +1268,7 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 // a transition, run one after the other, and the ask read here holds still until this transaction
 // ends. (The boot's restoration of decided wordings, docs.RestoreDecidedWordings, runs before the
 // server serves anything.)
-func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (model.Ask, error) {
+func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
 	ask, err := scanAskRow(tx.QueryRow(ctx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`

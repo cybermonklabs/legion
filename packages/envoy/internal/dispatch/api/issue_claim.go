@@ -606,7 +606,6 @@ func claimLegionManagedStatus(ctx context.Context, tx pgx.Tx, key string) *bool 
 // comes back from the update itself (queueIssueClaim), which costs no statement.
 func (s *server) claimWrite(
 	ctx context.Context,
-	who model.Actor,
 	key string,
 	actor model.Actor,
 	decide func(before model.Issue) (claimChange, error),
@@ -621,7 +620,7 @@ func (s *server) claimWrite(
 	if err := store.LockOwner(ctx, tx, store.IssueOwner(key)); err != nil {
 		return claimApplied{}, err
 	}
-	before, err := s.loadIssue(ctx, tx, who, key)
+	before, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return claimApplied{}, err
 	}
@@ -711,7 +710,7 @@ func (s *server) claimCycle(
 			return s.judgeHolder(ctx, who, key, actor, rule)
 		},
 		func(ctx context.Context, judged judgement) (claimApplied, error) {
-			return s.claimWrite(ctx, who, key, actor, func(before model.Issue) (claimChange, error) {
+			return s.claimWrite(ctx, key, actor, func(before model.Issue) (claimChange, error) {
 				return decide(before, judged)
 			})
 		},

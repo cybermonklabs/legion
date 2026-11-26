@@ -209,20 +209,6 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 	}
 }
 
-// agentViewReadsWhatever reports whether the content rule (access.SessionContentClause) answers
-// reader's view of session the same whatever the database holds, so the re-ask before a batch of
-// its frames reads nothing:
-//
-//   - the server's viewer (All), which the rule passes first;
-//   - the viewer's own session, which the rule passes next.
-//
-// An open viewer resolved while no project was private is not one of them: the rule passes it
-// only while that still holds, which the re-ask reads (anyProjectPrivateNow).
-func agentViewReadsWhatever(reader model.Actor, session string) bool {
-	viewer := reader.Viewer
-	return viewer != nil && (viewer.All || (viewer.Session != "" && viewer.Session == session))
-}
-
 // endAgentAfterFailure ends a view whose relay call failed with an ended frame (dropped), so its
 // page subscribes again rather than watching a session that never hears of it. It waits
 // agentStreamRetry first: a page answers an ended frame by subscribing again at once, and a relay

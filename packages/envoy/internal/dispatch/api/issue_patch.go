@@ -423,7 +423,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if input.Status != nil || parentProvided {
 		lock = lockPatchOwnersAndParent
 	}
-	if err := lock(ctx, tx, who, key, named...); err != nil {
+	if err := lock(ctx, tx, key, named...); err != nil {
 		return issueWriteResult{}, err
 	}
 	if step != nil && step.fence != nil {
@@ -431,7 +431,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			return issueWriteResult{}, err
 		}
 	}
-	before, err := s.loadIssue(ctx, tx, who, key)
+	before, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return issueWriteResult{}, err
 	}
@@ -802,7 +802,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// response's last_seq and the status event's payload are filled in from what those appends
 	// took (appendedIssueLastSeq, model.IssueEventPayload.WithOwnerLastSeq) rather than counted
 	// here.
-	after, err := s.loadIssue(ctx, tx, who, key)
+	after, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return issueWriteResult{}, err
 	}

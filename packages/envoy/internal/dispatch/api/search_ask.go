@@ -59,7 +59,7 @@ func (s *server) attachAskStates(ctx context.Context, q queryer, who model.Actor
 	}
 
 	if len(resolvedIDs) > 0 {
-		answers, err := s.loadAskAnswersByAsk(ctx, q, who, resolvedIDs)
+		answers, err := s.loadAskAnswersByAsk(ctx, q, resolvedIDs)
 		if err != nil {
 			return fmt.Errorf("load search ask answers: %w", err)
 		}

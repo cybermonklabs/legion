@@ -1130,7 +1130,7 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 // nothing, so it queues nothing and sends no batch.
 func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
-	applyArtifacts := queueArtifactDetails(batch, who, artifacts)
+	applyArtifacts := queueArtifactDetails(batch, artifacts)
 	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
@@ -1165,14 +1165,10 @@ func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, re
 	return openAsks
 }
 
-// loadIssue is one issue as who reads it: an issue of a project who does not see is
-// pgx.ErrNoRows, which every caller answers as it answers a key no issue carries. Every caller
-// binds a reader: a read the one readerOf answers, a write the one it resolved before it opened
-// its transaction. The issue is the row as it stands, every other row it names included, which a
-// write's event payload records whole; an answer to a reader leaves out what the reader does not
-// see (leaveOutHiddenIssueReferences).
-func (s *server) loadIssue(ctx context.Context, q queryer, who model.Actor, key string) (model.Issue, error) {
-	issue, _, err := s.loadIssueWithProgress(ctx, q, who, key)
+// loadIssue is one issue as it stands, every other row it names included, which a write's event
+// payload records whole.
+func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Issue, error) {
+	issue, _, err := s.loadIssueWithProgress(ctx, q, key)
 	return issue, err
 }
 
@@ -1395,7 +1391,7 @@ func scanExternalLinks(rows pgx.Rows) ([]model.ExternalLink, error) {
 
 // loadIssueWithProgress is loadIssue together with the issue's progress, which the read response
 // carries beside the issue (model.IssueProgress says why it is not a field of it).
-func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, who model.Actor, key string) (model.Issue, model.IssueProgress, error) {
+func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key string) (model.Issue, model.IssueProgress, error) {
 	issue, progress, err := scanIssueRow(q.QueryRow(ctx, issueRowStatement, key))
 	if err != nil {
 		return model.Issue{}, model.IssueProgress{}, err

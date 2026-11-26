@@ -13,7 +13,6 @@
 package api
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -186,52 +185,6 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	}
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, body)
-}
-
-// leaveOutHiddenPriorityReferences writes the two fault lists' rows as who reads them (the rule of
-// references, references_seen.go), in one read, as the issue's own read and the listing answer
-// them: an assignee who does not see is null, and so is a claim whose holder, and the actor who
-// moved the issue into backlog or icebox, who does not see. The read is made whatever the rows name
-// (seenReferences), so a row claimed or moved by a hidden holder costs what one nobody claimed
-// costs. A reader that sees every object, and lists with no row, cost no read.
-func leaveOutHiddenPriorityReferences(ctx context.Context, q queryer, who model.Actor, body *model.Priorities) error {
-	if seesEveryObject(who) || len(body.WorkUnderNoPriority.Issues)+len(body.PriorityWorkParked.Issues) == 0 {
-		return nil
-	}
-	rows := [][]model.PriorityIssue{body.WorkUnderNoPriority.Issues, body.PriorityWorkParked.Issues}
-	named := references{}
-	for _, issues := range rows {
-		for _, issue := range issues {
-			if issue.Assignee != nil {
-				named.name(personReference, *issue.Assignee)
-			}
-			if issue.Claim != nil {
-				named.nameActor(issue.Claim.Actor)
-			}
-			if issue.MovedBy != nil {
-				named.nameActor(*issue.MovedBy)
-			}
-		}
-	}
-	seen, err := seenReferences(ctx, q, who, named)
-	if err != nil {
-		return err
-	}
-	for _, issues := range rows {
-		for index := range issues {
-			issue := &issues[index]
-			if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
-				issue.Assignee = nil
-			}
-			if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
-				issue.Claim = nil
-			}
-			if issue.MovedBy != nil && !seen.holdsActor(*issue.MovedBy) {
-				issue.MovedBy = nil
-			}
-		}
-	}
-	return nil
 }
 
 // createPriorityInput is the body of POST /api/v1/priorities.

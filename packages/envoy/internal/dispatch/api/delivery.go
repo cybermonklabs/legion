@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // defaultDeliveryWindow is the timeline's default when the caller passes neither from nor to: the
@@ -168,8 +168,7 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 // deliveryTimelineCompute's compute, the two halves the live hub calls too, so a live page's
 // snapshot is this body.
 func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
-	reader, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	query := r.URL.Query()
@@ -182,7 +181,7 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readDeliveryPopulation(r.Context(), reader, settings, from, to, query, true)
+	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, true)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -345,15 +344,14 @@ type deliveryWaitingRow struct {
 // unowned P0 list); nothing that computes from it reads again. With withWaiting it also reads the
 // deploy repository's pull requests still waiting at `from` (ListPullRequestsWaitingAt), resolved
 // through the same issue and session lookups so the timeline's waiting line filters them alike;
-// the measures read none. reader is who the answer is read for: what it holds of a project is what
-// that reader sees (readDeliveryRows).
-func (s *server) readDeliveryPopulation(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting bool) (deliveryPopulation, error) {
-	return s.readDeliveryRows(ctx, reader, settings, from, to, query, withWaiting, true)
+// the measures read none.
+func (s *server) readDeliveryPopulation(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting bool) (deliveryPopulation, error) {
+	return s.readDeliveryRows(ctx, settings, from, to, query, withWaiting, true)
 }
 
 // readDeliveryRows is readDeliveryPopulation, and with withMeasures false leaves out the measures'
 // runs and unowned P0 list, which the Pipeline page's lead times do not read.
-func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
+func (s *server) readDeliveryRows(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
 	pool := s.deps.Store.Pool
 	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}}
 
@@ -477,57 +475,6 @@ func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, setti
 		return deliveryPopulation{}, err
 	}
 	return pop, nil
-}
-
-// openRepositories is the repositories whose visibility to reader decides what of the population an
-// open reader is shown (cutTo), once each: the repository of each pull request, the window's and
-// those waiting, that names no issue or a key no issue row holds, and deployRepo, whose runs that
-// shipped nothing or name no stored pull request it decides. A reader that is not open is shown none
-// of those, so none is named for it.
-func (p deliveryPopulation) openRepositories(reader model.Actor, deployRepo string) []string {
-	repositories := []string{}
-	if reader.Viewer == nil || !reader.Viewer.Open {
-		return repositories
-	}
-	add := func(repository string) {
-		if !slices.Contains(repositories, repository) {
-			repositories = append(repositories, repository)
-		}
-	}
-	add(deployRepo)
-	issueless := func(pr delivery.DeliveryPullRequest) {
-		if pr.IssueKey != nil {
-			if _, found := p.issues[*pr.IssueKey]; found {
-				return
-			}
-		}
-		add(pr.Repo)
-	}
-	for _, pr := range p.prs {
-		issueless(pr)
-	}
-	for _, pr := range p.waiting {
-		issueless(pr.DeliveryPullRequest)
-	}
-	return repositories
-}
-
-// groupsShown is the groups of which every session passes access.SessionClause for the reader whose
-// visibility argument is viewer, in their order, read in one statement: a group names its
-// sessions and their grouping, so it is answered as a broadcast is shown, only to a reader who may
-// see each one.
-func (s *server) groupsShown(ctx context.Context, viewer any, groups []delivery.SessionGroup) ([]delivery.SessionGroup, error) {
-	sessions := []string{}
-	for _, group := range groups {
-		sessions = append(sessions, group.Sessions...)
-	}
-	seen, err := s.sessionsSeen(ctx, viewer, sessions)
-	if err != nil {
-		return nil, err
-	}
-	return slices.DeleteFunc(groups, func(group delivery.SessionGroup) bool {
-		return slices.ContainsFunc(group.Sessions, func(session string) bool { return !seen[session] })
-	}), nil
 }
 
 // deliveryIssueProjects is the projects issues belong to, once each.

@@ -268,7 +268,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve main's repository for %s: %v", key, err)
 		}
-		issue, read, err := fixture.server.loadIssueWithProgress(ctx, pool, everyReader, key)
+		issue, read, err := fixture.server.loadIssueWithProgress(ctx, pool, key)
 		if err != nil {
 			t.Fatalf("read %s: %v", key, err)
 		}

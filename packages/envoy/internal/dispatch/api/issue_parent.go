@@ -352,7 +352,7 @@ func refuseParentOutsideCallerProject(caller, parent, parentProject string) erro
 // refuses it. The parent is read in the statement after the locks, never in the same one, so it
 // is the parent the lock's previous holder committed (store.LockOwnersAndRead): every writer of
 // parent_key holds the issue's lock.
-func lockIssueOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string, others ...string) (*string, error) {
+func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...string) (*string, error) {
 	owners := make([]store.Owner, 0, len(others)+1)
 	owners = append(owners, store.IssueOwner(key))
 	for _, other := range others {
@@ -379,8 +379,8 @@ const parentLockAttempts = 2
 // lockPatchOwners takes the owner locks of the issue and of the issues in named (a proposed parent,
 // rank neighbours) in one lock order, for a PATCH that appends no event to the issue's current
 // parent.
-func lockPatchOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
-	_, err := lockIssueOwners(ctx, tx, who, key, named...)
+func lockPatchOwners(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
+	_, err := lockIssueOwners(ctx, tx, key, named...)
 	return err
 }
 
@@ -395,7 +395,7 @@ func lockPatchOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string
 // It does not use resolveThenLock, whose resolve half runs with nothing held and whose write half
 // owns its own transaction: both halves here run inside the PATCH's transaction, after its
 // advisory locks, so the locks they take commit with the PATCH's writes.
-func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
+func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
 	rows := make([]string, 0, len(named)+1)
 	for range parentLockAttempts {
 		var parent *string
@@ -410,7 +410,7 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, who model.Actor, k
 		if err != nil {
 			return err
 		}
-		locked, err := lockIssueOwners(ctx, attempt, who, key, rows...)
+		locked, err := lockIssueOwners(ctx, attempt, key, rows...)
 		if err != nil {
 			_ = attempt.Rollback(ctx)
 			return err

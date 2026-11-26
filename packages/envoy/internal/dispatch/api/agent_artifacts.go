@@ -138,14 +138,10 @@ func (s *server) listAgentArtifacts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
-	}
 	session, err := requestSessionID(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeArtifactList(w, r, who, agentArtifactsSQL, session, agentArtifactsListMax)
+	s.writeArtifactList(w, r, agentArtifactsSQL, session, agentArtifactsListMax)
 }
