@@ -3,7 +3,7 @@
 // fixture. It prints one RESULT line per measurement and a FAIL line for each one that misses its
 // budget or its rule, and exits 1 when any did.
 //
-//	measure wait  -mode head -database <url> -url <server>
+//	measure wait  -mode head -database <url> -url <server> [-base-refresher]
 //	measure paint -mode head -database <url> -url <server> -token <token> \
 //	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file> [-run <n> -runs-file <file>]
 //	measure runs  -runs <n> -runs-file <file>
@@ -22,8 +22,10 @@
 // only the server's own later events to follow (consumerState.caughtUp), and, where the database
 // holds the code survival results, the regroup's pass at the server's start has built INFRA's day
 // rows of the code evals (code_projects.groups_digest set). At the base it waits for those of the
-// facts consumer, the fill and the refresher the base's catalog holds the tables of. Where the
-// server runs the fill it prints how long that took.
+// facts consumer and the fill the base's catalog holds the tables of, and, with -base-refresher
+// (run.sh's base measure, k17's control at a base that holds the eval registry), for its refresher
+// where the catalog holds that too; capture-base's base waits for no refresher, as it did before
+// the code evals. Where the server runs the fill it prints how long that took.
 //
 // paint is the first paint after a restart: the reads the page makes, each with the database time
 // of its statements (pg_stat_statements' total_exec_time, reset before each), the handler's
@@ -91,23 +93,19 @@ import (
 	"time"
 )
 
-// report collects what one invocation measured: the text of each RESULT line (lines) and of each
-// FAIL line (fails) it printed. tag, where it is set, follows the prefix of every RESULT and FAIL
-// line: " run=3" for the third of the first paint's runs. An -info invocation's prefix is INFO, and
-// it writes a rule it misses as an INFO-FAIL line, which no verdict counts (job.yaml's reads
-// `^FAIL`).
+// report collects what one invocation measured: the text of each FAIL line (fails) it printed.
+// tag, where it is set, follows the prefix of every RESULT and FAIL line: " run=3" for the third of
+// the first paint's runs. An -info invocation's prefix is INFO, and it writes a rule it misses as an
+// INFO-FAIL line, which no verdict counts (job.yaml's reads `^FAIL`).
 type report struct {
 	prefix string
 	tag    string
-	lines  []string
 	fails  []string
 }
 
 // result prints one measurement.
 func (r *report) result(format string, args ...any) {
-	line := fmt.Sprintf(format, args...)
-	r.lines = append(r.lines, line)
-	fmt.Printf("%s%s %s\n", r.prefix, r.tag, line)
+	fmt.Printf("%s%s %s\n", r.prefix, r.tag, fmt.Sprintf(format, args...))
 }
 
 // fail prints one measurement that missed its budget or its rule, and marks the run failed.
@@ -132,26 +130,27 @@ func (r *report) block(heading, text string) {
 
 // options is one invocation's flags.
 type options struct {
-	mode      string
-	database  string
-	url       string
-	token     string
-	serverLog string
-	pgLog     string
-	project   string
-	quiet     time.Duration
-	catalog   time.Duration
-	timeout   time.Duration
-	info      bool
-	run       int
-	runs      int
-	runsFile  string
-	now       time.Time
-	node      string
-	githubLog string
+	mode          string
+	database      string
+	url           string
+	token         string
+	serverLog     string
+	pgLog         string
+	project       string
+	quiet         time.Duration
+	catalog       time.Duration
+	timeout       time.Duration
+	info          bool
+	run           int
+	runs          int
+	runsFile      string
+	now           time.Time
+	node          string
+	githubLog     string
+	baseRefresher bool
 }
 
-const usage = "usage: measure wait|paint|runs|ghstub -mode head|failure-day|base -database <url> -url <server> [flags]"
+const usage = "usage: measure wait|paint|runs -mode head|failure-day|base -database <url> -url <server> [flags] | measure ghstub -log <file> -port-file <file> [-listen 127.0.0.1:0]"
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "ghstub" {
@@ -181,6 +180,7 @@ func main() {
 	now := flags.String("now", "", "paint: the UTC midnight the history the generator wrote ends at, RFC3339, which the paint's windows end on (job.sh's EVALBENCH_NOW); the current UTC midnight where unset")
 	flags.StringVar(&o.node, "node", "", "the node the run is on, which the lines of k16's fallback and move name (run.sh passes EVALBENCH_NODE)")
 	flags.StringVar(&o.githubLog, "github-log", "", "paint: the log of the GitHub stand-in the server ran against (ghstub), whose requests inside the paint's window are FAIL lines (check k17); none where the server ran with no stand-in")
+	flags.BoolVar(&o.baseRefresher, "base-refresher", false, "wait -mode base: wait for the base's eval day refresher too where its catalog holds it, as k17's control at a base that holds the eval registry needs (run.sh measure base); capture-base leaves it out")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		os.Exit(2)
 	}

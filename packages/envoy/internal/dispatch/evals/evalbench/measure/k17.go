@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -19,12 +20,12 @@ import (
 // makes no request to GitHub (checkGitHubStub), and, at the base before the code evals, holds
 // neither of them.
 
-// holdsRegistry is whether the database holds the eval registry's day rows: the base of a run
-// whose base is a commit of this branch before the code evals holds them, and the base before the
-// registry existed does not.
+// holdsRegistry is whether the database holds the eval registry's day rows (evalfixture.HeadTable):
+// the base of a run whose base is a commit of this branch before the code evals holds them, and the
+// base before the registry existed does not.
 func holdsRegistry(ctx context.Context, pool *store.Pool) (bool, error) {
 	var held bool
-	if err := pool.QueryRow(ctx, `select to_regclass('eval_days') is not null`).Scan(&held); err != nil {
+	if err := pool.QueryRow(ctx, `select to_regclass($1) is not null`, evalfixture.HeadTable).Scan(&held); err != nil {
 		return false, fmt.Errorf("read whether the database holds the eval registry: %w", err)
 	}
 	return held, nil
@@ -42,9 +43,6 @@ func registryBaseCases(project string, today time.Time) []paintCase {
 	}
 	return cases
 }
-
-// codeEvalSlugs are the slugs of the two code evals.
-var codeEvalSlugs = []string{evals.SlugCodeSurvival, evals.SlugPostMergeRework}
 
 // listedSeries is one series of a listed eval: its name, and its statistics over the window.
 type listedSeries struct {
@@ -116,7 +114,7 @@ func checkBaseEvals(r *report, measured []measuredCase) {
 			continue
 		}
 		var held []string
-		for _, slug := range codeEvalSlugs {
+		for _, slug := range evals.CodeSlugs {
 			if _, found := list.eval(slug); found {
 				held = append(held, slug)
 			}
@@ -148,7 +146,7 @@ func checkCodeEvals(r *report, measured []measuredCase) {
 			continue
 		}
 		stated := 0
-		for _, slug := range codeEvalSlugs {
+		for _, slug := range evals.CodeSlugs {
 			item, found := list.eval(slug)
 			switch {
 			case !found:
@@ -166,11 +164,11 @@ func checkCodeEvals(r *report, measured []measuredCase) {
 	}
 }
 
-// codeResultTable matches a statement that names a table of the code survival results.
-var codeResultTable = regexp.MustCompile(`\bcode_(?:changes|pairs|days)\b`)
-
 // codeResultTables are the tables of the results whose scans a plan names.
 var codeResultTables = []string{"code_changes", "code_pairs", "code_days"}
+
+// codeResultTable matches a statement that names a table of the code survival results.
+var codeResultTable = regexp.MustCompile(`\b(?:` + strings.Join(codeResultTables, "|") + `)\b`)
 
 // checkCodeResultReads is k17's second clause: no statement of the paint, of any read, names
 // code_changes, code_pairs or code_days, in its text or in the relations its plan scans. The day

@@ -232,7 +232,7 @@ func evalIDAs(key, evalID, of string) string {
 // project reads it): the rows a project reads through an issue of its own count none through a
 // repository (o.via false: its own rows, and an owner key's whose list picks it), and an owner
 // key's rows it reads through the repository count every row (o.via true), as their
-// via_repository does. The code evals' own rows (codeDaySlugs) are the one exception: their
+// via_repository does. The code evals' own rows (CodeSlugs) are the one exception: their
 // writer counts in via_repository the changes with no issue that reached the project through its
 // default repository (dispatch://INFRA-3206/comment/81b94de5-418c-4aa5-8e61-c8b83e7ac984), so a
 // project reads its own rows of those evals as stored. No owner key holds a row of them. Every read
@@ -242,9 +242,9 @@ func viaAsRead(via, evalID string) string {
 		ownViaSlugs + `) then ` + via + ` else 0 end`
 }
 
-// ownViaSlugs is codeDaySlugs as a list of SQL text literals, the slugs whose own rows viaAsRead
+// ownViaSlugs is CodeSlugs as a list of SQL text literals, the slugs whose own rows viaAsRead
 // reads as stored. A slug holds no quote (slugPattern).
-var ownViaSlugs = "'" + strings.Join(codeDaySlugs, "', '") + "'"
+var ownViaSlugs = "'" + strings.Join(CodeSlugs, "', '") + "'"
 
 // ownedKeys is the condition that a row of eval_days or eval_day_members (alias) stands under one of
 // the keys the projects read (eval_project_owners), where projects is the condition on

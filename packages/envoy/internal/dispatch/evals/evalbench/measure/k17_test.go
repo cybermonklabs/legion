@@ -45,13 +45,12 @@ func TestEveryRequestToGitHubInThePaintsWindowIsAFailLine(t *testing.T) {
 		{"three inside and two outside", []githubRequest{at(-time.Second), at(time.Second), at(2 * time.Second), at(9500 * time.Millisecond), at(11 * time.Second)}, 3, 2},
 	} {
 		judged := &report{prefix: "RESULT"}
-		checkGitHubStub(judged, row.requests, measured)
+		inside, outside := checkGitHubStub(judged, row.requests, measured)
 		if len(judged.fails) != row.inside {
 			t.Errorf("%s: %d FAIL lines %q, want %d", row.name, len(judged.fails), judged.fails, row.inside)
 		}
-		wantLine := fmt.Sprintf("github_requests_in_the_paint=%d github_requests_outside_the_paint=%d", row.inside, row.outside)
-		if !strings.Contains(strings.Join(judged.lines, "\n"), wantLine) {
-			t.Errorf("%s: the RESULT lines %q lack %q", row.name, judged.lines, wantLine)
+		if inside != row.inside || outside != row.outside {
+			t.Errorf("%s: the RESULT line counts %d requests in the paint and %d outside it, want %d and %d", row.name, inside, outside, row.inside, row.outside)
 		}
 	}
 }

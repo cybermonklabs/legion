@@ -331,6 +331,40 @@ func TestAGroupsSaveRegroupsWithNoGitHubRequest(t *testing.T) {
 	}
 }
 
+// A pass over a project whose code evals the seed has not written opens no regroup transaction
+// (the regroup's minute poll): it reads every project's groups, digest and seeding in one
+// statement, leaves the project unbuilt, and asks for another pass a minute later, which, once the
+// seed has written the evals, builds the project's rows under its groups and asks for none.
+func TestAPassOpensNoRegroupOfAProjectTheSeedHasNotReached(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	if _, err := r.database.Pool.Exec(r.ctx, `insert into projects (key, name, default_assignee) values ('LATE', 'LATE', 'alice')`); err != nil {
+		t.Fatalf("make the project LATE: %v", err)
+	}
+	r.saveGroups("LATE", everyChange)
+	regroups := 0
+	r.regroup.afterRows = func() { regroups++ }
+	r.clock.set(k9Pass)
+	if next := r.regroup.Pass(r.ctx); !next.Equal(k9Pass.Add(regroupRetry)) {
+		t.Errorf("the pass over LATE, whose evals are not seeded, asks to pass again at %s, want a minute later, %s", next, k9Pass.Add(regroupRetry))
+	}
+	if regroups != 0 {
+		t.Errorf("the pass over LATE, whose evals are not seeded, opened %d regroups, want none", regroups)
+	}
+	if _, err := r.registry.Ensure(r.ctx, "LATE"); err != nil {
+		t.Fatalf("seed the evals of LATE: %v", err)
+	}
+	if next := r.regroup.Pass(r.ctx); !next.IsZero() {
+		t.Errorf("the pass after LATE's seed asks to pass again at %s, want no retry", next)
+	}
+	if regroups != 1 {
+		t.Errorf("the pass after LATE's seed opened %d regroups, want 1", regroups)
+	}
+	if stood, err := ProjectDigest(r.ctx, r.database.Pool, "LATE"); err != nil || !stood.Built() || stood.GroupsDigest != groupsDigest(everyChange) {
+		t.Errorf("LATE stands as %+v (%v), want built under its groups", stood, err)
+	}
+}
+
 // Two projects' groups read two numbers over one repository (k9): ONE's seeded group, by the
 // prefix and the login, holds the login's change, all of whose six lines are alive, and the
 // prefix's, three of whose six are not, and reads 9/12; TWO's bots group, by the login alone, holds

@@ -5,10 +5,26 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
+
+// mainChildEnv makes this test binary the command rather than a test run: the command line, split
+// on spaces, that TestMain runs main over (TestARefusedCommandLineIsWrittenOnceAndExits2).
+const mainChildEnv = "EVALBENCH_TEST_MAIN_ARGS"
+
+// TestMain runs the package's tests, or, where mainChildEnv is set, the command itself.
+func TestMain(m *testing.M) {
+	if args, child := os.LookupEnv(mainChildEnv); child {
+		os.Args = append([]string{"evalbench"}, strings.Fields(args)...)
+		main()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // TestTheCodeFlagIsOnByDefaultAndOffByCodeFalse: the generator writes INFRA's code survival
 // results unless -code=false says it must not, which a load into a database of a base that holds
@@ -81,5 +97,31 @@ func TestACommandLineKeepsItsOtherDefaults(t *testing.T) {
 	}
 	if _, err := parseConfig([]string{"-database", "postgres://unused", "-now", "yesterday"}, io.Discard); err == nil || errors.Is(err, errUsage) || errors.Is(err, flag.ErrHelp) {
 		t.Errorf("-now yesterday answered %v, want a refusal that names it", err)
+	}
+}
+
+// TestARefusedCommandLineIsWrittenOnceAndExits2: the command refuses a flag that does not parse and
+// a -now that is no moment with exit 2 and the refusal on stderr once, the flag package's own line
+// for a flag, where printing the parse's error again would say it twice.
+func TestARefusedCommandLineIsWrittenOnceAndExits2(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		args, refusal string
+	}{
+		{"-database postgres://unused -code=maybe", `invalid boolean value "maybe" for -code`},
+		{"-database postgres://unused -now yesterday", `read -now "yesterday" as a moment`},
+	} {
+		command := exec.Command(os.Args[0])
+		command.Env = append(os.Environ(), mainChildEnv+"="+row.args)
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		err := command.Run()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+			t.Errorf("%q exited %v, want 2\n%s", row.args, err, stderr.String())
+		}
+		if count := strings.Count(stderr.String(), row.refusal); count != 1 {
+			t.Errorf("%q wrote %q %d times, want once:\n%s", row.args, row.refusal, count, stderr.String())
+		}
 	}
 }

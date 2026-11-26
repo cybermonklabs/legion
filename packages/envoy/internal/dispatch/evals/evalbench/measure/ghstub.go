@@ -227,14 +227,13 @@ func readGitHubLog(path string) ([]githubRequest, error) {
 // the stand-in received between the paint's first request and the answer of its last is a FAIL
 // line, naming the request and how long after the paint began it came, and a RESULT line counts the
 // requests inside the paint's window and those outside it, which the server's own loops made before
-// the paint began or after it ended, for information.
-func checkGitHubStub(r *report, requests []githubRequest, measured []measuredCase) {
+// the paint began or after it ended, for information. It answers the two counts.
+func checkGitHubStub(r *report, requests []githubRequest, measured []measuredCase) (inside, outside int) {
 	if len(measured) == 0 {
 		r.fail("k17: no read of the paint was measured, so no window to look for a request to GitHub in")
-		return
+		return 0, 0
 	}
 	from, to := measured[0].t0, measured[len(measured)-1].t1
-	inside, outside := 0, 0
 	for _, request := range requests {
 		if request.Time.Before(from) || request.Time.After(to) {
 			outside++
@@ -246,4 +245,5 @@ func checkGitHubStub(r *report, requests []githubRequest, measured []measuredCas
 	}
 	r.result("k17 github_requests_in_the_paint=%d github_requests_outside_the_paint=%d window=%s..%s window_ms=%d", inside, outside,
 		from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano), to.Sub(from).Milliseconds())
+	return inside, outside
 }

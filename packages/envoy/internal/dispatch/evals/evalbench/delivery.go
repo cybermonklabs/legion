@@ -518,14 +518,26 @@ func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history inf
 
 // putDeliverySettings writes Settings in the shape the database holds: at this head INFRA's own
 // settings (evalfixture.PutDeliverySettings: one source reading its default repository, the first
-// of Repos), and in a database with no project_delivery_settings, a base head's, the one
-// delivery_settings row its routes read (baseSettingsStatement).
+// of Repos); in a database whose project_delivery_settings holds no code_groups, a commit of this
+// branch before the code evals' groups (migration 20261126133047), which k17's control loads with
+// -code=false, the same rows less that column (putSettingsWithoutCodeGroups); and in a database with
+// no project_delivery_settings, a base head's, the one delivery_settings row its routes read
+// (baseSettingsStatement).
 func putDeliverySettings(ctx context.Context, pool *store.Pool) error {
 	held, err := evalfixture.ExistingTables(ctx, pool, []string{"project_delivery_settings"})
 	if err != nil {
 		return err
 	}
 	if len(held) > 0 {
+		var grouped bool
+		if err := pool.QueryRow(ctx, `
+			select exists (select 1 from pg_attribute where attrelid = to_regclass('project_delivery_settings') and attname = 'code_groups' and not attisdropped)
+		`).Scan(&grouped); err != nil {
+			return fmt.Errorf("read whether the delivery settings hold code groups: %w", err)
+		}
+		if !grouped {
+			return putSettingsWithoutCodeGroups(ctx, pool)
+		}
 		if _, err := evalfixture.PutDeliverySettings(ctx, pool, Project, Settings(), actor); err != nil {
 			return fmt.Errorf("write the delivery settings: %w", err)
 		}
@@ -542,6 +554,49 @@ func putDeliverySettings(ctx context.Context, pool *store.Pool) error {
 		settings.PRChecksRollupJobName, by); err != nil {
 		return fmt.Errorf("write the base head's delivery_settings row: %w", err)
 	}
+	return nil
+}
+
+// putSettingsWithoutCodeGroups writes INFRA's delivery settings, the save
+// evalfixture.DeliverySettingsInput says, into a database whose project_delivery_settings holds no
+// code_groups: the rows this head's delivery.PutProjectSettings writes on an empty store less that
+// column, which this head's save reads and writes, the project's row of project_delivery_settings
+// and a row of project_deploy_sources for each source, in one transaction, and the change rows the
+// save logged drained once it has committed, as every save of settings drains them.
+func putSettingsWithoutCodeGroups(ctx context.Context, pool *store.Pool) error {
+	input, err := evalfixture.DeliverySettingsInput(ctx, pool, Project, Settings())
+	if err != nil {
+		return err
+	}
+	by, err := json.Marshal(actor)
+	if err != nil {
+		return fmt.Errorf("encode the delivery settings' author: %w", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the delivery settings of %s: %w", Project, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos, failure_sources, updated_by)
+		values ($1, $2, $3, $4, '{}', $5)`, input.Project, input.Delivery, input.PopulationAuthors, input.ExcludedRepos, by); err != nil {
+		return fmt.Errorf("write the delivery settings of %s: %w", Project, err)
+	}
+	for position, source := range input.Sources {
+		if _, err := tx.Exec(ctx, `
+			insert into project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path,
+				production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name,
+				pr_checks_workflow_path, pr_checks_rollup_job_name)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, input.Project, position, source.Kind, source.Repo,
+			source.DeployWorkflowPath, source.ProductionJobNames, source.ProductionApplyStepName, source.StagingE2EJobName,
+			source.StagingApplyJobName, source.PRChecksWorkflowPath, source.PRChecksRollupJobName); err != nil {
+			return fmt.Errorf("write deploy source %d of %s: %w", position, Project, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the delivery settings of %s: %w", Project, err)
+	}
+	delivery.DrainAfterCommit(ctx, pool, "evalbench: drain the change rows of the delivery settings' save")
 	return nil
 }
 

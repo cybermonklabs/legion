@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/codesurvival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
@@ -35,9 +36,12 @@ import (
 // days that began to wait at least 33 days before Now's day are measured, as a run measures them
 // (survival.WaitsFrom), and the codeTailDays days after the newest of them hold the fingerprint the
 // run's replay left; the days after those wait, and hold no row. The repository's row says a daily
-// pass ran on Now's day, so the server's run does no pass during the measurement and asks GitHub
-// for nothing; code_projects is left empty, so the regroup's pass at the server's start builds
-// INFRA's day rows from these results, with no request to GitHub and no App.
+// pass ran on Now's day and that the next may not start before a year after Now (retry_at, which
+// the run's guard reads beside checked_on), so the server's run does no pass during the
+// measurement, on Now's day or after it (a job that runs past UTC midnight, or an EVALBENCH_NOW
+// before the server's day), and asks GitHub for nothing; code_projects is left empty, so the
+// regroup's pass at the server's start builds INFRA's day rows from these results, with no request
+// to GitHub and no App.
 
 // The rates of the reference window (plan, T12), from cybermonklabs/legion's default branch: 63.4
 // first-parent commits a day, 1,962 changes among its 3,356 commits, 905 of them the agents', and
@@ -52,10 +56,8 @@ const (
 	// codeRemovalsPerChange is how many pairs a measured change holds on average: the pairs of
 	// 90 days over the changes of 90 days.
 	codeRemovalsPerChange = codePairsPer90Days / 90 / (codeCommitsPerDay * codeChangeShare)
-	// codeMarkDays is how long after a change a commit's removal of its lines is a pair of it
-	// (survival.Mark), and codeTailDays how many days after the newest measured day a run's replay
-	// fingerprints (survival's tailDays).
-	codeMarkDays = 30
+	// codeTailDays is how many days after the newest measured day a run's replay fingerprints
+	// (survival's tailDays).
 	codeTailDays = 30
 	// codeFirstPR is the number of the first change's pull request.
 	codeFirstPR = 1000
@@ -64,18 +66,18 @@ const (
 	codeOtherIssueShare = 0.35
 )
 
-// CodeGroups are INFRA's two code groups, in the order its delivery settings hold them
+// codeGroups are INFRA's two code groups, in the order its delivery settings hold them
 // (project_delivery_settings.code_groups): the agents' changes, by a head branch under legion/ or
 // by the login of one of their Apps, and every other change after them.
-var CodeGroups = []delivery.CodeGroup{
+var codeGroups = []delivery.CodeGroup{
 	{Name: "Legion", BranchPrefixes: []string{"legion/"}, AuthorLogins: []string{"legion-implementer[bot]", "acme-legion-implementer[bot]"}},
 	{Name: "Other", BranchPrefixes: []string{}, AuthorLogins: []string{}},
 }
 
-// codeTables are the tables of the code survival results, the repository's row, the changes, the
-// pairs, the replayed days and the projects whose day rows were built, which a head with the
+// codeTables are the tables of the code survival results, the repository's row, the replayed
+// days, the changes, the pairs and the projects whose day rows were built, which a head with the
 // results holds and the base does not.
-var codeTables = []string{"code_repos", "code_changes", "code_pairs", "code_days", "code_projects"}
+var codeTables = []string{"code_repos", "code_days", "code_changes", "code_pairs", "code_projects"}
 
 // codeChange is one change of the chain before it is written: the commit a pull request landed as,
 // the pull request's facts, and its lines. added is alive, removedByNonPR and the lines its pairs
@@ -162,7 +164,7 @@ func planCode(spec Spec, history infraHistory) codePlan {
 		removals += codeRemovalsPerChange * (0.5 + rng.Float64())
 		wanted := int(removals)
 		removals -= float64(wanted)
-		until := change.committed.Add(codeMarkDays * 24 * time.Hour)
+		until := survival.Mark(change.committed)
 		low := i + 1
 		high := sort.Search(len(plan.changes), func(j int) bool { return plan.changes[j].committed.After(until) })
 		var taken []int
@@ -211,14 +213,14 @@ func planChange(rng *rand.Rand, history infraHistory, opened []time.Time, commit
 		tail = change.issue + "-" + word
 	}
 	person := authors[rng.IntN(len(authors))]
-	bot := CodeGroups[0].AuthorLogins[rng.IntN(len(CodeGroups[0].AuthorLogins))]
+	bot := codeGroups[0].AuthorLogins[rng.IntN(len(codeGroups[0].AuthorLogins))]
 	switch u := rng.Float64(); {
 	case !agents:
 		change.headRef, change.author = "feature/"+tail, person
 	case u < 0.8:
-		change.headRef, change.author = CodeGroups[0].BranchPrefixes[0]+tail, bot
+		change.headRef, change.author = codeGroups[0].BranchPrefixes[0]+tail, bot
 	case u < 0.9:
-		change.headRef, change.author = CodeGroups[0].BranchPrefixes[0]+tail, person
+		change.headRef, change.author = codeGroups[0].BranchPrefixes[0]+tail, person
 	default:
 		change.headRef, change.author = "bot/"+tail, bot
 	}
@@ -243,18 +245,6 @@ func issueOpenAt(rng *rand.Rand, history infraHistory, opened []time.Time, at ti
 	}
 	return ""
 }
-
-// rowStream is a COPY source of n rows, row(i) the i-th.
-type rowStream struct {
-	n, next int
-	row     func(i int) []any
-}
-
-func (s *rowStream) Next() bool { s.next++; return s.next <= s.n }
-
-func (s *rowStream) Values() ([]any, error) { return s.row(s.next - 1), nil }
-
-func (s *rowStream) Err() error { return nil }
 
 // orNull is s as a column value, null for the empty string.
 func orNull(s string) any {
@@ -291,7 +281,7 @@ func checkCodeSchema(ctx context.Context, pool *store.Pool) error {
 func writeCode(ctx context.Context, pool *store.Pool, spec Spec, history infraHistory) error {
 	plan := planCode(spec, history)
 	repo, today := strings.ToLower(Repos[0]), survival.DayOf(spec.Now)
-	groups, err := json.Marshal(CodeGroups)
+	groups, err := json.Marshal(codeGroups)
 	if err != nil {
 		return fmt.Errorf("encode the code groups: %w", err)
 	}
@@ -311,33 +301,35 @@ func writeCode(ctx context.Context, pool *store.Pool, spec Spec, history infraHi
 		columns []string
 		source  pgx.CopyFromSource
 	}{
-		{"code_repos", []string{"repo", "branch", "start_day", "state", "checked_on", "last_measured_on"},
-			&rowStream{n: 1, row: func(int) []any { return []any{repo, "main", plan.first, "readable", today, today} }}},
+		{"code_repos", []string{"repo", "branch", "start_day", "state", "checked_on", "last_measured_on", "retry_at"},
+			pgx.CopyFromSlice(1, func(int) ([]any, error) {
+				return []any{repo, "main", plan.first, string(codesurvival.RepoReadable), today, today, spec.Now.AddDate(1, 0, 0)}, nil
+			})},
 		{"code_days", []string{"repo", "day", "commits", "digest", "state", "measured_at", "tried_at"},
-			&rowStream{n: days, row: func(i int) []any {
+			pgx.CopyFromSlice(days, func(i int) ([]any, error) {
 				day, fingerprint := plan.first.AddDate(0, 0, i), plan.fingerprints[i]
 				if i >= plan.measuredDays {
-					return []any{repo, day, int32(fingerprint.Commits), fingerprint.Digest[:], string(survival.DayReplayed), nil, nil}
+					return []any{repo, day, int32(fingerprint.Commits), fingerprint.Digest[:], string(survival.DayReplayed), nil, nil}, nil
 				}
 				measuredAt := survival.WaitsFrom(day)
-				return []any{repo, day, int32(fingerprint.Commits), fingerprint.Digest[:], string(survival.DayMeasured), measuredAt, measuredAt}
-			}}},
+				return []any{repo, day, int32(fingerprint.Commits), fingerprint.Digest[:], string(survival.DayMeasured), measuredAt, measuredAt}, nil
+			})},
 		{"code_changes", []string{"repo", "sha", "day", "committed_at", "pr_number", "head_ref", "author", "issue_key", "added", "alive", "removed_by_non_pr"},
-			&rowStream{n: plan.measured, row: func(i int) []any {
+			pgx.CopyFromSlice(plan.measured, func(i int) ([]any, error) {
 				c := plan.changes[i]
 				return []any{repo, c.sha, survival.DayOf(c.committed), c.committed, int32(c.pr), c.headRef, c.author, orNull(c.issue),
-					int32(c.added), int32(c.alive), int32(c.removedByNonPR)}
-			}}},
+					int32(c.added), int32(c.alive), int32(c.removedByNonPR)}, nil
+			})},
 		{"code_pairs", []string{"repo", "adder_sha", "remover_sha", "remover_pr", "remover_head_ref", "remover_author", "remover_issue_key", "lines", "days_between"},
-			&rowStream{n: len(plan.pairs), row: func(i int) []any {
+			pgx.CopyFromSlice(len(plan.pairs), func(i int) ([]any, error) {
 				p := plan.pairs[i]
 				remover := plan.changes[p.remover]
 				return []any{repo, plan.changes[p.adder].sha, remover.sha, int32(remover.pr), remover.headRef, remover.author, orNull(remover.issue),
-					int32(p.lines), p.daysBetween}
-			}}},
+					int32(p.lines), p.daysBetween}, nil
+			})},
 	} {
-		if _, err := tx.CopyFrom(ctx, pgx.Identifier{copied.table}, copied.columns, copied.source); err != nil {
-			return fmt.Errorf("copy the rows of %s: %w", copied.table, err)
+		if err := copyRows(ctx, tx, copied.table, copied.columns, copied.source); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

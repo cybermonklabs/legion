@@ -7,12 +7,16 @@ package codesurvival
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -62,12 +66,14 @@ func (g *Regroup) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// Pass is one regroup pass: each project whose code groups' digest (groupsDigest) differs from the
-// one code_projects says its rows stand built under, or whose rows were never built, is rebuilt
-// (regroup). It answers when to pass again: regroupRetry from now where a project was left unbuilt,
-// and never otherwise.
+// Pass is one regroup pass over every project as regroupStates reads them: each project whose code
+// groups' digest (groupsDigest) differs from the one code_projects says its rows stand built under,
+// or whose rows were never built, is rebuilt (regroup), where the seed has written its code evals;
+// one whose evals the seed has not written yet is left unbuilt with no transaction opened. It
+// answers when to pass again: regroupRetry from now where a project was left unbuilt, and never
+// otherwise.
 func (g *Regroup) Pass(ctx context.Context) time.Time {
-	projects, err := readProjects(ctx, g.Pool, nil)
+	states, err := regroupStates(ctx, g.Pool)
 	if err != nil {
 		if ctx.Err() != nil {
 			return time.Time{}
@@ -76,32 +82,81 @@ func (g *Regroup) Pass(ctx context.Context) time.Time {
 		return g.now().Add(regroupRetry)
 	}
 	retry := false
-	for _, p := range projects {
+	for _, state := range states {
 		if ctx.Err() != nil {
 			return time.Time{}
 		}
-		stood, err := ProjectDigest(ctx, g.Pool, p.Key)
-		if err == nil && stood.Built() && stood.GroupsDigest == groupsDigest(p.Groups) {
+		if state.stood.Built() && state.stood.GroupsDigest == groupsDigest(state.Groups) {
 			continue
 		}
-		if err == nil {
-			var built bool
-			if built, err = g.regroup(ctx, p.Key); err == nil && !built {
-				retry = true
-			}
+		if !state.seeded {
+			retry = true
+			continue
 		}
+		built, err := g.regroup(ctx, state.Key)
 		if err != nil {
 			if ctx.Err() != nil {
 				return time.Time{}
 			}
+			g.logger().Warn("codesurvival: regroup a project's code day rows", "project", state.Key, "error", err)
+		}
+		if err != nil || !built {
 			retry = true
-			g.logger().Warn("codesurvival: regroup a project's code day rows", "project", p.Key, "error", err)
 		}
 	}
 	if retry {
 		return g.now().Add(regroupRetry)
 	}
 	return time.Time{}
+}
+
+// regroupState is one project as a regroup pass reads it: the project as the builders read it,
+// what its row of code_projects says its rows stand built under (ProjectDigest), and whether the
+// seed has written both its code evals.
+type regroupState struct {
+	project
+	stood  Project
+	seeded bool
+}
+
+// regroupStates is every project, in key order, in one statement: its default repository and its
+// code groups as readProjects reads them, its row of code_projects, and whether a version of each
+// of its code evals (evals.CodeSlugs) is stored, which is what evals.EvalIn finds. So a pass that
+// finds every project built, or a project's evals not seeded, costs this one read, however often
+// the retry brings it back.
+func regroupStates(ctx context.Context, db Querier) ([]regroupState, error) {
+	rows, err := db.Query(ctx, `
+		select p.key, lower(coalesce(p.default_repo, '')), coalesce(s.code_groups, '[]'::jsonb), c.groups_digest, c.built_at,
+			not exists (
+				select 1 from unnest($1::text[]) as slug
+				where not exists (select 1 from eval_versions v where v.eval_id = p.key || '/' || slug))
+		from projects p
+		left join project_delivery_settings s on s.project_key = p.key
+		left join code_projects c on c.project_key = p.key
+		order by p.key`, evals.CodeSlugs)
+	if err != nil {
+		return nil, fmt.Errorf("read the projects' code groups and digests: %w", err)
+	}
+	states, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (regroupState, error) {
+		var (
+			state          regroupState
+			groups, digest []byte
+			builtAt        *time.Time
+		)
+		if err := row.Scan(&state.Key, &state.DefaultRepo, &groups, &digest, &builtAt, &state.seeded); err != nil {
+			return regroupState{}, err
+		}
+		if err := json.Unmarshal(groups, &state.Groups); err != nil {
+			return regroupState{}, fmt.Errorf("decode the code groups of %s: %w", state.Key, err)
+		}
+		stood, err := projectOf(state.Key, digest, builtAt)
+		state.stood = stood
+		return state, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the projects' code groups and digests: %w", err)
+	}
+	return states, nil
 }
 
 // regroup rebuilds every day row of key's code evals from the stored results in one transaction

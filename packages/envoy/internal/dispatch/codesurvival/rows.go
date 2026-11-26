@@ -26,9 +26,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// codeEvalIDs is project's eval ids of the two code evals.
+// codeEvalIDs is project's eval ids of the two code evals (evals.CodeSlugs).
 func codeEvalIDs(project string) []string {
-	return []string{evals.EvalID(project, evals.SlugCodeSurvival), evals.EvalID(project, evals.SlugPostMergeRework)}
+	ids := make([]string, len(evals.CodeSlugs))
+	for index, slug := range evals.CodeSlugs {
+		ids[index] = evals.EvalID(project, slug)
+	}
+	return ids
 }
 
 // project is one project as the builders read it: its key, its default repository in lower case
@@ -39,14 +43,13 @@ type project struct {
 	Groups      []delivery.CodeGroup
 }
 
-// readProjects is every project of keys, or every project when keys is nil, in key order, with
-// its default repository and its code groups (project_delivery_settings.code_groups, none for a
-// project with no delivery settings).
+// readProjects is every project of keys, in key order, with its default repository and its code
+// groups (project_delivery_settings.code_groups, none for a project with no delivery settings).
 func readProjects(ctx context.Context, db Querier, keys []string) ([]project, error) {
 	rows, err := db.Query(ctx, `
 		select p.key, lower(coalesce(p.default_repo, '')), coalesce(s.code_groups, '[]'::jsonb)
 		from projects p left join project_delivery_settings s on s.project_key = p.key
-		where $1::text[] is null or p.key = any($1::text[])
+		where p.key = any($1::text[])
 		order by p.key`, keys)
 	if err != nil {
 		return nil, fmt.Errorf("read the projects' code groups: %w", err)
@@ -70,37 +73,15 @@ func readProjects(ctx context.Context, db Querier, keys []string) ([]project, er
 	return projects, nil
 }
 
-// groupsDigest is the sha256 of groups' canonical JSON, the list as the settings hold it with
-// every list of prefixes and logins written, empty or not: what code_projects.groups_digest holds
-// of the groups a project's day rows stand built under.
+// groupsDigest is the sha256 of groups' canonical JSON (delivery.CodeGroupsJSON): what
+// code_projects.groups_digest holds of the groups a project's day rows stand built under.
 func groupsDigest(groups []delivery.CodeGroup) [32]byte {
-	canonical := make([]delivery.CodeGroup, len(groups))
-	for index, group := range groups {
-		canonical[index] = delivery.CodeGroup{Name: group.Name, BranchPrefixes: nonNil(group.BranchPrefixes), AuthorLogins: nonNil(group.AuthorLogins)}
-	}
-	encoded, err := json.Marshal(canonical)
+	encoded, err := delivery.CodeGroupsJSON(groups)
 	if err != nil {
 		// A list of strings always encodes.
 		panic(fmt.Sprintf("codesurvival: encode code groups: %v", err))
 	}
 	return sha256.Sum256(encoded)
-}
-
-// nonNil is values, or an empty list for none.
-func nonNil(values []string) []string {
-	if values == nil {
-		return []string{}
-	}
-	return values
-}
-
-// groupNames is the names of groups, in order.
-func groupNames(groups []delivery.CodeGroup) []string {
-	names := make([]string, len(groups))
-	for index, group := range groups {
-		names[index] = group.Name
-	}
-	return names
 }
 
 // projectsOfRepo is the keys of every project repo's results on days count for (R11), sorted:
@@ -149,10 +130,7 @@ func projectsOfIssues(ctx context.Context, db Querier, changes []survival.Change
 
 // union is the keys of every list, sorted, each once.
 func union(lists ...[]string) []string {
-	var all []string
-	for _, list := range lists {
-		all = append(all, list...)
-	}
+	all := slices.Concat(lists...)
 	slices.Sort(all)
 	return slices.Compact(all)
 }
@@ -224,7 +202,7 @@ func prepare(ctx context.Context, tx pgx.Tx, keys []string, build string, at tim
 		afterRows()
 	}
 	for _, p := range b.projects {
-		if _, err := evals.WriteCodeGroupSeriesTx(ctx, tx, p.Key, groupNames(p.Groups)); err != nil {
+		if _, err := evals.WriteCodeGroupSeriesTx(ctx, tx, p.Key, delivery.CodeGroupNames(p.Groups)); err != nil {
 			return nil, nil, fmt.Errorf("write the code group series of %s: %w", p.Key, err)
 		}
 	}
@@ -305,7 +283,11 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	pairs, err := pairsOf(ctx, db, changes)
+	adderRepos, adders := make([]string, len(changes)), make([]string, len(changes))
+	for index, change := range changes {
+		adderRepos[index], adders[index] = change.Repo, change.SHA
+	}
+	pairs, err := PairsOf(ctx, db, adderRepos, adders)
 	if err != nil {
 		return nil, err
 	}
@@ -433,20 +415,17 @@ func changesFor(ctx context.Context, db Querier, p project, days []time.Time) ([
 	return changes, nil
 }
 
-// pairsOf is every stored pair whose adder is one of changes.
-func pairsOf(ctx context.Context, db Querier, changes []fold.Change) ([]fold.Pair, error) {
-	if len(changes) == 0 {
+// PairsOf is every stored pair whose adder is adders[i], a change of repos[i], by repository, adder
+// and remover: the pairs of a set of changes, in one statement.
+func PairsOf(ctx context.Context, db Querier, repos, adders []string) ([]fold.Pair, error) {
+	if len(adders) == 0 {
 		return nil, nil
-	}
-	repos, shas := make([]string, len(changes)), make([]string, len(changes))
-	for index, change := range changes {
-		repos[index], shas[index] = change.Repo, change.SHA
 	}
 	rows, err := db.Query(ctx, `
 		select p.repo, p.adder_sha, p.remover_sha, p.remover_pr, p.remover_head_ref, p.remover_author,
 			coalesce(p.remover_issue_key, ''), p.lines, p.days_between
 		from code_pairs p join unnest($1::text[], $2::text[]) as a(repo, sha) on p.repo = a.repo and p.adder_sha = a.sha
-		order by p.repo, p.adder_sha, p.remover_sha`, repos, shas)
+		order by p.repo, p.adder_sha, p.remover_sha`, repos, adders)
 	if err != nil {
 		return nil, fmt.Errorf("read the pairs of the changes: %w", err)
 	}

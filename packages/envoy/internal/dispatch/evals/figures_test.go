@@ -1068,7 +1068,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 			continue
 		}
 		part := row.DayPart
-		if !throughRepository && (owner != c.project || !slices.Contains(codeDaySlugs, slugOf(owner, row.EvalID))) {
+		if !throughRepository && (owner != c.project || !slices.Contains(CodeSlugs, slugOf(owner, row.EvalID))) {
 			part.ViaRepository = 0
 		}
 		at := slices.IndexFunc(entry.Series, func(series Series) bool { return series.Series == part.Series })

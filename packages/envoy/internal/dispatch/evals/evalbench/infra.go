@@ -393,9 +393,14 @@ func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory,
 	return history, nil
 }
 
-// copyRows writes rows into table's columns with one COPY.
-func copyRows(ctx context.Context, pool *store.Pool, table string, columns []string, rows pgx.CopyFromSource) error {
-	if _, err := pool.CopyFrom(ctx, pgx.Identifier{table}, columns, rows); err != nil {
+// copier is what copyRows needs of its connection: the pool, or a transaction.
+type copier interface {
+	CopyFrom(ctx context.Context, table pgx.Identifier, columns []string, rows pgx.CopyFromSource) (int64, error)
+}
+
+// copyRows writes rows into table's columns with one COPY, on the pool or in a transaction.
+func copyRows(ctx context.Context, db copier, table string, columns []string, rows pgx.CopyFromSource) error {
+	if _, err := db.CopyFrom(ctx, pgx.Identifier{table}, columns, rows); err != nil {
 		return fmt.Errorf("copy the rows of %s: %w", table, err)
 	}
 	return nil

@@ -697,10 +697,10 @@ func refused(route Route, got answer, err error) string {
 
 // filesPatch reads the files[] of commit sha, every page of it
 // (`GET /repos/{owner}/{repo}/commits/{sha}?per_page=100&page=n`, following each page's Link
-// header), into the replay's form, and answers how many files the pages listed.
+// header), into the replay's form, a page at a time (survival.FilesPatch), so no page's patch text
+// is held past its own, and answers how many files the pages listed.
 func (g *GitHub) filesPatch(ctx context.Context, r Repository, sha string) (PatchRead, int, error) {
-	var entries []survival.FilesEntry
-	read := 0
+	files, withheld, listed, read := []survival.FileDiff{}, 0, 0, 0
 	for path := r.repoPath() + "/commits/" + url.PathEscape(sha) + "?per_page=" + strconv.Itoa(perPage) + "&page=1"; path != ""; {
 		got, err := g.readJSON(ctx, r, RouteFiles, path, githubapp.CheckResponse)
 		if err != nil {
@@ -712,12 +712,12 @@ func (g *GitHub) filesPatch(ctx context.Context, r Repository, sha string) (Patc
 		if err := json.Unmarshal(got.body, &page); err != nil {
 			return PatchRead{}, 0, fmt.Errorf("decode the files of %s %s: %w", r.Repo, sha, githubapp.ShownErr(err))
 		}
-		entries = append(entries, page.Files...)
+		diffs, held := survival.FilesPatch(page.Files)
+		files, withheld, listed = append(files, diffs...), withheld+held, listed+len(page.Files)
 		read += len(got.body)
 		if path, err = g.client.NextPage(got.header); err != nil {
 			return PatchRead{}, 0, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
 		}
 	}
-	files, withheld := survival.FilesPatch(entries)
-	return PatchRead{Patch: survival.Patch{Files: files, Withheld: withheld}, Route: RouteFiles, Bytes: read}, len(entries), nil
+	return PatchRead{Patch: survival.Patch{Files: files, Withheld: withheld}, Route: RouteFiles, Bytes: read}, listed, nil
 }

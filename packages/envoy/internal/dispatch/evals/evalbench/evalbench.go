@@ -28,10 +28,11 @@
 //     27,967 pairs of a change and a later change that removed its lines in 90 days, all at the
 //     load's scale; INFRA's two code groups, in its delivery settings; the fingerprint of each day;
 //     the days that began to wait 33 days before Now's measured; and the repository's row checked
-//     on Now's day, so the server's run reads GitHub for none of it during the measurement. The
-//     code_projects table is left empty, so the regroup's pass at the server's start builds INFRA's
-//     day rows of the two code evals from these results, with no GitHub request and no App. Spec.NoCode
-//     leaves all of it out, and Base and OneProject write none.
+//     on Now's day, with no pass due before a year after Now, so the server's run reads GitHub for
+//     none of it during the measurement. The code_projects table is left empty, so the regroup's
+//     pass at the server's start builds INFRA's day rows of the two code evals from these results,
+//     with no GitHub request and no App. Spec.NoCode leaves all of it out, and Base and OneProject
+//     write none.
 //
 // Base writes, into a database the base's envoy-dispatch migrated (main at the commit this head
 // merges), the history main's Delivery page reads, for k8's and k13's negative controls: the same
@@ -154,9 +155,9 @@ func (s Spec) readings() bool {
 }
 
 // WritesCode is whether the load writes the code survival results: a load of this head's schema
-// that does not leave them out (NoCode).
+// with its readings that does not leave them out (NoCode).
 func (s Spec) WritesCode() bool {
-	return !s.NoCode && !s.Base && !s.OneProject
+	return !s.NoCode && s.readings()
 }
 
 // scaled is count at the spec's scale, at least floor.
@@ -167,14 +168,14 @@ func (s Spec) scaled(count float64, floor int) int {
 // Counts is what one load wrote, by table, read back from the database once it is done.
 type Counts map[string]int64
 
-// countedTables are the tables Counts reads, in the order it prints them; it reads those the
-// database holds, so a load of the base counts none of the registry's.
-var countedTables = []string{
+// countedTables are the tables Counts reads, in the order it prints them, the code survival
+// results' (codeTables) last; it reads those the database holds, so a load of the base counts none
+// of the registry's.
+var countedTables = slices.Concat([]string{
 	"projects", "issues", "events", "handoffs", "legion_observations", "legion_settings",
 	"delivery_pull_requests", "delivery_runs", "delivery_run_jobs",
 	"session_titles", "eval_versions", "eval_series", "eval_readings", "eval_days",
-	"code_repos", "code_days", "code_changes", "code_pairs", "code_projects",
-}
+}, codeTables)
 
 // Load writes the fixture spec names into the database, which the server must have migrated and
 // nothing else written, and answers the counts it then holds. logf reports each step as it ends.

@@ -484,7 +484,7 @@ func TestTheSeedKeepsTheCodeGroupSeries(t *testing.T) {
 	held := func() map[string]Series {
 		t.Helper()
 		series := map[string]Series{}
-		for _, slug := range codeDaySlugs {
+		for _, slug := range CodeSlugs {
 			_, current := r.currentOf(t, slug)
 			for name, one := range current {
 				series[slug+" "+name] = one
@@ -693,7 +693,7 @@ func TestTheRefresherWritesNoRowForTheCodeEvals(t *testing.T) {
 	}
 	codeRowsEverywhere := func() int {
 		t.Helper()
-		return r.count(t, `select count(*) from eval_days where substr(eval_id, length(project_key) + 2) = any($1)`, codeDaySlugs)
+		return r.count(t, `select count(*) from eval_days where substr(eval_id, length(project_key) + 2) = any($1)`, CodeSlugs)
 	}
 
 	for day := 1; day <= 2; day++ {
@@ -764,7 +764,7 @@ func TestTheCodeEvalsViaRepositoryIsReadAndNoOtherChanges(t *testing.T) {
 	if err := r.database.Pool.QueryRow(t.Context(), `
 		select eval_id, day from eval_days where project_key = $1 and repo = '' and n > 0 and listed
 			and substr(eval_id, length(project_key) + 2) <> all($2)
-		order by eval_id, day limit 1`, project, codeDaySlugs).Scan(&other, &day); err != nil {
+		order by eval_id, day limit 1`, project, CodeSlugs).Scan(&other, &day); err != nil {
 		t.Fatalf("read an own row of %s's that counts an item: %v", project, err)
 	}
 	r.exec(t, "store a count through the repository on an own row of another eval", `

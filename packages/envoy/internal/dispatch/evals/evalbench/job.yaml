@@ -10,8 +10,10 @@
 #         request to GitHub, and each paint holds both code evals);
 #   base  the first paint of the base, k8's and k13's negative controls: BASE, main at the commit
 #         COMMIT merges, `git merge-base <COMMIT> origin/main`, which base mode builds and loads;
-#         with BASE_FLAGS empty and BASE a commit of this branch that holds the eval registry but
-#         not the code evals it is k17's control: the evals list holds neither code eval;
+#         with BASE_FLAGS empty and BASE a commit of this branch that holds every table of the eval
+#         registry the load checks but not the code evals (its project_delivery_settings with or
+#         without code_groups, migration 20261126133047) it is k17's control: the evals list holds
+#         neither code eval;
 #   tab   the Evals tab in Chromium over the full fixture (job.sh tab): the paint's three cases,
 #         each after a restart, and the recompute under INFRA-2916's write drive, k4 with
 #         TEN_TIMES=0 and k19 with TEN_TIMES=1;

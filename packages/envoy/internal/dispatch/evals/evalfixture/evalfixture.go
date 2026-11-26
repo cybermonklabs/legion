@@ -606,24 +606,34 @@ func deliverySettingsOf(deployRepo string) delivery.DeliverySettings {
 }
 
 // PutDeliverySettings saves settings as project's delivery settings (project_delivery_settings and
-// project_deploy_sources, through delivery.PutProjectSettings in a transaction of its own):
-// delivery on, settings' population rule, and one github_workflow source holding settings' rule,
-// which names no repository where settings.DeployRepo is the project's default repository, so it
-// reads that default and moves with it, and names settings.DeployRepo otherwise. The project's row
-// exists first.
+// project_deploy_sources, through delivery.PutProjectSettings in a transaction of its own): the save
+// DeliverySettingsInput says. The project's row exists first.
 func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, settings delivery.DeliverySettings, by model.Actor) (delivery.ProjectSettings, error) {
+	input, err := DeliverySettingsInput(ctx, pool, project, settings)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	return saveSettings(ctx, pool, input, by)
+}
+
+// DeliverySettingsInput is the save of settings as project's delivery settings that
+// PutDeliverySettings makes: delivery on, settings' population rule, and one github_workflow source
+// holding settings' rule, which names no repository where settings.DeployRepo is the project's
+// default repository, so it reads that default and moves with it, and names settings.DeployRepo
+// otherwise. The project's row exists first.
+func DeliverySettingsInput(ctx context.Context, pool *store.Pool, project string, settings delivery.DeliverySettings) (delivery.ProjectSettingsInput, error) {
 	var defaultRepo *string
 	if err := pool.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
-		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
+		return delivery.ProjectSettingsInput{}, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
 	var repo *string
 	if defaultRepo == nil || !strings.EqualFold(*defaultRepo, settings.DeployRepo) {
 		repo = new(settings.DeployRepo)
 	}
-	return saveSettings(ctx, pool, delivery.ProjectSettingsInput{
+	return delivery.ProjectSettingsInput{
 		Project: project, Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(settings, repo)},
 		PopulationAuthors: settings.PopulationAuthors, ExcludedRepos: settings.ExcludedRepos,
-	}, by)
+	}, nil
 }
 
 // saveSettings saves input through delivery.PutProjectSettings in a transaction of its own, as the

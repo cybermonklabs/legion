@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/codesurvival"
+	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -28,6 +30,10 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // codeNow is the midnight the code survival histories of these tests end at.
 var codeNow = time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+
+// codeMarkDays is how long after a change a commit's removal of its lines is a pair of it
+// (survival.Mark).
+const codeMarkDays = 30
 
 // codeIssues is a history of two INFRA issues opened a day, each closed five days after it opens but
 // every third, which the draws of an issue open at a commit's moment (issueOpenAt) read.
@@ -96,18 +102,18 @@ func TestTheCodeHistoryHoldsTheMeasuredRates(t *testing.T) {
 	}
 
 	// Every way a group takes a change is held, and the agents' share is the reference window's.
-	groups := delivery.SurvivalGroups(CodeGroups)
+	groups := delivery.SurvivalGroups(codeGroups)
 	ways := map[string]int{}
 	for _, change := range plan.changes {
 		group, ok := survival.GroupOf(survival.ChangeFacts{PR: change.pr, HeadRef: change.headRef, Author: change.author, IssueKey: change.issue}, groups)
 		if !ok {
 			t.Fatalf("no group takes the change of %s by %s", change.headRef, change.author)
 		}
-		prefix := strings.HasPrefix(change.headRef, CodeGroups[0].BranchPrefixes[0])
-		login := slices.Contains(CodeGroups[0].AuthorLogins, change.author)
+		prefix := strings.HasPrefix(change.headRef, codeGroups[0].BranchPrefixes[0])
+		login := slices.Contains(codeGroups[0].AuthorLogins, change.author)
 		way := map[[2]bool]string{{true, true}: "prefix and login", {true, false}: "prefix alone", {false, true}: "login alone", {false, false}: "neither"}[[2]bool{prefix, login}]
 		ways[group+" by "+way]++
-		if group == CodeGroups[0].Name {
+		if group == codeGroups[0].Name {
 			agents++
 		}
 	}
@@ -260,8 +266,8 @@ func TestTheCodeResultsAreWrittenAndTheRegroupBuildsINFRAsDayRowsFromThem(t *tes
 		t.Fatalf("read INFRA's code groups: %v", err)
 	}
 	var groups []delivery.CodeGroup
-	if err := json.Unmarshal(stored, &groups); err != nil || !reflect.DeepEqual(groups, CodeGroups) {
-		t.Errorf("INFRA's settings hold the code groups %s (%v), want %+v", stored, err, CodeGroups)
+	if err := json.Unmarshal(stored, &groups); err != nil || !reflect.DeepEqual(groups, codeGroups) {
+		t.Errorf("INFRA's settings hold the code groups %s (%v), want %+v", stored, err, codeGroups)
 	}
 	var checkedOn, lastMeasuredOn, startDay time.Time
 	var state string
@@ -313,6 +319,72 @@ func TestTheCodeResultsAreWrittenAndTheRegroupBuildsINFRAsDayRowsFromThem(t *tes
 	}
 	if retry := regroup.Pass(ctx); !retry.IsZero() {
 		t.Errorf("a second regroup pass asks for another at %s", retry)
+	}
+}
+
+// TestTheServersRunAsksGitHubForNothingAfterNowsDay: the repository's row the load writes says the
+// next daily pass may not start before a year after Now (retry_at), so a pass of the server's run on
+// the day after Now's, as a job that runs past UTC midnight or an EVALBENCH_NOW before the server's
+// day gives it, does nothing: it sends GitHub no request and leaves the row as the load wrote it,
+// where a pass would find the stand-in's 404 and store the repository unreadable.
+func TestTheServersRunAsksGitHubForNothingAfterNowsDay(t *testing.T) {
+	spec := Spec{Now: codeNow, Seed: 2916, Scale: 0.02, BuiltBy: "evalbench-test"}
+	rig, history := codeRig(t, spec)
+	ctx, pool := t.Context(), rig.Pool
+	if err := writeCode(ctx, pool, spec, history); err != nil {
+		t.Fatalf("write the code survival results: %v", err)
+	}
+	repo := strings.ToLower(Repos[0])
+	loaded, found, err := codesurvival.GetRepo(ctx, pool, repo)
+	if err != nil || !found {
+		t.Fatalf("read the repository's row: found %t, %v", found, err)
+	}
+	if want := codeNow.AddDate(1, 0, 0); !loaded.RetryAt.Equal(want) {
+		t.Errorf("the repository's row holds retry_at %s, want a year after Now, %s", loaded.RetryAt, want)
+	}
+	github := codesurvivaltest.New(t)
+	run := &codesurvival.Run{Pool: pool, Client: github.Client(t), Attributor: delivery.NewAttributor(refs.Renames{}), Build: "evalbench-test",
+		Now: func() time.Time { return codeNow.AddDate(0, 0, 1).Add(time.Hour) }, Logger: slog.New(slog.DiscardHandler)}
+	run.Pass(ctx)
+	if requests := github.Requests(); len(requests) != 0 {
+		t.Errorf("the run's pass on the day after Now's sent GitHub %d requests: %v", len(requests), requests)
+	}
+	if after, found, err := codesurvival.GetRepo(ctx, pool, repo); err != nil || !found || after != loaded {
+		t.Errorf("the run's pass on the day after Now's left the repository's row %+v (found %t, %v), want it as loaded, %+v", after, found, err, loaded)
+	}
+}
+
+// TestTheDeliverySettingsAreWrittenWhereTheSettingsHoldNoCodeGroups: a database whose
+// project_delivery_settings holds no code_groups, a commit of this branch before migration
+// 20261126133047 that k17's control loads with -code=false, takes INFRA's delivery settings as the
+// rows a database of this head takes, less that column.
+func TestTheDeliverySettingsAreWrittenWhereTheSettingsHoldNoCodeGroups(t *testing.T) {
+	spec := Spec{Now: codeNow, Seed: 2916, Scale: 0.02, BuiltBy: "evalbench-test"}
+	head, _ := codeRig(t, spec)
+	base := storetest.Open(t)
+	ctx := t.Context()
+	if _, err := base.Pool.Exec(ctx, `alter table project_delivery_settings drop column code_groups`); err != nil {
+		t.Fatalf("drop code_groups: %v", err)
+	}
+	if _, err := writeInfra(ctx, base.Pool, spec); err != nil {
+		t.Fatalf("write INFRA's issues: %v", err)
+	}
+	if err := putDeliverySettings(ctx, base.Pool); err != nil {
+		t.Fatalf("write INFRA's delivery settings where they hold no code_groups: %v", err)
+	}
+	settings := func(pool *store.Pool) string {
+		t.Helper()
+		var written string
+		if err := pool.QueryRow(ctx, `
+			select (to_jsonb(s) - 'code_groups' - 'updated_at')::text || ' ' ||
+				(select jsonb_agg(to_jsonb(d) - 'id' order by d.position)::text from project_deploy_sources d where d.project_key = s.project_key)
+			from project_delivery_settings s where s.project_key = $1`, Project).Scan(&written); err != nil {
+			t.Fatalf("read INFRA's delivery settings: %v", err)
+		}
+		return written
+	}
+	if got, want := settings(base.Pool), settings(head.Pool); got != want {
+		t.Errorf("INFRA's delivery settings with no code_groups are\n%s\nwant this head's less code_groups\n%s", got, want)
 	}
 }
 

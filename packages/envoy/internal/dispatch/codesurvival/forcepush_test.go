@@ -118,6 +118,10 @@ func TestAForcePushMarksTheTouchedDaysBeforeAnythingElse(t *testing.T) {
 		}
 		windows++
 	}
+	// Every window of seven days holds day 3, the first marked day, so days 0 to 2 are read alone.
+	if read := r.read(widgetsProject, "agents", day(0), day(3)); read.survival.Share == nil || read.rework.Share == nil {
+		t.Errorf("days 0 to 2 hold no marked day and read survival %s and rework %s, want a number of each", value(read.survival.Share), value(read.rework.Share))
+	}
 	lines := r.logs.lines(t, "codesurvival: run")
 	if last := lines[len(lines)-1]; last["days_marked"] != float64(len(forcedMarks)) || last["stopped"] != stoppedBudget {
 		t.Errorf("the pass logged %v, want %d days marked and a stop at the budget", last, len(forcedMarks))

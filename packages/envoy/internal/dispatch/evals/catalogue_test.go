@@ -401,7 +401,7 @@ var codeMethodPhrases = []string{
 func TestTheCodeMethodsNeverStateTheMixedOrTheTipGap(t *testing.T) {
 	t.Parallel()
 	checked := 0
-	for _, slug := range codeDaySlugs {
+	for _, slug := range CodeSlugs {
 		method := entryOf(t, slug).method()
 		if !strings.Contains(method, "1.2 points") || !strings.Contains(method, "4.8 for the other agent") {
 			t.Errorf("%s's method does not state the same-age gap, so a check that it states no other proves little", slug)

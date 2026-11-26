@@ -1,12 +1,16 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // caughtUpState is the state of a server whose consumers have caught up as of today, at build
 // "build": no Legion project and no keyword fill to wait for, the refresher's cursors at the heads,
@@ -70,6 +74,33 @@ func TestABaseThatHoldsNoRefresherIsOwedNoDayRowsAndOneThatHoldsItIsOwedThem(t *
 	missing := state.caughtUp("build", previous, "INFRA")
 	if len(missing) == 0 || !strings.Contains(strings.Join(missing, "\n"), "figures/INFRA") {
 		t.Errorf("a base whose refresher has not walked INFRA's figures owes %q, want the walk named", missing)
+	}
+}
+
+// TestTheBaseRefresherIsWaitedForOnlyWhereTheWaitAsksForIt: at the base, the catch-up reads the
+// refresher's state where the catalog holds its cursors and -base-refresher asks for it (k17's
+// control, whose paint reads the base's evals list), and otherwise waits for the facts and the fill
+// alone, as capture-base's k22 capture at its base head, which reads no day row, did before the code
+// evals; at this head it always reads it. The database is this head's, which holds the cursors.
+func TestTheBaseRefresherIsWaitedForOnlyWhereTheWaitAsksForIt(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	for _, row := range []struct {
+		mode          string
+		baseRefresher bool
+		registry      bool
+	}{
+		{"base", false, false},
+		{"base", true, true},
+		{"head", false, true},
+	} {
+		state, err := readConsumers(t.Context(), database.Pool, row.mode, row.baseRefresher)
+		if err != nil {
+			t.Fatalf("read the consumers in mode %s with -base-refresher=%t: %v", row.mode, row.baseRefresher, err)
+		}
+		if state.registry != row.registry {
+			t.Errorf("in mode %s with -base-refresher=%t the wait reads the refresher: %t, want %t", row.mode, row.baseRefresher, state.registry, row.registry)
+		}
 	}
 }
 

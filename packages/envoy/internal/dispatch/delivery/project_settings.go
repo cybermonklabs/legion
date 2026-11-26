@@ -94,6 +94,27 @@ func SurvivalGroups(groups []CodeGroup) []survival.Group {
 	return converted
 }
 
+// CodeGroupNames is the names of groups, in order.
+func CodeGroupNames(groups []CodeGroup) []string {
+	names := make([]string, len(groups))
+	for i, group := range groups {
+		names[i] = group.Name
+	}
+	return names
+}
+
+// CodeGroupsJSON is groups' canonical JSON: the list in order, every group's list of prefixes and
+// of logins written, empty or not. It is what a save stores in project_delivery_settings.code_groups
+// (PutProjectSettings), and what codesurvival hashes into the digest of the groups a project's day
+// rows stand built under.
+func CodeGroupsJSON(groups []CodeGroup) ([]byte, error) {
+	canonical := make([]CodeGroup, len(groups))
+	for i, group := range groups {
+		canonical[i] = CodeGroup{Name: group.Name, BranchPrefixes: nonNil(group.BranchPrefixes), AuthorLogins: nonNil(group.AuthorLogins)}
+	}
+	return json.Marshal(canonical)
+}
+
 // SourceRepoOf is the repository a github_workflow source reads (R2): the one it names, else the
 // project's default repository, and false where it names none and the project has none. Every
 // reader that names a source's repository asks here.
@@ -642,15 +663,11 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 		day := input.FailuresMeasuredSince.UTC().Format(time.DateOnly)
 		since = &day
 	}
-	// codeGroups is the groups the save writes, every list of them a list, and null where the input
-	// names none, which keeps the stored groups (an insert stores the column's empty list).
+	// codeGroups is the groups the save writes (CodeGroupsJSON), and null where the input names
+	// none, which keeps the stored groups (an insert stores the column's empty list).
 	var codeGroups []byte
 	if input.CodeGroups != nil {
-		groups := make([]CodeGroup, len(*input.CodeGroups))
-		for i, group := range *input.CodeGroups {
-			groups[i] = CodeGroup{Name: group.Name, BranchPrefixes: nonNil(group.BranchPrefixes), AuthorLogins: nonNil(group.AuthorLogins)}
-		}
-		if codeGroups, err = json.Marshal(groups); err != nil {
+		if codeGroups, err = CodeGroupsJSON(*input.CodeGroups); err != nil {
 			return ProjectSettings{}, fmt.Errorf("encode the code groups of %s: %w", input.Project, err)
 		}
 	}

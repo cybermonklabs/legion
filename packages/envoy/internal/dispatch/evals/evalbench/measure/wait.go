@@ -42,11 +42,14 @@ type heads struct {
 // that hold day rows and how far each project's stored figures are built (eval_figures_built).
 // This head runs every one of these consumers. The base, main at the commit this head merges,
 // runs the facts consumer and the fill where its catalog holds their tables, and the refresher
-// where its catalog holds the refresher's cursors (registry): a base before the eval registry runs
-// none, and a base that is a commit of this branch before the code evals runs all but the regroup
-// (readConsumers), which a merge of main can change. Where the database holds code_projects
-// (codeBuilt), the regroup's pass at the server's start has built a project's day rows of the code
-// evals when its row holds the digest of its groups.
+// where its catalog holds the refresher's cursors: a base before the eval registry runs none, and
+// a base that is a commit of this branch before the code evals runs all but the regroup. The base's
+// refresher is waited for (registry) only where the wait asks for it (options.baseRefresher, k17's
+// control, whose paint reads the base's evals list): capture-base's GET /delivery/timeline reads no
+// day row, so k22's capture at its base head waits for the facts and the fill alone (readConsumers),
+// as it did before the code evals. A merge of main can change what the base runs. Where the
+// database holds code_projects (codeBuilt), the regroup's pass at the server's start has built a
+// project's day rows of the code evals when its row holds the digest of its groups.
 type consumerState struct {
 	heads       heads
 	legionFacts bool
@@ -117,7 +120,7 @@ func wait(ctx context.Context, r *report, o options) error {
 	var seen []heads
 	held, filled := false, false
 	for {
-		state, err := readConsumers(ctx, database.Pool, o.mode)
+		state, err := readConsumers(ctx, database.Pool, o.mode, o.baseRefresher)
 		if err != nil {
 			return err
 		}
@@ -150,8 +153,9 @@ func wait(ctx context.Context, r *report, o options) error {
 
 // readConsumers reads the feeds' heads and the consumers' cursors, marks and walks. At the base it
 // first reads which of the Legion facts consumer, the keyword fill and the refresher the server
-// runs, by whether the catalog holds their cursor tables, and reads those alone.
-func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumerState, error) {
+// runs, by whether the catalog holds their cursor tables, and reads those alone, the refresher's
+// only where baseRefresher asks for it.
+func readConsumers(ctx context.Context, pool *store.Pool, mode string, baseRefresher bool) (consumerState, error) {
 	state := consumerState{facts: map[string]int64{}, computed: map[string]string{}, days: map[string]int64{}, builtBy: map[string]int64{}}
 	if err := pool.QueryRow(ctx, `
 		select coalesce((select max(id) from events), 0), coalesce((select max(id) from legion_observations), 0),
@@ -166,6 +170,7 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 			to_regclass('eval_days_cursor') is not null`).Scan(&state.legionFacts, &fill, &state.registry); err != nil {
 			return consumerState{}, fmt.Errorf("read which consumers the base runs: %w", err)
 		}
+		state.registry = state.registry && baseRefresher
 	}
 	rows, err := pool.Query(ctx, `select distinct project from legion_observations order by project`)
 	if err != nil {

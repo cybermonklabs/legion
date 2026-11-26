@@ -15,10 +15,12 @@
 #                  the commit this head merges: envoy-dispatch built at EVALBENCH_BASE, its
 #                  database migrated by it, and the generator's -base history, written by this
 #                  head's generator. With EVALBENCH_BASE_FLAGS empty and EVALBENCH_BASE a commit of
-#                  this branch that holds the eval registry but not the code evals, it is k17's
-#                  control: the generator loads this head's history with its readings and none of
-#                  the code survival results (-code=false), and the paint is the evals list, which
-#                  must hold neither code eval
+#                  this branch that holds every table of the eval registry the load checks
+#                  (evalfixture.DerivedTables) but not the code evals, it is k17's control: the
+#                  generator loads this head's history with its readings and none of the code
+#                  survival results (-code=false), writing the delivery settings without code_groups
+#                  where the base's project_delivery_settings predates that column (migration
+#                  20261126133047), and the paint is the evals list, which must hold neither code eval
 #   job.sh tab     the Evals tab's paint and recompute in Chromium (k4 at the stated rate, k19 at
 #                  ten times; run.sh's tab): this head's server serving the web app built from the
 #                  checkout, over the full fixture, with track_commit_timestamp on, so the drive

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net/url"
 	"slices"
 	"time"
@@ -137,18 +136,16 @@ type codeChange struct {
 // codeRange is what a code eval's readers of one range read once (evalRangeReads): the project, the
 // eval's status rows of the range in the cuts the request reads, in day order, and each by its cut
 // and day; the changes that count for the project on the days their cut measured, each of a group,
-// in commit order; the days each repository's changes were read on that their cut measured, which
-// its pairs are read on; for each marked or blocked day of a cut, the repositories of the changes
-// that count for the project on it; and the first change of each repository's marked day, by the
-// repository and the day.
+// in commit order; for each marked day of a cut, the repositories of the changes that count for the
+// project on it; and the first change of each repository's marked day, by the repository and the
+// day.
 type codeRange struct {
-	project  *codeProject
-	rows     []evals.DayRow
-	status   map[codeCutDay]evals.DayRow
-	changes  []codeChange
-	measured map[string][]time.Time
-	held     map[codeCutDay][]string
-	first    map[codeCutDay]string
+	project *codeProject
+	rows    []evals.DayRow
+	status  map[codeCutDay]evals.DayRow
+	changes []codeChange
+	held    map[codeCutDay][]string
+	first   map[codeCutDay]string
 }
 
 // codeDayState is the state a code eval's status row states of its day: measured, marked or
@@ -168,8 +165,9 @@ func codeDayState(row evals.DayRow) survival.DayState {
 // codeRangeOf is read's range as the code evals' rows read it (codeRange). Without a repository
 // filter every change of every repository the run reads (code_repos) is read on the days the
 // project's own rows measured or marked; with one, each named repository's changes on the days its
-// own rows did. A change is the project's where fold.CountsFor says so, with its issue's project
-// read from issues, as the run reads it.
+// own rows did; every repository's in one statement (codesurvival.ChangesOn). A change is the
+// project's where fold.CountsFor says so, with its issue's project read from issues, as the run
+// reads it. No change of a day whose status row states it blocked is read.
 func codeRangeOf(ctx context.Context, read evalItemsRead) (*codeRange, error) {
 	if read.shared.code != nil {
 		return read.shared.code, nil
@@ -183,8 +181,8 @@ func codeRangeOf(ctx context.Context, read evalItemsRead) (*codeRange, error) {
 		return nil, err
 	}
 	slices.SortStableFunc(rows, func(a, b evals.DayRow) int { return cmp.Or(a.Day.Compare(b.Day), cmp.Compare(a.Repo, b.Repo)) })
-	r := &codeRange{project: project, rows: rows, status: map[codeCutDay]evals.DayRow{}, measured: map[string][]time.Time{},
-		held: map[codeCutDay][]string{}, first: map[codeCutDay]string{}}
+	r := &codeRange{project: project, rows: rows, status: map[codeCutDay]evals.DayRow{}, held: map[codeCutDay][]string{},
+		first: map[codeCutDay]string{}}
 	for _, row := range rows {
 		r.status[codeCutDay{row.Repo, row.Day.Unix()}] = row
 	}
@@ -200,28 +198,18 @@ func codeRangeOf(ctx context.Context, read evalItemsRead) (*codeRange, error) {
 			return nil, err
 		}
 	}
-	var stored []fold.Change
+	var dayRepos []string
+	var days []time.Time
 	for _, repo := range repos {
-		var days []time.Time
 		for _, row := range rows {
-			if row.Repo != cutOf(repo) {
-				continue
-			}
-			switch codeDayState(row) {
-			case survival.DayMeasured:
-				r.measured[repo] = append(r.measured[repo], row.Day)
-				days = append(days, row.Day)
-			case survival.DayMarked:
-				days = append(days, row.Day)
+			if state := codeDayState(row); row.Repo == cutOf(repo) && (state == survival.DayMeasured || state == survival.DayMarked) {
+				dayRepos, days = append(dayRepos, repo), append(days, row.Day)
 			}
 		}
-		changes, err := codesurvival.Changes(ctx, read.tx, repo, days)
-		if err != nil {
-			return nil, err
-		}
-		for _, change := range changes {
-			stored = append(stored, fold.Change{Repo: repo, Change: change})
-		}
+	}
+	stored, err := codesurvival.ChangesOn(ctx, read.tx, dayRepos, days)
+	if err != nil {
+		return nil, err
 	}
 	projects, err := issueProjectsOf(ctx, read.tx, stored)
 	if err != nil {
@@ -244,7 +232,7 @@ func codeRangeOf(ctx context.Context, read evalItemsRead) (*codeRange, error) {
 			if group, ok := survival.GroupOf(change.ChangeFacts, project.groups); ok {
 				r.changes = append(r.changes, codeChange{Change: change, group: group, recorded: row.UpdatedAt})
 			}
-		case survival.DayMarked, survival.DayBlocked:
+		case survival.DayMarked:
 			if !slices.Contains(r.held[key], change.Repo) {
 				r.held[key] = append(r.held[key], change.Repo)
 			}
@@ -368,39 +356,36 @@ type codePair struct {
 func (p codePair) key() string { return p.repo + "@" + p.AdderSHA + ">" + p.RemoverSHA }
 
 // pairItemSource is the pairs the rework eval's day rows of the range counted: each stored pair
-// (codesurvival.Pairs) whose adder is a change of codeRangeOf, the remover of a later change that
-// removed lines of it at or before its 30-day mark, in the adders' commit order, each a row keyed
-// `<repo>@<adder>><remover>` of the series its kind and its adder's group name (codeKindSeries):
-// both issues (each null with none), the kind, the lines removed, the days between the two commits,
-// both pull requests and the adder's group; measured at the adder's commit, addressed to the
-// remover's pull request, with a via link to the remover's commit and a related link to the
-// adder's. series keeps one series' pairs, and row one pair.
+// whose adder is a change of codeRangeOf (codesurvival.PairsOf, one statement over those changes),
+// the remover of a later change that removed lines of it at or before its 30-day mark, in the
+// adders' commit order, each a row keyed `<repo>@<adder>><remover>` of the series its kind and its
+// adder's group name (codeKindSeries): both issues (each null with none), the kind, the lines
+// removed, the days between the two commits, both pull requests and the adder's group; measured at
+// the adder's commit, addressed to the remover's pull request, with a via link to the remover's
+// commit and a related link to the adder's. series keeps one series' pairs, and row one pair.
 func (s *server) pairItemSource(ctx context.Context, read evalItemsRead) (evalItemSource, error) {
 	r, err := codeRangeOf(ctx, read)
 	if err != nil {
 		return nil, err
 	}
 	adders := make(map[string]*codeChange, len(r.changes))
+	adderRepos, adderSHAs := make([]string, len(r.changes)), make([]string, len(r.changes))
 	for index := range r.changes {
 		change := &r.changes[index]
 		adders[codeChangeKey(change.Repo, change.SHA)] = change
+		adderRepos[index], adderSHAs[index] = change.Repo, change.SHA
+	}
+	stored, err := codesurvival.PairsOf(ctx, read.tx, adderRepos, adderSHAs)
+	if err != nil {
+		return nil, err
 	}
 	var pairs []codePair
-	for _, repo := range slices.Sorted(maps.Keys(r.measured)) {
-		stored, err := codesurvival.Pairs(ctx, read.tx, repo, r.measured[repo])
-		if err != nil {
-			return nil, err
-		}
-		for _, pair := range stored {
-			adder, counted := adders[codeChangeKey(repo, pair.AdderSHA)]
-			if !counted {
-				continue
-			}
-			one := codePair{Pair: pair, repo: repo, adder: adder, kind: survival.KindOf(adder.group, adder.ChangeFacts, pair.Remover, r.project.groups)}
-			if (read.request.series == "" || read.request.series == fold.GroupSeries(codeKindSeries[one.kind], adder.group)) &&
-				(read.request.row == "" || read.request.row == one.key()) {
-				pairs = append(pairs, one)
-			}
+	for _, pair := range stored {
+		adder := adders[codeChangeKey(pair.Repo, pair.AdderSHA)]
+		one := codePair{Pair: pair.Pair, repo: pair.Repo, adder: adder, kind: survival.KindOf(adder.group, adder.ChangeFacts, pair.Remover, r.project.groups)}
+		if (read.request.series == "" || read.request.series == fold.GroupSeries(codeKindSeries[one.kind], adder.group)) &&
+			(read.request.row == "" || read.request.row == one.key()) {
+			pairs = append(pairs, one)
 		}
 	}
 	slices.SortStableFunc(pairs, func(a, b codePair) int {

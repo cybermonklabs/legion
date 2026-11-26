@@ -15,10 +15,11 @@
 # (`measure wait`: the Legion facts read whole and, at this head, every family's day rows served
 # under the running build with every walk done and the stored figures built, and the keyword fill's
 # cursor at the newest event, which the load leaves at its last event, with a RESULT line of how
-# long the fill took to get there; at the base, those of these consumers the base runs), once, and
-# stops it. It then starts it again and measures the first paint as the first requests after that
-# start (`measure paint`), and stops it. At this head it does so EVALBENCH_PAINT_RUNS times, 8 by
-# default (k8), each run a fresh start of the server, with each run's RESULT and FAIL lines tagged
+# long the fill took to get there; at the base, those of these consumers the base runs, its
+# refresher among them where it runs one, -base-refresher), once, and stops it. It then starts it
+# again and measures the first paint as the first requests after that start (`measure paint`), and
+# stops it. At this head it does so EVALBENCH_PAINT_RUNS times, 8 by default (k8), each run a fresh
+# start of the server, with each run's RESULT and FAIL lines tagged
 # run=<n>, and then prints one line per read and per group of reads with the median and the
 # maximum of the runs, failing any read over its budget in any run (`measure runs`). The rest is
 # measured once. Run 1's paint is followed by k2, k13's named-jobs read and P0 list, k16's day
@@ -47,9 +48,10 @@
 # readers in through dev sign-in, with the cookie identity a deployment uses.
 #
 # capture-base is k22's capture at the base head (legion/INFRA-978 82380570f8) over the
-# one-project fixture: once the consumers have caught up, GET /api/v1/delivery/timeline for the 84
-# days before EVALBENCH_NOW, written to EVALBENCH_BASE_TIMELINE. pages is k22's read at this head
-# over the same fixture: once the consumers have caught up, evalbench/timelinepages reads the
+# one-project fixture: once the consumers have caught up (the facts consumer and the fill, its
+# refresher not waited for, since the capture reads no day row), GET /api/v1/delivery/timeline for
+# the 84 days before EVALBENCH_NOW, written to EVALBENCH_BASE_TIMELINE. pages is k22's read at this
+# head over the same fixture: once the consumers have caught up, evalbench/timelinepages reads the
 # project's timeline page by page and compares the union with that capture.
 #
 # The server runs with no NATS (DISPATCH_NATS_DISABLED=1), no GitHub App and, but for tab, the
@@ -63,15 +65,16 @@
 # costs no request to GitHub, and a server with no App could make none): `measure ghstub` listens on
 # a loopback port, answers the App's installation and token calls and 404 to every other route, and
 # writes each request it is sent, with its time, method, path and Accept, as a JSON line to
-# $EVALBENCH_WORK/github.jsonl; the server gets a throwaway App key made here (openssl genrsa 2048)
-# as DISPATCH_APP_PEM_B64, DISPATCH_APP_CLIENT_ID=evalbench and the stand-in as
-# DISPATCH_GITHUB_API_BASE; and `measure paint -github-log` prints a FAIL line for each request the
-# log holds that came between the paint's first request and the answer of its last, and a RESULT
-# line with how many came outside it. The server's delivery reconcile, which would make a request at
-# a random moment of its first five minutes, is put off for a year (DISPATCH_TEST_HOOKS=1 and
-# DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=8760h): it is a loop of the server's own and no read of
-# the page, and one request of it in a paint's few seconds would fail a paint no read caused.
-# Without the variable the server runs as it did and paint reads no log.
+# $EVALBENCH_WORK/github-<mode>.jsonl, a log of each mode's own, so the failure-day run, which
+# empties its log at the start, leaves the head run's whole; the server gets a throwaway App key
+# made here (openssl genrsa 2048) as DISPATCH_APP_PEM_B64, DISPATCH_APP_CLIENT_ID=evalbench and
+# the stand-in as DISPATCH_GITHUB_API_BASE; and `measure paint -github-log` prints a FAIL line for
+# each request the log holds that came between the paint's first request and the answer of its
+# last, and a RESULT line with how many came outside it. The server's delivery reconcile, which
+# would make a request at a random moment of its first five minutes, is put off for a year
+# (DISPATCH_TEST_HOOKS=1 and DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=8760h): it is a loop of the
+# server's own and no read of the page, and one request of it in a paint's few seconds would fail a
+# paint no read caused. Without the variable the server runs as it did and paint reads no log.
 #
 # Environment:
 #   EVALBENCH_WORK        where the server's home, its logs and the measurement's output go (required)
@@ -155,9 +158,11 @@ mkdir -p "$work/home" "$work/web"
 server_pid=""
 status=0
 stub_pid=""
-# The settings the server and the paint take when the GitHub stand-in runs (start_github_stub).
+# The settings the server and the paint take when the GitHub stand-in runs, and its log
+# (start_github_stub).
 server_github=()
 paint_github=()
+github_log=""
 # The identity the server reads people by: the Go tests' trusted header, or, for the tab, the
 # cookie a deployment uses, signed by dev sign-in (which serves a loopback origin alone).
 identity=(DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1)
@@ -225,7 +230,8 @@ start_github_stub() {
     exit 1
   }
   rm -f "$port_file"
-  "$EVALBENCH_MEASURE" ghstub -log "$work/github.jsonl" -port-file "$port_file" 2>>"$work/github-stub.log" &
+  github_log=$work/github-$mode.jsonl
+  "$EVALBENCH_MEASURE" ghstub -log "$github_log" -port-file "$port_file" 2>>"$work/github-stub.log" &
   stub_pid=$!
   local started=$SECONDS
   until [ -s "$port_file" ]; do
@@ -245,8 +251,8 @@ start_github_stub() {
   stub_port=$(tr -d '\n' <"$port_file")
   server_github=(DISPATCH_APP_CLIENT_ID=evalbench "DISPATCH_APP_PEM_B64=$pem" "DISPATCH_GITHUB_API_BASE=http://127.0.0.1:$stub_port"
     DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=8760h)
-  paint_github=(-github-log "$work/github.jsonl")
-  echo "MARK $(date -u +%FT%TZ) GitHub stand-in $stub_pid answering the App's calls on port $stub_port, logging to $work/github.jsonl"
+  paint_github=(-github-log "$github_log")
+  echo "MARK $(date -u +%FT%TZ) GitHub stand-in $stub_pid answering the App's calls on port $stub_port, logging to $github_log"
 }
 
 # stop_github_stub stops the stand-in with SIGTERM, which it answers with its log whole and exit 0,
@@ -261,7 +267,29 @@ stop_github_stub() {
     echo "FAIL run.sh: the GitHub stand-in exited $code"
     status=1
   fi
-  echo "RESULT k17 github_stub requests_logged=$(wc -l <"$work/github.jsonl") log=$work/github.jsonl"
+  echo "RESULT k17 github_stub requests_logged=$(wc -l <"$github_log") log=$github_log"
+}
+
+# read_path_names greps each file of the read path (read_path) for a statement that reads from or
+# joins a table pattern matches, and prints check's RESULT line, how many files it read and key, the
+# count of what it found, and, where it found any, a FAIL line naming what and each match. grep
+# exits 1 when no line matches and above 1 when it could not read a file, which would leave a file
+# of the read path unread, a FAIL line too; pipefail hands that status on through tr. Each file is
+# read as one record (-z), so a statement that breaks its line between `from` and the table is
+# found too, and each match is printed with its file on one line.
+read_path_names() {
+  local check=$1 key=$2 what=$3 pattern=$4 found searched=0
+  found=$(grep -H -o -z -i -E '\b(from|join)[[:space:]]+'"$pattern"'\b' "${read_path[@]}" | tr '\0\n' '\n ') || searched=$?
+  if [ "$searched" -gt 1 ]; then
+    echo "FAIL $check grep exited $searched, so a file of the read path was not read: ${read_path[*]}"
+    status=1
+  fi
+  echo "RESULT $check read_path_files=${#read_path[@]} $key=$(printf '%s' "$found" | grep -c . || true)"
+  if [ -n "$found" ]; then
+    echo "FAIL $check the read path names $what:"
+    printf '%s\n' "$found"
+    status=1
+  fi
 }
 # Every exit stops a server still running and waits for it, so the caller's next step (job.sh's
 # stop of Postgres, the next measure) never runs beside it, and the stand-in the same.
@@ -296,7 +324,13 @@ if [ "$command" = measure ] && [ "${EVALBENCH_GITHUB_STUB:-0}" = 1 ]; then
   start_github_stub
 fi
 start_server "$work/server-catchup.log"
-measure wait -timeout "${EVALBENCH_CATCHUP:-1h}"
+# At the base the catch-up waits for the base's refresher too, where the base runs one, since k17's
+# control paints the base's evals list; capture-base's capture reads no day row and waits for none.
+wait_flags=()
+if [ "$command" = measure ] && [ "$mode" = base ]; then
+  wait_flags=(-base-refresher)
+fi
+measure wait -timeout "${EVALBENCH_CATCHUP:-1h}" "${wait_flags[@]}"
 # status is 0 until the wait, so here it is the wait's own; stop_server sets it on a bad stop.
 waited=$status
 stop_server
@@ -387,38 +421,12 @@ if [ "$mode" = head ]; then
       "$dispatch_src/evals/refresher.go" "$dispatch_src/evals/figures_read.go"
       "$dispatch_src/evals/figures_refresher.go" "$dispatch_src/evals/figures.go"
       "$dispatch_src/evals/statistics.go" "$dispatch_src/evals/delivery_targets.go" "$dispatch_src/evals/evals.go")
-    # grep exits 1 when no line matches and above 1 when it could not read a file, which would
-    # leave a file of the read path unread; pipefail hands that status on through tr. Each file is
-    # read as one record (-z), so a statement that breaks its line between `from` and `events` is
-    # found too, and each match is printed with its file on one line.
-    searched=0
-    hits=$(grep -H -o -z -i -E '\b(from|join)[[:space:]]+events\b' "${read_path[@]}" | tr '\0\n' '\n ') || searched=$?
-    if [ "$searched" -gt 1 ]; then
-      echo "FAIL k13 grep exited $searched, so a file of the read path was not read: ${read_path[*]}"
-      status=1
-    fi
-    echo "RESULT k13 read_path_files=${#read_path[@]} reads_of_events=$(printf '%s' "$hits" | grep -c . || true)"
-    if [ -n "$hits" ]; then
-      echo "FAIL k13 the read path names events:"
-      printf '%s\n' "$hits"
-      status=1
-    fi
+    read_path_names k13 reads_of_events events 'events'
     # k17: nor does it name the code survival results (dispatch://INFRA-3206, R15): the day rows
     # and the stored figures hold what the page shows, so no file of the read path reads
     # code_changes, code_pairs or code_days. This is the files' half of the rule, and `measure
     # paint` holds the statements the paint ran to it, in their text and in their plans.
-    searched=0
-    results=$(grep -H -o -z -i -E '\b(from|join)[[:space:]]+code_(changes|pairs|days)\b' "${read_path[@]}" | tr '\0\n' '\n ') || searched=$?
-    if [ "$searched" -gt 1 ]; then
-      echo "FAIL k17 grep exited $searched, so a file of the read path was not read: ${read_path[*]}"
-      status=1
-    fi
-    echo "RESULT k17 read_path_files=${#read_path[@]} reads_of_code_results=$(printf '%s' "$results" | grep -c . || true)"
-    if [ -n "$results" ]; then
-      echo "FAIL k17 the read path names the code survival results:"
-      printf '%s\n' "$results"
-      status=1
-    fi
+    read_path_names k17 reads_of_code_results "the code survival results" 'code_(changes|pairs|days)'
   else
     echo "FAIL k13 EVALBENCH_SOURCE names no checkout, so the read path was not read"
     status=1

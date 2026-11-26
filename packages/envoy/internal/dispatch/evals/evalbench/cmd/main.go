@@ -18,10 +18,12 @@
 // -code, on by default, writes INFRA's code survival results (dispatch://INFRA-3206, check k17):
 // 365 days of its default repository's chain at cybermonklabs/legion's measured rate, INFRA's two
 // code groups and the repository's row, so the server's regroup builds the two code evals' day
-// rows when it starts. -code=false leaves them out, for a database whose schema predates them: a
-// base that holds the eval registry but not the code evals (the load then writes this head's
-// history, with its readings, and no -base). -base and -one-project write none, whatever -code
-// says.
+// rows when it starts. -code=false leaves them out, for a database whose schema predates them:
+// k17's control base, a commit of this branch that holds every table of the eval registry the load
+// checks (evalfixture.DerivedTables) but not the code evals, into which the load writes this head's
+// history, with its readings, and no -base; where its project_delivery_settings predates
+// code_groups (migration 20261126133047), the load writes the settings without that column. -base
+// and -one-project write none, whatever -code says.
 //
 // -failure-day writes a failure day (evalbench.AddFailureDay) into a database this command has
 // loaded, and nothing else: -failure-day-runs failed deploy runs with -failure-day-jobs failed
@@ -58,8 +60,9 @@ type config struct {
 // errUsage is the command line that names no database.
 var errUsage = errors.New(usage)
 
-// parseConfig reads the command line args, flag errors written to stderr. The load's Now is the
-// current UTC midnight where args name none.
+// parseConfig reads the command line args, and writes each error it answers to stderr but the
+// usage, which its caller prints: the flag package writes its own, and -now's is written here. The
+// load's Now is the current UTC midnight where args name none.
 func parseConfig(args []string, stderr io.Writer) (config, error) {
 	var cfg config
 	var now string
@@ -72,7 +75,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	flags.BoolVar(&cfg.spec.TenTimes, "ten-times", false, "write ten times the stated run rate")
 	flags.BoolVar(&cfg.spec.Base, "base", false, "write into a database of the base, main at the commit this head merges (git merge-base <head> origin/main), with no eval reading")
 	flags.BoolVar(&cfg.spec.OneProject, "one-project", false, "write the one-project fixture of the Evals tab's k22 and k24 (INFRA alone, its pull requests in the deploy repository and one other, no reading), into a database of this head or of the base head 82380570f8")
-	flags.BoolVar(&code, "code", true, "write INFRA's code survival results (365 days of its default repository's chain, its two code groups and the repository's row); -base and -one-project write none, and a database whose schema predates them takes -code=false")
+	flags.BoolVar(&code, "code", true, "write INFRA's code survival results (365 days of its default repository's chain, its two code groups and the repository's row); -base and -one-project write none. A database whose schema predates them takes -code=false: k17's control base, a commit of this branch that holds the eval registry's tables but not the code evals, its delivery settings with or without code_groups (migration 20261126133047)")
 	flags.StringVar(&cfg.spec.BuiltBy, "built-by", "", "the build the logged evals' day rows record: the server's stamped commit")
 	flags.StringVar(&now, "now", "", "the moment every history ends at, RFC 3339; the current UTC midnight by default")
 	flags.IntVar(&cfg.day.DaysAgo, "failure-day", 0, "write only a failure day into the loaded database, on the UTC day this many days before -now's, 1 to 84; 0 loads the fixture")
@@ -86,7 +89,9 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if now != "" {
 		at, err := time.Parse(time.RFC3339, now)
 		if err != nil {
-			return config{}, fmt.Errorf("read -now %q as a moment: %w", now, err)
+			err = fmt.Errorf("read -now %q as a moment: %w", now, err)
+			fmt.Fprintf(stderr, "evalbench: %v\n", err)
+			return config{}, err
 		}
 		cfg.spec.Now = at.UTC()
 	}
@@ -105,10 +110,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	case err != nil:
-		fmt.Fprintf(os.Stderr, "evalbench: %v\n", err)
+		// parseConfig has written the error to stderr.
 		os.Exit(2)
 	}
-	spec, day := cfg.spec, cfg.day
 	ctx := context.Background()
 	opened, err := store.Open(ctx, cfg.database)
 	if err != nil {
@@ -119,10 +123,10 @@ func main() {
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "evalbench: "+format+"\n", args...)
 	}
-	if day.DaysAgo != 0 {
+	if cfg.day.DaysAgo != 0 {
 		logf("adding a failure day of %d failed runs and %d failed jobs at scale %g, %d days before %s, seed %d",
-			day.Runs, day.Jobs, spec.Scale, day.DaysAgo, spec.Now.Format(time.RFC3339), spec.Seed)
-		added, err := evalbench.AddFailureDay(ctx, opened.Pool, spec, day)
+			cfg.day.Runs, cfg.day.Jobs, cfg.spec.Scale, cfg.day.DaysAgo, cfg.spec.Now.Format(time.RFC3339), cfg.spec.Seed)
+		added, err := evalbench.AddFailureDay(ctx, opened.Pool, cfg.spec, cfg.day)
 		if err != nil {
 			fail(err)
 		}
@@ -131,16 +135,16 @@ func main() {
 		return
 	}
 	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t, one project: %t, code survival results: %t), ending at %s",
-		spec.Seed, spec.Scale, spec.TenTimes, spec.Base, spec.OneProject, spec.WritesCode(), spec.Now.Format(time.RFC3339))
-	counts, err := evalbench.Load(ctx, opened, spec, logf)
+		cfg.spec.Seed, cfg.spec.Scale, cfg.spec.TenTimes, cfg.spec.Base, cfg.spec.OneProject, cfg.spec.WritesCode(), cfg.spec.Now.Format(time.RFC3339))
+	counts, err := evalbench.Load(ctx, opened, cfg.spec, logf)
 	if err != nil {
 		fail(err)
 	}
 	for _, line := range counts.Lines() {
 		fmt.Printf("RESULT load %s\n", line)
 	}
-	if spec.OneProject {
-		checks, err := evalbench.CheckOneProject(ctx, opened.Pool, spec.Now)
+	if cfg.spec.OneProject {
+		checks, err := evalbench.CheckOneProject(ctx, opened.Pool, cfg.spec.Now)
 		if err != nil {
 			fail(err)
 		}

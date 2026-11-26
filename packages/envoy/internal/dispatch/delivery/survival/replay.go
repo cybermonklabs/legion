@@ -1,6 +1,7 @@
 package survival
 
 import (
+	"maps"
 	"slices"
 	"strings"
 )
@@ -267,12 +268,7 @@ func (r *Replay) PeakLines() int { return r.peak }
 
 // Paths is every path that holds a tracked line, in order.
 func (r *Replay) Paths() []string {
-	paths := make([]string, 0, len(r.paths))
-	for path := range r.paths {
-		paths = append(paths, path)
-	}
-	slices.Sort(paths)
-	return paths
+	return slices.Sorted(maps.Keys(r.paths))
 }
 
 // LinesOf is the tracked lines of path, in the order of their places.

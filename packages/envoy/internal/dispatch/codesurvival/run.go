@@ -310,9 +310,12 @@ func (r *Run) daily(ctx context.Context, gh *GitHub, stored Repo, now time.Time,
 			}
 			line.daysMarked = len(marked)
 		}
+		// The changed days' fingerprints of the chain, read once over the span from the first
+		// changed day to the last.
+		span := survival.Fingerprints(chain, changed[0], changed[len(changed)-1])
 		fresh := make([]survival.Fingerprint, len(changed))
 		for index, day := range changed {
-			fresh[index] = survival.Fingerprints(chain, day, day)[0]
+			fresh[index] = span[dayKey(day)-dayKey(changed[0])]
 		}
 		if err := RefreshFingerprints(ctx, r.Pool, repo, fresh); err != nil {
 			return err
@@ -329,8 +332,12 @@ func (r *Run) daily(ctx context.Context, gh *GitHub, stored Repo, now time.Time,
 		return PutRepo(ctx, r.Pool, stored)
 	}
 	replayed := survival.ReplayRange(chain, days[0], days[len(days)-1])
+	shas := make([]string, len(replayed))
+	for index, commit := range replayed {
+		shas[index] = commit.SHA
+	}
 
-	estimate, err := r.estimate(ctx, gh, opened, chain, replayed, days[0])
+	estimate, err := r.estimate(ctx, opened, chain, shas, days[0])
 	if err != nil {
 		return err
 	}
@@ -348,10 +355,6 @@ func (r *Run) daily(ctx context.Context, gh *GitHub, stored Repo, now time.Time,
 		return &budgetStop{budget: budget}
 	}
 
-	shas := make([]string, len(replayed))
-	for index, commit := range replayed {
-		shas[index] = commit.SHA
-	}
 	workers, buffer := r.workers, r.buffer
 	if workers == 0 {
 		workers = streamWorkers
@@ -410,23 +413,19 @@ func chainRoot(chain []survival.Commit) time.Time {
 // or after d0, the oldest selected day, and one more; one for each commit of the range, its patch;
 // and one for each commit of the range whose pull request attribution has not judged under its
 // rule, its first page of commit messages, where every commit of the range whose merged pull
-// request Dispatch has not stored counts as one. The list's pages are an estimate and no bound:
-// a commit of the chain landed one merged pull request at most, but the list holds every closed
-// pull request updated on or after d0, of every base, and so also those that never merged and
-// those merged into a branch that has not landed, which no read before the list counts. A list
-// longer than the estimate, and a pull request over 100 commits, which takes more pages of
-// commit messages, are met by the budget check after the list (daily), and the counts the pass
-// logs hold them.
-func (r *Run) estimate(ctx context.Context, gh *GitHub, opened Repository, chain, replayed []survival.Commit, d0 time.Time) (int, error) {
+// request Dispatch has not stored counts as one. shas are the SHAs of the range's commits, in
+// chain order. The list's pages are an estimate and no bound: a commit of the chain landed one
+// merged pull request at most, but the list holds every closed pull request updated on or after
+// d0, of every base, and so also those that never merged and those merged into a branch that has
+// not landed, which no read before the list counts. A list longer than the estimate, and a pull
+// request over 100 commits, which takes more pages of commit messages, are met by the budget check
+// after the list (daily), and the counts the pass logs hold them.
+func (r *Run) estimate(ctx context.Context, opened Repository, chain []survival.Commit, shas []string, d0 time.Time) (int, error) {
 	since := 0
 	for _, commit := range chain {
 		if !commit.CommittedAt.Before(d0) {
 			since++
 		}
-	}
-	shas := make([]string, len(replayed))
-	for index, commit := range replayed {
-		shas[index] = commit.SHA
 	}
 	rows, err := r.Pool.Query(ctx, `
 		select distinct number from delivery_pull_requests
@@ -442,7 +441,7 @@ func (r *Run) estimate(ctx context.Context, gh *GitHub, opened Repository, chain
 	if err != nil {
 		return 0, err
 	}
-	return since/perPage + 1 + len(replayed) + len(replayed) - len(judged), nil
+	return since/perPage + 1 + len(shas) + len(shas) - len(judged), nil
 }
 
 // store writes a measurement in one transaction (plan, "A daily pass of one repository", step 6):

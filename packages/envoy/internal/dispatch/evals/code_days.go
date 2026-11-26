@@ -36,9 +36,10 @@ const (
 	SlugPostMergeRework = "post-merge-rework-30d"
 )
 
-// codeDaySlugs is the two code evals, whose day rows WriteCodeDaysTx writes and no refresher family
-// builds.
-var codeDaySlugs = []string{SlugCodeSurvival, SlugPostMergeRework}
+// CodeSlugs is the two code evals, whose day rows WriteCodeDaysTx writes and no refresher family
+// builds: the list every reader of both evals (codesurvival's builder, the eval bench's k17) names
+// them by.
+var CodeSlugs = []string{SlugCodeSurvival, SlugPostMergeRework}
 
 // CheckSeriesName refuses name where the registry refuses it as a series name (validSeriesName):
 // empty, or holding whitespace, a control character or a `.`. A project's code group names the
@@ -46,6 +47,52 @@ var codeDaySlugs = []string{SlugCodeSurvival, SlugPostMergeRework}
 // cannot hold.
 func CheckSeriesName(name string) error {
 	return validSeriesName(name)
+}
+
+// CheckCodeGroupName refuses group, the name of a project's code group, where a code eval could
+// not hold a series it names: the first series `<base>:<group>` of the code evals' group bases
+// (catalogueEntry.groupSeries), in CodeSlugs' order, that the registry refuses (refusedGroupSeries),
+// which WriteCodeGroupSeriesTx refuses too. It answers that series and why, and "" and nil where
+// every series it names is one the registry holds.
+func CheckCodeGroupName(group string) (string, error) {
+	entries, err := codeEntries()
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if series, err := refusedGroupSeries(entry, []string{group}); err != nil {
+			return series, err
+		}
+	}
+	return "", nil
+}
+
+// codeEntries is the catalogue's entry of each code eval, in CodeSlugs' order.
+func codeEntries() ([]catalogueEntry, error) {
+	entries := make([]catalogueEntry, len(CodeSlugs))
+	for index, slug := range CodeSlugs {
+		at := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == slug })
+		if at < 0 {
+			return nil, fmt.Errorf("evals: the catalogue holds no code eval %s", slug)
+		}
+		entries[index] = catalogue[at]
+	}
+	return entries, nil
+}
+
+// refusedGroupSeries is the first series of entry's group series of groups that the registry
+// refuses, as a series name (validSeriesName) or as a key too long (keyTooLong), and why; "" and
+// nil where it refuses none.
+func refusedGroupSeries(entry catalogueEntry, groups []string) (string, error) {
+	for _, series := range entry.groupSeries(groups) {
+		if err := validSeriesName(series.Series); err != nil {
+			return series.Series, err
+		}
+		if reason := keyTooLong("series", series.Series); reason != "" {
+			return series.Series, errors.New(reason)
+		}
+	}
+	return "", nil
 }
 
 // CodeDayRows is the day rows of survival and rework, the parts fold.BuildDays builds of the code
@@ -69,7 +116,7 @@ func CodeDayRows(project, repo string, survival, rework []measures.DayPart) []Da
 }
 
 // WriteCodeDaysTx writes, in tx, the caller's transaction, by build, project's day rows of the code
-// evals evalIDs names (each the eval id of one of codeDaySlugs in project) on days, each a UTC
+// evals evalIDs names (each the eval id of one of CodeSlugs in project) on days, each a UTC
 // midnight: rows, every row of those evals on those days, of every cut (CodeDayRows). Each row is
 // upserted where a value moved (upsertDays), so a row whose values stand is left as it is and logs
 // no change. Each stored row of those evals on those days that rows does not hold is deleted
@@ -88,8 +135,8 @@ func WriteCodeDaysTx(ctx context.Context, tx pgx.Tx, project string, evalIDs []s
 	slugs := make([]string, 0, len(evalIDs))
 	for _, evalID := range evalIDs {
 		slug := slugOf(project, evalID)
-		if evalID != EvalID(project, slug) || !slices.Contains(codeDaySlugs, slug) {
-			return fmt.Errorf("evals: %s is no code eval of %s, whose code evals are %v", evalID, project, codeDaySlugs)
+		if evalID != EvalID(project, slug) || !slices.Contains(CodeSlugs, slug) {
+			return fmt.Errorf("evals: %s is no code eval of %s, whose code evals are %v", evalID, project, CodeSlugs)
 		}
 		if !slices.Contains(slugs, slug) {
 			slugs = append(slugs, slug)
@@ -141,24 +188,18 @@ func WriteCodeDaysTx(ctx context.Context, tx pgx.Tx, project string, evalIDs []s
 // their series under them, so the versions it numbers are free. A transaction that waits for a
 // lock while it holds a transaction id holds back every reader of the event log (inWrite), so the
 // caller calls it before tx writes anything. A group name whose series the registry refuses
-// (CheckSeriesName, keyTooLong), a group named twice, and a project whose code evals the seed has
-// not written, are refused before anything is written.
+// (refusedGroupSeries), a group named twice, and a project whose code evals the seed has not
+// written, are refused before anything is written.
 func WriteCodeGroupSeriesTx(ctx context.Context, tx pgx.Tx, project string, groups []string) (int, error) {
-	entries := make([]catalogueEntry, len(codeDaySlugs))
-	ids := make([]string, len(codeDaySlugs))
-	for index, slug := range codeDaySlugs {
-		at := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == slug })
-		if at < 0 {
-			return 0, fmt.Errorf("evals: the catalogue holds no code eval %s", slug)
-		}
-		entries[index], ids[index] = catalogue[at], EvalID(project, slug)
-		for _, series := range entries[index].groupSeries(groups) {
-			if err := validSeriesName(series.Series); err != nil {
-				return 0, fmt.Errorf("evals: a code group of %s names the series %q of %s: %w", project, series.Series, ids[index], err)
-			}
-			if reason := keyTooLong("series", series.Series); reason != "" {
-				return 0, fmt.Errorf("evals: a code group of %s names the series %q of %s: %s", project, series.Series, ids[index], reason)
-			}
+	entries, err := codeEntries()
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]string, len(entries))
+	for index, entry := range entries {
+		ids[index] = EvalID(project, entry.definition.Slug)
+		if series, err := refusedGroupSeries(entry, groups); err != nil {
+			return 0, fmt.Errorf("evals: a code group of %s names the series %q of %s: %w", project, series, ids[index], err)
 		}
 	}
 	for index, group := range groups {
@@ -211,16 +252,13 @@ func CheckCodeGroupSeriesRoom(ctx context.Context, tx pgx.Tx, project string, gr
 	if err != nil && !errors.Is(err, delivery.ErrNoSettings) {
 		return err
 	}
-	names := slices.Clone(groups)
-	for _, group := range stored.CodeGroups {
-		names = append(names, group.Name)
+	names := slices.Concat(groups, delivery.CodeGroupNames(stored.CodeGroups))
+	entries, err := codeEntries()
+	if err != nil {
+		return err
 	}
-	for _, slug := range codeDaySlugs {
-		at := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == slug })
-		if at < 0 {
-			return fmt.Errorf("evals: the catalogue holds no code eval %s", slug)
-		}
-		entry, evalID := catalogue[at], EvalID(project, slug)
+	for _, entry := range entries {
+		evalID := EvalID(project, entry.definition.Slug)
 		held := map[string]Series{}
 		if _, found, err := newestDefinition(ctx, tx, evalID); err != nil {
 			return err

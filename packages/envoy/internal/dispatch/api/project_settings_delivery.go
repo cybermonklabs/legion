@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -303,12 +302,8 @@ func codeGroupSeriesRoom(ctx context.Context, tx pgx.Tx, project string, groups 
 	if err := delivery.LockProject(ctx, tx, project); err != nil {
 		return err
 	}
-	names := make([]string, len(groups))
-	for i, group := range groups {
-		names[i] = group.Name
-	}
 	var full *evals.Error
-	err := evals.CheckCodeGroupSeriesRoom(ctx, tx, project, names)
+	err := evals.CheckCodeGroupSeriesRoom(ctx, tx, project, delivery.CodeGroupNames(groups))
 	if errors.As(err, &full) {
 		return delivery.InputRefusal(nil, "code_groups", "%s", full.Message)
 	}
@@ -399,20 +394,15 @@ func trimmedEntries(entries []string) []string {
 // codeGroupNameMax is the most characters a code group's name holds.
 const codeGroupNameMax = 64
 
-// codeGroupSeriesBases are the bases of the series a code group names, `<base>:<name>`
-// (fold.GroupSeries): survival in the code survival eval, and rework, iteration, noissue and
-// other in the post-merge rework eval.
-var codeGroupSeriesBases = []string{fold.SeriesSurvival, fold.SeriesRework, fold.SeriesIteration, fold.SeriesNoIssue, fold.SeriesOther}
-
 // codeGroupsRefusal refuses a save's code groups, in order, where a regroup could not write their
 // series or a reader could not tell two of them apart, and answers nil where it takes them. The
 // refusal is 400 DELIVERY_SETTINGS_INPUT of the field code_groups, whose message names the group
 // by its place, from 1 as the settings form numbers its groups, and by its name. A name is refused
 // that is blank, holds more than codeGroupNameMax characters, or is the name of an earlier group in
-// any case, and so is one that makes a series name the registry refuses (evals.CheckSeriesName over
-// each of codeGroupSeriesBases: whitespace, a control character or a `.`). A blank prefix or login
-// is refused. A group with no prefix and no login takes every change no group before it took, so
-// it is the last group, and a project holds one at most.
+// any case, and so is one that makes a series name the registry refuses (evals.CheckCodeGroupName,
+// over the series the code evals hold of a group: whitespace, a control character or a `.`). A
+// blank prefix or login is refused. A group with no prefix and no login takes every change no group
+// before it took, so it is the last group, and a project holds one at most.
 func codeGroupsRefusal(groups []delivery.CodeGroup) *delivery.SettingsError {
 	refuse := func(at int, format string, args ...any) *delivery.SettingsError {
 		label := fmt.Sprintf("group %d", at+1)
@@ -429,11 +419,8 @@ func codeGroupsRefusal(groups []delivery.CodeGroup) *delivery.SettingsError {
 		if length := utf8.RuneCountInString(group.Name); length > codeGroupNameMax {
 			return refuse(at, "a name holds at most %d characters, and this one holds %d", codeGroupNameMax, length)
 		}
-		for _, base := range codeGroupSeriesBases {
-			series := fold.GroupSeries(base, group.Name)
-			if err := evals.CheckSeriesName(series); err != nil {
-				return refuse(at, "the name makes the series %q, and %v", series, err)
-			}
+		if series, err := evals.CheckCodeGroupName(group.Name); err != nil {
+			return refuse(at, "the name makes the series %q, and %v", series, err)
 		}
 		if first := slices.IndexFunc(groups[:at], func(earlier delivery.CodeGroup) bool { return strings.EqualFold(earlier.Name, group.Name) }); first >= 0 {
 			return refuse(at, "group %d is named %q, and two groups' names differ by more than case", first+1, groups[first].Name)

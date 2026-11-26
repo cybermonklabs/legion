@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 )
 
 // Lease is the name of the lease the daily run takes (duty.RunLeased), so one process runs each
@@ -446,6 +447,34 @@ func Changes(ctx context.Context, db Querier, repo string, days []time.Time) ([]
 	return changes, nil
 }
 
+// ChangesOn is every change of repos[i] on days[i], pairs of a repository and a day, each with its
+// repository, by repository and then in the order the commits were made: what Changes reads of
+// each repository, read for every pair in one statement.
+func ChangesOn(ctx context.Context, db Querier, repos []string, days []time.Time) ([]fold.Change, error) {
+	if len(days) == 0 {
+		return nil, nil
+	}
+	rows, err := db.Query(ctx, `
+		select c.repo, c.sha, c.day, c.committed_at, c.pr_number, c.head_ref, c.author, coalesce(c.issue_key, ''), c.added, c.alive,
+			c.removed_by_non_pr
+		from code_changes c join unnest($1::text[], $2::date[]) as w(repo, day) on c.repo = w.repo and c.day = w.day
+		order by c.repo, c.committed_at, c.sha`, repos, days)
+	if err != nil {
+		return nil, fmt.Errorf("read the changes of %d days of the repositories: %w", len(days), err)
+	}
+	changes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (fold.Change, error) {
+		var change fold.Change
+		err := row.Scan(&change.Repo, &change.SHA, &change.Day, &change.CommittedAt, &change.PR, &change.HeadRef, &change.Author,
+			&change.IssueKey, &change.Added, &change.AliveAtMark, &change.RemovedByNonPR)
+		change.Day, change.CommittedAt = change.Day.UTC(), change.CommittedAt.UTC()
+		return change, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the changes of %d days of the repositories: %w", len(days), err)
+	}
+	return changes, nil
+}
+
 // Pairs is every pair of repo whose adder is a change on days, in the order of the adders' commits
 // and then of the removers' SHAs: what a run measured, as survival.Measure answered it.
 func Pairs(ctx context.Context, db Querier, repo string, days []time.Time) ([]survival.Pair, error) {
@@ -489,16 +518,23 @@ func (p Project) Built() bool { return !p.BuiltAt.IsZero() }
 // scanProject reads a code_projects row of the columns `project_key, groups_digest, built_at`.
 func scanProject(row pgx.Row) (Project, error) {
 	var (
-		project Project
-		digest  []byte
-		built   *time.Time
+		key    string
+		digest []byte
+		built  *time.Time
 	)
-	if err := row.Scan(&project.Key, &digest, &built); err != nil {
+	if err := row.Scan(&key, &digest, &built); err != nil {
 		return Project{}, err
 	}
+	return projectOf(key, digest, built)
+}
+
+// projectOf is key's row of code_projects from its groups_digest and its built_at, each nil where
+// the column holds null.
+func projectOf(key string, digest []byte, built *time.Time) (Project, error) {
+	project := Project{Key: key}
 	if built != nil {
 		if len(digest) != len(project.GroupsDigest) {
-			return Project{}, fmt.Errorf("the groups digest of %s holds %d bytes, want %d", project.Key, len(digest), len(project.GroupsDigest))
+			return Project{}, fmt.Errorf("the groups digest of %s holds %d bytes, want %d", key, len(digest), len(project.GroupsDigest))
 		}
 		copy(project.GroupsDigest[:], digest)
 		project.BuiltAt = built.UTC()
