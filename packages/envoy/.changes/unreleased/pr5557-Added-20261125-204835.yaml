@@ -6,7 +6,7 @@ body: |-
   its approval page, and `membership_held` at its token endpoint; it cuts a call its airlock carries
   for them, and the NATS hub's auth service refuses their session's connection. It still serves a
   held person's refresh grant, lease renewal and the calls that only end access. It keeps each
-  answer in `person_standing` (migration `0047_person_standing`), so while Dispatch cannot be asked
+  answer in `person_standing` (migration `0048_person_standing`), so while Dispatch cannot be asked
   a person it last answered held stays held and everyone else is served, with one WARN line a
   minute per person and `broker_hold_unchecked_total{last_answer}`. A Dispatch that answers with no
   `held` field, as one older than the hold does, is answered the same way, with one WARN line a

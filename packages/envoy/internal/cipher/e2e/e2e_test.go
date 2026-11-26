@@ -112,17 +112,28 @@ type e2eServer struct {
 }
 
 // e2eOptions are what a test points the broker's upstreams at, each what main.go reads from a
-// setting: the namespace's secrets; the Directory API (BROKER_DIRECTORY_URL) and the reader
-// account (BROKER_DIRECTORY_ACCOUNT); IAM Service Account Credentials, Google's in production;
-// Anthropic's token exchange; the bindings of BROKER_SERVICE_ACCOUNT_SECRETS; and the clock the
-// group reader dates its reads by, time.Now when nil.
+// setting: the namespace's secrets; the profiles file (BROKER_PROFILES_FILE), "" for none; the
+// Directory API (BROKER_DIRECTORY_URL) and the reader account (BROKER_DIRECTORY_ACCOUNT); IAM
+// Service Account Credentials, Google's in production; Anthropic's token exchange; the bindings
+// of BROKER_SERVICE_ACCOUNT_SECRETS; and the clock the group reader dates its reads by, time.Now
+// when nil.
 type e2eOptions struct {
 	secrets                                []secrets.LocalSecret
+	profiles                               string
 	directoryURL, directoryAccount, iamURL string
 	anthropicURL                           string
 	serviceAccounts                        map[string]string
 	now                                    func() time.Time
 }
+
+// The airlock's proxy URL and certificate every e2e broker's releases carry
+// (BROKER_AIRLOCK_PROXY_URL, BROKER_AIRLOCK_CA_CERT_FILE): strings the release hands over unread,
+// since no e2e test dials the proxy. Only a name its profiles file puts behind a kind is
+// released with them.
+const (
+	e2eProxyURL      = "http://127.0.0.1:13381"
+	e2eCACertificate = "-----BEGIN CERTIFICATE-----\ne2e-airlock-ca\n-----END CERTIFICATE-----\n"
+)
 
 // newE2EServer is newE2EServerWith over e2eSecrets, with no group reader account, as a
 // deployment that names none.
@@ -164,6 +175,9 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	reader.Start(ctx)
 	loader := policytest.Loader(local)
 	loader.Groups = reader
+	if o.profiles != "" {
+		loader.Profiles = policytest.Profiles(t, o.profiles)
+	}
 	current, err := policy.NewCurrent(ctx, loader, reloadInterval)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -173,7 +187,9 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 		Store: st, Policy: current, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
-		Groups: reader,
+		Groups:               reader,
+		AirlockProxyURL:      e2eProxyURL,
+		AirlockCACertificate: e2eCACertificate,
 		Minters: map[string]requests.Minter{
 			policy.TypeAnthropicFederation: (&secrets.AnthropicFederation{
 				Accounts:      o.serviceAccounts,
@@ -182,7 +198,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 			}).Mint,
 		},
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
 	reqMachine.Chain.Groups = reader
 	// The caller of the routes Dispatch's server calls presents its own projected ServiceAccount
 	// token, verified against a local OIDC issuer standing in for the cluster's, as the broker

@@ -177,14 +177,14 @@ func TestASignInToThePageRecordsItsAccountAndRefusesAReplacedOne(t *testing.T) {
 
 	signIn(t, st, hashOf("replaced"), ada, expires)
 	var recorded store.IssuerSubject
-	replacedHash, legacyHash := hashOf("replaced"), hashOf("before 0045")
+	replacedHash, legacyHash := hashOf("replaced"), hashOf("before 0046")
 	if err := st.Pool.QueryRow(ctx, `select issuer, subject from browser_sessions where secret_hash = $1`, replacedHash[:]).
 		Scan(&recorded.Issuer, &recorded.Subject); err != nil || recorded != replaced {
 		t.Fatalf("the session records the account %+v (%v), want %+v", recorded, err, replaced)
 	}
 	if _, err := st.Pool.Exec(ctx, `insert into browser_sessions (secret_hash, login, expires_at) values ($1, $2, $3)`,
 		legacyHash[:], ada, expires); err != nil {
-		t.Fatalf("write a session as a broker from before migration 0045 did: %v", err)
+		t.Fatalf("write a session as a broker from before migration 0046 did: %v", err)
 	}
 	signIn(t, st, hashOf("ben"), ben, expires)
 	previous := hashOf("previous")
@@ -209,7 +209,7 @@ func TestASignInToThePageRecordsItsAccountAndRefusesAReplacedOne(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for secret, want := range map[string]bool{"replaced": false, "before 0045": false, "ben": true, "previous": true} {
+	for secret, want := range map[string]bool{"replaced": false, "before 0046": false, "ben": true, "previous": true} {
 		if got := live(secret); got != want {
 			t.Errorf("session %q live=%t after the revoke's delete, want %t", secret, got, want)
 		}

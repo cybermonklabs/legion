@@ -9,7 +9,7 @@ import (
 )
 
 // TestATradeUnderASignInRecordingNoAccountEndsItsCredentialAndSessions: a sign-in from before
-// migration 0045 records no account, so the sessions enrolled under its launcher credential might
+// migration 0046 records no account, so the sessions enrolled under its launcher credential might
 // be any account's. Where the broker asks Dispatch (store.SignInTrade.EndUnrecorded, which
 // cmd/cipherd sets with BROKER_PROJECT_ACCESS_URL), a trade under its key ends that sign-in
 // (store.RecordPersonSignIn) and, in
@@ -82,7 +82,7 @@ func TestATradeUnderASignInRecordingNoAccountEndsItsCredentialAndSessions(t *tes
 
 // TestATradeUnderASignInRecordingNoAccountKeepsItWithoutDispatch: where the broker does not ask
 // Dispatch (store.SignInTrade.EndUnrecorded false, BROKER_PROJECT_ACCESS_URL unset), a trade under
-// the key of a sign-in from before migration 0045 is that sign-in's, as before the release: the
+// the key of a sign-in from before migration 0046 is that sign-in's, as before the release: the
 // row stays, recording no account, and the credential it held, its session, the session's grant
 // and its pending request all stay live. A revoke of any account at the address still ends that
 // row, since it records none (store.SubjectSignInsTx).

@@ -470,7 +470,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 		PodOperators: podOperators,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
 	// The token exchange's entries, built once and given to both the OAuth provider and the request
 	// machine, as main gives both the one set.
 	entries := newExchangeSet(t)

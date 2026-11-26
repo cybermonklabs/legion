@@ -12,7 +12,7 @@ import (
 )
 
 // recordedAccountTables are the tables whose guards hold the broker's record of which Google
-// account holds an address: every trigger of theirs runs a function migrations 0045 and 0046 pin.
+// account holds an address: every trigger of theirs runs a function migrations 0046 and 0047 pin.
 var recordedAccountTables = []string{
 	"replaced_person_subjects", "person_replacement_generations",
 	"person_signins", "launcher_credentials", "browser_sessions", "oauth_access_tokens", "oauth_refresh_tokens",
@@ -31,7 +31,7 @@ func tablesSchema(t *testing.T, st *store.Store) string {
 
 // TestEveryRecordedAccountTriggerRunsUnderItsOwnSearchPath reads every trigger of those tables and
 // holds the function it runs to search_path = pg_catalog, the schema the tables are in, pg_temp
-// (migrations 0045 and 0046). A trigger function with no setting of its own resolves its tables,
+// (migrations 0046 and 0047). A trigger function with no setting of its own resolves its tables,
 // functions and operators under the caller's search_path, where a temporary table or a schema
 // listed before pg_catalog is the caller's to make, so a guard added later fails this test until
 // it is pinned.
@@ -71,11 +71,11 @@ func TestEveryRecordedAccountTriggerRunsUnderItsOwnSearchPath(t *testing.T) {
 
 // TestASessionOperatorDoesNotLowerTheAppliedGeneration: guard_person_replacement_generations
 // refuses new.session_generation < old.session_generation, the rule that keeps the greatest
-// replacement the broker applied at an address from moving back — which, as 0045's own comment
+// replacement the broker applied at an address from moving back — which, as 0046's own comment
 // says, "lets a late revoke apply again", ending what the account that holds the address now made.
 // `<` is an operator the caller's search_path chooses, so a session that makes a schema of its own
 // holding a `<` on bigint that answers false, and lists it before pg_catalog, would have the guard
-// admit the lowering. The function is pinned (0045), so pg_catalog's operator takes the comparison
+// admit the lowering. The function is pinned (0046), so pg_catalog's operator takes the comparison
 // and the lowering is refused with SQLSTATE 23514.
 //
 // Control, in the test: with the function's setting reset, the session's operator answers and the

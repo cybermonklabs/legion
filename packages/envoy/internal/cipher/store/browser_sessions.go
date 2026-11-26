@@ -13,7 +13,7 @@ import (
 // Each function takes the SHA-256 of the session's cookie secret, never the secret itself, and
 // the caller's now: a session is live while its expires_at is after now, so the lookup and the
 // sweep draw the same line, as the sweeper's other expiries do on the time it passes them. Each
-// session records the Google account that signed in (0045's issuer and subject, none on a row
+// session records the Google account that signed in (0046's issuer and subject, none on a row
 // from before), which is what the revoke of an account that no longer holds the person's address
 // ends it by (DeleteSubjectBrowserSessionsTx). A decision made under a session reads it again in
 // its own transaction, under the person's lock (HoldBrowserSessionTx).
@@ -115,7 +115,7 @@ func (s *Store) DeleteBrowserSessionsForLogin(ctx context.Context, login string)
 }
 
 // DeleteSubjectBrowserSessionsTx deletes, in tx, every session of person, live or expired, that
-// account signed in or that records no account, a session from before migration 0045 that might
+// account signed in or that records no account, a session from before migration 0046 that might
 // be any account's, and answers how many it deleted: the approval-page half of the revoke of an
 // account that no longer holds person's address (enroll.Service.RevokePersonSubject). A session
 // another account signed in is not among them. The caller holds LockPerson, so no sign-in of

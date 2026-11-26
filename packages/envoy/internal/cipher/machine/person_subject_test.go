@@ -31,7 +31,7 @@ func pendingLoginOf(t *testing.T, svc *Service, person string) (recordID, code s
 }
 
 // ageReplacements moves every replacement recorded at person's address back past
-// ApprovalInFlightWindow. A replacement's replaced_at never moves (migration 0045's guard), so the
+// ApprovalInFlightWindow. A replacement's replaced_at never moves (migration 0046's guard), so the
 // fixture writes it with the guard off.
 func ageReplacements(t *testing.T, svc *Service, person string) {
 	t.Helper()

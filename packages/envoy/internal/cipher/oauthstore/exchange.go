@@ -793,10 +793,10 @@ type CredentialAccount struct {
 
 // CredentialApprover is what a token exchanged from the machine login credentialID names records
 // about it: the Google account that approved the login (launcher_credentials' approver_issuer and
-// approver_subject, migration 0045), as the approval Dispatch relayed named it, written once when
+// approver_subject, migration 0046), as the approval Dispatch relayed named it, written once when
 // the login was approved, and the login's created_at. The exchange reads it once, when it mints a
 // token from that login's own, and writes it onto the token (oauth.Provider.approverAccount). The
-// account is empty for a credential that records none, which is one made before 0045, one an older
+// account is empty for a credential that records none, which is one made before 0046, one an older
 // Dispatch approved, and every credential no person approved (a machine's own, a pod's); all of it
 // is empty for a credential there is no row of.
 func (s *Store) CredentialApprover(ctx context.Context, credentialID string) (CredentialAccount, error) {
