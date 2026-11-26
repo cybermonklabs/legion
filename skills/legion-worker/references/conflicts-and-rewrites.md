@@ -4,21 +4,7 @@ Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-f
 
 ## Reintegrating the base
 
-The implementer merges the base into the issue branch only when one of these holds:
-
-- GitHub reports it `CONFLICTING`.
-
-- The daemon's merge-forward message asks it (*The daemon's ask*, below).
-
-- The controller asks because of a conflict.
-
-- The change needs something only the base has.
-
-- The pull request was retargeted.
-
-Past the review, the merger merges the base forward when it merges, for a conflict or for a check the base's newer code breaks (its role prompt, "A head that conflicts with its base").
-So past the review the implementer merges only when the daemon's merge-forward message or the merger asks it.
-Never merge to refresh CI or to pick up the default branch: each merge is a new head that reruns CI and can void a review.
+The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the change needs something only the base has, or the pull request was retargeted. Past the review the merger merges the base forward when it merges, for a conflict or for a check the base's newer code breaks (its role prompt, "A head that conflicts with its base"), so the implementer merges then only when the daemon's merge-forward message or the merger asks it. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review.
 
 Before you race another tree's pull request on shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 

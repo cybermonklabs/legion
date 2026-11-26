@@ -47,12 +47,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   A job that holds its own steps then has a run concluded `skipped`; a job that calls a workflow, as each such job on cybermonklabs/legion does, has only its own run, under its bare name (`test`), concluded `skipped`, and no job of the called file starts, so the run a check names (`test / test`) is `absent`.
   The implementer adds the label, `full-ci` or the job's `lane:` label that `.github/workflows/ci.yaml` names beside it, then pushes, because the workflow starts on a push and not on a label.
   The label stays on while a `ci_check` of the issue names such a job.
-  No job runs on a pull request in part.
-  On cybermonklabs/legion test, pi-legion and envoy-infra-go are held back.
-  Their builds and checks (tooling-checks, pi-legion-build and envoy-infra-build) run on every pull request.
-  Each of these jobs names its check `<job> / <job>` (`test / test`, `tooling-checks / tooling-checks`).
-  The browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`.
-  Its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
+  No job runs on a pull request in part: on cybermonklabs/legion test, pi-legion and envoy-infra-go are held back, while tooling-checks, pi-legion-build and envoy-infra-build, their builds and checks, run on every pull request, each job's check named `<job> / <job>` (`test / test`, `tooling-checks / tooling-checks`); the browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`, and its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
   On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite, and a check naming it for those steps passes under its label with none of them run.
 
 ## A name that no run answers
