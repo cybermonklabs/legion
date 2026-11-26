@@ -75,9 +75,24 @@ copying the unpacked toolchain into the runner's tool cache, which no later job 
 reads (the script's header). Its checkout starts from main's objects, which a push to main leaves
 in the cache (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores), and fetches
 only what the run's commit adds to them. The generation starts its TypeScript listings
-(`.github/scripts/ci_ts_listing.py#start`) before it loads the read table: tsc's listing of the
-dashboard's program is 9 s of the generation's 16 s, and it then runs beside the load and the go
-commands rather than after the load.
+(`.github/scripts/ci_ts_listing.py#start`) before it loads the read table, and each go command
+as the table declares the run that asks it (`.github/scripts/ci_filter_coverage.py#start_early`),
+both on threads at nice 10 (`.github/scripts/ci_filter_coverage.py#background_priority`), so they
+run beside the load, which is one interpreter thread, rather than after it. It lists the
+programs with tsgo, TypeScript's native compiler, pinned in the root package.json
+(`.github/scripts/ci_ts_listing.py#COMPILER`); the lint job's check-ts-filters.sh lists them
+again with tsc, the typecheck's own compiler, and holds every listed block to what tsc lists, so
+a file tsgo resolves differently fails that pull request's lint job by name. A bump of the
+pinned tsgo that changes a listing fails the same way, on the pull request that bumps it.
+
+On a 4-processor runner the generation spends about 7 s in the table's thread, 14 s of
+processor time in go list and, with tsc, 11 s listing the dashboard's and the proof editor's
+programs. Each piece alone gained nothing (3 runs each, run 45885103288 and earlier, every
+output the same): the go commands begun during the load slowed the load from 4.3 to 7.3 s until
+their threads were lowered to nice 10, which left the step at 13.8 s against 14.3 s; tsgo
+without the early go commands left it at 13.8 to 14.7 s, the commands then waiting for the load
+as before. Together the listing's processor time falls from 11 s to under 4 s, the go commands
+take what the load leaves, and the step takes 11.2 to 11.7 s.
 
 Why computed. The filters were one file every job's filter was in, and every pull request that
 added a read, a test file or a package a job compiles edited it, most of them at the same lines:

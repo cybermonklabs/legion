@@ -388,7 +388,10 @@
 # names the gate file, the //ci: line or the workflow a fault is in. The go commands of every gate
 # and every //ci:builds line run at once, in a pool of CI_FILTERS_JOBS (default: the machine's
 # processors, at most 8; 1 runs them one after another), each answer keyed by what it asks, so the
-# filters are the same text whatever the pool's size.
+# filters are the same text whatever the pool's size. With more than one, each command starts as
+# the table declares its run (ci_filter_coverage.start_early), so the commands run while the rest
+# of the table loads; a command's failure waits in its answer and is reported when the walk asks
+# it, as it is when the command runs then.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -587,8 +590,9 @@ export CI_FILTERS_MODE="${1:-check}"
 # The first reading comes before the audit hook too, since it opens every file of the tree and none
 # of those opens is the computation's. A run whose imports fail is a failure before the second
 # read has anything to add. The generate mode starts its TypeScript listings
-# (ci_ts_listing.start) right after the engine's own import, so tsc and Bun list while the table
-# loads and the go commands run; they read the tree and write nothing in it.
+# (ci_ts_listing.start), with tsgo (ci_ts_listing.COMPILER), right after the engine's own import,
+# and every mode starts each go command as the table declares its run (ci_filter_coverage.start_early),
+# so they run while the table loads; they read the tree and write nothing in it.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
 import hashlib
 import os
@@ -669,11 +673,14 @@ with warnings.catch_warnings(record=True) as caught:
     ci_filter_coverage.OPENED = opened
     if os.environ["CI_FILTERS_MODE"] == "generate":
         import ci_ts_listing
+        ci_ts_listing.COMPILER = "tsgo"
         ci_ts_listing.start()
+    ci_filter_coverage.start_early()
     started = time.monotonic()
     try:
         import ci_job_reads
     except ci_filter_coverage.RepositoryInputError as exc:
+        ci_filter_coverage.stop_early()
         print(f"::{token}::", flush=True)
         ci_filter_coverage.print_annotation(exc.annotation())
         sys.exit(1)

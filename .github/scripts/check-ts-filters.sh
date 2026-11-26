@@ -16,6 +16,13 @@
 # remembering to widen a list. --listFilesOnly lists the program and stops without checking a
 # type, so this is no second typecheck: the job's own step is what compiles it.
 #
+# This check lists with tsc, the compiler every typecheck job runs, and the changes job's
+# generation lists with tsgo, the native compiler pinned in the root package.json, which it runs
+# for speed (.github/scripts/ci_ts_listing.py#COMPILER). So this check is also the cross-check of
+# that compiler: a listed block the generation wrote from tsgo's answer that is not exactly the
+# files tsc lists fails here, on the pull request whose tree makes the two differ, naming the file,
+# as a bump of the pinned tsgo that changes a listing does.
+#
 # The pairs cover every gate whose job runs a typecheck, each read from that job's own steps:
 # contracts, envoy_client (packages/envoy-client and packages/cipher-client), pi_shared,
 # pi_envoy, pi_legion_build (packages/pi-legion, in the pi-legion-build job), claude_envoy,

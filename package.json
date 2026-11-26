@@ -42,6 +42,7 @@
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "@types/spdx-expression-parse": "3.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "mdast-util-from-markdown": "2.0.3",
     "mdast-util-frontmatter": "2.0.1",
     "mdast-util-gfm": "3.1.0",

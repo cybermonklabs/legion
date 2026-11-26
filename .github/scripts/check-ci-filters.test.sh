@@ -691,7 +691,10 @@ check "whose failure makes every filter every path" \
 
 # What tsc and bun resolve with is a file the filters are computed with too: a tsconfig edit (a
 # `paths` map, an `extends`) can move a listed block while no file of the block changes. The stand-in
-# bunx prints the program's `listed` file, which stands for tsc's new answer to the new tsconfig.
+# bunx prints the program's `listed` file, which stands for the compiler's new answer to the new
+# tsconfig. The generation lists a program with tsgo (ci_ts_listing.COMPILER), so each stand-in bunx
+# here answers `tsgo -p` alone and refuses any other argv: a generation that listed with tsc would
+# fail these cases.
 echo "case: a tsconfig edit that moves a listed block selects every path through that filter"
 root=$(fixture base-tsconfig)
 mkdir -p "$root/pkg/app" "$root/pkg/lib" "$root/bin"
@@ -703,7 +706,7 @@ printf 'pkg/lib/one.ts\n' > "$root/pkg/app/listed"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsc -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+[ "$1 $2" = "tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
 sed "s|^|$PWD/|" "$3/listed"
 SH
 chmod +x "$root/bin/bunx"
@@ -1128,7 +1131,7 @@ printf '{}\n' > "$root/pkg/app/tsconfig.json"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsc -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+[ "$1 $2" = "tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
 echo "$(cd node_modules/@x/lib && pwd -P)/index.ts"
 SH
 cat > "$root/bin/bun" <<'SH'
@@ -1187,7 +1190,7 @@ printf 'pkg/lib/one.ts\n' > "$root/pkg/app/listed"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsc -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+[ "$1 $2" = "tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
 sed "s|^|$PWD/|" "$3/listed"
 SH
 printf '#!/bin/sh\nexit 0\n' > "$root/bin/bun"
