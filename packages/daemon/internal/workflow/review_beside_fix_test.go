@@ -399,3 +399,45 @@ func TestTheWayAfterAFixCountsTheTasksCommits(t *testing.T) {
 		t.Fatalf("the tester's start moves its working copy to %q, want %s, the head the task's branch stands at", got, headThree)
 	}
 }
+
+// A step beside a fix can fail before the fix's job read has answered, and its report must reach
+// the fix either way, since the way after the fix counts it (GotReport). Here the reviewer returns
+// the task to the fix's own step while fix 1 still reads its job: no row is queued, because the fix
+// has no entry for one to name, and the task of its start speaks the report instead. In the other
+// order, where the fix runs already, the report goes as its own row, as before. Its red is the
+// order before: the row was queued for entry 0 and dropped at its delivery, before the fix started
+// because no fix ran, and after it because the start gave the fix another entry, so the implementer
+// never read the report its way was decided by.
+func TestAReportWhileTheFixReadsItsJobReachesItsStart(t *testing.T) {
+	const report = "the widget renders twice"
+	t.Run("while the fix reads its job, its start speaks the report", func(t *testing.T) {
+		r := reviewing(t)
+		r.fails(fixHead, "k-ci")
+		r.reviewedX()
+		r.move(TriggerReviewRejected, "", reviewReport(report))
+		if fix := r.latestFix(); fix.State != record.FixReading || !fix.GotReport {
+			t.Fatalf("fix 1 after the review's report = %+v, want it reading its job with the report", fix)
+		}
+		assertStrings(t, "the step-report rows while the fix reads its job", r.news(record.CINewsStepReport), nil)
+
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+
+		starts := r.fixStarts()
+		if len(starts) == 0 {
+			t.Fatal("the outbox holds no start of the fix")
+		}
+		want := fmt.Sprintf("The reviewer of step 3 reports: %s.", report)
+		if task := starts[len(starts)-1].Task; !strings.Contains(task, want) {
+			t.Fatalf("the task of the fix's start does not name the report %q:\n%s", want, task)
+		}
+	})
+
+	t.Run("once the fix runs, the report goes as its own row", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.reviewedX()
+		r.move(TriggerReviewRejected, "", reviewReport(report))
+		if rows := r.news(record.CINewsStepReport); len(rows) != 1 {
+			t.Fatalf("the step-report rows of a report to a running fix = %q, want one", rows)
+		}
+	})
+}
