@@ -2,12 +2,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { api, issueStateRequest } from "../../api/client";
-import { userStateQuery } from "../../api/queries";
+import { issueAsksQuery, userStateQuery } from "../../api/queries";
 import type { UserState } from "../../api/types";
 import { stateForIssue } from "../issue/pins";
 import { useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
-import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * The issue's read mark, and the only writer of it (`user_issue_state.last_read_seq`, which the

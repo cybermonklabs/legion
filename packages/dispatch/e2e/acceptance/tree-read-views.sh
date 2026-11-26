@@ -11,13 +11,13 @@
 #   A  born converted: a comment thread alice wrote; a criterion alice wrote into the issue's tree
 #      under the thread's first block; a requirement r1 under that criterion; an agent's decision d1
 #      with its shaped tuple to r1 and the reading g1 under it; r1's constrained_by to a constraint
-#      of the catalogue (the source of the `inversion` lens kind, which is not the `pre-mortem`
-#      kind's source); a check c1 serving r1 with one result; plan tasks t0 and t1 serving r1, t1
+#      of the catalogue (a source written with `lens-kind-add`, not the `pre-mortem` kind's
+#      source); a check c1 serving r1 with one result; plan tasks t0 and t1 serving r1, t1
 #      needing t0; an ask a1 alice answered, with an agent's reading g2 under it; and alice's
 #      approval of the Verification query.
 #   B  a child of A, born converted and holding no requirement: a check cc1 and plan tasks t0 and t1
 #      that serve A's r1, t1 needing B's own t0 and sharing its block id with A's t1, the check with
-#      one result; a design block in B's own tree; and a constraint nothing names.
+#      one result; and a design block in B's own tree.
 #   C  not converted (created while a server_processes row that lists no issue_room is live, which
 #      the driver writes and takes back through DATABASE_URL, as the Go tests' holdIssuesUnconverted
 #      does): a requirement set proposed and a check set overtaken through the /state route.
@@ -26,8 +26,8 @@
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (the agent bearer, read
 # here and never printed), PROJECT (CORE), DEV_SIGNIN_LOGIN (alice) and DATABASE_URL (infra_1253,
-# the database that server serves, which psql reads and, for C's create and the author-only lens of
-# the last section, writes as the Go tests of the same rules write it). Each unmet input is exit 2.
+# the database that server serves). The driver adds two catalogue sources with `envoy-dispatch`
+# on PATH and uses psql for C's process row and the final visibility fixture. Unmet inputs exit 2.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` and the script exits 1. The last line is
@@ -59,7 +59,7 @@ USAGE
 
 readonly driver=tree-read-views.sh
 require_env DATABASE_URL DISPATCH_URL PROJECT DEV_SIGNIN_LOGIN
-require_commands awk cp curl date grep jq mktemp psql seq
+require_commands awk cp curl date envoy-dispatch grep jq mktemp psql seq
 read_bearer
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 project="$PROJECT"
@@ -126,7 +126,7 @@ tree_read_views_section() {
 tree_read_views_expect() {
   local file="$1"
   shift
-  cp "$file" "$work/body"
+  [[ "$file" == "$work/body" ]] || cp "$file" "$work/body"
   expect "$@"
 }
 
@@ -229,15 +229,26 @@ tree_init
 tree_sign_in setup "$login"
 sign_in setup "$login" " (for a read or write that names its cookie)"
 sign_in setup "$reader" " (the reader an author-only node is kept from)"
-seeded_catalogue
-pre_mortem_source="$(jq -r '[.lens_kinds[] | select(.id == "pre-mortem") | .sources[0].id][0] // empty' "$work/catalogue.json")"
-named_constraint="$(jq -r '[.lens_kinds[] | select(.id == "inversion") | .sources[0].id][0] // empty' "$work/catalogue.json")"
-named_constraint_ref="$(jq -r '[.lens_kinds[] | select(.id == "inversion") | .sources[0].ref][0] // empty' "$work/catalogue.json")"
-[[ -n "$pre_mortem_source" && -n "$named_constraint" && "$named_constraint" != "$pre_mortem_source" ]] ||
-  fail setup "the catalogue names a source constraint of pre-mortem and of inversion" "$(head -c 600 "$work/catalogue.json")"
-[[ -n "$named_constraint_ref" ]] || named_constraint_ref="dispatch://constraint/$named_constraint"
-readonly pre_mortem_source named_constraint named_constraint_ref
-pass setup "the requirement's constraint is inversion's source $named_constraint; pre-mortem's source is $pre_mortem_source"
+# The source of each new catalogue kind is a constraint outside any issue's tree. Give r1 one
+# of those sources and leave the other unnamed. Neither is pre-mortem's own source.
+readonly named_kind="tree-read-named-$stamp" unnamed_kind="tree-read-unnamed-$stamp"
+tree_envoy_dispatch setup "add the kind whose source r1 will name" lens-kind-add \
+  --id "$named_kind" --words "Check the order" --source "Sort urgent asks first" --reference "Ordering rule 1"
+tree_envoy_dispatch setup "add the kind whose source nothing names" lens-kind-add \
+  --id "$unnamed_kind" --words "Check the archive" --source "Archive only finished asks" --reference "Archive rule 1"
+tree_send GET /api/v1/schema/blocks
+tree_want 200 setup "read the lens catalogue after adding its two sources"
+pre_mortem_source="$(jq -er '.lens_kinds[] | select(.id == "pre-mortem") | .sources[0].id // empty' "$work/body")" ||
+  fail setup "the catalogue names pre-mortem's source" "the source is absent"
+named_constraint="$(jq -er --arg k "$named_kind" '.lens_kinds[] | select(.id == $k) | .sources[0].id // empty' "$work/body")" ||
+  fail setup "the catalogue names $named_kind's source" "the source is absent"
+unnamed_constraint="$(jq -er --arg k "$unnamed_kind" '.lens_kinds[] | select(.id == $k) | .sources[0].id // empty' "$work/body")" ||
+  fail setup "the catalogue names $unnamed_kind's source" "the source is absent"
+[[ "$named_constraint" != "$pre_mortem_source" && "$unnamed_constraint" != "$named_constraint" &&
+   "$unnamed_constraint" != "$pre_mortem_source" ]] ||
+  fail setup "the three catalogue constraints are distinct" "$pre_mortem_source, $named_constraint, $unnamed_constraint"
+readonly pre_mortem_source named_constraint unnamed_constraint named_constraint_ref="dispatch://constraint/$named_constraint"
+pass setup "r1 will name $named_constraint, not $pre_mortem_source (pre-mortem's source) or $unnamed_constraint"
 
 # --- the seed ------------------------------------------------------------------------------------
 
@@ -366,13 +377,8 @@ readonly child_tree
 readonly design_words="The child's design block: the urgency field comes first."
 tree_read_views_edit_person seed "$login gives $child a design block" "$child_tree" \
   "$(jq -cn --arg w "$design_words" '[{op: "insert", after: "end", markdown: $w}]')"
-tree_send POST "/api/v1/issues/$child/constraints" "$(jq -cn --argjson a "$(tree_actor)" \
-  '{standard: "A constraint nothing names", reference: "section 0", actor: $a}')"
-tree_want 201 seed "write a constraint nothing names"
-tree_field seed "write a constraint nothing names" .id
-readonly unnamed_constraint="$tree_value"
 corpus_wait_settled seed
-pass seed "seeded the child $child: cc1 with the result $child_result, t0 and t1, a design block, and the constraint $unnamed_constraint nothing names"
+pass seed "seeded the child $child: cc1 with the result $child_result, t0 and t1, and a design block"
 
 # --- converted, the tree artifact, view_of -----------------------------------------------------------
 
@@ -796,13 +802,6 @@ tree_read_views_expect "$work/a-bob.json" run "$reader's read answers the commen
 # --- an issue that has not converted ------------------------------------------------------------
 
 tree_read_views_section unconverted
-query unconverted "hold a live process that lists no issue room" "
-  insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-  select gen_random_uuid(), signing_keys, schema_version, schema_creatable, now() + interval '1 hour'
-  from server_processes order by heartbeat_at desc limit 1
-  returning instance::text"
-held_process="$answer"
-[[ "$held_process" =~ ^[0-9a-f-]{36}$ ]] || fail unconverted "hold a live process that lists no issue room" "psql answered '$held_process'"
 cat >"$work/spec-c.md" <<'SPEC'
 A paragraph of the unconverted spec's prose.
 
@@ -810,6 +809,22 @@ A paragraph of the unconverted spec's prose.
 The unconverted issue holds one requirement.
 :::
 SPEC
+# Copy the single live server's row. Only the instance, heartbeat and issue_room capability differ.
+# Insert just before the create: processes.LiveWindow is 15 s, measured on the database's clock.
+query unconverted "hold a live process that lists no issue room" "
+  with live as materialized (
+    select * from server_processes where heartbeat_at > now() - interval '15 seconds'
+  )
+  insert into server_processes (instance, commit, dashboard_build, signing_keys, started_at, heartbeat_at,
+    schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol, capabilities)
+  select gen_random_uuid(), commit, dashboard_build, signing_keys, started_at, now(),
+    schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol,
+    array_remove(capabilities, 'issue_room')
+  from live where (select count(*) from live) = 1 and 'issue_room' = any(capabilities)
+  returning instance::text"
+held_process="$answer"
+[[ "$held_process" =~ ^[0-9a-f-]{36}$ ]] ||
+  fail unconverted "copy the live server row without issue_room" "expected one live server with issue_room; insert returned '$held_process'"
 tree_read_views_create unconverted "An issue that has not converted" "$work/spec-c.md"
 readonly unconverted="$corpus_key" unconverted_spec="$corpus_spec"
 query unconverted "take the held process back" "delete from server_processes where instance = '$held_process'::uuid returning 1"
@@ -854,26 +869,30 @@ done
 
 tree_read_views_section visibility
 tree_person_send POST "/api/v1/issues/$key/lenses" "$(jq -cn --arg on "$requirement_node" --arg v "$hidden_verdict" --arg f "$hidden_finding" \
-  '{on: $on, kind: "pre-mortem", verdict: $v, findings: [$f]}')"
+  '{on: $on, kind: "pre-mortem", visibility: "author", verdict: $v, findings: [$f]}')"
 tree_want 201 visibility "$login invokes the pre-mortem lens her risk stands under"
+expect visibility "the API creates the lens and its finding at author visibility" '["author",["author"]]' \
+  '[.visibility, [.findings[].visibility]]'
 tree_field visibility "$login invokes the pre-mortem lens her risk stands under" .id
 readonly hidden_lens="$tree_value"
-tree_person_send POST "/api/v1/issues/$key/risks" "$(jq -cn --arg l "dispatch://lens/$hidden_lens" \
+risk_input="$(jq -cn --arg l "dispatch://lens/$hidden_lens" \
   '{lens: $l, heading: "The urgency field is left unset.", early_warning: "Asks sort last.", prevention: "Require the field."}')"
-tree_want 201 visibility "$login writes a project risk under that lens"
-tree_field visibility "$login writes a project risk under that lens" .id
+tree_person_send POST "/api/v1/issues/$key/risks" "$(jq -c '. + {visibility: "project"}' <<<"$risk_input")"
+tree_want 400 visibility "the API refuses a project risk under the author-only lens"
+expect visibility "the refusal is VISIBILITY_WIDER_THAN_PARENT" '"VISIBILITY_WIDER_THAN_PARENT"' .code
+tree_person_send POST "/api/v1/issues/$key/risks" "$risk_input"
+tree_want 201 visibility "$login writes a risk that inherits the lens's author visibility"
+expect visibility "the risk inherits author visibility" '"author"' .visibility
+tree_field visibility "read the risk's id" .id
 readonly risk="$tree_value"
-# The store refuses a project node under an author-only one, so the lens and its finding are
-# reserved for alice once the risk stands, as TestTheTreeReadLiftsAVisibleNodeAboveAParentItsReaderMayNotSee
-# reserves its lens.
-query visibility "reserve the lens $hidden_lens and its finding for $login" "
-  with reserved as (
-    update graph_nodes set visibility = 'author'
-    where (kind = 'lens' and id = '$hidden_lens') or (kind = 'block' and id like 'lens/' || '$hidden_lens' || '#%')
-    returning 1)
-  select count(*) from reserved"
-[[ "$answer" -ge 2 ]] || fail visibility "reserve the lens and its finding for $login" "the update reserved $answer nodes"
-pass visibility "reserved the lens $hidden_lens and its finding for $login; the risk $risk stays project"
+# No API write can create the mixed-visibility branch. Widen only the test risk in the store
+# so the tree read must lift it for bob. The lens and finding keep the API's author visibility.
+with_vars visibility "widen the test risk to project visibility" \
+  "update graph_nodes set visibility = 'project' where kind = 'risk' and id = :'risk'
+   and visibility = 'author' returning id" risk="$risk"
+[[ "$answer" == "$risk" ]] ||
+  fail visibility "the test risk has project visibility" "the update returned '$answer', want $risk"
+pass visibility "the test risk $risk is project-visible under the author-only lens $hidden_lens"
 tree_read_views_get visibility "$login" "/api/v1/issues/$key/tree" "$work/a-alice.json"
 tree_read_views_expect "$work/a-alice.json" visibility "read as $login, the risk's parent is the lens" "\"$hidden_lens\"" \
   --arg r "$risk" '[.nodes[] | select(.kind == "risk" and .id == $r) | .parent.id][0]'

@@ -7,7 +7,7 @@ import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
-import { whoAmIQuery } from "../../../api/queries";
+import { issueAskThreadsQuery, whoAmIQuery } from "../../../api/queries";
 import { pageKindBullet } from "../../../theme/classes";
 import type { TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
@@ -18,7 +18,6 @@ import {
   OutlineWriterProvider,
   useOutlineWriter,
 } from "../outline-writer";
-import { issueAskThreadsQuery } from "../useIssueTree";
 import {
   criterionMarkdown,
   criterionOffered,

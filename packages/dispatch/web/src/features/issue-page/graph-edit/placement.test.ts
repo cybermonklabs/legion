@@ -372,10 +372,10 @@ test("an indent names the stored sibling above as parent and its last ranked chi
   const request = fixture.moved.indent.request.body;
   expect(place("<statement-3>").indent).toStrictEqual({ body: request, kind: "move" });
   // Where the sibling above holds children of the node's own document, the last of them is after
-  // (a table after a list of the issue's own fragment); the children of another document are
-  // none of it (a paragraph after a decision, whose one child is of the spec).
+  // (a table after a list of the issue's own fragment, whose last item is after); the children of
+  // another document are none of it (a paragraph after a decision, whose one child is of the spec).
   expect(place("<tree/table>").indent).toStrictEqual({
-    body: { after: "<tree/bullet_list/paragraph>", parent: "<tree/bullet_list>" },
+    body: { after: "<tree/bullet_list/list_item>", parent: "<tree/bullet_list>" },
     kind: "move",
   });
   expect(nodeOf(converted, "<reading>").parent?.id).toBe("<decision>");
@@ -387,8 +387,8 @@ test("an indent names the stored sibling above as parent and its last ranked chi
 
 // No real read makes an Indent ask for the next page: the walk puts a sibling's whole subtree
 // before the node, so a node held after its sibling above holds that sibling's children. This
-// case holds the rule on the first page of the fixture's `paged` read, which ends inside the first
-// statement's check: an Indent whose sibling above closes before the node is answered from the
+// case holds the rule on the first page of the fixture's `paged` read, which ends at the first
+// statement: an Indent whose sibling above closes before the node is answered from the
 // page alone, and the Moves of a node that stands where the page ends wait for the page after it.
 test("an indent past the loaded page reads the next pages first", () => {
   expect(firstPage.cursor, "the first page names the next").not.toBeNull();
@@ -403,8 +403,8 @@ test("an indent past the loaded page reads the next pages first", () => {
 });
 
 test("an outdent names the old parent as after only within its document", () => {
-  // A paragraph of the list, both of the issue's own fragment: the list is after.
-  expect(place("<tree/bullet_list/paragraph>").outdent).toStrictEqual({
+  // An item of the list, both of the issue's own fragment: the list is after.
+  expect(place("<tree/bullet_list/list_item>").outdent).toStrictEqual({
     body: { after: "<tree/bullet_list>", parent: "issue/<issue>" },
     kind: "move",
   });
@@ -441,15 +441,14 @@ test("a move names the ranked sibling of the same document that stands before th
   expect(place("<statement-3>").move_down).toEqual(grey("grey_last"));
 });
 
-// The first page of the fixture's `paged` read ends in the first statement's children: the
-// siblings below the first statement, and below the check, may be on the next page.
+// The first page of the fixture's `paged` read ends at the first statement: the siblings below
+// the first statement, and below the criterion, may be on the next page.
 test("a move past the loaded page reads the next page first", () => {
   const cut = (node: string) => placementOf({ held: firstPage, node, status: STATUS });
   expect(firstPage.cursor).not.toBeNull();
   expect(nodeOf(firstPage, "<statement-1>").id).toBe("<statement-1>");
   expect(firstPage.nodes?.some((node) => node.id === "<statement-2>")).toBe(false);
   expect(cut("<statement-1>").move_down).toEqual({ kind: "read_next" });
-  expect(cut("<check-shared>").move_down).toEqual({ kind: "read_next" });
   expect(cut("<criterion>").move_down).toEqual({ kind: "read_next" });
   // The pages together answer it.
   expect(place("<statement-1>").move_down.kind).toBe("move");

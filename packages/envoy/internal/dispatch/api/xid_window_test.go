@@ -414,10 +414,16 @@ func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 // batch up to the version's insert, the savepoint the write phase takes before it, the batch from
 // it on with the version's version_renders row pinned to the approval's digest, the read of the
 // spec query's record at one cut, the update giving the pinned row its cut, the savepoint's
-// release, the settlement credit's batch and the COMMIT (restoreWindowStatements).
+// release, the settlement credit's batch and the COMMIT (restoreWindowStatements). The spec's
+// revision token stands in a requirement (revisionRequirementSpec), so the upload that bumps it
+// moves the spec's record and stales the approval: R14 covers the approval by the Spec query's
+// record, which a bump of the token in a paragraph does not move, so the record carry would carry
+// the approval to that upload's version, and the measured upload, whose text is not that carried
+// version's, would carry it by the record again and take no restore's window.
 func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	// Not parallel: the xid rig measures only in a test that runs alone in the process.
-	f := newXidFixture(t, testServerOptions{}, "")
+	spec, _ := xidSpec(1)
+	f := newXidFixture(t, testServerOptions{}, revisionRequirementSpec(t, spec))
 	approval := reviewDocument(t, f.handler, f.specID, "alice", "approved", "")
 	approved := versionMarkdown(t, f.handler, f.specID, approval.Version)
 	f.revise()
@@ -428,12 +434,13 @@ func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 		t.Fatalf("stale the approval before the restore: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
 	waitForArtifactVersion(t, f.handler, f.specID, approval.Version+1)
+	requireNoCarry(t, f.handler, f.specID, 1, "stale")
 	// The restore names the token of the version it replaces, read before the measured request.
 	base := uploadBase(t, f.handler, f.specID)
 	report := f.measure(t, http.StatusCreated, storetest.XidWindowOf(18,
 		"the write phase's batch up to the restored version's insert, the savepoint the write phase takes before that insert, "+
 			"the batch from the insert on - the version's version_renders row pinned to the approval's digest, the carried review and its artifact.approved before the version's artifact.version - "+
-			"the read of the spec query's record at one cut once the batch has run - the cut, the reads of the issue's conversation, the read of the items' rows, the one read of the tree, the read of the issues above the issue and that of the issue a view shows - "+
+			"the read of the spec query's record at one cut once the batch has run - the cut, the reads of the issue's conversation, the read of the items' rows, the one read of the tree, the one read of the issues above the issue and of whether it is a view, and the read of the values and relations of the one node the spec query takes, its requirement rv - "+
 			"the update giving the pinned version_renders row the cut (R14, R15), the release of the savepoint where the record is the approval's digest, "+
 			"the batch of the settlement credit's statements, and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{

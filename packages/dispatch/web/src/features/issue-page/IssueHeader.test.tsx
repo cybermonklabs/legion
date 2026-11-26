@@ -19,10 +19,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
-import {
-  artifactRecordHandler,
-  decisionsAndReadMarkHandlers,
-} from "../../__tests__/proof-document";
+import { artifactRecordHandler, readMarkHandlers } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -224,7 +221,7 @@ function answerHeaderReads(): void {
       })
     ),
     artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id)),
-    ...decisionsAndReadMarkHandlers()
+    ...readMarkHandlers()
   );
 }
 
@@ -454,7 +451,9 @@ test("the header counts a Change under the decision whose block of the spec hold
   };
   const restore = stubHeader(issue);
   const reads = [
-    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([listed, untied])),
+    spyOn(api, "getIssueDecisions").mockResolvedValue(
+      decisionsRead([listed, untied], issue.artifacts[0])
+    ),
     spyOn(api, "getIssueCoverage").mockResolvedValue({
       gaps: [],
       has_plan: false,

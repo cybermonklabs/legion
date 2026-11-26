@@ -1,6 +1,7 @@
 import { type MutationKey, useQuery } from "@tanstack/react-query";
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 
+import { issueAskThreadsQuery } from "../../api/queries";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
@@ -20,7 +21,7 @@ import { isStatement } from "./issue-tree";
 import { criterionOffered } from "./model-rows/criterion-write";
 import type { RoomFacts } from "./model-rows/room-target";
 import { useRoomFacts } from "./model-rows/room-target";
-import { issueAskThreadsQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot

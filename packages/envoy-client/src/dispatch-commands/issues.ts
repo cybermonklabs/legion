@@ -4,6 +4,7 @@ import type {
   ClaimedIssue,
   DuplicateCandidate,
   Issue,
+  IssueCheckResults,
   IssueComponents,
   IssueComponentsInput,
   IssueDetails,
@@ -828,6 +829,24 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
   };
 }
 
+/**
+ * Whether the issue whose results read answered no check has a Verification document at all: its
+ * queries say, where the issue read carries them, since a results read with no check is the same
+ * for an empty verification query and for none.
+ */
+async function hasVerificationDocument(
+  client: DispatchClient,
+  issue: string,
+  results: IssueCheckResults
+): Promise<boolean> {
+  const { queries } = await client.getIssue(issue);
+  // A server of the release before answers the issue read with no `queries`. Its results read
+  // names the Verification document itself, "" where the issue has none.
+  // kept for one release: role-artifact-ids
+  if (queries === undefined) return results.verification_artifact_id !== "";
+  return queries.some(({ query }) => query === "verification");
+}
+
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
  *  against it. */
 export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
@@ -837,8 +856,10 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   const brief = optionalBoolean(args, "brief") === true;
   const results = await client.issueResults(issue, at);
   const checks = results.checks ?? [];
+  const hasVerification =
+    checks.length > 0 || (await hasVerificationDocument(client, issue, results));
   return {
-    text: formatCheckResults(results, brief),
+    text: formatCheckResults(results, hasVerification, brief),
     details: {
       issue,
       checks: checks.length,

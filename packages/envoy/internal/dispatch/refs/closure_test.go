@@ -893,3 +893,59 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 		}
 	})
 }
+
+// A retired document's address names its issue (loadArtifactNodes). A comment of CORE-1 links
+// both CORE-2 and CORE-2's retired decisions document, and the references read lists CORE-2 once
+// among the links out, with the kinds of both links; two retired documents of CORE-2 each link
+// CORE-1, and the read lists CORE-2 once among the links in. Each list holds one row for each
+// node, so a client keying its rows by node draws each once.
+func TestTheReferencesReadListsTheIssueOfARetiredDocumentOnce(t *testing.T) {
+	tx := prefixFixture(t)
+	ctx := context.Background()
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('CORE-2', 'CORE', 2, 'Retired its documents', '{"kind":"user","id":"alice"}', 'V')
+	`); err != nil {
+		t.Fatalf("create issue CORE-2: %v", err)
+	}
+	retired := func(slug string) (string, string) {
+		t.Helper()
+		var id, refKey string
+		if err := tx.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, retired_at)
+			values ('CORE-2', 'CORE', $1, $1, 'doc', false, '{"kind":"user","id":"alice"}', now())
+			returning id::text, ref_key
+		`, slug).Scan(&id, &refKey); err != nil {
+			t.Fatalf("create the retired document %s: %v", slug, err)
+		}
+		return id, refKey
+	}
+	decisions, decisionsKey := retired(RetiredDecisionsSlug)
+	notes, _ := retired("notes")
+	comment := createReferenceComment(t, tx, "CORE-1")
+	insertReference(t, tx, "comment", comment, "issue", "CORE-2")
+	insertReference(t, tx, "comment", comment, "artifact", decisionsKey)
+	insertReference(t, tx, "artifact", decisions, "issue", "CORE-1")
+	insertReference(t, tx, "artifact", notes, "issue", "CORE-1")
+
+	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1", "")
+	if err != nil {
+		t.Fatalf("read the references of CORE-1: %v", err)
+	}
+	listed := func(links []model.ReferenceLink) []string {
+		rows := []string{}
+		for _, link := range links {
+			rows = append(rows, fmt.Sprintf("%s %s %v via %s %s", link.Node.Kind, link.Node.ID, link.Kinds, link.Via.Kind, link.Via.ID))
+		}
+		return rows
+	}
+	if got, want := listed(references.Links), []string{"issue CORE-2 [mentions] via comment " + comment}; !slices.Equal(got, want) {
+		t.Errorf("the links out of CORE-1 = %q; want %q, the issue once for its own address and its retired document's", got, want)
+	}
+	if got, want := listed(references.LinkedFrom), []string{"issue CORE-2 [mentions] via issue CORE-1"}; !slices.Equal(got, want) {
+		t.Errorf("the links into CORE-1 = %q; want %q, the issue once for its two retired documents", got, want)
+	}
+	if len(references.Members) != 0 {
+		t.Errorf("the members of CORE-1 = %#v; want none, since a retired document's address names its issue", references.Members)
+	}
+}

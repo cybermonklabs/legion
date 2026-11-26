@@ -453,7 +453,7 @@
               "asks": [],
               "block_id": "d1",
               "changed_at": "<time>",
-              "changed_version": 4,
+              "changed_version": 3,
               "heading": "The graph keeps one write for each move.",
               "kept": null,
               "kind": "agent",
@@ -794,8 +794,8 @@
                 "proven": true
               }
             ],
-            "block_id": "<list-paragraph>",
-            "id": "<list-paragraph>",
+            "block_id": "<list-item>",
+            "id": "<issue>/tree#<list-item>",
             "kind": "block",
             "made_at": "<time>",
             "no_conversation": true,
@@ -805,8 +805,69 @@
               "kind": "block",
               "supertag": "block"
             },
-            "placement_seq": "<seq:list-paragraph>",
+            "placement_seq": "<seq:issue>/tree#<list-item>",
             "rank": "<rank:06>",
+            "role": "tree",
+            "state": "live",
+            "supertag": "block",
+            "text": "- The first item of the list.",
+            "text_tree": {
+              "content": [
+                {
+                  "content": [
+                    {
+                      "attrs": {
+                        "spread": false
+                      },
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "text": "The first item of the list.",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        }
+                      ],
+                      "type": "list_item"
+                    }
+                  ],
+                  "type": "bullet_list"
+                }
+              ],
+              "type": "doc"
+            },
+            "visibility": "project"
+          },
+          {
+            "attributes": {
+              "placement": "text",
+              "project": "GEDIT",
+              "state": "live",
+              "text_rank": "2U",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "block_id": "<list-paragraph>",
+            "id": "<list-paragraph>",
+            "kind": "block",
+            "made_at": "<time>",
+            "no_conversation": true,
+            "parent": {
+              "first_line": "The first item of the list.",
+              "id": "<issue>/tree#<list-item>",
+              "kind": "block",
+              "supertag": "block"
+            },
+            "placement_seq": "<seq:list-paragraph>",
+            "rank": "<rank:07>",
             "role": "tree",
             "state": "live",
             "supertag": "block",
@@ -842,8 +903,8 @@
                 "proven": true
               }
             ],
-            "block_id": "<tree/bullet_list/paragraph>",
-            "id": "<tree/bullet_list/paragraph>",
+            "block_id": "<tree/bullet_list/list_item>",
+            "id": "<tree/bullet_list/list_item>",
             "kind": "block",
             "made_at": "<time>",
             "no_conversation": true,
@@ -853,7 +914,68 @@
               "kind": "block",
               "supertag": "block"
             },
-            "placement_seq": "<seq:tree/bullet_list/paragraph>",
+            "placement_seq": "<seq:tree/bullet_list/list_item>",
+            "rank": "<rank:07>",
+            "role": "tree",
+            "state": "live",
+            "supertag": "block",
+            "text": "- The second item of the list.",
+            "text_tree": {
+              "content": [
+                {
+                  "content": [
+                    {
+                      "attrs": {
+                        "spread": false
+                      },
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "text": "The second item of the list.",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        }
+                      ],
+                      "type": "list_item"
+                    }
+                  ],
+                  "type": "bullet_list"
+                }
+              ],
+              "type": "doc"
+            },
+            "visibility": "project"
+          },
+          {
+            "attributes": {
+              "placement": "text",
+              "project": "GEDIT",
+              "state": "live",
+              "text_rank": "2U",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "block_id": "<tree/bullet_list/list_item/paragraph>",
+            "id": "<tree/bullet_list/list_item/paragraph>",
+            "kind": "block",
+            "made_at": "<time>",
+            "no_conversation": true,
+            "parent": {
+              "first_line": "The second item of the list.",
+              "id": "<tree/bullet_list/list_item>",
+              "kind": "block",
+              "supertag": "block"
+            },
+            "placement_seq": "<seq:tree/bullet_list/list_item/paragraph>",
             "rank": "<rank:07>",
             "role": "tree",
             "state": "live",
@@ -1790,7 +1912,7 @@
               "mark_id": "<comment-on-statement-3>",
               "orphaned": true,
               "quote": "stores nothing",
-              "version": 4
+              "version": 3
             },
             "attributes": {
               "project": "GEDIT",
@@ -2189,12 +2311,6 @@
             "visibility": "project"
           }
         ],
-        "owed_documents": [
-          {
-            "artifact_id": "<decisions>",
-            "version": 3
-          }
-        ],
         "tree": "<tree>",
         "tuples": [
           {
@@ -2364,6 +2480,39 @@
           },
           {
             "from": {
+              "id": "<issue>/tree#<list-item>",
+              "kind": "block"
+            },
+            "kind": "authored_by",
+            "to": {
+              "id": "<person>",
+              "kind": "person"
+            }
+          },
+          {
+            "from": {
+              "id": "<issue>/tree#<list-item>",
+              "kind": "block"
+            },
+            "kind": "part_of",
+            "to": {
+              "id": "<tree/bullet_list>",
+              "kind": "block"
+            }
+          },
+          {
+            "from": {
+              "id": "<issue>/tree#<list-item>",
+              "kind": "block"
+            },
+            "kind": "text_parent",
+            "to": {
+              "id": "<tree/bullet_list>",
+              "kind": "block"
+            }
+          },
+          {
+            "from": {
               "id": "<list-paragraph>",
               "kind": "block"
             },
@@ -2380,7 +2529,7 @@
             },
             "kind": "part_of",
             "to": {
-              "id": "<tree/bullet_list>",
+              "id": "<issue>/tree#<list-item>",
               "kind": "block"
             }
           },
@@ -2391,13 +2540,13 @@
             },
             "kind": "text_parent",
             "to": {
-              "id": "<tree/bullet_list>",
+              "id": "<issue>/tree#<list-item>",
               "kind": "block"
             }
           },
           {
             "from": {
-              "id": "<tree/bullet_list/paragraph>",
+              "id": "<tree/bullet_list/list_item>",
               "kind": "block"
             },
             "kind": "authored_by",
@@ -2408,7 +2557,7 @@
           },
           {
             "from": {
-              "id": "<tree/bullet_list/paragraph>",
+              "id": "<tree/bullet_list/list_item>",
               "kind": "block"
             },
             "kind": "part_of",
@@ -2419,12 +2568,45 @@
           },
           {
             "from": {
-              "id": "<tree/bullet_list/paragraph>",
+              "id": "<tree/bullet_list/list_item>",
               "kind": "block"
             },
             "kind": "text_parent",
             "to": {
               "id": "<tree/bullet_list>",
+              "kind": "block"
+            }
+          },
+          {
+            "from": {
+              "id": "<tree/bullet_list/list_item/paragraph>",
+              "kind": "block"
+            },
+            "kind": "authored_by",
+            "to": {
+              "id": "<person>",
+              "kind": "person"
+            }
+          },
+          {
+            "from": {
+              "id": "<tree/bullet_list/list_item/paragraph>",
+              "kind": "block"
+            },
+            "kind": "part_of",
+            "to": {
+              "id": "<tree/bullet_list/list_item>",
+              "kind": "block"
+            }
+          },
+          {
+            "from": {
+              "id": "<tree/bullet_list/list_item/paragraph>",
+              "kind": "block"
+            },
+            "kind": "text_parent",
+            "to": {
+              "id": "<tree/bullet_list/list_item>",
               "kind": "block"
             }
           },
@@ -2481,6 +2663,17 @@
             "to": {
               "id": "<person>",
               "kind": "person"
+            }
+          },
+          {
+            "from": {
+              "id": "<question>",
+              "kind": "ask"
+            },
+            "kind": "asked_on",
+            "to": {
+              "id": "<question-block>",
+              "kind": "block"
             }
           },
           {
@@ -3502,13 +3695,13 @@
     }
   },
   "paged": {
-    "page_size": 20,
+    "page_size": 21,
     "pages": [
       {
         "body": {
           "comments_before": null,
           "converted": true,
-          "cursor": "<cursor:result:<result>>",
+          "cursor": "<cursor:block:<check-shared>>",
           "document_nodes": [
             {
               "artifact_id": "<spec>",
@@ -3717,7 +3910,7 @@
                 "asks": [],
                 "block_id": "d1",
                 "changed_at": "<time>",
-                "changed_version": 3,
+                "changed_version": 2,
                 "heading": "The graph keeps one write for each move.",
                 "kept": null,
                 "kind": "agent",
@@ -4058,8 +4251,8 @@
                   "proven": true
                 }
               ],
-              "block_id": "<list-paragraph>",
-              "id": "<list-paragraph>",
+              "block_id": "<list-item>",
+              "id": "<issue>/tree#<list-item>",
               "kind": "block",
               "made_at": "<time>",
               "no_conversation": true,
@@ -4069,8 +4262,69 @@
                 "kind": "block",
                 "supertag": "block"
               },
-              "placement_seq": "<seq:list-paragraph>",
+              "placement_seq": "<seq:issue>/tree#<list-item>",
               "rank": "<rank:5>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "- The first item of the list.",
+              "text_tree": {
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "attrs": {
+                          "spread": false
+                        },
+                        "content": [
+                          {
+                            "content": [
+                              {
+                                "text": "The first item of the list.",
+                                "type": "text"
+                              }
+                            ],
+                            "type": "paragraph"
+                          }
+                        ],
+                        "type": "list_item"
+                      }
+                    ],
+                    "type": "bullet_list"
+                  }
+                ],
+                "type": "doc"
+              },
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<list-paragraph>",
+              "id": "<list-paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The first item of the list.",
+                "id": "<issue>/tree#<list-item>",
+                "kind": "block",
+                "supertag": "block"
+              },
+              "placement_seq": "<seq:list-paragraph>",
+              "rank": "<rank:6>",
               "role": "tree",
               "state": "live",
               "supertag": "block",
@@ -4106,8 +4360,8 @@
                   "proven": true
                 }
               ],
-              "block_id": "<tree/bullet_list/paragraph>",
-              "id": "<tree/bullet_list/paragraph>",
+              "block_id": "<tree/bullet_list/list_item>",
+              "id": "<tree/bullet_list/list_item>",
               "kind": "block",
               "made_at": "<time>",
               "no_conversation": true,
@@ -4117,7 +4371,68 @@
                 "kind": "block",
                 "supertag": "block"
               },
-              "placement_seq": "<seq:tree/bullet_list/paragraph>",
+              "placement_seq": "<seq:tree/bullet_list/list_item>",
+              "rank": "<rank:6>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "- The second item of the list.",
+              "text_tree": {
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "attrs": {
+                          "spread": false
+                        },
+                        "content": [
+                          {
+                            "content": [
+                              {
+                                "text": "The second item of the list.",
+                                "type": "text"
+                              }
+                            ],
+                            "type": "paragraph"
+                          }
+                        ],
+                        "type": "list_item"
+                      }
+                    ],
+                    "type": "bullet_list"
+                  }
+                ],
+                "type": "doc"
+              },
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/bullet_list/list_item/paragraph>",
+              "id": "<tree/bullet_list/list_item/paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The second item of the list.",
+                "id": "<tree/bullet_list/list_item>",
+                "kind": "block",
+                "supertag": "block"
+              },
+              "placement_seq": "<seq:tree/bullet_list/list_item/paragraph>",
               "rank": "<rank:6>",
               "role": "tree",
               "state": "live",
@@ -4613,79 +4928,6 @@
             },
             {
               "attributes": {
-                "placement": "authored",
-                "project": "GEDIT",
-                "state": "live",
-                "text_rank": "3U",
-                "visibility": "project"
-              },
-              "author": [
-                {
-                  "id": "<person>",
-                  "kind": "user",
-                  "proven": true
-                }
-              ],
-              "block_id": "c1",
-              "check": {
-                "changed_version": 1,
-                "text_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c"
-              },
-              "document": {
-                "artifact_id": "<verification>",
-                "position": 0,
-                "slug": "verification-md"
-              },
-              "id": "<check-shared>",
-              "kind": "block",
-              "made_at": "<time>",
-              "parent": {
-                "first_line": "An indent is one write of the node's place.",
-                "id": "<statement-1>",
-                "kind": "block",
-                "supertag": "requirement"
-              },
-              "placement_seq": "<seq:check-shared>",
-              "rank": "<rank:9>",
-              "role": "tree",
-              "state": "live",
-              "supertag": "check",
-              "text": ":::check{#c1 serves=\"dispatch://<issue>/spec#b-s1 dispatch://<issue>/spec#b-s2 dispatch://<issue>/spec#b-s3\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nEvery edit of the graph is one write.\n:::",
-              "text_tree": {
-                "content": [
-                  {
-                    "attrs": {
-                      "blockId": "c1",
-                      "negative_control": "Drop the rule: the test fails.",
-                      "run": "go test ./graph",
-                      "serves": [
-                        "dispatch://<issue>/spec#b-s1",
-                        "dispatch://<issue>/spec#b-s2",
-                        "dispatch://<issue>/spec#b-s3"
-                      ],
-                      "surface": "api",
-                      "when": "before_merge"
-                    },
-                    "content": [
-                      {
-                        "content": [
-                          {
-                            "text": "Every edit of the graph is one write.",
-                            "type": "text"
-                          }
-                        ],
-                        "type": "paragraph"
-                      }
-                    ],
-                    "type": "check"
-                  }
-                ],
-                "type": "doc"
-              },
-              "visibility": "project"
-            },
-            {
-              "attributes": {
                 "state": "live",
                 "visibility": "project"
               },
@@ -4732,13 +4974,7 @@
               "visibility": "project"
             }
           ],
-          "owed_documents": [
-            {
-              "artifact_id": "<decisions>",
-              "version": 2
-            }
-          ],
-          "remaining": 19,
+          "remaining": 20,
           "tree": "<tree>",
           "tuples": [
             {
@@ -4908,6 +5144,39 @@
             },
             {
               "from": {
+                "id": "<issue>/tree#<list-item>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<issue>/tree#<list-item>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<issue>/tree#<list-item>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
                 "id": "<list-paragraph>",
                 "kind": "block"
               },
@@ -4924,7 +5193,7 @@
               },
               "kind": "part_of",
               "to": {
-                "id": "<tree/bullet_list>",
+                "id": "<issue>/tree#<list-item>",
                 "kind": "block"
               }
             },
@@ -4935,13 +5204,13 @@
               },
               "kind": "text_parent",
               "to": {
-                "id": "<tree/bullet_list>",
+                "id": "<issue>/tree#<list-item>",
                 "kind": "block"
               }
             },
             {
               "from": {
-                "id": "<tree/bullet_list/paragraph>",
+                "id": "<tree/bullet_list/list_item>",
                 "kind": "block"
               },
               "kind": "authored_by",
@@ -4952,7 +5221,7 @@
             },
             {
               "from": {
-                "id": "<tree/bullet_list/paragraph>",
+                "id": "<tree/bullet_list/list_item>",
                 "kind": "block"
               },
               "kind": "part_of",
@@ -4963,12 +5232,45 @@
             },
             {
               "from": {
-                "id": "<tree/bullet_list/paragraph>",
+                "id": "<tree/bullet_list/list_item>",
                 "kind": "block"
               },
               "kind": "text_parent",
               "to": {
                 "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/list_item/paragraph>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/list_item/paragraph>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<tree/bullet_list/list_item>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/list_item/paragraph>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<tree/bullet_list/list_item>",
                 "kind": "block"
               }
             },
@@ -5025,6 +5327,17 @@
               "to": {
                 "id": "<person>",
                 "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<question>",
+                "kind": "ask"
+              },
+              "kind": "asked_on",
+              "to": {
+                "id": "<question-block>",
+                "kind": "block"
               }
             },
             {
@@ -5114,61 +5427,6 @@
                 "id": "<criterion>",
                 "kind": "block"
               }
-            },
-            {
-              "from": {
-                "id": "<check-shared>",
-                "kind": "block"
-              },
-              "kind": "authored_by",
-              "to": {
-                "id": "<person>",
-                "kind": "person"
-              }
-            },
-            {
-              "from": {
-                "id": "<check-shared>",
-                "kind": "block"
-              },
-              "kind": "part_of",
-              "to": {
-                "id": "<statement-1>",
-                "kind": "block"
-              }
-            },
-            {
-              "from": {
-                "id": "<check-shared>",
-                "kind": "block"
-              },
-              "kind": "serves",
-              "to": {
-                "id": "<statement-1>",
-                "kind": "block"
-              }
-            },
-            {
-              "from": {
-                "id": "<check-shared>",
-                "kind": "block"
-              },
-              "kind": "serves",
-              "to": {
-                "id": "<statement-2>",
-                "kind": "block"
-              }
-            },
-            {
-              "from": {
-                "id": "<check-shared>",
-                "kind": "block"
-              },
-              "kind": "serves",
-              "to": {
-                "id": "<statement-3>",
-                "kind": "block"
-              }
             }
           ],
           "version": null,
@@ -5209,6 +5467,79 @@
           "documents": null,
           "issue": "<issue>",
           "nodes": [
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "3U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "c1",
+              "check": {
+                "changed_version": 1,
+                "text_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c"
+              },
+              "document": {
+                "artifact_id": "<verification>",
+                "position": 0,
+                "slug": "verification-md"
+              },
+              "id": "<check-shared>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "An indent is one write of the node's place.",
+                "id": "<statement-1>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:check-shared>",
+              "rank": "<rank:4>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "check",
+              "text": ":::check{#c1 serves=\"dispatch://<issue>/spec#b-s1 dispatch://<issue>/spec#b-s2 dispatch://<issue>/spec#b-s3\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nEvery edit of the graph is one write.\n:::",
+              "text_tree": {
+                "content": [
+                  {
+                    "attrs": {
+                      "blockId": "c1",
+                      "negative_control": "Drop the rule: the test fails.",
+                      "run": "go test ./graph",
+                      "serves": [
+                        "dispatch://<issue>/spec#b-s1",
+                        "dispatch://<issue>/spec#b-s2",
+                        "dispatch://<issue>/spec#b-s3"
+                      ],
+                      "surface": "api",
+                      "when": "before_merge"
+                    },
+                    "content": [
+                      {
+                        "content": [
+                          {
+                            "text": "Every edit of the graph is one write.",
+                            "type": "text"
+                          }
+                        ],
+                        "type": "paragraph"
+                      }
+                    ],
+                    "type": "check"
+                  }
+                ],
+                "type": "doc"
+              },
+              "visibility": "project"
+            },
             {
               "attributes": {
                 "check_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c",
@@ -5734,7 +6065,7 @@
                 "occurrence": 0,
                 "orphaned": false,
                 "quote": "stores nothing",
-                "version": 4
+                "version": 3
               },
               "attributes": {
                 "project": "GEDIT",
@@ -6171,14 +6502,63 @@
               "visibility": "project"
             }
           ],
-          "owed_documents": [
-            {
-              "artifact_id": "<decisions>",
-              "version": 3
-            }
-          ],
           "tree": "<tree>",
           "tuples": [
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-2>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-3>",
+                "kind": "block"
+              }
+            },
             {
               "from": {
                 "id": "<result>",
@@ -6530,7 +6910,7 @@
           "if_match": null,
           "login": "<person>",
           "method": "GET",
-          "path": "/api/v1/issues/<issue>/tree?cursor=<cursor:result:<result>>"
+          "path": "/api/v1/issues/<issue>/tree?cursor=<cursor:block:<check-shared>>"
         },
         "status": 200
       }
@@ -7333,7 +7713,7 @@
                 "asks": [],
                 "block_id": "d1",
                 "changed_at": "<time>",
-                "changed_version": 4,
+                "changed_version": 3,
                 "heading": "The graph keeps one write for each move.",
                 "kept": null,
                 "kind": "agent",
@@ -7674,8 +8054,8 @@
                   "proven": true
                 }
               ],
-              "block_id": "<list-paragraph>",
-              "id": "<list-paragraph>",
+              "block_id": "<list-item>",
+              "id": "<issue>/tree#<list-item>",
               "kind": "block",
               "made_at": "<time>",
               "no_conversation": true,
@@ -7685,8 +8065,69 @@
                 "kind": "block",
                 "supertag": "block"
               },
-              "placement_seq": "<seq:list-paragraph>",
+              "placement_seq": "<seq:issue>/tree#<list-item>",
               "rank": "<rank:06>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "- The first item of the list.",
+              "text_tree": {
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "attrs": {
+                          "spread": false
+                        },
+                        "content": [
+                          {
+                            "content": [
+                              {
+                                "text": "The first item of the list.",
+                                "type": "text"
+                              }
+                            ],
+                            "type": "paragraph"
+                          }
+                        ],
+                        "type": "list_item"
+                      }
+                    ],
+                    "type": "bullet_list"
+                  }
+                ],
+                "type": "doc"
+              },
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<list-paragraph>",
+              "id": "<list-paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The first item of the list.",
+                "id": "<issue>/tree#<list-item>",
+                "kind": "block",
+                "supertag": "block"
+              },
+              "placement_seq": "<seq:list-paragraph>",
+              "rank": "<rank:07>",
               "role": "tree",
               "state": "live",
               "supertag": "block",
@@ -7722,8 +8163,8 @@
                   "proven": true
                 }
               ],
-              "block_id": "<tree/bullet_list/paragraph>",
-              "id": "<tree/bullet_list/paragraph>",
+              "block_id": "<tree/bullet_list/list_item>",
+              "id": "<tree/bullet_list/list_item>",
               "kind": "block",
               "made_at": "<time>",
               "no_conversation": true,
@@ -7733,7 +8174,68 @@
                 "kind": "block",
                 "supertag": "block"
               },
-              "placement_seq": "<seq:tree/bullet_list/paragraph>",
+              "placement_seq": "<seq:tree/bullet_list/list_item>",
+              "rank": "<rank:07>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "- The second item of the list.",
+              "text_tree": {
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "attrs": {
+                          "spread": false
+                        },
+                        "content": [
+                          {
+                            "content": [
+                              {
+                                "text": "The second item of the list.",
+                                "type": "text"
+                              }
+                            ],
+                            "type": "paragraph"
+                          }
+                        ],
+                        "type": "list_item"
+                      }
+                    ],
+                    "type": "bullet_list"
+                  }
+                ],
+                "type": "doc"
+              },
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/bullet_list/list_item/paragraph>",
+              "id": "<tree/bullet_list/list_item/paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The second item of the list.",
+                "id": "<tree/bullet_list/list_item>",
+                "kind": "block",
+                "supertag": "block"
+              },
+              "placement_seq": "<seq:tree/bullet_list/list_item/paragraph>",
               "rank": "<rank:07>",
               "role": "tree",
               "state": "live",
@@ -8825,7 +9327,7 @@
                 "occurrence": 0,
                 "orphaned": false,
                 "quote": "stores nothing",
-                "version": 4
+                "version": 3
               },
               "attributes": {
                 "project": "GEDIT",
@@ -9309,12 +9811,6 @@
               "visibility": "project"
             }
           ],
-          "owed_documents": [
-            {
-              "artifact_id": "<decisions>",
-              "version": 3
-            }
-          ],
           "tree": "<tree>",
           "tuples": [
             {
@@ -9484,6 +9980,39 @@
             },
             {
               "from": {
+                "id": "<issue>/tree#<list-item>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<issue>/tree#<list-item>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<issue>/tree#<list-item>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
                 "id": "<list-paragraph>",
                 "kind": "block"
               },
@@ -9500,7 +10029,7 @@
               },
               "kind": "part_of",
               "to": {
-                "id": "<tree/bullet_list>",
+                "id": "<issue>/tree#<list-item>",
                 "kind": "block"
               }
             },
@@ -9511,13 +10040,13 @@
               },
               "kind": "text_parent",
               "to": {
-                "id": "<tree/bullet_list>",
+                "id": "<issue>/tree#<list-item>",
                 "kind": "block"
               }
             },
             {
               "from": {
-                "id": "<tree/bullet_list/paragraph>",
+                "id": "<tree/bullet_list/list_item>",
                 "kind": "block"
               },
               "kind": "authored_by",
@@ -9528,7 +10057,7 @@
             },
             {
               "from": {
-                "id": "<tree/bullet_list/paragraph>",
+                "id": "<tree/bullet_list/list_item>",
                 "kind": "block"
               },
               "kind": "part_of",
@@ -9539,12 +10068,45 @@
             },
             {
               "from": {
-                "id": "<tree/bullet_list/paragraph>",
+                "id": "<tree/bullet_list/list_item>",
                 "kind": "block"
               },
               "kind": "text_parent",
               "to": {
                 "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/list_item/paragraph>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/list_item/paragraph>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<tree/bullet_list/list_item>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/list_item/paragraph>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<tree/bullet_list/list_item>",
                 "kind": "block"
               }
             },
@@ -9601,6 +10163,17 @@
               "to": {
                 "id": "<person>",
                 "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<question>",
+                "kind": "ask"
+              },
+              "kind": "asked_on",
+              "to": {
+                "id": "<question-block>",
+                "kind": "block"
               }
             },
             {

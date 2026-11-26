@@ -72,12 +72,14 @@ export type ChangeComment = Pick<
 /** The fields of a decision this module reads: an entry of the decisions read. */
 type ChangedDecision = Pick<
   DecisionEntry,
-  "changed_at" | "document" | "kept" | "ref" | "replaced" | "text" | "text_tree"
+  "changed_at" | "document" | "kept" | "node" | "ref" | "replaced" | "text" | "text_tree"
 >;
 
-/** The fields of the issue read a decision's document is found by (`decisionDocumentId`): its
- *  key, its documents and which of them is its spec. */
-type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"> & {
+/** The fields of the issue read a decision's document is found by, where the decisions read names
+ *  none (`decisionDocumentId`): its key, its documents and which of them is its spec. Every view
+ *  that finds a decision's document hands it the issue read it already holds: the Decisions tab,
+ *  the tree, the header's count, the Decisions filter and the margin's decision cards. */
+export type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"> & {
   readonly artifacts?: readonly Pick<Artifact, "id" | "slug">[] | null;
 };
 
@@ -132,17 +134,25 @@ export function decisionContent(
 }
 
 /**
- * The id of the document whose block `decision` is, among the issue's documents: the decisions
- * read names an agent's decision by its block's address (`DecisionEntry.ref`: `spec#b-…` for a
- * block of the issue's spec, `artifact/<slug>#b-…` for one of another document), and a Change's
- * anchor names the document it is anchored in by its id (`Anchor.artifact_id`). Undefined for a
- * person's decision, whose address is its ask's and names no block, for an address of another
- * issue, and while the issue read carries no such document.
+ * The id of the document whose block `decision` is. The Decisions view of the issue's tree names
+ * it (`DecisionEntry.document`) only for a typed block of a role document - the spec, the plan,
+ * the Verification document - whether or not the issue read has listed the issue's documents
+ * yet; for a decision of any other document it names none, and the decision's own address
+ * (`DecisionEntry.ref`, `artifact/<slug>#b-…`) names the document, found among the issue's
+ * documents once the issue read lists them. A Change's anchor names the document it is anchored
+ * in by that id (`Anchor.artifact_id`), a Keep is written against it, and an agent's decision's
+ * words are its record (`decision-entries.ts`'s `entryTextSource`). Undefined for an entry that
+ * names none and whose address names no block of the issue's documents: an ask, whose address
+ * names the ask and no block (its words are the ask's own record), a block of a document the
+ * issue read does not list yet, and an address of another issue.
  */
 export function decisionDocumentId(
   issue: DecisionDocuments,
-  decision: Pick<DecisionEntry, "ref">
+  decision: Pick<DecisionEntry, "document" | "ref">
 ): string | undefined {
+  const named = decision.document?.artifact_id;
+  if (named !== undefined) return named;
+  // The view named no document: read the one the decision's own address names.
   const route = parseNodeReference(decision.ref);
   if (route === undefined || !("key" in route) || route.key !== issue.key) return undefined;
   if (!("block" in route) || route.block === undefined) return undefined;
@@ -154,6 +164,40 @@ export function decisionDocumentId(
 }
 
 /**
+ * Each of the issue's decisions a Change can be asked of, by the document its block stands in
+ * (`decisionDocumentId`), replaced ones included: their blocks hold blocks too, and a comment
+ * anchored in one changes no other decision. An ask's entry is none, whatever document its block
+ * stands in: a person's answer is theirs, and no Change is written on it.
+ */
+function changeableByDocument(
+  issue: DecisionDocuments,
+  decisions: Pick<IssueDecisions, "entries"> | undefined
+): ReadonlyMap<string, readonly ChangedDecision[]> {
+  const byDocument = new Map<string, ChangedDecision[]>();
+  for (const row of decisions?.entries ?? []) {
+    const document = row.node.kind === "ask" ? undefined : decisionDocumentId(issue, row);
+    if (document === undefined) continue;
+    const held = byDocument.get(document);
+    if (held === undefined) byDocument.set(document, [row]);
+    else held.push(row);
+  }
+  return byDocument;
+}
+
+/**
+ * The documents a Change of one of the issue's decisions can be anchored in
+ * (`changeableByDocument`). A caller reads the blocks of those of them the tree reads, which name
+ * the decision whose block holds a Change's anchor (`decisionChangeComments`): the header's count
+ * and the Decisions filter read them so, and the tree reads them all.
+ */
+export function changeDocumentIds(
+  issue: DecisionDocuments,
+  decisions: Pick<IssueDecisions, "entries"> | undefined
+): ReadonlySet<string> {
+  return new Set(changeableByDocument(issue, decisions).keys());
+}
+
+/**
  * The id of the block `decision` is: the block the read names its document by
  * (`DecisionEntry.document`). Undefined for an entry that names none and whose address names no
  * block, an ask on the issue itself.
@@ -162,10 +206,9 @@ export function decisionBlockId(
   decision: Pick<DecisionEntry, "document" | "ref">
 ): string | undefined {
   if (decision.document !== null) return decision.document.block_id;
-  // A decision a server of the release before answered names no document (`withEntries`): its
-  // address is its section's heading block in the decisions document, and that block is the one
-  // a Keep is written against and a Change is placed by.
-  // kept for one release: compat-objects
+  // The tree read names a document only on a typed block of a role document, so the entry of a
+  // decision of any other document names none (`api/decisions-tree.ts`): its own address names
+  // the block a Keep is written against and a Change is placed by.
   const route = parseNodeReference(decision.ref);
   return route !== undefined && "block" in route ? route.block?.id : undefined;
 }
@@ -357,17 +400,7 @@ export function decisionChangeComments(
   }
   // Every decision that stands is a node, so no quote is matched for any.
   if (standing.every((row) => onNodes.has(row.ref))) return changes;
-  // Each decision by the document its block stands in, replaced ones included: their blocks hold
-  // blocks too, and a comment anchored in one changes no other decision. An ask's entry stands in
-  // no document's block by its address (`decisionDocumentId`), so it takes no change.
-  const byDocument = new Map<string, ChangedDecision[]>();
-  for (const row of decisions?.entries ?? []) {
-    const document = decisionDocumentId(issue, row);
-    if (document === undefined) continue;
-    const held = byDocument.get(document);
-    if (held === undefined) byDocument.set(document, [row]);
-    else held.push(row);
-  }
+  const byDocument = changeableByDocument(issue, decisions);
   // A decision's whole words as a quote is matched against them (`decisionWords`), for each one a
   // change can be asked of by a quote: none a node of the tree read holds.
   const words = new Map(

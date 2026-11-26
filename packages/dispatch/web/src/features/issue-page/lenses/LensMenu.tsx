@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useContext,
   useEffect,
   useId,
@@ -28,22 +29,32 @@ import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, type NodeType } from "../page-words";
 import { lensStoreAddress } from "./lens-drafts";
 import {
+  forgetInvocations,
   lensKindsQuery,
   lensPlaceOf,
+  type NodeInvocations,
   type Outline,
   type StandingAddress,
   useInvokeLens,
+  useLensInvocations,
   useStandingAddress,
 } from "./lens-reads";
 
 /**
  * What each row needs to offer the Lens act: the issue the page is on, the outline the
- * address opens - Conversation or Graph, the two places the act is drawn (R4) - and where the
- * reader stands now, which a pick's answer reads as it lands. `TreeRows.tsx` provides it
- * (`useLensAct`); a route that names no issue, and an address that opens no outline - a filter
- * or any other view - provide none, and `LensMenu` then draws no act.
+ * address opens - Conversation or Graph, the two places the act is drawn (R4) - where the
+ * reader stands now, which a pick's answer reads as it lands, and what has been invoked on each
+ * node of the issue, read once for every row. `TreeRows.tsx` provides it (`useLensAct`); a route
+ * that names no issue, and an address that opens no outline - a filter or any other view -
+ * provide none, and `LensMenu` then draws no act.
  */
 export interface LensAct {
+  /** Lets go of every invocation on the node at `on` that has its answer, and so of its
+   *  refusal (`forgetInvocations`). */
+  readonly forget: (on: string) => void;
+  /** What has been invoked on each node of the issue, by the node's address
+   *  (`useLensInvocations`). */
+  readonly invocations: ReadonlyMap<string, NodeInvocations>;
   readonly issueKey: string;
   readonly outline: Outline;
   readonly standing: StandingAddress;
@@ -54,9 +65,10 @@ export const LensActContext = createContext<LensAct | undefined>(undefined);
 /**
  * The Lens act each row offers, whatever the focus, as `TreeRows.tsx` provides it to its rows:
  * the issue the address names and the outline it opens, read as the page's slots read their address
- * (`lensPlaceOf`), and where the reader stands now. A route that names no issue, and an address
- * that opens no outline, offer no act. One value while the address stands, so no row draws
- * again.
+ * (`lensPlaceOf`), where the reader stands now, and what has been invoked on each node of the
+ * issue, read here once for every row (`useLensInvocations`). A route that names no issue, and an
+ * address that opens no outline, offer no act. One value while the address stands and no
+ * invocation of a lens changes, so a focus move draws no row again for it.
  */
 export function useLensAct(): LensAct | undefined {
   const { pathname, search } = useLocation();
@@ -67,10 +79,20 @@ export function useLensAct(): LensAct | undefined {
   // the caller is drawn: the rows, not the row that made the pick, which a fold or filter can
   // unmount while the write is out.
   const standing = useStandingAddress();
+  const invocations = useLensInvocations(issueKey);
+  const queryClient = useQueryClient();
   return useMemo(
     () =>
-      issueKey === undefined || outline === undefined ? undefined : { issueKey, outline, standing },
-    [issueKey, outline, standing]
+      issueKey === undefined || outline === undefined
+        ? undefined
+        : {
+            forget: (on: string) => forgetInvocations(queryClient, issueKey, on),
+            invocations,
+            issueKey,
+            outline,
+            standing,
+          },
+    [invocations, issueKey, outline, queryClient, standing]
   );
 }
 
@@ -149,6 +171,11 @@ export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey">): bool
  * node's invocations, not only in local state, so they outlive the menu closing or the row
  * unmounting: while the write is still out, opening its menu again says the pick is out and
  * takes no other, and a refusal stands on the row until the menu opens again.
+ *
+ * The act stands on every such row and a focus move draws every row again, so a row reads
+ * nothing of the query client itself: its node's invocations come with the act, read once for
+ * all the rows (`useLensAct`), and the pick's write and the catalogue's read are the open menu's
+ * (`KindsMenu`), drawn only while it is open. The write and its landing outlive the menu.
  */
 export function LensMenu({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
   const act = useContext(LensActContext);
@@ -177,34 +204,17 @@ function ActAndMenu({
   on: string;
   tabStops: boolean;
 }): ReactNode {
-  const invocation = useInvokeLens(act.issueKey, on, act.outline, act.standing);
-  const refusal = refusalOf(invocation.refusal);
+  const invocations = act.invocations.get(on);
+  const refusal = refusalOf(invocations?.refusal);
   const [open, setOpen] = useState(false);
-  // Whether a pick is out, as the menu's line says it and as `pick` reads it. On the menu that
+  // Whether a pick is out, as the menu's line says it and as its pick reads it. On the row that
   // made the pick, `picked` holds from the press until `invoke` answers, once the tree is read
-  // again. The node's write (`invocation.pending`) holds until it settles, on any menu: a menu
-  // drawn again after its row unmounted starts with `picked` unset.
+  // again, whether or not its menu is still open. The node's write (`pending`) holds until it
+  // settles, on any row: a row drawn again after it unmounted starts with `picked` unset.
   const [picked, setPicked] = useState(false);
-  const examining = picked || invocation.pending;
-  const kinds = useQuery(lensKindsQuery(open));
-  const listed = kinds.data;
+  const examining = picked || invocations?.pending === true;
   const control = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLSpanElement>(null);
-  const titleId = useId();
-
-  // The menu takes the focus as it opens, and its first item once the catalogue answers; an
-  // item the reader moved to keeps it.
-  useEffect(() => {
-    const list = menu.current;
-    if (!open || list === null) return;
-    const first = list.querySelector<HTMLElement>('[role="menuitem"]');
-    if (listed === undefined || first === null) {
-      list.focus();
-      return;
-    }
-    const focus = document.activeElement;
-    if (focus === list || !list.contains(focus)) first.focus();
-  }, [open, listed]);
 
   // A press outside the act and the menu closes it - a press on the line beside the menu too,
   // which takes no focus - and leaves the focus to the press; focus moving outside the act and
@@ -248,58 +258,24 @@ function ActAndMenu({
   }, [open]);
 
   const openMenu = () => {
-    invocation.forget();
+    act.forget(on);
     setOpen(true);
   };
 
   /** Closes the menu once an invocation is answered, giving the focus back to the row where it
-   *  was still in the menu. A refusal is the invocation's to keep (`useInvokeLens`). */
+   *  was still in the menu. A refusal is the node's invocations' to keep
+   *  (`useLensInvocations`). */
   const answered = () => {
     setPicked(false);
     if (menu.current?.contains(document.activeElement) === true) focusRow(control.current);
     setOpen(false);
   };
 
-  // One invocation on the node at a time: a pick sends nothing while the menu says one is out
-  // (`examining`).
-  const pick = (kind: string) => {
-    if (examining) return;
+  /** Says a pick is out from its press until `answer`, the pick's invocation, answers. */
+  const picking = (answer: Promise<unknown>) => {
     setPicked(true);
-    // By the time `useInvokeLens` answers, it has read the outline again and, where Dispatch
-    // answered the lens it made and the reader still stands in the outline of the pick, moved
-    // the address to the new lens's row.
-    void invocation.invoke(kind).then(answered, answered);
+    void answer.then(answered, answered);
   };
-
-  // Every key but Tab is the menu's while it is open, its default prevented, so the page's
-  // keymap, which passes a marked key by, moves nothing of the tree under it (`keymap.ts`); no
-  // React handler of the row or the tree reads keys. A key held with Control, Meta or Alt is no
-  // key of the tree (the keymap matches those modifiers exactly), so the browser keeps its own
-  // shortcuts, zoom and reload among them. Tab closes the menu: the focus goes back to the act
-  // first, so Tab moves on from the act, as from the row's other controls. Escape is the capture
-  // listener's above, which marks it as it closes the menu, or leaves it, unmarked, to a dialog
-  // open over the page, wherever the focus is.
-  const walk = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (event.key === "Tab") {
-      control.current?.focus();
-      setOpen(false);
-      return;
-    }
-    if (event.key === "Escape") return;
-    event.preventDefault();
-    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
-    const at = event.target instanceof HTMLElement ? items.indexOf(event.target) : -1;
-    if (event.key === "Enter") {
-      const kind = listed?.[at];
-      if (kind !== undefined) pick(kind.id);
-      return;
-    }
-    const to = step(event.key, at, items.length);
-    if (to !== undefined) items[to]?.focus();
-  };
-
-  const line = menuLine(examining, listed !== undefined, kinds);
 
   return (
     <>
@@ -332,72 +308,167 @@ function ActAndMenu({
         </span>
       )}
       {open ? (
-        // A line of its own under the acts, which the menu hangs from.
-        <span className="relative block h-0 basis-full">
-          <span className={`${pageMenu} left-0 max-w-full text-left`}>
-            <span
-              aria-labelledby={titleId}
-              className="flex flex-col"
-              onKeyDown={walk}
-              ref={menu}
-              role="menu"
-              tabIndex={-1}
-            >
-              <span
-                className={`block px-2 pt-1 pb-1.5 text-xs font-semibold ${pageMutedText}`}
-                id={titleId}
-                {...pageChrome}
-              >
-                {LENS_WORDS.menu_title}
-              </span>
-              {(listed ?? []).map((kind) => {
-                const standard = kind.sources?.[0]?.standard ?? "";
-                return (
-                  <button
-                    className={`${pageMenuItem} flex flex-col gap-0.5`}
-                    key={kind.id}
-                    onClick={() => pick(kind.id)}
-                    role="menuitem"
-                    tabIndex={-1}
-                    type="button"
-                  >
-                    <span className="break-words" data-lens-kind-words="" {...authorText}>
-                      {kind.words}
-                    </span>
-                    {standard === "" ? null : (
-                      <span
-                        className={`break-words text-xs font-normal ${pageMutedText}`}
-                        data-lens-kind-standard=""
-                        {...authorText}
-                      >
-                        {standard}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </span>
-            {/* What the menu says of its reads stands beside it, not in it, on one line with the
-                role `status`: the menu holds the focus while the catalogue is read, and a screen
-                reader reads a status out as it changes, which it does not do for words inside
-                the focused menu. The line is drawn while the menu is open, empty while it says
-                nothing, so it is in place before it first speaks. */}
-            <span
-              className={
-                line === undefined
-                  ? undefined
-                  : `block px-2 py-[7px] text-sm ${line.failed ? pageFailedText : pageQuietText}`
-              }
-              data-lens-menu-line=""
-              role="status"
-              {...pageChrome}
-            >
-              {line?.words}
-            </span>
-          </span>
-        </span>
+        <KindsMenu
+          act={act}
+          examining={examining}
+          menu={menu}
+          on={on}
+          onPick={picking}
+          onTab={() => {
+            control.current?.focus();
+            setOpen(false);
+          }}
+        />
       ) : null}
     </>
+  );
+}
+
+/**
+ * The open menu of lens kinds on the node at `on`, drawn only while its act's menu is open: it
+ * reads the catalogue (`lensKindsQuery`) and holds the node's write (`useInvokeLens`), which a
+ * row whose menu is closed does not. `menu` is the act's handle on it. A pick hands its
+ * invocation to `onPick`, and the write and its landing go on once the menu is gone; Tab is
+ * `onTab`'s.
+ */
+function KindsMenu({
+  act,
+  examining,
+  menu,
+  on,
+  onPick,
+  onTab,
+}: {
+  act: LensAct;
+  examining: boolean;
+  menu: RefObject<HTMLSpanElement | null>;
+  on: string;
+  onPick: (answer: Promise<unknown>) => void;
+  onTab: () => void;
+}): ReactNode {
+  const invoke = useInvokeLens(act.issueKey, on, act.outline, act.standing);
+  const kinds = useQuery(lensKindsQuery());
+  const listed = kinds.data;
+  const titleId = useId();
+
+  // The menu takes the focus as it opens, and its first item once the catalogue answers; an
+  // item the reader moved to keeps it.
+  useEffect(() => {
+    const list = menu.current;
+    if (list === null) return;
+    const first = list.querySelector<HTMLElement>('[role="menuitem"]');
+    if (listed === undefined || first === null) {
+      list.focus();
+      return;
+    }
+    const focus = document.activeElement;
+    if (focus === list || !list.contains(focus)) first.focus();
+  }, [listed, menu]);
+
+  // One invocation on the node at a time: a pick sends nothing while the menu says one is out
+  // (`examining`).
+  const pick = (kind: string) => {
+    if (examining) return;
+    // By the time `invoke` answers, it has read the outline again and, where Dispatch answered
+    // the lens it made and the reader still stands in the outline of the pick, moved the address
+    // to the new lens's row.
+    onPick(invoke(kind));
+  };
+
+  // Every key but Tab is the menu's while it is open, its default prevented, so the page's
+  // keymap, which passes a marked key by, moves nothing of the tree under it (`keymap.ts`); no
+  // React handler of the row or the tree reads keys. A key held with Control, Meta or Alt is no
+  // key of the tree (the keymap matches those modifiers exactly), so the browser keeps its own
+  // shortcuts, zoom and reload among them. Tab closes the menu: the focus goes back to the act
+  // first, so Tab moves on from the act, as from the row's other controls (`onTab`). Escape is
+  // the act's capture listener's, which marks it as it closes the menu, or leaves it, unmarked,
+  // to a dialog open over the page, wherever the focus is.
+  const walk = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === "Tab") {
+      onTab();
+      return;
+    }
+    if (event.key === "Escape") return;
+    event.preventDefault();
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const at = event.target instanceof HTMLElement ? items.indexOf(event.target) : -1;
+    if (event.key === "Enter") {
+      const kind = listed?.[at];
+      if (kind !== undefined) pick(kind.id);
+      return;
+    }
+    const to = step(event.key, at, items.length);
+    if (to !== undefined) items[to]?.focus();
+  };
+
+  const line = menuLine(examining, listed !== undefined, kinds);
+
+  return (
+    // A line of its own under the acts, which the menu hangs from.
+    <span className="relative block h-0 basis-full">
+      <span className={`${pageMenu} left-0 max-w-full text-left`}>
+        <span
+          aria-labelledby={titleId}
+          className="flex flex-col"
+          onKeyDown={walk}
+          ref={menu}
+          role="menu"
+          tabIndex={-1}
+        >
+          <span
+            className={`block px-2 pt-1 pb-1.5 text-xs font-semibold ${pageMutedText}`}
+            id={titleId}
+            {...pageChrome}
+          >
+            {LENS_WORDS.menu_title}
+          </span>
+          {(listed ?? []).map((kind) => {
+            const standard = kind.sources?.[0]?.standard ?? "";
+            return (
+              <button
+                className={`${pageMenuItem} flex flex-col gap-0.5`}
+                key={kind.id}
+                onClick={() => pick(kind.id)}
+                role="menuitem"
+                tabIndex={-1}
+                type="button"
+              >
+                <span className="break-words" data-lens-kind-words="" {...authorText}>
+                  {kind.words}
+                </span>
+                {standard === "" ? null : (
+                  <span
+                    className={`break-words text-xs font-normal ${pageMutedText}`}
+                    data-lens-kind-standard=""
+                    {...authorText}
+                  >
+                    {standard}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </span>
+        {/* What the menu says of its reads stands beside it, not in it, on one line with the
+            role `status`: the menu holds the focus while the catalogue is read, and a screen
+            reader reads a status out as it changes, which it does not do for words inside
+            the focused menu. The line is drawn while the menu is open, empty while it says
+            nothing, so it is in place before it first speaks. */}
+        <span
+          className={
+            line === undefined
+              ? undefined
+              : `block px-2 py-[7px] text-sm ${line.failed ? pageFailedText : pageQuietText}`
+          }
+          data-lens-menu-line=""
+          role="status"
+          {...pageChrome}
+        >
+          {line?.words}
+        </span>
+      </span>
+    </span>
   );
 }
 
@@ -468,22 +539,21 @@ export function LensKinds({
   onAnswered: () => void;
   onBack: () => void;
 }): ReactNode {
-  const invocation = useInvokeLens(act.issueKey, on, act.outline, act.standing);
+  const invoke = useInvokeLens(act.issueKey, on, act.outline, act.standing);
   // Whether a pick is out, as `ActAndMenu` holds it: from the press until `invoke` answers, and
-  // while the node's write is out on any menu.
+  // while the node's write is out on any menu (the node's invocations, which the act reads).
   const [picked, setPicked] = useState(false);
-  const examining = picked || invocation.pending;
-  const kinds = useQuery(lensKindsQuery(true));
+  const examining = picked || act.invocations.get(on)?.pending === true;
+  const kinds = useQuery(lensKindsQuery());
   const listed = kinds.data;
   const menu = useRef<HTMLSpanElement>(null);
   const titleId = useId();
 
   // The opening lets go of the node's answered invocations, and so of the refusal the act's line
-  // says, once: `forget` is a new function at every render.
-  const forget = useRef(invocation.forget);
-  forget.current = invocation.forget;
+  // says, once, as `ActAndMenu`'s opening does (`act.forget`): the act and node it opened on.
+  const opening = useRef({ act, on });
   useEffect(() => {
-    forget.current();
+    opening.current.act.forget(opening.current.on);
   }, []);
 
   // The submenu takes the focus as it opens, and its first kind once the catalogue answers; a kind
@@ -508,7 +578,7 @@ export function LensKinds({
       setPicked(false);
       onAnswered();
     };
-    void invocation.invoke(kind).then(answered, answered);
+    void invoke(kind).then(answered, answered);
   };
 
   const walk = (event: KeyboardEvent<HTMLElement>) => {
@@ -601,11 +671,11 @@ export function LensKinds({
  * What the act's line says of the node's last refused invocation, as `ActAndMenu` says it after
  * the act, for a row whose act stands in another menu: in Graph, where the act leaves the row, it
  * is drawn after the node menu's control (`graph-edit/RowMenu.tsx`), until the Lens submenu opens
- * again on that node (`LensKinds`). Nothing while no invocation on the node was refused.
+ * again on that node (`LensKinds`). Nothing while no invocation on the node was refused. It reads
+ * the node's invocations as the act holds them, so a row whose menu is closed holds no write.
  */
 export function LensRefusal({ act, on }: { act: LensAct; on: string }): ReactNode {
-  const invocation = useInvokeLens(act.issueKey, on, act.outline, act.standing);
-  const refusal = refusalOf(invocation.refusal);
+  const refusal = refusalOf(act.invocations.get(on)?.refusal);
   if (refusal === undefined) return null;
   return (
     <span className={pageFailedText} role="status" {...pageChrome}>

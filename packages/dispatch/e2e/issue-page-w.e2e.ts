@@ -969,13 +969,15 @@ function readOf(path: string): string {
   return query === "" ? url.pathname : `${url.pathname}?${query}`;
 }
 
-/** The read of issue `key`'s tree `requests` hold the first request of (`readOf`), or undefined
- *  where they hold none: what a load sends the tree route. */
-function treeReadOf(requests: readonly ApiRequest[], key: string): string | undefined {
+/** The outline's read of issue `key`'s tree that `requests` hold the first request of
+ *  (`readOf`): the first read of the tree route that names no view, since a load also reads the
+ *  Decisions view's tree (`api.getIssueDecisions`). Undefined where they hold none. */
+function outlineReadOf(requests: readonly ApiRequest[], key: string): string | undefined {
   const matches = treeReadRoute(key);
-  const first = requests.find(
-    (request) => request.method === "GET" && matches(new URL(request.path, "http://page.invalid"))
-  );
+  const first = requests.find((request) => {
+    const url = new URL(request.path, "http://page.invalid");
+    return request.method === "GET" && matches(url) && !url.searchParams.has("view");
+  });
   return first === undefined ? undefined : readOf(first.path);
 }
 
@@ -1118,10 +1120,10 @@ async function openPreMortemMenu(page: Page, view: OutlineKind, preMortem: strin
  * Row 3's invocation in `view`, with the menu of lens kinds open on the pre-mortem's row and the
  * focus on its first kind: Enter invokes it, and the new lens holds the focus. It sends its write
  * and one read of the tree, one request for each page of it, and that read is the open view's:
- * each page's request is the read `load` names, the one the view's load sent the tree route
- * (`treeReadOf`), but for its cursor. The shell's own timed reads (`SHELL_TIMED_READS`) are left
- * out: a window that spans one says nothing of the invocation, and every other request in it is
- * counted. `before` holds every lens the tree read held before it.
+ * each page's request is the read `load` names, the outline read the view's load sent the tree
+ * route (`outlineReadOf`), but for its cursor. The shell's own timed reads (`SHELL_TIMED_READS`)
+ * are left out: a window that spans one says nothing of the invocation, and every other request
+ * in it is counted. `before` holds every lens the tree read held before it.
  *
  * The count is measured alone (`measuredAlone`). Its window opens before the page goes quiet
  * ahead of the press, and a try whose window heard an event (`events`) is spoiled. Its lens
@@ -1730,15 +1732,14 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     const events = watchEventFrames(page);
 
     // Conversation's load, at the issue's own address: the requests of the load without lenses,
-    // and a read of the tree that names its kinds and no view.
+    // and an outline read of the tree that names its kinds.
     const answer = await loadView(page, traffic, events, tree, key, "conversation");
     expectLoadReadsNoLens(traffic, without.conversation, lenses, "conversation");
-    const conversationRead = treeReadOf(traffic.requests, key) ?? "";
-    const conversationQuery = new URL(conversationRead, "http://page.invalid").searchParams;
+    const conversationRead = outlineReadOf(traffic.requests, key) ?? "";
     expect(
-      { kind: conversationQuery.getAll("kind").length > 0, view: conversationQuery.has("view") },
-      "Conversation's load reads the tree with no kind, or with a view"
-    ).toEqual({ kind: true, view: false });
+      new URL(conversationRead, "http://page.invalid").searchParams.getAll("kind").length,
+      "Conversation's outline read names no kind"
+    ).toBeGreaterThan(0);
 
     // `j` over every row focuses each lens in turn, which reads nothing.
     await unfoldEveryBranch(page);
@@ -1806,14 +1807,12 @@ test("the first load adds no request for lenses and reads a chain only at a pres
       () => openPreMortemMenu(page, "conversation", ids.preMortem)
     );
 
-    // Graph's load, at its own address: the requests of the load without lenses, and a read of
-    // the tree with no kind and no view.
+    // Graph's load, at its own address: the requests of the load without lenses, and an outline
+    // read of the tree with no kind.
     await loadView(page, traffic, events, tree, key, "graph");
     expectLoadReadsNoLens(traffic, without.graph, lenses, "graph");
-    const graphRead = treeReadOf(traffic.requests, key) ?? "";
-    expect(graphRead, "Graph's load reads the tree with a kind or a view").toBe(
-      `/api/v1/issues/${key}/tree`
-    );
+    const graphRead = outlineReadOf(traffic.requests, key) ?? "";
+    expect(graphRead, "Graph's outline read names a kind").toBe(`/api/v1/issues/${key}/tree`);
 
     // An invocation in Graph, from the pre-mortem's menu, sends its write and one read of the
     // tree, Graph's. Its lenses before it are those of Graph's read, which holds Conversation's.

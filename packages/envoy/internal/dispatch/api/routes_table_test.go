@@ -238,6 +238,8 @@ var testHookRoutes = []string{
 	"POST /api/v1/writes/_test/slow",
 	"POST /api/v1/settings/new-issue/_test",
 	"GET /api/v1/messages/_test/queued",
+	"PUT /api/v1/_test/holds/neighbourhood-read",
+	"PUT /api/v1/_test/holds/related-search",
 }
 
 // requireRouteNames fails t naming each route of want that got, the routes what names, does not

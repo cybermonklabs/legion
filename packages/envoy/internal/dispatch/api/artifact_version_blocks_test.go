@@ -85,9 +85,14 @@ func TestAVersionReadCarriesThatVersionsBlocks(t *testing.T) {
 // The blocks of a version index the markdown its answer carries. A version an earlier renderer
 // stored can render otherwise today; its answer then carries the rendering the blocks were read
 // from, and the digest and size of that text, so a reader slicing the markdown at a block's range
-// reads that block. The document is one whose versions answer their stored bytes, a document of
-// no query's band (docs' queryOfBand): a version of an issue's plan renders from the issue's tree,
-// so it holds no stored rendering of an earlier renderer to read.
+// reads that block. Only a version written before the cutover holds such a rendering: every
+// version this build writes, an upload's among them, holds a version_renders row with a time and
+// renders from the tree (R15: "A version of a document that no query record covers ... The row
+// holds a time, so the version renders from the tree"), and "A version with no row was written
+// before the cutover", which answers its stored bytes. So the fixture makes the upload's version 1
+// one written before the cutover: it stores the rendering an earlier renderer wrote and takes away
+// the version_renders row the upload wrote, as c-render-at-version deletes a row and reads the
+// stored markdown answered.
 func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -97,6 +102,9 @@ func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
 	stored := "Intro.\n\n\n\n:::plan_task{#a steps=\"implementer\"}\nBody.\n:::\n"
 	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set markdown = $2 where artifact_id = $1 and number = 1`, plan.ID, stored); err != nil {
 		t.Fatalf("store version 1's older rendering: %v", err)
+	}
+	if taken, err := database.Pool.Exec(context.Background(), `delete from version_renders where artifact_id = $1 and number = 1`, plan.ID); err != nil || taken.RowsAffected() != 1 {
+		t.Fatalf("take away the version_renders row the upload wrote of version 1: %d rows (%v), want the one row", taken.RowsAffected(), err)
 	}
 	plain := decodeBody[versionBlocksAnswer](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+plan.ID+"/versions/1", nil, "alice"))
 	if plain.Markdown != stored {

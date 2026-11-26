@@ -293,9 +293,11 @@ test("any other code, a 5xx and no answer draw the line that the change was not 
 test("a container refusal names the container with a link to its row where the held tree shows it, and else quotes the server", () => {
   const listParagraph = "<list-paragraph>";
   const container = converted.nodes?.find((node) => node.id === listParagraph)?.parent;
-  expect(container?.id, "the fixture's list paragraph stands under the list").toBe(
-    "<tree/bullet_list>"
-  );
+  // The server reads each item of a list as a block of its own, so the paragraph stands under the
+  // list's first item, whose block the seed names.
+  const item = converted.nodes?.find((node) => node.block_id === "<list-item>")?.id;
+  expect(item, "the fixture holds the list's first item").toBeDefined();
+  expect(container?.id, "the fixture's list paragraph stands under its list item").toBe(item);
   for (const exchange of [
     refused.CONTAINER_WOULD_EMPTY,
     fixture.deleted.refused.CONTAINER_WOULD_EMPTY,
@@ -303,7 +305,7 @@ test("a container refusal names the container with a link to its row where the h
     const error = new ApiError(exchange.status, exchange.body);
     // The held tree shows the parent: its kind and its first line, and a link to its row.
     const named = refusalLine(error, { held: converted, node: listParagraph });
-    expect(named.container).toBe("<tree/bullet_list>");
+    expect(named.container).toBe(item);
     expect(named.text).toContain(ANSWER_LINES.container_empties);
     expect(named.text).toContain(LABELS.container_list_item ?? "");
     expect(named.text).toContain(container?.first_line ?? "");

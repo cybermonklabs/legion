@@ -437,19 +437,24 @@ func owedVersionNodes(ctx context.Context, q graphstore.Queryer, rows string, li
 // at its number. A version that holds no row answers its stored bytes, which no render describes,
 // and is none of this census.
 //
-// A row that holds no time renders nothing, and the census counts it in a class of its own (R15,
-// R16): Deferred, a version no pass has stated yet, or one a later version replaced before its
-// pass, the first reportedDifferences of them each named at its address (DeferredAt); and
-// TreeMismatch, a version whose pass found the rendering of its tree is not its stored markdown,
-// which is never counted as deferred and is a difference too, so the census refuses while that
-// class holds a row. A repair that closes a mark leaves a row with no time, which is deferred for
-// good. TreeMismatchRepaired is how many rows a repair cleared the mark of, whatever they hold now.
+// A row that holds no time renders nothing, and the census counts it in one of two classes of its
+// own, and never as a difference, since no render describes its bytes (R15, R16): Deferred, a
+// version no pass has stated yet, or one a later version replaced before its pass, the first
+// reportedDifferences of them each named at its address (DeferredAt); and TreeMismatch, a version
+// whose pass found the rendering of its tree is not its stored markdown and whose mark no repair
+// has cleared yet, which is never counted as deferred, the first reportedDifferences of them each
+// named at its address (TreeMismatchAt). The census refuses while TreeMismatch holds a row, as it
+// refuses on a difference (StoreReport.Refused). A row is in one class and never in both. A repair
+// that restates a version gives its row a time, so it is rendered and compared like any other; a
+// repair that closes a mark leaves a row with no time, which is deferred for good.
+// TreeMismatchRepaired is how many rows a repair cleared the mark of, whatever they hold now.
 type VersionRenderCensus struct {
 	Versions, Differences int64
 	Reported              []Difference
 	Deferred              int64
 	DeferredAt            []string
 	TreeMismatch          int64
+	TreeMismatchAt        []string
 	TreeMismatchRepaired  int64
 }
 
@@ -490,8 +495,8 @@ type versionRenderRow struct {
 // CompareVersionRenders holds each row version_renders holds to its version: to a version the
 // store holds, whose stored markdown it compares with render, the tree as of the time the row
 // records, through q; a row whose version the store does not hold is a difference unrendered. A
-// row that holds no time it counts as tree_mismatch or deferred, and renders nothing of it. It
-// reads them in batches of versionRenderBatch.
+// row that holds no time it counts as tree_mismatch or deferred, renders nothing of and counts as
+// no difference. It reads them in batches of versionRenderBatch.
 func CompareVersionRenders(ctx context.Context, q graphstore.Queryer, render VersionMarkdownAt) (VersionRenderCensus, error) {
 	var census VersionRenderCensus
 	after := versionRenderRow{artifactID: "00000000-0000-0000-0000-000000000000"}
@@ -517,7 +522,9 @@ func CompareVersionRenders(ctx context.Context, q graphstore.Queryer, render Ver
 			switch {
 			case version.mismatched:
 				census.TreeMismatch++
-				cause = "the pass that stated the version found its tree does not render as its stored markdown (tree_mismatch)"
+				if len(census.TreeMismatchAt) < reportedDifferences {
+					census.TreeMismatchAt = append(census.TreeMismatchAt, "version "+version.address)
+				}
 			case version.at == nil:
 				census.Deferred++
 				if len(census.DeferredAt) < reportedDifferences {
@@ -566,18 +573,27 @@ func renderDifference(stored *string, rendered string) string {
 		len(*stored), len(rendered), at)
 }
 
-// writeVersionRenders prints the census of the rendered versions, its classes on its first line,
-// each difference on a line of its own, and each deferred version it names on a line of its own.
+// writeVersionRenders prints the census of the rendered versions: its counts on its first line,
+// rendered_from_tree, deferred, tree_mismatch, tree_mismatch_repaired and differences, in that
+// order (R16); then each difference on a line of its own; then each version whose tree_mismatch
+// mark stands, on a line of its own; then each deferred version it names.
 func writeVersionRenders(w io.Writer, census VersionRenderCensus) {
-	fmt.Fprintf(w, "census: versions rendered_from_tree=%s differences=%s deferred=%s tree_mismatch=%s tree_mismatch_repaired=%s (each version version_renders holds, its stored markdown against a render of the tree as of its row's time; a row with no time is deferred, or tree_mismatch where its pass found its tree does not render as its stored markdown, which is a difference too; a version with no row answers its stored bytes and is none of these)\n",
-		pgmigrate.Thousands(census.Versions), pgmigrate.Thousands(census.Differences), pgmigrate.Thousands(census.Deferred),
-		pgmigrate.Thousands(census.TreeMismatch), pgmigrate.Thousands(census.TreeMismatchRepaired))
+	fmt.Fprintf(w, "census: versions rendered_from_tree=%s deferred=%s tree_mismatch=%s tree_mismatch_repaired=%s differences=%s (each version version_renders holds, its stored markdown against a render of the tree as of its row's time; a row with no time is deferred, or tree_mismatch where its pass found its tree does not render as its stored markdown, which refuses the census while its mark stands; neither is a difference; a version with no row answers its stored bytes and is none of these)\n",
+		pgmigrate.Thousands(census.Versions), pgmigrate.Thousands(census.Deferred), pgmigrate.Thousands(census.TreeMismatch),
+		pgmigrate.Thousands(census.TreeMismatchRepaired), pgmigrate.Thousands(census.Differences))
 	for _, difference := range census.Reported {
 		fmt.Fprintf(w, "census: versions difference at %s: %s\n", difference.At, difference.Cause)
 	}
 	if census.Differences > int64(len(census.Reported)) {
 		fmt.Fprintf(w, "census: versions and %s more difference(s) not printed\n",
 			pgmigrate.Thousands(census.Differences-int64(len(census.Reported))))
+	}
+	for _, at := range census.TreeMismatchAt {
+		fmt.Fprintf(w, "census: versions tree_mismatch at %s\n", at)
+	}
+	if census.TreeMismatch > int64(len(census.TreeMismatchAt)) {
+		fmt.Fprintf(w, "census: versions and %s more tree_mismatch version(s) not printed\n",
+			pgmigrate.Thousands(census.TreeMismatch-int64(len(census.TreeMismatchAt))))
 	}
 	for _, at := range census.DeferredAt {
 		fmt.Fprintf(w, "census: versions deferred at %s: no pass has stated it\n", at)

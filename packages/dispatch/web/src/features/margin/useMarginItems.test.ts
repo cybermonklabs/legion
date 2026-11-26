@@ -3,7 +3,7 @@ import type { AcceptSuggestionResponse } from "@legion/contracts";
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createElement, type ReactNode } from "react";
+import { createElement, type ReactElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { realClock } from "../../__tests__/fake-clock";
@@ -22,7 +22,7 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
-import type { DecisionsRead } from "../issue/decision-entries";
+import type { DecisionDocuments } from "../issue-page/decision-review";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
@@ -1175,6 +1175,12 @@ function DecisionItems({ document }: { document: Artifact }) {
 }
 
 function renderDecisionItems(document: Artifact) {
+  return renderMarginReads(createElement(DecisionItems, { document }));
+}
+
+/** `element` on CORE-1's spec, under the reads of the margin a test does not answer, each held
+ *  empty, so the decisions read is the one a row answers. */
+function renderMarginReads(element: ReactElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1186,11 +1192,7 @@ function renderDecisionItems(document: Artifact) {
     createElement(
       MemoryRouter,
       { initialEntries: ["/issues/CORE-1/spec"] },
-      createElement(
-        QueryClientProvider,
-        { client: queryClient },
-        createElement(DecisionItems, { document })
-      )
+      createElement(QueryClientProvider, { client: queryClient }, element)
     )
   );
 }
@@ -1243,59 +1245,59 @@ test("an issue document that is not its spec reads no decisions and shows none",
   }
 });
 
-// A server of the release before answers the Decisions read with no `entries`: its decisions are
-// the sections of the issue's decisions document, an agent's or, where a section cites an ask, a
-// person's, each with the links it shaped. During a roll a page of this build can reach one, and
-// the margin still draws each beside the spec blocks it links, as it draws an entry.
-test("a Decisions read of the release before, with no entries, still draws its decisions beside the spec", async () => {
-  const section = (
-    block: string,
-    to: string,
-    kind: string,
-    { replaced = false, unsure = false } = {}
-  ) => ({
-    asks: kind === "person" ? ["ask-1"] : [],
-    block_id: block,
-    changed_at: "2026-10-02T00:00:00Z",
-    changed_version: 2,
-    heading: `Decision ${block}`,
-    kept: null,
-    kind,
-    links: [decisionLink(block, to)],
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${block}`,
-    replaced,
-    text: `## Decision ${block}\n\nWe decided.`,
-    text_sha256: `sum-${block}`,
-    unsure,
-    waiting_review: kind === "agent" && !replaced,
-  });
-  const before: DecisionsRead = {
-    decisions: [
-      section("h-agent", "p-a", "agent"),
-      section("h-person", "p-b", "person", { unsure: true }),
-      section("h-replaced", "p-a", "agent", { replaced: true }),
-    ],
-    document: "dispatch://CORE-1/artifact/decisions-md",
-    open_questions: [],
-  };
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(
-    before as IssueDecisions
+/** The document each margin decision item names, by the spec block it stands beside, with the
+ *  issue read `issue` handed to the margin, or none. */
+function DecisionDocumentIds({ issue }: { issue: DecisionDocuments | undefined }) {
+  const { decisions } = useMarginItems(
+    { key: "CORE-1", kind: "issue" },
+    "comments",
+    artifact,
+    new Map(),
+    new Map(),
+    undefined,
+    { documentShown: true, ...(issue === undefined ? {} : { issue }) }
   );
-  const view = renderDecisionItems(artifact);
+  return createElement(
+    "output",
+    { "aria-label": "Margin decision documents" },
+    JSON.stringify(decisions.map((item) => [item.blockId, item.documentId ?? null]))
+  );
+}
+
+// The Decisions view names a document only for a typed block of a role document, so a decision of
+// choices.md, which plays no role, names none. Its item finds the document by the decision's own
+// address among the issue read's documents, as the Decisions tab does: the card reads a `#id` in
+// the decision's words against it. Until the issue read answers, the item names none.
+test("a decision of a document no role names is an item of that document, found by its address", async () => {
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
+    ...issueDecisions,
+    entries: [{ ...decisionOf("d-5", [decisionLink("d-5", "p-a")]), document: null }],
+  });
+  const issue: DecisionDocuments = {
+    artifacts: [
+      { id: "artifact-1", slug: "spec" },
+      { id: "choices-id", slug: "choices-md" },
+    ],
+    key: "CORE-1",
+    primary_artifact_id: "artifact-1",
+  };
   try {
-    const agent = "dispatch://CORE-1/artifact/decisions-md#b-h-agent";
-    const person = "dispatch://CORE-1/artifact/decisions-md#b-h-person";
-    await waitFor(() =>
-      expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
-        decisions: [
-          ["p-b", person, true],
-          ["p-a", agent, false],
-        ],
-        items: [`decision:${person}:CORE-1/spec#p-b`, `decision:${agent}:CORE-1/spec#p-a`],
-      })
-    );
+    for (const [handed, named] of [
+      [undefined, null],
+      [issue, "choices-id"],
+    ] as const) {
+      const view = renderMarginReads(createElement(DecisionDocumentIds, { issue: handed }));
+      try {
+        await waitFor(() =>
+          expect(
+            JSON.parse(screen.getByLabelText("Margin decision documents").textContent ?? "")
+          ).toEqual([["p-a", named]])
+        );
+      } finally {
+        view.unmount();
+      }
+    }
   } finally {
-    view.unmount();
     getIssueDecisions.mockRestore();
   }
 });

@@ -19,6 +19,7 @@ import { answerRequests } from "../../../__tests__/network";
 import { userOnFakeClock } from "../../../__tests__/user";
 import { conversationTreeKey } from "../../../api/queries";
 import { trackQueryFetches } from "../../../api/query-refresh";
+import { pageFocusedRow } from "../../../theme/classes";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useDialog } from "../../shell/useDialog";
@@ -1438,4 +1439,85 @@ test("no key pressed in the menu reaches the tree", async () => {
     out.resolve();
     view.unmount();
   }
+});
+
+/** `count` statements of the spec, `spec/r1` on, each a row the Lens act stands on. */
+function statements(count: number): TreeNode[] {
+  return Array.from({ length: count }, (_unused, at) =>
+    node({
+      id: `spec/r${at + 1}`,
+      reference: statementRef(`r${at + 1}`),
+      text: `Statement ${at + 1}`,
+      type: "requirement",
+    })
+  );
+}
+
+/** What the page asks of a client's mutation cache since `watchMutations` began: how many
+ *  listeners it holds now, and how many notices it has sent them. */
+interface MutationWatch {
+  listeners: number;
+  notices: number;
+}
+
+/** Watches `client`'s mutation cache, from before anything is drawn with it. */
+function watchMutations(client: QueryClient): MutationWatch {
+  const cache = client.getMutationCache();
+  const watch: MutationWatch = { listeners: 0, notices: 0 };
+  const subscribe = cache.subscribe;
+  jest.spyOn(cache, "subscribe").mockImplementation((listener) => {
+    const unsubscribe = subscribe(listener);
+    watch.listeners += 1;
+    return () => {
+      watch.listeners -= 1;
+      unsubscribe();
+    };
+  });
+  const notify = cache.notify.bind(cache);
+  jest.spyOn(cache, "notify").mockImplementation((event) => {
+    watch.notices += 1;
+    notify(event);
+  });
+  return watch;
+}
+
+// The act stands on every row that takes it, and a focus move draws every row again, so what an
+// act reads of the mutation cache itself would make each move cost more with every row: the
+// outline reads every node's invocations once, the same for 3 rows as for 30, and a move tells
+// the cache's listeners nothing.
+test("the rows' Lens acts listen to the mutation cache once, however many rows", async () => {
+  // For each count of rows: the cache's listeners once the rows are drawn, and after three focus
+  // moves; and the notices those moves sent.
+  const listeners: number[][] = [];
+  const notices: number[] = [];
+  for (const count of [3, 30]) {
+    const client = signedIn();
+    const watch = watchMutations(client);
+    const view = renderAt(<Rows nodes={statements(count)} />, undefined, client);
+    try {
+      await waitFor(() =>
+        expect(view.container.querySelectorAll("[data-row-lens]")).toHaveLength(count)
+      );
+      const drawn = watch.listeners;
+      const before = watch.notices;
+      for (const at of [1, 2, count]) {
+        const id = `spec/r${at}`;
+        await focusedAct(view, id);
+        expect(
+          rowOf(view, id).querySelector("[data-node-card]")?.className,
+          "the focus move did not draw the rows again"
+        ).toContain(pageFocusedRow);
+      }
+      listeners.push([drawn, watch.listeners]);
+      notices.push(watch.notices - before);
+    } finally {
+      view.unmount();
+    }
+  }
+  const [few] = listeners;
+  expect(listeners, "the mutation cache's listeners grew with the rows or a focus move").toEqual([
+    [few?.[0], few?.[0]],
+    [few?.[0], few?.[0]],
+  ]);
+  expect(notices, "a focus move told the mutation cache's listeners").toEqual([0, 0]);
 });

@@ -169,13 +169,16 @@ func sessionCloser(name, id string) closer {
 // an ask that is not open for the release before's readers, so the settlement after it, on the
 // closed issue, saves one version of each document, differing from the one before only in those
 // blocks' openers and appending only its quiet artifact.version event; it changes no ask row, no
-// answer or review, and appends no ask event. Reopening restores exactly the withdrawn asks, the
-// text shows their blocks open again, and the settlement after the reopen saves one more version
-// of each document, the blocks' state taken off again and a copy keeping its source. The settle
-// delay is an hour, so the test runs each settlement itself (SettleIssueDocuments, as the timer,
-// the room's next load or the resumption would), and each read in between meets the issue as the
-// write before it left it. The reopen is sent against a read taken after the closed issue's
-// settlement, as a client that reads the issue before it writes sends it.
+// answer or review, and appends no ask event. The issue is born converted, so that settlement also
+// marks its queries owed, and the drain after it writes one version of the issue's decisions
+// query, whose answer holds the withdrawn asks, with its own quiet artifact.version (R7: "Every
+// version the drain writes appends `artifact.version`"). Reopening restores exactly the withdrawn
+// asks, the text shows their blocks open again, and the settlement after the reopen saves one more
+// version of each document, the blocks' state taken off again and a copy keeping its source. The
+// settle delay is an hour, so the test runs each settlement itself (SettleIssueDocuments, as the
+// timer, the room's next load or the resumption would), and each read in between meets the issue
+// as the write before it left it. The reopen is sent against a read taken after the closed
+// issue's settlement and its drain, as a client that reads the issue before it writes sends it.
 func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T) {
 	t.Parallel()
 	for _, closer := range closers {
@@ -201,6 +204,12 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 			}
 			reviews := reviewCount(t, f.database, f.spec, f.copy)
 			decisions := decisionEventCount(t, f.database, f.issue)
+			// The decisions query as the fixture's writes left it, once no drain is owed.
+			renderAtVersionQuiet(t, f.database, f.issue, f.spec)
+			decisionsQuery, decisionsBefore := decisionsQueryVersions(t, f.database, f.issue)
+			if decisionsQuery == "" {
+				t.Fatalf("%s holds no decisions query node: the issue is not born converted, so this case proves nothing", f.issue)
+			}
 			openedBefore := map[string]int{}
 			recordsBefore := map[string]model.Ask{}
 			for _, ask := range f.open() {
@@ -263,6 +272,9 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 				t.Fatalf("settle the closed issue's documents: %v", err)
 			}
 			awaitSettled(t, f.database, documents...)
+			// The settlement committed its versions and its query mark together; the drain after its
+			// COMMIT writes the decisions query's version and clears the mark.
+			renderAtVersionQuiet(t, f.database, f.issue, f.spec)
 			closedAt := map[string]int{}
 			for _, document := range documents {
 				closedAt[document] = requireStateVersionsPast(t, f.handler, f.database, document, latestBefore[document], 1)
@@ -272,7 +284,17 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 				}
 				requireLiveText(t, f.handler, document, resolved[document])
 			}
-			requireQuietVersionEvents(t, f.database, f.issue, response.LastSeq, len(documents))
+			if _, drained := decisionsQueryVersions(t, f.database, f.issue); drained != decisionsBefore+1 {
+				t.Fatalf("the decisions query of %s holds version %d after the closed issue's settlement, want %d: the drain writes one version of it, holding the withdrawn asks",
+					f.issue, drained, decisionsBefore+1)
+			}
+			requireQuietVersionEvents(t, f.database, f.issue, response.LastSeq, len(documents)+1)
+			versioned := map[string]int{f.spec: closedAt[f.spec], f.copy: closedAt[f.copy], decisionsQuery: decisionsBefore + 1}
+			for artifact, number := range versioned {
+				if _, _, held := documentEventOf(t, f.database, "artifact.version", artifact, number); !held {
+					t.Fatalf("the events after the close hold no artifact.version of version %d of %s, want one for each of %v", number, artifact, versioned)
+				}
+			}
 			if got := askRowTexts(t, f.database, asks...); !reflect.DeepEqual(got, rows) {
 				t.Fatalf("the closed issue's settlement changed the asks:\n%v\nwant them as the close left them\n%v", got, rows)
 			}
