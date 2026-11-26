@@ -93,7 +93,7 @@ func TestRunSendsAStandInForARefusedDestinationAndIsDoneOnceThatIsRefusedToo(t *
 	stop := runDeps(t, deps)
 	defer stop()
 
-	waitFor(t, 7*time.Second, "the event marked published past its refused destination", func() bool {
+	waitFor(t, "the event marked published past its refused destination", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	attempts, published := publisher.snapshot()

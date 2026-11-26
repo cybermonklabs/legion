@@ -147,7 +147,10 @@ export function MachineLoginPage(): ReactNode {
           };
 
   return (
-    <section className="max-w-2xl space-y-6">
+    // The page is as wide as the Settings page (`max-w-4xl`), which holds the machine logins list's
+    // six columns; at the reading width (`max-w-2xl`) the list scrolled sideways and hid Expires and
+    // Revoke. The lookup's error and the looked-up login keep the reading width.
+    <section className="max-w-4xl space-y-6">
       <h1 className={`text-xl font-semibold ${textPrimaryOnCanvas}`}>Enter machine login code</h1>
       <form className="flex flex-wrap items-end gap-3" onSubmit={submit}>
         <div className="flex flex-col gap-1">
@@ -179,7 +182,7 @@ export function MachineLoginPage(): ReactNode {
       {/* A lookup the reader stopped may have been made, and Look up is a press of its own, under
           a key of its own. */}
       {lookup.isError ? (
-        <p className={dangerText}>
+        <p className={`max-w-2xl ${dangerText}`}>
           {lookup.error instanceof SendStoppedError
             ? stoppedWriteNote("the lookup of that code", "made", {
                 anew: "Look up sends the code in the field as a new lookup.",
@@ -188,7 +191,7 @@ export function MachineLoginPage(): ReactNode {
         </p>
       ) : null}
       {view === undefined ? null : (
-        <div className="space-y-4">
+        <div className="max-w-2xl space-y-4">
           <CredentialRecordFacts record={view.record} />
           {view.record.state === "expired" ? (
             <p className={`text-sm font-medium ${textPrimaryOnCanvas}`}>
