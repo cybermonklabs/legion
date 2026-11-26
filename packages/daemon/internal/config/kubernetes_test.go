@@ -212,26 +212,6 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 	}
 }
 
-// A scheduling block that selects one node label and tolerates one taint, neither of them the
-// Legion pool's, loads, and settles to that selector and that toleration as the file writes them.
-func TestLoadForValidationReadsASchedulingBlockAsWritten(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+`    scheduling:
-      node_selector: {kubernetes.io/arch: amd64}
-      tolerations:
-        - {key: example.com/dedicated, operator: Equal, value: builds, effect: NoSchedule}
-`), noEnv)
-	if err != nil {
-		t.Fatalf("LoadForValidation: %v", err)
-	}
-	want := Scheduling{
-		NodeSelector: map[string]string{"kubernetes.io/arch": "amd64"},
-		Tolerations:  []Toleration{{Key: "example.com/dedicated", Operator: "Equal", Value: "builds", Effect: "NoSchedule"}},
-	}
-	if got := cfg.Runtime.Kubernetes.Scheduling; !reflect.DeepEqual(got, want) {
-		t.Errorf("scheduling = %#v, want %#v", got, want)
-	}
-}
-
 // A share's source is read-only exactly when no volume_mounts entry mounts it writable, for a claim
 // and an NFS export alike, and for a share mounted twice, once of each kind: the kubelet changes
 // ownership on, and the node mounts `-o ro`, only by the source's readOnly. A ConfigMap's source is
@@ -333,8 +313,8 @@ func modeRefusal(kind, got string) string {
 // What a block that sets only its required members settles to: the issue volume at 50Gi, both
 // pods' reservations at the daemon's default (an issue pod 2 CPU and 8Gi over an 80Gi disk limit
 // and a 6Gi disk request, the controller's pod 1 CPU and 4Gi over a 10Gi limit and a 1Gi request),
-// no scheduling beyond the Legion pool the runtime selects, in-cluster credentials, and nothing of
-// the operator's in any pod.
+// no scheduling (a pod selects no node label but a microVM pod's ComputeClass), in-cluster
+// credentials, and nothing of the operator's in any pod.
 func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile), noEnv)
 	if err != nil {

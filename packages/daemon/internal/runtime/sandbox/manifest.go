@@ -1097,11 +1097,11 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // launcher containers mount the providers Secret's configured keys and the operator's mounts, are
 // told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
 // internal/podsafety). Its init containers and the volumes only they mount are its kind's
-// (podKind). Beyond the Legion pool's selector and tolerations, and a microVM pod's ComputeClass
-// (placement), it asks nothing of its placement: an ephemeral disk is made where the pod is
-// scheduled, so the scheduler puts such a pod wherever the pool has room. A claim that outlives
-// its pods binds each later pod to the zones of its volume. The controller applies a template only
-// to the next pod it creates, so the template is rebuilt for every relaunch. Its metadata
+// (podKind). Beyond the operator's scheduling and a microVM pod's ComputeClass (placement), it
+// asks nothing of its placement: an ephemeral disk is made where the pod is scheduled, so the
+// scheduler puts such a pod wherever a node has room. A claim that outlives its pods binds each
+// later pod to the zones of its volume. The controller applies a template only to the next pod
+// it creates, so the template is rebuilt for every relaunch. Its metadata
 // carries, beside the two stop-eviction annotations, the configuration the pod is built from
 // (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from

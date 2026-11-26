@@ -2410,10 +2410,10 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondTheOperatorsScheduling(t *
 
 // No pod the runtime builds carries the Legion pool's placement: its node selector has no
 // legion.dev/pool key and none of its tolerations is of that key, so a Legion pod runs on the
-// cluster's general nodes. Beside any legion.dev/pool entry, a gVisor pod's selector and
-// tolerations are the operator's scheduling exactly as configured, and a microVM pod's are those
-// and its ComputeClass's label and the toleration of the taint GKE puts on that class's nodes,
-// and nothing else. Each pod runs under its sandbox's RuntimeClass, gVisor's or the microVM one.
+// cluster's general nodes. A gVisor pod's selector and tolerations are the operator's scheduling
+// exactly as configured, and a microVM pod's are those and its ComputeClass's label and the
+// toleration of the taint GKE puts on that class's nodes, and nothing else. Each pod runs under
+// its sandbox's RuntimeClass, gVisor's or the microVM one.
 // The pods are an issue's, fresh and resumed, the controller's of a gVisor project, a repository
 // cache's, the image probe's, an issue's whose issue runs in a microVM and the controller's of a
 // microVM project, each built under no scheduling at all and under an operator's selector and
@@ -2423,8 +2423,7 @@ func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
 	// poolLabel is the Legion pool's node label and the key of its taint, written out so the test
 	// holds this key and not whatever the runtime's constant names.
 	const poolLabel = "legion.dev/pool"
-	resume := workerSpec(t)
-	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", resumeSession
+	resume := manifestCases(t)["resume"].spec
 	block := testMicroVM()
 	dedicated := corev1.Toleration{Key: "example.com/dedicated", Operator: corev1.TolerationOpEqual, Value: "builds", Effect: corev1.TaintEffectNoSchedule}
 	for name, scheduling := range map[string]Scheduling{
@@ -2458,9 +2457,6 @@ func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
 							t.Errorf("the pod tolerates the Legion pool's taint %+v, want no toleration of %s", toleration, poolLabel)
 						}
 					}
-					selector := maps.Clone(tc.pod.NodeSelector)
-					delete(selector, poolLabel)
-					tolerations := slices.DeleteFunc(slices.Clone(tc.pod.Tolerations), func(toleration corev1.Toleration) bool { return toleration.Key == poolLabel })
 					wantSelector, wantTolerations, runtimeClass := map[string]string{}, slices.Clone(scheduling.Tolerations), gvisor
 					maps.Copy(wantSelector, scheduling.NodeSelector)
 					if tc.class != "" {
@@ -2468,11 +2464,11 @@ func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
 						wantTolerations = append(wantTolerations, computeClassToleration(tc.class))
 						runtimeClass = microVMRuntimeClass
 					}
-					if !maps.Equal(selector, wantSelector) {
-						t.Errorf("less any %s key, the pod selects %v, want exactly %v", poolLabel, selector, wantSelector)
+					if !maps.Equal(tc.pod.NodeSelector, wantSelector) {
+						t.Errorf("the pod selects %v, want exactly %v", tc.pod.NodeSelector, wantSelector)
 					}
-					if !slices.Equal(tolerations, wantTolerations) {
-						t.Errorf("less any toleration of %s, the pod tolerates %+v, want exactly %+v", poolLabel, tolerations, wantTolerations)
+					if !slices.Equal(tc.pod.Tolerations, wantTolerations) {
+						t.Errorf("the pod tolerates %+v, want exactly %+v", tc.pod.Tolerations, wantTolerations)
 					}
 					if got := tc.pod.RuntimeClassName; got == nil || *got != runtimeClass {
 						t.Errorf("the pod runs under the RuntimeClass %s, want %s", runtimeClassText(got), runtimeClass)

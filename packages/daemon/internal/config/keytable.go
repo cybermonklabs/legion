@@ -657,7 +657,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: kubernetesKey + ".scheduling", Members: []member{
 		{Name: "node_selector", Default: "a pod selects no node label but a microVM pod's ComputeClass", RequiredBy: "no",
-			Description: "The node labels every pod selects, as written, which may not name `legion.dev/pool`: Legion's pods share the cluster's general nodes, and that label would set them apart on nodes of their own again."},
+			Description: "The node labels every pod selects, as written, which may not name `legion.dev/pool`: Legion's pods share the cluster's general nodes, and that label would set them apart on nodes of their own."},
 		{Name: "tolerations", Default: "a pod tolerates no taint, so a tainted pool needs its toleration named here", RequiredBy: "no",
 			Description: "The node taints every pod tolerates, each a key, an operator and an effect."},
 		{Name: "priority_class", Default: "a pod runs at the namespace's own default priority", RequiredBy: "no",
