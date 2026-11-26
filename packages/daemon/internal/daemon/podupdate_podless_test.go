@@ -17,6 +17,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -101,10 +103,9 @@ func wantPodlessEnd(t *testing.T, rig *podUpdateRig, bounded bool, lost []claim.
 // such an end owes: the line of a replacement the round made, which carries by as true — the
 // field that says who made it, the sweep by issue ("byIssue") or a launch into the pod
 // ("atLaunch") — and says whether the bound made it, names each member in lost as one that had
-// not answered (unansweredMembers) and says why no read of the workspace was made; and one message
-// on the issue that names each member in lost with its state, names no member that answered, and
-// says that no process could read the workspace. A round whose members all answered writes no
-// message.
+// not answered (unansweredMembers) and none in answered, and names the read the pod's launcher made
+// of the workspace before the replacement (R7 of #5285), which found nothing here.
+// A read that found nothing tells nobody: no message on the issue, and no notice to the architect.
 func wantRoundPodEnd(t *testing.T, rig *podUpdateRig, by string, bounded bool, lost []claim.Role, answered ...claim.Role) {
 	t.Helper()
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
@@ -115,36 +116,21 @@ func wantRoundPodEnd(t *testing.T, rig *podUpdateRig, by string, bounded bool, l
 	if line[by] != true || line["round"] != podUpdateRound || line["pod"] != podUpdatePod || line["atTheBound"] != bounded {
 		t.Errorf("the replacement's line is %+v, want round %s of pod %s replaced with %s, atTheBound=%t", line, podUpdateRound, podUpdatePod, by, bounded)
 	}
-	if line["workspaceRead"] != "not made" || line["workspaceNotReadBecause"] != noProcessRead {
-		t.Errorf("the replacement's line names the read %+v, want one not made because %q", line, noProcessRead)
+	if line["workspaceRead"] != "found no work" || line["workspaceReadBy"] != "launcher" {
+		t.Errorf("the replacement's line names the read %+v, want the pod's launcher's read that found no work", line)
 	}
 	wantField(t, line, "unansweredMembers", lost...)
+	members, _ := line["unansweredMembers"].([]any)
+	for _, role := range answered {
+		if slices.Contains(members, any(string(role))) {
+			t.Errorf("the replacement's line names the %s, which answered the round, as a member that had not: %+v", role, line)
+		}
+	}
 	if bound := loggedLines(t, rig.logs.String(), podUpdateBoundLine); bounded != (len(bound) == 1) || len(bound) > 1 {
 		t.Errorf("the replacement was logged at the bound %d times, want the bound's line %t: %+v", len(bound), bounded, bound)
 	}
-
-	messages := rig.messages()
-	if len(lost) == 0 {
-		if len(messages) != 0 {
-			t.Fatalf("the issue was written %q, want nothing: every member of the round answered", messages)
-		}
-		return
-	}
-	if len(messages) != 1 {
-		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
-	}
-	for _, role := range lost {
-		if !strings.Contains(messages[0], string(role)+" (") {
-			t.Errorf("the message does not name the %s, a member that had not answered:\n%s", role, messages[0])
-		}
-	}
-	for _, role := range answered {
-		if strings.Contains(messages[0], string(role)) {
-			t.Errorf("the message names the %s, which answered the round:\n%s", role, messages[0])
-		}
-	}
-	if !strings.Contains(messages[0], "No role process ran in the pod") {
-		t.Errorf("the message does not say that no role process could read the workspace:\n%s", messages[0])
+	if messages, told := rig.messages(), rig.architectNotices(record.WorkspaceTakenNotice); len(messages) != 0 || len(told) != 0 {
+		t.Fatalf("the issue was written %q and the architect told %+v, want nothing: the read before the replacement found nothing", messages, told)
 	}
 }
 
@@ -286,8 +272,8 @@ func TestAPodlessRoundIsReplacedByIssueOnceNothingHoldsIt(t *testing.T) {
 			if calls := rig.issueReplacements(); len(calls) != 1 {
 				t.Errorf("the pod was replaced by issue %d times after two more sweeps, want the one", len(calls))
 			}
-			if messages := rig.messages(); len(messages) != 1 {
-				t.Errorf("the issue was written %d messages after two more sweeps, want the one of the round's end: %q", len(messages), messages)
+			if messages, told := rig.messages(), rig.architectNotices(record.WorkspaceTakenNotice); len(messages) != 0 || len(told) != 0 {
+				t.Errorf("the issue was written %q and the architect told %+v after two more sweeps, want nothing", messages, told)
 			}
 		})
 	}
@@ -408,10 +394,11 @@ const pauseStoppedRole = claim.RoleImplementer
 
 var pauseLetOut = podUpdateStart.Add(10 * time.Minute)
 
-// pacedUntil is a wake pacing that lets every paced launch out at letOut. An operator's resume is
-// not paced (supervise's exemptWake).
-func pacedUntil(letOut time.Time) supervise.WakePace {
-	return supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(time.Time) time.Time { return letOut }}
+// pacedUntil is a wake pacing, built on the rig's clock, that lets the first paced launch out at
+// letOut (parkedFor, from the clock's time when the rig builds it). An operator's resume is not
+// paced (supervise's exemptWake).
+func pacedUntil(letOut time.Time) func(supervise.Clock) supervise.WakePace {
+	return func(clock supervise.Clock) supervise.WakePace { return parkedFor(clock, letOut.Sub(clock.Now())) }
 }
 
 // heldLaunchLetOut is what the round waits for while the wake pacing parks the held launch of
@@ -701,9 +688,9 @@ func TestALaunchUnderARoundWithNoProcessIsLaunchedOnce(t *testing.T) {
 		members []podUpdateRole
 		// resumeAt is when the claim is resumed.
 		resumeAt time.Time
-		// pace is the wake pacing, which parks the launch until a minute past the bound; the
-		// zero pace launches where the resume is made.
-		pace supervise.WakePace
+		// pace is the wake pacing, which parks the launch until a minute past the bound; nil
+		// launches where the resume is made.
+		pace func(supervise.Clock) supervise.WakePace
 		// alongside is a second launching claim, of the first's shape, resumed and launched at
 		// once with the first.
 		alongside claim.Role
@@ -778,7 +765,7 @@ func TestALaunchUnderARoundWithNoProcessIsLaunchedOnce(t *testing.T) {
 				rig.intoRoundPod(launching)
 				rig.handle(launching, rig.lookStart(launching))
 			}
-			if tc.pace.Reserve != nil {
+			if tc.pace != nil {
 				rig.wantLaunchParked(launching, launchTurn)
 				// The sweep before the bound, while the launch waits for its turn and no machine
 				// is in a decision.

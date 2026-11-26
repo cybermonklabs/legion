@@ -38,7 +38,11 @@ package api
 // recorded from the entry's number (arrivedWith), and adds `step` to the phase of an other claim's
 // pending task (its enumeratedValues), as deploymentRolesContract's entry adds it to the pending
 // task of the architect's view and of each worker's: the claim of a role the deployment defines
-// can hold a task queued for the step.
+// can hold a task queued for the step. It adds, from its own number too, the two words entries
+// below it added to those rows of the architect's view and of each worker's, since an other
+// claim's view is the same view: `cyber_policy` to its failure cause and its pending cause
+// (cyberPolicyContract's cyberPolicyCause), and `awaiting_children` to its pending task's phase
+// (gateBasisContract's awaitingChildren).
 //
 // strandedTokenContract is this entry's id. Code that compares a caller's contract with it reads
 // entryNumber(strandedTokenContract), as shaping.go's release records do.
@@ -64,6 +68,9 @@ func init() {
 		},
 		enumeratedValues: []enumeratedValues{
 			{answer: AnswerState, keyPath: "issues.*.otherClaims.*.claim.pendingTask.phase", values: valuesFrom(strandedTokenContract, "step")},
+			{answer: AnswerState, keyPath: "issues.*.otherClaims.*.claim.pendingTask.phase", values: arrivedWith(strandedTokenContract, awaitingChildren)},
+			{answer: AnswerState, keyPath: "issues.*.otherClaims.*.claim.failure.cause", values: arrivedWith(strandedTokenContract, cyberPolicyCause)},
+			{answer: AnswerState, keyPath: "issues.*.otherClaims.*.claim.pendingCause", values: arrivedWith(strandedTokenContract, cyberPolicyCause)},
 		},
 	})
 }

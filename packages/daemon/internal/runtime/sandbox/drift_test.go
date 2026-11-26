@@ -735,15 +735,22 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 // under a configuration naming none has drifted, with `default` read into the configured half of
 // its reason. The account is the only thing each case changes, so it is the only reason PodDrift
 // has to give: a pod drifted in the account alone is named for the account and for nothing else.
+//
+// The reason opens on runtime.BreakingDrift, the runtime's mark of a drift that breaks the pod
+// (R7 of #5285, spec v23: the spec's architect ruled at 04:00Z on 2026-11-24 that
+// a pod's account is such a drift). The mark is set here, where the account's drift is decided, so
+// the daemon's update round over it replaces the pod after the read of its workspace, whatever the
+// read finds, and tells the issue's architect what it took (runtime.Breaks).
 func TestPodDriftNamesTheServiceAccountThePodRunsAs(t *testing.T) {
 	t.Parallel()
-	// The phrase drift.go's PodDrift builds, "account "+<the account the pod runs as>+", now "+
-	// <the configured account>, pinned whole and spelled out: it is what an operator reads of
-	// the round, so a change of it there is read beside this test of what it means. Its two
-	// halves here are defaultServiceAccount, which the rig's pods run as, and otherAccount; the
-	// row that configures no account pins those two halves the other way round, and reads
-	// `default` in the configured one, which is what serviceAccountOr makes of an unset account.
-	const says = "account default, now legion-worker"
+	// The phrase drift.go's PodDrift builds, runtime.BreakingDrift+"account "+<the account the
+	// pod runs as>+", now "+<the configured account>, pinned whole and spelled out: it is what an
+	// operator reads of the round, so a change of it there is read beside this test of what it
+	// means. Its two halves here are defaultServiceAccount, which the rig's pods run as, and
+	// otherAccount; the row that configures no account pins those two halves the other way round,
+	// and reads `default` in the configured one, which is what serviceAccountOr makes of an unset
+	// account.
+	const says = runtime.BreakingDrift + "account default, now legion-worker"
 	for name, tc := range map[string]struct {
 		account string            // what the restarted daemon is configured with
 		stored  func(*corev1.Pod) // what the pod is edited to run as before the reading
@@ -752,7 +759,7 @@ func TestPodDriftNamesTheServiceAccountThePodRunsAs(t *testing.T) {
 		"a pod on default under a configuration naming another account": {otherAccount, nil, says},
 		"a pod already on the configured account":                       {otherAccount, onAccount(otherAccount), ""},
 		"no configured account and a pod on default":                    {"", onAccount(defaultServiceAccount), ""},
-		"no configured account and a pod on a named one":                {"", onAccount(otherAccount), "account legion-worker, now default"},
+		"no configured account and a pod on a named one":                {"", onAccount(otherAccount), runtime.BreakingDrift + "account legion-worker, now default"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)

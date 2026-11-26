@@ -124,6 +124,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
 		UnrecordedRefusal: &supervise.UnrecordedRefusal{Since: at.Add(-2 * time.Hour), Attempts: 4,
 			Error: "apply fact supervise/pod-refused:legion-legion-legion-500-implementer:1: the database did not answer"},
+		MessageMarkAt: at.Add(-90 * time.Second),
 		AwaitsPod: &runtime.Locator{
 			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, 6),
 			Sandbox: &runtime.SandboxLocator{

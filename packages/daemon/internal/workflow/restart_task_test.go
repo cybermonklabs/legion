@@ -160,8 +160,8 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		// The write carries why the hold stands, written for the person who set the todo and read
 		// beside the board's move: the issues the retro waits for. The architect's rules for
 		// ending a child stay in the architect's retro-held notice, which this text is not.
-		why := root.Key + " waits before its retro for these issues beneath it: " + heldBeneath + ". Legion starts the retro when the last one leaves."
-		if notice := retroHeldNotice(root.Key, []string{heldBeneath}).Reason; !strings.Contains(notice, record.EndChildRule) || !strings.Contains(notice, record.StatusNotTakenYet) {
+		why := root.Key + " waits before its retro while these issues beneath it are still in the workflow: " + heldBeneath + ". " + retroHeldStarts
+		if notice := retroHeldNotice(root.Key, acceptanceHold{code: signOffChildInWorkflow, names: heldBeneath}, false).Reason; !strings.Contains(notice, record.EndChildRule) || !strings.Contains(notice, record.StatusNotTakenYet) {
 			t.Fatalf("the architect's retro-held notice = %q, want it carrying the rules for ending a child and the sentence on a status not taken yet", notice)
 		}
 		if got, writes := outboxRowsOf(t, pool, root.Key), statusWrites(t, pool, root.Key); got != outbox+1 || len(writes) != statuses+1 ||
@@ -169,7 +169,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			t.Fatalf("the todo queued %d outbox rows of %s, its status writes now %+v; want one, the status the record keeps, in_progress, written back over the todo with the reason %q for the person, and nothing started",
 				got-outbox, root.Key, writes, why)
 		}
-		if line := logged.String(); strings.Count(line, "workflow: a todo leaves the hold of a root that waits for the issues beneath it") != 1 || !strings.Contains(line, heldBeneath) {
+		if line := logged.String(); strings.Count(line, "workflow: a todo leaves the hold of a root that waits before its retro") != 1 || !strings.Contains(line, heldBeneath) {
 			t.Fatalf("the log of the todo = %q, want one line saying the hold stays, naming %s", line, heldBeneath)
 		}
 	})
@@ -310,7 +310,7 @@ func TestARestartDoesWhatAMoveDoesAfterItsStart(t *testing.T) {
 // recorded, which that start cannot carry. The three releases are the restart of a stopped task
 // at step 1 (restartTask); the retry of any other hold back into the phase it is from
 // (retryPhase), here a person's todo on a root with no plan rows that a failed claim holds; and
-// the start of a parent's retro once nothing beneath it is in the workflow (startHeldRetro), for
+// the start of a parent's retro once nothing beneath it is in the workflow (StartHeldRetro), for
 // a parent walking `implementer reviewer`. Each is crossed with its control, a holder that took
 // the approved version, which is owed nothing and queues no reconcile. The deployment gates the
 // spec of each root, and no reconcile stands queued before the release, so the count is the

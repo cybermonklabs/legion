@@ -161,6 +161,10 @@ type podUpdateRig struct {
 	// asks the store what that pod's launcher asks (launcherStarts); intoPod,
 	// relaunchedUnregistered and runParkedLaunch ask nothing.
 	keptSince time.Time
+	// wakePace builds the rig's wake pacing on its clock (podUpdateRigOptions.wakePace), which a
+	// restart builds afresh, as a restarted daemon builds its one pacer anew; nil is the pacing
+	// off.
+	wakePace func(supervise.Clock) supervise.WakePace
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -176,10 +180,11 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // boot restores the first machine, because the feeds read it with no lock; a later restart carries
 // it to the next daemon's feeds (restart). nil runs nothing.
 //
-// wakePace is the wake pacing every machine is built with (supervise.Deps.WakePace), as
-// openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
-// boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
-// pacing off: every launch runs where it is raised.
+// wakePace builds the wake pacing every machine is built with (supervise.Deps.WakePace) on the
+// rig's clock, as run builds the daemon's one pacer on the machines' clock and openSupervision
+// hands it to its machines. A machine takes its deps when the boot restores it, so the pacing is
+// built before that, as beforeDecision is set. nil is the pacing off: every launch runs where it
+// is raised.
 //
 // paused is the project's pause flag every machine reads (supervise.Deps.Paused), as
 // openSupervision hands the daemon's pause service to its machines: the open pause's id, or
@@ -187,7 +192,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // pacing is. nil is a project that is never paused.
 type podUpdateRigOptions struct {
 	beforeDecision func(claim.Token, supervise.Event)
-	wakePace       supervise.WakePace
+	wakePace       func(supervise.Clock) supervise.WakePace
 	paused         func() (int64, bool)
 }
 
@@ -273,6 +278,10 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// supervision, bound once it exists and before any machine is restored, as the daemon's boot
 	// binds the Sandbox runtime's (plan.launchRounds).
 	rt.RoundPodEnds = s.roundPodEndsAtLaunch
+	var pace supervise.WakePace
+	if opts.wakePace != nil {
+		pace = opts.wakePace(clock)
+	}
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
@@ -288,7 +297,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		PluginRelaunchable: true,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
-		WakePace:           opts.wakePace,
+		WakePace:           pace,
 		Paused:             opts.paused,
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.
@@ -310,7 +319,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// sequential flow's: a goroutine a test starts beside it takes worker() instead.
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log, engine: w.engine,
-		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
+		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}, wakePace: opts.wakePace}
 	// The lane reads the record: an ask that names no claim, as the release before wrote it,
 	// reaches the claim the record gives its role's step (outbox.workerToken).
 	rig.lane = &outbox{pool: pool, records: records, project: podUpdateProject, notices: rig.listener, supervisor: sup, log: log}
@@ -1102,14 +1111,21 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 	if notDue := rig.notDue(); len(notDue) != 0 {
 		t.Errorf("the replacement was refused inside ReplacePod %d times, want none", len(notDue))
 	}
+	// The replacement reads the workspace once before it is made (R7 of #5285).
 	var asked []string
+	reads := 0
 	for _, call := range rig.rt.Calls()[before:] {
 		asked = append(asked, call.Method)
 		switch call.Method {
+		case "WorkspaceWork":
+			reads++
 		case "ReplacePod", "PodDrift", "Probe", "Observe", "ReconcileOrphans":
 		default:
-			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads and one ReplacePod: %v", call.Method, asked)
+			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads, one read of the workspace and one ReplacePod: %v", call.Method, asked)
 		}
+	}
+	if reads != 1 {
+		t.Errorf("the workspace was read %d times for the round, want once before the replacement: %v", reads, asked)
 	}
 	if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
 		t.Errorf("the sweep logged a bounded end %+v for a round its answers ended", lines)
@@ -1120,12 +1136,14 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 }
 
 // podUpdateAccountDrift is the reason PodDrift gives for a pod running as a ServiceAccount other
-// than the configured one, spelled as drift.go builds it: "account " + <the account the pod runs
-// as> + ", now " + <the configured account> (PodDrift, accountDrift), here a pod left on `default`
-// under a configuration that now names `legion-worker`. This round rig scripts PodDrift, so
-// nothing here reads drift.go: the sandbox package's TestPodDriftNamesTheServiceAccountThePodRunsAs
-// holds that spelling, and this copy of it only makes the round below one opened on the account.
-const podUpdateAccountDrift = "account default, now legion-worker"
+// than the configured one, spelled as drift.go builds it: runtime.BreakingDrift + "account " +
+// <the account the pod runs as> + ", now " + <the configured account> (PodDrift, accountDrift),
+// here a pod left on `default` under a configuration that now names `legion-worker`. The mark
+// says the drift breaks the pod (R7 of #5285, spec v23). This round rig scripts
+// PodDrift, so nothing here reads drift.go: the sandbox package's
+// TestPodDriftNamesTheServiceAccountThePodRunsAs holds that spelling, and this copy of it only
+// makes the round below one opened on the account.
+const podUpdateAccountDrift = runtime.BreakingDrift + "account default, now legion-worker"
 
 // The ServiceAccount a pod runs as reaches its replacement the way every other drift of an issue
 // pod does, and that is the whole of what this test holds. A pod created under the account the
@@ -1639,12 +1657,13 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 // which only Resume sets, and the worker is told so in the prompt every role reads
 // (internal/prompts/go/worker-common.md, "Your process is shorter than your session").
 //
-// What does prompt it is the daemon's silence sweep, a bound after that last turn: it finds a
-// phase worker nothing will prompt and sends the phase's task again
-// (TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement). The two tests are the two halves
-// of one truth — the round's end prompts nobody, and the sweep is what does — and neither
-// stands without the other: this one advances no clock and runs no sweep, so what it reads is
-// the end of the round alone.
+// What does prompt it is its relaunch's ready, a workflow fact that gives a phase worker holding
+// nothing its phase's task once its new process is ready
+// (TestAReplacedPhaseWorkerGetsItsUnfinishedTaskOnceWhenItsNewProcessIsReady), and, a bound
+// after that last turn, the daemon's silence sweep, which finds a phase worker nothing has
+// prompted and sends the phase's task again
+// (TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement). This rig binds no ready as a fact,
+// advances no clock and runs no sweep, so what it reads is the end of the round alone.
 func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -1736,10 +1755,10 @@ func TestPodUpdateResumesAnOpenRoundAfterARestart(t *testing.T) {
 	next.awaitReplacement(1, "by the daemon that resumed the round")
 }
 
-// restart is a second daemon over the same Postgres: new machines, a new runtime, and nothing of
-// the first daemon's memory. The new machines' feeds run what the first daemon's ran before each
-// decision (podUpdateRigOptions.beforeDecision), as the test's own seam rather than the daemon's
-// memory.
+// restart is a second daemon over the same Postgres: new machines, a new runtime, a wake pacer
+// built afresh, and nothing of the first daemon's memory. The new machines' feeds run what the
+// first daemon's ran before each decision (podUpdateRigOptions.beforeDecision), as the test's own
+// seam rather than the daemon's memory.
 func (r *podUpdateRig) restart() *podUpdateRig {
 	r.t.Helper()
 	r.sup.stop()
@@ -1755,6 +1774,9 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	sup.beforeDecision = r.sup.beforeDecision
 	sup.deps = r.sup.deps
 	sup.deps.Runtime, sup.deps.Conns, sup.deps.Store = rt, conns, st
+	if r.wakePace != nil {
+		sup.deps.WakePace = r.wakePace(r.clock)
+	}
 	r.t.Cleanup(sup.stop)
 	s := &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
@@ -1782,7 +1804,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
-		listener: r.listener, asked: r.asked, keptSince: r.keptSince}
+		listener: r.listener, asked: r.asked, keptSince: r.keptSince, wakePace: r.wakePace}
 	next.lane = &outbox{pool: r.pool, records: r.records, project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = s
 	return next
@@ -2067,8 +2089,8 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times about a replacement that keeps failing, want once", rig.clock.Now(), len(notices))
 	}
-	if !strings.Contains(notices[0].Reason, "The runtime refused the pod replacement") || !strings.Contains(notices[0].Reason, "the api server refused the suspension") {
-		t.Errorf("the notice says %q, want the refusal and the error the runtime gave", notices[0].Reason)
+	if !strings.Contains(notices[0].Reason, "The pod replacement failed.") || !strings.Contains(notices[0].Reason, "the api server refused the suspension") {
+		t.Errorf("the notice says %q, want the failure and the error the runtime gave", notices[0].Reason)
 	}
 	wantAnswered(t, notices[0], claim.RoleImplementer)
 	wantNoRefusedNotice(t, rig)

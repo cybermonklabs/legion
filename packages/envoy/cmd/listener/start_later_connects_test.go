@@ -307,13 +307,9 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 // cluster could not reconcile, say. The JSON lines the later connects end the start with add the
 // credential on the same terms (natsStart.refusedCredential).
 func TestTheStartsLastLineNamesTheCredentialOnlyAfterARefusal(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
-	environment := func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return seed, true
-		}
-		return "", false
-	}
+	environment := testnats.SeedOnly(seed)
 	start := newNATSStart(listenerCredentialWait)
 	failed := errors.New("ensure stream ENVOY_NOTIFICATIONS: ENVOY_NATS_REPLICAS=3: replicas > 1 not supported in non-clustered mode")
 	line := startFailureLine(failed, start, environment)

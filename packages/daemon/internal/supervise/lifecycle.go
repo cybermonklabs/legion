@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // The tree lifecycle (internal/treelifecycle) is the store's barrier between a tree's runnable
@@ -83,11 +84,11 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
 // cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced. turn is the moment the request
-// already reserved for this launch in the pacing (RequestSpawn.Turn), the zero time for every
-// request that reserved none (launchAfter). start is the work a workflow start brings the claim
-// back for, which its caller has judged already (startHolds) and the launch judges again where a
-// park it waits in ends (startLeftWhileParked).
+// its own event, so a request that carries no such field is paced. place is the place the
+// request's caller already took for this launch in the pacing (RequestSpawn.Place), nil for every
+// request that took none (launchAfter). start is the work a workflow start brings the claim back
+// for, which its caller has judged already (startHolds) and the launch judges again where a park
+// it waits in ends (startLeftWhileParked).
 //
 // A start that leaves the session the claim records (leaves, StartWork's LeaveSession) forgets it
 // once the admission has bound the claim, so the launch spawns a fresh agent, as retry's fresh
@@ -106,12 +107,17 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
-func (m *Machine) revive(ctx context.Context, exempt bool, turn time.Time, start StartWork, admitted func()) error {
+func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, start StartWork, admitted func()) error {
 	leave := m.leaves(start)
 	if leave {
 		if err := m.mayForget(ctx, "start"); err != nil {
 			return err
 		}
+	}
+	// The admission writes the claim row alone, so a take-back the claim must carry goes first
+	// (carryPending, writeCarried).
+	if err := m.writeCarried(ctx); err != nil {
+		return err
 	}
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
@@ -121,11 +127,13 @@ func (m *Machine) revive(ctx context.Context, exempt bool, turn time.Time, start
 	if admitted != nil {
 		admitted()
 	}
-	if leave {
+	// A retry in a new session has forgotten the session in admitted already (retry), so the start
+	// has nothing left to leave.
+	if leave && m.leaves(start) {
 		m.log.Info("supervise: the start leaves the session a key's agent ran in, so it spawns a fresh agent", "session", m.claim.Session)
 		m.forgetSession("its step's agent took a name a key's agent held in an earlier generation, so it starts in a session of its own: this session was that key's")
 	}
-	return m.launchAfter(ctx, false, exempt, true, turn, noEnd, start)
+	return m.launchAfter(ctx, false, exempt, true, place, noEnd, start)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -160,7 +168,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // the credit of a refused launch of this lane is one nothing is left waiting for: a credit is
 // taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of a parked
 // wake takes it off the machine before anything is rechecked (wakeNow, runParkedLaunchNow), and
-// no decision of this package raises a launch over one still waiting (parkWake lists them).
+// no decision of this package raises a launch over one still waiting (endRefreshLane lists them).
 //
 // Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
 // retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
@@ -220,21 +228,24 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 
 // watchAgain arms again what watches the process the claim records, where that is not armed: the
 // timers the claim's state calls for, which are the ones a restart reading this claim back from
-// the store would arm for it (NewMachine), and the bound an acknowledged prompt waits for its
-// turn on. Its one caller is the refusal a parked launch's turn meets (runWake), over a claim
-// that keeps its process with the launch that was to replace it gone: the park disarmed the boot
+// the store would arm for it (NewMachine), and the bound an outstanding prompt waits for its turn
+// on. Its one caller is the refusal a parked launch's turn meets (runWake), over a claim that
+// keeps its process with the launch that was to replace it gone: the park disarmed the boot
 // interval, the registration deadline, the probe interval and the turn bound of that process
-// (parkWake), the claim keeps it and the wake is spent, so a booting process whose agent never
-// registers would meet no deadline and a prompt the agent acknowledged would wait for its turn
-// on nothing.
+// (waitOnMachine), the claim keeps it and the wake is spent, so a booting process whose agent
+// never registers would meet no deadline and an outstanding prompt would wait for its turn on
+// nothing. The next paragraph gives the rule for each of an outstanding prompt's two states.
 //
 // A claim still coming up is watched by its boot interval and its registration deadline, a
 // registered one by the deadline alone, and a claim whose agent is ready by neither: a live
 // session is watched by the runtime's sweep (observe) and by its own connection, and the probe
 // interval is an uncertain answer's retry rather than a watch of the claim's — the sweep asks
-// again at its own pass. The turn bound goes with them for a prompt Oh My Pi acknowledged and no
-// turn has started on (acked, Machine.outstanding), for the same RPC wait that prompt was given,
-// so one the agent read and never turned on still fails rather than waiting for ever (noTurn).
+// again at its own pass. The turn bound goes with them for a prompt of the task outstanding with
+// no turn started on it (Machine.outstanding), in either of its states: one Oh My Pi acknowledged
+// (acked), or one held, whose frame the daemon wrote and whose reply did not come
+// (keepHeldPrompt). It is armed for the same RPC wait that prompt was given, so one the agent never
+// turned on still ends rather than waiting for ever: an acknowledged one is charged, and a held one
+// is sent again under its id, charged nothing (noTurn).
 //
 // A timer already armed keeps the moment it already holds: the park takes only the four timers
 // above, so whatever the claim still holds is a watch nothing of this launch disturbed, and

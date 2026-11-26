@@ -73,11 +73,13 @@ type PausePodHold struct {
 	// LetOut is, as PausePodHoldsSince reads it, the latest let-out of a launch the hold's pause
 	// held for a role of the pod: the greatest stuck clock (pod_resumes.clock_at) of the issue's
 	// resumes that pause held (pod_resumes.pause_id), which the resume starts at its own moment
-	// (SetProjectResumeClocksTx) and the reservation of each launch moves to the moment the wake
-	// pacing lets that launch out (SetResumeClock). It is zero where the pause held no launch of
-	// the pod, and every other read of a hold leaves it zero. An update round's bound is its one
-	// reader (internal/daemon's heldUntil). Whether the pause still keeps the pod for one claim is
-	// never read from it.
+	// (SetProjectResumeClocksTx) and the let-out of each launch moves to the moment the wake
+	// pacing lets that launch out (SetResumeClock). A launch that still waits in the pacing's queue
+	// has no let-out yet, and its clock is stopped (pod_resumes.queued), so its let-out is read as
+	// the read's own now: not before it. It is zero where the pause held no launch of the pod, and
+	// every other read of a hold leaves it zero. An update round's bound is its one reader
+	// (internal/daemon's heldUntil). Whether the pause still keeps the pod for one claim is never
+	// read from it.
 	LetOut time.Time
 	// Owed is, as PausePodHoldsSince reads it, each claim of the pod that the hold's pause still
 	// owes a launch: the claim has a resume of that pause for the issue (pod_resumes.claim) that no
@@ -212,6 +214,11 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 // opened, which runs on to the let-out of the last launch its pause held for a role of the pod,
 // so since is the opening of the oldest round the sweep reads.
 //
+// now is the sweep's own reading of the clock, and it is the let-out of a launch that still waits
+// in the wake pacing's queue: a place in the queue has no moment until the pacer lets it out, so
+// the open resume of such a launch has its clock stopped (pod_resumes.queued), and the hold counts
+// on to now while it waits (dispatch://INFRA-5682 R1).
+//
 // A launch the pause still owes a claim is a resume of that pause for the issue that names the
 // claim, that no first turn stamped, nothing closed (OpenPodResume), and whose pod no ready stamped
 // (MarkPodResumeReady). It is read for each claim. The stuck clock of such a resume can be before
@@ -219,18 +226,19 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 // (SetResumeClock). The pause keeps the pod for that claim's work until the claim runs in the pod
 // again, so the read returns such a hold whatever since. A resume that a ready stamped and that
 // stays open owes nothing, so it brings no hold into the read. project is the Dispatch key.
-func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since time.Time) ([]PausePodHold, error) {
+func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since, now time.Time) ([]PausePodHold, error) {
 	var holds []PausePodHold
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `select h.id, h.pause_id, h.project, h.issue, h.held_at, h.ended_at, coalesce(h.ended_why, ''),
 				l.let_out, l.owed_claims
 			from project_pause_pod_holds h
-			left join lateral (select max(r.clock_at) as let_out,
+			left join lateral (select max(case when r.queued and r.first_turn_at is null and r.closed_at is null
+						then $3::timestamptz else r.clock_at end) as let_out,
 					coalesce(array_agg(r.claim order by r.claim) filter (where r.first_turn_at is null and r.closed_at is null and r.pod_ready_at is null), '{}') as owed_claims
 				from pod_resumes r
 				where r.project = lower(h.project) and r.issue = h.issue and r.pause_id = h.pause_id) l on true
 			where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2 or cardinality(l.owed_claims) > 0)
-			order by h.issue, h.held_at`, project, since)
+			order by h.issue, h.held_at`, project, since, now)
 		if err != nil {
 			return err
 		}

@@ -97,6 +97,21 @@ func (r *idleWakeRig) livePodUID(issue idleRigIssue) string {
 	return uid
 }
 
+// launcherConnections is how many times the launcher of the issue's role in the pod uid has been
+// accepted by a daemon: the line the launcher logs once a daemon acknowledges its hello
+// (launcher's serve), which names the pod's Sandbox, the role and the pod.
+func (r *idleWakeRig) launcherConnections(issue idleRigIssue, uid string) int {
+	r.t.Helper()
+	accepted := fmt.Sprintf("(sandbox %s, role %s, pod %s)", issue.pod, issue.role, uid)
+	connections := 0
+	for _, line := range strings.Split(r.pods.log(), "\n") {
+		if strings.Contains(line, "launcher: connected to the daemon at ") && strings.Contains(line, accepted) {
+			connections++
+		}
+	}
+	return connections
+}
+
 // checkerStartTried is whether the outbox has tried the checker's start at least once: the row is
 // gone (a try that started the role) or it carries a try (a try that waits).
 func (r *idleWakeRig) checkerStartTried(issue idleRigIssue) bool {
@@ -146,6 +161,13 @@ func (r *idleWakeRig) countPodWaitHeld(issue idleRigIssue) func() int {
 // role's line left out, since the start that waits for the pod makes role's claim the moment the
 // Sandbox has left the store — then for role's claim to register in a new pod of the issue, other
 // than the pod before.
+//
+// The first wait keeps the pod quiet, since the release measures the idle period from the claim
+// rows. It back-dates every claim of the project but role's (quietExcept). The start of role runs
+// in the moment the release takes the pod. A back-date of the new claim made before the wait reads
+// the pod gone would let the idle rule release the new pod as idle at once, so the role would be
+// suspended and never registered in it. A slow poll, as when the package's other tests load the
+// machine, makes that moment wide.
 func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role claim.Role, before string) {
 	r.t.Helper()
 	token := string(r.roleToken(issue, role))
@@ -164,7 +186,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 	idleRigEventually(r.t, idleRigReleaseWait, "the pod of "+issue.key+" released with every claim of it but "+string(role)+"'s left as it was", func() bool {
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
-			r.quiet()
+			r.quietExcept(claim.Token(token))
 		}
 		if got := others(); !slices.Equal(got, held) {
 			r.t.Fatalf("the claims of %s read\n  %s\nwant the ones it stood at\n  %s\nthis release stops no role and changes no claim",
@@ -181,6 +203,17 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 	})
 }
 
+// quietExcept is quiet for every claim of the project but token's: the claim a start makes while
+// the test waits is left with the moment its own rows record.
+func (r *idleWakeRig) quietExcept(token claim.Token) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(context.Background(),
+		`update claims set updated_at = now() - interval '30 minutes'
+		 where project = $1 and token <> $2`, r.project, string(token)); err != nil {
+		r.t.Fatalf("back-date the project's claims but %s: %v", token, err)
+	}
+}
+
 // A pod built before a role of the deployment is kept until main's rule for a pod with no live
 // claim or the pod's update round ends it: the start of the role waits on its
 // row and makes no claim, so no launch replaces the pod with the issue's disk under it.
@@ -189,6 +222,9 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 //     keeps its uid, no release is marked, the served issue names the checker in
 //     startWaitsForPod, and no claim of the checker exists.
 //  2. After the idle period, main's rule releases the pod, and the checker starts in a new pod.
+//     That release has the pod's launcher read the disk first (R6 of #5285), so the pod is made
+//     quiet only once its launcher is connected to the restarted daemon: a read made before then
+//     fails, and a failed read keeps the pod for an hour (pods.DeclineUnreadRetry).
 //  3. An operator's suspension keeps the pod past the idle period and is told once.
 func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) {
 	t.Parallel()
@@ -237,9 +273,13 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		issue := rig.issue("a")
 		rig.stopRole(issue)
 		uid := rig.livePodUID(issue)
+		connected := rig.launcherConnections(issue, uid)
 		rig.defineChecker(issue)
 		rig.startChecker(issue)
 		waiting(t, rig, issue)
+		idleRigEventually(t, idleRigRecordWait, "the launcher of "+issue.key+"'s pod connected to the restarted daemon", func() bool {
+			return rig.launcherConnections(issue, uid) > connected
+		})
 		rig.quiet()
 		rig.awaitUnownedReleasedThenStarted(issue, podWaitRigRole, uid)
 		idleRigEventually(t, idleRigRecordWait, "the served issue "+issue.key+" naming no start waiting for its pod", func() bool {

@@ -63,14 +63,27 @@ type roleForReader struct {
 // admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask, which reads its task's
 // first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported
 // holds every task to an implementer step with each tester, reviewer and acceptance step after
-// it), or reads the retro's own phase (retroHeldNotice and Engine.startHeldRetro, which run only
+// it), or reads the retro's own phase (retroHeldNotice and Engine.StartHeldRetro, which run only
 // for a parent held before its retro for the issues beneath it), or answers RoleFor's role for
 // every phase but step to the readers this list holds (record.Issue.RoleAt), or reads the phase a
 // held issue's retry restores only past the refusal of a plan's own hold, which is the one hold an
 // issue at admitted takes (Engine.retryOrEscalate, for the retry of a named claim), or never reads
 // admitted at all because a check before it refuses that phase, which is what each named test
-// holds it to. The owner walk reads no role: where it starts is its caller's to say
-// (record.NoticeStartsAtParent, for a notice).
+// holds it to. A parent's wait on its open children (awaiting_children.go, dispatch://INFRA-3320)
+// is of the last kind: each of its readers runs only past record.OpenChildHolds, which refuses
+// admitted, or on the start a hold kept, which is never admitted's. Where one reads accepting's
+// architect it starts no phase worker: the return of a parent whose pull request merged during
+// the wait starts what a move into accepting starts, a child's failed architect again and the
+// accepting step's run (ReturnFromChildren, through start and startStandingStep in
+// internal/workflow's effects.go), and the stop holds accepting with no role told
+// (StopForChildren), since the architect's notice tells it. The return reads the role of the step
+// at the place it returns to on a task with plan rows (Walk.RoleAt), so a return to a step of a
+// role the deployment defines starts that role. The release of a hold reads the held phase's role
+// for the restart (retryPhase), and a held phase is never admitted. The entry the phase's role
+// stands on is read for R9's exemption of a move out of retro or merging (samePhaseExempt) only
+// past record.OpenChildHolds, by the stop and by the guard on a start of the phase the issue
+// stands in, so it reads accepting's architect at most and never admitted's. The owner walk reads
+// no role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -93,6 +106,17 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
+	// A parent's wait on its open children: the stop of a started parent, the start it finds
+	// undelivered, the exemption's entry, and the return, which reads the role of the phase on an
+	// issue with no plan rows and of the step at its place on a task with them.
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.StopForChildren"}: {calls: 1, tests: []string{
+		"TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"}},
+	{file: "internal/workflow/awaiting_children.go", fn: "undeliveredStart"}: {calls: 1, tests: []string{
+		"TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"}},
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.ReturnFromChildren"}: {calls: 2, tests: []string{
+		"TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld"}},
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.samePhaseExempt"}: {calls: 1, tests: []string{
+		"TestParentWaitsHoldsEveryPhaseStart"}},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 1, tests: []string{
 		"TestACarriedRootResumesFromTheApprovedHeadAndTheHold", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}: {calls: 1, tests: []string{"TestRoleForAnswersEveryPhaseOfPhaseAll"}},
@@ -139,7 +163,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestStopTaskHoldsTheIssueAndStopsTheStep", "TestAStopReachesTheDeploymentRoleThatRuns"}},
 	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}: {calls: 1, tests: []string{
 		"TestStopTaskHoldsTheIssueAndStopsTheStep", "TestAStopReachesTheDeploymentRoleThatRuns"}},
-	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
+	{file: "internal/workflow/retro_hold.go", fn: "Engine.StartHeldRetro"}: {calls: 1, tests: []string{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}: {calls: 1, tests: []string{
@@ -161,6 +185,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// of the running step at step (record.Issue.RoleAt).
 	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{
 		"TestOnlyAPhaseWorkerHoldsAMembersPhase", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
+	// The role of a held claim's start that meets its phase waiting on it, read with the issue, so
+	// at step it is the role of the running step.
+	{file: "internal/daemon/outbox.go", fn: "outbox.heldStartRefused"}: {calls: 1, tests: []string{
+		"TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt"}},
 	{file: "internal/daemon/design_news_send.go", fn: "memberDraft.told"}: {calls: 1, tests: []string{
 		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
 	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 1, tests: []string{

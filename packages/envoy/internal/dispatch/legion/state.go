@@ -131,21 +131,23 @@ const (
 // (packages/daemon/internal/phase). A reader of the board or of the metrics names them from
 // here, so the two never spell one of them differently. PhaseStep is the phase of a step whose
 // role the deployment defines, of any type its settings name, whose role the daemon reports as
-// the issue's `stepRole`.
+// the issue's `stepRole`. PhaseAwaitingChildren is a parent that an open Dispatch child of it
+// holds (dispatch://INFRA-3320, R11): no worker of it works, and it keeps no slot.
 const (
-	PhaseAdmitted       = "admitted"
-	PhaseAwaitingPerson = "awaiting_person"
-	PhasePlanning       = "planning"
-	PhaseImplementing   = "implementing"
-	PhaseTesting        = "testing"
-	PhaseReviewing      = "reviewing"
-	PhaseStep           = "step"
-	PhaseAccepting      = "accepting"
-	PhaseRetro          = "retro"
-	PhaseMerging        = "merging"
-	PhaseAwaitingMerge  = "awaiting_merge"
-	PhaseDone           = "done"
-	PhaseHeld           = "held"
+	PhaseAdmitted         = "admitted"
+	PhaseAwaitingPerson   = "awaiting_person"
+	PhaseAwaitingChildren = "awaiting_children"
+	PhasePlanning         = "planning"
+	PhaseImplementing     = "implementing"
+	PhaseTesting          = "testing"
+	PhaseReviewing        = "reviewing"
+	PhaseStep             = "step"
+	PhaseAccepting        = "accepting"
+	PhaseRetro            = "retro"
+	PhaseMerging          = "merging"
+	PhaseAwaitingMerge    = "awaiting_merge"
+	PhaseDone             = "done"
+	PhaseHeld             = "held"
 )
 
 // JSONString is a JSON text's string value, or "" for a null, a number, or anything else: an
