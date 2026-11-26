@@ -577,10 +577,10 @@ func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		return caller{}, false
 	}
 	accounts := s.deps.APIAccounts
-	if identity.google {
+	if identity.Google {
 		accounts = s.deps.GoogleAPIAccounts
 	}
-	listed, found := accounts[identity.account]
+	listed, found := accounts[identity.Account]
 	if !found {
 		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this account is not in BROKER_API_ACCOUNTS")
 		return caller{}, false
@@ -605,7 +605,7 @@ func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (cal
 		return caller{}, false
 	}
 	for _, edge := range s.deps.EdgeListeners {
-		if edge.Account != identity.account || edge.Google != identity.google {
+		if edge.Account != identity.Account || edge.Google != identity.Google {
 			continue
 		}
 		if !issuerNamed(w, identity, edge.Issuers, "NOT_AN_EDGE_LISTENER", "edge-listener entry of BROKER_NATS_SERVICES") {
@@ -617,24 +617,14 @@ func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (cal
 	return caller{}, false
 }
 
-// tokenIdentity is what a caller's verified identity token says of it, as identityAccount
-// answers it: the account it names, whether that is a Google account, and, for a Kubernetes
-// token, the name of the issuer of BROKER_K8S_OIDC_ISSUER that signed it ("" for the one issuer
-// of a bare URL, and for every Google token).
-type tokenIdentity struct {
-	account string
-	google  bool
-	issuer  string
-}
-
 // issuerNamed reports whether the entry that lists identity's account, whose issuer names are
 // issuers, takes identity's token (PlatformIdentity.TakenFrom: a Kubernetes token only from an
 // issuer the entry names, a Google token always), or writes the refusal. The refusal is the 403
 // code of an account the entry's list does not name, its sentence naming entry. It is the issuer
 // check accountCaller holds a BROKER_API_ACCOUNTS entry to and edgeListenerCaller an edge
 // listener's entry of BROKER_NATS_SERVICES.
-func issuerNamed(w http.ResponseWriter, identity tokenIdentity, issuers []string, code, entry string) bool {
-	if (PlatformIdentity{Google: identity.google, Issuer: identity.issuer}).TakenFrom(issuers) {
+func issuerNamed(w http.ResponseWriter, identity PlatformIdentity, issuers []string, code, entry string) bool {
+	if identity.TakenFrom(issuers) {
 		return true
 	}
 	writeError(w, http.StatusForbidden, code, "this account's "+entry+" does not name the issuer that signed its token")
@@ -642,8 +632,9 @@ func issuerNamed(w http.ResponseWriter, identity tokenIdentity, issuers []string
 }
 
 // identityAccount verifies r's bearer, a caller's own identity token, and answers what it says
-// of its caller (tokenIdentity), or writes the refusal: the one verification accountCaller and
-// edgeListenerCaller share.
+// of its caller (PlatformIdentity: the token's Account, Google and Issuer, its Issued and Expiry
+// left zero, since liveIdentityToken judges the token's times here), or writes the refusal: the
+// one verification accountCaller and edgeListenerCaller share.
 //
 // A caller presents one of two tokens: a Kubernetes service account's own projected token, which
 // names the account by its subject, or a machine's Google identity token, which names it by its
@@ -662,17 +653,17 @@ func issuerNamed(w http.ResponseWriter, identity tokenIdentity, issuers []string
 // token is spendable for at most an hour. Each is a 401. A Kubernetes token whose issuer the
 // broker cannot read yet is 503 OIDC_ISSUER_UNAVAILABLE, since nothing was decided about it. No
 // refusal repeats the token.
-func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (tokenIdentity, bool) {
+func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (PlatformIdentity, bool) {
 	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
-		return tokenIdentity{}, false
+		return PlatformIdentity{}, false
 	}
 	raw := bearer(r)
 	if s.deps.AccountTokens != nil {
 		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
 		if !errors.Is(err, oidc.ErrIssuer) {
-			identity := tokenIdentity{account: claims.Subject, issuer: claims.Issuer.Name}
-			return identity, s.liveIdentityToken(w, err, identity.google, claims.IssuedAt, claims.Expiry)
+			identity := PlatformIdentity{Account: claims.Subject, Issuer: claims.Issuer.Name}
+			return identity, s.liveIdentityToken(w, err, identity.Google, claims.IssuedAt, claims.Expiry)
 		}
 	}
 	if s.deps.GoogleAccountTokens != nil {
@@ -680,14 +671,14 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (tokenI
 		if !errors.Is(err, oidc.ErrIssuer) {
 			if err == nil && (token.Identity.Account == "" || !token.Identity.EmailVerified) {
 				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
-				return tokenIdentity{}, false
+				return PlatformIdentity{}, false
 			}
-			identity := tokenIdentity{account: token.Identity.Account, google: true}
-			return identity, s.liveIdentityToken(w, err, identity.google, token.IssuedAt, token.Expiry)
+			identity := PlatformIdentity{Account: token.Identity.Account, Google: true}
+			return identity, s.liveIdentityToken(w, err, identity.Google, token.IssuedAt, token.Expiry)
 		}
 	}
 	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
-	return tokenIdentity{}, false
+	return PlatformIdentity{}, false
 }
 
 // liveIdentityToken is identityAccount's judgement of one token its verifier judged, whichever

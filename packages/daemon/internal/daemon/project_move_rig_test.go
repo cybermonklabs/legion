@@ -53,10 +53,11 @@ var goHomes = func() []string {
 
 // legionBuild is this test binary's one build of `legion`, which every buildLegion of the process
 // answers. One build serves every test that runs the command: a build takes about a minute in an
-// issue pod, and the race step runs this package under one deadline (dispatch://INFRA-3583). The
-// binary goes into the directory testbuild builds into (testbuild.Dir), which testbuild.Main
-// removes once the tests are done, since a test's own temporary directory is gone before the next
-// test runs; by is the test whose call built it, and took is how long its `go build` ran.
+// issue pod, and each race leg runs its group of this package's tests under one deadline
+// (dispatch://INFRA-3583). The binary goes into the directory testbuild builds into
+// (testbuild.Dir), which testbuild.Main removes once the tests are done, since a test's own
+// temporary directory is gone before the next test runs; by is the test whose call built it, and
+// took is how long its `go build` ran.
 var legionBuild struct {
 	once   sync.Once
 	binary string

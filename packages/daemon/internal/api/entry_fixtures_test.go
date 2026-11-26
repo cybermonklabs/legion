@@ -1099,8 +1099,9 @@ type entryTestRows struct {
 	// frozen band does (TestANarrowedBodySaysSo); nil for an entry that adds no band.
 	carry func(State) State
 	// exclusions is each json field of an answer's wire types that the entry's bodies cannot
-	// realise, with why: rows of contract_shapes_test.go's excludedDeclaredFields, held to the same
-	// census (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture).
+	// realise, with why: rows the census (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture)
+	// reads after contract_shapes_test.go's excludedDeclaredFields, in the build's order, held to
+	// the same checks.
 	exclusions map[answerField]string
 }
 

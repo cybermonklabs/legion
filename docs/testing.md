@@ -631,21 +631,18 @@ out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it witho
 test you add, rename or delete needs no edit of that file to keep CI green: a test no group names
 runs in the group `.github/scripts/go_legs.py` places it in, the same in every leg, and a name the
 package no longer declares matches nothing, each with a warning on the legs' logs for the next
-rebalance. The
-figures below were measured while these steps were the `test` job's. On CI's runners, while the
-plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
-2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
-125688799071). Under `-race` it took up
-to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
-measured, on main and on pull requests, and ran go test's own ten minutes out on main at
-job 125691048644 of run 41562777668. CI now splits its tests over three race legs, and each leg's
-`-timeout 30m` is that leg's deadline for its group of the tests. With the project release's tests
-the whole package took 1,731.355 s to more than 1,980.274 s in `daemon-go`'s race step on
-2026-11-20, against main's 1,409.674 s to 1,475.337 s that day, so a leg, which runs about a third
-of it, stays well inside its 30 minutes, while the whole package does not fit them. On a busy
-machine it takes longer still (908 s under `-race` on a shared devbox, before those tests), so a
-command that runs the whole package, alone or in a pattern that includes it, passes
-`-timeout 40m`, the 1,980.274 s plus 21% rounded up:
+rebalance. The figures below were measured while these steps were the `test` job's, but for those
+of 2026-11-20, which are `daemon-go`'s race step's. On CI's runners, while the plain step still
+ran it, it took at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to
+2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job 125688799071). Under
+`-race` it took up to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that
+sjawhar/legion#2709 measured, on main and on pull requests, and ran go test's own ten minutes out
+on main at job 125691048644 of run 41562777668; on a busy machine it took longer still (908 s under
+`-race` on a shared devbox). With the project release's tests the whole package took 1,731.355 s to
+more than 1,980.274 s on 2026-11-20, against main's 1,409.674 s to 1,475.337 s that day: more than
+the `-timeout 30m` each of the three legs gives its group, about a third of the package. So a
+command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 40m`,
+the 1,980.274 s plus 21% rounded up:
 
 ```sh
 cd packages/daemon

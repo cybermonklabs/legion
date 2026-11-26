@@ -265,12 +265,12 @@ func TestProjectReleaseWordsGolden(t *testing.T) {
 func TestProjectReleaseRolesHaveRecordedArrivals(t *testing.T) {
 	fields := EnumeratedFields()
 	for _, keyPath := range []string{"projectRelease.result.sandboxes.*.asked.*.role", "projectRelease.result.claims.*.role"} {
-		at := slices.IndexFunc(fields, func(f EnumeratedField) bool { return f.Answer == AnswerState && f.KeyPath == keyPath })
-		if at < 0 {
+		field, ok := fieldAt(fields, AnswerState, keyPath)
+		if !ok {
 			t.Fatalf("EnumeratedFields holds no row of the state's `%s`", keyPath)
 		}
 		for _, role := range claim.Roles {
-			if !slices.ContainsFunc(fields[at].Values, func(v EnumeratedValue) bool { return v.Value == string(role) }) {
+			if !slices.ContainsFunc(field.Values, func(v EnumeratedValue) bool { return v.Value == string(role) }) {
 				t.Errorf("claim.Roles holds the role %q, which the state's `%s` records at no contract: a reader of an "+
 					"older contract would be served it and refuse the whole state. A new role is added through the new "+
 					"entry's enumeratedValues: a row at this key path (valuesFrom(<that entry>, role)), held back below "+
