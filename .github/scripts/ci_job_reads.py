@@ -1482,10 +1482,10 @@ RACE_FILLS = [
      f"{CI}'s race step", CI, f"{CI}'s two race steps follow it already"),
     (ENVOY_RACE_FILL_JOB, "ENVOY_RACE_FILL_JOB", [word for job in ENVOY_RACE_LANE for word in race_pkgs(job)],
      "ENVOY_RACE_LANE", "the envoy race lane's steps", "the envoy race lane",
-     "envoy-go-race's legs and envoy-go-race-api's step follow it already (hold_envoy_legs holds the race "
-     "legs' packages to the lane, every package under a tree among them; RACE_API_SCRIPT), and "
-     "envoy-go-race-docs' line is RACE_DOCS_SCRIPT's, written by hand, so a change to the lane's docs "
-     "entry changes that line too"),
+     "envoy-go-race-api's step follows it already (RACE_API_SCRIPT), envoy-go-race's legs are held to it "
+     "(hold_envoy_legs refuses race legs whose packages are not the lane's, every package under a tree "
+     "among them), and envoy-go-race-docs' line is RACE_DOCS_SCRIPT's, written by hand, so a change to the "
+     "lane's docs entry changes that line too"),
 ]
 
 
