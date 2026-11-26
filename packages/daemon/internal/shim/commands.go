@@ -207,6 +207,9 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 		return err
 	}
 	defer done()
+	// CONTROL COMMIT, never for merge: 11 s of the request's budget spent before the
+	// adoption's own commands run.
+	time.Sleep(11 * time.Second)
 	dir, jj, run := opened.dir, opened.jj, opened.run
 	described, err := run(nil, describedArgs(jj, dir)...)
 	if err != nil {
