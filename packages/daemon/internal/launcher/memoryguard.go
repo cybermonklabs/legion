@@ -204,11 +204,13 @@ const (
 // descendants; the shim, the oldest direct child of the role-init that is this binary run as
 // `worker-shim` (an orphan the role leaves is adopted by the role-init too); every direct child of
 // the shim but the CodeGraph warm-up (codegraphWarmUp), which is the agent before and after its
-// start wrapper execs it, the secrets renewer and the working copy's adoption; Oh My Pi's helpers
-// but its eval kernel, each reached from the agent through a chain of helpers; and a Claude Code
-// role's `claude` and its MCP server. The warm-up and all it starts may be ended: the shim starts
-// it during the agent's session load (warmCodegraph, internal/shim), its end ends no session, and
-// the next start runs it again or finds the index its last build left.
+// start wrapper execs it, the secrets renewer and the working copy's adoption, and never an orphan,
+// since a shim under role-init adopts none (only the controller pod's single-role shim reaps
+// orphans, reapingShim, and its classifier tells them from the shim's own, shimOwnChildren); Oh My
+// Pi's helpers but its eval kernel, each reached from the agent through a chain of helpers; and a
+// Claude Code role's `claude` and its MCP server. The warm-up and all it starts may be ended: the
+// shim starts it during the agent's session load (warmCodegraph, internal/shim), its end ends no
+// session, and the next start runs it again or finds the index its last build left.
 //
 // A process is the role's whose role-init is its ancestor by the parent chain, else the role's
 // whose role-init shares its PID namespace, else no role's. The ancestor comes first because a
@@ -358,18 +360,20 @@ func protectTrees(t *memoryguard.Table, roots []int, protected map[int]bool) {
 // the shim, the manager's running generation, only while that process
 // is this binary run as `worker-shim`, since the manager keeps its generation's pid until its wait
 // is done with it, and once the shim is reaped the kernel may give that pid to another process;
-// and every direct child of the shim with what is the agent's own under it (protectAgent): the
+// and each of the shim's own children with what is the agent's own under it (protectAgent): the
 // agent before and after its start wrapper execs it, Oh My Pi's helpers but its eval kernel, and
-// the secrets renewer and its keygen, which are Legion's own by construction, since a command the
-// agent runs is the agent's child and never the shim's.
+// the secrets renewer and its keygen, which are Legion's own by construction (shimOwnChildren). A
+// command the agent runs is the agent's child, never the shim's; one it leaves behind becomes the
+// shim's child, since this pod's shim reaps orphans (reapingShim), and stays the controller's work
+// as it was when the launcher adopted it.
 //
 // Every process of the container is the controller's, protected or not: no other role runs
-// there, so a kill of an orphan the launcher adopted as PID 1, or of a process a `kubectl exec`
+// there, so a kill of an orphan the launcher or the shim adopted, or of a process a `kubectl exec`
 // started under no shim, is reported to the controller as a kill of its agent's command is, and
 // every line of the guard's names the manager's role.
 //
-// It marks as a session process (memoryguard.Class.Session) the shim and every direct child of
-// the shim, as podClassifier marks a role's (the controller's pod has no role-init): the agent
+// It marks as a session process (memoryguard.Class.Session) the shim and each of the shim's own
+// children, as podClassifier marks a role's (the controller's pod has no role-init): the agent
 // and the shim's other children, which no place in the tree tells from it. Only the guest watch
 // reads the mark, which a microVM controller pod's launcher runs over this classifier
 // (serveMemoryGuard, INFRA-4567); the guard a gVisor controller pod's launcher runs ignores it.
@@ -411,7 +415,7 @@ func (c *controllerClassifier) classify(t *memoryguard.Table) map[int]memoryguar
 	if shim, ok := t.Get(shimPID); ok && isShim(c.exe, shim) {
 		protected[shim.PID] = true
 		session[shim.PID] = true
-		for _, agent := range t.Children(shim.PID) {
+		for _, agent := range shimOwnChildren(t, shim) {
 			session[agent.PID] = true
 			protectAgent(t, agent, protected)
 		}
@@ -423,6 +427,57 @@ func (c *controllerClassifier) classify(t *memoryguard.Table) map[int]memoryguar
 		classes[p.PID] = memoryguard.Class{Role: c.manager.role, Protected: protected[p.PID], Session: session[p.PID]}
 	}
 	return classes
+}
+
+// shimOwnChildren are the direct children of shim that the shim started itself. The controller
+// pod's single-role shim, the one shim this classifier reads, reaps orphans (reapOrphansFlag,
+// which reapingShim gives it), so it also has for direct children the orphans its tree leaves,
+// which nothing in the tree tells from its own but their age and their executable: its own are
+// the agent, the oldest direct child that is not the secrets binary, since an orphan descends from
+// the agent's commands and so is younger than the agent, and the secrets keygen and renewer, the
+// executable the shim's shimwire.AgentSecretsBinFlag names run as shimwire.AgentSecretsKeygen or
+// shimwire.AgentSecretsRenew. Any other direct child is an orphan the shim adopted. An orphan that
+// runs that executable as either task is taken for the shim's own: that is the rule's cost.
+func shimOwnChildren(t *memoryguard.Table, shim *memoryguard.Process) []*memoryguard.Process {
+	children := t.Children(shim.PID)
+	options := shim.Args
+	if end := slices.Index(options, "--"); end >= 0 {
+		options = options[:end]
+	}
+	secrets := flagValue(options, "--"+shimwire.AgentSecretsBinFlag)
+	resolved := secrets
+	if secrets != "" {
+		if path, err := filepath.EvalSymlinks(secrets); err == nil {
+			resolved = path
+		}
+	}
+	var own []*memoryguard.Process
+	agent := false
+	for _, p := range children {
+		task := argument(p, 1)
+		switch {
+		case secrets != "" && p.Exe != "" && (p.Exe == secrets || p.Exe == resolved) && (task == shimwire.AgentSecretsKeygen || task == shimwire.AgentSecretsRenew):
+			own = append(own, p)
+		case !agent:
+			agent = true
+			own = append(own, p)
+		}
+	}
+	return own
+}
+
+// flagValue is the value of the flag name among a command's options, written as `name value` or
+// `name=value`, and "" where they hold none.
+func flagValue(options []string, name string) string {
+	for i, option := range options {
+		if option == name && i+1 < len(options) {
+			return options[i+1]
+		}
+		if value, ok := strings.CutPrefix(option, name+"="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 // protectAgent spares agent, a direct child of the shim (a role's in an issue pod, the one

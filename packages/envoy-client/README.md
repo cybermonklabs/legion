@@ -34,9 +34,24 @@ block with recognized routing and delivery fields. The renderer includes `to` on
 message to the reader, formats sender identity and reply metadata, renders structured payloads
 once as `message`, and marks unknown sources or fields with `unrecognised`.
 
-A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`
-(or `dispatch`): one nested deeper than the encoder's recursion reaches, and one whose layout
-passes the card's bound, as an array chain 1,400 levels deep does from a 3 KB frame. The bound is
+A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`:
+one nested deeper than the encoder's recursion reaches, and one whose layout passes the card's
+bound, as an array chain 1,400 levels deep does from a 3 KB frame. A Dispatch event is shown under
+`dispatch` as the card's `dispatch` block written as JSON text - the owner, type, actor, relation
+and payload or compact record the card lays out from the event `readDispatchPayload` read, with a
+body read whole in place of the part the frame carried - never as the frame's payload, so a key
+the reader drops reaches no card; an event too deep to write as JSON, or whose
+text still passes the bound, shows its owner, its type, its actor's `kind` and `id`, the
+`act` of the agent or token that acted for its person (`act: "not shown"` for an act
+`ActorActSchema` does not read) and a session's `service`, the verified service token that made
+the write (`service: "not shown"` when it is no string), no other key of the actor, and the
+reason, held to the bound too. When even that passes it, the card drops its other fields (they
+repeat the issue key) and keeps the owner, the type, the actor and the reason; when those pass it,
+it drops the owner (a document's owner is read from a topic: the one the host names, or the
+frame's own) and keeps the type, the actor and the reason - the type and the actor are bytes of
+the frame, the reason is short, and the bound is at least twice the frame; and the reason alone is
+the last answer. Each is held to the bound. The
+bound is
 `INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
 (its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
 still lays out whole. The result's `payloadShownAsText` says which. Each host logs that once,
@@ -46,19 +61,25 @@ of it. A payload that is text already is never held to the bound; its frame boun
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
-parsed event under `dispatch: { owner, type, actor, payload }` with `payload` typed per event
-type. The card's `payload` leaves out each field that states nothing (`null`, `""`, `false`,
+parsed event under `dispatch` as a block. Its `owner` is the issue key, else `PROJECT / slug` from a
+document topic, else the artifact id; an event with none of those, as a direct message, has no
+`owner`. The block has `type`, `actor`, and `relation` where the card says why it reached the
+session, and in place of `payload` a compact record where the card has one (an ask's `question`,
+`reply` and `state`, a human edit's `edit`) - with `payload` typed per event type. The card's `payload`
+leaves out each field that states nothing (`null`, `""`, `false`,
 `[]`, or an object left empty; a list keeps every item), each field that repeats the card
-(`issue_key`, an `author` each of whose fields is the `actor`'s, a `created_at` less than a
-second from the time Envoy issued the card, whose `at` is that time cut to the second, and a
-comment's `thread_root_id` and `answers` equal to its `reply_to`), and Dispatch's own outbox and
-client bookkeeping (`deliveries`, `thread_logins`, `references_changed*`,
-`mentions_decide_routes`, `suppress*`, an issue's board `rank`). A field whose value is the fact even when empty stays as
+(`issue_key`, an `author` or `actor` each of whose fields is the event's `actor`'s, a `target`
+naming this session on a card whose `to:` names it, a `created_at` less than a second from the
+time Envoy issued the card, whose `at` is that time cut to the second, and a comment's
+`thread_root_id` and `answers` equal to its `reply_to`), and Dispatch's own outbox and client
+bookkeeping (`deliveries`, `thread_logins`, `references_changed*`, `mentions_decide_routes`,
+`suppress*`, an issue's board `rank`). A field whose value is the fact even when empty stays as
 written: each field an update's `changed` names, a present `suggestion`, and a present `forced`.
-A session actor's `origin` keeps only its `session_title`. A payload whose shape disagrees with
-its event type's schema keeps its raw parsed fields under the same rules, and a frame that is no
-Dispatch event is shown as its raw parsed value under `dispatch`; neither is dropped or reduced
-to prose. A dispatch envelope with no payload at
+A session actor's `origin` keeps only its `session_title`, and an event on no issue and no
+document, as a direct message is, prints no `owner`. A payload whose shape disagrees with its
+event type's schema keeps its raw parsed fields under `dispatch.payload`, under the same rules,
+never dropped or reduced to prose. A frame from which `readDispatchPayload` reads no event shows
+no `dispatch` block or text, and marks `unrecognised: payload`. A dispatch envelope with no payload at
 all falls back to the same `summary` field every other source gets and marks `unrecognised:
 payload`. On a `notifications.dispatch.*` topic, which carries every event of its owner, the
 renderer skips the events Dispatch marks `quiet` — a delivery receipt, an anchor refresh,
@@ -1813,9 +1834,15 @@ minute later before reading the refusal as an older Dispatch. In a rollout, a se
 build took but whose answer was lost, and was then sent again to an older build, may still have
 recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
 A review records an approval or a request for changes in the person's name, so it works only with
-a token that names a person who holds `approve`: a personal token (`DISPATCH_TOKEN`) the person
-gave `approve`. A broker token, a person's sign-in included, never holds it. Dispatch refuses any
-other token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
+a token that names a person who holds `approve`. A session whose Dispatch credential is the
+person's `agent-secrets login` sign-in (no `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN` or envoy.json
+`dispatch.token`, which are read first unless `DISPATCH_TOKEN_BROKER=1`) sends the review through Cipher's
+proxy: it trades the sign-in for the approve capability's placeholder and sends the review with
+it, and the secrets broker spends an approve-only token that never reaches the box. A broker that
+serves no approve capability refuses that trade `400 invalid_request`, saying so, and nothing
+reaches Dispatch. Otherwise the review needs a personal token (`DISPATCH_TOKEN`) the person gave
+`approve`: a broker token sent directly never holds it, and Dispatch refuses any other token with
+`403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
 the caller read, and it must be the version the review would record: the document's latest
 settled version, or the version an open approval request names for the document. Dispatch
 refuses any other version with `409 REVIEW_VERSION_MOVED`,

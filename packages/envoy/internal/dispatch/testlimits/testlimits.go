@@ -2,15 +2,17 @@
 // Postgres it runs against, so that no CI lane, no pod's test server and no test holds a number of
 // its own.
 //
-// Three places read it. .github/scripts/pg-connection-ceiling.sh raises a CI lane's server to
-// FullSizeServerConnections plus that server's superuser reserve, through
+// Three places read it. .github/scripts/pg-connection-ceiling.sh checks that a CI lane's server
+// allows FullSizeServerConnections plus that server's superuser reserve, through
 // internal/dispatch/store/cmd/connections, so every lane runs the Dispatch processes it starts at
-// production's pool sizes. packages/daemon/docker/legion-testpg starts a pod's test server at
-// ServerConnections plus the reserve, as a literal that testlimits_test.go holds to
-// ServerConnections: one connection per process short of FullSizeServerConnections, so each
-// process there runs its pools scaled to a budget one connection under production's. And every
-// start of a Dispatch server process in cmd/dispatch's tests first takes one of MaxProcessesAtOnce
-// slots (cmd/dispatch/process_slots_test.go) and is then fitted to the server it meets
+// production's pool sizes, and fails saying to raise max_connections in
+// .github/scripts/postgres-service-settings.sh and every Postgres service's command: line with
+// it. packages/daemon/docker/legion-testpg starts a pod's test server at ServerConnections plus
+// the reserve, as a literal that testlimits_test.go holds to ServerConnections: one connection per
+// process short of FullSizeServerConnections, so each process there runs its pools scaled to a
+// budget one connection under production's. And every start of a Dispatch server process in
+// cmd/dispatch's tests first takes one of MaxProcessesAtOnce slots
+// (cmd/dispatch/process_slots_test.go) and is then fitted to the server it meets
 // (connection_ceiling_test.go): a server smaller than FullSizeServerConnections gives each process
 // a connection budget its pools scale to (PoolBudget), and a server too small for even the
 // smallest pools refuses the start by name, rather than as a 53300 refusal inside a room, a lease
@@ -69,9 +71,10 @@ const ServerConnections = RequiredConnections + SuiteHeadroom
 // FullSizeServerConnections is what a test server must allow beyond its superuser reserve
 // (superuser_reserved_connections) for every Dispatch process a suite starts to run at
 // production's pool sizes: MaxProcessesAtOnce processes of store.ConnectionsPerTestProcess each,
-// the test hooks' listener counted, beside SuiteHeadroom. Every CI lane's server allows it
-// (.github/scripts/pg-connection-ceiling.sh, through internal/dispatch/store/cmd/connections). A
-// smaller server scales them (PoolBudget).
+// the test hooks' listener counted, beside SuiteHeadroom. Every CI lane's server allows it: its
+// max_connections is on its command line (.github/scripts/postgres-service-settings.sh), and
+// .github/scripts/pg-connection-ceiling.sh checks it, through
+// internal/dispatch/store/cmd/connections. A smaller server scales them (PoolBudget).
 const FullSizeServerConnections = MaxProcessesAtOnce*store.ConnectionsPerTestProcess + SuiteHeadroom
 
 // MinServerConnections is the fewest connections a test server must allow beyond its superuser
@@ -104,7 +107,8 @@ func PoolBudget(maxConnections, reserved int) (int, error) {
 		"(testlimits.SuiteHeadroom), and one process needs %d with every pool at its smallest (store.MinBudget). "+
 		"Restart the server with -c max_connections=%d or more (testlimits.MinServerConnections plus the reserve). "+
 		"From %d (testlimits.FullSizeServerConnections plus the reserve), as every CI lane's server allows "+
-		"(.github/scripts/pg-connection-ceiling.sh), every process runs production's pool sizes; below that, "+
+		"(.github/scripts/postgres-service-settings.sh, which .github/scripts/pg-connection-ceiling.sh checks), "+
+		"every process runs production's pool sizes; below that, "+
 		"each runs pools scaled to its share",
 		maxConnections, reserved, MaxProcessesAtOnce, max(budget, 0), SuiteHeadroom, store.MinBudget(),
 		MinServerConnections()+reserved, FullSizeServerConnections+reserved)

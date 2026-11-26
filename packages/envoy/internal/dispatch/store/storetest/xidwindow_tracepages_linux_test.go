@@ -755,7 +755,11 @@ func TestAStatementTheRigCouldNotReadIsUnknown(t *testing.T) {
 // operation returns once the rig has begun that COMMIT's span; the hook xidCaptureEnded, between
 // the capture's end and the copy, waits for the COMMIT to end. The window is judged whole and
 // keeps D6. With the tracer stopped before the copy, as a broadcast's late COMMIT found it at
-// fb9f413303, the window ends past the trace and reads UNKNOWN.
+// fb9f413303, the window ends past the trace and reads UNKNOWN. And the transaction's thread still
+// holds its clock at the capture's end, so the COMMIT's end is read off its own descriptor: the
+// clocks of open transactions are dropped only once the statements are copied (dropOpenClocks).
+// Dropped at the capture's end, a broadcast delivery's clock was closed as its COMMIT's end read
+// it (envoy-go job 139692608395).
 func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
 	RequireXidGapJudgment(t)
 	database := Open(t)
@@ -773,8 +777,17 @@ func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
 	committed := make(chan error, 1)
 	var captureEnded time.Time
+	var open, stillHeld int
 	xidCaptureEnded = func() {
 		captureEnded = time.Now()
+		tracer.mu.Lock()
+		for _, held := range tracer.locked {
+			open++
+			if _, ok := (*xidHeldClocks.Load())[held.thread]; ok {
+				stillHeld++
+			}
+		}
+		tracer.mu.Unlock()
 		if err := <-committed; err != nil {
 			t.Errorf("the late COMMIT: %v", err)
 		}
@@ -818,6 +831,9 @@ func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
 	})
 	if err := report.Err(); err != nil {
 		t.Fatalf("a COMMIT that ended after the capture: verdict %v, want its window judged whole within the trace", err)
+	}
+	if open != 1 || stillHeld != 1 {
+		t.Fatalf("at the capture's end %d transaction(s) were open and %d of their threads still held a clock, want the one transaction open and its thread's clock held until the rig copied its statements", open, stillHeld)
 	}
 	if len(report.Windows) != 1 {
 		t.Fatalf("the rig judged %d windows, want the one transaction", len(report.Windows))

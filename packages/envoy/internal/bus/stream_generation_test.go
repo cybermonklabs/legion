@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // generationKey is the stream metadata key that holds the generation of the stream's settings,
@@ -187,19 +189,14 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		info, err := checkerJS.StreamInfo(Stream)
-		if err == nil {
-			if !slices.Equal(info.Config.Subjects, streamCarriedSubjects) {
-				t.Fatalf("recreated stream subjects = %v, want %v", info.Config.Subjects, streamCarriedSubjects)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the stream was not recreated after the client reconnected: %v", err)
-		}
-		time.Sleep(100 * time.Millisecond)
+	var info *nats.StreamInfo
+	testwait.UntilPolling(t, 100*time.Millisecond, "the client to recreate the stream once it reconnected (the last read is the stream read's error)", func() (string, bool) {
+		read, err := checkerJS.StreamInfo(Stream)
+		info = read
+		return fmt.Sprint(err), err == nil
+	})
+	if !slices.Equal(info.Config.Subjects, streamCarriedSubjects) {
+		t.Fatalf("recreated stream subjects = %v, want %v", info.Config.Subjects, streamCarriedSubjects)
 	}
 }
 
@@ -303,13 +300,10 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			}
 
 			addNewerSubject(t, js)
-			deadline := time.Now().Add(10 * time.Second)
-			for client.UsesCoreTransport(topic) {
-				if time.Now().After(deadline) {
-					t.Fatalf("the client still sends %s over core NATS 10 s after the stream captured it", topic)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+			testwait.Until(t, "the client to send "+topic+" through JetStream once the stream captured it (the last read is whether it still sent it over core NATS)", func() (bool, bool) {
+				core := client.UsesCoreTransport(topic)
+				return core, !core
+			})
 			envelope := contracts.Envelope{
 				EventID:        "evt-followed-subject",
 				Source:         "dispatch",
@@ -369,13 +363,10 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 
 			srv.Start(t)
-			deadline := time.Now().Add(15 * time.Second)
-			for client.UsesCoreTransport(topic) {
-				if time.Now().After(deadline) {
-					t.Fatalf("the client still sends %s over core NATS 15 s after the server came up", topic)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+			testwait.Until(t, "the client to send "+topic+" through JetStream once the server came up (the last read is whether it still sent it over core NATS)", func() (bool, bool) {
+				core := client.UsesCoreTransport(topic)
+				return core, !core
+			})
 		})
 	}
 }

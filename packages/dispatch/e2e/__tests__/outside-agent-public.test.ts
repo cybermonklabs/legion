@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { type BoundName, rowLimit, runBounded } from "./bounded-subprocess";
 import {
   copyLeg,
   type LegRun,
@@ -115,7 +115,10 @@ switch (command) {
 `;
 
 /** One run of a copy of the public leg against the stand-ins, as `scenario` says. */
-async function publicStandInRun(scenario: PublicScenario): Promise<LegRun> {
+async function publicStandInRun(
+  scenario: PublicScenario,
+  bound: BoundName = "short"
+): Promise<LegRun> {
   const leg = copyLeg(scratch, publicLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   await Bun.write(join(legDir, "outside-agent-probe.ts"), standInProbe);
@@ -176,7 +179,7 @@ exit 0
   const origin = `http://127.0.0.1:${await closedPort()}`;
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
-    bound: "short",
+    bound,
     cwd: scratch("cwd"),
     env: {
       PATH: bin,
@@ -295,6 +298,26 @@ describe.skipIf(skipWithout("bash", "bun"))(
       },
       // The run, a bounded child under the short bound.
       rowLimit("short")
+    );
+
+    // With no close time the real stand-in's hold sleeps for the T5 window (20 minutes). The
+    // 30-second publicT5Diagnostic bound covers the measured public-leg start to this hold under
+    // the row's parallel shape, so the forced hold names the T5 window and live processes.
+    test(
+      "a T5 relay hold that never closes leaves a named timeout diagnostic",
+      async () => {
+        const failure = await publicStandInRun({ trades: [true] }, "publicT5Diagnostic").then(
+          () => "the public leg ended before its deliberate held relay bound",
+          (error: unknown) => (error instanceof Error ? error.message : String(error))
+        );
+        expect(failure, "the held relay did not reach the T5 window").toContain(
+          "outside-agent-public: T5: window open for up to 1200 s"
+        );
+        expect(failure, "the held relay named no live process").toMatch(
+          /still running when its bound passed:\n {2}pid=\d+ ppid=\d+ name=/
+        );
+      },
+      rowLimit("publicT5Diagnostic")
     );
   }
 );

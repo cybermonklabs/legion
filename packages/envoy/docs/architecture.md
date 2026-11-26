@@ -657,6 +657,18 @@ record: it asks the server once per ten minutes whether its user may read a sess
 the listeners whose users may run every pass. A release of the role, the reaper's delete of its
 claim and a claim no read answers leave the records where they are.
 
+An edge listener's frame rule (`edgeFrameVerdict`, `cmd/listener/edge_frames.go`) tells a role
+message by the same read, inside a rule of its own. Before it reads the role, it withholds a frame
+that names `topic` or `role` under more than one key or under a key that differs from the name
+only in case (`ambiguous_key`), so a later `"TOPIC"` or `"ROLE"` key withholds the frame there
+rather than leaving its role as it is, a frame with a top-level `__proto__` key, and a Dispatch
+frame whose payload is no event of a project the token lists, unless it is a person's message to
+the session in its own conversation on its own agent subject (`dispatchDirectMessage`). It then
+judges a role message by its role only when its topic is a role lane or an agent subject in the old
+form or in the new form under one of the token's projects (`roleFrameVerdict`,
+`roleMarkOnAgentSubject`); a role-marked frame with any other topic, or none, it judges by its
+topic, as a frame with no role mark.
+
 The session relay, which runs in the receive term of the pod holding the lease, delivers a role
 message to a session only while the role's claim names that
 session. It reads the claim from the role bucket for each frame that is a role message; when the

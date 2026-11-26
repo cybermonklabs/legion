@@ -868,7 +868,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 		slog.String("holder", holder),
 		slog.String("event_id", eventID),
 		slog.Uint64("stream_seq", msg.StreamSeq))
-	go runKeptRoleDrain(m.cfg, role)
+	startHandover(m.cfg, role, runKeptRoleDrain)
 	return true
 }
 

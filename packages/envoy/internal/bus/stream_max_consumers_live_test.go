@@ -21,7 +21,7 @@
 // (.github/workflows/ci-job-envoy-go.yaml, "Test the container-backed NATS matrix (natslive)").
 // The runtime is reached only through testnats.StartImageConfig, as every package outside the
 // three container rigs must (TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime,
-// testnats/nats_test.go).
+// textcheck/container_runtime_test.go).
 
 package bus
 
