@@ -133,6 +133,7 @@ import {
 } from "./going-locators";
 import {
   type BarSeed,
+  listedRequests,
   type ReviewedRoute,
   railInboxLink,
   readVisualSeed,
@@ -206,7 +207,7 @@ async function script(
 /** Opens `pageUnderTheBar`, waits for it to settle, and opens the bar over it. */
 async function openTheBar(page: Page, seed: VisualSeed): Promise<void> {
   await page.goto(pageUnderTheBar.path(seed));
-  await waitForRouteSettled(page, pageUnderTheBar);
+  await waitForRouteSettled(page, pageUnderTheBar, listedRequests(page));
   await openBar(page);
 }
 
