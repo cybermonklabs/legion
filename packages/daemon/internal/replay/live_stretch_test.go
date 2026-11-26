@@ -65,7 +65,7 @@ func TestAStretchPastASkippedLoopDoesNotDrawAgainAtALaterPhase(t *testing.T) {
 	skipped := 0
 	for seed := int64(1); seed <= 6; seed++ {
 		var draws []conflictDraw
-		if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch,
+		if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: drawnConflictBranch,
 			Seed: seed, Slowdown: 1, PGDSN: replayDSN(t), Out: t.TempDir(),
 			onDraw: func(draw conflictDraw) { draws = append(draws, draw) }}); err != nil {
 			t.Fatal(err)
@@ -103,7 +103,7 @@ func TestAStretchMergedForwardPastARecordedLoopDrawsOnce(t *testing.T) {
 	window := skippedLoopContinuationWindow(t)
 	mergedForward := 0
 	for seed := int64(1); seed <= 6; seed++ {
-		draws, out := drawsOfRun(t, window, "main", MainBranch, seed)
+		draws, out := drawsOfRun(t, window, "main", drawnConflictBranch, seed)
 		log := replayLog(t, out)
 		for i := 1; i <= 4; i++ {
 			key := fmt.Sprintf("ACME-%d", i)
@@ -268,7 +268,7 @@ func TestABootsConflictInAnotherPhaseWaitsForTheStretchsEnd(t *testing.T) {
 			window := bootPhaseMismatchWindow(t, c.later...)
 			clean, deferred := 0, 0
 			for seed := int64(1); seed <= 3; seed++ {
-				draws, out := drawsOfRun(t, window, "legion-v20.42.5", MainBranch, seed)
+				draws, out := drawsOfRun(t, window, "legion-v20.42.5", drawnConflictBranch, seed)
 				log := replayLog(t, out)
 				for _, key := range mismatchKeys {
 					var before []conflictDraw
@@ -339,8 +339,8 @@ func TestABootAfterAStretchEndedMovesNoEarlierDraw(t *testing.T) {
 	without, with := bootPhaseMismatchWindow(t), bootPhaseMismatchWindow(t, clock(12, 0))
 	outcomes := map[string]int{}
 	for seed := int64(1); seed <= 3; seed++ {
-		before, _ := drawsOfRun(t, without, "legion-v20.42.5", MainBranch, seed)
-		after, _ := drawsOfRun(t, with, "legion-v20.42.5", MainBranch, seed)
+		before, _ := drawsOfRun(t, without, "legion-v20.42.5", drawnConflictBranch, seed)
+		after, _ := drawsOfRun(t, with, "legion-v20.42.5", drawnConflictBranch, seed)
 		first, later := firstDraws(before), firstDraws(after)
 		for _, key := range mismatchKeys {
 			a, drew := first[key]
@@ -376,8 +376,8 @@ func TestABootsDrawTakesThePlaceOfTheStretchsEnd(t *testing.T) {
 	noBoot, booted := phaseMismatchWindow(t), bootPhaseMismatchWindow(t)
 	conflicted, clean := 0, 0
 	for seed := int64(1); seed <= 3; seed++ {
-		endDraws, endOut := drawsOfRun(t, noBoot, "legion-v20.42.5", MainBranch, seed)
-		bootDraws, bootOut := drawsOfRun(t, booted, "legion-v20.42.5", MainBranch, seed)
+		endDraws, endOut := drawsOfRun(t, noBoot, "legion-v20.42.5", drawnConflictBranch, seed)
+		bootDraws, bootOut := drawsOfRun(t, booted, "legion-v20.42.5", drawnConflictBranch, seed)
 		endLog, bootLog := replayLog(t, endOut), replayLog(t, bootOut)
 		atEnd, atBoot := firstDraws(endDraws), firstDraws(bootDraws)
 		for _, key := range mismatchKeys {
@@ -419,7 +419,7 @@ func TestABootsDrawTakesThePlaceOfTheStretchsEnd(t *testing.T) {
 // to ACME-8 never by conflict. It fails where the boot at 10:30 draws on that branch.
 func TestTheRecordedConflictsBranchDrawsNoBootConflict(t *testing.T) {
 	t.Parallel()
-	draws, out := drawsOfRun(t, bootPhaseMismatchWindow(t), "legion-v20.42.5", DiagnosticBranches()[0].Branch, 1)
+	draws, out := drawsOfRun(t, bootPhaseMismatchWindow(t), "legion-v20.42.5", MainBranch, 1)
 	if len(draws) > 0 {
 		t.Errorf("the recorded conflicts branch drew %d times (%+v), want none", len(draws), draws)
 	}
@@ -469,7 +469,7 @@ func TestEachDrawWritesALineOfItsOwn(t *testing.T) {
 	if TraceReads(conflictDrawnLine) {
 		t.Errorf("the trace reads %q, a line of the replay's own", conflictDrawnLine)
 	}
-	draws, out := drawsOfRun(t, bootPhaseMismatchWindow(t), "legion-v20.42.5", MainBranch, 1)
+	draws, out := drawsOfRun(t, bootPhaseMismatchWindow(t), "legion-v20.42.5", drawnConflictBranch, 1)
 	raw, err := os.ReadFile(filepath.Join(out, logFile))
 	if err != nil {
 		t.Fatal(err)

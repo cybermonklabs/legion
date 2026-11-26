@@ -183,6 +183,7 @@ func newGitCase(t *testing.T) *gitCase {
 			[]byte("[" + committed(p0, "07:00:00") + "," + committed(c.p1, "07:30:00") +
 				`,{"id":7,"event":"labeled","actor":{"login":"person-1"},"created_at":"2001-03-05T08:00:00Z","label":{"name":"ready"}}]`),
 			[]byte(fmt.Sprintf(`[{"id":8,"event":"head_ref_force_pushed","actor":{"login":"person-1"},"commit_id":%q,"created_at":"2001-03-05T10:00:00Z"},`+
+				`{"id":10,"event":"base_ref_changed","created_at":"2001-03-05T10:03:00Z"},`+
 				`{"id":9,"event":"merged","actor":{"login":"person-1"},"commit_id":%q,"created_at":"2001-03-05T10:20:00Z"}]`, c.p2, c.m5)),
 		},
 		13: {[]byte("[" + committed(unreachableHead, "09:15:00") + "]")},
@@ -343,12 +344,12 @@ func (c *gitCase) wantLines(gitPhase bool) []string {
 	}
 	fromC1 := fmt.Sprintf(`"tip":%q,"mergeBase":%q,"paths":%%s,"verdicts":[%s,%s,%s]`, c.m4, c.c1, verdict(c.m1, false), verdict(c.m3, true), verdict(c.m4, true))
 	lines = append(lines,
-		fmt.Sprintf(`{"kind":"pull","pr":12,"merge":%q,"heads":3}`, c.m5),
+		fmt.Sprintf(`{"kind":"pull","pr":12,"merge":%q,"base":"main","baseChanges":["2001-03-05T10:03:00Z"],"heads":3}`, c.m5),
 		head(12, c.p1, "07:30:00", "commit", fmt.Sprintf(fromC1, `["f.txt"]`)),
 		head(12, c.p1b, "09:30:00", "read", fmt.Sprintf(fromC1, `["f.txt","h.txt"]`)),
 		head(12, c.p2, "10:00:00", "force-push", fmt.Sprintf(`"tip":%q,"mergeBase":%q,"paths":["f.txt"],"verdicts":[%s,%s]`, c.m4, c.m1,
 			verdict(c.m3, true), verdict(c.m4, true))),
-		`{"kind":"pull","pr":13,"merge":"","heads":1}`,
+		`{"kind":"pull","pr":13,"merge":"","base":"main","baseChanges":[],"heads":1}`,
 		head(13, unreachableHead, "09:15:00", "commit", ""))
 	if gitPhase {
 		lines = append(lines, fmt.Sprintf(`{"kind":"missing","pr":13,"head":%q,"base":"","reason":"head-unreachable","detail":"%s%s"}`,

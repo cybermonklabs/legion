@@ -205,16 +205,18 @@ func TestForecastControlSaysWhereItCannotTell(t *testing.T) {
 	}
 
 	// A forecast or a validation of the main branch alone, run into a validation's directory,
-	// leaves the part every branch and branch of the recorded conflicts the directory held.
+	// leaves the part's other branches and break-even runs in place.
 	wall, err := BranchNamed("main+timing=wall")
 	if err != nil {
 		t.Fatal(err)
 	}
 	held := partRecord{Branches: []partRun{{Branch: "main", Slowdown: 1, Seeds: []int64{1, 2}}, {Branch: wall.Name, Slowdown: 1, Seeds: []int64{1}}},
-		Diagnostics: []partRun{{Branch: "main+conflicts=recorded", Slowdown: 1, Seeds: []int64{1}}}}
+		BreakEven: []partRun{{Branch: "main", Slowdown: 1.1, Seeds: []int64{1}}}}
 	merged := held.with(partRecord{Branches: []partRun{{Branch: "main", Slowdown: 1, Seeds: []int64{1}}}, BreakEven: []partRun{}})
 	if len(merged.Branches) != 2 || merged.Branches[0].label() != MainBranchAt.Label() || !slices.Equal(merged.Branches[0].Seeds, []int64{1}) ||
-		merged.Branches[1].Branch != wall.Name || len(merged.Diagnostics) != 1 {
+		merged.Branches[1].Branch != wall.Name || !slices.EqualFunc(merged.BreakEven, held.BreakEven, func(a, b partRun) bool {
+		return a.label() == b.label() && slices.Equal(a.Seeds, b.Seeds)
+	}) {
 		t.Errorf("the part held there already, merged with a run of the main branch alone, reads %+v", merged)
 	}
 }

@@ -141,17 +141,18 @@ type ErrorSummary struct {
 // (GateTrees). On R5's branch of the recorded conflicts it names, seed by seed, each issue that
 // breaks the branch (Breakers), which gates nothing.
 type BranchValidation struct {
-	Branch        BranchAt       `json:"branch"`
-	Seeds         []int64        `json:"seeds"`
-	Measures      []MeasureCheck `json:"measures"`
-	Issues        []IssueError   `json:"issues"`
-	FirstSlot     ErrorSummary   `json:"firstSlot"`
-	Done          ErrorSummary   `json:"done"`
-	FirstSlotPass bool           `json:"firstSlotPass"`
-	Failed        []string       `json:"failed"`
-	Starts        []SeedStarts   `json:"starts"`
-	GateTrees     []TreeGate     `json:"gateTrees"`
-	Breakers      []SeedBreakers `json:"breakers,omitempty"`
+	Branch        BranchAt                `json:"branch"`
+	Seeds         []int64                 `json:"seeds"`
+	Measures      []MeasureCheck          `json:"measures"`
+	Issues        []IssueError            `json:"issues"`
+	FirstSlot     ErrorSummary            `json:"firstSlot"`
+	Done          ErrorSummary            `json:"done"`
+	FirstSlotPass bool                    `json:"firstSlotPass"`
+	Failed        []string                `json:"failed"`
+	Starts        []SeedStarts            `json:"starts"`
+	GateTrees     []TreeGate              `json:"gateTrees"`
+	Breakers      []SeedBreakers          `json:"breakers,omitempty"`
+	ConflictRuns  []ConflictRunValidation `json:"conflictRuns,omitempty"`
 }
 
 // SeedBreakers is one seed's issues that break R5's branch of the recorded conflicts (spec R5),
@@ -204,7 +205,7 @@ func (b BranchValidation) Pass() bool { return len(b.Failed) == 0 }
 func ValidateBranch(recorded Scorecard, at BranchAt, replays []Scorecard) BranchValidation {
 	v := BranchValidation{Branch: at, Seeds: make([]int64, 0, len(replays)), Failed: []string{}, Starts: startsOf(recorded, replays),
 		GateTrees: gateTreesOf(recorded, replays)}
-	if at.Branch.recordedConflicts() {
+	if at.Branch.Name == MainBranch.Name {
 		v.Breakers = breakersOf(recorded, replays)
 	}
 	for _, card := range replays {
@@ -464,18 +465,14 @@ var MainBranchAt = BranchAt{Branch: MainBranch, Slowdown: 1}
 
 // Validation is a window's validation (spec R5): the replay of the rule its daemon ran, on every
 // branch, against its record. A branch that fails a test gives no comparison of rules, and a
-// window whose main branch fails gives none at all. Diagnostics is R5's branch of the recorded
-// conflicts at each slowdown factor the validation ran it at (DiagnosticBranches) against the same
-// record: each names the issues that break it (BranchValidation.Breakers), and its tests are shown
-// beside R5's; it gives no comparison and never stands in place of the main branch, so no method
-// of a Validation and no decision reads it. CapBacktest is the cap backtest, where the validation
-// is one (ValidateConfig.CapBacktest).
+// window whose main branch fails gives none at all. The main branch also names the issues that
+// break it (BranchValidation.Breakers). CapBacktest is present when the validation is a cap
+// backtest (ValidateConfig.CapBacktest).
 type Validation struct {
 	Window      string             `json:"window"`
 	Rule        string             `json:"rule"`
 	Record      Scorecard          `json:"record"`
 	Branches    []BranchValidation `json:"branches"`
-	Diagnostics []BranchValidation `json:"diagnostics"`
 	CapBacktest *CapBacktest       `json:"capBacktest,omitempty"`
 }
 
@@ -539,6 +536,14 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 	default:
 		p.line("The window's main branch (%s) fails %d of R5's tests.", MainBranchAt.Label(), len(main.Failed))
 	}
+	for _, b := range v.Branches {
+		if b.Branch.Branch.Conflicts == conflictsDrawn {
+			p.line("The drawn branch `%s` %s R5 on this window.", b.Branch.Label(), passWord(b.Pass()))
+			if !b.Pass() {
+				p.line("The tool is not finished and the pull request does not merge while it fails on window one.")
+			}
+		}
+	}
 	if !v.MainPasses() {
 		p.line("So the window gives no comparison at all: every branch of it gives none.")
 	}
@@ -572,24 +577,21 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 	p.line("")
 	p.line("| branch | seed | first starts the record did not make | first starts the replay did not make | median first-slot error (minutes) |")
 	p.line("| --- | --- | --- | --- | --- |")
-	for _, branches := range [][]BranchValidation{v.Branches, v.Diagnostics} {
-		for _, b := range branches {
-			for _, s := range b.Starts {
-				p.line("| `%s` | %d | %d | %d | %s |", b.Branch.Label(), s.Seed, s.ReplayOnly, s.RecordOnly, formatNumber(s.FirstSlotMedianMinutes))
-			}
+	for _, b := range v.Branches {
+		for _, s := range b.Starts {
+			p.line("| `%s` | %d | %d | %d | %s |", b.Branch.Label(), s.Seed, s.ReplayOnly, s.RecordOnly, formatNumber(s.FirstSlotMedianMinutes))
 		}
 	}
-	if len(v.Diagnostics) > 0 {
+	if ran {
 		p.line("")
 		p.line("%s# The issues that break R5's branch of the recorded conflicts", heading)
 		p.line("")
-		p.line("On the branch that keeps the window's recorded conflicts and draws none, `%s`, at each slowdown factor, the replay of the recorded rule should start no issue that the record did not start in the window, and file each issue that the record filed in it.",
-			DiagnosticBranches()[0].Branch.Name)
+		p.line("On `main`, at each slowdown factor, the replay keeps the recorded conflicts and should start no issue that the record did not start in the window and file every issue the record filed.")
 		p.line("Each seed's issues that break either are named here, and the naming gates nothing: no test of R5, no verdict of the window and no decision of a comparison reads them.")
 		p.line("")
 		p.line("| branch | seed | issues it starts that the record did not start | issues the record filed that it leaves out |")
 		p.line("| --- | --- | --- | --- |")
-		for _, b := range v.Diagnostics {
+		for _, b := range v.Branches {
 			for _, s := range b.Breakers {
 				p.line("| `%s` | %d | %s | %s |", b.Branch.Label(), s.Seed, keyList(s.StartedNotRecorded), keyList(s.FiledLeftOut))
 			}
@@ -600,14 +602,7 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 		p.line("%s# `%s`: each measure", heading, b.Branch.Label())
 		p.line("")
 		b.write(p, issuesOf)
-	}
-	for _, b := range v.Diagnostics {
-		p.line("")
-		p.line("%s# `%s`: R5's branch of the recorded conflicts, whose measures test nothing", heading, b.Branch.Label())
-		p.line("")
-		p.line("Its tests are shown and judge nothing: it gives no comparison, and it is read beside the main branch, never in place of the main branch.")
-		p.line("")
-		b.write(p, issuesOf)
+		b.writeConflictRuns(p)
 	}
 	if v.CapBacktest != nil && p.err == nil {
 		p.line("")

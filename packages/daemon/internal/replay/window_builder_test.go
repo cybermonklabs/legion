@@ -2116,15 +2116,10 @@ func conflictOutOfMergingWindow(t *testing.T, launched bool) Window {
 	})
 }
 
-// recordedAndMainBranches are the two branches a window's recorded conflict is replayed on: main,
-// which draws each stretch's conflict, and main with the record's own conflicts.
+// recordedAndMainBranches exercises both recorded and generated conflicts.
 func recordedAndMainBranches(t *testing.T) []Branch {
 	t.Helper()
-	recorded, err := BranchNamed("main+conflicts=recorded")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return []Branch{MainBranch, recorded}
+	return []Branch{MainBranch, drawnConflictBranch}
 }
 
 // checkACME2LeavesMergingAt replays window under legion-v20.42.5 on each branch of
@@ -2525,7 +2520,7 @@ func TestABootsConflictInALaterPhaseEntersAtTheStretchsEnd(t *testing.T) {
 	for seed := int64(1); seed <= 3; seed++ {
 		var draws []conflictDraw
 		out := t.TempDir()
-		if _, err := Run(context.Background(), RunConfig{Window: bootAcceptingWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch,
+		if _, err := Run(context.Background(), RunConfig{Window: bootAcceptingWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: drawnConflictBranch,
 			Seed: seed, Slowdown: 1, PGDSN: replayDSN(t), Out: out, onDraw: func(draw conflictDraw) {
 				if draw.at.issue == "ACME-1" {
 					draws = append(draws, draw)
@@ -2576,7 +2571,7 @@ func TestARunCountsTheLoopsItPassesOverAndAdds(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			out := t.TempDir()
-			result, err := Run(context.Background(), RunConfig{Window: c.window, Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1,
+			result, err := Run(context.Background(), RunConfig{Window: c.window, Rule: replayedRule(t, c.rule), Branch: drawnConflictBranch, Seed: 1,
 				Slowdown: 1, PGDSN: replayDSN(t), Out: out})
 			if err != nil {
 				t.Fatalf("replay the window under %s: %v", c.rule, err)
@@ -2620,7 +2615,7 @@ func runOutWindow(t *testing.T) Window {
 
 // A window with a run-out replays past its end, to the run-out's, so the work the record shows after
 // --to runs where the replay moves it, and its every measure reads the window alone (the architect's
-// D12). The test replays runOutWindow under main: ACME-2's stretch draws no conflict at 12:00 and
+// D12). It replays runOutWindow under main on the drawn branch: ACME-2 draws clean at 12:00 and
 // goes on past its recorded loop into its review recorded inside the run-out, so its reviewer works
 // on across 13:00 and rejects it at 14:15, a move the replay's log shows. Its slot-hours of the
 // window are each in a turn, and no scorecard, the replay's two nor the record's, counts a move, a
@@ -2629,7 +2624,7 @@ func runOutWindow(t *testing.T) Window {
 func TestARunOutReplaysPastTheWindowAndMeasuresInsideIt(t *testing.T) {
 	t.Parallel()
 	window := runOutWindow(t)
-	result, log := knobRun(t, window, mainRule(t), "main")
+	result, log := knobRun(t, window, mainRule(t), drawnConflictBranch.Name)
 	rejected := linesAt(log, func(line replayLine) bool {
 		return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.From == string(phase.Reviewing) &&
 			line.Trigger == workflow.TriggerReviewRejected

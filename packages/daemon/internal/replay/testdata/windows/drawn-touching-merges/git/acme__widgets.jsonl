@@ -1,8 +1,8 @@
 {"kind":"commit","sha":"5306e33653a092792440df835278ff4b373c6e4b","paths":["billing/invoice.go"]}
 {"kind":"commit","sha":"24a7d942dc032909804ce6085525e676fb0d63e6","paths":["aisle/sort.go","shelf/stock.go"]}
 {"kind":"commit","sha":"6eac36fb46518732ee0aeb21ed66c3e555a2a9f1","paths":["shelf/stock.go"]}
-{"kind":"pull","pr":11,"merge":"6eac36fb46518732ee0aeb21ed66c3e555a2a9f1","heads":2}
+{"kind":"pull","pr":11,"merge":"6eac36fb46518732ee0aeb21ed66c3e555a2a9f1","base":"main","baseChanges":[],"heads":2}
 {"kind":"head","pr":11,"sha":"3b373d9ea3a21c9f234f17005240db9f6181d0af","at":"2001-03-05T09:45:00Z","from":"commit","tip":"24a7d942dc032909804ce6085525e676fb0d63e6","mergeBase":"7a77ebdaec3a8b010ac8a64c3170559340575481","paths":["shelf/stock.go"],"verdicts":[{"base":"24a7d942dc032909804ce6085525e676fb0d63e6","conflict":true,"paths":["shelf/stock.go"]}]}
 {"kind":"head","pr":11,"sha":"eeca395393763cb2464e2fb42427192715f045e9","at":"2001-03-05T11:30:00Z","from":"commit","tip":"24a7d942dc032909804ce6085525e676fb0d63e6","mergeBase":"24a7d942dc032909804ce6085525e676fb0d63e6","paths":["shelf/stock.go"],"verdicts":[]}
-{"kind":"pull","pr":12,"merge":"24a7d942dc032909804ce6085525e676fb0d63e6","heads":1}
+{"kind":"pull","pr":12,"merge":"24a7d942dc032909804ce6085525e676fb0d63e6","base":"main","baseChanges":[],"heads":1}
 {"kind":"head","pr":12,"sha":"805b5ecb6c6992c0036cf7c0969fd35b60b30b80","at":"2001-03-05T09:50:00Z","from":"commit","tip":"5306e33653a092792440df835278ff4b373c6e4b","mergeBase":"7a77ebdaec3a8b010ac8a64c3170559340575481","paths":["aisle/sort.go","shelf/stock.go"],"verdicts":[]}

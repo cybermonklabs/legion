@@ -21,6 +21,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+var drawnConflictBranch = func() Branch {
+	b := MainBranch
+	b.Name, b.Conflicts = "main+conflicts=drawn", conflictsDrawn
+	return b
+}()
+
 // knobValuesOf is each knob of b by its JSON name and its value: every string field of a Branch
 // but its name.
 func knobValuesOf(b Branch) map[string]string {
@@ -35,36 +41,19 @@ func knobValuesOf(b Branch) map[string]string {
 	return values
 }
 
-// The branches of design section 7 are the main branch and each change of one knob to one of its
-// other values, each at each slowdown factor, 24 in all: at f 1.0, 1.2 and 1.6, the main branch
-// (offset, offset, recorded, recorded, none, fitted, and drawn conflicts), named main, and
-// main+timing=wall, main+answer=wall, main+afterSendBack=less-slot-wait, main+firstStarts=rank,
-// main+neverStarted=drawn, main+neverStarted=drawn-done and main+merges=zero, each differing from
-// the main branch in its one named knob and read back whole by BranchNamed. The diagnostic knob of
-// the conflicts' source changes none of them: its one other value is R5's branch of the recorded
-// conflicts, main+conflicts=recorded, at each slowdown factor (DiagnosticBranches), which BranchNamed
-// reads back too. A name with a value its knob does not take is refused.
+// The main branch and each one-knob change run at each of the three slowdown factors.
 func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
 	t.Parallel()
 	branches := Branches()
-	if len(branches) != 24 {
-		t.Fatalf("Branches lists %d branches, want 24", len(branches))
+	if len(branches) != 27 {
+		t.Fatalf("Branches lists %d branches, want 27", len(branches))
 	}
-	wantNames := []string{"main", "main+afterSendBack=less-slot-wait", "main+answer=wall", "main+firstStarts=rank", "main+merges=zero",
-		"main+neverStarted=drawn", "main+neverStarted=drawn-done", "main+timing=wall"}
+	wantNames := []string{"main", "main+afterSendBack=less-slot-wait", "main+answer=wall", "main+conflicts=drawn", "main+conflicts=git",
+		"main+firstStarts=rank", "main+neverStarted=drawn", "main+neverStarted=drawn-done", "main+timing=wall"}
 	wantMain := map[string]string{"timing": "offset", "answer": "offset", "afterSendBack": "recorded", "firstStarts": "recorded",
-		"neverStarted": "none", "merges": "fitted", "conflicts": "drawn"}
+		"neverStarted": "none", "conflicts": "recorded"}
 	if got := knobValuesOf(MainBranch); !reflect.DeepEqual(got, wantMain) {
 		t.Errorf("the main branch is %v, want %v", got, wantMain)
-	}
-	diagnostics := DiagnosticBranches()
-	if got, want := branchNames(diagnostics), []string{"main+conflicts=recorded@1", "main+conflicts=recorded@1.2", "main+conflicts=recorded@1.6"}; !slices.Equal(got, want) {
-		t.Errorf("the branches of the recorded conflicts are %v, want %v", got, want)
-	}
-	for _, at := range diagnostics {
-		if parsed, err := BranchNamed(at.Branch.Name); err != nil || parsed != at.Branch || !parsed.recordedConflicts() {
-			t.Errorf("the branch of the recorded conflicts %+v reads back by its name as %+v (%v)", at.Branch, parsed, err)
-		}
 	}
 	for _, f := range []float64{1.0, 1.2, 1.6} {
 		var names []string
@@ -95,7 +84,7 @@ func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
 			t.Errorf("at f %v Branches lists %v, want %v", f, names, wantNames)
 		}
 	}
-	for _, name := range []string{"main+timing=later", "main+slowdown=1.2", "main+merges", "other"} {
+	for _, name := range []string{"main+timing=later", "main+slowdown=1.2", "main+merges=zero", "other"} {
 		if _, err := BranchNamed(name); err == nil {
 			t.Errorf("BranchNamed accepts %q", name)
 		}
@@ -107,11 +96,8 @@ func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
 // with each knob a change names set to that change's value and every other knob at the main
 // branch's, under the name it was given. The test reads main+neverStarted=drawn+timing=wall,
 // main+firstStarts=rank+answer=wall+afterSendBack=less-slot-wait, whose knobs it names in another
-// order than the knobs', and main+conflicts=git+neverStarted=drawn: the conflicts knob takes git, a
-// value no list of branches runs (Branches, DiagnosticBranches), which draws as drawn does until the
-// git branch is built, and which a run takes (Branch.check). It refuses a knob named twice, with one
-// value or two, a value its knob does not take in a later change, a change that names no knob of a
-// branch, a change with no value or none at all, and a name that does not begin main+.
+// order than the knobs', and main+conflicts=git+neverStarted=drawn. The named combination is
+// accepted but not enumerated by Branches, which lists one-knob changes only.
 func TestBranchNamedReadsSeveralKnobChangesEachOnce(t *testing.T) {
 	t.Parallel()
 	twoKnobs := MainBranch
@@ -129,9 +115,9 @@ func TestBranchNamedReadsSeveralKnobChangesEachOnce(t *testing.T) {
 	if err := git.check(); err != nil || git.recordedConflicts() {
 		t.Errorf("the branch %s is refused by a run (%v), or keeps the recorded conflicts (%t)", git.Name, err, git.recordedConflicts())
 	}
-	for _, at := range slices.Concat(Branches(), DiagnosticBranches()) {
-		if at.Branch.Conflicts == conflictsGit {
-			t.Errorf("the lists of branches run %s at f %v, and none runs the conflicts knob's git", at.Branch.Name, at.Slowdown)
+	for _, at := range Branches() {
+		if at.Branch == git {
+			t.Errorf("Branches lists a two-knob change: %s", at.Label())
 		}
 	}
 	for name, says := range map[string]string{
@@ -1024,15 +1010,9 @@ func conflictWindow(t *testing.T) Window {
 	return window
 }
 
-// Merges sets the merges term of the conflict draw (assumption 3): under fitted the stretch draws
-// at the chance its merges give, under zero at the base chance alone. The test replays
-// conflictWindow under main. On the main branch ACME-1's first stretch draws a conflict at 11:00
-// (its M is 1), the engine asks the merge forward, the merge-forward segment runs the loop's 30
-// minutes of implementing and lands at 11:30, and ACME-1's last merging segment runs from then: it
-// merges at 11:45, with one round of conflict of half an hour. On main+merges=zero the stretch
-// draws at the base chance, below 10⁻⁶, does not conflict, and ACME-1's last merging segment runs
-// from 11:00: it merges at 11:15, with no merge forward and no round of conflict.
-func TestTheMergesKnobSetsTheTermToZero(t *testing.T) {
+// The recorded and drawn branches both send a conflicting head down the rule's merge-forward
+// path. The fixture has a recorded conflict and a fit that draws it at seed 1.
+func TestRecordedAndDrawnConflictsUseTheRulesMergeForward(t *testing.T) {
 	t.Parallel()
 	window := conflictWindow(t)
 	for _, c := range []struct {
@@ -1042,14 +1022,11 @@ func TestTheMergesKnobSetsTheTermToZero(t *testing.T) {
 		landed []time.Time
 	}{
 		{branch: "main", done: clock(11, 45), asked: []time.Time{clock(11, 0)}, landed: []time.Time{clock(11, 30)}},
-		{branch: "main+merges=zero", done: clock(11, 15)},
+		{branch: "main+conflicts=drawn", done: clock(11, 45), asked: []time.Time{clock(11, 0)}, landed: []time.Time{clock(11, 30)}},
 	} {
 		t.Run(c.branch, func(t *testing.T) {
 			t.Parallel()
 			result, log := knobRun(t, window, mainRule(t), c.branch)
-			if result.Conflicts.TermZero != (c.branch != "main") {
-				t.Errorf("the run's conflict model %s, on the branch %s", result.Conflicts, c.branch)
-			}
 			if done := result.Scorecard.DoneAt["ACME-1"]; !done.Equal(c.done) {
 				t.Errorf("ACME-1 is done at %s, want %s", stamp(done), stamp(c.done))
 			}

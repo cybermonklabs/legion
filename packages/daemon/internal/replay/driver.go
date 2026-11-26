@@ -232,8 +232,7 @@ type driver struct {
 	pauseID  int64
 	unplaced []Unplaced
 
-	// conflicts is the conflict model the run draws by (with its merges term set to zero under
-	// the branch's Merges zero), merges the window's commits of each base branch it counts a
+	// conflicts is the fitted generator, merges the window's commits of each base branch it counts a
 	// stretch's M from, loops the recorded conflict loops a drawn conflict's work is drawn from,
 	// draws the run's source of every conflict draw, which reads drawSource, seeded afresh for each
 	// draw by the run's seed and the draw's place (seedDraw), stretchDraws how many draws each
@@ -253,6 +252,7 @@ type driver struct {
 	stretchDraws  map[stretchDraw]int
 	lastDraw      map[string]stretchDraw
 	stretchFrom   map[string]time.Time
+	git           replayGit
 	stretches     map[string]*liveStretch
 	liveStretches int
 	waiting       map[string]waitingConflict
@@ -615,6 +615,7 @@ func (d *driver) observe() error {
 			if to == phase.Done {
 				delete(d.inFlight, key)
 			}
+			d.endedGitLoops(key, to)
 			d.openOnPhase(key, to)
 			d.queueFreshRetries(key, to)
 			if err := d.waitMoves(key, to); err != nil {
@@ -631,6 +632,9 @@ func (d *driver) observe() error {
 			d.placeReopens(key)
 			delete(d.waiting, key)
 			delete(d.stretches, key)
+			delete(d.git.loopEnds, key)
+			delete(d.git.firstImpl, key)
+			delete(d.git.forwardAt, key)
 			tree := line.str("tree")
 			for _, waiting := range slices.Sorted(maps.Keys(d.signOffs)) {
 				if waiting != key && d.treeOf(waiting) == tree {
@@ -1619,7 +1623,7 @@ func (d *driver) boot(boot Boot) error {
 		return nil
 	}})
 	if read := maxTime(maxTime(bootRead(boot), last), d.clock.Instant()); read.Before(d.window.End()) &&
-		d.conflicts.Conflicts > 0 && !d.cfg.Branch.recordedConflicts() {
+		(d.cfg.Branch.asksGit() || d.cfg.Branch.Conflicts == conflictsDrawn && d.conflicts.canDrawConflict()) {
 		d.push(&item{at: read, class: classAct, rec: read, order: lineOrder + 1, run: d.bootConflicts})
 	}
 	return nil

@@ -52,8 +52,7 @@ Their record names an issue's parent in another project, ACMEAUX, as its events 
 Each waits on the skip list (`pending_test.go`) until the replay reads the resolved priority (plan task t39).
 
 The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "The branch that asks git, and the generator's profile" below gives it.
-`drawn-skipped-loop` and `drawn-boot-earlier-phase` hold no git input and run as the replay draws today.
-The five others wait on the skip list (`pending_test.go`) until the replay reads git's verdicts and the generator counts by profile; of `drawn-work-conflict`, only the run on the branch that draws waits.
+`drawn-skipped-loop` and `drawn-boot-earlier-phase` hold no git input and exercise the generator's legacy merge count.
 
 ## What a directory holds
 
@@ -227,7 +226,7 @@ The two may differ by the reconstruction error the tool reports; these windows h
 - In a replay each stretch draws once, at the moment its recorded end falls by its segments, with M counted over the replayed stretch:
   a draw u, seeded by the run's seed, the issue, the phase and the recorded start of the segment that ends the stretch, and the number of the stretch's draws before it, makes a conflict where u < the chance, so two rules at one seed draw the same u for each stretch both run.
   A recorded `conflict` move, or a merger's move back that counts as one, is never injected: the draw makes it, or the next bullet keeps it.
-  Under the diagnostic branch `main+conflicts=recorded` no stretch draws: each recorded conflict is made as recorded, and its issue runs its own loop.
+  On the main branch no stretch draws: each recorded conflict is made as recorded, and its issue runs its own loop.
 
 - A stretch whose recorded end is a `conflict` whose loop the record shows running to `to`, with no return to the phase the conflict left, does not draw:
   the record holds no work of the issue after the stretch but that loop, so a draw of no conflict, or of another loop, would leave the issue idle to the window's end (assumption 35).
@@ -250,7 +249,6 @@ The two may differ by the reconstruction error the tool reports; these windows h
 
 The spec's R2 gives the conflicts of a replay three sources: the main branch keeps the record's conflicts, `conflicts=git` asks git's verdicts, and `conflicts=drawn` draws every conflict.
 The windows `git-store-verdicts`, `git-unanswered-reads`, `merge-event-time`, `drawn-touching-merges` and `drawn-work-conflict` hold `git/<owner>__<name>.jsonl` (`replay.md`, "Add git's verdicts of each repository") and are worked by the rules below.
-"Conflicts" above says how the main branch draws until the replay is built so.
 
 - **The replay's base.**
   For a repository whose window holds git input, the base holds the record's first-parent commits (`merges/`), each from its `at` on, never from its `committed`.

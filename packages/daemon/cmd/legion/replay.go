@@ -498,12 +498,11 @@ reason.
 The window's Dispatch events, its recorded phase moves, ticks and boots are applied at their
 recorded times or offsets, a worker stub runs the outbox rows the daemon's lanes would take after
 each fact, and each work segment runs its recorded length times f^((n − m)/42) at --slowdown f.
-Each stretch of an issue's work from testing to merging draws whether its head conflicts with its
-base, from a model fitted on the window's own recorded stretches, with a draw that --seed, the
-issue and the stretch's place in the record give, so two rules at one seed draw alike for each
-stretch both run; the run prints the model with its intervals. --branch sets one knob the record
-does not give: timing, answer, afterSendBack, firstStarts, neverStarted, merges, or conflicts, the
-diagnostic knob that keeps the record's conflicts (main+<knob>=<value>).
+The main branch keeps recorded conflicts. The git branch uses stored verdicts and draws conflicts
+for unanswered reads. The drawn branch uses the same fitted generator for every eligible stretch.
+The run prints the model with its intervals. Set knobs with --branch main+<knob>=<value>, and add
+another +<knob>=<value> for each additional change. The knobs are timing, answer, afterSendBack,
+firstStarts, neverStarted, and conflicts (recorded, git or drawn).
 A window collected with a run-out (collect --after) is replayed on past its end through the
 run-out, so the work the record shows after --to runs where the replay moves it; every measure
 reads the window's own span alone. --cap replays the window at one admission cap from its start to
@@ -877,13 +876,11 @@ started) and the seed 1 alone for one that draws nothing. Up to --parallel runs 
 in a database of its own on the server --pg-dsn names. Each run's run.json, scorecard.json and
 scorecard-line.json are written under --out, in <window>/<rule>/<branch>@<f>/seed-<n>/, beside the
 window's record.json; a run whose files are there already is not run again, and each run's log is
-deleted once the run has read it back, unless --keep-logs. With --main-only the main branch at f 1
-runs alone, with its seeds, in place of every branch. Either way R5's branch of the recorded
-conflicts, main+conflicts=recorded, which keeps the record's conflicts and draws none, runs at each
-of f 1, 1.2 and 1.6 beside them: it names, seed by seed, each issue the replay starts that the
-record did not start in the window and each issue the record filed in the window that the replay
-leaves out, and gates nothing; its table is shown and tests nothing, and it never stands in place
-of the main branch.
+deleted once the run has read it back, unless --keep-logs. With --main-only only main at f 1 runs.
+Main keeps recorded conflicts. At each slowdown validation reports the issues main starts that
+the record did not start, and those it leaves out that the record filed. The git branch reports
+read counts by verdict and kind, with boot reads separate, and loop hours by source. The drawn
+branch reports its validation verdict. A failing drawn branch gives no comparison on that branch.
 
 It prints, for each branch and each measure, the recorded value, the replayed value (the mean of
 the seeds, with the lowest and the highest seed's), the gap, the allowance and the test; for each

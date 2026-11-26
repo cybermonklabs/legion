@@ -446,8 +446,13 @@ Each line of the file is one JSON object, in this order:
 - `{"kind":"commit","sha","paths"}`: each first-parent commit of `--branch` that the merges file holds, in that file's order, then each base commit that a read of a merge state names and the merges file does not hold.
   `paths` is the paths that the commit changes against its first parent (`git diff-tree -r --no-commit-id --name-only <sha>^1 <sha>`), sorted.
 
-- `{"kind":"pull","pr","merge","heads"}`: each pull request, in ascending number, each followed by its head lines.
+- `{"kind":"pull","pr","merge","base","baseChanges","heads"}`: each pull request, in ascending number, each followed by its head lines.
   `merge` is the commit that GitHub records as its merge into `--branch` (`merge_commit_sha`, where `merged` is true and `base.ref` is `--branch`), where the merges file holds that commit, and empty where it does not.
+  `base` is the current base branch from GitHub's `base.ref`.
+  `baseChanges` lists the times of the timeline's `base_ref_changed` events, oldest first, or `[]` when there are none.
+  A read can use the stored verdicts only if `base` is the collected branch and the recorded read is at or after the last base change.
+  Otherwise the read is unanswered with kind `missing`.
+  Collect the git file again if it predates these required fields.
   `heads` counts the pull request's head lines.
 
 - `{"kind":"head","pr","sha","at","from","tip","mergeBase","paths","verdicts"}`: each head of the pull request, by `at` and then `sha`.
@@ -690,10 +695,73 @@ A window recorded under a release before that mark holds none of it, so the star
 So the members of a tree that the record re-admitted before the window's start come back at its promotion, or at the first pass that finds it running, as the daemon of the commit that the replay was built from brings them back.
 The replay's copy of Dispatch also takes the claim of each `issue.claimed` and `issue.released` event, so a later boot or tick reads the claim that Dispatch showed.
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
-Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.
+The main branch keeps the record's conflicts.
+It also keeps the source's conflicts for work that the replay draws for an issue that never started.
+The git and drawn branches can change conflicts when a rule changes when work runs.
+
+#### The git branch
+
+`main+conflicts=git` reads the head's merge state at each stretch end and at daemon boots inside a stretch.
+The standing head is the latest at or before the recorded move or boot read.
+At the same time a force-push wins over a logged read, which wins over a commit.
+Within one source at the same time, the later line wins.
+For a boot, the replay maps work already done in the running segment back to recorded time by removing the slowdown.
+It does not read past that segment's recorded end.
+
+For a repository with git input, each base commit enters at the recorded merge time, not the committer's time.
+The exception is the merge commit of a pull request linked to an issue whose work the replay runs.
+That commit enters when the replay merges the issue, or not at all if the replay does not merge it.
+At a read, Git can answer if the landed commits not in the head that touch its paths are exactly the first n bases in its verdict list, in replay landing order.
+With n = 0 the read is clean.
+Otherwise the answer is the verdict at the nth base.
+An answered conflict acts at that moment through the rule's conflict path.
+At a recorded conflict end it keeps the recorded loop.
+At an otherwise clean end it takes the loop's work from the generator.
+An answered clean end skips the recorded conflict loop, except for an open loop kept under assumption 35.
+The replay reads again at the next end of a stretch that went on past a skipped loop.
+
+An unanswered read has the first applicable kind in this order:
+
+- `never-ran`: drawn work or an issue with no recorded pull request.
+
+- `missing`: no usable git input, pull request, standing head or commit path list needed for the read.
+
+- `after-merge`: a touching merge comes after the pull request's own recorded merge on the base branch.
+
+- `order`: the touching merges do not match the recorded prefix.
+
+Unanswered reads use the conflict generator, with at most one draw per live stretch.
+A boot in an open stretch with no recorded end can use an answered read but does not draw.
+An answered end read overrides a deferred boot draw.
+After a loop whose work was drawn, the head holds the replay's base as of the return to the phase it left, or the landing of the merge forward.
+Later reads consider only commits that landed after that point.
+No touching merges gives a clean read, and touching merges give `order` unless a higher-priority unanswered kind applies.
+A kept loop uses the recorded heads again.
+
+The replay logs one `replay: a head's merge state read from git` line per read.
+It gives `issue`, `repo`, `head`, `recorded`, `by` (`boot` or `end`), and `n` and `answer` for answered reads, or `answer: "unanswered"` and `kind`.
+Neither timeline reads these lines as moves.
+
+#### The conflict generator
+
+`main+conflicts=drawn` draws at each live stretch's first eligible read.
+The model fits stretches that begin and end inside the window.
+For a repository with git input, an issue's profile is the paths of the standing head at the read, or the last available head's paths.
+Drawn work of an issue that never started takes its source's profile but has no head of its own.
+The generator counts only landed commits that share a path with the profile and come after the head's merge base.
+When the head is unknown, it counts from the later of the first implementing segment's start and the last merge forward in that generation.
+After a drawn conflict loop, it counts only commits that landed after the loop ended.
+If the issue has no profile, it counts all commits since the stretch's start and reports those draws.
+With no touching merges the chance is zero.
+The fit counts touching merges at the recorded stretch end and excludes stretches with none or with no profile.
+The fit reports the excluded stretches and the recorded conflicts with no touching merge.
+Repositories without git input use a separate legacy fit over the whole window.
+That fit and its draws count each recorded base commit strictly inside the stretch except the issue's own merge.
+The result names the repositories that use each fit and gives both sets of coefficients when both fits apply.
+The profiled fit and draws count only known touching commits.
+The result counts fitted stretches and draws that encounter a commit with no path list.
 A stretch that began in the reach is not in the fit, because the reach can be of a release that recorded a conflict as another move back.
-The fit counts a merger's conflict as a conflict: a merger's move back out of merging whose reason, as the daemon posts it on the issue, names a conflict, and a stretch in which the daemon asked the merger to merge the base forward.
-Such a move back is not entered as recorded, because the stretch that it ends draws its conflict as a stretch that a `conflict` move ends does.
+The fit counts the merger's move back for a conflicting head and the merger's merge forward as conflicts.
 Each draw of a stretch takes its value from `--seed`, the issue, and the place of the stretch in the record: the phase and the recorded start of the work segment that ends it, and how many times the stretch drew before.
 The loop of a conflict that it draws takes its value from the same place.
 So a draw never depends on the draws before it, and two rules at one seed draw the same value for each stretch that both run, also where one rule ends a stretch earlier or runs a stretch that the other does not.
@@ -705,6 +773,8 @@ Where the stretch breaks or ends in another phase first, that conflict is droppe
 A stretch makes this choice at the first boot inside it, and a stretch that no boot reads inside draws at its end.
 A stretch draws once.
 It keeps that draw through its moves on to the next phase, a hold, a recorded conflict loop that it passes over and a merge forward, so a stretch that draws no conflict, at a boot or at its end, does not draw again, at a later boot or at a later end in another phase.
+A kept open-loop conflict enters at its end whatever the live stretch drew before.
+Even after an earlier clean draw, this later move is the record's and is not another draw.
 A move back, the merge, a move out of the stretch's phases or the issue's leave ends the stretch, and the stretch after it draws its own.
 `run` writes a line of its own to `log.jsonl` for each draw, at the moment of the draw, with the msg `replay: a stretch's conflict drawn`.
 Its attributes are `issue`, `stretch` (the number of the issue's stretch in the run), `running` (the phase of the work segment that ran at the draw), `fitted` (the phase in which the record ends the stretch, whose chance the draw read), `start` (the replay's start of the stretch), `merges`, `by` (`boot` or `end`), `chance`, `u` (the number drawn) and `outcome`: `clean`, `conflict`, or `deferred` for a conflict that waits for the stretch's end.
@@ -767,10 +837,10 @@ Last, it prints each assumption that the run rests on, with the number of outbox
 
 | File | What it holds |
 | --- | --- |
-| `log.jsonl` | The daemon's lines on the simulated clock, and the replay's own line of each conflict draw (`replay: a stretch's conflict drawn`). |
+| `log.jsonl` | The daemon's lines on the simulated clock and the replay's lines for conflict draws and Git reads. |
 | `scorecard.json` | The measures read from the states that the daemon's own admission passes left, the snapshot timeline. |
 | `scorecard-line.json` | The same measures read back from `log.jsonl` and the replay's Dispatch events, as the measures of a record are read, the line timeline. |
-| `run.json` | What ran, what it counted, the gap of each measure between the two timelines, and the conflict model. |
+| `run.json` | What ran, what it counted, the gap of each measure between the two timelines, the conflict model, and the read counts (`gitReads`) and conflict hours (`gitLoopHours`) by repository. |
 | `segments.jsonl` | Each work segment, with `--trace-segments` alone. |
 
 `run.json` names the code that made the run, and the time at which the run started:
@@ -897,8 +967,7 @@ A branch that draws nothing runs the seed 1 alone.
 Up to `--parallel` runs run at once, each in a database of its own.
 Each run's files go under `--out` in `<window>/<rule>/<branch>@<f>/seed-<n>/`, and a run whose files are there already does not run again.
 `validate` deletes each run's log once it has read it, unless `--keep-logs`.
-With `--main-only` it runs the main branch at f = 1 alone, with its seeds, in place of every branch.
-Either way it also runs R5's branch of the recorded conflicts, `main+conflicts=recorded`, at f = 1, 1.2 and 1.6, each with the seed 1 alone, which keeps the record's conflicts and draws none ([The branches](#the-branches), assumption 44).
+With `--main-only` it runs only the main branch at f = 1.
 
 It prints, for each branch and each measure, the recorded value, the replayed value, the gap, the allowance and the test.
 The replayed value is the mean of the seeds, with the values of the lowest and the highest seed.
@@ -922,16 +991,12 @@ They read priority taken by rank alone (`priorityTaken`), the order of the recor
 R7 judges a rule on it by its error across the change of the rule, not by an allowance of these tests.
 The wait of urgent work (`urgentWaits`) is not one of these tests either, and `validate` does not print it.
 
-Beside the tests, `validate` prints three diagnostics, which test nothing:
+Beside the tests, `validate` prints diagnostics that do not affect the gaps:
 
 - For each branch and seed, the number of issues that the replay gave a first slot in the window and the record did not, the number that the record gave one and the replay did not, and the seed's own median error of the first slot, over the issues that the record or that seed gives one, a missing one standing at `--to`.
   It stands beside the first-slot test's statistic, the mean over the seeds of each issue's error (assumption 44), in the table and in `--json` (`firstSlotMedianMinutes`).
 
 - For each branch, the trees whose design gate stood closed in the replay more than 30% longer or shorter than in the record (`gateClosedHours`).
-
-- The table of each branch of the recorded conflicts, in a section of its own.
-  It shows how the admission alone stands against the record, with the record's own conflicts in place of drawn ones.
-  It gives no comparison, and it is read beside the main branch, never in place of the main branch: no test of R5, no verdict of a window and no decision of a comparison reads it.
 
 On R5's branch of the recorded conflicts, the replay of the recorded rule should start no issue that the record did not start in the window, and file each issue that the record filed in the window.
 `validate` names, for each f and each seed, the issues that break either, in the section "The issues that break R5's branch of the recorded conflicts":
@@ -941,7 +1006,15 @@ On R5's branch of the recorded conflicts, the replay of the recorded rule should
 - each issue of the window's project that the record files in the window and the replay does not file in it, read from each scorecard's `filed`
 
 The names gate nothing: no test of R5, no verdict of the window and no decision of a comparison reads them.
-`--json` gives them as `breakers` on each branch of `diagnostics`, with `startedNotRecorded` and `filedLeftOut` for each seed.
+`--json` gives them as `breakers` on the main branch at each slowdown, with `startedNotRecorded` and `filedLeftOut` for each seed.
+
+For each git run, `validate` gives a table by repository and seed.
+The table crosses Git's answer or unanswered kind with the recorded outcome at each end read.
+It counts boot reads separately, with no recorded outcome.
+It gives the share of reads Git could not answer and the share of conflict hours started by draws rather than answered reads.
+Each git and drawn run reports the hours spent in conflict loops by source.
+`validate` also says whether the drawn branch passes the window.
+A failing drawn branch does not stop a comparison on the passing branches, but the tool is not finished and the pull request does not merge while it fails on window one.
 
 A validation whose replays give no issue a first slot or a done, where the record gives some, is refused, with an error that names the window, because each issue's error would stand at `--to` less the record's time.
 `--from-runs <dir>` reads the validation from the runs that a `validate` or a `compare` wrote, and runs nothing.
@@ -1810,16 +1883,12 @@ A result that rests on a knob runs under each value of that knob, so that you re
 | `afterSendBack` | `recorded`, `less-slot-wait` | How long the first work after a send-back takes, its recorded length, or that length less its recorded wait for a slot. | 13 |
 | `firstStarts` | `recorded`, `rank` | The order of first starts, the order in which the record started the issues in the window, or the board's rank. | 36 |
 | `neverStarted` | `none`, `drawn`, `drawn-done` | The work of an issue that never started, none, or the work of an issue drawn from those that the record started, or from those that it finished: from the issues of its own tree where the tree has any, else from those of its priority and repository, else from the whole window. | 8 |
-| `merges` | `fitted`, `zero` | The merges term of the conflict draw, as fitted on the window, or zero, with the base and the phase terms kept. | 3 |
-| `conflicts` | `drawn`, `recorded` | Where the conflicts come from, each stretch drawing its own, or the record's conflicts made as recorded with no stretch drawing, which only `validate` runs, as R5's branch of the recorded conflicts. | 44 |
+| `conflicts` | `recorded`, `git`, `drawn` | Keep the record's conflicts, use Git's stored verdicts with the generator for unanswered reads, or draw every conflict from the generator. | 3, 44 |
 
 Beside the first six knobs, the slowdown factor f is the seventh, with the values 1, 1.2 and 1.6 (assumption 1).
-The main branch is `offset`, `offset`, `recorded`, `recorded`, `none`, `fitted` and `drawn`, at f = 1.
-Each other branch changes one knob, and takes the name `main+<knob>=<value>`, for example `main+timing=wall`.
-The tool offers the main branch and the 7 branches that change one of the first six knobs, each at f = 1, 1.2 and 1.6, which makes 24 branches for each rule and window.
-The knob `conflicts` is a diagnostic knob, which changes none of these 24 branches.
-`validate` runs its one other value, `main+conflicts=recorded`, at f = 1, 1.2 and 1.6 beside them, as R5's branch of the recorded conflicts, which names each issue that breaks it and gates nothing, and `compare` never runs it.
-Under it, each stretch that the record ends in a conflict conflicts through the daemon's own path, as a kept conflict does (assumption 35), and its issue runs its own recorded loop; each other stretch ends as recorded.
+The main branch uses the first value of each knob.
+Validation and comparison run `main` and the eight one-knob changes at f = 1, 1.2 and 1.6, for 27 branch and slowdown pairs.
+`run` accepts a single change, such as `main+timing=wall`, or several different knobs, such as `main+conflicts=git+neverStarted=drawn`.
 A run's directory names its branch as `<branch>@<f>`, for example `main@1.2`.
 Under the rule that made the record, both values of `timing` and of `answer` give the record's times, because every anchor falls at its recorded time.
 
@@ -2085,8 +2154,9 @@ The rate has a base, a term for each phase in which a stretch can end, a term fo
 The base stands for the stretches that end in merging in the window's first release part, and each other phase's term moves the rate of the stretches that end in that phase.
 A phase or a part takes a term of its own only where both groups that the term sets apart hold a conflict and a stretch without one: the phase's stretches and the base's, a later part's stretches and the first part's, a phase's stretches that span a boot and those that span none.
 Every other group draws at the rate of the group that it would be set apart from.
-A branch sets the merges term to zero and keeps every other term.
-A rule moves conflicts only through the merges term, because each stretch ends in the phase that the record shows, at the record's release parts and boots.
+The main branch keeps recorded conflicts.
+The git branch uses stored verdicts, and the drawn branch uses the fitted model for every draw.
+On those branches the timing and order of touching merges can change the result.
 
 Merging's rate is each release part's own.
 A release that posts the merger's conflicts records each as a conflict, and a release that does not records it as another send-back, which the replay keeps as a recorded loop.
@@ -2109,7 +2179,7 @@ A loop still open at the end of the run-out has no known length and is left out,
 In window one that leaves out 6 loops from testing, 9 from reviewing, 8 from accepting, 17 from merging and 1 from retro.
 The tool draws no length that the record does not show.
 
-Each stretch draws apart from the record's outcome.
+A draw does not depend on the record's outcome.
 So a stretch that the record ended in a conflict can draw none, and its issue then goes on past its recorded loop into its later recorded work.
 The acts of the loop that it passes over on other issues keep their recorded times: a child's filing, its release, a link, and an edit of another issue.
 Its issue does not close before a child that the record filed under it before its own close has entered, as the daemon holds a merged issue's close while an issue beneath it is in the workflow.
@@ -2152,7 +2222,7 @@ For each stretch of the record, read whether it ended in a conflict, the phase t
 At the same phase and the same number of merges, a higher rate of conflict after a long wait shows the effect that the rate leaves out.
 For each phase, the share of the stretches that end there in a conflict in a window that the rate was not fitted on tests the phase terms.
 A window that records no conflict of its own, such as one of a release that records a conflict as red checks (assumption 22), tests neither the phase terms nor the merges term.
-`validate` and `compare` give the branch `main+merges=zero` beside `main`, which shows how far the merges term moves each measure.
+Compare the git and drawn branches against the recorded conflicts on `main`.
 For each phase, the share of the stretches that span a boot and end in a conflict, against the share of those that span none, in a window that the model was not fitted on, tests the boot term.
 For each release part, the share of the merging stretches that end in a conflict, in a window of the same releases, tests the part terms.
 The number of recorded loops that a run passes over and the number that it adds, over the seeds, show how far the draws move the record's loops.
@@ -2950,11 +3020,13 @@ For each `supervise: launched` line in the record, read the time to the first `s
 A time that grows with the issues in flight shows a cost that the segments do not carry.
 The break-even factor of `compare` says how large f must be to change a rule's rank.
 
-### Assumption 29: GitHub moves a replay only by the moves the record shows: a pull request's opening, reviews, checks, mergeability, merge queue and pushes are read from the recorded moves, and the replay's own pull request record stands in for the issue's
+### Assumption 29: The replay makes no live GitHub requests
 
 The tool's own.
 A rule that changes how long a head waits may change what GitHub reports of it, a conflict above all.
-The tool draws conflicts from the fitted rate (assumption 3), and keeps every other report as the record's moves, which favours a rule under which heads wait longer.
+The git branch uses stored verdicts for mergeability, with the generator for reads it cannot answer.
+The main branch keeps recorded conflicts, and the drawn branch uses the generator.
+All branches keep other GitHub outcomes through the recorded moves.
 
 **Evidence in a recorded window.** _The GitHub facts that the replay leaves out._
 The replay leaves out each fact of a pull request's opening, reviews, checks, closing, merge queue, pushes and mergeability.
@@ -3138,12 +3210,12 @@ Doubtful, and the direction is unknown.
 A stretch ends in a recorded conflict whose loop runs to `--to` when the record shows the issue moved back by `conflict` and never back in the phase that the conflict left.
 The record then holds no work of the issue after the stretch but that loop.
 Drawn as any other stretch, a draw of no conflict would take the issue past a loop after which the record shows nothing, and a drawn conflict would give it another loop in place of its own, after which it has nothing either: either way the issue would stand idle, with no worker, to the window's end.
-So the replay does not draw such a stretch.
-It keeps the conflict and makes it through the daemon's own path, as it makes a drawn one.
+The replay keeps this conflict at its end regardless of the Git answer or any earlier draw.
+The move belongs to the record, even if the stretch drew clean earlier.
+The git branch logs the end read but does not act on it, and skips boot reads in the stretch.
 Under a rule whose conflicting head moves back, a kept conflict in testing, reviewing, accepting, retro or merging moves the issue back, and it then runs its own loop as recorded.
 Under a rule whose conflicting head keeps its phase, the merge-forward segment that the daemon asks at once for a kept conflict lasts as long as that loop's implementing round, and has no end where the round has none.
 Under `main`, in accepting or retro, the daemon at the head moves nothing and asks nobody, and the record holds no work of the issue after the stretch but the loop, so the issue stands in its phase with no worker to `--to` (assumption 37).
-Every other stretch is drawn.
 
 **Evidence in a recorded window.** _Stretches that a recorded conflict loop runs past `--to`._
 In a replay of one deployment's recorded window of four days under the rule that its daemon ran, with such stretches drawn as any other, six issues stood with no worker, in accepting, merging or reviewing, from the end of the stretch to the window's end, where the record shows each one working in its loop.
@@ -3448,14 +3520,15 @@ If answers come at the person's own hours whatever the question's time, the repl
 Compare their tables, above all the waits on links and on blockers and the first-slot error.
 Count the share of the replay's answers that fall in hours at which the record shows almost none.
 
-### Assumption 44: A validation of the recorded rule draws the record's conflicts again, so the first-slot test of R5 rests on the replay's own noise
+### Assumption 44: Redrawing conflicts can change the first-slot test
 
 Doubtful.
-A replay of the rule that made the record draws each stretch's conflict from the fitted rate, and keeps only a recorded conflict whose loop runs to `--to` (assumption 35).
+On the drawn branch a replay draws each stretch's conflict from the fitted rate, except for kept open loops.
+On the git branch it draws only for unanswered reads.
 So most of the record's conflicts are drawn again, on other stretches, and two seeds give an issue first slots that differ by about half as much as the replay differs from the record.
 The first-slot test can then pass or fail on the draws alone.
-`validate` runs the diagnostic branch `main+conflicts=recorded` beside R5's tests, which keeps the record's conflicts and draws none, and so reads the admission alone against the record.
-It never stands in place of the main branch, and no test of R5 and no decision reads it.
+The main branch keeps the record's conflicts, so this source of noise does not affect its first-slot test.
+All three branches are subject to the same validation gaps.
 
 **Evidence in a recorded window.** _Two seeds against the record._
 In a validation of one deployment's recorded window under its own rule, for the issues that every seed gave a first slot, the median difference between two seeds was about 45 minutes, and the median error against the record about 90 minutes.
@@ -3478,8 +3551,8 @@ If the redrawn conflicts move the first slots more than the rule does, the repla
 - Slots: Unknown.
   The loops of redrawn conflicts hold slots at other times.
 
-**The reading that would test it.** _The diagnostic branch beside the main branch._
-Compare the first-slot error of `main` with that of `main+conflicts=recorded` in one validation, and the spread of the first-slot error over the seeds of `main`.
+**The reading that would test it.** _The drawn branch beside the main branch._
+Compare the first-slot errors on `main` and `main+conflicts=drawn`, and the spread over the seeds on the drawn branch.
 
 ### Assumption 45: The three modelled signals depend on the work in flight alone
 

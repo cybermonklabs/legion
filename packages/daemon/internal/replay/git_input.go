@@ -66,10 +66,10 @@ func githubReason(reason string) bool {
 //     branch, in that file's order, then each base commit a read names (MergeStateRead.BaseSHA)
 //     that the merges file does not hold, in the log's order, with the paths it changes against
 //     its first parent, sorted (Commits);
-//   - for each pull request, in ascending number, {"kind":"pull","pr","merge","heads"}, its merge
-//     commit into the base branch where the merges file holds it, else "", and the count of its
-//     heads, followed by one {"kind":"head","pr","sha","at","from",...} line for each of its heads,
-//     by at then sha (Pulls);
+//   - for each pull request, in ascending number, {"kind":"pull","pr","merge","base","baseChanges","heads"},
+//     its merge commit where the merges file holds it, else "", its current base branch, its
+//     base change times in ascending order, and the count of its heads, followed by one
+//     {"kind":"head","pr","sha","at","from",...} line for each head, by at then sha (Pulls);
 //   - {"kind":"missing","pr","head","base","reason","detail"}: each input the collector could not
 //     get, sorted by pr, head, base, reason and detail (Missing). A missing input is never written
 //     as clean.
@@ -92,11 +92,13 @@ type GitCommit struct {
 
 // GitPull is a pull request: its number, the commit GitHub records as its merge into the base
 // branch where the window's merges file holds that commit ("" where the window's inputs hold no
-// merge of it), and its heads, by At then SHA.
+// merge of it), the current base branch, the times of its base changes, and its heads.
 type GitPull struct {
-	Number int
-	Merge  string
-	Heads  []GitHead
+	Number      int
+	Merge       string
+	Base        string
+	BaseChanges []time.Time
+	Heads       []GitHead
 }
 
 // GitHead is a head of a pull request: its commit, the moment it stood from and where that moment
@@ -186,10 +188,12 @@ type (
 		Paths []string `json:"paths"`
 	}
 	gitPullLine struct {
-		Kind  string `json:"kind"`
-		PR    int    `json:"pr"`
-		Merge string `json:"merge"`
-		Heads int    `json:"heads"`
+		Kind        string      `json:"kind"`
+		PR          int         `json:"pr"`
+		Merge       string      `json:"merge"`
+		Base        string      `json:"base"`
+		BaseChanges []time.Time `json:"baseChanges"`
+		Heads       int         `json:"heads"`
 	}
 	gitHeadLine struct {
 		Kind      string        `json:"kind"`
@@ -235,7 +239,12 @@ func (g GitInput) lines() ([]json.RawMessage, error) {
 		}
 	}
 	for _, pull := range g.Pulls {
-		if err := add(gitPullLine{Kind: gitPullKind, PR: pull.Number, Merge: pull.Merge, Heads: len(pull.Heads)}); err != nil {
+		changes := make([]time.Time, len(pull.BaseChanges))
+		for i, at := range pull.BaseChanges {
+			changes[i] = at.UTC()
+		}
+		if err := add(gitPullLine{Kind: gitPullKind, PR: pull.Number, Merge: pull.Merge, Base: pull.Base,
+			BaseChanges: changes, Heads: len(pull.Heads)}); err != nil {
 			return nil, err
 		}
 		for _, head := range pull.Heads {
@@ -279,7 +288,7 @@ type gitLineRead struct {
 var (
 	gitLineMembers = map[string][]string{
 		gitCommitKind:  {"kind", "sha", "paths"},
-		gitPullKind:    {"kind", "pr", "merge", "heads"},
+		gitPullKind:    {"kind", "pr", "merge", "base", "baseChanges", "heads"},
 		gitHeadKind:    {"kind", "pr", "sha", "at", "from"},
 		gitMissingKind: {"kind", "pr", "head", "base", "reason", "detail"},
 	}
@@ -353,11 +362,18 @@ func parseGitLine(line []byte) (gitLineRead, error) {
 			return gitLineRead{}, fmt.Errorf("a pull line numbers its pull request %d", l.PR)
 		case l.Heads < 0:
 			return gitLineRead{}, fmt.Errorf("the pull line of #%d counts %d heads", l.PR, l.Heads)
+		case l.Base == "":
+			return gitLineRead{}, fmt.Errorf("the pull line of #%d names no base branch", l.PR)
 		}
 		if err := checkCommit(fmt.Sprintf("the merge of #%d", l.PR), l.Merge, true); err != nil {
 			return gitLineRead{}, err
 		}
-		parsed.pull, parsed.heads = GitPull{Number: l.PR, Merge: l.Merge}, l.Heads
+		for i, at := range l.BaseChanges {
+			if at.IsZero() || i > 0 && at.Before(l.BaseChanges[i-1]) {
+				return gitLineRead{}, fmt.Errorf("the pull line of #%d has an invalid base change time", l.PR)
+			}
+		}
+		parsed.pull, parsed.heads = GitPull{Number: l.PR, Merge: l.Merge, Base: l.Base, BaseChanges: l.BaseChanges}, l.Heads
 	case gitHeadKind:
 		var l gitHeadLine
 		if err := decodeStrict(line, &l); err != nil {

@@ -839,6 +839,7 @@ func (n *neutralizer) registerGit(in GitInput) {
 		n.values = append(n.values, commit.Paths...)
 	}
 	for _, pull := range in.Pulls {
+		n.values = append(n.values, pull.Base)
 		for _, head := range pull.Heads {
 			n.values = append(n.values, head.Paths...)
 			for _, verdict := range head.Verdicts {
@@ -887,7 +888,10 @@ func (n *neutralizer) gitInput(in GitInput) GitInput {
 			head.Verdicts = verdicts
 			heads[j] = head
 		}
-		out.Pulls[i] = GitPull{Number: pull.Number, Merge: pull.Merge, Heads: heads}
+		pull.Base = n.withhold(n.renameLogins(n.rename(pull.Base)))
+		pull.BaseChanges = slices.Clone(pull.BaseChanges)
+		pull.Heads = heads
+		out.Pulls[i] = pull
 	}
 	for i, missing := range in.Missing {
 		missing.Detail = n.withhold(n.rename(missing.Detail))

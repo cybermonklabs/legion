@@ -881,9 +881,6 @@ func writeMadeUpRuns(t *testing.T, dir string, windows []windowRecord, rules []r
 			for _, f := range plan.breakEven {
 				part.BreakEven = append(part.BreakEven, write(BranchAt{Branch: MainBranch, Slowdown: f}))
 			}
-			for _, at := range plan.diagnostics {
-				part.Diagnostics = append(part.Diagnostics, write(at))
-			}
 			if err := writeJSON(filepath.Join(dir, w.Name, rule.Name, partFile), part); err != nil {
 				t.Fatal(err)
 			}
@@ -1059,19 +1056,35 @@ func TestTheIssuesFileGivesEachIssuesTimesUnderEachRule(t *testing.T) {
 	}
 	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)
 	for i := range windows {
-		windows[i].Stretches, windows[i].Conflicted = 2, 1
 		windows[i].Scorecard.FirstSlot = map[string]time.Time{"ACME-2": moment(0), "ACME-1": moment(30), "ACME-3": moment(60)}
 		windows[i].Scorecard.DoneAt = map[string]time.Time{"ACME-2": moment(120), "ACME-1": moment(180)}
 	}
 	rules := []record.SlotRule{replayedRule(t, record.MainRule.Name), replayedRule(t, "returned-by-first-slot")}
 	dir := t.TempDir()
-	writeMadeUpRuns(t, dir, windows, rules, runPlan{branches: []BranchAt{MainBranchAt}, perDraw: 3},
-		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
-			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
-			line.FirstSlot, line.DoneAt = times(replays[rule.Name].firstSlot, seed), times(replays[rule.Name].doneAt, seed)
-			ran.Gaps = Gaps(snapshot, line)
-			return snapshot, line, ran
-		})
+	// Main no longer draws conflicts. Give the report three synthetic runs
+	// explicitly so the assertions still exercise its median and missing-time rules.
+	for _, w := range windows {
+		if err := writeJSON(filepath.Join(dir, w.Name, recordFile), w); err != nil {
+			t.Fatal(err)
+		}
+		for r, rule := range rules {
+			branch := partRun{Branch: MainBranch.Name, Slowdown: 1, Seeds: []int64{1, 2, 3}}
+			for _, seed := range branch.Seeds {
+				snapshot, line, ran := madeUpRun(w, r, rule, MainBranchAt, seed)
+				line.FirstSlot, line.DoneAt = times(replays[rule.Name].firstSlot, seed), times(replays[rule.Name].doneAt, seed)
+				ran.Gaps = Gaps(snapshot, line)
+				for name, value := range map[string]any{runFile: ran, scorecardFile: snapshot, lineScorecardFile: line} {
+					if err := writeJSON(filepath.Join(runDir(dir, w.Name, rule.Name, MainBranchAt, seed), name), value); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			part := partRecord{Window: w.Name, Rule: rule.Name, RuleCommit: rule.Commit, Branches: []partRun{branch}}
+			if err := writeJSON(filepath.Join(dir, w.Name, rule.Name, partFile), part); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	runs, err := ReadRuns(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -1285,37 +1298,26 @@ func TestTheDocumentGivesDoneByAnyoneBesideLegionsDone(t *testing.T) {
 	}
 }
 
-// A validation runs R5's branch of the recorded conflicts beside R5's tests, at every slowdown
-// factor (DiagnosticBranches): the plan of every validation holds it, with the main branch alone or
-// with every branch, and neither a comparison's plan nor the cap backtest's holds it. The
-// validation read from the runs holds each such branch apart from its branches, so whether the
-// window's main branch passes and which branches give a comparison never read it, and it prints
-// each one's table as one whose measures test nothing and that never stands in place of the main
-// branch. The runs are made up: the main branch passes R5, and the branch of the recorded conflicts,
-// whose issues finished stand at twice the record's at each factor, fails it.
-func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
+// A failing drawn branch is not a comparison cell, but does not suppress the other branches.
+func TestConflictBranchesStandInTheValidation(t *testing.T) {
 	t.Parallel()
-	for _, run := range []struct {
-		name string
-		cfg  ValidateConfig
-	}{{"main only", ValidateConfig{MainOnly: true}}, {"every branch", ValidateConfig{}}} {
-		if got := validatePlan(run.cfg).diagnostics; !slices.Equal(got, DiagnosticBranches()) {
-			t.Errorf("%s: the validation runs the branches of the recorded conflicts %v, want %v", run.name, branchNames(got), branchNames(DiagnosticBranches()))
+	git, err := BranchNamed("main+conflicts=git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drawn := BranchAt{Branch: drawnConflictBranch, Slowdown: 1}
+	for _, branch := range []Branch{MainBranch, git, drawn.Branch} {
+		if !slices.Contains(validatePlan(ValidateConfig{}).branches, BranchAt{Branch: branch, Slowdown: 1}) {
+			t.Errorf("validation omits %s", branch.Name)
 		}
-	}
-	if got := fullPlan().diagnostics; len(got) != 0 {
-		t.Errorf("a comparison runs the branches of the recorded conflicts %v, want none", branchNames(got))
-	}
-	if got := validatePlan(ValidateConfig{CapBacktest: true, Cap: 73}).diagnostics; len(got) != 0 {
-		t.Errorf("the cap backtest runs the branches of the recorded conflicts %v, want none", branchNames(got))
 	}
 	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)[:1]
 	dir := t.TempDir()
-	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name)},
-		runPlan{branches: []BranchAt{MainBranchAt}, diagnostics: DiagnosticBranches(), perDraw: 1},
+	writeMadeUpRuns(t, dir, windows, []record.SlotRule{record.MainRule},
+		runPlan{branches: []BranchAt{MainBranchAt, {Branch: git, Slowdown: 1}, drawn}, perDraw: 1},
 		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
 			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
-			if at.Branch.recordedConflicts() {
+			if at == drawn {
 				line.Done = 40
 			}
 			return snapshot, line, ran
@@ -1328,45 +1330,20 @@ func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	labels := func(branches []BranchValidation) []string {
-		var out []string
-		for _, b := range branches {
-			out = append(out, b.Branch.Label())
-		}
-		return out
-	}
-	if got := labels(v.Branches); !slices.Equal(got, []string{MainBranchAt.Label()}) {
-		t.Errorf("the validation's branches are %v, want the main branch alone", got)
-	}
-	want := []string{"main+conflicts=recorded@1", "main+conflicts=recorded@1.2", "main+conflicts=recorded@1.6"}
-	if got := labels(v.Diagnostics); !slices.Equal(got, want) {
-		t.Fatalf("the validation's branches of the recorded conflicts are %v, want %v", got, want)
-	}
-	for _, b := range v.Diagnostics {
-		if b.Pass() {
-			t.Errorf("%s passes R5's tests, want it to fail its issues finished", b.Branch.Label())
-		}
-	}
-	if !v.MainPasses() || len(v.NoComparison()) != 0 {
-		t.Errorf("main passes %t and the branches that give no comparison are %v; the failing branches of the recorded conflicts move neither", v.MainPasses(),
-			v.NoComparison())
+	if !v.MainPasses() || !slices.Equal(v.NoComparison(), []BranchAt{drawn}) {
+		t.Errorf("main passes %t; no comparison on %v, want drawn alone", v.MainPasses(), v.NoComparison())
 	}
 	var out bytes.Buffer
 	if err := v.Write(&out, 1, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{"## `main+conflicts=recorded@1`: R5's branch of the recorded conflicts, whose measures test nothing",
-		"## `main+conflicts=recorded@1.6`: R5's branch of the recorded conflicts, whose measures test nothing", "never in place of the main branch"} {
-		if !strings.Contains(out.String(), line) {
-			t.Errorf("the validation prints no %q:\n%s", line, out.String())
-		}
+	if !strings.Contains(out.String(), "the pull request does not merge while it fails on window one") {
+		t.Error("validation does not say a failing generator on window one blocks the pull request")
 	}
 }
 
-// R5's branch of the recorded conflicts (spec R5): validate runs main+conflicts=recorded under the
-// window's recorded rule at every slowdown factor, and names, seed by seed, each issue the replay
-// starts that the record did not start in the window and each issue the record filed in the window
-// that the replay leaves out; the names gate nothing. The record's scorecard and a replay's line
+// R5 names the unexpected starts and omitted filings on main at each slowdown factor, without
+// changing the validation verdict.
 // scorecard give each issue of the window's project filed in the window, at its filing (filed):
 // priorityWorkWindow files ACME-1 to ACME-6 from 09:00 to 09:55 and ACME-7 at 08:30, before the
 // window; firstStartsWindow files ACME-1, ACME-2 and ACME-3, and a replay of it under main on the
@@ -1377,14 +1354,6 @@ func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
 // branch passes R5, and the names move neither its verdict nor which branches give a comparison.
 func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
 	t.Parallel()
-	var labels []string
-	for _, at := range DiagnosticBranches() {
-		labels = append(labels, at.Label())
-	}
-	factors := []string{"main+conflicts=recorded@1", "main+conflicts=recorded@1.2", "main+conflicts=recorded@1.6"}
-	if !slices.Equal(labels, factors) {
-		t.Errorf("validate runs the recorded conflicts' branch as %v, want %v: at every slowdown factor", labels, factors)
-	}
 	filedOf := func(card Scorecard) map[string]time.Time {
 		var read struct {
 			Filed map[string]time.Time `json:"filed"`
@@ -1401,10 +1370,7 @@ func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
 	if got := filedOf(card); !maps.EqualFunc(got, wantFiled, time.Time.Equal) {
 		t.Errorf("the record's scorecard gives the issues filed in the window as %v, want %v", got, wantFiled)
 	}
-	recorded, err := BranchNamed("main+conflicts=recorded")
-	if err != nil {
-		t.Fatal(err)
-	}
+	recorded := MainBranch
 	window := firstStartsWindow(t)
 	card, err = Score(window)
 	if err != nil {
@@ -1439,7 +1405,7 @@ func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
 	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)[:1]
 	dir := t.TempDir()
 	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name)},
-		runPlan{branches: []BranchAt{MainBranchAt}, diagnostics: branches, perDraw: 1},
+		runPlan{branches: branches, perDraw: 1},
 		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
 			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
 			if at.Branch.recordedConflicts() {
@@ -1452,11 +1418,8 @@ func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
 	patchJSON(t, filepath.Join(dir, windows[0].Name, recordFile), func(fields map[string]any) {
 		fields["scorecard"].(map[string]any)["filed"] = recordFiled
 	})
-	for _, at := range append([]BranchAt{MainBranchAt}, branches...) {
-		filed := recordFiled
-		if at.Branch.recordedConflicts() {
-			filed = byFactor[at.Slowdown].filed
-		}
+	for _, at := range branches {
+		filed := byFactor[at.Slowdown].filed
 		patchJSON(t, filepath.Join(runDir(dir, windows[0].Name, record.MainRule.Name, at, 1), lineScorecardFile), func(fields map[string]any) {
 			fields["filed"] = filed
 		})
@@ -1469,12 +1432,13 @@ func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !v.MainPasses() || len(v.NoComparison()) != 0 {
-		t.Errorf("main passes %t and the branches that give no comparison are %v; the names of the recorded conflicts' branch gate nothing",
-			v.MainPasses(), v.NoComparison())
+	// At f=1.2 the added first slots move the median past the R5 gap. The breaker
+	// names do not disqualify main@1, which also has breakers.
+	if !v.MainPasses() || !slices.Equal(v.NoComparison(), []BranchAt{{Branch: MainBranch, Slowdown: 1.2}}) {
+		t.Errorf("main passes %t and no comparison on %v, want only main@1.2 disqualified", v.MainPasses(), v.NoComparison())
 	}
 	var read struct {
-		Diagnostics []struct {
+		Branches []struct {
 			Branch struct {
 				Slowdown float64 `json:"slowdown"`
 			} `json:"branch"`
@@ -1483,14 +1447,14 @@ func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
 				StartedNotRecorded []string `json:"startedNotRecorded"`
 				FiledLeftOut       []string `json:"filedLeftOut"`
 			} `json:"breakers"`
-		} `json:"diagnostics"`
+		} `json:"branches"`
 	}
 	asJSON(t, v, &read)
 	want := map[float64][2][]string{1: {{"ACME-3"}, {"ACME-5"}}, 1.2: {{"ACME-3", "ACME-6"}, {"ACME-4", "ACME-5"}}, 1.6: {nil, nil}}
-	if len(read.Diagnostics) != len(want) {
-		t.Errorf("the validation holds %d branches of the recorded conflicts, want %d", len(read.Diagnostics), len(want))
+	if len(read.Branches) != len(want) {
+		t.Errorf("the validation holds %d main branches, want %d", len(read.Branches), len(want))
 	}
-	for _, b := range read.Diagnostics {
+	for _, b := range read.Branches {
 		names, ok := want[b.Branch.Slowdown]
 		if !ok || len(b.Breakers) != 1 || b.Breakers[0].Seed != 1 || !slices.Equal(b.Breakers[0].StartedNotRecorded, names[0]) ||
 			!slices.Equal(b.Breakers[0].FiledLeftOut, names[1]) {
@@ -1502,8 +1466,8 @@ func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
 	if err := v.Write(&out, 1, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{"| `main+conflicts=recorded@1` | 1 | ACME-3 | ACME-5 |", "| `main+conflicts=recorded@1.2` | 1 | ACME-3, ACME-6 | ACME-4, ACME-5 |",
-		"| `main+conflicts=recorded@1.6` | 1 | none | none |", "gates nothing"} {
+	for _, line := range []string{"| `main@1` | 1 | ACME-3 | ACME-5 |", "| `main@1.2` | 1 | ACME-3, ACME-6 | ACME-4, ACME-5 |",
+		"| `main@1.6` | 1 | none | none |", "gates nothing"} {
 		if !strings.Contains(out.String(), line) {
 			t.Errorf("the validation prints no %q:\n%s", line, out.String())
 		}

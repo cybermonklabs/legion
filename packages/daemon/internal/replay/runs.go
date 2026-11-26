@@ -113,7 +113,7 @@ type windowRecord struct {
 // a drawn scenario.
 func (r windowRecord) draws(branch Branch) bool {
 	branch = branch.orMain()
-	return r.Conflicted > 0 && !branch.recordedConflicts() || branch.NeverStarted != MainBranch.NeverStarted
+	return (r.Conflicted > 0 || r.Conflicts.canDrawConflict()) && !branch.recordedConflicts() || branch.NeverStarted != MainBranch.NeverStarted
 }
 
 // seeds is the seeds a run of the window on branch takes: 1 to perDraw where it draws, and 1
@@ -169,9 +169,8 @@ func (r partRun) label() string {
 }
 
 // partRecord is a part's part.json: the window and the rule it ran, each branch it ran with its
-// seeds, the factors of the break-even search it ran the main branch at beyond its branches', R5's
-// branches of the recorded conflicts a validation ran beside them (DiagnosticBranches), the cap its
-// runs served under in place of the record's (Cap, none where they kept the record's), and what the
+// seeds, the extra slowdown factors of the break-even search, and the cap its runs served under
+// in place of the record's (Cap, none where they kept the record's), and
 // part took — the wall time of its window, whose parts' runs share one pool (runWindow), so every
 // part of one window writes the same time; how many runs it ran at once; and the process's peak
 // memory — so a later Job can be sized from it (each run's own counts are in its run.json).
@@ -181,7 +180,6 @@ type partRecord struct {
 	RuleCommit      string    `json:"ruleCommit"`
 	Branches        []partRun `json:"branches"`
 	BreakEven       []partRun `json:"breakEven"`
-	Diagnostics     []partRun `json:"diagnostics,omitempty"`
 	Cap             int       `json:"cap,omitempty"`
 	Parallel        int       `json:"parallel"`
 	WallSeconds     float64   `json:"wallSeconds"`
@@ -192,10 +190,9 @@ type partRecord struct {
 // at the factors breakEven names beyond them, and R5's branches of the recorded conflicts a
 // validation runs.
 type partSpec struct {
-	rule        record.SlotRule
-	branches    []BranchAt
-	breakEven   []float64
-	diagnostics []BranchAt
+	rule      record.SlotRule
+	branches  []BranchAt
+	breakEven []float64
 }
 
 // windowSpec is one window a process runs parts of: its directory, its name, its place among the
@@ -305,9 +302,6 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 		for _, f := range part.breakEven {
 			add(&plan.BreakEven, BranchAt{Branch: MainBranch, Slowdown: f})
 		}
-		for _, at := range part.diagnostics {
-			add(&plan.Diagnostics, at)
-		}
 		plans[i] = plan
 	}
 	*of += len(runs)
@@ -351,7 +345,7 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 }
 
 // with is the part.json of a part held there already, held, with the runs plan made too: each
-// branch, break-even factor and branch of the recorded conflicts of either, plan's seeds where both
+// branch and break-even factor of either, plan's seeds where both
 // name one, and plan's counts of what the part took. So a forecast or a validation of the main
 // branch alone, run into the directory of a validation of every branch, leaves each of its branches
 // in the part, and each report reads every run the directory holds.
@@ -367,11 +361,7 @@ func (held partRecord) with(plan partRecord) partRecord {
 		}
 		return merged
 	}
-	plan.Branches, plan.BreakEven, plan.Diagnostics = merge(held.Branches, plan.Branches), merge(held.BreakEven, plan.BreakEven),
-		merge(held.Diagnostics, plan.Diagnostics)
-	if len(plan.Diagnostics) == 0 {
-		plan.Diagnostics = nil
-	}
+	plan.Branches, plan.BreakEven = merge(held.Branches, plan.Branches), merge(held.BreakEven, plan.BreakEven)
 	return plan
 }
 
@@ -527,15 +517,20 @@ type partRead struct {
 // issue's times of its line scorecard, and no run keeps its snapshot scorecard's, which no report
 // reads.
 type runRead struct {
-	seed        int64
-	snapshot    Scorecard
-	costs       Costs
-	line        Scorecard
-	gaps        []MeasureGap
-	assumptions []int
-	scenario    string
-	build       string
-	started     time.Time
+	seed          int64
+	snapshot      Scorecard
+	costs         Costs
+	line          Scorecard
+	gaps          []MeasureGap
+	assumptions   []int
+	scenario      string
+	build         string
+	started       time.Time
+	gitReads      map[string]GitReadCounts
+	gitHours      map[string]GitLoopHours
+	gitTable      map[string]GitReadTable
+	conflicts     ConflictModel
+	keptOpenLoops int
 }
 
 // ReadRuns reads every window's record and every part, with its runs, that dirs hold. A part found
@@ -626,7 +621,7 @@ func (r Runs) keepsIssues(key partKey) bool {
 }
 
 // readPart reads the part key from the directory of runs dir: its part.json and each run its plan
-// names, its diagnostic branches' among them; keepIssues keeps each issue's times of the runs' line
+// names; keepIssues keeps each issue's times of the runs' line
 // scorecards on every branch, and the runs of the main branch (MainBranchAt) keep them whatever it
 // says.
 func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
@@ -635,7 +630,7 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 	if err := readJSON(filepath.Join(partDir, partFile), &part.plan); err != nil {
 		return nil, err
 	}
-	for _, run := range slices.Concat(part.plan.Branches, part.plan.BreakEven, part.plan.Diagnostics) {
+	for _, run := range slices.Concat(part.plan.Branches, part.plan.BreakEven) {
 		at, err := run.at()
 		if err != nil {
 			return nil, fmt.Errorf("replay: the part of %s under %s: %w", key.window, key.rule, err)
@@ -693,6 +688,8 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 	}
 	read.assumptions, read.scenario = ran.Assumptions, ran.Scenario
 	read.build, read.started = cmp.Or(ran.BuildCommit, unknownBuild), ran.StartedAt
+	read.gitReads, read.gitHours, read.gitTable = ran.GitReads, ran.GitLoopHours, ran.GitReadTable
+	read.conflicts, read.keptOpenLoops = ran.Conflicts, ran.Divergence.KeptOpenLoops
 	return read, nil
 }
 
@@ -757,7 +754,7 @@ func (r Runs) part(window, rule string) (*partRead, error) {
 }
 
 // Validation is the validation of the window named window under rule (spec R5), read from the runs:
-// each branch of the part's plan, and each of its diagnostic branches apart, against the window's
+// each branch of the part's plan against the window's
 // record, both read from line timelines. A validation whose replays give no issue a first slot or a
 // done on any branch, where the record gives one some, is refused: its runs were read without their
 // issues' times, and every issue's error would stand at the window's end less the record's time.
@@ -783,14 +780,18 @@ func (r Runs) Validation(window, rule string) (Validation, error) {
 			for _, card := range cards {
 				timed = timed || len(card.FirstSlot) > 0 || len(card.DoneAt) > 0
 			}
-			branches = append(branches, ValidateBranch(rec.Scorecard, at, cards))
+			v := ValidateBranch(rec.Scorecard, at, cards)
+			for _, seed := range part.runs[at.Label()] {
+				if at.Branch.asksGit() || at.Branch.Conflicts == conflictsDrawn {
+					v.ConflictRuns = append(v.ConflictRuns, ConflictRunValidation{Seed: seed.seed, Reads: seed.gitReads, Hours: seed.gitHours,
+						Table: seed.gitTable, Fit: seed.conflicts, KeptOpenLoops: seed.keptOpenLoops})
+				}
+			}
+			branches = append(branches, v)
 		}
 		return branches, nil
 	}
 	if v.Branches, err = validate(part.plan.Branches); err != nil {
-		return Validation{}, err
-	}
-	if v.Diagnostics, err = validate(part.plan.Diagnostics); err != nil {
 		return Validation{}, err
 	}
 	if !timed && (len(rec.Scorecard.FirstSlot) > 0 || len(rec.Scorecard.DoneAt) > 0) {

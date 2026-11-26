@@ -398,7 +398,7 @@ func replayWindowOn(t *testing.T, window Window, rule string, branch Branch, see
 // the replay's log and each issue's moves in it.
 func replayLoopWindow(t *testing.T, window Window, rule string, seed int64) (RunResult, []replayLine, map[string][]fixtureMove) {
 	t.Helper()
-	result, log := replayWindowOn(t, window, rule, MainBranch, seed)
+	result, log := replayWindowOn(t, window, rule, drawnConflictBranch, seed)
 	return result, log, replayedMoves(log)
 }
 
@@ -718,7 +718,7 @@ func TestAStretchAfterADrawnLoopTakesADrawOfItsOwn(t *testing.T) {
 	replayDSN(t)
 	var draws []conflictDraw
 	out := t.TempDir()
-	result, err := Run(context.Background(), RunConfig{Window: cyclingLoopWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch,
+	result, err := Run(context.Background(), RunConfig{Window: cyclingLoopWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: drawnConflictBranch,
 		Seed: 1, Slowdown: 1, PGDSN: replayDSN(t), Out: out, onDraw: func(draw conflictDraw) { draws = append(draws, draw) }})
 	if err != nil {
 		t.Fatalf("replay the window under legion-v20.42.5: %v", err)
@@ -741,61 +741,29 @@ func TestAStretchAfterADrawnLoopTakesADrawOfItsOwn(t *testing.T) {
 	}
 }
 
-// The branch Merges zero sets the conflict model's merges term to zero and keeps its base and its
-// phase terms (spec R2, assumption 3, plan D7): every stretch draws at the chance its phase gives
-// whatever M its base took. The test reads a model with a base, a term for testing and a merges
-// term, and fails where the zero branch's chance at any M from 0 to 20 is not the logistic of the
-// base in merging and of the base and testing's term in testing, or where the fitted model's chance
-// at an M above 0 is. It then replays the fixture window conflict-from-fitted-rate under main on the
-// branch main+merges=zero: ACME-1's first stretch, which conflicts at the fitted rate (its M is 1),
-// draws at the base chance, below 10⁻⁶, and does not conflict, so no merge forward is asked, no
-// loop of conflict is counted, and ACME-1 goes on with its last merging segment from 11:00 and is
-// done at 11:15.
-func TestTheZeroBranchDrawsWithoutTheMergesTerm(t *testing.T) {
+// The fallback generator keeps the fitted terms on a repository without git input.
+func TestTheLegacyConflictGeneratorUsesTheFittedTerms(t *testing.T) {
 	t.Parallel()
-	base, testingTerm := -1.5, 0.7
-	fitted := ConflictModel{Stretches: 10, Conflicts: 4, Base: Coefficient{Estimate: base}, Term: Coefficient{Estimate: 0.9}, Level: conflictLevel,
-		Phases: map[phase.Phase]PhaseFit{phase.Testing: {Term: &Coefficient{Estimate: testingTerm}}}}
-	zero := fitted.WithoutTerm()
+	model := ConflictModel{Stretches: 10, Conflicts: 4, Base: Coefficient{Estimate: -1.5}, Term: Coefficient{Estimate: 0.9},
+		Phases: map[phase.Phase]PhaseFit{phase.Testing: {Term: &Coefficient{Estimate: 0.7}}}}
 	for merges := range 21 {
-		for in, want := range map[phase.Phase]float64{phase.Merging: logistic(base), phase.Testing: logistic(base + testingTerm)} {
-			if got := zero.Chance(in, merges); got != want {
-				t.Errorf("under the zero branch the chance in %s at M = %d is %v, want %v, its base and phase term's", in, merges, got, want)
-			}
-			if merges > 0 && fitted.Chance(in, merges) == zero.Chance(in, merges) {
-				t.Errorf("the fitted model's chance in %s at M = %d is %v, without its merges term of 0.9", in, merges, fitted.Chance(in, merges))
+		for in, base := range map[phase.Phase]float64{phase.Merging: -1.5, phase.Testing: -0.8} {
+			want := logistic(base + 0.9*math.Log2(1+float64(merges)))
+			if got := model.Chance(in, merges); math.Abs(got-want) > 1e-12 {
+				t.Errorf("legacy chance in %s at M=%d = %v, want %v", in, merges, got, want)
 			}
 		}
 	}
-
-	dsn := replayDSN(t)
-	branch, err := BranchNamed("main+merges=zero")
+	result, err := Run(context.Background(), RunConfig{Window: fixtureWindow(t, "conflict-from-fitted-rate"), Rule: mainRule(t),
+		Branch: drawnConflictBranch, Seed: 1, Slowdown: 1, PGDSN: replayDSN(t), Out: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := t.TempDir()
-	result, err := Run(context.Background(), RunConfig{Window: fixtureWindow(t, "conflict-from-fitted-rate"), Rule: mainRule(t), Branch: branch,
-		Seed: 1, Slowdown: 1, PGDSN: dsn, Out: out})
-	if err != nil {
-		t.Fatalf("replay the window on %s: %v", branch.Name, err)
+	if got := result.Conflicts.DrawnOwnMergeUnknown; got != 1 {
+		t.Errorf("%d drawn stretches may count their own merge, want 1", got)
 	}
-	if !result.Conflicts.TermZero {
-		t.Errorf("the run's conflict model %s keeps its merges term on the branch %s", result.Conflicts, branch.Name)
-	}
-	if result.Conflicts.DrawnOwnMergeUnknown != 1 {
-		t.Errorf("the run counts %d drawn stretches whose M may hold their own merge, want 1: ACME-1's first, over the 10:45 merge, "+
-			"which names no pull request", result.Conflicts.DrawnOwnMergeUnknown)
-	}
-	if loop, counted := result.Scorecard.Loops[string(CauseConflict)]; counted {
-		t.Errorf("the replay counts %+v of conflict, and on %s no stretch conflicts", loop, branch.Name)
-	}
-	if done := result.Scorecard.DoneAt["ACME-1"]; !done.Equal(clock(11, 15)) {
-		t.Errorf("ACME-1 is done at %s, want 11:15, its last merging segment run from its stretch's end at 11:00", stamp(done))
-	}
-	for _, line := range replayLog(t, out) {
-		if line.Msg == mergeForwardAskedLine {
-			t.Errorf("the replay asked a merge forward of %s at %s, and on %s no stretch conflicts", line.Issue, stamp(line.Time), branch.Name)
-		}
+	if loop := result.Scorecard.Loops[string(CauseConflict)]; loop.Rounds != 1 || loop.Hours != 0.5 {
+		t.Errorf("conflict loop = %+v, want one half-hour merge forward", loop)
 	}
 }
 
@@ -840,10 +808,6 @@ func TestAConflictDependsOnTheWaitOnlyThroughMerges(t *testing.T) {
 	both := merged(clock(8, 0), clock(11, 30))
 	if model.Chance(phase.Merging, both) == long {
 		t.Errorf("a stretch that took two merges draws at %v, the chance of one that took one, under a merges term of 1.1", long)
-	}
-	if zero := model.WithoutTerm(); zero.Chance(phase.Merging, both) != zero.Chance(phase.Merging, 1) {
-		t.Errorf("under the zero branch a stretch that took two merges draws at %v and one that took one at %v", zero.Chance(phase.Merging, both),
-			zero.Chance(phase.Merging, 1))
 	}
 	if got := (ConflictModel{Stretches: 3}).Chance(phase.Merging, 5); got != 0 {
 		t.Errorf("a window that records no conflict draws a chance of %v, want 0", got)
@@ -1192,7 +1156,7 @@ func sharedDrawsWindow(t *testing.T, to time.Time) Window {
 func drawsUnder(t *testing.T, window Window, rule string) []conflictDraw {
 	t.Helper()
 	var draws []conflictDraw
-	if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, rule), Branch: MainBranch, Seed: 1, Slowdown: 1,
+	if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, rule), Branch: drawnConflictBranch, Seed: 1, Slowdown: 1,
 		PGDSN: replayDSN(t), Out: t.TempDir(), onDraw: func(draw conflictDraw) { draws = append(draws, draw) }}); err != nil {
 		t.Fatalf("replay the window under %s: %v", rule, err)
 	}
@@ -1423,9 +1387,9 @@ func TestAMergersSendBackForAConflictingHeadCountsAsAConflict(t *testing.T) {
 func TestTheRecordedConflictsBranchKeepsTheRecordsConflicts(t *testing.T) {
 	t.Parallel()
 	window := phaseLoopsWindow(t, false)
-	recorded := DiagnosticBranches()[0].Branch
+	recorded := MainBranch
 	if !recorded.recordedConflicts() {
-		t.Fatalf("the diagnostic branch %s keeps no recorded conflicts", recorded.Name)
+		t.Fatalf("the main branch %s keeps no recorded conflicts", recorded.Name)
 	}
 	if seeds := (windowRecord{Stretches: 3, Conflicted: 1}).seeds(recorded, SeedsPerDraw); !slices.Equal(seeds, []int64{1}) {
 		t.Errorf("a window with a recorded conflict runs %s at the seeds %v, want the seed 1 alone", recorded.Name, seeds)
@@ -1559,7 +1523,7 @@ func TestTheMergingRateIsFittedForEachReleasePart(t *testing.T) {
 	}
 	for seed := int64(1); seed <= 3; seed++ {
 		var draws []conflictDraw
-		if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: seed,
+		if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: drawnConflictBranch, Seed: seed,
 			Slowdown: 1, PGDSN: replayDSN(t), Out: t.TempDir(), onDraw: func(draw conflictDraw) { draws = append(draws, draw) }}); err != nil {
 			t.Fatal(err)
 		}
@@ -1643,7 +1607,7 @@ func TestAStretchSpanningABootDrawsThereAtItsOwnChance(t *testing.T) {
 	for seed := int64(1); seed <= 10; seed++ {
 		var draws []conflictDraw
 		out := t.TempDir()
-		if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: seed,
+		if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: drawnConflictBranch, Seed: seed,
 			Slowdown: 1, PGDSN: replayDSN(t), Out: out, onDraw: func(draw conflictDraw) { draws = append(draws, draw) }}); err != nil {
 			t.Fatal(err)
 		}

@@ -426,7 +426,10 @@ func (c *gitCollector) readPull(ctx context.Context, reader githubReader, reposi
 	if err != nil {
 		return nil, nil, fmt.Errorf("the pull request: %w", err)
 	}
-	pull := GitPull{Number: number}
+	if detail.Base.Ref == "" {
+		return nil, nil, fmt.Errorf("the pull request names no base branch")
+	}
+	pull := GitPull{Number: number, Base: detail.Base.Ref}
 	if detail.Merged && detail.Base.Ref == c.cfg.Branch && c.mergeSet[detail.MergeCommitSHA] {
 		pull.Merge = detail.MergeCommitSHA
 	}
@@ -439,7 +442,8 @@ func (c *gitCollector) readPull(ctx context.Context, reader githubReader, reposi
 	if err != nil {
 		return nil, nil, fmt.Errorf("the timeline: %w", err)
 	}
-	timeline, missing := parseGitTimeline(number, pages)
+	timeline, changes, missing := parseGitTimeline(number, pages)
+	pull.BaseChanges = changes
 	pull.Heads = c.selectHeads(number, timeline)
 	return &pull, missing, nil
 }
@@ -459,8 +463,9 @@ type timelineHead struct {
 // no list of events, a committed event that gives no commit or no committer's time, and a force
 // push that gives no time or names no commit, whose tip is never guessed, are each a
 // timeline-unread missing input.
-func parseGitTimeline(number int, pages [][]byte) ([]timelineHead, []GitMissing) {
+func parseGitTimeline(number int, pages [][]byte) ([]timelineHead, []time.Time, []GitMissing) {
 	var heads []timelineHead
+	changes := []time.Time{}
 	var missing []GitMissing
 	unread := func(format string, args ...any) {
 		missing = append(missing, GitMissing{PR: number, Reason: GitTimelineUnread, Detail: fmt.Sprintf(format, args...)})
@@ -493,6 +498,15 @@ func parseGitTimeline(number int, pages [][]byte) ([]timelineHead, []GitMissing)
 					continue
 				}
 				heads = append(heads, timelineHead{sha: committed.SHA, at: committed.Committer.Date.UTC(), from: GitHeadCommit, order: len(heads)})
+			case "base_ref_changed":
+				var changed struct {
+					At time.Time `json:"created_at"`
+				}
+				if err := json.Unmarshal(item, &changed); err != nil || changed.At.IsZero() {
+					unread("a base_ref_changed event of the timeline gives no time: %.200s", item)
+				} else {
+					changes = append(changes, changed.At.UTC())
+				}
 			case "head_ref_force_pushed":
 				var pushed struct {
 					CommitID  *string    `json:"commit_id"`
@@ -509,7 +523,8 @@ func parseGitTimeline(number int, pages [][]byte) ([]timelineHead, []GitMissing)
 			}
 		}
 	}
-	return heads, missing
+	slices.SortFunc(changes, time.Time.Compare)
+	return heads, changes, missing
 }
 
 // selectHeads is the heads of the pull request number the git file writes, of those its timeline

@@ -23,7 +23,7 @@ func sampleGitInput(t *testing.T) GitInput {
 	return GitInput{
 		Commits: []GitCommit{{SHA: sha("a"), Paths: []string{"docs/a.md", "f.txt"}}, {SHA: sha("b"), Paths: []string{"f.txt"}}},
 		Pulls: []GitPull{
-			{Number: 12, Merge: sha("b"), Heads: []GitHead{
+			{Number: 12, Merge: sha("b"), Base: "main", BaseChanges: []time.Time{at("09:00:00")}, Heads: []GitHead{
 				{SHA: sha("1"), At: at("07:30:00"), From: GitHeadCommit, Tip: sha("a"), MergeBase: sha("0"), Paths: []string{"f.txt"},
 					Verdicts: []GitVerdict{{Base: sha("a"), Conflict: true, Paths: []string{"f.txt"}}}},
 				{SHA: sha("2"), At: at("09:30:00"), From: GitHeadRead, Tip: sha("a"), MergeBase: sha("0"), Paths: []string{"h.txt"},
@@ -31,7 +31,7 @@ func sampleGitInput(t *testing.T) GitInput {
 				{SHA: sha("3"), At: at("10:00:00"), From: GitHeadForcePush, Tip: sha("a"), MergeBase: sha("a"), Paths: []string{"f.txt"},
 					Verdicts: []GitVerdict{{Base: sha("a"), Conflict: false, Paths: []string{}}}},
 			}},
-			{Number: 13, Heads: []GitHead{{SHA: sha("4"), At: at("09:15:00"), From: GitHeadCommit}}},
+			{Number: 13, Base: "release", BaseChanges: []time.Time{}, Heads: []GitHead{{SHA: sha("4"), At: at("09:15:00"), From: GitHeadCommit}}},
 		},
 		Missing: []GitMissing{
 			{Base: sha("c"), Reason: GitBaseUnreachable, Detail: "git fetch of the commit alone: git exits 128"},
@@ -129,6 +129,8 @@ func TestAGitLineNotOfItsFormIsRefused(t *testing.T) {
 	for _, line := range []string{
 		`{"kind":"commit","sha":"` + sha + `","paths":[],"pr":1}`,
 		`{"kind":"pull","pr":12,"merge":""}`,
+		`{"kind":"pull","pr":12,"merge":"","baseChanges":[],"heads":0}`,
+		`{"kind":"pull","pr":12,"merge":"","base":"main","heads":0}`,
 		`{"kind":"head","pr":12,"sha":"` + sha + `","at":"2001-03-05T09:00:00Z","from":"commit","tip":"` + sha + `"}`,
 		`{"kind":"commit","sha":"` + sha + `","paths":["b","a"]}`,
 		`{"kind":"head","pr":12,"sha":"` + sha + `","at":"2001-03-05T09:00:00Z","from":"commit","tip":"` + sha + `","mergeBase":"` + sha +
@@ -158,7 +160,7 @@ func TestNeutralizeCarriesTheGitInput(t *testing.T) {
 	paths := []string{"docs/nimbus-412/notes.md", privateWord + "/readme.md", "src/app.go"}
 	w.Git = map[string]GitInput{privateRepo: {
 		Commits: []GitCommit{{SHA: sha("1"), Paths: paths}},
-		Pulls: []GitPull{{Number: 88, Merge: sha("1"), Heads: []GitHead{{SHA: sha("3"), At: time.Date(2026, time.March, 2, 10, 4, 0, 0, time.UTC),
+		Pulls: []GitPull{{Number: 88, Merge: sha("1"), Base: "main", Heads: []GitHead{{SHA: sha("3"), At: time.Date(2026, time.March, 2, 10, 4, 0, 0, time.UTC),
 			From: GitHeadCommit, Tip: sha("2"), MergeBase: sha("2"), Paths: paths[:1],
 			Verdicts: []GitVerdict{{Base: sha("1"), Conflict: true, Paths: paths[:1]}}}}}},
 		Missing: []GitMissing{{PR: 88, Head: sha("4"), Reason: GitHeadUnreachable,

@@ -178,7 +178,7 @@ func TestAnEventOfALoopADrawnLoopReplacesGoesWithIt(t *testing.T) {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			var copied *shadow
 			out := t.TempDir()
-			cfg := RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: seed, Slowdown: 1, PGDSN: dsn,
+			cfg := RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: drawnConflictBranch, Seed: seed, Slowdown: 1, PGDSN: dsn,
 				Out: out}
 			cfg.atStart = func(s *shadow) { copied = s }
 			if _, err := Run(context.Background(), cfg); err != nil {

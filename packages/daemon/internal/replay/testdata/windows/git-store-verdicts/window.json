@@ -44,7 +44,7 @@
   "files": {
     "events/ACME-1.jsonl": "1986be08a1877d10bb1b1b58eca6168c82237d1f81da707ec55d3a12ec71e98b",
     "events/ACME-2.jsonl": "c3058ce17d755a4e2dcf38feac10dfa763dfc4495cde6294d4974a58da103cef",
-    "git/acme__widgets.jsonl": "bf3fa912f81a00357d93c93495e3d7c9c76915d0b80da2faf9293635212cf7ba",
+    "git/acme__widgets.jsonl": "b03eca711fb20334130707341aa522f4369ff28e762e8327da637fe010dd0cf3",
     "log.jsonl": "5da196a5cdb1130552093f63c952c2b3171f1a2c28c43b3aa091761512942f82",
     "merges/acme__widgets.jsonl": "ed85c14de5997c7ef9a3a285deb1d94a23e01233fe567a1918655c97b09ba31f"
   }

@@ -21,9 +21,11 @@ body: |-
     `run` writes a line of its own to the run's log for each conflict draw, `replay: a stretch's
     conflict drawn`, with the issue, its stretch, the running and the fitted phase, the chance, the
     number drawn and the outcome; no daemon writes that line, and no measure reads it.
-    `validate` checks a replay against the record (`--main-only` runs the main branch alone, with
-    its seeds), `forecast` checks it against a recorded change of the rule, and `compare` compares
-    the rules on two windows, gives the reason for each rule, and writes each issue's first slot
+    The main branch keeps recorded conflicts. The git branch uses stored verdicts and draws
+    unanswered reads. The drawn branch draws from the generator fitted on touching merges.
+    `validate` checks all three conflict branches and reports Git read counts and conflict hours.
+    `--main-only` runs just the main branch at slowdown 1. `forecast` checks the tool against
+    a recorded change of rule. `compare` compares rules on two windows and writes each issue's first slot
     and done time under each rule beside the record. `rules` prints the twenty rules that a
     replay can run, each with its commit: the daemon's own, the rules of three recorded windows
     (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The

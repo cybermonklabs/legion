@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"cmp"
 	"maps"
 	"math/rand/v2"
 	"slices"
@@ -187,6 +188,7 @@ func clonePieces(pieces []*piece, key string) []*piece {
 	for _, p := range pieces {
 		clone := &piece{issue: key, index: len(clones), visit: p.visit, phase: p.phase, role: p.role, opens: p.opens, start: p.start,
 			end: p.end, ends: p.ends, hold: p.hold, m: p.m, cut: p.cut, drawn: true}
+		clone.source = cmp.Or(p.source, p.issue)
 		if clone.opens == opensAtSeed {
 			clone.opens = openingOf(clone.phase, clone.visit)
 		}

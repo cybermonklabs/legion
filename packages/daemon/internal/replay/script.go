@@ -128,6 +128,8 @@ type piece struct {
 	// are entered at the generation the issue stands at, its registration names the issue's own
 	// document, and the Dispatch events of the work it copies stay the copied issue's.
 	drawn bool
+	// source is the issue whose recorded piece was cloned, empty on an original.
+	source string
 	// leftUnrun says the piece is work of a generation its issue left in the replay before the
 	// piece opened (driver.cancelWork): the replay never ran that generation's piece in it, so the
 	// piece runs at the generation the issue stands at when it opens, and its move is entered at
@@ -139,17 +141,19 @@ type piece struct {
 	// (liveStretch), not a piece's.
 	drew    *piece
 	resumes bool
+	gitLoop *gitLoop
 	// acts is every act of the piece, by its offset from the start.
 	acts []act
 
 	// The replay's own: where the piece stands, when it started, its length, when it was paused,
 	// and the items it scheduled that have not run.
-	state    pieceState
-	at       time.Time
-	n        int
-	length   time.Duration
-	pausedAt time.Time
-	pending  []*item
+	state     pieceState
+	at        time.Time
+	n         int
+	length    time.Duration
+	pausedAt  time.Time
+	pausedFor time.Duration
+	pending   []*item
 	// turns is each role's turn under way in the piece, which a pause ends and a resume begins
 	// again.
 	turns map[claim.Role]bool
