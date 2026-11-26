@@ -132,7 +132,7 @@ func launchComesUp(machine *supervise.Machine, ready bool) error {
 // applies it.
 func relaunched(machine *supervise.Machine) error {
 	ended := machine.Claim()
-	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: ended.Token}); err != nil {
+	if err := machine.Handle(context.Background(), supervise.RequestAskedRetry{Claim: ended.Token, By: supervise.SuspendedByOperator}); err != nil {
 		return fmt.Errorf("the operator's retry of the %s: %w", ended.Role, err)
 	}
 	machine.Wait()
@@ -327,7 +327,7 @@ func retriedIntoAFreshSession(t *testing.T, runner *outbox, machine *supervise.M
 	failed := machine.Claim()
 	runner.supervisor.deps.Runtime.(*fake.Runtime).ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
 		failed.Token, runtime.ErrSessionFileMissing)})
-	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: failed.Token}); err != nil {
+	if err := machine.Handle(context.Background(), supervise.RequestAskedRetry{Claim: failed.Token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's retry of the %s: %v", failed.Role, err)
 	}
 	machine.Wait()
@@ -559,12 +559,12 @@ func (p *publishedThen) Publish(ctx context.Context, topic, message string, payl
 // ready too.
 func endedAndRetried(machine *supervise.Machine, ready bool) error {
 	told := machine.Claim()
-	if err := machine.Handle(context.Background(), supervise.RequestStop{Claim: told.Token}); err != nil {
+	if err := machine.Handle(context.Background(), supervise.RequestStop{Claim: told.Token, By: supervise.SuspendedByOperator}); err != nil {
 		return fmt.Errorf("the operator's stop of the %s's launch %d: %w", told.Role, told.Generation, err)
 	}
 	machine.Wait()
 	if !ready {
-		if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: told.Token}); err != nil {
+		if err := machine.Handle(context.Background(), supervise.RequestAskedRetry{Claim: told.Token, By: supervise.SuspendedByOperator}); err != nil {
 			return fmt.Errorf("the operator's retry of the %s: %w", told.Role, err)
 		}
 		machine.Wait()

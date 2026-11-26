@@ -16,7 +16,6 @@ import {
 } from "./api";
 import { blockId, openedThreadCard, setSheet } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { READING_PANE_WIDTH } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { sessionIds } from "./session-ids";
 
@@ -420,12 +419,14 @@ export function answeredQuestionPreview(page: Page, askId: string): Locator {
   return page.locator(`[data-answer-row="${askId}"]`).locator("[data-markdown-preview]").first();
 }
 
-/** Opens the Inbox narrowed to its Reply rows, below the reading column's width so every row is
- *  the card that draws its own thread rather than a title alone (`e2e/inbox-pane.ts`'s
- *  `READING_PANE_WIDTH`). `/replies` lands on this same address. */
+/** Opens the Inbox drawer, whose every row is the card that draws its own thread rather than a
+ *  title alone: the Inbox page draws short rows at every width and reads one row at a time
+ *  (`e2e/inbox-pane.ts`). The drawer opens over another page, so this navigates to one. */
 export async function openInboxReplies(page: Page): Promise<void> {
-  await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 256 });
-  await page.goto("/?type=reply");
+  await page.goto("/agents");
+  await page.locator("body").focus();
+  await page.keyboard.press("i");
+  await expect(page.getByRole("dialog", { name: "Inbox" })).toBeVisible();
 }
 
 /** One turn of the thread an Inbox Reply row draws: the row is `[data-inbox-row="reply:<thread
