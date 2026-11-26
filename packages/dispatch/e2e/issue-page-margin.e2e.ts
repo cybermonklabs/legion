@@ -1,7 +1,8 @@
 /** comments on text are written through the server's routes and drawn beside their nodes from its
  *  tree, comments and messages reads */
 
-import { type Result, routeUrl } from "../web/src/api/paths";
+import type { CommentNodeAnchor } from "@legion/contracts";
+
 import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
@@ -39,7 +40,7 @@ import {
 import {
   type MarginSeed,
   type NoThreadsSeed,
-  readWithTrees,
+  readNodeAnchored,
   seedMarginIssue,
   seedNoThreads,
 } from "./issue-page-margin";
@@ -352,16 +353,10 @@ function nodeComments(seeded: MarginSeed): { readonly id: string; readonly what:
   });
 }
 
-/** A comment's node anchor as the server holds it (INFRA-1253 R31). */
-type NodeAnchor = NonNullable<Result<"/api/v1/comments/{id}", "get">["comment"]["node_anchor"]>;
-
-/** The node anchor the server holds for comment `id`: the comment read with `node_anchor=true`,
- *  which names the node its words are in by its id in the tree read. */
-async function nodeAnchorOf(id: string): Promise<NodeAnchor> {
-  const read = await readWithTrees<Result<"/api/v1/comments/{id}", "get">>(
-    routeUrl("/api/v1/comments/{id}", { id }, { node_anchor: true })
-  );
-  const anchor = read.comment.node_anchor;
+/** The node anchor the server holds for comment `id` (INFRA-1253 R31): the comment read with
+ *  `node_anchor=true`, which names the node its words are in by its id in the tree read. */
+async function nodeAnchorOf(id: string): Promise<CommentNodeAnchor> {
+  const anchor = (await readNodeAnchored(id)).comment.node_anchor;
   if (anchor === undefined) throw new Error(`the server holds no node anchor of comment ${id}`);
   return anchor;
 }
@@ -375,9 +370,9 @@ function treeIdIn(answer: IssueTreeRead, key: string, readId: string, what: stri
 }
 
 /** The spots of the seeded comments on the words of a node (`nodeComments`), each at the node and
- *  the match its node anchor names, which the page places it at from G2. */
-async function nodeSpots(page: Page, seeded: MarginSeed): Promise<Spot[]> {
-  const answer = await requestedTreeRead(page, seeded.key);
+ *  the match its node anchor names, which the page places it at from G2; `answer` is Graph's
+ *  read of the issue (`requestedTreeRead`), which holds every node. */
+async function nodeSpots(answer: IssueTreeRead, seeded: MarginSeed): Promise<Spot[]> {
   return Promise.all(
     nodeComments(seeded).map(async ({ id, what }) => {
       const anchor = await nodeAnchorOf(id);
@@ -449,6 +444,9 @@ interface SpotReading {
 }
 
 interface SpotsReading {
+  /** Every thread box the column shows, each by its root's id, the asked spots' and any other's:
+   *  the stack a spot stands in. */
+  readonly boxes: readonly { readonly box: Box; readonly id: string }[];
   readonly mainRight: number;
   readonly spots: readonly SpotReading[];
 }
@@ -458,7 +456,8 @@ interface SpotsReading {
  * column finds it (`TextMargin.tsx`'s `rowIn`: of two rows of one node, the one under the stored
  * parent the box names); and the lines of its quoted words in that row's words element
  * (`[data-node-words]`), found as the page's plain words read them, with what the row draws that
- * is no part of the node's text left out (`row-text-runs.ts`).
+ * is no part of the node's text left out (`row-text-runs.ts`). Beside them, every thread box the
+ * column shows, whether a spot's or not.
  */
 function readSpots(page: Page, spots: readonly Spot[]): Promise<SpotsReading> {
   return page.evaluate(
@@ -527,7 +526,20 @@ function readSpots(page: Page, spots: readonly Spot[]): Promise<SpotsReading> {
         const last = lines.item(lines.length - 1);
         return first === null || last === null ? null : { first: rect(first), last: rect(last) };
       };
+      const shownBox = (box: Element | null): HTMLElement | null =>
+        box instanceof HTMLElement &&
+        !box.hidden &&
+        getComputedStyle(box).visibility !== "hidden" &&
+        box.getBoundingClientRect().height > 0
+          ? box
+          : null;
       return {
+        boxes: [...(column?.querySelectorAll("[data-text-thread]") ?? [])].flatMap((box) => {
+          const shown = shownBox(box);
+          return shown === null
+            ? []
+            : [{ box: rect(shown.getBoundingClientRect()), id: shown.dataset.textThread ?? "" }];
+        }),
         mainRight: stage?.getBoundingClientRect().right ?? 0,
         spots: asked.map((spot) => {
           const box = column?.querySelector(`[data-text-thread="${CSS.escape(spot.id)}"]`) ?? null;
@@ -540,13 +552,7 @@ function readSpots(page: Page, spots: readonly Spot[]): Promise<SpotsReading> {
             rows.length < 2 || parent === null
               ? rows[0]
               : (rows.find((one) => parentOf(one) === parent) ?? rows[0]);
-          const shown =
-            box instanceof HTMLElement &&
-            !box.hidden &&
-            getComputedStyle(box).visibility !== "hidden" &&
-            box.getBoundingClientRect().height > 0
-              ? box
-              : null;
+          const shown = shownBox(box);
           return {
             box: shown === null ? null : rect(shown.getBoundingClientRect()),
             id: spot.id,
@@ -603,38 +609,49 @@ function drawnBoxes(
     .sort((left, right) => left.box.top - right.box.top);
 }
 
+/** The box the column shows right above the box `box` of thread `id` in the stack: of its other
+ *  boxes, a spot's or any other thread's, the lowest whose top is at or above `box`'s top. */
+function boxAbove(
+  reading: SpotsReading,
+  id: string,
+  box: Box
+): { readonly box: Box; readonly id: string } | undefined {
+  let above: { readonly box: Box; readonly id: string } | undefined;
+  for (const other of reading.boxes) {
+    if (other.id === id || other.box.top > box.top + 0.5) continue;
+    if (above === undefined || other.box.top > above.box.top) above = other;
+  }
+  return above;
+}
+
 /**
  * The drawn threads whose box does not stand level with the first line of their quoted words in
  * their node's row (within 2 px), and, where the column stacks (`stacked`, G5), not 8 px or more
- * under the thread above it either; each with both tops.
+ * under the thread above it either - the box right above it, whatever thread it is: a thread the
+ * row does not name still pushes the ones under it down - each with both tops.
  */
 function offWords(reading: SpotsReading, spots: readonly Spot[], stacked: boolean): string[] {
-  const failures: string[] = [];
-  let above: Box | undefined;
-  for (const { box, id, words } of drawnBoxes(reading)) {
+  return drawnBoxes(reading).flatMap(({ box, id, words }) => {
     const level = words !== null && Math.abs(box.top - words.first.top) <= 2;
-    const under = stacked && above !== undefined && box.top >= above.bottom + 8 - 0.5;
-    if (!level && !under) {
-      failures.push(
-        `${whatOf(spots, id)}: its box at ${box.top}, its words at ${words?.first.top ?? "none"}`
-      );
-    }
-    above = box;
-  }
-  return failures;
+    const above = boxAbove(reading, id, box);
+    const under = stacked && above !== undefined && box.top >= above.box.bottom + 8 - 0.5;
+    return level || under
+      ? []
+      : [`${whatOf(spots, id)}: its box at ${box.top}, its words at ${words?.first.top ?? "none"}`];
+  });
 }
 
-/** The drawn threads whose box covers the one above it. */
+/** The drawn threads whose box covers another box the column shows, a spot's or any other
+ *  thread's: its top stands inside that box. */
 function covering(reading: SpotsReading, spots: readonly Spot[]): string[] {
-  const failures: string[] = [];
-  let above: { readonly box: Box; readonly id: string } | undefined;
-  for (const drawn of drawnBoxes(reading)) {
-    if (above !== undefined && drawn.box.top < above.box.bottom - 0.5) {
-      failures.push(`${whatOf(spots, drawn.id)} covers ${whatOf(spots, above.id)}`);
-    }
-    above = drawn;
-  }
-  return failures;
+  return drawnBoxes(reading).flatMap(({ box, id }) =>
+    reading.boxes
+      .filter(
+        (other) =>
+          other.id !== id && other.box.top <= box.top + 0.5 && box.top < other.box.bottom - 0.5
+      )
+      .map((other) => `${whatOf(spots, id)} covers ${whatOf(spots, other.id)}`)
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -934,22 +951,23 @@ async function openView(page: Page, traffic: ApiRequests, key: string, view: Vie
 }
 
 /** (1) to (4) at 1440 px in each view, (2) first: the base this part stands on already draws no
- *  row of a comment on text, so a run at the merge-base reads (2) and fails on (1). The Change's
- *  thread, where `change` holds it, is read in the two outlines, which draw the agent decision as
- *  a row: the Spec view draws it as a cell of part J's column of decisions, and Decisions draws
- *  the Change in part U's row (row 8). */
+ *  row of a comment on text, so a run at the merge-base reads (2) and fails on (1). From G5
+ *  (`gates.change`) the Change's thread is read in each view that draws the agent decision as a
+ *  row - Conversation, Graph and Decisions, where its box stands among the others whatever part U
+ *  owes of its words (row 8) - and not in the Spec view, which draws that decision as a cell of
+ *  its column of decisions (owed on part J). */
 async function readEveryView(
   page: Page,
   traffic: ApiRequests,
   seeded: MarginSeed,
   spots: readonly Spot[],
-  change: Spot | undefined,
   gates: RowOneGates
 ): Promise<void> {
+  const change = gates.change ? await changeSpot(seeded) : undefined;
   for (const view of VIEWS) {
     await openView(page, traffic, seeded.key, view);
     const must = mustDraw(seeded, view);
-    const read = change === undefined || !OUTLINES[view] ? spots : [...spots, change];
+    const read = change === undefined || view === "spec" ? spots : [...spots, change];
     for (const spot of read) {
       if (!must.has(spot.id)) continue;
       await expect(
@@ -1573,7 +1591,7 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     "NODE_ANCHOR"
   );
   const changeThread = onBase(
-    "(1) and (2) the Change's thread beside the agent decision in Conversation and in Graph, and the Change as no row",
+    "(1) and (2) the Change's thread beside the agent decision in Conversation, Graph and Decisions, and the Change as no row",
     "COMPOSER"
   );
   onBase(
@@ -1598,14 +1616,17 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     "PART_J"
   );
   await phase(browser, seedMarginIssue, async (page, seeded) => {
-    const spots = [...(await threadSpots(seeded)), ...(nodes ? await nodeSpots(page, seeded) : [])];
-    const change = changeThread ? await changeSpot(seeded) : undefined;
+    const [documentThreads, nodeThreads] = await Promise.all([
+      threadSpots(seeded),
+      nodes ? requestedTreeRead(page, seeded.key).then((answer) => nodeSpots(answer, seeded)) : [],
+    ]);
+    const spots = [...documentThreads, ...nodeThreads];
     const traffic = watchApiRequests(page);
     if (phone) {
       await readPhone(page, traffic, seeded, spots);
       return;
     }
-    await readEveryView(page, traffic, seeded, spots, change, {
+    await readEveryView(page, traffic, seeded, spots, {
       change: changeThread,
       nodes,
       quoted,
@@ -2068,7 +2089,7 @@ async function writeOnNodes(
     await expectLanded(page, { ...spot, what: `the ${what}` }, "graph");
     written.push({ ...spot, what: `the thread written on the ${what}` });
   }
-  const known = [...(await threadSpots(seeded)), ...(await nodeSpots(page, seeded))];
+  const known = (await Promise.all([threadSpots(seeded), nodeSpots(answer, seeded)])).flat();
   for (const view of VIEWS) {
     await openView(page, traffic, seeded.key, view);
     const must = new Set(view === "graph" ? written.map(({ id }) => id) : []);
@@ -2443,8 +2464,8 @@ async function invokeFromThread(card: Locator, view: View): Promise<void> {
   const before = await card
     .locator('[data-thread-lens-type="lens"]')
     .evaluateAll((lenses) => lenses.map((lens) => lens.getAttribute("data-thread-lens") ?? ""));
-  // Until G5 stacks the column's cards, a lower node's card can sit over this one; focusing the
-  // control raises its card above siblings through `focus-within:z-20`.
+  // Focusing the control makes its card the stack's focus (`CardStackFocus`), which stands it
+  // level with its words, so the press lands on the card where it stays.
   const act = card.locator("[data-thread-acts] [data-row-lens]").first();
   await act.focus();
   await act.click();
@@ -2644,12 +2665,13 @@ function entryPlace(
 // c-address. The named reply's focus is read first: at the merge-base the row fails there, and
 // with an address that opens the issue's own address instead.
 // SLOW(>=2s): the whole seeded issue, loaded at the addresses of a reply, the Change, the thread
-// past the first page of a statement's children, the risk's comment in two views and a comment
-// no view draws, and at the issue's own address for its Contents pane.
+// past the first page of a statement's children, the comments on the plan task, the constraint
+// and the result, the risk's comment in two views and a comment no view draws, and at the
+// issue's own address for its Contents pane.
 test("the address of a comment on text opens its thread", async ({ browser }) => {
   test.setTimeout(300_000);
-  const risk = onBase(
-    "`?comment=<id>` of the risk's comment opens the view that draws the risk's row, with the focus in that thread: Graph at Graph's address, and Conversation at the issue's own, since Conversation draws the risk (R8)",
+  const nodeAddresses = onBase(
+    "`?comment=<id>` of the constraint's comment and of the result's comment opens Graph with the focus in that thread, and of the risk's comment opens Conversation with the focus in that thread and stays in Graph from Graph's own address",
     "NODE_ANCHOR"
   );
   const message = onBase(
@@ -2669,6 +2691,24 @@ test("the address of a comment on text opens its thread", async ({ browser }) =>
     const { key } = seeded;
     const spots = await threadSpots(seeded);
     const traffic = watchApiRequests(page);
+    // `?comment=<id>` of `comment` at `from`'s own address opens `to`, with the focus in the
+    // comment's thread (R8: Conversation where it draws the thread's node, else Graph).
+    const opens = async (
+      comment: string,
+      what: string,
+      from: "conversation" | "graph",
+      to: "conversation" | "graph"
+    ) => {
+      const at = `at ${PRESET_NAMES[from]}'s address`;
+      await gotoIssue(page, `${presetPath(key, from)}?comment=${comment}`);
+      await expect(page, `?comment= of ${what} ${at} opens ${PRESET_NAMES[to]}`).toHaveURL(
+        (url) => url.pathname === presetPath(key, to)
+      );
+      await expect(
+        threadCard(page, comment),
+        `?comment= of ${what} ${at} puts the focus in its thread`
+      ).toBeFocused();
+    };
 
     const replyPath = buildIssuePath({ id: seeded.statementReply, key, kind: "comment" });
     await gotoIssue(page, replyPath);
@@ -2708,23 +2748,18 @@ test("the address of a comment on text opens its thread", async ({ browser }) =>
       "the address of the thread on the 55th child draws that child's page of children"
     ).toBeVisible();
 
-    if (risk) {
-      const comment = seeded.riskComment;
-      if (comment === null) throw new Error("the seed wrote no comment on the risk");
-      // R8 opens Conversation where Conversation draws the thread's node, else Graph. The risk
-      // stands under the lens on the resolved statement, and a risk is a kind of Conversation's
-      // read, so Conversation draws its row and the issue's own address keeps the thread there.
-      for (const view of ["graph", "conversation"] as const) {
-        await gotoIssue(page, `${presetPath(key, view)}?comment=${comment}`);
-        await expect(
-          page,
-          inView(view, "?comment= of the risk's comment opens the view that draws the risk's row")
-        ).toHaveURL((url) => url.pathname === presetPath(key, view));
-        await expect(
-          threadCard(page, comment),
-          inView(view, "?comment= of the risk's comment puts the focus in its thread")
-        ).toBeFocused();
+    // Conversation draws no row of a plan task with no step, of a constraint or of a result, so
+    // the address of a comment on one opens Graph; it draws a risk (`CONVERSATION_KINDS`).
+    await opens(seeded.planTaskComment, "the plan task's comment", "conversation", "graph");
+    if (nodeAddresses) {
+      const { constraintComment, resultComment, riskComment } = seeded;
+      if (constraintComment === null || resultComment === null || riskComment === null) {
+        throw new Error("the seed wrote no comment on the constraint, the result or the risk");
       }
+      await opens(constraintComment, "the constraint's comment", "conversation", "graph");
+      await opens(resultComment, "the result's comment", "conversation", "graph");
+      await opens(riskComment, "the risk's comment", "conversation", "conversation");
+      await opens(riskComment, "the risk's comment", "graph", "graph");
     }
     if (message) {
       const reply = seeded.messageQuotedReply;

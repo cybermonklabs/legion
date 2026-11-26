@@ -13,10 +13,10 @@ import { compareTimestamps } from "../web/src/lib/timestamps";
 import { baseUrl, editArtifact, getArtifactBlocks, userHeaders } from "./api";
 import { specBlockRef } from "./issue-layout-seed-text";
 import {
-  type MarginNodeComment,
   type MarginReplyQuote,
   type MarginSeed,
   readMarginTree,
+  readNodeAnchored,
   readWithTrees,
   seedMarginIssue,
 } from "./issue-page-margin";
@@ -170,7 +170,7 @@ interface QuoteCase {
   node: IssueTreeNode;
   quote: string;
   path: typeof COMMENTS | typeof MESSAGES;
-  body: (selection: MarginReplyQuote) => CommentWrite | MessageWrite | MarginNodeComment;
+  body: (selection: MarginReplyQuote) => CommentWrite | MessageWrite;
 }
 
 async function quoteWrite(
@@ -200,9 +200,7 @@ async function quoteWrite(
     // POST /api/v1/issues/{key}/comments answers a node-anchored comment with `anchor: null` and
     // no `node_anchor` (strict `CommentSchema`); read it back with `?node_anchor=true` (1253 R31).
     if (entry.nodeAnchor === true) {
-      const read = await readWithTrees<Result<"/api/v1/comments/{id}", "get">>(
-        routeUrl("/api/v1/comments/{id}", { id: answer.id }, { node_anchor: true })
-      );
+      const read = await readNodeAnchored(answer.id);
       if (read.comment.node_anchor !== undefined) {
         return { node_anchor: read.comment.node_anchor, status };
       }

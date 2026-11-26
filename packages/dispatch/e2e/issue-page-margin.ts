@@ -1,4 +1,4 @@
-import { type Query, routeUrl } from "../web/src/api/paths";
+import { type Query, type Result, routeUrl } from "../web/src/api/paths";
 import type { IssueTreeRead } from "../web/src/api/types";
 import {
   baseUrl,
@@ -71,6 +71,14 @@ export function readMarginTree(key: string, query: MarginTreeQuery = {}): Promis
   return readWithTrees<IssueTreeRead>(routeUrl("/api/v1/issues/{key}/tree", { key }, query));
 }
 
+/** Comment `id` and its replies, read with `node_anchor=true` (INFRA-1253 R31): its node anchor,
+ *  which a comment's write answers with no `node_anchor` (strict `CommentSchema`). */
+export function readNodeAnchored(id: string): Promise<Result<"/api/v1/comments/{id}", "get">> {
+  return readWithTrees<Result<"/api/v1/comments/{id}", "get">>(
+    routeUrl("/api/v1/comments/{id}", { id }, { node_anchor: true })
+  );
+}
+
 function block(kind: string, id: string, words: string, attrs = ""): string {
   return `:::${kind}{#${id}${attrs}}\n${words}\n:::`;
 }
@@ -105,15 +113,6 @@ function onBlock(
 export interface MarginReplyQuote {
   occurrence: number;
   quote: string;
-}
-
-/** G2: a node selection names the node in place of the document. */
-export type MarginNodeComment = Omit<Parameters<typeof createComment>[1], "anchor"> & {
-  anchor: MarginReplyQuote & { node: string };
-};
-
-async function nodeComment(key: string, body: MarginNodeComment): Promise<string> {
-  return (await createComment(key, body)).id;
 }
 
 interface Layout {
@@ -172,7 +171,6 @@ interface ReasoningNodes {
   lensAddress: string;
   risk: string;
   riskAddress: string;
-  rowFinding: string;
   rowFindingAddress: string;
   rowFindingBlock: string;
   rowLens: string;
@@ -474,7 +472,6 @@ async function seedReasoning(layout: Layout, statementComment?: string): Promise
     lensAddress: lens.address,
     risk: risk.id,
     riskAddress: risk.address,
-    rowFinding: rowFinding.id,
     rowFindingAddress: rowFinding.address,
     rowFindingBlock: rowFinding.block_id,
     rowLens: rowLens.id,
@@ -547,11 +544,16 @@ async function seedGated(layout: Layout, reasoning: ReasoningNodes): Promise<Gat
       (await replyToMessageBlock(key, layout.message, layout.messageBlock, messageQuote)).id
   );
   const onNode = (item: string, node: string, quote: string) =>
-    gated(item, "NODE_ANCHOR", () =>
-      nodeComment(key, {
-        anchor: { node, occurrence: 1, quote },
-        body: `A remark on the ${item}'s words.`,
-      })
+    gated(
+      item,
+      "NODE_ANCHOR",
+      async () =>
+        (
+          await createComment(key, {
+            anchor: { node, occurrence: 1, quote },
+            body: `A remark on the ${item}'s words.`,
+          })
+        ).id
     );
   return {
     askQuotedReply,
