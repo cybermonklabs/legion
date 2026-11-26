@@ -9314,6 +9314,7 @@ the clone's hooks, its git and jj configuration (a legacy `.jj/workspace-config.
 Its pins hold whatever the clone's configuration says: no hook runs, no git maintenance starts, git reaches a remote over https alone, and no jj configuration an agent writes reaches it (below).
 The clone's other git configuration, an `http.proxy` among it, applies to its fetch from GitHub, so a plant there can see the token.
 Keeping the provisioning token from the issue's own agents is not one of Legion's goals: the token reads what the implement App's own lease, which the issue's implement roles hold, already reads and writes.
+A review role holds the review App's lease alone, so a plant a review role makes reaches a lease that role does not otherwise hold, as the cross-role plants below do.
 
 The daemon mints it with `ReadToken` (`implementTokens`, `internal/daemon/kubernetes.go`), and the three places that mint one — an issue pod's provisioning as the daemon makes the pod (`issuePod.provision`), the gh refresher's minute and the repository cache's Secret — share that one source.
 An installation that refuses the reading lease — GitHub answers 422 to a token request for a permission the installation is not granted, and mints nothing rather than leaving it out; the permissions the request names are what the installation was granted a moment before, so a refusal here is a grant that changed between the two calls — fails the mint, in key mode as in token mode, and no wider token is minted in its place.
