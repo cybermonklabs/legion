@@ -95,6 +95,7 @@ import {
 } from "@legion/contracts";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
+  LegionActivityRequest,
   LegionChildRequest,
   LegionControllerGrantRequest,
   LegionGateRegisterRequest,
@@ -108,6 +109,7 @@ import {
   LegionReadyRequest,
   LegionSignOffRequest,
   LegionStateResponse,
+  LegionTurnOutcomeRequest,
   LegionWaveReleaseRequest,
 } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -698,6 +700,17 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     }),
     "POST /legion/v1/claims/ready": route(LegionReadyRequest, (request) =>
       request.secret === sessionSecret ? { status: 204 } : forbidden("Invalid session secret")
+    ),
+    // The pane's turn-boundary reports, which the daemon takes with the claim's secret: activity
+    // answers 204 with no body, as `acknowledge` reads it, and a turn's outcome answers the run of
+    // refused turns its reports end with (`claim.TurnOutcomeResponse`), none here, failing nothing.
+    "POST /legion/v1/claims/activity": route(LegionActivityRequest, (request) =>
+      request.secret === sessionSecret ? { status: 204 } : forbidden("Invalid session secret")
+    ),
+    "POST /legion/v1/claims/turn-outcome": route(LegionTurnOutcomeRequest, (request) =>
+      "secret" in request && request.secret !== sessionSecret
+        ? forbidden("Invalid session secret")
+        : answered({ refusedRun: 0, failed: false })
     ),
     "POST /legion/v1/grants": (body) => {
       const controller = role === "controller";

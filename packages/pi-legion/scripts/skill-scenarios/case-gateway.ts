@@ -23,14 +23,49 @@ const RequestBody = z.looseObject({
   messages: z.array(
     z.looseObject({
       role: z.string(),
-      content: z.union([z.string(), z.array(z.looseObject({ text: z.string().optional() }))]),
+      content: z.union([
+        z.string(),
+        z.array(z.looseObject({ type: z.string().optional(), text: z.string().optional() })),
+      ]),
     })
   ),
 });
 
+/** The Google metadata server's identity token for `audience`, as a keyless gateway route reads
+ * the pod's own identity: minted on demand and kept in this process alone until ten minutes
+ * before it expires. No file and no environment variable holds it. */
+export function metadataIdentity(
+  audience: string,
+  read: typeof fetch = fetch
+): () => Promise<string> {
+  let held: { token: string; expires: number } | undefined;
+  return async () => {
+    if (held !== undefined && held.expires - Date.now() > 600_000) return held.token;
+    const url = new URL(
+      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
+    );
+    url.searchParams.set("audience", audience);
+    url.searchParams.set("format", "full");
+    const response = await read(url, { headers: { "Metadata-Flavor": "Google" } });
+    if (!response.ok) throw new Error(`the metadata server answered ${response.status}`);
+    const token = (await response.text()).trim();
+    const claims = z
+      .object({ aud: z.string(), exp: z.number() })
+      .safeParse(
+        JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString() || "null")
+      );
+    if (!claims.success || claims.data.aud !== audience)
+      throw new Error(`the metadata server's token is no identity token for ${audience}`);
+    held = { token, expires: claims.data.exp * 1000 };
+    return token;
+  };
+}
+
 /** Use the copied profile's gateway credentials, not the caller's. Only keep request metadata
- * needed to identify what was served: no prompt, headers with credentials, or response text. */
-export function caseGateway(dir: string, agentDir: string) {
+ * needed to identify what was served: no prompt, headers with credentials, or response text.
+ * With `identity`, the upstream is a keyless route: each request goes with that bearer in place
+ * of the key the profile's provider names, which then is a placeholder that reaches no one. */
+export function caseGateway(dir: string, agentDir: string, identity?: () => Promise<string>) {
   const models = path.join(agentDir, "models.yml");
   const settings = path.join(agentDir, "config.yml");
   const config = Config.parse(Bun.YAML.parse(readFileSync(models, "utf8")));
@@ -72,13 +107,23 @@ export function caseGateway(dir: string, agentDir: string) {
       for (const key of ["host", "connection", "content-length", "transfer-encoding"])
         headers.delete(key);
       headers.set("x-litellm-session-id", sessionId);
+      if (identity !== undefined) {
+        headers.delete("x-api-key");
+        headers.set("authorization", `Bearer ${await identity()}`);
+      }
       const body = parsed.data;
+      // The skill's own message: a user message's text that opens a line with the marker. Oh My
+      // Pi puts its dated system reminder ahead of it in the first user message, so the marker
+      // need not open the message; a tool result is a block of another type.
+      const opensLine = (text: string | undefined) =>
+        text !== undefined &&
+        (text.startsWith(DISPATCH_FIRST_MARKER) || text.includes(`\n${DISPATCH_FIRST_MARKER}`));
       const dispatchFirst = body.messages.some(
         ({ role, content }) =>
           role === "user" &&
-          (typeof content === "string" ? content : content[0]?.text)?.startsWith(
-            DISPATCH_FIRST_MARKER
-          )
+          (typeof content === "string"
+            ? opensLine(content)
+            : content.some(({ type, text }) => type === "text" && opensLine(text)))
       );
       const at = new Date().toISOString();
       const requestSeq = ++seq;
@@ -96,6 +141,7 @@ export function caseGateway(dir: string, agentDir: string) {
         log,
         `${JSON.stringify({
           seq: requestSeq,
+          path: url.pathname,
           at,
           status: response.status,
           dispatchFirst,
@@ -170,6 +216,13 @@ if (import.meta.main) {
   const [dir, agentDir] = Bun.argv.slice(2);
   if (!dir || !agentDir)
     throw new Error("usage: case-gateway.ts <run dir> <copied profile's agent dir>");
-  const server = caseGateway(dir, agentDir);
+  // SKILL_SCENARIOS_GATEWAY_AUDIENCE names a keyless route: the audience of the identity token
+  // the pod's metadata server mints for it (a builds Job's model-gateway route, for one).
+  const audience = process.env.SKILL_SCENARIOS_GATEWAY_AUDIENCE;
+  const server = caseGateway(
+    dir,
+    agentDir,
+    audience === undefined || audience === "" ? undefined : metadataIdentity(audience)
+  );
   console.log(`listening on ${server.url.origin}`);
 }

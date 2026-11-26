@@ -19,7 +19,7 @@ import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
-import { caseGateway } from "./case-gateway";
+import { caseGateway, metadataIdentity } from "./case-gateway";
 import { armOrder, loadCase } from "./case-world";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -1792,6 +1792,37 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
       }
     );
     expect(jj.stdout.toString()).toBe(sha);
+    // The head's tree holds the module P05's check runs in; the base holds CHANGES.md alone, and
+    // no bookmark names the local-only commit the workspace stands on.
+    const tree = (commit: string) =>
+      childSpawn([
+        "git",
+        "-C",
+        path.join(first, "workspace"),
+        "ls-tree",
+        "-r",
+        "--name-only",
+        commit,
+      ])
+        .stdout.toString()
+        .trim()
+        .split("\n");
+    expect(tree(sha)).toEqual([
+      "CHANGES.md",
+      "go.mod",
+      "internal/api/api_check_test.go",
+      "internal/api/doc.go",
+      "internal/dispatch/dispatch_check_test.go",
+      "internal/dispatch/doc.go",
+    ]);
+    expect(tree(JSON.parse(map)[p05.world.git?.remote.branches[0]?.head ?? ""])).toEqual([
+      "CHANGES.md",
+    ]);
+    expect(
+      childSpawn(["jj", "-R", path.join(first, "ws"), "bookmark", "list", "--all"], {
+        JJ_CONFIG: path.join(first, "jj.toml"),
+      }).stdout.toString()
+    ).not.toContain("local-only");
     expect(
       childSpawn(["git", "--git-dir", path.join(first, "remote.git"), "cat-file", "-e", sha])
         .exitCode
@@ -1842,11 +1873,11 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
     };
     const index = readFileSync(path.join(a, ".git", "index"));
     const before = stage("original", b);
-    writeFileSync(path.join(a, "change-1.txt"), "different contents\n");
+    writeFileSync(path.join(a, "CHANGES.md"), "different contents\n");
     writeFileSync(path.join(a, "another.txt"), "one untracked file\n");
     const after = stage("dirty", a);
     expect(after.tree).not.toBe(before.tree);
-    expect(after.files).toEqual(["another.txt", "change-1.txt"]);
+    expect(after.files).toEqual(["CHANGES.md", "another.txt"]);
     expect(readFileSync(path.join(a, ".git", "index"))).toEqual(index);
     expect(
       readFileSync(path.join(dir, "staging.jsonl"), "utf8")
@@ -1945,6 +1976,130 @@ test("case gateway keeps request fields, uses fresh run identities, and records 
     }
     expect(received[0]?.user).not.toBe(received[1]?.user);
     expect(received[0]?.session).not.toBe(received[1]?.session);
+  } finally {
+    upstream.stop(true);
+  }
+});
+
+/** The profile's placeholder key, which the keyless route must drop. */
+const PLACEHOLDER_KEY = "placeholder";
+
+// The keyless route of a builds Job: the gateway takes the pod's identity token, never the
+// profile's placeholder key, and the token is minted once and reused until near its expiry.
+test("case gateway's keyless route sends the pod's identity token in place of the profile's key", async () => {
+  const seen: { authorization: string | null; key: string | null }[] = [];
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      seen.push({
+        authorization: request.headers.get("authorization"),
+        key: request.headers.get("x-api-key"),
+      });
+      return new Response("answer");
+    },
+  });
+  const claims = (aud: string) =>
+    Buffer.from(JSON.stringify({ aud, exp: Math.floor(Date.now() / 1000) + 3600 })).toString(
+      "base64url"
+    );
+  const minted: string[] = [];
+  const metadata = (aud: string) =>
+    (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      minted.push(
+        `${url.searchParams.get("audience")} ${new Headers(init?.headers).get("Metadata-Flavor")}`
+      );
+      return new Response(`h.${claims(aud)}.s`);
+    }) as typeof fetch;
+  try {
+    const dir = freshDir("case-keyless");
+    writeFileSync(
+      path.join(dir, "models.yml"),
+      JSON.stringify({ providers: { anthropic: { baseUrl: upstream.url.origin } } })
+    );
+    writeFileSync(path.join(dir, "config.yml"), "{}");
+    const gateway = caseGateway(
+      dir,
+      dir,
+      metadataIdentity("gateway-audience", metadata("gateway-audience"))
+    );
+    try {
+      for (let i = 0; i < 2; i += 1) {
+        const response = await fetch(new URL("/v1/messages", gateway.url), {
+          method: "POST",
+          headers: [["x-api-key", PLACEHOLDER_KEY]],
+          body: JSON.stringify({ model: "claude-opus-5-5", messages: [] }),
+        });
+        expect(await response.text()).toBe("answer");
+      }
+    } finally {
+      gateway.stop(true);
+    }
+    const token = `h.${claims("gateway-audience")}.s`;
+    expect(seen).toEqual([
+      { authorization: `Bearer ${token}`, key: null },
+      { authorization: `Bearer ${token}`, key: null },
+    ]);
+    expect(minted).toEqual(["gateway-audience Google"]);
+    await expect(metadataIdentity("gateway-audience", metadata("another"))()).rejects.toThrow(
+      "no identity token for gateway-audience"
+    );
+  } finally {
+    upstream.stop(true);
+  }
+});
+
+// Catches: a reading of the first block of a user message alone, which reads a skill message
+// behind Oh My Pi's dated reminder as absent (the first lane proof recorded it on none of its 55
+// requests); and a tool result that quotes the marker, which injects nothing.
+test("case gateway finds the Dispatch-first message behind a host's reminder, and not in a tool result", async () => {
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("answer"),
+  });
+  const marker = "<dispatch-first-skill>\nContext.\n</dispatch-first-skill>";
+  try {
+    const dir = freshDir("case-reminder");
+    writeFileSync(
+      path.join(dir, "models.yml"),
+      JSON.stringify({ providers: { anthropic: { baseUrl: upstream.url.origin } } })
+    );
+    writeFileSync(path.join(dir, "config.yml"), "{}");
+    const gateway = caseGateway(dir, dir);
+    try {
+      for (const content of [
+        [
+          { type: "text", text: "<system-reminder>\nToday: 2030-01-08.\n</system-reminder>" },
+          { type: "text", text: marker },
+        ],
+        [
+          {
+            type: "text",
+            text: `<system-reminder>Today: 2030-01-08.</system-reminder>\n${marker}`,
+          },
+        ],
+        [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: marker }] }],
+      ]) {
+        const response = await fetch(new URL("/v1/messages", gateway.url), {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-opus-5-5", messages: [{ role: "user", content }] }),
+        });
+        expect(await response.text()).toBe("answer");
+      }
+    } finally {
+      gateway.stop(true);
+    }
+    const rows = readFileSync(path.join(dir, "deployments.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.map((row) => [row.path, row.dispatchFirst])).toEqual([
+      ["/v1/messages", true],
+      ["/v1/messages", true],
+      ["/v1/messages", false],
+    ]);
   } finally {
     upstream.stop(true);
   }

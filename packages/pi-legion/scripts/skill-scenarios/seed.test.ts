@@ -1286,4 +1286,30 @@ describe("case-world Dispatch", () => {
     expect(data.results.checks[0].results).toEqual(dispatch.results);
     expect(data.handoffs).toHaveLength(world.dispatch.handoffs.length);
   });
+
+  // Catches: a case's check that serves a requirement by its bare id (`#r1`), which the real
+  // Dispatch refuses (INVALID_MARKDOWN) and so seeded no world at all in the first lane proof.
+  test("writes a case's block references as Dispatch writes them", async () => {
+    expect(
+      seed.dispatchBlockRefs(
+        'serves="dispatch://ACME-12/spec#r1" dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/artifact/plan-md@v3#step-1 dispatch://ACME-12/ask/a1'
+      )
+    ).toBe(
+      'serves="dispatch://ACME-12/spec#b-r1" dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/artifact/plan-md@v3#b-step-1 dispatch://ACME-12/ask/a1'
+    );
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    if (!p05) throw new Error("missing P05");
+    const world = structuredClone(p05.world);
+    const verification = world.dispatch.documents[0];
+    if (!verification) throw new Error("P05 has no Verification document");
+    verification.body = verification.body.replace(
+      "{#k1 ",
+      '{#k1 serves="dispatch://ACME-12/spec#r1" '
+    );
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    await seed.seedCaseDispatch(dir);
+    const uploaded = dispatch.calls.find(({ path }) => path === "/api/v1/issues/ACME-12/artifacts");
+    expect(String(uploaded?.body?.content)).toContain('serves="dispatch://ACME-12/spec#b-r1"');
+  });
 });

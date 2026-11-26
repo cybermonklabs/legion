@@ -11,7 +11,7 @@ import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
 import { workerPane } from "./daemon-pane";
 import { buildGitWorld, defaultBranch, stageJob, translateCommits } from "./git-world";
-import { parseHeldoutFile, parseSkillUseFile, type World } from "./heldout-case";
+import { parseHeldoutFile, parseSkillUseFile, World } from "./heldout-case";
 
 export function loadCase(file: string, set: string, id: string) {
   const text = readFileSync(file, "utf8");
@@ -309,13 +309,17 @@ async function casePane(
         return [line.slice(0, equals), line.slice(equals + 1)];
       })
   );
+  // The pane names the issue's repository and its default branch as the daemon's record does: the
+  // case world's, where the world has a GitHub repository.
+  const world = World.parse(JSON.parse(readFileSync(path.join(dir, "launch-world.json"), "utf8")));
   const claim = {
     project,
-    tree,
     issue: role === "controller" ? "" : issue,
-    // The companion pane change adds the controller to the workerPane claim type.
     role: role as Parameters<typeof workerPane>[2]["role"],
-    ...(role === "controller" ? { controllerLaunch: "headless" as const } : {}),
+    ...(role === "controller" ? { controller: "headless" as const } : { tree }),
+    ...(world.github === null
+      ? {}
+      : { repository: world.github.repository, defaultBranch: defaultBranch(world.git) }),
   };
   const pane = await workerPane({ rig: dir, port: Number(port), profile }, base, claim, {
     daemonModule: path.join(checkout, "packages", "daemon"),

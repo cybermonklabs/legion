@@ -160,8 +160,10 @@ export function skillReads(entries: readonly SessionEntry[]): OutcomeRecord["ski
   return reads;
 }
 
-/** Recognize the actual context message, not a tool result quoting the marker. Some hosts
- * inject this on the provider request only; pass positive wire evidence in that case. */
+/** Recognize the actual context message, not a tool result quoting the marker: a user message
+ * with a text block that opens with the marker, at any place in the message, since a host can put
+ * a block of its own (Oh My Pi's dated system reminder) ahead of it. Some hosts inject this on
+ * the provider request only; pass positive wire evidence in that case. */
 export function dispatchFirstInjected(
   entries: readonly SessionEntry[],
   onProviderRequest = false
@@ -171,7 +173,9 @@ export function dispatchFirstInjected(
     entries.some(
       ({ message }) =>
         message?.role === "user" &&
-        message.content?.[0]?.text?.startsWith(DISPATCH_FIRST_MARKER) === true
+        (message.content ?? []).some(
+          (part) => part.type === "text" && part.text?.startsWith(DISPATCH_FIRST_MARKER) === true
+        )
     )
   );
 }

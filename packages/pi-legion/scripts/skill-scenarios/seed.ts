@@ -948,6 +948,17 @@ async function caseEvents(issue: string): Promise<DispatchEvent[]> {
   }
 }
 
+/** `text` with each block reference written as Dispatch writes one: a case names a block by its
+ * id (`dispatch://ACME-12/spec#r1`, the block `:::requirement{#r1}`), and Dispatch refuses any
+ * reference but `#b-<id>` (`dispatch://ACME-12/spec#b-r1`) in a block's attribute. A reference
+ * already in that form, and any other text, is left as it is. */
+export function dispatchBlockRefs(text: string): string {
+  return text.replace(
+    /(dispatch:\/\/[A-Z][A-Z0-9]*(?:-\d+)?\/(?:spec|artifact\/[A-Za-z0-9._-]+)(?:@v\d+)?)#(?!b-)([A-Za-z0-9][A-Za-z0-9-]*)/g,
+    "$1#b-$2"
+  );
+}
+
 /** File in a fresh scratch Dispatch. Dispatch allocates issue numbers; the placeholders reserve
  * preceding keys so the case's own references (including its parent's key) resolve unchanged.
  * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order. */
@@ -987,7 +998,11 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
               ? `Parent of ${issue.key}`
               : `Reserved key ${expected}`,
           ...(own
-            ? { spec: issue.spec, parent: issue.parent, repo: world.github?.repository }
+            ? {
+                spec: dispatchBlockRefs(issue.spec),
+                parent: issue.parent,
+                repo: world.github?.repository,
+              }
             : {}),
         },
         seed
@@ -999,7 +1014,7 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
   if (parent && parent[0] !== project) await createThrough(...parent, false);
   await createThrough(project, number, true);
   for (const { name, body } of documents)
-    await createIssueArtifact(issue.key, { name, content: body }, seed);
+    await createIssueArtifact(issue.key, { name, content: dispatchBlockRefs(body) }, seed);
   const steps: Step[] = [
     ...handoffs.map((record) => ({
       at: time(record.at, record.id),
@@ -1019,7 +1034,11 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
     ...comments.map((comment) => ({
       at: time(comment.at, comment.id),
       write: async () => {
-        await createComment(issue.key, { body: comment.body }, author(comment.author));
+        await createComment(
+          issue.key,
+          { body: dispatchBlockRefs(comment.body) },
+          author(comment.author)
+        );
       },
     })),
     ...asks.map((ask) => ({
@@ -1027,7 +1046,10 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
       write: async () => {
         const opened = await createAsk(
           issue.key,
-          { question: ask.question, options: ask.options.map((label) => ({ label })) },
+          {
+            question: dispatchBlockRefs(ask.question),
+            options: ask.options.map((label) => ({ label })),
+          },
           author(ask.author)
         );
         if (ask.state === "answered") {

@@ -93,6 +93,8 @@ interface PaneRequest {
   readonly role: string;
   readonly controller?: "headless" | "interactive";
   readonly backend?: PromptBackend;
+  readonly repository?: string;
+  readonly defaultBranch?: string;
   readonly stateDir: string;
   readonly workspace: string;
   readonly daemonUrl: string;
@@ -136,6 +138,10 @@ export interface WorkerClaim {
   readonly tree?: string;
   readonly role: LaunchRole;
   readonly controller?: "headless" | "interactive";
+  /** The issue's repository (owner/name) and its default branch, which the pane's addressing and
+   * gh bundle name; omitted, the tester-proof world's (daemon-pane.go's rigRepository). */
+  readonly repository?: string;
+  readonly defaultBranch?: string;
 }
 
 /** Where a pane's daemon is read from: a checkout's daemon module (`DAEMON_MODULE` for this one),

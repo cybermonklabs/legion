@@ -125,6 +125,24 @@ type launch struct {
 	claim      supervise.Claim
 	controller string
 	backend    runtime.Backend
+	// repository and defaultBranch are the issue's repository and its default branch, which the
+	// pane's addressing and gh bundle name; "" is the rig's own (rigRepository, rigDefaultBranch).
+	repository    string
+	defaultBranch string
+}
+
+// where answers the launch's repository, its default branch and the repository's owner, the
+// rig's own where the launch names none.
+func (l launch) where() (repository, branch, owner string) {
+	repository, branch = l.repository, l.defaultBranch
+	if repository == "" {
+		repository = rigRepository
+	}
+	if branch == "" {
+		branch = rigDefaultBranch
+	}
+	owner, _, _ = strings.Cut(repository, "/")
+	return repository, branch, owner
 }
 
 // newLaunch is the launch of role on the issue of project whose tree's root is tree ("" is the
@@ -241,6 +259,11 @@ type paneRequest struct {
 	Controller string `json:"controller"`
 	// Backend is the backend the role runs on, "omp" or "claude"; "" is Oh My Pi.
 	Backend string `json:"backend"`
+	// Repository and DefaultBranch are the issue's repository (owner/name) and its default
+	// branch, as the daemon's record of the issue holds them: the case world's, for a case run.
+	// "" is the tester-proof world's (rigRepository, rigDefaultBranch).
+	Repository    string `json:"repository"`
+	DefaultBranch string `json:"defaultBranch"`
 }
 
 type paneResponse struct {
@@ -262,6 +285,8 @@ func pane() error {
 	if err != nil {
 		return err
 	}
+	l.repository, l.defaultBranch = req.Repository, req.DefaultBranch
+	_, _, owner := l.where()
 	if l.controller == controllerInteractive {
 		return errors.New("the interactive controller runs in the operator's terminal under `legion controller start`, whose environment is its own (controllerEnvironment), not a pane's, and the rig does not stand in for it; `prompt controller interactive` composes its prompt")
 	}
@@ -274,7 +299,7 @@ func pane() error {
 		// alone, where a daemon serving more holds a `<owner>/<repo>` directory beside it per sibling
 		// repository.
 		ghRoot = runtime.GHConfigDir(req.StateDir, token)
-		bundle := ghconfig.Bundle{Default: rigOwner, Dirs: map[string]ghconfig.Rendered{rigOwner: ghconfig.Render(req.GHToken, "", time.Time{})}}
+		bundle := ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: ghconfig.Render(req.GHToken, "", time.Time{})}}
 		if _, err := ghconfig.WriteBundle(ghRoot, bundle); err != nil {
 			return fmt.Errorf("write the claim's gh files: %w", err)
 		}
@@ -285,7 +310,7 @@ func pane() error {
 	spec := runtime.SpawnSpec{Claim: token, Project: req.Project, Tree: l.claim.Tree, Issue: l.claim.Issue, Role: role, Generation: 1}
 	variables, err := tmux.PaneVariables(spec, tmux.PaneInputs{
 		StateDir: req.StateDir, Workspace: req.Workspace, DaemonURL: req.DaemonURL, EnvoyURL: req.EnvoyURL,
-		NATSURLs: req.NATSURLs, GHOwnersDir: ghRoot, GHDefault: rigOwner, GH: gh,
+		NATSURLs: req.NATSURLs, GHOwnersDir: ghRoot, GHDefault: owner, GH: gh,
 	}, []runtime.SecretFile{{Variable: "LEGION_BOOT_TOKEN", Path: req.BootTokenFile}})
 	if err != nil {
 		return err
@@ -418,15 +443,16 @@ func rolePrompt(stateDir string, l launch) (string, error) {
 		body.Write(text)
 	}
 	steps := config.Gates{}.Steps()
+	name, branch, owner := l.where()
 	var addressing string
 	if c.Role == claim.RoleController {
-		addressing = daemon.DesignGateFragment(steps) + " " + daemon.RepositoriesSentence([]string{rigOwner})
+		addressing = daemon.DesignGateFragment(steps) + " " + daemon.RepositoriesSentence([]string{owner})
 	} else {
-		repository, err := ghrepo.Parse("the rig's repository", rigRepository)
+		repository, err := ghrepo.Parse("the rig's repository", name)
 		if err != nil {
 			return "", err
 		}
-		if addressing, err = daemon.AddressingFragment(c.Project, c, repository, rigDefaultBranch, []string{rigOwner}); err != nil {
+		if addressing, err = daemon.AddressingFragment(c.Project, c, repository, branch, []string{owner}); err != nil {
 			return "", err
 		}
 		if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {

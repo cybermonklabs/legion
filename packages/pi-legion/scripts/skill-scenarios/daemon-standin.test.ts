@@ -175,6 +175,37 @@ test("refuses a request that does not parse, a grant that is not live, and a rou
   expect(daemon.lines().map((line) => line.status)).toEqual([400, 403, 404, 404]);
 });
 
+// Catches: the pane's turn-boundary reports answered 404, as the first lane proof's stand-in
+// answered 33 activity reports and the turn outcome of a P05 run. The bodies are the ones the
+// pinned plugin sent in that run, the secret put back.
+test("answers the pane's activity with 204 and a turn's outcome with its refused run, under the claim's secret", async () => {
+  const daemon = boot();
+  const { secret } = await daemon.grant();
+  const claim = { claimToken: "legion-skillsrig-acme-12-tester", sessionId: "session-1" };
+  const activity = {
+    at: "2026-11-26T12:09:56.181Z",
+    backgroundWork: { running: false, kinds: [] },
+    phase: { nextReminderAt: null },
+  };
+  const outcome = { generation: 1, sequence: 1, outcome: "clean", unprompted: true };
+  expect(
+    await daemon.call("POST", "/legion/v1/claims/activity", { ...claim, secret, activity })
+  ).toMatchObject({ status: 204, body: null });
+  expect(
+    await daemon.call("POST", "/legion/v1/claims/turn-outcome", { ...claim, secret, ...outcome })
+  ).toMatchObject({ status: 200, body: { refusedRun: 0, failed: false } });
+  expect(
+    await daemon.call("POST", "/legion/v1/claims/activity", { ...claim, secret: "wrong", activity })
+  ).toMatchObject({ status: 403 });
+  expect(
+    await daemon.call("POST", "/legion/v1/claims/turn-outcome", {
+      ...claim,
+      secret: "wrong",
+      ...outcome,
+    })
+  ).toMatchObject({ status: 403 });
+});
+
 test("a completion is refused as the daemon refuses it: the record a phase ends with, the verdict, the role", async () => {
   const tester = boot();
   const { grantId } = await tester.grant();

@@ -41,9 +41,104 @@ export function defaultBranch(world: World["git"]): string {
   return branches.find(({ name }) => name === "main")?.name ?? branches[0]?.name ?? "main";
 }
 
-/** Case ids can be fictitious. Preserve the topology and descriptions, giving each commit its
- * own small file because the case schema specifies no trees. Use a stable author and date so
- * paired arms start with identical commit ids and trees. */
+/** `command`'s words, as a shell splits a plain command line: blanks between words, and single
+ * and double quotes around a word's parts. */
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let word: string | undefined;
+  let quote: string | undefined;
+  for (const char of command) {
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined;
+      else word += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      word ??= "";
+    } else if (/\s/.test(char)) {
+      if (word !== undefined) words.push(word);
+      word = undefined;
+    } else word = (word ?? "") + char;
+  }
+  if (word !== undefined) words.push(word);
+  return words;
+}
+
+/** A test name `go test -run <pattern>` selects: the pattern's first alternative of its top
+ * level (before any `/`), its letters, digits and `_`, with `Test` in front where it has none;
+ * undefined where that name does not match the pattern. */
+function goTestName(pattern: string | undefined): string | undefined {
+  if (pattern === undefined || pattern === "") return "TestCheck";
+  const top = pattern.split("/")[0] ?? "";
+  const first = (
+    top
+      .replace(/^\^|\$$/g, "")
+      .replace(/[()]/g, "")
+      .split("|")[0] ?? ""
+  ).replace(/[^A-Za-z0-9_]/g, "");
+  const name = first.startsWith("Test") ? first : `Test${first}`;
+  try {
+    return new RegExp(top).test(name) ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The minimal Go module a world's `go test` checks run green in: for each `check` block of the
+ * world's documents whose `run` is a `go test` command, go.mod at the root and, in each package
+ * directory the command names, a source file and one test, empty and so passing, whose name its
+ * `-run` pattern selects. A check of any other command shape, or one whose pattern names no test
+ * goTestName can write, gets no code. Paths to file text. */
+export function goCheckModule(world: World): Map<string, string> {
+  const tests = new Map<string, Set<string>>();
+  for (const { body } of world.dispatch.documents) {
+    for (const [, attributes = ""] of body.matchAll(/:::check\{([^}]*)\}/g)) {
+      const run = /(?:^|\s)run="([^"]*)"/.exec(attributes)?.[1];
+      const words = shellWords(run ?? "");
+      if (words[0] !== "go" || words[1] !== "test") continue;
+      let pattern: string | undefined;
+      const packages: string[] = [];
+      for (let i = 2; i < words.length; i += 1) {
+        const word = words[i] ?? "";
+        if (word === "-run") pattern = words[++i];
+        else if (word.startsWith("-run=")) pattern = word.slice("-run=".length);
+        else if (word === "." || word.startsWith("./")) packages.push(word);
+      }
+      const name = goTestName(pattern);
+      if (name === undefined) continue;
+      for (const pkg of packages.length === 0 ? ["."] : packages) {
+        const dir = pkg
+          .replace(/\/\.\.\.$/, "")
+          .replace(/^\.\/?/, "")
+          .replace(/\/+$/, "");
+        tests.set(dir, (tests.get(dir) ?? new Set()).add(name));
+      }
+    }
+  }
+  const files = new Map<string, string>();
+  if (tests.size === 0) return files;
+  files.set("go.mod", "module example.invalid/caseworld\n\ngo 1.22\n");
+  for (const [dir, names] of tests) {
+    const pkg = (dir.split("/").at(-1) || "caseworld").replace(/[^A-Za-z0-9_]/g, "_").toLowerCase();
+    const at = (file: string) => (dir === "" ? file : `${dir}/${file}`);
+    files.set(
+      at("doc.go"),
+      `// Package ${pkg} stands in for the code this world's checks read.\npackage ${pkg}\n`
+    );
+    files.set(
+      at(`${pkg}_check_test.go`),
+      `package ${pkg}\n\nimport "testing"\n${[...names].map((name) => `\nfunc ${name}(t *testing.T) {}\n`).join("")}`
+    );
+  }
+  return files;
+}
+
+/** Case ids can be fictitious and the schema holds no trees. Preserve the topology and the
+ * descriptions, and give each commit a tree: CHANGES.md, one line for the commit and each commit
+ * under it, and, at every commit that is off the default branch's first-parent line or above one
+ * that is, goCheckModule's module, so a `go test` check runs green at the role's head as a real
+ * tree's would. Use a stable author and date so paired arms start with identical commit ids and
+ * trees. No bookmark names a local-only commit: the workspace stands on it. A local
+ * `legion/<issue>` bookmark tracks the remote's branch only where the remote holds it. */
 export function buildGitWorld(dir: string, world: World, stage = false): CommitMap {
   const fixture = world.git;
   const remote = path.join(dir, "remote.git");
@@ -70,38 +165,62 @@ export function buildGitWorld(dir: string, world: World, stage = false): CommitM
   const remoteName = fixture?.remote.name ?? "origin";
   run(dir, env, ["git", "init", "-q", "--bare", "--object-format=sha1", "-b", branch, remote]);
   git("init", "-q", "--object-format=sha1", "-b", branch);
-  const commits = new Map(
-    fixture?.commits.map((commit, index) => [commit.id, { ...commit, index }])
-  );
+  const commits = new Map(fixture?.commits.map((commit) => [commit.id, commit]));
   if (commits.size !== (fixture?.commits.length ?? 0)) throw new Error("duplicate git commit id");
+  // The default branch's first-parent line: the base no generated code is in.
+  const base = new Set<string>();
+  for (
+    let id = fixture?.remote.branches.find(({ name }) => name === branch)?.head;
+    id !== undefined && !base.has(id);
+    id = commits.get(id)?.parents[0]
+  )
+    base.add(id);
+  const module = goCheckModule(world);
+  const blob = (text: string) => plumbing(text, "hash-object", "-w", "--stdin");
+  const moduleBlobs = new Map([...module].map(([file, text]) => [file, blob(text)]));
+  const index = path.join(temp, "case-world.index");
+  const writeTree = (files: Map<string, string>) => {
+    const indexEnv = { ...env, GIT_INDEX_FILE: index };
+    rmSync(index, { force: true });
+    run(
+      workspace,
+      indexEnv,
+      ["git", "update-index", "--add", "--index-info"],
+      [...files].map(([file, sha]) => `100644 ${sha}\t${file}\n`).join("")
+    );
+    return run(workspace, indexEnv, ["git", "write-tree"]);
+  };
+  interface Built {
+    sha: string;
+    changes: string[];
+    module: boolean;
+  }
   const building = new Set<string>();
-  const built = new Map<string, { sha: string; files: Map<string, string> }>();
-  const build = (id: string) => {
+  const built = new Map<string, Built>();
+  const build = (id: string): Built => {
     const previous = built.get(id);
     if (previous) return previous;
     if (building.has(id)) throw new Error(`git commit cycle at ${id}`);
     const commit = commits.get(id);
     if (!commit) throw new Error(`git parent ${id} is not in the case`);
     building.add(id);
-    const parents = commit.parents.map((parent): { sha: string; files: Map<string, string> } =>
-      build(parent)
-    );
-    const files = new Map(parents.flatMap((parent) => [...parent.files]));
-    files.set(
-      `change-${commit.index + 1}.txt`,
-      plumbing(`${commit.description}\n`, "hash-object", "-w", "--stdin")
-    );
-    const tree = plumbing(
-      [...files].map(([name, blob]) => `100644 blob ${blob}\t${name}\n`).join(""),
-      "mktree"
-    );
+    const parents = commit.parents.map(build);
+    const changes = [
+      ...new Set([...parents.flatMap((parent) => parent.changes), `- ${commit.description}`]),
+    ];
+    // Off the default branch's first-parent line (any commit but a root, where the remote names
+    // no default branch), or above a commit that is.
+    const offBase = base.size > 0 ? !base.has(id) : parents.length > 0;
+    const carries = offBase || parents.some((parent) => parent.module);
+    const files = new Map([["CHANGES.md", blob(`# Changes\n\n${changes.join("\n")}\n`)]]);
+    if (carries) for (const [file, sha] of moduleBlobs) files.set(file, sha);
     const sha = plumbing(
       `${commit.description}\n`,
       "commit-tree",
-      tree,
+      writeTree(files),
       ...parents.flatMap((parent) => ["-p", parent.sha])
     );
-    const result = { sha, files };
+    const result = { sha, changes, module: carries };
     built.set(id, result);
     building.delete(id);
     return result;
@@ -124,13 +243,26 @@ export function buildGitWorld(dir: string, world: World, stage = false): CommitM
   }
   const standing = fixture && mapping[fixture.workspace.standingOn];
   if (standing) {
-    git("switch", "--detach", standing);
-    for (const [index, id] of (fixture?.workspace.localOnly ?? []).entries()) {
-      git("update-ref", `refs/heads/local-only/${index + 1}`, mapping[id] ?? "");
+    for (const id of fixture?.workspace.localOnly ?? []) {
+      const reachable = Bun.spawnSync(
+        ["git", "merge-base", "--is-ancestor", mapping[id] ?? "", standing],
+        {
+          cwd: workspace,
+          env,
+        }
+      );
+      if (reachable.exitCode !== 0)
+        throw new Error(
+          `local-only commit ${id} is not under the commit the workspace stands on, so no working copy keeps it`
+        );
     }
+    git("switch", "--detach", standing);
   }
   jj("git", "init", "--colocate");
   if (fixture?.remote.branches.length) jj("git", "fetch", "--remote", remoteName);
+  const own = `legion/${world.dispatch.issue.key}`;
+  if (fixture?.remote.branches.some(({ name }) => name === own))
+    jj("bookmark", "track", own, "--remote", remoteName);
   if (standing) {
     // git init imported the detached HEAD and made its child the jj working copy.
     if (jj("log", "-r", "@-", "--no-graph", "-T", "commit_id") !== standing) {

@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -289,7 +288,16 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	githubURL := githubtest.Server(t, githubtest.Spec{Handle: r.github.serve})
 	r.setupIssue(world)
 	if runDir != "" {
-		r.restoreDispatch(runDir, "", false)
+		// The run's own claim session, whose handoffs the replay writes under its new pane's.
+		calls, err := teardownEffectsReadCalls(filepath.Join(runDir, "sessions"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		original := ""
+		if len(calls) > 0 {
+			original = calls[0].Session
+		}
+		r.restoreDispatch(runDir, original, false)
 	} else {
 		for _, doc := range world.Dispatch.Documents {
 			r.document(doc.Name, doc.Body)
@@ -1090,15 +1098,30 @@ func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 
 var teardownEffectsUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// teardownEffectsSameAnswer reports whether the real daemon answered a request as the stand-in
+// did. A run diverges on an acceptance against a refusal, or one refusal against another (plan
+// T4, lane D step 3): the route and the status must match, and a refusal's code too. An accepted
+// answer's body is not compared, since the stand-in's simpler records say less than the daemon's.
 func teardownEffectsSameAnswer(a, b teardownEffectsHTTP) bool {
 	if a.Status != b.Status || a.Method != b.Method || a.Path != b.Path {
 		return false
 	}
-	var first, second any
-	if json.Unmarshal(a.Answer, &first) != nil || json.Unmarshal(b.Answer, &second) != nil {
-		return bytes.Equal(a.Answer, b.Answer)
+	if a.Status < 400 {
+		return true
 	}
-	return reflect.DeepEqual(first, second)
+	return teardownEffectsRefusalCode(a.Answer) == teardownEffectsRefusalCode(b.Answer)
+}
+
+// teardownEffectsRefusalCode is the `code` of a refusal's JSON body, or the whole body where it is
+// no JSON object naming one.
+func teardownEffectsRefusalCode(body []byte) string {
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &refusal) != nil || refusal.Code == "" {
+		return string(body)
+	}
+	return refusal.Code
 }
 func teardownEffectsReadTime(t *testing.T, path string) time.Time {
 	t.Helper()
@@ -1200,18 +1223,25 @@ func (r *teardownEffectsRun) restoreDispatch(dir, session string, withHandoffs b
 		}
 	}
 	teardownEffectsReadJSON(t, filepath.Join(dir, "dispatch-readback.json"), &snapshot)
-	if withHandoffs {
-		slices.SortStableFunc(snapshot.Handoffs, func(a, b handoffRecord) int { return a.Version - b.Version })
-		for _, old := range snapshot.Handoffs {
-			author := old.Author.ID
-			if author == session {
-				author = r.session
-			}
-			got := r.handoff(old.Phase, author, old.Body)
-			if got.Version != old.Version {
-				t.Fatalf("restored %s version %d, want %d", old.Phase, got.Version, old.Version)
-			}
+	// The handoffs other sessions wrote go in with the rest of the world, before the issue takes
+	// its status: Dispatch refuses a handoff on a closed issue (ISSUE_CLOSED). The run's own go in
+	// once the replay's pane has registered, rebound to its session.
+	slices.SortStableFunc(snapshot.Handoffs, func(a, b handoffRecord) int { return a.Version - b.Version })
+	for _, old := range snapshot.Handoffs {
+		own := session != "" && old.Author.ID == session
+		if own != withHandoffs {
+			continue
 		}
+		author := old.Author.ID
+		if own {
+			author = r.session
+		}
+		got := r.handoff(old.Phase, author, old.Body)
+		if got.Version != old.Version {
+			t.Fatalf("restored %s version %d, want %d", old.Phase, got.Version, old.Version)
+		}
+	}
+	if withHandoffs {
 		return
 	}
 	prefix := "/api/v1/issues/" + r.key
@@ -1221,6 +1251,15 @@ func (r *teardownEffectsRun) restoreDispatch(dir, session string, withHandoffs b
 		}
 	}
 	for _, comment := range snapshot.Comments {
+		switch comment.Author.Kind {
+		case "system":
+			// Dispatch's own comment, such as the parent-status rule's on a seeded status change:
+			// Dispatch writes it again where the restored writes call for it, and no caller can.
+			continue
+		case "user":
+			r.dispatch.user(http.MethodPost, prefix+"/comments", map[string]any{"body": comment.Body}, http.StatusCreated, nil)
+			continue
+		}
 		status, body := r.dispatch.agentPost(prefix+"/comments", map[string]any{"actor": comment.Author, "body": comment.Body})
 		if status != 201 {
 			t.Fatalf("restore comment: %d %s", status, body)

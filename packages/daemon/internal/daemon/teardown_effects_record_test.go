@@ -225,3 +225,31 @@ func TestTeardownEffectsTranscript(t *testing.T) {
 		}
 	}
 }
+
+// Fixture F2 is a real lane R transcript (P10's production-check look, captured by the T4 proof's
+// lane R Job; packages/pi-legion/scripts/skill-scenarios/testdata/f2/f2.command). Its one legion
+// call is the pending report, read whole from the assistant message with the session the header
+// names and the time its result came back.
+func TestTeardownEffectsTranscriptF2(t *testing.T) {
+	f, err := os.Open("../../../pi-legion/scripts/skill-scenarios/testdata/f2/sessions/p10-production-check.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	calls, err := teardownEffectsTranscript(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("read %d legion calls, want 1: %+v", len(calls), calls)
+	}
+	got := calls[0]
+	if got.ID != "toolu_0145VcE1ybv5hPDBo9UkaRbD" || got.Op != "handoff_complete" || got.Session != "01a217c6-05b8-71f0-8c27-f4db9cca186b" ||
+		got.At.Format(time.RFC3339Nano) != "2026-11-26T12:15:29.293Z" || got.ResultAt.Format(time.RFC3339Nano) != "2026-11-26T12:15:29.31Z" ||
+		got.Args["verdict"] != "pending" || got.Args["check_opened_at"] != "2030-01-08T11:58:00Z" || got.Args["wake_at"] != "2030-01-08T13:00:00Z" {
+		t.Fatalf("read %+v, want the pending report with its check, wake and times", got)
+	}
+	if summary, _ := got.Args["summary"].(string); !strings.HasPrefix(summary, "Look 1 (woken by the merge)") {
+		t.Fatalf("summary %q is not the call's whole argument", summary)
+	}
+}

@@ -74,12 +74,27 @@
 # SKILL_SCENARIOS_CLOCK and its task; clock.txt is that time and clock-real.txt the wall-clock
 # instant at launch. Logs use the real clock and the outcome puts them on the case timeline.
 # D1 gets $TMPDIR/stage-a and stage-b at the default branch's head and a local stage-job recorder.
+# A case world names commits and no files (git-world.ts): each commit's tree holds CHANGES.md, a
+# line for it and each commit under it, and, at each commit off the default branch's first-parent
+# line and every commit above one, a generated Go module: go.mod at the root and, for each `check`
+# block of the world's documents whose `run` is a `go test` command, in each package directory it
+# names, one empty test its `-run` pattern selects, so that check passes at the role's head. A
+# check of any other command shape gets no generated code. A local-only commit is kept by the
+# working copy alone (`@` on top of it), no bookmark naming it; a local `legion/<issue>` bookmark
+# tracks the remote's branch only where the world's remote holds that branch. The pane's
+# addressing and gh bundle name the world's GitHub repository and its default branch
+# (daemon-pane.go's pane request), and the daemon stand-in answers the pane's `claims/activity`
+# (204) and `claims/turn-outcome` (no refused run) as the daemon does.
 # These comparisons do not use the old scenarios' ablate rule. Arms use the same model and
 # thinking effort (claude-opus-5-5, xhigh), run serially in order from SKILL_SCENARIOS_SEED,
 # and send fresh per-run gateway identities. Each run keeps the selected deployment id in
 # deployments.jsonl (null if the gateway did not supply it).
 # Run model cases only in a builds Job. Optional daemon fixtures: SKILL_SCENARIOS_DAEMON_ANSWERS
 # names the shared answer file; SKILL_SCENARIOS_CASE_ANSWERS names an overlay for this case.
+# SKILL_SCENARIOS_GATEWAY_AUDIENCE names a keyless model route (a builds Job's model gateway): the
+# run's case gateway (case-gateway.ts) sends each request with the identity token the pod's
+# metadata server mints for that audience, in place of the key the profile's provider names, which
+# is then a placeholder. No file and no pane holds the token.
 #   measure-before-ask
 #                   A plain session is told to ask Sami which of three ways to finish an owner
 #                   session posted, with the export the message names in its working directory;
@@ -1844,7 +1859,8 @@ case_legion_pane() {
 }
 
 run_case() {
-  local scenario=$1 id=$2 name=$3 file role agent model tools gateway_pid=
+  local scenario=$1 id=$2 name=$3 file role agent model gateway_pid=
+  local -a tools=()
   file=$(case_input) || exit 1
   bun "$here/case-world.ts" prepare "$R" "$file" "$scenario" "$id" >>"$R/fixture.log" 2>&1 ||
     fail "case-world prepare failed; see $R/fixture.log"
@@ -1867,14 +1883,23 @@ run_case() {
   {
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
     echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
-    echo "OMP_SESSION_STORAGE=jsonl"
+    # The pinned Oh My Pi's file store, which writes the run's transcript under sessions/: a
+    # caller's `sql` would keep it in a database the run does not hold. mise runs the pin it
+    # already holds and asks GitHub nothing, where the pane's gh files would answer it.
+    echo "OMP_SESSION_STORAGE=file"
+    echo "MISE_OFFLINE=1"
   } >>"$R/pane.env"
   SKILL_SCENARIO_RUN="$R" start_process gateway bun "$here/case-gateway.ts" "$R" "$R/home/.omp/profiles/$profile/agent"
   await_start gateway "$gateway_pid" 30 "the case gateway proxy to listen" grep -q '^listening on ' "$R/logs/gateway.log"
   model=$(jq -er .model "$R/gateway-run.json")
-  tools=$(jq -er '.tools | join(",")' "$R/launch.json")
+  # A Legion pane gets every tool, as the daemon launches one: its `legion` tool registers only
+  # once the pane's claim boots, so `--tools` refuses that name at start. A plain session gets
+  # its case's tools.
+  [ "$(jq -r .plain "$R/launch.json")" != true ] ||
+    tools=(--tools "$(jq -er '.tools | join(",")' "$R/launch.json")")
   date -u +%FT%T.%NZ >"$R/clock-real.txt"
-  launch "$name" --model "$model" --thinking xhigh --tools "$tools"
+  launch "$name" --model "$model" --thinking xhigh "${tools[@]}"
+  stop_tree "$gateway_pid" && wait "$gateway_pid" 2>/dev/null || true
   seed_ts case-readback "$R"
   agent=$(jq -r '.agent // empty' "$R/launch.json")
   bun "$here/outcome.ts" "$R" ${agent:+"$agent"}
