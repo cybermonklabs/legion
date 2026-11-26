@@ -1398,10 +1398,9 @@ test("the box's picker keeps the page one screen wide when a row's detail is lon
       content: "# Notes\n\nA zebrafish paragraph the picker's search finds.\n",
       name: `${name}.md`,
     });
-    // The row's detail: the address of what the search found in its short form - the
-    // document's, with the word "block" for the paragraph that holds the searched word - as
-    // today's composers give it whole in the row's tooltip.
-    const detail = `${seeded.key} ${name}-md block`;
+    // The row's detail: the document's address in its short form, as today's composers give it
+    // whole in the row's tooltip.
+    const detail = `${seeded.key} ${name}-md`;
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);

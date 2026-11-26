@@ -421,6 +421,7 @@ export function SpecFilterBody({
     artifacts,
     container: tree,
     onEditing,
+    onOwnEdit: () => {},
     onReport: reportHere,
   });
   // The statements in the order they are drawn, which is the order the keys move through them,
