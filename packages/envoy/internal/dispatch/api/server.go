@@ -1113,8 +1113,9 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 //
 // Any other refusal that carries a close code of its own (CloseCode, as errCredentialExpired
 // does) cancels the context with that refusal, whose close frame ygo sends the document socket's
-// peer: errDocumentWriteRevoked, on which the provider reconnects and is admitted read-only. Every
-// other refusal cancels the context with no cause, and the socket closes with no close frame.
+// peer: errDocumentWriteRevoked, on which the provider reconnects and the new upgrade decides the
+// write again. Every other refusal cancels the context with no cause, and the socket closes with no
+// close frame.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancelCause(r.Context())
@@ -1168,7 +1169,7 @@ var errCredentialExpired error = admissionRevoked{
 // off the cause and sends the peer that close frame, on which the provider reconnects with a
 // fresh proof, and the new upgrade decides the write afresh: read-only where the rule refuses.
 var errDocumentWriteRevoked error = admissionRevoked{
-	reason: "the spec-writer rule no longer lets the token this socket was opened with write its document; the provider reconnects and is admitted read-only",
+	reason: "the spec-writer rule no longer lets the token this socket was opened with write its document, or its read failed; the provider reconnects and the new upgrade decides the write again",
 }
 
 // admissionRevoked is the type of those two causes: an error whose CloseCode ygo sends. The type
