@@ -135,7 +135,8 @@ drives them with real client processes:
 
 Every client reaches the listener through a recording proxy of its own
 (`role-takeover/listener-proxy.ts`), so each request and the listener's answer to it is read from
-a log rather than inferred.
+a log rather than inferred. Each proxy, like natsd and the listener, binds a port the kernel
+chooses and reports it, and the smoke reads the port from that report.
 
 [`scripts/e2e/nats-callout-sessions.sh`](../../../scripts/e2e/README.md#nats-callout-sessionssh)
 drives the same two clients as the sessions of its stack behind the NATS auth service, with no
@@ -304,16 +305,16 @@ that failed, and 2 is a refusal.
 
 ## local-stack.sh
 
-The loopback Envoy stack the two smokes above bring up, in one sourced file: a free loopback
-port below the kernel's ephemeral range (`port_range`, `port_open`, `pick_port`), the natsd and
+The loopback Envoy stack the two smokes above bring up, in one sourced file: the natsd and
 listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy` directory to
 build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from another
-revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`)
-and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced,
-never run: it starts no process, so every script keeps its own isolation, logs, traps, timeouts,
-messages and exit codes. A caller defines `refuse` and sets `local_stack_fail` to the function an
-exhausted port range is reported through, `refuse` in both smokes here.
-`packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
+revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`),
+when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`) and the ports it
+reports it bound (`natsd_port`, `listener_addr`). Each service binds port 0 and names the port the
+kernel gave it: no port is picked free and handed to a service, since another process can take
+such a port before the service binds it. It is sourced, never run: it starts no process, so every
+script keeps its own isolation, logs, traps, timeouts, messages and exit codes. A caller defines
+`refuse`. `packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
 
 ## listener-api.sh
 

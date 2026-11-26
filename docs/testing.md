@@ -228,6 +228,23 @@ itself, whose tests import its sources by relative path.
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
+- A server a suite or a rig script starts never binds a port the caller found free and let go of:
+  any other program on the machine can take that port first, and the server then fails to start
+  or another program answers in its place. The server binds port 0 and the caller reads the port
+  from what the server reports (natsd's `-p -1 -m -1`, the listener's `PORT=0`, a broker's
+  `*_LISTEN_ADDR` of `127.0.0.1:0`, `moto_server -p 0`, `python3 -u -m http.server 0`,
+  `Bun.serve({ port: 0 })`), or takes a socket the caller holds (`start_held` in
+  `scripts/e2e/lib/rig.sh`), or listens on a unix socket in a directory of the run's own and on no
+  TCP port, as the Dispatch e2e harness's Postgres does in both providers
+  (`packages/dispatch/e2e/harness-postgres.ts`). A URL a server must hold before it binds names a
+  front bound first and pointed at the port the server reports (`dev-airlock-stands front`, as
+  `packages/envoy/scripts/dev-broker.sh` and `lib/project-access-stack.sh` run it). A port a
+  process names as closed for its whole life is held bound and never listening (`holdRefusedPort`
+  in `@legion/test-fixtures/refused-port`, which the outside-path-reach tests' `closedPort` takes),
+  and a broker that must refuse and later answer at one address is a listener the row holds from
+  its start, which drops each connection until it relays to the broker (`heldBrokerAddress` in
+  `packages/claude-envoy/tests/channel-nats.test.ts`).
+
 - Give a Bun process the test starts under a HOME of its own `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`,
   unless the row tests that cache. Where neither that variable nor `XDG_CACHE_HOME` names another
   place, Bun keeps its transpiler cache under HOME, so a child in an empty HOME writes a file and a

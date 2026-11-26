@@ -4,9 +4,10 @@
 # The private project's half of scripts/dev-stack.sh, in one place: PRIV's pod and the broker's
 # own access account, which every run mints tokens for, lists and exports, and what
 # --project-access adds to a run: the broker's client of this run's Dispatch and the airlock
-# beside it (its stands are lib/airlock-stack.sh's), the check that the broker's proxy bound the
-# port this run picked, the settings that admit the broker's account to Dispatch's access routes,
-# and the DEV_STACK_PRIV_*, DEV_STACK_PROJECT_ACCESS and DEV_STACK_AIRLOCK_* lines of the banner.
+# beside it (its stands are lib/airlock-stack.sh's), the front the broker's proxy is named by and
+# its pointing at the port the proxy bound, the settings that admit the broker's account to
+# Dispatch's access routes, and the DEV_STACK_PRIV_*, DEV_STACK_PROJECT_ACCESS and
+# DEV_STACK_AIRLOCK_* lines of the banner.
 # It is sourced, never run, and dev-stack.sh is its one caller: it sources this file once its
 # work directory is made, since the names below are paths in it, and calls each function below
 # at the point of the run the function names. dev-stack.sh keeps the order its processes start
@@ -46,25 +47,30 @@ AIRLOCK_BOUND_HOST="priv.airlock.test"
 AIRLOCK_PROFILES_FILE="$WORK_DIR/profiles.json"
 AIRLOCK_IMAGE="${DEV_STACK_AIRLOCK_IMAGE:-docker.io/library/python:3.12-slim}"
 AIRLOCK_CONTAINER="dev-stack-stands-$(printf '%s' "${WORK_DIR##*.}" | tr '[:upper:]' '[:lower:]')"
+# The front the broker's proxy is named by: its URL on its standard output, its log, and the file
+# it reads its backend from, which project_access_proxy_check writes.
+AIRLOCK_FRONT_JSON="$WORK_DIR/airlock-proxy-front.json"
+AIRLOCK_FRONT_LOG="$WORK_DIR/logs/airlock-proxy-front.log"
+AIRLOCK_PROXY_BACKENDS="$WORK_DIR/airlock-proxy-backends"
+AIRLOCK_FRONT_PID=""
 
 # project_access_broker_setup sets, for the broker dev-stack.sh starts next, the settings
 # --project-access gives it, and starts the airlock they name; without the option it leaves each
 # empty and starts nothing:
 #   PROJECT_ACCESS_ENV   BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE
 #   AIRLOCK_ENV          BROKER_PROFILES_FILE and the BROKER_AIRLOCK_* settings (airlock_broker_env)
-#   AIRLOCK_PROXY_PORT   the port this run picked for the broker's proxy
-#   AIRLOCK_PROXY_URL    http://127.0.0.1:<that port>
+#   AIRLOCK_PROXY_URL    the URL of the front the broker's proxy is named by
+#   AIRLOCK_FRONT_PID    that front's process, which dev-stack.sh's cleanup stops
 # The first two are arrays of NAME=value the broker's start line passes on.
 #
 # With --project-access the broker asks this run's Dispatch about projects, at the port the keeper
 # already holds for it, presenting its own account's token; without it the broker holds no such
 # client and serves no project-tagged secret, as before.
-# shellcheck disable=SC2034 # PROJECT_ACCESS_ENV and AIRLOCK_ENV are the caller's: dev-stack.sh starts the broker with them
+# shellcheck disable=SC2034,SC2154 # PROJECT_ACCESS_ENV and AIRLOCK_ENV are the caller's: dev-stack.sh starts the broker with them; awaited is dev-stack.sh's, set by its await
 project_access_broker_setup() {
   PROJECT_ACCESS_ENV=()
   AIRLOCK_ENV=()
   AIRLOCK_PROXY_URL=""
-  AIRLOCK_PROXY_PORT=""
   if [ "$PROJECT_ACCESS" = true ]; then
     PROJECT_ACCESS_ENV=(BROKER_PROJECT_ACCESS_URL="$DISPATCH_URL" BROKER_PROJECT_ACCESS_TOKEN_FILE="$BROKER_ACCESS_TOKEN_FILE")
     # The airlock, so a proxied request of a private project's secret can be driven on this stack
@@ -79,42 +85,43 @@ project_access_broker_setup() {
     . "$SCRIPT_DIR/lib/airlock-stack.sh"
     airlock_stands_start "$BIN_DIR/dev-airlock-stands" "$WORK_DIR" "$AIRLOCK_BOUND_HOST" "$AIRLOCK_IMAGE" "$AIRLOCK_CONTAINER"
     airlock_profiles_write "$AIRLOCK_PROFILES_FILE" "$AIRLOCK_BOUND_HOST" "$PRIV_SECRET"
-    # The proxy's port, which the broker must be told at boot and binds itself: the kernel picks a
-    # free one here, this script lets it go, and the broker takes it a moment later. Nothing holds
-    # it in between, so another process on this machine can take it first; that race is why the
-    # broker's own proxy line is read back (project_access_proxy_check) and a run whose proxy is
-    # not on this port stops rather than printing an address nothing serves.
-    AIRLOCK_PROXY_PORT="$(python3 -c "
-import socket
-s = socket.socket()
-s.bind(('127.0.0.1', 0))
-print(s.getsockname()[1])
-s.close()
-")"
-    AIRLOCK_PROXY_URL="http://127.0.0.1:${AIRLOCK_PROXY_PORT}"
-    mapfile -t AIRLOCK_ENV < <(airlock_broker_env "$AIRLOCK_PROFILES_FILE" "$AIRLOCK_PROXY_URL" "127.0.0.1:${AIRLOCK_PROXY_PORT}")
+    # A release names the proxy's URL (BROKER_AIRLOCK_PROXY_URL), which the broker must hold at
+    # boot while its proxy's port is known only once it has bound it. So a front, bound here before
+    # the broker on a port the kernel chooses, names the proxy, and project_access_proxy_check points
+    # it at the port the broker's proxy reports it bound, as dev-broker.sh's and dev-airlock.sh's
+    # fronts are. The broker's proxy binds port 0: a port picked free here and bound by the broker
+    # later is any other process's to take in between.
+    : >"$AIRLOCK_PROXY_BACKENDS"
+    "$BIN_DIR/dev-airlock-stands" front --listen 127.0.0.1:0 --backends-file "$AIRLOCK_PROXY_BACKENDS" \
+      >"$AIRLOCK_FRONT_JSON" 2>"$AIRLOCK_FRONT_LOG" &
+    AIRLOCK_FRONT_PID=$!
+    await "the airlock proxy's front" "$AIRLOCK_FRONT_PID" "$AIRLOCK_FRONT_LOG" "$AIRLOCK_FRONT_JSON" 'its URL' front_url_in ||
+      exit 1
+    AIRLOCK_PROXY_URL="$awaited"
+    mapfile -t AIRLOCK_ENV < <(airlock_broker_env "$AIRLOCK_PROFILES_FILE" "$AIRLOCK_PROXY_URL" "127.0.0.1:0")
   fi
 }
+
+# front_url_in prints the URL the front reports on its standard output, read from $1 once it is
+# listening; await runs it by name.
+front_url_in() { jq -r '.url // empty' "$1"; }
 
 # airlock_addr_in prints the address the broker's proxy reports it listens on, read from the
 # broker's log $1, as dev-stack.sh's own readers read each process's; await runs it by name.
 airlock_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "airlock proxy listening") | .addr][0] // empty' "$1"; }
 
-# project_access_proxy_check, under --project-access, waits for the broker's proxy line and stops
-# the run when the proxy is not on the port project_access_broker_setup picked; dev-stack.sh calls
-# it once the broker answers its health check. Without the option it does nothing.
+# project_access_proxy_check, under --project-access, waits for the broker's proxy line and points
+# the front project_access_broker_setup started at the address it names; dev-stack.sh calls it
+# once the broker answers its health check. Without the option it does nothing.
 # shellcheck disable=SC2154 # awaited is dev-stack.sh's, set by its await
 project_access_proxy_check() {
   if [ "$PROJECT_ACCESS" = true ]; then
-    # The port the broker's proxy actually bound, read from its own line, against the one this
-    # script picked: a lost race stops the run here rather than leaving a caller to find that the
-    # address the banner names serves nothing.
-    await "the broker's airlock proxy" "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its proxy address' airlock_addr_in
-    if [ "$awaited" != "127.0.0.1:${AIRLOCK_PROXY_PORT}" ]; then
-      echo "dev-stack: the broker's airlock proxy is on $awaited, not the 127.0.0.1:${AIRLOCK_PROXY_PORT} this run picked: another process took that port first. Start the run again." >&2
+    # The address the broker's proxy bound, read from its own line: the front rereads its backends
+    # file when it changes, so writing it is all it takes.
+    await "the broker's airlock proxy" "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its proxy address' airlock_addr_in ||
       exit 1
-    fi
-    echo "dev-stack: airlock proxy $AIRLOCK_PROXY_URL, bound host $AIRLOCK_S_URL" >&2
+    printf '%s\n' "$awaited" >"$AIRLOCK_PROXY_BACKENDS"
+    echo "dev-stack: airlock proxy $AIRLOCK_PROXY_URL (a front over the broker's own proxy port $awaited), bound host $AIRLOCK_S_URL" >&2
   fi
 }
 

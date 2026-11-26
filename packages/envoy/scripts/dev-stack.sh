@@ -138,7 +138,7 @@
 #
 # With --callout the hub runs behind the NATS auth service, in two brokers, which
 # scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds. It
-# is refused beside --project-access, since both brokers would take the airlock proxy's one port.
+# is refused beside --project-access, since the airlock proxy's front points at one broker's proxy.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
@@ -209,8 +209,9 @@ and Dispatch admits that account to its access routes. The run also starts the a
 broker's proxy, and dev-airlock-stands in a docker container, so it needs docker. Without the
 option none of this runs, as before.
 
---callout and --project-access cannot run together: both of --callout's brokers would take the
-airlock proxy's one port. The pair is refused with exit 2 before anything is created or started.
+--callout and --project-access cannot run together: the airlock proxy's front points at the
+first broker's proxy alone, and --callout starts two. The pair is refused with exit 2 before
+anything is created or started.
 
 EOF
   cat <<EOF
@@ -277,12 +278,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# --- --callout starts two brokers with one set of settings, and --project-access gives every
-# broker the one airlock proxy port this run picks (BROKER_AIRLOCK_LISTEN_ADDR), so the second
-# broker could not bind it and its start would stop the run. The pair is refused here, before
-# anything is created or started. ---
+# --- --callout starts two brokers with one set of settings, and --project-access names the airlock
+# proxy by one front, which it points at the first broker's proxy alone (project_access_proxy_check),
+# so nothing would reach the second broker's proxy. The pair is refused here, before anything is
+# created or started. ---
 if [ "$CALLOUT" = true ] && [ "$PROJECT_ACCESS" = true ]; then
-  echo "dev-stack: --callout and --project-access cannot run together: both of --callout's brokers would take the airlock proxy's one port" >&2
+  echo "dev-stack: --callout and --project-access cannot run together: the airlock proxy's front points at the first broker's proxy alone, and --callout starts two" >&2
   exit 2
 fi
 
@@ -624,6 +625,7 @@ cleanup() {
   stop_bounded 'the listener port keeper' "$LISTENER_KEEPER_PID"
   stop_bounded 'the second broker' "$BROKER2_PID"
   stop_bounded broker "$BROKER_PID"
+  stop_bounded "the airlock proxy's front" "${AIRLOCK_FRONT_PID:-}"
   stop_bounded natsd "$NATS_PID"
   stop_bounded dev-oidc-issuer "$ISSUER_PID"
   stop_bounded 'the Dispatch port keeper' "$KEEPER_PID"
