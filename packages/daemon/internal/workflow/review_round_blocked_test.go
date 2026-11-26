@@ -47,7 +47,7 @@ type githubFake struct {
 func newGitHubFake(t *testing.T, pool *pgxpool.Pool, engine *Engine, state record.MergeState) *githubFake {
 	g := &githubFake{t: t, pool: pool, engine: engine, mergeable: record.MergeabilityMergeable, state: state,
 		checks: record.HeadChecksConcluded, at: time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC), step: conflictConfirmWait}
-	engine.cfg.ReadMergeState = func(string) { g.reads++ }
+	engine.cfg.ReadMergeState = func(record.PullRequestKey) { g.reads++ }
 	return g
 }
 

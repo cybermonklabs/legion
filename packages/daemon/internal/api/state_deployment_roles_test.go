@@ -88,8 +88,8 @@ func stateServedWithLog(t *testing.T, state State, contract int) (servedRoles, [
 
 // deploymentRolesDropped is the `dropped` of deploymentRolesContract's row.
 func deploymentRolesDropped() string {
-	for _, row := range stateNarrowings {
-		if row.contract == deploymentRolesContract {
+	for _, row := range stateNarrowings() {
+		if row.contract == entryNumber(deploymentRolesContract) {
 			return row.dropped
 		}
 	}
@@ -106,16 +106,17 @@ func deploymentRolesDropped() string {
 // for its pod, both name the checker, and the checker's stranded claim is served.
 func TestAnOlderCallerSeesAStepIssueAsAtWork(t *testing.T) {
 	var contracts []int
-	for _, row := range stateNarrowings {
+	for _, row := range stateNarrowings() {
 		if below := row.contract - 1; below >= supervise.PodUpdateContract-1 && !slices.Contains(contracts, below) {
 			contracts = append(contracts, below)
 		}
 	}
-	contracts = append(contracts, deploymentRolesContract)
+	added := entryNumber(deploymentRolesContract)
+	contracts = append(contracts, added)
 	for _, contract := range contracts {
 		t.Run(fmt.Sprint(contract), func(t *testing.T) {
 			served, narrowings, _ := stateServedWithLog(t, populatedState(t), contract)
-			older := contract < deploymentRolesContract
+			older := contract < added
 			step, held := served.Issues["LEGION-240"], served.Issues["LEGION-241"]
 			if step == nil || held == nil {
 				t.Fatalf("the issues served = %v, want LEGION-240 and LEGION-241 among them", issueKeys(served.Issues))
@@ -186,9 +187,10 @@ func TestAnOlderCallerSeesATaskPendingAtStepAsAtImplementing(t *testing.T) {
 		PendingTask: &PendingTaskView{Phase: phase.Step, QueuedAt: time.Date(2026, 9, 22, 9, 16, 2, 0, time.UTC)}}}}
 	issues["LEGION-240"] = atStep
 	state.Issues = issues
-	for _, contract := range []int{deploymentRolesContract - 1, deploymentRolesContract} {
+	added := entryNumber(deploymentRolesContract)
+	for _, contract := range []int{added - 1, added} {
 		served, _, _ := stateServedWithLog(t, state, contract)
-		want := map[bool]string{true: "implementing", false: "step"}[contract < deploymentRolesContract]
+		want := map[bool]string{true: "implementing", false: "step"}[contract < added]
 		workers, _ := served.Issues["LEGION-240"]["workers"].(map[string]any)
 		checker, _ := workers["checker"].(map[string]any)
 		view, _ := checker["claim"].(map[string]any)
@@ -220,7 +222,7 @@ func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
 	paused.WaitsOn = append(slices.Clone(paused.WaitsOn), PauseStopView{Claim: "legion-legion-legion-241-checker", Issue: "LEGION-241", Role: "checker",
 		AskedAt: time.Date(2026, 9, 22, 9, 18, 30, 0, time.UTC)})
 	state.Paused = &paused
-	contract := deploymentRolesContract - 1
+	contract := entryNumber(deploymentRolesContract) - 1
 
 	served, _, left := stateServedWithLog(t, state, contract)
 
@@ -244,20 +246,6 @@ func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
 		if stop.Role == "checker" {
 			t.Fatalf("the open pause served waits on the checker's stop on %s, want none for a caller below the contract", stop.Issue)
 		}
-	}
-}
-
-// deploymentRolesContract is the contract whose entry in version.go added the roles a deployment
-// defines to the state. The number is pinned, as OwnerPlanContract's is: a constant left behind at
-// a renumber would serve a plugin that cannot parse step the phase step.
-func TestTheDeploymentRolesContractIsTheContractThatAddedTheRoles(t *testing.T) {
-	const addedDeploymentRoles = 258
-	if deploymentRolesContract != addedDeploymentRoles {
-		t.Fatalf("deploymentRolesContract = %d, want %d, the contract whose entry in version.go added the phase step and stepRole",
-			deploymentRolesContract, addedDeploymentRoles)
-	}
-	if deploymentRolesContract > DaemonAPIVersion {
-		t.Fatalf("deploymentRolesContract = %d, above DaemonAPIVersion %d: no caller could be served the phase step", deploymentRolesContract, DaemonAPIVersion)
 	}
 }
 

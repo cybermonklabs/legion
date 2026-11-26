@@ -329,13 +329,29 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 // failed once ctx had ended is the launch's own end rather than the other App's failure: it is
 // the error, and nothing is logged.
 func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository ghrepo.Repository, own runtime.GitIdentity) (map[claim.Role]runtime.GitIdentity, error) {
-	app := appauth.AppRoleFor(c.Role)
-	identities := make(map[claim.Role]runtime.GitIdentity, len(claim.Roles))
+	deployed := deploymentApps(s.roles)
+	app, err := appauth.AppRoleFor(c.Role, deployed)
+	if err != nil {
+		return nil, err
+	}
+	roles := slices.Clone(claim.Roles)
+	for _, role := range s.roles {
+		roles = append(roles, role.Name)
+	}
+	identities := make(map[claim.Role]runtime.GitIdentity, len(roles))
 	var others []claim.Role
-	for _, role := range claim.Roles {
-		if appauth.AppRoleFor(role) == app {
+	otherApp := appauth.Implement
+	if app == appauth.Implement {
+		otherApp = appauth.Review
+	}
+	for _, role := range roles {
+		roleApp, err := appauth.AppRoleFor(role, deployed)
+		switch {
+		case err != nil:
+			continue
+		case roleApp == app:
 			identities[role] = own
-		} else {
+		default:
 			others = append(others, role)
 		}
 	}
@@ -349,14 +365,14 @@ func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository
 			identities[role] = other
 		}
 	case ctx.Err() != nil:
-		return nil, fmt.Errorf("the git identity of the %s App: %w", appauth.AppRoleFor(others[0]), err)
+		return nil, fmt.Errorf("the git identity of the %s App: %w", otherApp, err)
 	default:
 		log := s.log
 		if log == nil {
 			log = slog.Default()
 		}
 		log.Warn("legion launch carries no identity of the other App's roles: its role identities hold its own App's roles alone",
-			"claim", c.Token, "app", appauth.AppRoleFor(others[0]), "error", err)
+			"claim", c.Token, "app", otherApp, "error", err)
 	}
 	return identities, nil
 }
