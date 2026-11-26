@@ -127,6 +127,7 @@ type invocation struct {
 // the caller's own test reads the output. A row whose exit was changed on purpose carries the new
 // exit in old_exit (invocationsTable), and the run is compared with that.
 func TestInvocationTable(t *testing.T) {
+	t.Parallel()
 	rows := readInvocations(t)
 	if len(rows) == 0 {
 		t.Fatalf("%s holds no row: UNKNOWN, nothing was compared", invocationsTable)

@@ -1324,7 +1324,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 
 ## A pod does not come up
 
-- **`Pending`.** Usually scheduling: a pod reserves its roles' cpu and memory (3 CPU and 19 GiB for
+- **`Pending`.** Usually scheduling: a pod reserves its roles' cpu and memory (2 CPU and 8 GiB for
   an issue pod at the defaults) and lands wherever the pool has room, so a pool at its limits leaves
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the

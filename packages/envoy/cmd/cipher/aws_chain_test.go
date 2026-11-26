@@ -26,6 +26,7 @@ import (
 // sign-in's own failure prints it in, naming the setting and never the path or the value, since
 // both read one chain. Control: an API error the call met prints AWS's code, as before.
 func TestAStoreCallFailsInTheSignInsWords(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at aws_chain_test.go:44).
 	planted := "hunter2pw-" + "storechain-" + "7b0d"
 	call := func(err error) error {
 		return &smithy.OperationError{ServiceID: secretsmanager.ServiceID, OperationName: "ListSecrets", Err: fmt.Errorf("failed to refresh cached credentials, %w", err)}
@@ -70,6 +71,7 @@ func TestAStoreCallFailsInTheSignInsWords(t *testing.T) {
 // carries a made-up secret. Control: the call ran out of its own deadline, so the row read a real
 // timeout.
 func TestASignInThatTimedOutNamesTheAddressSettings(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at aws_chain_test.go:82).
 	planted := "hunter2pw-" + "stsdeadline-" + "1c4f"
 	silent, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
