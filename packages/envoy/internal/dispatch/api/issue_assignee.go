@@ -18,8 +18,9 @@ import (
 // (nil, false): leave it alone. JSON null → (nil, true): clear it, which only an update does; a
 // create reads a null as naming nobody, as it reads an absent field, and fills the assignee in
 // (defaultAssignee). A string → its canonical email, which must name a person who has signed in
-// (400 ASSIGNEE_NOT_ALLOWED otherwise). Anything else → 400 INVALID_ISSUE.
-func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (assignee *string, provided bool, err error) {
+// and whom who, the write's reader, may see (400 ASSIGNEE_NOT_ALLOWED otherwise, allowedLogin).
+// Anything else → 400 INVALID_ISSUE.
+func (s *server) parseIssueAssignee(ctx context.Context, who model.Actor, raw json.RawMessage) (assignee *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
 	}
@@ -30,26 +31,25 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 	if err := json.Unmarshal(raw, &login); err != nil {
 		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", "assignee must be a person's email or null")
 	}
-	canonical, err := s.allowedLogin(ctx, login)
+	canonical, err := s.allowedLogin(ctx, who, login)
 	if err != nil {
 		return nil, true, err
 	}
 	return &canonical, true, nil
 }
 
-// allowedLogin canonicalises login and checks that it names a person who has signed in and whom the
-// reader the request's gate put in ctx may see (access.PersonClause): a person a restricted member
-// or a credential acting for one may not see is refused exactly as one who has not signed in. A
-// context with no reader reads as the closed viewer, which sees no person, so a handler that lost
-// its reader allows nobody; work the server does for no request names everyReader in ctx itself.
-func (s *server) allowedLogin(ctx context.Context, login string) (string, error) {
+// allowedLogin canonicalises login and checks that it names a person who has signed in and whom
+// who, the reader of the write that names them, may see (access.PersonClause): a person a
+// restricted member or a credential acting for one may not see is refused exactly as one who has
+// not signed in. Each caller passes the reader its own handler resolved (readerOf, which reads the
+// one the request's gate put in its context), so the check holds whatever wraps the handler; a
+// reader with no viewer reads as the closed viewer, which sees no person.
+func (s *server) allowedLogin(ctx context.Context, who model.Actor, login string) (string, error) {
 	canonical := model.CanonicalLogin(login)
 	var known bool
 	if canonical != "" {
-		reader, _ := readerFromContext(ctx)
-		viewer := refs.VisibilityArg(reader)
 		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1 and `+
-			access.PersonClause("people.email", "$2")+`)`, canonical, viewer).Scan(&known); err != nil {
+			access.PersonClause("people.email", "$2")+`)`, canonical, refs.VisibilityArg(who)).Scan(&known); err != nil {
 			// The error reaches a log line, so it names no person (TestAnAssigneeReadFailureNamesNoPerson).
 			return "", fmt.Errorf("read whether the login may be assigned: %w", err)
 		}

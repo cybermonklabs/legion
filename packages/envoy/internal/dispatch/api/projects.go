@@ -149,7 +149,12 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 				"the person a project's unowned work lands on")
 		return
 	}
-	projectDefault, err := s.allowedLogin(r.Context(), projectDefault)
+	// The person is held to the creating credential's sight as well as to having signed in.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	projectDefault, err := s.allowedLogin(r.Context(), who, projectDefault)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

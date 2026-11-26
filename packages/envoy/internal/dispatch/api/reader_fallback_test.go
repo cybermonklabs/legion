@@ -30,12 +30,14 @@ func TestAReadWhoseContextLostItsReaderSeesNothing(t *testing.T) {
 		database := storetest.Open(t)
 		seedPeople(t, database, "alice")
 		served := directServer(Deps{Store: database})
-		if _, err := served.allowedLogin(context.Background(), "alice"); err == nil {
-			t.Fatal("an assignee check with no reader in its context allowed alice: want the closed viewer's refusal")
+		// The check takes its reader from its caller (allowedLogin), and the zero reader is the
+		// closed viewer, which sees no person.
+		if _, err := served.allowedLogin(context.Background(), model.Actor{}, "alice"); err == nil {
+			t.Fatal("an assignee check with no reader allowed alice: want the closed viewer's refusal")
 		} else if refusal := (*apiError)(nil); !errors.As(err, &refusal) || refusal.code != "ASSIGNEE_NOT_ALLOWED" {
-			t.Fatalf("an assignee check with no reader in its context = %v, want ASSIGNEE_NOT_ALLOWED", err)
+			t.Fatalf("an assignee check with no reader = %v, want ASSIGNEE_NOT_ALLOWED", err)
 		}
-		if login, err := served.allowedLogin(withReader(context.Background(), everyReader), "alice"); err != nil || login != "alice" {
+		if login, err := served.allowedLogin(context.Background(), everyReader, "alice"); err != nil || login != "alice" {
 			t.Fatalf("an assignee check that names everyReader = %q, %v; want alice", login, err)
 		}
 	})
