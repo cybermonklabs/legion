@@ -1101,6 +1101,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The role lookup above may have waited on the listener past what the refresh made with who
+	// covers, and the transaction below reads the message by the session content rule.
+	s.refreshRosterBeforeReadBack(r.Context(), who)
 
 	tx, err := s.begin(r.Context())
 	if err != nil {

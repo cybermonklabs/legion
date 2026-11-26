@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -183,7 +182,8 @@ func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Sugges
 // answered ask a check offers carries the display tree of its answer. Each check reads its
 // trees through a reader of its own, resolved on that check's goroutine and before
 // running.Wait answers: the checks run side by side, and one reader is registered with and
-// resolved on one goroutine alone (text_trees.go).
+// resolved on one goroutine alone (text_trees.go). who is the editor as a reader, whose viewer
+// every check binds (relatedInput.who).
 func (s *server) decisionBlockChecks(
 	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor, who model.Actor, trees bool,
 ) []decisionBlockCheck {
@@ -446,7 +446,7 @@ func (s *server) runRelatedCheck(
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
 	go func() {
-		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
+		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, input.who, project, input.text, input.title, exclusion, probeUnknownTerms)
 		close(pick.ready)
 		stage := relatedStage{err: pick.err}
 		switch {
@@ -456,7 +456,7 @@ func (s *server) runRelatedCheck(
 			// keyword matches anything, so there is no query to run.
 			stage.response = model.SearchResponse{Results: []model.SearchResult{}, Limit: suggestionSearchDepth}
 		default:
-			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, relatedKeywordStatement, project, pick.terms, excluded)
+			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, input.who, relatedKeywordStatement, project, pick.terms, excluded)
 		}
 		stage.took = time.Since(stagesStarted)
 		keyword <- stage
@@ -516,7 +516,7 @@ func (s *server) runRelatedCheck(
 		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
+			stage := s.relatedMeaningStage(meaningRead, crossRead, input.who, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
@@ -656,7 +656,7 @@ func (s *server) runRelatedCheck(
 // alone, and resolved there before the results are handed over, so an answer that reaches the
 // check carries its trees filled and one the grace left behind is read by nobody.
 func (s *server) relatedMeaningStage(
-	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
+	ctx, crossRead context.Context, who model.Actor, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		if ctx.Err() != nil || meaningStatementEnded(err) {
@@ -679,7 +679,7 @@ func (s *server) relatedMeaningStage(
 		cross = make(chan []model.SearchResult, 1)
 		go func() {
 			reader := s.readDisplayTrees(crossRead, trees)
-			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), reader)
+			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), who, reader)
 			if err != nil {
 				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
 			}
@@ -698,7 +698,7 @@ func (s *server) relatedMeaningStage(
 		// The check answers not made without reading this.
 		return failed(relatedReasonMeaningFailed, nil)
 	}
-	response, err := s.relatedMeaningSearch(ctx, project, pick.terms, vector, excluded)
+	response, err := s.relatedMeaningSearch(ctx, who, project, pick.terms, vector, excluded)
 	if err != nil {
 		return failed(relatedReasonMeaningFailed, err)
 	}
@@ -738,7 +738,7 @@ func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []mo
 // server holds on the statement included, which its caller reports as the meaning search not
 // answering (relatedMeaningStage).
 func (s *server) relatedMeaningSearch(
-	ctx context.Context, project string, picked relatedTerms, vector []float32, excluded []string,
+	ctx context.Context, who model.Actor, project string, picked relatedTerms, vector []float32, excluded []string,
 ) (model.SearchResponse, error) {
 	tx, err := s.beginMeaningScan(ctx)
 	if err != nil {
@@ -748,7 +748,7 @@ func (s *server) relatedMeaningSearch(
 	// The flag is read only where it can change the statement, as search reads it
 	// (runMeaningSearch): a check naming no project runs the unscoped one either way.
 	filled := project != "" && embeddingProjectKeysFilled(ctx, tx)
-	return s.relatedSearch(ctx, tx, relatedMeaningStatementFor(project, filled), project, picked, excluded,
+	return s.relatedSearch(ctx, tx, who, relatedMeaningStatementFor(project, filled), project, picked, excluded,
 		embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
 }
 
@@ -787,8 +787,11 @@ func relatedMeaningStatementFor(project string, filled bool) relatedStatement {
 // is the one whose kinds CTE filters them (relatedStatement.excluding) and they are its last
 // parameter, which is why that filter reads $11 of the keyword statement and $14 of the meaning
 // one; with none, the statement is the one without the filter.
+//
+// who is the check's reader (relatedInput.who), whose viewer the statement binds last
+// (relatedViewer).
 func (s *server) relatedSearch(
-	ctx context.Context, q queryer, statement relatedStatement, project string, picked relatedTerms,
+	ctx context.Context, q queryer, who model.Actor, statement relatedStatement, project string, picked relatedTerms,
 	excluded []string, meaning ...any,
 ) (model.SearchResponse, error) {
 	snippetTerm := ""
@@ -807,13 +810,8 @@ func (s *server) relatedSearch(
 	if len(excluded) > 0 {
 		query, args = statement.excluding, append(args, excluded)
 	}
-	// The acting credential, last of the parameters each statement declares. The check runs off
-	// the write that triggered it, on a context of its own and with no credential of that
-	// writer's to hand, so it reads as the server's own reader (everyReader), which proves no
-	// author: a node reserved for its author is suggested to nobody, which is the answer that can
-	// mislead no reader. The reader of the write the check runs off is not carried this far, and
-	// until a project can be private the server's reader sees what every caller sees.
-	args = append(args, refs.VisibilityArg(everyReader))
+	// The visibility argument, last of the parameters each statement declares (relatedViewer).
+	args = append(args, relatedViewer(who))
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return model.SearchResponse{}, err
@@ -823,6 +821,15 @@ func (s *server) relatedSearch(
 	// A write's related-item check shows no snippet tree: nothing reads one, and the trees are
 	// the dashboard's to ask for.
 	return scanSearchRows(rows, relatedSearchQuery(picked.Terms), suggestionSearchDepth, 0, false)
+}
+
+// relatedViewer is the visibility argument every search of a check binds: the viewer of who, the
+// writer whose write triggered it (relatedInput.who), so the check offers nothing of a project
+// or a conversation that writer may not read, and no author, so a node reserved for its author
+// is suggested to nobody, which is the answer that can mislead no reader - the check's answer is
+// recorded (write_suggestions) as well as handed to the writer.
+func relatedViewer(who model.Actor) any {
+	return refs.VisibilityArg(model.Actor{Viewer: who.Viewer})
 }
 
 // relatedSearchQuery is Suggestions.SearchQuery: the best relatedSearchQueryTerms chosen terms,
@@ -890,6 +897,7 @@ func (s *server) fillRelatedItems(
 		// project can be private the server's reader sees what that writer sees.
 		who.Viewer = everyReader.Viewer
 	}
+	who.Viewer = input.who.Viewer
 	if err := s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees); err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.
@@ -1071,9 +1079,8 @@ const relatedCheckInsert = `
 // (persistSuggestions). Every source with a project and an owner gets one related_checks row: its
 // outcome, search mode, reason, the lexemes it searched for, the stages' and the whole check's
 // times and how many items it listed. A check whose project could not be resolved has no row to
-// write, since the row belongs to a project. The rows go in one transaction of the same few round
-// trips however many there are (insertRelatedChecks), so an edit's decision blocks beyond
-// decisionBlockCheckLimit, however many, cost no more than one.
+// write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
+// so an edit's decision blocks beyond decisionBlockCheckLimit, however many, cost one.
 //
 // related_checks rows the first attempt could not write are tried once more in the background
 // (retryRecord). Each row's id is chosen here and the insert does nothing where it exists, since
@@ -1146,27 +1153,17 @@ func (s *server) retryRecord(err error, write func(context.Context) error, messa
 	})
 }
 
-// insertRelatedChecks writes inserts' related_checks rows in a transaction of its own, in one
-// round trip between its BEGIN and its COMMIT. A batch is built for each attempt: pgx keeps what it
-// learned of a statement on the batch's queued queries, which belongs to the connection that sent
-// it. The rows are no write of the request that ran the check: they record a write that has
-// already committed and marked its key, so they are made outside its transaction, under a context
-// with the request's commit step taken off (store.WithoutBeforeCommit), so that the record never
-// marks the request's Idempotency-Key, and a failure is only logged.
+// insertRelatedChecks writes inserts' related_checks rows in one round trip. A batch is built for
+// each attempt: pgx keeps what it learned of a statement on the batch's queued queries, which
+// belongs to the connection that sent it. The rows are no write of the request that ran the
+// check: they record a write that has already committed and marked its key, so they are made
+// outside its transaction, and a failure is only logged.
 func (s *server) insertRelatedChecks(ctx context.Context, inserts [][]any) error {
-	tx, err := s.deps.Store.Pool.Begin(store.WithoutBeforeCommit(ctx))
-	if err != nil {
-		return fmt.Errorf("begin the related_checks rows: %w", err)
-	}
-	defer tx.Rollback(context.WithoutCancel(ctx))
 	batch := &pgx.Batch{}
 	for _, args := range inserts {
 		batch.Queue(relatedCheckInsert, args...)
 	}
-	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return s.deps.Store.Pool.SendBatch(ctx, batch).Close()
 }
 
 // relatedRecordRetryable says whether a related_checks insert that failed may succeed when tried

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -16,7 +17,7 @@ import (
 
 // askRowColumns are docs.AskColumns plus the documents a block ask, a quoted anchor or an
 // approval request names; every ask read carries whichever document applies. Queries selecting
-// them read from askRowFrom.
+// them read from askRowFrom, or from askReadFromSeenBy for a response.
 const askRowColumns = docs.AskColumns + `, ba.id::text, ba.slug, ba.is_primary,
 	aa.project_key, aa.slug, aa.name, aa.is_primary,
 	pa.project_key, pa.slug, pa.name, pa.is_primary`
@@ -24,11 +25,28 @@ const askRowColumns = docs.AskColumns + `, ba.id::text, ba.slug, ba.is_primary,
 // askRowFrom is a var, not a const, because its anchor join is built from store.CastableUUID: a
 // stored anchor resolves to the document its artifact_id casts to, whatever the spelling, and one
 // whose artifact_id casts to no uuid resolves to no document instead of failing the read with
-// SQLSTATE 22P02.
+// SQLSTATE 22P02. It binds no reader: a write reads the asks its ask.* event payloads carry
+// through it, and every read of those payloads joins the documents again for its reader
+// (attachAskDocumentArtifacts). A response reads askRowFromSeenBy instead.
 var askRowFrom = `from asks a
 	left join artifacts ba on ba.id = a.block_artifact_id
 	left join artifacts aa on aa.id = ` + store.CastableUUID(`a.anchor->>'artifact_id'`) + `
 	left join artifacts pa on pa.id = (a.approval->>'artifact_id')::uuid`
+
+// askRowFromSeenBy is askRowFrom for a response to the viewer bound at viewerParam: the document an
+// anchor quotes and the one an approval request names join only where that viewer sees their
+// project (access.ProjectClause), as attachAskDocumentArtifacts joins them for an ask event's
+// payload, so a document of a project the viewer does not see answers as one no row holds - no
+// anchor_artifact, no approval_artifact. The ask's own block document is its owner's, which the
+// statement's owner clause already judges.
+func askRowFromSeenBy(viewerParam string) string {
+	return `from asks a
+	left join artifacts ba on ba.id = a.block_artifact_id
+	left join artifacts aa on aa.id = ` + store.CastableUUID(`a.anchor->>'artifact_id'`) + `
+		and (aa.project_key is null or ` + access.ProjectClause("aa.project_key", viewerParam) + `)
+	left join artifacts pa on pa.id = (a.approval->>'artifact_id')::uuid
+		and (pa.project_key is null or ` + access.ProjectClause("pa.project_key", viewerParam) + `)`
+}
 
 // newestReply selects the newest comment in the thread of the ask aliased a: the one that
 // committed last, since a comment's created_at is when its insert ran (migration 0065) and every
@@ -40,7 +58,7 @@ const newestReply = `select c.id, c.author, c.created_at, c.turn from comments c
 			limit 1`
 
 // lastReplyJoin attaches the newest comment in the ask's thread as lr; the ask must be
-// aliased a. askReadFrom and listOpenAsks both read the reply through it.
+// aliased a. askReadFromSeenBy and listOpenAsks both read the reply through it.
 const lastReplyJoin = `
 		left join lateral (` + newestReply + `) lr on true`
 
@@ -86,14 +104,14 @@ end`
 // question answers with (askWaitingOnPerson below).
 //
 // It names the ask a, its issue i and its project p, so every query reading it joins all three
-// the way askReadFrom does, the ask's own document among them: a question owned by an issue has
+// the way askReadFromSeenBy does, the ask's own document among them: a question owned by an issue has
 // no document row and one owned by a document has no issue row, so the project is reached
 // through coalesce(i.project_key, ar.project_key). A query that reads the expression without
 // those joins fails at run time rather than at compile time, which is why
 // TestOneExpressionDecidesWhoWaits drives the routes behind the reads and
 // TestTheWriteNamesThePerson the writes behind askWaitingOnPerson; the joins themselves are
 // askedOfPersonJoins below, which every statement reading the expression builds its FROM clause
-// from - the Inbox's person filter through askReadFrom, as it sits in the statement that
+// from - the Inbox's person filter through askReadFromSeenBy, as it sits in the statement that
 // selects askReadColumns.
 //
 // It compares with = rather than wrapping either column in lower(btrim(...)): asks.asked_of,
@@ -104,10 +122,10 @@ const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
 // a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
-// p. Five FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
+// p. Five FROM clauses carry them - askReadFromSeenBy and askWaitingOnPerson below, the active CTE of
 // listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the
 // read putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds them from
-// this one text, so the rule and the tables it names move together. askReadFrom serves two of
+// this one text, so the rule and the tables it names move together. askReadFromSeenBy serves two of
 // the six reads, askReadColumns and the Inbox's person filter, which share one statement.
 // TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the expression to
 // its own.
@@ -149,7 +167,7 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 // open request's stored field for one it hands back, which a hand-back does not touch. It is the
 // one rule every read of that person shares (askedOfPersonExpression) over the three tables that
 // rule names beside the ask - its issue, its own document and the project of whichever of the
-// two owns it, the joins askReadFrom makes - read against a row of one holding the ask's three
+// two owns it, the joins askReadFromSeenBy makes - read against a row of one holding the ask's three
 // columns rather than against the stored ask: the writes of both callers are queued on the
 // ledger (docs.Ledger), so the row a write opens is not there until Commit, and the read runs in
 // the read phase, under the owner's lock the caller holds, before anything is written. The
@@ -178,15 +196,17 @@ func askWaitingOnPerson(ctx context.Context, q queryer, owner owner, askedOf *st
 // WaitingOnPerson is askedOfPersonExpression, the person that turn waits on, aliased
 // waiting_on_person for the same reason; every project names a default assignee, so it is null
 // only for a question whose project row the read could not reach. Queries selecting them read
-// from askReadFrom. Event payloads are built from askRowColumns instead: they carry neither.
+// from askReadFromSeenBy. Event payloads are built from askRowColumns instead: they carry neither.
 const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
 	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
 
-// askReadFrom is askRowFrom with the three joins askedOfPersonExpression reads beside the ask
-// (askedOfPersonJoins) and the ask's newest reply. A query over it that wants the issue's or
-// the document's own columns reads them from those joins rather than joining either table
-// again, as the Inbox read does.
-var askReadFrom = askRowFrom + askedOfPersonJoins + lastReplyJoin
+// askReadFromSeenBy is askRowFromSeenBy, for the viewer bound at viewerParam, with the three joins
+// askedOfPersonExpression reads beside the ask (askedOfPersonJoins) and the ask's newest reply. A
+// query over it that wants the issue's or the document's own columns reads them from those joins
+// rather than joining either table again, as the Inbox read does.
+func askReadFromSeenBy(viewerParam string) string {
+	return askRowFromSeenBy(viewerParam) + askedOfPersonJoins + lastReplyJoin
+}
 
 // nullableAskArtifactRef holds the nullable columns of one optional document an ask names - a
 // quoted anchor's or an approval request's artifact_id, both resolved through a left join that
@@ -276,7 +296,9 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // beside its other reads (readIssueDetails), and a read of its own sends them as a batch of its
 // own (loadAskDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
 // declares no counting arms for is refused as the count is queued, which queues nothing and
-// answers nothing itself, so the apply reports that refusal.
+// answers nothing itself, so the apply reports that refusal. For a reader that does not see every
+// object, a fourth statement reads which of the persons the asks wait on it sees, and the apply
+// leaves out the rest (askPersons).
 func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
 	askIDs := distinctAskIDs(asks)
 	openedEventIDs := make(map[string]int64, len(askIDs))
@@ -285,6 +307,7 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 	events.QueueOpenedEventIDs(b, askIDs, events.EveryEvent, openedEventIDs)
 	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
 	refs.QueueAskPartIDs(b, who, asks, partIDs)
+	seen := queueAskPersons(b, who, asks)
 	return func() error {
 		if countsErr != nil {
 			return countsErr
@@ -294,7 +317,58 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 		}
 		applyAskBacklinkCounts(asks, counts)
 		applyAskPartIDs(asks, partIDs)
+		leaveOutHiddenAskPersons(asks, seen)
 		return nil
+	}
+}
+
+// askPersons names the persons each ask names beside its row: the person it was handed to and the
+// person it waits on (askedOfPersonExpression), the one the issue's assignee or the project's
+// default may name.
+func askPersons(asks []*model.Ask) references {
+	named := references{}
+	for _, ask := range asks {
+		if ask.AskedOf != nil {
+			named.name(personReference, *ask.AskedOf)
+		}
+		named.name(personReference, ask.WaitingOnPerson)
+	}
+	return named
+}
+
+// queueAskPersons queues in b the read of which persons of asks who sees (seenReferencesSQL), and
+// answers the set the batch fills: nil for a reader that sees every object, or no asks, which
+// queues nothing. Any other reader's read is queued whatever the asks name, as seenReferences makes
+// its one statement, so an ask handed to a hidden person costs what one handed to nobody costs.
+func queueAskPersons(b *pgx.Batch, who model.Actor, asks []*model.Ask) references {
+	if seesEveryObject(who) {
+		return nil
+	}
+	named := askPersons(asks)
+	if len(asks) == 0 {
+		return nil
+	}
+	seen := references{}
+	b.Queue(seenReferencesSQL, seenReferencesArgs(who, named)...).Query(func(rows pgx.Rows) error {
+		return scanSeenReferences(rows, seen)
+	})
+	return seen
+}
+
+// leaveOutHiddenAskPersons writes asks as their reader reads them (the rule of references,
+// references_seen.go): a person the reader does not see, by seen, is left out - the ask's asked_of
+// null and its waiting_on_person empty. A nil seen is a reader that sees every person.
+func leaveOutHiddenAskPersons(asks []*model.Ask, seen references) {
+	if seen == nil {
+		return
+	}
+	for _, ask := range asks {
+		if ask.AskedOf != nil && !seen.holds(personReference, *ask.AskedOf) {
+			ask.AskedOf = nil
+		}
+		if ask.WaitingOnPerson != "" && !seen.holds(personReference, ask.WaitingOnPerson) {
+			ask.WaitingOnPerson = ""
+		}
 	}
 }
 
@@ -314,12 +388,12 @@ func loadAskDetails(ctx context.Context, q queryer, who model.Actor, asks []*mod
 }
 
 // attachAskPartIDs reads, in one query over `ask_blocks`, the part id of every listed ask's
-// options and answer and the ask's current part revision (`refs.AskPartIDs`), so every read
-// that shows an ask's options shows the reference of each: `dispatch://<key>/ask/<id>#b-<part
-// id>`, pinned to the ask's `revision` with `@v<N>`. It is read beside attachAskBacklinkCounts,
-// which every list and detail read of an ask already pays for, and never by a write, whose
-// answer carries no id. A list of asks reads the same ids in its own batch instead
-// (queueAskDetails, over refs.QueueAskPartIDs).
+// options and answer and the ask's current part revision (`refs.AskPartIDs`), as who may read the
+// ask, so every read that shows an ask's options shows the reference of each:
+// `dispatch://<key>/ask/<id>#b-<part id>`, pinned to the ask's `revision` with `@v<N>`. It is read
+// beside attachAskBacklinkCounts, which every list and detail read of an ask already pays for, and
+// never by a write, whose answer carries no id. A list of asks reads the same ids in its own batch
+// instead (queueAskDetails, over refs.QueueAskPartIDs).
 //
 // Which option or answer each stored part stands for, and what an ask the index has not reached
 // or an option no part stands for carries, is refs.AskPartIDs'.
@@ -353,13 +427,25 @@ func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 
 // attachAskReadFields is what the read of one ask (getAsk) attaches beyond its row: its inbound
 // graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its answer
-// with its part revision (attachAskPartIDs). A write attaches neither. A list of asks reads the
-// same fields, with their identity events, in one batch instead (queueAskDetails, loadAskDetails).
+// with its part revision (attachAskPartIDs), and the persons it names left out where who does not
+// see them. A write attaches none of them. A list of asks reads the same fields, with their
+// identity events, in one batch instead (queueAskDetails, loadAskDetails).
 func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
 	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
 		return err
 	}
-	return attachAskPartIDs(ctx, q, who, asks)
+	if err := attachAskPartIDs(ctx, q, who, asks); err != nil {
+		return err
+	}
+	if seesEveryObject(who) {
+		return nil
+	}
+	seen, err := seenReferences(ctx, q, who, askPersons(asks))
+	if err != nil {
+		return err
+	}
+	leaveOutHiddenAskPersons(asks, seen)
+	return nil
 }
 
 func (s *server) loadAskAnchorArtifact(

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
+import { isDeploymentReadRefused } from "../../api/client";
 import { deliveryRunQuery } from "../../api/queries";
 import type {
   DeliveryComponent,
@@ -10,6 +11,7 @@ import type {
   DeliveryRunJobDetail,
   DeliverySessionGroup,
 } from "../../api/types";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   borderStrong,
   dangerText,
@@ -139,28 +141,51 @@ function PRDetail({
   );
 }
 
-/** Every job of the run, with each result, read once the drill-down opens. */
-function RunJobs({ runId, durations }: { runId: number; durations: boolean }): ReactNode {
+/** The run's every job, with each result, read once the drill-down opens, under `label`. The
+ *  jobs are the deployment's (`GET /api/v1/delivery/runs/{id}`, read class `deployment`), which
+ *  Dispatch refuses a restricted member: such a member's drill-down never mounts this, and a
+ *  refusal any other viewer meets (a credential that changed while the page was open) leaves the
+ *  section out rather than saying the jobs could not be read. */
+function RunJobs({
+  durations,
+  label,
+  runId,
+}: {
+  durations: boolean;
+  label: string;
+  runId: number;
+}): ReactNode {
   const detail = useQuery(deliveryRunQuery(runId));
-  if (detail.isPending) return <div className={`text-sm ${textMutedOnSurface}`}>Loading…</div>;
-  if (detail.isError) {
-    return <div className={`text-sm ${textMutedOnSurface}`}>The run's jobs could not be read.</div>;
+  if (isDeploymentReadRefused(detail.error)) return null;
+  let jobs: ReactNode;
+  if (detail.isPending) {
+    jobs = <div className={`text-sm ${textMutedOnSurface}`}>Loading…</div>;
+  } else if (detail.isError) {
+    jobs = <div className={`text-sm ${textMutedOnSurface}`}>The run's jobs could not be read.</div>;
+  } else {
+    jobs = (detail.data.jobs ?? []).map((job) => {
+      const durationMs = jobDurationMs(job);
+      return (
+        <div className="flex justify-between gap-2 text-sm" key={job.name}>
+          <span className={textPrimaryOnSurface}>{job.name}</span>
+          <span className={job.conclusion === "failure" ? dangerText : textSecondaryOnSurface}>
+            {job.conclusion}
+            {durations && durationMs !== null ? ` (${Math.round(durationMs / 1000)}s)` : ""}
+          </span>
+        </div>
+      );
+    });
   }
-  return (detail.data.jobs ?? []).map((job) => {
-    const durationMs = jobDurationMs(job);
-    return (
-      <div className="flex justify-between gap-2 text-sm" key={job.name}>
-        <span className={textPrimaryOnSurface}>{job.name}</span>
-        <span className={job.conclusion === "failure" ? dangerText : textSecondaryOnSurface}>
-          {job.conclusion}
-          {durations && durationMs !== null ? ` (${Math.round(durationMs / 1000)}s)` : ""}
-        </span>
-      </div>
-    );
-  });
+  return (
+    <div>
+      <div className={sectionLabel}>{label}</div>
+      {jobs}
+    </div>
+  );
 }
 
-function DeployDetail({ run }: { run: DeliveryRun }): ReactNode {
+/** A deploy's drill-down; `jobs` says whether it reads and lists the run's jobs (`RunJobs`). */
+function DeployDetail({ jobs, run }: { jobs: boolean; run: DeliveryRun }): ReactNode {
   return (
     <div className="flex flex-col gap-2">
       <h3 className={`pr-6 text-lg font-semibold ${textPrimaryOnSurface}`}>
@@ -177,15 +202,14 @@ function DeployDetail({ run }: { run: DeliveryRun }): ReactNode {
           </div>
         ))}
       </div>
-      <div>
-        <div className={sectionLabel}>Jobs</div>
-        <RunJobs durations runId={run.id} />
-      </div>
+      {jobs ? <RunJobs durations label="Jobs" runId={run.id} /> : null}
     </div>
   );
 }
 
-function FailureDetail({ run }: { run: DeliveryRun }): ReactNode {
+/** A pipeline failure's drill-down; `jobs` says whether it reads and lists the run's every job
+ *  (`RunJobs`). */
+function FailureDetail({ jobs, run }: { jobs: boolean; run: DeliveryRun }): ReactNode {
   return (
     <div className="flex flex-col gap-2">
       <h3 className={`pr-6 text-lg font-semibold ${dangerText}`}>
@@ -207,10 +231,7 @@ function FailureDetail({ run }: { run: DeliveryRun }): ReactNode {
           </div>
         ) : null}
       </div>
-      <div>
-        <div className={sectionLabel}>All jobs</div>
-        <RunJobs durations={false} runId={run.id} />
-      </div>
+      {jobs ? <RunJobs durations={false} label="All jobs" runId={run.id} /> : null}
     </div>
   );
 }
@@ -218,7 +239,8 @@ function FailureDetail({ run }: { run: DeliveryRun }): ReactNode {
 /** The timeline and the list's shared drill-down: a PR, a deploy, or a pipeline failure, in a
  *  full-height panel at the right edge with a close button. It is a dialog (`useDialog`): focus
  *  starts on the close button and stays inside, Escape closes it, and closing hands focus back to
- *  whatever opened it. */
+ *  whatever opened it. A restricted member's run drill-down shows the run, its link and what it
+ *  shipped, and leaves out its jobs, which are the deployment's to read (`RunJobs`). */
 export function DrillDown({
   prs,
   runs,
@@ -238,6 +260,7 @@ export function DrillDown({
   onClose: () => void;
 }): ReactNode {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const restricted = useRestrictedMember();
   const dialog = useDialog<HTMLElement>({
     initialFocusRef: closeButtonRef,
     onClose,
@@ -262,8 +285,8 @@ export function DrillDown({
   } else {
     const run = runs.find((candidate) => candidate.id === selection.id);
     if (run === undefined) body = <div>Run {selection.id} not found.</div>;
-    else if (selection.kind === "deploy") body = <DeployDetail run={run} />;
-    else body = <FailureDetail run={run} />;
+    else if (selection.kind === "deploy") body = <DeployDetail jobs={!restricted} run={run} />;
+    else body = <FailureDetail jobs={!restricted} run={run} />;
   }
 
   return (

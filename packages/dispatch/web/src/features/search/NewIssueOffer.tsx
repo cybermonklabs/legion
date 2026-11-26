@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { newIssueSettingsQuery } from "../../api/queries";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { useWrites, type Writes } from "../writes/write-store";
 import { type FiledIssue, fileNewIssue, type NewIssueWrite } from "./new-issue";
@@ -70,9 +71,12 @@ export function useNewIssueOffer({
   // The two settings decide what the press writes, so the row waits for them: a press made
   // without them would file an issue carrying neither the label nor the session the deployment
   // asked for. A read that failed leaves the bar offering nothing, as it does with no project.
+  // The settings are the deployment's, which Dispatch refuses a restricted member
+  // (`useRestrictedMember`), so their bar never asks and offers them nothing likewise.
+  const restricted = useRestrictedMember();
   const settings = useQuery({
     ...newIssueSettingsQuery(),
-    enabled: offered && project !== undefined,
+    enabled: offered && project !== undefined && !restricted,
   });
   const [here, setState] = useWordsState<OfferState>(words);
   // Nothing pressed and nothing to offer is no offer at all. Once a press has been made the

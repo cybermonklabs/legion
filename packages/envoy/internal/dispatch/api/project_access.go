@@ -124,3 +124,16 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 	}
 	s.writeHandlerError(w, err)
 }
+
+// BusProjects writes the private-projects record, the contract K7 names: one key per private
+// project in the hub's envoy_private_projects bucket, which every listener reads to hold that
+// project's messages back from a token that does not list it. No writer of it is in this tree, so
+// cmd/dispatch passes none, and every write that needs the record answers 409
+// PRIVATE_PROJECTS_UNAVAILABLE (ensurePrivate).
+type BusProjects interface {
+	// EnsurePrivate puts project's key, reading what it needs through q, the visibility write's
+	// own transaction, since the pool refuses that write's request a second connection
+	// (store.ErrNestedAcquire). The write calls it last before its commit, and any error refuses
+	// the write.
+	EnsurePrivate(ctx context.Context, q access.Querier, project string) error
+}

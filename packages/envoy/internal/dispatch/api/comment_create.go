@@ -453,7 +453,7 @@ func (s *server) describeAsk(
 // askSessions is what a comment.created in askID's thread says about whose ask it is
 // (model.CommentEventPayload.AskSessions), as the comment's write leaves them: author, the
 // session that wrote the ask when one did (describeAsk's AskAuthorSession), then each other
-// session asks.Followers reads, ordered by since and then session id, then replier, appended
+// session asks.PayloadFollowers reads, ordered by since and then session id, then replier, appended
 // last, when it is a session none of those names, and [] when no session owns the ask. It reads
 // in the route's read phase, where the read holds no transaction id and finds the followers
 // committed before this write, but not the follow the write queues for a session that replies
@@ -791,7 +791,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	start, err := resolveThenLock(r.Context(),
 		func(ctx context.Context) (commentResolution, error) {
-			return s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
+			resolved, err := s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
+			if err == nil && len(mentionTargets) > 0 {
+				// The lookups may have waited a listener take-over out, and the write below reads
+				// its owner by the session content rule.
+				s.refreshRosterBeforeReadBack(ctx, writer)
+			}
+			return resolved, err
 		},
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
 			return s.beginCommentWrite(ctx, writer, owner, resolved, write)
@@ -1204,11 +1210,16 @@ func queueCommentRow(
 		return commentStoreWrite{}, err
 	}
 	// What this comment is in the node and tuple store: its node, queued before the row that names
-	// it, and the facts the row is the projection of, which wait for the event that stores it. The
-	// node write appends nothing (graphstore.QueueNodes): every fact of this write, the two base
-	// attributes it states among them, is appended under that event, which is appended after the
-	// row. A comment left out of the store (unprojected) has no node to write.
-	stored, err := commentStored(ctx, tx, comment.ID, comment.Author, comment.CreatedAt, comment.Anchor, comment.ArtifactID)
+	// it, in the project of the issue or the document it belongs to, and the facts the row is the
+	// projection of, which wait for the event that stores it. The node write appends nothing
+	// (graphstore.QueueNodes): every fact of this write, the base attributes it states among
+	// them, is appended under that event, which is appended after the row. A comment left out of
+	// the store (unprojected) has no node to write.
+	project, parties, err := graphstore.ScopeOf(ctx, tx, comment.IssueKey, comment.ArtifactID)
+	if err != nil {
+		return commentStoreWrite{}, err
+	}
+	stored, err := commentStored(ctx, tx, comment.ID, comment.Author, comment.CreatedAt, comment.Anchor, comment.ArtifactID, project, parties)
 	if err != nil {
 		return commentStoreWrite{}, err
 	}
@@ -1329,10 +1340,11 @@ type commentStoreWrite struct {
 }
 
 // commentStored is what the comment rowID states (graphstore.CommentFacts): its node,
-// project-visible and live, made by its author at the row's own created_at, and the artifact it
-// is anchored to and the artifact that owns it, each stated only where the comment has one.
-// Both relations name the artifact by its address, which is its ref_key, so the two artifacts'
-// addresses are read here, in the caller's read phase, in one statement.
+// project-visible and live, in project or between parties (graphstore.ScopeOf of what it belongs
+// to), made by its author at the row's own created_at, and the artifact it is anchored to and the
+// artifact that owns it, each stated only where the comment has one. Both relations name the
+// artifact by its address, which is its ref_key, so the two artifacts' addresses are read here, in
+// the caller's read phase, in one statement.
 func commentStored(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1341,6 +1353,8 @@ func commentStored(
 	at time.Time,
 	anchor *model.Anchor,
 	ownerArtifactID *string,
+	project string,
+	parties []string,
 ) (commentStoreWrite, error) {
 	var artifacts []string
 	if anchor != nil {

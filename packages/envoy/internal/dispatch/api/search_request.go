@@ -36,10 +36,10 @@ import (
 // hit's snippet is cut and marked into beside its text (scanSearchRows); the answerer's own
 // search reads a hit's title and href alone and asks for none.
 //
-// who is the credential the search acts for, which every statement binds last
-// (searchQueryArguments) so that no read answers a node that credential may not see
-// (refs.VisibilityArg). The zero actor proves no author, which is what the answerer's own
-// search and the package's tests read as.
+// who is the reader the search acts for, with its viewer (readerOf), which every statement binds
+// (searchQueryArguments, searchOwnIssueKeys, searchRarestWords) so that no read answers a node that
+// reader may not see, nor a row of a project it does not see (refs.VisibilityArg). A reader with
+// no viewer is the closed viewer, which sees nothing.
 //
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
@@ -295,7 +295,8 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // configuration every search column is built with ('english'), so the word a person wrote and
 // the lexeme the statistics count are the same thing; the lexemes of one query are matched once
 // each (distinct on), and the df is summed over the projects in scope - one when the search names
-// a project ($2), every project when it names none.
+// a project ($2), every project when it names none - of the projects the reader sees ($4, its
+// viewer), so a project the reader does not see weighs no word of its search.
 //
 // The statistics are search_term_stats, the per-project document frequencies the related-terms
 // refresh keeps up to date through search_term_queue and the snapshot beside its totals
@@ -312,7 +313,7 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // ones run out, which is what broadens a query on a database whose statistics have never been
 // built: every word unknown, the order is the query's own and the bound is all that is left of
 // the pick.
-const searchRarestWordsSQL = `
+var searchRarestWordsSQL = `
 with words as (
   select distinct on (w.lexeme) w.word, w.at, w.lexeme
     from (select t.word, t.at,
@@ -325,6 +326,7 @@ df as (
   select s.lexeme, sum(s.ndoc) as ndoc
     from search_term_stats s
    where s.lexeme in (select lexeme from words) and ($2 = '' or s.project_key = $2)
+     and ` + access.ProjectClause("s.project_key", "$4") + `
    group by s.lexeme
 )
 select w.word from words w left join df on df.lexeme = w.lexeme
@@ -342,7 +344,8 @@ func (s *server) searchRarestWords(ctx context.Context, parameters searchParamet
 	if len(words) < 2 {
 		return nil, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, searchRarestWordsSQL, words, parameters.project, searchBroadenWords)
+	rows, err := s.deps.Store.Pool.Query(ctx, searchRarestWordsSQL, words, parameters.project, searchBroadenWords,
+		refs.VisibilityArg(parameters.who))
 	if err != nil {
 		return nil, err
 	}

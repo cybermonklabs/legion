@@ -97,13 +97,14 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// The caller's own credential names the writer: this route takes no `actor`, so a question
 	// is recorded for whoever asked it - the person at the browser, the session a broker-issued
 	// token proved, or the person a personal token belongs to - and the stream compares the
-	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded).
-	caller, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded). The reader
+	// is resolved here, at the start, with what that credential may see (readerOf), and the run's
+	// search reads as it (goingSearch).
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	actor := caller.Recorded()
+	actor := reader.Recorded()
 	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. The rule is
 	// graphstore.ProvesAuthor, which lives beside the store that records an author, and which
 	// every author-private read of the graph asks too, in Go and in SQL
@@ -168,12 +169,16 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	request, err := s.recordGoingRequest(r.Context(), actor, project, words)
+	// A project the asker does not see is recorded so (asked_unseen): the run reads as the asker,
+	// so it holds nothing of that project, and its author reads it as a run of a key no project
+	// holds, which is what a hidden key must answer as.
+	unseen := project != "" && !viewerSees(reader.Viewer, project)
+	request, err := s.recordGoingRequest(r.Context(), actor, project, words, unseen)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.detached.goDetached(func() { s.startGoingRun(answering, request) })
+	s.detached.goDetached(func() { s.startGoingRun(answering, request, reader) })
 	WriteJSON(w, http.StatusCreated, request)
 }
 
@@ -227,15 +232,15 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of. It searches as the run's author, the credential that
-// asked the question and the only one the stream serves, so the answer is drawn from what that
-// credential may read and no more.
-func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
+// search past what the caller asked of. It searches as reader, the credential that asked the
+// question and the only one the stream serves, with the viewer that credential resolved when it
+// asked, so the answer is drawn from what that credential may read and no more.
+func (s *server) goingSearch(project string, reader model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
 		// reading each hit for display would be work no reader of this answer ever sees, which is
 		// what these parameters leaving trees unset says.
-		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
+		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: reader}
 		found, err := s.runSearch(ctx, parameters)
 		if err != nil {
 			return nil, err
@@ -289,7 +294,10 @@ func (s *server) goingBodies(requestID string) func(context.Context, []going.Hit
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
 	// is what this route compares the run's author with, and a credential resolves at a cost -
-	// a token row, the sign-in issuer's confirmation - worth paying once.
+	// a token row, the sign-in issuer's confirmation - worth paying once. The reader the run is
+	// read as (readGoingRequest) is resolved from that same resolution, kept in the request's
+	// context (withCallerResolved).
+	r = s.withCallerResolved(r)
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
@@ -341,7 +349,8 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		frames, state, err := s.readGoingStream(ctx, id, after)
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run under this reader
-			// (contracts.GoingRequestTTL); either way there is nothing left to read.
+			// (contracts.GoingRequestTTL), or the run having become one this reader may not
+			// read (goingRunSeen); either way there is nothing left to read.
 			return
 		}
 		if state.Withdrawn {

@@ -245,7 +245,7 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route
 	}
 	var managed bool
 	if row != nil {
-		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.project, row.parent, row.labels)
+		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.parent, row.labels)
 	} else {
 		managed, err = legionManagedStatus(ctx, walk, issueKey)
 	}
@@ -402,13 +402,12 @@ func (s *server) writeAdvice(
 	return s.adviseWrite(ctx, tx, route, issueKey, actor, asks, status, appending, opensAQuestion, nil)
 }
 
-// adviceIssueRow is the part of an issue row a write's advice reads - its project, its parent and
-// its labels, which the walk for who owns the issue's status starts from
-// (legionManagedStatusOfRow) - as the write leaves the row.
+// adviceIssueRow is the part of an issue row a write's advice reads - its parent and its labels,
+// which the walk for who owns the issue's status starts from (legionManagedStatusOfRow) - as the
+// write leaves the row.
 type adviceIssueRow struct {
-	project string
-	parent  *string
-	labels  []string
+	parent *string
+	labels []string
 }
 
 // writeAdviceBefore is writeAdvice for a write that reads its advice before it writes the issue

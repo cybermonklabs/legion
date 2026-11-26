@@ -32,7 +32,8 @@ const (
 	noPlanTaskReason  = "has no plan task"
 )
 
-// GET /api/v1/issues/{key}/coverage  (any authenticated caller)
+// GET /api/v1/issues/{key}/coverage  (a caller that sees the issue's project; to any other, the
+// issue is one nobody holds)
 //
 // What each requirement of the issue's spec lacks. An issue with no spec, or a spec that marks
 // no requirements, answers no requirements and the single gap line. A caller that sent
@@ -57,10 +58,11 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, coverage)
 }
 
-// issueCoverage reads the issue's requirements and what serves each, for who: an issue below it
-// who may not see serves nothing here (refs.IssueDescendants). The documents' blocks are read
-// from the block index (document_blocks and block_refs), which every accepted write leaves in
-// step with the document it wrote; the requirements' order and words come from the live spec.
+// issueCoverage reads the issue's requirements and what serves each, for who: an issue who may
+// not see has no spec here, and an issue below it who may not see serves nothing
+// (refs.IssueDescendants). The documents' blocks are read from the block index (document_blocks
+// and block_refs), which every accepted write leaves in step with the document it wrote; the
+// requirements' order and words come from the live spec.
 // trees is the reader of a request that answers the requirements' trees, nil for every other
 // caller: each requirement registers with it (requirementBlocksIn), in the row the answer
 // carries, the markdown typedBlocksIn reads the block's tree from, which is the rule GET
@@ -68,10 +70,12 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // are filled in place, so each registered pointer is into the answer itself.
 func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
+	viewer := refs.VisibilityArg(who)
+	seen := access.ProjectClause("a.project_key", "$2")
 	err := q.QueryRow(ctx, `
-		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
-		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
-	`, issueKey).Scan(&coverage.SpecArtifactID, &coverage.HasPlan)
+		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary and `+seen+`), ''),
+		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+` and `+seen+`)
+	`, issueKey, viewer).Scan(&coverage.SpecArtifactID, &coverage.HasPlan)
 	if err != nil {
 		return model.IssueCoverage{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
 	}
@@ -91,7 +95,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
-	served, err := servingBlockCounts(ctx, q, coverage.SpecArtifactID, append([]string{issueKey}, descendants...))
+	served, err := servingBlockCounts(ctx, q, viewer, coverage.SpecArtifactID, append([]string{issueKey}, descendants...))
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -173,9 +177,10 @@ type servingCounts struct {
 }
 
 // servingBlockCounts counts, for each block of the spec, the `check` and `plan_task` blocks of
-// the documents of issues that name it in `serves`. Both ends are current blocks of their
-// documents: deleting the check deletes its row, so its requirement is uncovered again.
-func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, issues []string) (map[string]servingCounts, error) {
+// the documents of issues that name it in `serves`, of the documents viewer sees. Both ends are
+// current blocks of their documents: deleting the check deletes its row, so its requirement is
+// uncovered again.
+func servingBlockCounts(ctx context.Context, q queryer, viewer any, specArtifactID string, issues []string) (map[string]servingCounts, error) {
 	rows, err := q.Query(ctx, `
 		select t.block_id, s.type, count(*)
 		from block_refs r
@@ -184,8 +189,9 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 		join artifacts a on a.id = r.artifact_id
 		where r.kind = 'serves' and r.to_kind = 'block'
 		  and a.issue_key = any($2) and s.type in ('check', 'plan_task')
+		  and `+access.ProjectClause("a.project_key", "$3")+`
 		group by t.block_id, s.type
-	`, specArtifactID, issues)
+	`, specArtifactID, issues, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read what serves the requirements of %s: %w", specArtifactID, err)
 	}

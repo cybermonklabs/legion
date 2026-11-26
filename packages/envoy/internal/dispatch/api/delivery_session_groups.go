@@ -16,6 +16,13 @@ import (
 // Parent agent (api/delivery.go). The timeline carries every group, so these routes only write.
 // Access is the delivery settings' rule, any signed-in person or agent (putDeliverySettings), and,
 // as there, no event is appended: a group has no project, issue or artifact to own one.
+//
+// A session a write names - a group's sessions, what an edit adds or removes - is read as the
+// writer sees it (refuseHiddenSessions) before anything of a group is locked or read: one it may not
+// see is a session nobody holds, refused 404 SESSION_NOT_FOUND, so no refusal names the group that
+// holds it and no write reaches it. A session a write does not name is read as the writer sees it
+// too: the title rule holds a group's name only to the sessions the writer sees, each by the
+// titles it reads (groupTitleRule, delivery.CreateSessionGroup), so no refusal names another.
 
 // createDeliverySessionGroupInput is the body of POST /api/v1/delivery/session-groups.
 type createDeliverySessionGroupInput struct {
@@ -48,13 +55,16 @@ func (s *server) createDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 		writeError(w, "SESSION_GROUP_INPUT", http.StatusBadRequest, "sessions must name at least one session")
 		return
 	}
+	if s.refuseHiddenSessions(w, r, sessions) {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	group, err := delivery.CreateSessionGroup(r.Context(), tx, name, sessions, actor)
+	group, err := delivery.CreateSessionGroup(r.Context(), tx, name, sessions, actor, groupTitleRule(r.Context()))
 	if err != nil {
 		s.writeSessionGroupError(w, err)
 		return
@@ -105,13 +115,16 @@ func (s *server) updateDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	if update.Remove, ok = sessionGroupSessions(w, "remove", input.Remove); !ok {
 		return
 	}
+	if s.refuseHiddenSessions(w, r, update.Add, update.Remove) {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	group, err := delivery.UpdateSessionGroup(r.Context(), tx, id, update, actor)
+	group, err := delivery.UpdateSessionGroup(r.Context(), tx, id, update, actor, groupTitleRule(r.Context()))
 	if err != nil {
 		s.writeSessionGroupError(w, err)
 		return
@@ -183,6 +196,43 @@ func sessionGroupSessions(w http.ResponseWriter, field string, values []string) 
 		}
 	}
 	return sessions, true
+}
+
+// refuseHiddenSessions answers 404 SESSION_NOT_FOUND for the first session of lists the request's
+// reader may not see (sessionsHiddenFromReader, access.SessionClause), in the words a session nobody
+// holds is refused in elsewhere (withinSessionScope), and reports whether it answered. While a
+// project is private a session nobody holds is one the writer does not see either, so the two take
+// this one path; an open writer of a deployment that holds no private project reads nothing for it
+// (R9), and every other writer is refused the deployment's rows before this (withinProjectScope).
+func (s *server) refuseHiddenSessions(w http.ResponseWriter, r *http.Request, lists ...[]string) bool {
+	named := slices.Concat(lists...)
+	hidden, err := s.sessionsHiddenFromReader(r.Context(), named)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return true
+	}
+	if index := slices.IndexFunc(named, hidden); index >= 0 {
+		writeError(w, codeSessionNotFound, http.StatusNotFound, "no session "+named[index])
+		return true
+	}
+	return false
+}
+
+// groupTitleRule is the read rule a group write's title rule reads under (delivery.CreateSessionGroup):
+// the writer's own (readableEvents), so a name is held only to the sessions it sees, each by the
+// titles it reads; and every event (events.EveryEvent), which holds a name to every session as
+// before, for a writer that sees every object (R9). A context with no reader reads as the closed
+// viewer (closedViewer), which sees no session, failing closed as sessionsHiddenFromReader does: no
+// refusal of its write answers a session or a title.
+func groupTitleRule(ctx context.Context) events.Readable {
+	reader, ok := readerFromContext(ctx)
+	if !ok {
+		return readableEvents(model.Actor{Viewer: closedViewer()})
+	}
+	if seesEveryObject(reader) {
+		return events.EveryEvent
+	}
+	return readableEvents(reader)
 }
 
 // writeSessionGroupError answers a group write's refusal with its code, naming what it refers to.

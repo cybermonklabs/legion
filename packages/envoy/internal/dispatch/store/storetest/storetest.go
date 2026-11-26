@@ -20,10 +20,24 @@
 // packages/envoy/scripts/dev-postgres.sh runs holds the local Dispatch's), and a change to them
 // outlives the run.
 //
-// A test's database is dropped in the background once the test ends, and Main waits for the
-// drops. Dropping a database forces a checkpoint and waits for it, and every package testing
-// against the same server queues on its one checkpointer: a test that waited for its own drop
-// spent that queue's time on its clock.
+// A test's database is not dropped when the test ends. Dropping a database takes a transaction id
+// when it deletes the database's row and keeps it while it forces a checkpoint and waits for it,
+// and every snapshot on the server is instance-wide: the live readers' event horizon
+// (events.Horizon) waits for every transaction id open on the server, in any database, so a drop
+// running while another test of the package watches a live view holds that view's frames for as
+// long as the checkpoint takes, which under a loaded box passed the 30 seconds a test waits. So a
+// database whose test ended waits, with the others, until a test asks for a database while no
+// test of the package holds one, and dropBatch of them are waiting: that test drops them all
+// before its own is made, and no other test can make one meanwhile (held). Main drops the rest
+// once the package's tests end. Drops made together share one checkpoint, so the drops add one
+// checkpoint for every dropBatch tests to the package's clock, and the disk holds at most
+// dropBatch spare databases, plus those of the subtests of a test that still holds its own.
+//
+// The harness batches drops, not creates. A create takes a transaction id the same way, when it
+// inserts the new database's row, and keeps it across both checkpoints a file copy forces, and
+// creates run side by side with the package's other tests (hold runs create outside held's lock):
+// so each test's create adds two checkpoints to the package's clock, and holds the live views of
+// the tests running beside it while they run.
 package storetest
 
 import (
@@ -104,12 +118,66 @@ func ready(t testing.TB) {
 	}
 }
 
-// clone returns a store on a new database cloned from template, dropped after t ends.
+// held is every database of this package's tests that is not yet dropped: live counts the ones
+// whose test has not ended, or is still being made, and finished names the rest. A batch drop
+// runs only while live is 0, under held's lock, so no test makes a database, and so none watches
+// a live view of one, while a drop runs.
+var held struct {
+	sync.Mutex
+	live     int
+	finished []string
+}
+
+// dropBatch is how many finished databases wait before a test that finds no other test holding a
+// database drops them (the package comment says why). A variable so the package's own test can
+// make every finished database drop at once.
+var dropBatch = 32
+
+// hold makes the database name with create as one of a test that has not ended, first dropping
+// the finished ones if no test of the package holds a database and dropBatch of them wait, and
+// marks it finished once t ends. create runs outside held's lock, with live counting it, so tests
+// make their databases side by side and no batch drop starts meanwhile.
+func hold(t testing.TB, name string, create func() error) error {
+	held.Lock()
+	if held.live == 0 && len(held.finished) >= dropBatch {
+		dropNow(held.finished)
+		held.finished = nil
+	}
+	held.live++
+	held.Unlock()
+	if err := create(); err != nil {
+		held.Lock()
+		held.live--
+		held.Unlock()
+		return err
+	}
+	t.Cleanup(func() {
+		held.Lock()
+		defer held.Unlock()
+		held.live--
+		held.finished = append(held.finished, name)
+	})
+	return nil
+}
+
+// dropNow drops names together and waits for them.
+func dropNow(names []string) {
+	for _, name := range names {
+		dropDatabase(name)
+	}
+	shared.drops.Wait()
+}
+
+// clone returns a store on a new database cloned from template, dropped once no test of the
+// package holds a database after t ends (hold).
 func clone(t testing.TB, template string) *store.Store {
 	t.Helper()
 	ctx := context.Background()
 	name := randomName(t, "dispatch_test_")
-	if _, err := shared.admin.Exec(ctx, cloneStatement(name, template)); err != nil {
+	if err := hold(t, name, func() error {
+		_, err := shared.admin.Exec(ctx, cloneStatement(name, template))
+		return err
+	}); err != nil {
 		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
@@ -122,13 +190,17 @@ func clone(t testing.TB, template string) *store.Store {
 }
 
 // Empty returns the connection string of a new database that holds nothing, not even the
-// version table, dropped after t ends: for a test that migrates it itself, as the two-build
-// suite has the builds it runs migrate theirs, in production's order. It makes no template.
+// version table, dropped once no test of the package holds a database after t ends (hold): for a
+// test that migrates it itself, as the two-build suite has the builds it runs migrate theirs, in
+// production's order. It makes no template.
 func Empty(t testing.TB) string {
 	t.Helper()
 	ready(t)
 	name := randomName(t, "dispatch_test_")
-	if _, err := shared.admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
+	if err := hold(t, name, func() error {
+		_, err := shared.admin.Exec(context.Background(), "create database "+name+" strategy file_copy")
+		return err
+	}); err != nil {
 		t.Fatalf("create empty database: %v", err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
@@ -208,8 +280,8 @@ func cloneStatement(name, template string) string {
 	return "create database " + name + " template " + template + " strategy file_copy"
 }
 
-// Main runs the package's tests, waits for their databases to drop, then drops every template
-// they were cloned from. A package whose tests call Open uses it as its TestMain:
+// Main runs the package's tests, drops their databases, then drops every template they were
+// cloned from. A package whose tests call Open uses it as its TestMain:
 // func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
 func Main(m *testing.M) int { return Run(m.Run) }
 
@@ -224,6 +296,10 @@ func Run(run func() int) int {
 		return code
 	}
 	defer shared.admin.Close()
+	held.Lock()
+	dropNow(held.finished)
+	held.finished = nil
+	held.Unlock()
 	shared.drops.Wait()
 	for _, failure := range shared.dropFails {
 		fmt.Fprintf(os.Stderr, "storetest: %s\n", failure)
@@ -257,8 +333,8 @@ const (
 	dropPause  = 200 * time.Millisecond
 )
 
-// dropDatabase drops name without waiting for it; Main waits for every drop. Drops in flight
-// together share one checkpoint.
+// dropDatabase drops name without waiting for it; dropNow and Main wait for every drop. Drops in
+// flight together share one checkpoint.
 //
 // `with (force)` terminates whatever is still connected, which needs pg_signal_backend: a login
 // that is only the database's owner is refused `permission denied to terminate process`. The

@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch whoami` names the projects the credential lists where that list decides what it reads, as "It may use projects INFRA, OPS, every public project, and no other private project." for a full member''s credential, whose list decides only which private projects it reads, and "It may use projects INFRA, OPS and no other." for a restricted member''s; its details carry `projects` beside `project`. For a credential that lists none, and against a Dispatch that answers no `projects`, it says what it said before.'
+time: 2026-11-16T17:18:12.021627794Z
+custom:
+    Issue: pr4177

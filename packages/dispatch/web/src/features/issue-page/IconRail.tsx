@@ -22,12 +22,16 @@ import { buildProjectPath } from "../refs/routes";
  * entry, and nothing opens on hover: the page carries no tooltip (R6). What the sidebar holds
  * beyond these - search, a new issue, the pinned agents and issues, every project, sign-out - is
  * one press away, under the control at the foot, which opens the whole navigation over the page.
+ *
+ * A restricted member's rail draws neither view over every project - Priorities and Pipeline -
+ * as their sidebar draws neither (`Sidebar`): `app.tsx` answers both pages NotFound for them.
  */
 export function IconRail({
   inboxCount,
   navigationOpen,
   onOpenNavigation,
   project,
+  restricted,
   user,
 }: {
   /** The one number the sidebar's Inbox carries, which is part of the entry's name. */
@@ -36,6 +40,8 @@ export function IconRail({
   onOpenNavigation: () => void;
   /** The project of the issue on the page, which the rail marks as where the reader is. */
   project: string | undefined;
+  /** Whether the reader is a restricted member (`isRestrictedMember`). */
+  restricted: boolean;
   user: AuthenticatedUser;
 }): ReactNode {
   return (
@@ -57,9 +63,11 @@ export function IconRail({
         to="/"
       />
       <RailLink icon={AGENTS_ICON} label="Agents" to="/agents" />
-      <RailLink icon={PRIORITIES_ICON} label="Priorities" to={PRIORITIES_PATH} />
+      {restricted ? null : (
+        <RailLink icon={PRIORITIES_ICON} label="Priorities" to={PRIORITIES_PATH} />
+      )}
       <RailLink icon={DELIVERY_ICON} label="Delivery" to="/delivery" />
-      <RailLink icon={PIPELINE_ICON} label="Pipeline" to="/pipeline" />
+      {restricted ? null : <RailLink icon={PIPELINE_ICON} label="Pipeline" to="/pipeline" />}
       {/* The issue's own project, marked as where the reader is by the accent rule at its edge
           as well as its colour. */}
       {project === undefined ? null : (

@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"golang.org/x/sync/errgroup"
 )
@@ -123,6 +124,31 @@ func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor,
 		return pipelinePopulation{}, err
 	}
 	return pop, nil
+}
+
+// prChecksShown is whether reader is shown each of runs, PR-checks runs of repo: a run is shown
+// when its pull request, the row of its number (delivery.PullRequestNumbersShown), is, and a run
+// whose number no row holds, or that names none, names no issue and is shown when unnamedShown, the
+// population's answer for a run that names no pull request (deliveryPopulation.unnamedShown: an open
+// viewer from whom repo is not hidden).
+func (s *server) prChecksShown(ctx context.Context, reader model.Actor, repo string, runs []delivery.DeliveryRun, unnamedShown bool) (func(delivery.DeliveryRun) bool, error) {
+	numbers := []int{}
+	for _, run := range runs {
+		if run.PRNumber != nil {
+			numbers = append(numbers, *run.PRNumber)
+		}
+	}
+	shown, err := delivery.PullRequestNumbersShown(ctx, s.deps.Store.Pool, repo, numbers, refs.VisibilityArg(reader))
+	if err != nil {
+		return nil, err
+	}
+	return func(run delivery.DeliveryRun) bool {
+		if run.PRNumber == nil {
+			return unnamedShown
+		}
+		visible, stored := shown[*run.PRNumber]
+		return visible || (!stored && unnamedShown)
+	}, nil
 }
 
 // deliveryPipelineCompute is GET /api/v1/delivery/pipeline's body as of at, from a population read

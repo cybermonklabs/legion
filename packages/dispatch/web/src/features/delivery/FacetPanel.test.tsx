@@ -5,16 +5,26 @@ import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { whoAmIQuery } from "../../api/queries";
 import type { DeliveryTimelineWithMeasures } from "../../api/types";
 import { FacetPanel } from "./FacetPanel";
 import type { Filters } from "./lib/facets";
 
 /** The panel as the page renders it, under a router and a query client: Edit groups opens an
  *  editor that names each session with its live link and saves through the client. The agent
- *  registry is seeded empty, as the shell's poller last read it. */
-function renderPanel(props: ComponentProps<typeof FacetPanel>) {
+ *  registry is seeded empty, as the shell's poller last read it, and the reader is a restricted
+ *  member (`member_kind: "restricted"`) when `restricted` is set and a full member otherwise. */
+function renderPanel(props: ComponentProps<typeof FacetPanel>, restricted = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(["agents"], []);
+  if (restricted) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    });
+  }
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -111,34 +121,52 @@ test("a facet's trigger names the facet and what is picked", () => {
   }
 });
 
+/** A window whose Parent agent facet counts one session group, Release crew, and one session. */
+const grouped = {
+  ...data,
+  facet_counts: {
+    ...data.facet_counts,
+    parent_agent: { "group:g1": 3, Reviewer: 1 },
+  },
+  session_groups: [
+    {
+      created_at: "2026-10-11T00:00:00Z",
+      created_by: { id: "alice@example.com", kind: "user" as const },
+      id: "g1",
+      name: "Release crew",
+      sessions: ["s1", "s2"],
+      updated_at: "2026-10-11T00:00:00Z",
+      updated_by: { id: "alice@example.com", kind: "user" as const },
+    },
+  ],
+  session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
+  session_pr_counts: { s1: 2, s2: 1, s3: 1 },
+};
+
 test("a group's Parent agent value reads as its name, and Edit groups opens the editor", async () => {
   const user = userEvent.setup();
-  const grouped = {
-    ...data,
-    facet_counts: {
-      ...data.facet_counts,
-      parent_agent: { "group:g1": 3, Reviewer: 1 },
-    },
-    session_groups: [
-      {
-        created_at: "2026-10-11T00:00:00Z",
-        created_by: { id: "alice@example.com", kind: "user" as const },
-        id: "g1",
-        name: "Release crew",
-        sessions: ["s1", "s2"],
-        updated_at: "2026-10-11T00:00:00Z",
-        updated_by: { id: "alice@example.com", kind: "user" as const },
-      },
-    ],
-    session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
-    session_pr_counts: { s1: 2, s2: 1, s3: 1 },
-  };
   renderPanel({ data: grouped, filters: noFilters, onChange: () => {} });
   try {
     await user.click(screen.getByRole("button", { name: /^Parent agent/ }));
     expect(optionNames("Parent agent options")).toEqual(["Release crew, 3 PRs", "Reviewer, 1 PR"]);
     await user.click(screen.getByRole("button", { name: "Edit groups" }));
     expect(screen.getByRole("dialog", { name: "Session groups" })).toBeDefined();
+  } finally {
+    cleanup();
+  }
+});
+
+// The session groups are the deployment's to write (`scopeDeployment`), which Dispatch refuses a
+// restricted member: their panel offers no editor. The groups the timeline answers them still
+// name the Parent agent values they count.
+test("a restricted member's panel offers no session-groups editor, and a group still names its Parent agent value", async () => {
+  const user = userEvent.setup();
+  renderPanel({ data: grouped, filters: noFilters, onChange: () => {} }, true);
+  try {
+    await user.click(screen.getByRole("button", { name: /^Parent agent/ }));
+    expect(optionNames("Parent agent options")).toEqual(["Release crew, 3 PRs", "Reviewer, 1 PR"]);
+    expect(screen.queryByRole("button", { name: "Edit groups" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Session groups" })).toBeNull();
   } finally {
     cleanup();
   }

@@ -38,6 +38,7 @@ import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useFootInset } from "../../hooks/useFootInset";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -561,6 +562,7 @@ function AgentRow({
   opened,
   pinned,
   section,
+  selectable,
   selected,
   unreadReplies,
   waitingOnAgent,
@@ -597,6 +599,9 @@ function AgentRow({
   /** The group the row is listed under, which `keyboard.ts` reads to find that group's
    *  heading (`data-agent-section`). */
   section: AgentGroup;
+  /** Whether the row draws its select box, which picks it for a broadcast: not for a restricted
+   *  member, whom Dispatch refuses every broadcast (403 RESTRICTED_MEMBER). */
+  selectable: boolean;
   selected: boolean;
   /** Replies to this session the reader has not read, from the viewer's agent state. The page
    *  reads that state once for its grouping and hands each row its own number: a query of the
@@ -647,14 +652,16 @@ function AgentRow({
           wraps to a line of its own (the span below), which is the shape the row had before
           this change and what keeps the name a box wide enough to tap on a phone. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-1.5 md:flex-nowrap">
-        <input
-          aria-label={`Select ${label} for broadcast`}
-          checked={selected}
-          className={`size-4 shrink-0 ${checkboxAccent}`}
-          data-agent-select=""
-          onChange={(event) => onSelect(event.target.checked)}
-          type="checkbox"
-        />
+        {selectable ? (
+          <input
+            aria-label={`Select ${label} for broadcast`}
+            checked={selected}
+            className={`size-4 shrink-0 ${checkboxAccent}`}
+            data-agent-select=""
+            onChange={(event) => onSelect(event.target.checked)}
+            type="checkbox"
+          />
+        ) : null}
         {/* The row's toggle keeps the name; `AgentName` draws the running state before it and
             the live link after it, outside the heading, so the heading's text is the name
             alone. `contents` keeps each of them a flex item of the row, as the heading is. The
@@ -1463,6 +1470,11 @@ export function AgentsPage(): ReactNode {
   const inbox = useQuery(inboxQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
+  // The broadcasts are the deployment's, which Dispatch refuses a restricted member, and their
+  // pages answer such a person Page not found (`DeploymentPages`, app.tsx): the page links them
+  // to none, and offers them no broadcast to compose - no select box, no select-all and so no
+  // composer, since Dispatch refuses a restricted member's send too (403 RESTRICTED_MEMBER).
+  const restricted = useRestrictedMember();
   // The pins are the person's, not this browser's (INFRA-812): the Agents page reads them from
   // the viewer's agent state and writes them to Dispatch, so a pin made here is in the rail and
   // in the person's other browsers at once.
@@ -1533,7 +1545,7 @@ export function AgentsPage(): ReactNode {
   const restoreRefusal = composing
     ? "Restore draft would replace the broadcast you have started. Send it, or clear its message and selection, first."
     : null;
-  const showComposer = selected.size > 0 && agents.length > 0;
+  const showComposer = !restricted && selected.size > 0 && agents.length > 0;
   // Not memoised: the grouping is a function of the clock, and is recomputed on every render of
   // this page. Every listed session is grouped, the ones the filters exclude included: their
   // rows stay mounted, hidden, like a collapsed group's.
@@ -1694,6 +1706,7 @@ export function AgentsPage(): ReactNode {
       opened={openedRows.has(agent.session_id)}
       pinned={pinned.includes(agent.session_id)}
       section={group}
+      selectable={!restricted}
       selected={selected.has(agent.session_id)}
       unreadReplies={agentStates[agent.session_id]?.unread_replies ?? 0}
       waitingOnAgent={waitingOnAgentBySession.get(agent.session_id) ?? 0}
@@ -1749,9 +1762,11 @@ export function AgentsPage(): ReactNode {
         </h1>
         <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
           <span>Live Envoy sessions and their Dispatch activity.</span>
-          <Link className={`${linkText} ${linkHoverText}`} to="/agents/broadcasts">
-            Broadcasts
-          </Link>
+          {restricted ? null : (
+            <Link className={`${linkText} ${linkHoverText}`} to="/agents/broadcasts">
+              Broadcasts
+            </Link>
+          )}
           <Link className={`${linkText} ${linkHoverText}`} to="/machines">
             Machines
           </Link>
@@ -1778,13 +1793,15 @@ export function AgentsPage(): ReactNode {
             onFilters={setFilters}
             searchInputRef={searchInputRef}
           />
-          <SelectionHeader
-            listed={agents}
-            matching={matching}
-            onClear={() => setSelected(() => new Set())}
-            onToggle={() => setSelected((current) => toggleMatching(matching, current))}
-            selected={selected}
-          />
+          {restricted ? null : (
+            <SelectionHeader
+              listed={agents}
+              matching={matching}
+              onClear={() => setSelected(() => new Set())}
+              onToggle={() => setSelected((current) => toggleMatching(matching, current))}
+              selected={selected}
+            />
+          )}
           {matching.length === 0 && current ? (
             <EmptyState
               label="Agents filtered empty state"

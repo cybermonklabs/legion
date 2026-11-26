@@ -36,7 +36,7 @@ var goingAsker = model.Actor{Kind: "user", ID: "alice"}
 // record stores one run, failing the test if it cannot.
 func (rig goingRig) record(t *testing.T, words string) goingRequest {
 	t.Helper()
-	request, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "TEST", words)
+	request, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "TEST", words, false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 	rig.age(t, abandoned.ID, time.Minute, time.Second)
 	leases := sweepLeases(t, rig.database)
 	runSweep(t, func(ctx context.Context) {
-		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil)
+		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil, nil, nil, nil)
 	})
 	waitUntil(t, "the abandoned run ended by a maintenance pass", func() bool {
 		_, state, err := rig.server.readGoingStream(context.Background(), abandoned.ID, 0)
