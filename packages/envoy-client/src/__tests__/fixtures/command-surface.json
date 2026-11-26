@@ -1938,7 +1938,7 @@
       "text": [
         "Checks of DSP-1:",
         "",
-        "- k1 (before_merge). Compared with the head of pull request #2712 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-01-02T03:04:05Z). A pass stands: yes, from implementer.",
+        "- k1 (before_merge). Compared with the head of pull request #2712 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-01-02T03:04:05Z). A pass stands: yes. Newest at that commit: implementer: pass (01234567).",
         "  The check's words: The workspace opens natively.",
         "  - pass by implementer at 1111111111111111111111111111111111111111. That commit is the head of pull request #2712. The check's words did not move after this result (result version 1, check version 1). Recorded 2026-01-02T03:04:05Z. Result 01234567-0000-4000-8000-000000000001.",
         "    The role recorded no reading."

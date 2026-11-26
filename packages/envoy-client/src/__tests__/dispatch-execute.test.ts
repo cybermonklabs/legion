@@ -8722,7 +8722,7 @@ describe("executeDispatchTool", () => {
       [
         "Checks of DSP-42:",
         "",
-        "- k1 (before_merge). Compared with the head of pull request #3530 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes, from implementer.",
+        "- k1 (before_merge). Compared with the head of pull request #3530 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes. Newest at that commit: implementer: pass (res-1).",
         "  The check's words: Run bun test in packages/envoy-client and see every case pass.",
         "  - fail by tester at 2222222222222222222222222222222222222222. That commit is none of the compared commits. The check's words moved after this result (result version 3, check version 4). Recorded 2026-11-10T11:30:00Z. Result res-3.",
         `    Reading: ${longReading}`,
@@ -8835,12 +8835,12 @@ describe("executeDispatchTool", () => {
     expect(read.text.split("\n")).toEqual([
       "Checks of DSP-42:",
       "",
-      `- k1 (before_merge). Compared with the head of pull request #9 at ${headCommit}, the head of acme/tools#7 at ${linkedCommit}. A pass stands: yes, from tester.`,
+      `- k1 (before_merge). Compared with the head of pull request #9 at ${headCommit}, the head of acme/tools#7 at ${linkedCommit}. A pass stands: yes. Newest at those commits: tester: pass (res-1).`,
       "  The check's words: The check's words.",
       `  - pass by tester at ${linkedCommit}. That commit is the head of acme/tools#7. The check's words did not move after this result (result version 1, check version 1). Recorded 2026-11-10T10:00:00Z. Result res-1.`,
       "    The role recorded no reading.",
       "",
-      "- k4 (after_merge). Compared with branch main. A pass stands: yes, from tester.",
+      "- k4 (after_merge). Compared with branch main. A pass stands: yes. Newest on that branch: tester: pass (res-2).",
       "  The check's words: The check's words.",
       `  - pass by tester at ${mergeCommit}. That commit is on branch main of acme/tools. The check's words did not move after this result (result version 1, check version 1). Recorded 2026-11-10T10:00:00Z. Result res-2.`,
       "    The role recorded no reading.",
@@ -9098,7 +9098,7 @@ describe("executeDispatchTool", () => {
       [
         "Checks of DSP-42:",
         "",
-        `- k1 (before_merge). Compared with the head of pull request #3530 at ${headCommit} (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes, from implementer.`,
+        `- k1 (before_merge). Compared with the head of pull request #3530 at ${headCommit} (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes.`,
         "  The check's words: Run the e2e script and read:",
         "    - every case passes;",
         "    - the run's last line says PASS.",
@@ -9123,6 +9123,90 @@ describe("executeDispatchTool", () => {
         "    ok read-compares",
       ].join("\n")
     );
+  });
+
+  // The head line names the newest result of each role at the commit the check compared with,
+  // pass and fail alike, oldest first, so a newer fail beside a pass is never hidden behind the
+  // server's answer. INFRA-5924's check c-wayback-runs at 91b20a0251: an implementer's pass, then
+  // a tester's fail, and the server answers that a pass stands, from the implementer.
+  test("dispatch_results names each role's newest result at the compared commit, a newer fail beside a pass", async () => {
+    const recorded = threeResults.checks[0];
+    const head = `91b20a0251${"0".repeat(30)}`;
+    const atHead = {
+      answer: "at_basis",
+      basis: { kind: "pull_request", commit: head, pull_request: 5930 },
+    };
+    const check = {
+      ...recorded,
+      block_id: "c-wayback-runs",
+      compared_with: [
+        {
+          kind: "pull_request",
+          commit: head,
+          pull_request: 5930,
+          learned_at: { at: "2026-11-26T09:00:00Z", kind: "read_at" },
+        },
+      ],
+      pass_stands: { answer: "yes", roles: ["implementer"] },
+      // Newest first, as the API serves them; the implementer's older pass at another commit is
+      // at no compared commit, so it is no result at that commit.
+      results: [
+        {
+          ...recorded.results[0],
+          id: "9f5fd8c4-0000-4000-8000-000000000002",
+          role: "tester",
+          verdict: "fail",
+          commit_sha: head,
+          commit_stands: atHead,
+          check_words_moved: false,
+          check_version: 4,
+          observed: "c-wayback-runs fails.",
+          created_at: "2026-11-26T11:00:00Z",
+        },
+        {
+          ...recorded.results[2],
+          id: "2120a467-0000-4000-8000-000000000001",
+          commit_sha: head,
+          commit_stands: atHead,
+          observed: "c-wayback-runs passes.",
+          created_at: "2026-11-26T10:00:00Z",
+        },
+        {
+          ...recorded.results[2],
+          id: "0aa0aa0a-0000-4000-8000-000000000000",
+          commit_sha: otherCommit,
+          commit_stands: { answer: "other_commit" },
+          observed: "an earlier head passes.",
+          created_at: "2026-11-26T09:00:00Z",
+        },
+      ],
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        return response({
+          issue: "DSP-42",
+          verification_artifact_id: "artifact-9",
+          checks: [check],
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(read.text.split("\n").filter((line) => line.startsWith("- "))).toEqual([
+      `- c-wayback-runs (before_merge). Compared with the head of pull request #5930 at ${head} (Dispatch read it 2026-11-26T09:00:00Z). A pass stands: yes. Newest at that commit: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer).`,
+    ]);
   });
 
   test("dispatch_results --at asks the route about that one commit", async () => {
@@ -9523,7 +9607,7 @@ describe("executeDispatchTool", () => {
       [
         "Checks of DSP-42:",
         "",
-        "- k1 (before_merge). Compared with the head of pull request #3530 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes, from implementer.",
+        "- k1 (before_merge). Compared with the head of pull request #3530 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes. Newest at that commit: implementer: pass (res-1).",
         "  The check's words: Run bun test in packages/envoy-client and see every case pass.",
         "  - pass by implementer at 1111111111111111111111111111111111111111. That commit is the head of pull request #3530. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result res-1.",
         "    Reading: bun test: 1598 pass, 0 fail.",

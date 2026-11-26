@@ -2432,10 +2432,13 @@ export const dispatchToolSpecs = [
       "pull request and no branch to compare with, Dispatch cannot read the repository, a read " +
       "Dispatch made did not answer, Dispatch has not read the head of a pull request of the " +
       "issue, or Dispatch does not know yet whether a pull request it read is this issue's. " +
-      "Each check then prints one line that answers the gate: whether a pass of it stands, and " +
-      "from which roles. A pass stands when its commit is one of the commits the check " +
-      "compared with, the check's words did not move after the result was recorded, and no " +
-      "retraction stands against it. " +
+      "Each check's head line then answers the gate: whether a pass of it stands, then the " +
+      "newest result of each role at what the check compared with, pass and fail alike, oldest " +
+      "first, each with the first eight characters of its id (`A pass stands: yes. Newest at " +
+      "that commit: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer).`); a " +
+      "retracted result is left out. A pass stands when its commit is one of the commits the " +
+      "check compared with, the check's words did not move after the result was recorded, and " +
+      "no retraction stands against it. " +
       "Under its head line, a check names each pull request whose head Dispatch has not read " +
       "(`Not read yet:`), and why and since when GitHub refuses that read where it does " +
       "(`Not read:`), then each pull request Dispatch does not know yet is the issue's " +
@@ -2444,13 +2447,16 @@ export const dispatchToolSpecs = [
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
       "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
-      "the reason and the caller that retracted it. A check with no result says so. " +
+      "the reason and the caller that retracted it. A check with no result says so. Each line of " +
+      "a reading, a retraction's reason or a check's words after its first is indented, so none " +
+      "starts as a check line (`- `) or a result line (`  - `) does. " +
       `${CHECK_PROVED_BY_CI}: ` +
       "no role records its result, and Dispatch reads it from GitHub at the head of the " +
       "issue's open pull request of the highest number, else at the head of its merged one of " +
       "the highest number. Its one result prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
-      "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
+      "words>`, then `A pass stands: yes, from ci.`, `A pass stands: no.` or `A pass stands: " +
+      "not known.`, then `Pull request line:` " +
       "and the line to write into the pull-request body unchanged, then the reading: the " +
       "conclusion, the run's output title and summary, and its URL. A run that proves nothing " +
       "prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's " +

@@ -846,10 +846,10 @@ else
     --role tester --verdict pass --commit "$commit_two" --surface cli \
     --run "bash e2e/acceptance/verification.sh" --observed "the last of the three results"
   run reading "read the results of $root" results --issue "$root"
-  grep -qE "^- c1 \(before_merge\)\. Compared with the head of pull request #7 at ${commit_two}.*\. A pass stands: yes, from tester\.$" \
+  grep -qE "^- c1 \(before_merge\)\. Compared with the head of pull request #7 at ${commit_two}.*\. A pass stands: yes\. Newest at that commit: tester: pass \([0-9a-f]{8}\)\.$" \
     "$work/out" ||
-    fail reading "c1 names the head it compares with, and a pass of it standing from the tester" "$(<"$work/out")"
-  pass reading "c1 names the head of pull request 7, all forty characters of it, as what its results are compared with, and a pass of it stands from the tester"
+    fail reading "c1 names the head it compares with, a pass of it standing, and the tester's newest result at that head" "$(<"$work/out")"
+  pass reading "c1 names the head of pull request 7, all forty characters of it, as what its results are compared with, a pass of it stands, and the line names the tester's newest result there"
   [[ "$(grep -cE "^  - pass by tester at (${commit_two}|${commit_lookalike})\. " "$work/out")" == 3 ]] ||
     fail reading "the read prints all three results" "$(<"$work/out")"
   pass reading "the read prints every result of c1, each at all forty characters of its commit"
