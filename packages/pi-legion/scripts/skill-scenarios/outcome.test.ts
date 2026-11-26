@@ -90,6 +90,14 @@ function syntheticRun() {
           issue_key: "ACME-12",
           payload: { handoff_id: "h", phase: "implement", version: 1 },
         },
+        // Dispatch's own failed hand-off of a comment to its target: never a scored action.
+        {
+          seq: 11,
+          created_at: time("000000002"),
+          type: "comment.delivery",
+          issue_key: "ACME-12",
+          payload: { state: "failed", target: "role:legion-acme-acme-12-tester" },
+        },
       ],
     })
   );
@@ -108,23 +116,24 @@ test("writes one nanosecond-ordered list, retaining P05's premature result and h
       target: "ACME-12",
       fields: { check: "k1", commit: caseHead, run: "bun test" },
     },
-    { seq: 2, kind: "dispatch", command: "handoff-write", fields: { body: { head: caseHead } } },
-    { seq: 3, kind: "push", ref: "legion/ACME-12", commit: caseHead },
+    { seq: 2, kind: "github", command: "gh pr list" },
+    { seq: 3, kind: "dispatch", command: "handoff-write", fields: { body: { head: caseHead } } },
+    { seq: 4, kind: "push", ref: "legion/ACME-12", commit: caseHead },
     {
-      seq: 4,
+      seq: 5,
       kind: "github",
       method: "POST",
       path: "repos/example/widgets/pulls",
       fields: { head: "legion/ACME-12", base: "main" },
     },
     {
-      seq: 5,
+      seq: 6,
       kind: "daemon",
       op: "handoff_complete",
       args: { wake_at: "2030-01-07T16:00:00Z", commit: caseHead },
       answer: { code: "HANDOFF_NO_PULL_REQUEST" },
     },
-    { seq: 6, kind: "staging", files: ["app.ts"] },
+    { seq: 7, kind: "staging", files: ["app.ts"] },
   ]);
   expect(got.lastText).toBe("Done.");
   expect(got.dispatchFirstInjected).toBe(true);
@@ -140,6 +149,95 @@ test("invalid records are refused before outcome.json is written", () => {
   write("staging.jsonl", '{"at":"2026-01-07T15:00:02Z","tree":"not-a-tree","files":[]}\n');
   expect(() => writeOutcome(dir)).toThrow("tree");
   expect(existsSync(path.join(dir, "outcome.json"))).toBe(false);
+});
+
+test("records the role's own reads: its legion read calls and its GitHub reads, not the extension's record check", () => {
+  const { dir, write } = syntheticRun();
+  const time = (fraction: string) => `2026-01-07T15:00:03.${fraction}Z`;
+  const get = (at: string, issue: string, status: number, answer: unknown) => ({
+    at,
+    method: "GET",
+    path: `/legion/v1/issues/${issue}/record`,
+    status,
+    body: null,
+    answer,
+  });
+  const record = { record: { key: "ACME-12", phase: "implementing" } };
+  write(
+    "daemon.log",
+    [
+      get(time("100"), "ACME-12", 200, record),
+      get(time("100"), "ACME-99", 404, { code: "RECORD_NOT_FOUND" }),
+      // The extension's own check, after every legion call has its result.
+      get(time("900"), "ACME-12", 200, record),
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n")
+  );
+  const legion = (id: string, args: object) => ({
+    type: "toolCall",
+    id,
+    name: "legion",
+    arguments: args,
+  });
+  const result = (id: string, at: string) => ({
+    type: "message",
+    timestamp: at,
+    message: {
+      role: "toolResult",
+      toolName: "legion",
+      toolCallId: id,
+      content: [{ type: "text", text: "{}" }],
+    },
+  });
+  write(
+    "sessions/example.jsonl",
+    [
+      { type: "session", id: "ses-reads" },
+      {
+        type: "message",
+        timestamp: time("050"),
+        message: {
+          role: "assistant",
+          content: [
+            legion("own", { op: "read_record", i: "Reading the record" }),
+            legion("child", { op: "read_record", issue: "ACME-99" }),
+          ],
+        },
+      },
+      result("own", time("200")),
+      result("child", time("200")),
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "Done." }] },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")
+  );
+  const got = writeOutcome(dir);
+  expect(got.actions.filter((action) => action.kind === "daemon")).toEqual([
+    {
+      seq: 7,
+      at: "2030-01-07T15:00:03.100000000Z",
+      kind: "daemon",
+      op: "read_record",
+      args: {},
+      answer: { code: null, body: record },
+    },
+    {
+      seq: 8,
+      at: "2030-01-07T15:00:03.100000000Z",
+      kind: "daemon",
+      op: "read_record",
+      args: { issue: "ACME-99" },
+      answer: { code: "RECORD_NOT_FOUND", body: { code: "RECORD_NOT_FOUND" } },
+    },
+  ]);
+  expect(got.actions.filter((action) => action.kind === "github")).toMatchObject([
+    { kind: "github", command: "gh pr list" },
+    { kind: "github", method: "POST", path: "repos/example/widgets/pulls" },
+  ]);
 });
 
 test("A case takes the selected task's returned report, not the host paraphrase", () => {

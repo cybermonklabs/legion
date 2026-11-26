@@ -57,6 +57,19 @@
       },
       "status": 200,
       "body": {}
+    },
+    {
+      "name": "set-status-issue-not-in-dispatch",
+      "method": "POST",
+      "path": "/legion/v1/issues/status",
+      "match": {
+        "issue": "ACME-53"
+      },
+      "status": 502,
+      "body": {
+        "code": "NOT_FOUND",
+        "error": "not found"
+      }
     }
   ]
 }

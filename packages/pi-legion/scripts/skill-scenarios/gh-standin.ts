@@ -8,7 +8,11 @@
 // and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr edit --body`,
 // `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an object that
 // has a `body`, or with a list that holds such objects, then answers with the new one in each such
-// object, as GitHub's next read would, and the call's record carries it as `body`.
+// object, as GitHub's next read would, and the call's record carries it as `body`. Only a pull
+// request (an object with a `number`) takes the new body: its reviews' bodies are their own.
+// A review submission (`gh api` POST to `…/pulls/<n>/reviews`, or `gh pr review`) is kept too:
+// the POST answers with the review it created, and every route answering with that pull request
+// or with its review list then holds the review, the pull request's `reviewDecision` following.
 // A route that holds `pages` (each page the whole JSON answer as GitHub sends it: a GraphQL answer
 // with its `pageInfo {hasNextPage endCursor}`, or a list) answers a paged read as gh does. With
 // `--paginate`: every page, as one JSON text per page with nothing between them (plain), each
@@ -64,6 +68,8 @@ const prPatch =
 let body: string | undefined;
 /** The body this call left the pull request with, once the routes serve it. */
 let kept: string | undefined;
+/** The `-f`/`-F` fields of a `gh api` call, each file field read. */
+const apiFields: Record<string, string> = {};
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index] ?? "";
   const next = args[index + 1];
@@ -73,6 +79,7 @@ for (let index = 0; index < args.length; index += 1) {
     files[next] = await readSource(next);
     body = files[next];
   } else if (arg === "--input" || arg === "--body-file") files[next] = await readSource(next);
+  else if (args[0] !== "api" && arg === "-F") files[next] = await readSource(next);
   else if (arg === "-F" || arg === "--field" || arg === "-f" || arg === "--raw-field") {
     const [key = "", ...rest] = next.split("=");
     let value = rest.join("=");
@@ -80,6 +87,7 @@ for (let index = 0; index < args.length; index += 1) {
       files[value.slice(1)] = await readSource(value.slice(1));
       value = files[value.slice(1)] ?? "";
     }
+    apiFields[key] = value;
     if (prPatch && key === "body") body = value;
   }
 }
@@ -111,9 +119,14 @@ if (!route) {
   exit(1);
 }
 if (body !== undefined) {
-  /** `value` with the new body, when it is an object that has a body. */
+  /** `value` with the new body, when it is a pull request (an object with a `number` and a body),
+   * never one of its reviews or comments, whose bodies are their own. */
   const withBody = (value: unknown): unknown =>
-    typeof value === "object" && value !== null && !Array.isArray(value) && "body" in value
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    "body" in value &&
+    "number" in value
       ? { ...value, body }
       : value;
   const edited = routes.map((candidate) => ({
@@ -124,6 +137,147 @@ if (body !== undefined) {
   }));
   writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
   kept = body;
+}
+
+/** The method a `gh api` call names (`-X`, `--method`, `-XPOST`, `--method=POST`), uppercase. */
+function apiMethod(): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    const hit = /^(?:-X|--method=?)(.*)$/.exec(arg);
+    if (hit) return (hit[1] || args[index + 1] || "").toUpperCase();
+  }
+  return undefined;
+}
+/** The pull request object a route answers with: the case world's `gh pr view` answer. */
+type Pull = {
+  number: number;
+  url?: string;
+  headRefName?: string;
+  headRefOid?: string;
+  reviews: unknown[];
+};
+const pulls = routes
+  .map((candidate) => candidate.stdout)
+  .filter(
+    (value): value is Pull =>
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value) &&
+      "number" in value &&
+      "reviews" in value &&
+      Array.isArray(value.reviews)
+  );
+// A review submission: `gh api` POST to `repos/<o>/<r>/pulls/<n>/reviews` (its `event`,
+// `commit_id` and `body` from fields or an `--input` object) or `gh pr review [<n>]` with
+// `--approve`, `--request-changes` or `--comment`. GitHub answers the POST with the review it
+// created, and its next read of the pull request holds it: every route answering with that pull
+// request or with its review list then holds the new review too, its review decision follows, and
+// the POST answers with the review. The review is submitted at the case clock (clock.txt, moved
+// on by the time since the launch, clock-real.txt).
+let review: Record<string, unknown> | undefined;
+const reviewsPath = args.find((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/reviews$/.test(arg));
+const apiReview =
+  as === "gh" &&
+  args[0] === "api" &&
+  reviewsPath !== undefined &&
+  (apiMethod() ?? (Object.keys(apiFields).length > 0 || input !== undefined ? "POST" : "GET")) ===
+    "POST";
+const prReview = as === "gh" && args[0] === "pr" && args[1] === "review";
+if (apiReview || prReview) {
+  let number: number | undefined;
+  let event: string | undefined;
+  let commit: string | undefined;
+  let text = "";
+  if (apiReview) {
+    number = Number(/pulls\/(\d+)\/reviews$/.exec(reviewsPath ?? "")?.[1]);
+    const given: Record<string, unknown> =
+      input === undefined ? apiFields : { ...JSON.parse(files[input] ?? "{}"), ...apiFields };
+    event = typeof given.event === "string" ? given.event : undefined;
+    commit = typeof given.commit_id === "string" ? given.commit_id : undefined;
+    text = typeof given.body === "string" ? given.body : "";
+  } else {
+    const selector = args[2] !== undefined && !args[2].startsWith("-") ? args[2] : undefined;
+    number = (
+      selector === undefined && pulls.length === 1
+        ? pulls[0]
+        : pulls.find((pull) => [String(pull.number), pull.url, pull.headRefName].includes(selector))
+    )?.number;
+    if (args.some((arg) => arg === "-a" || arg === "--approve")) event = "APPROVE";
+    else if (args.some((arg) => arg === "-r" || arg === "--request-changes"))
+      event = "REQUEST_CHANGES";
+    else if (args.some((arg) => arg === "-c" || arg === "--comment")) event = "COMMENT";
+    for (let index = 2; index < args.length; index += 1) {
+      const flag = args[index];
+      const value = args[index + 1];
+      if (value === undefined) continue;
+      if (flag === "-b" || flag === "--body") text = value;
+      if (flag === "-F" || flag === "--body-file") text = files[value] ?? "";
+    }
+  }
+  const pull = pulls.find((candidate) => candidate.number === number);
+  if (pull !== undefined) {
+    const states: Record<string, string> = {
+      APPROVE: "APPROVED",
+      REQUEST_CHANGES: "CHANGES_REQUESTED",
+      COMMENT: "COMMENTED",
+    };
+    let when = at;
+    try {
+      // Date.parse reads milliseconds; clock-real.txt holds nanoseconds.
+      const instant = (file: string) =>
+        Date.parse(
+          readFileSync(`${run}/${file}`, "utf8")
+            .trim()
+            .replace(/(\.\d{3})\d+/, "$1")
+        );
+      const clock = instant("clock.txt");
+      const launched = instant("clock-real.txt");
+      if (Number.isFinite(clock) && Number.isFinite(launched))
+        when = new Date(clock + (Date.parse(at) - launched)).toISOString();
+    } catch {
+      // A world with no clock files keeps the call's own time.
+    }
+    const sha = commit ?? pull.headRefOid ?? "";
+    const ids = pull.reviews.map((each) =>
+      typeof each === "object" && each !== null && "id" in each ? Number(each.id) : 0
+    );
+    review = {
+      id: Math.max(0, ...ids.filter(Number.isFinite)) + 1,
+      author: { login: "legion-review[bot]" },
+      user: { login: "legion-review[bot]" },
+      body: text,
+      state: (event && states[event]) ?? "PENDING",
+      commit_id: sha,
+      commit: { oid: sha },
+      submitted_at: when,
+      submittedAt: when,
+    };
+    const decision =
+      [...pull.reviews, review]
+        .map((each) =>
+          typeof each === "object" && each !== null && "state" in each ? each.state : ""
+        )
+        .filter((state) => state === "APPROVED" || state === "CHANGES_REQUESTED")
+        .at(-1) ?? "";
+    // Every route answering with this pull request (`gh pr view`'s and `gh api …/pulls/<n>`'s) and
+    // every route answering with its review list.
+    const edited = routes.map((candidate) => {
+      const value = candidate.stdout;
+      if (pulls.includes(value as Pull) && (value as Pull).number === number)
+        return {
+          ...candidate,
+          stdout: {
+            ...(value as Pull),
+            reviews: [...(value as Pull).reviews, review],
+            reviewDecision: decision,
+          },
+        };
+      if (Array.isArray(value) && candidate.match.includes(`/pulls/${number}/reviews`))
+        return { ...candidate, stdout: [...value, review] };
+      return candidate;
+    });
+    writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
+  }
 }
 const jqIndex = args.findIndex((arg) => arg === "--jq" || arg === "-q");
 const filter = jqIndex >= 0 ? args[jqIndex + 1] : undefined;
@@ -239,7 +393,7 @@ if (route.pages !== undefined) {
   if (route.stderr) process.stderr.write(route.stderr);
   exit(route.exit ?? 0);
 }
-let output: unknown = route.stdout ?? "";
+let output: unknown = apiReview && review !== undefined ? review : (route.stdout ?? "");
 const jsonIndex = args.indexOf("--json");
 if (jsonIndex >= 0) {
   const fields = (args[jsonIndex + 1] ?? "").split(",");

@@ -9,6 +9,7 @@ import { parseInstant } from "./production-dispatch";
 import {
   dispatchFirstInjected,
   resultText,
+  type SessionEntry,
   session,
   sessionCalls,
   skillReads,
@@ -103,6 +104,16 @@ const completeFields = new Map(
   })
 );
 
+/** The daemon's answer as an outcome records it: its refusal code (`HTTP_<status>` for a refusal
+ * that names none, null where the daemon took the request) and its body. */
+function daemonAnswer(line: z.infer<typeof DaemonLine>) {
+  const code = Fields.safeParse(line.answer).data?.code;
+  return {
+    code: typeof code === "string" ? code : line.status >= 400 ? `HTTP_${line.status}` : null,
+    body: line.answer,
+  };
+}
+
 function daemonAction(line: z.infer<typeof DaemonLine>): Pending[] {
   const op = daemonOps.get(line.path.replace(/^\/legion\/v1\//, ""));
   if (line.method !== "POST" || op === undefined) return [];
@@ -113,20 +124,59 @@ function daemonAction(line: z.infer<typeof DaemonLine>): Pending[] {
           Object.entries(rest).map(([key, value]) => [completeFields.get(key) ?? key, value])
         )
       : rest;
-  const body = line.answer;
-  const code = Fields.safeParse(body).data?.code;
-  return [
-    {
-      kind: "daemon",
-      op,
-      at: line.at,
-      args,
-      answer: {
-        code: typeof code === "string" ? code : line.status >= 400 ? `HTTP_${line.status}` : null,
-        body,
-      },
-    },
-  ];
+  return [{ kind: "daemon", op, at: line.at, args, answer: daemonAnswer(line) }];
+}
+
+/** Whether a GET's path is the route of a Legion tool's daemon read, for the issue the call names
+ * (`undefined`: the claim's own, any issue's record). A case can score the read that anchors a
+ * wait. */
+const daemonReads: Record<string, (path: string, issue: string | undefined) => boolean> = {
+  read_record: (path, issue) =>
+    issue === undefined
+      ? /^\/legion\/v1\/issues\/[^/]+\/record$/.test(path)
+      : path === `/legion/v1/issues/${issue}/record`,
+  read_state: (path) => path === "/legion/v1/state",
+};
+
+/** The role's own reads of the daemon. The Legion extension checks the issue's record on the same
+ * route, so a GET is the role's only inside the window of a legion tool call of a read op, from
+ * the call's message to its result; each GET answers one call. */
+function daemonReadActions(
+  entries: readonly SessionEntry[],
+  log: readonly z.infer<typeof DaemonLine>[]
+): Pending[] {
+  const resultAt = new Map(
+    entries.flatMap((entry) =>
+      entry.message?.role === "toolResult" &&
+      entry.message.toolCallId !== undefined &&
+      entry.timestamp !== undefined
+        ? [[entry.message.toolCallId, nanos(entry.timestamp)] as const]
+        : []
+    )
+  );
+  const taken = new Set<number>();
+  return sessionCalls(entries).flatMap(({ entry, call }): Pending[] => {
+    const { op, i: _intent, ...args } = Fields.safeParse(call.arguments).data ?? {};
+    const name = typeof op === "string" ? op : "";
+    const route = daemonReads[name];
+    const until = call.id === undefined ? undefined : resultAt.get(call.id);
+    if (call.name?.replace(/^_+/, "") !== "legion" || route === undefined) return [];
+    if (entry.timestamp === undefined || until === undefined) return [];
+    const from = nanos(entry.timestamp);
+    const issue = typeof args.issue === "string" ? args.issue : undefined;
+    const index = log.findIndex(
+      (line, i) =>
+        !taken.has(i) &&
+        line.method === "GET" &&
+        route(line.path, issue) &&
+        nanos(line.at) >= from &&
+        nanos(line.at) <= until
+    );
+    const line = log[index];
+    if (line === undefined) return [];
+    taken.add(index);
+    return [{ kind: "daemon", op: name, at: line.at, args, answer: daemonAnswer(line) }];
+  });
 }
 
 const commands = new Map(
@@ -160,8 +210,11 @@ function dispatchActions(readback: z.infer<typeof Readback>): Pending[] {
       .flatMap((check) => check.results ?? [])
       .map((result) => [result.id, result])
   );
+  // A `*.delivery` event is Dispatch's own attempt to hand a comment or an ask to its target
+  // through Envoy, and a run's Dispatch has no Envoy (start_dispatch's FAKE_ENVOY_PORT), so each
+  // one failed there: no write of the role's. The write it delivers keeps its targets.
   return readback.events
-    .filter((event) => event.seq > readback.seedThrough)
+    .filter((event) => event.seq > readback.seedThrough && !event.type.endsWith(".delivery"))
     .map((event) => {
       const payload = event.payload;
       let fields = payload;
@@ -269,20 +322,18 @@ function githubAction(call: z.infer<typeof Call>): Pending[] {
   if (call.body !== undefined) fields.body = call.body;
   if (number !== undefined) fields.number = number;
   const common = { kind: "github" as const, at: call.at, fields };
+  // Reads are recorded as writes are: a case can score the read that anchors a wait (a pull
+  // request's head, its approval). GraphQL reads use POST, so only a mutation is recorded, and
+  // gh's own login and dashboard are no GitHub action.
   if (verb === "api") {
     const explicit = method ?? (hasData ? "POST" : "GET");
     const query = fields.query;
-    // GraphQL reads use POST too. Only a mutation is a scored write.
     if (endpoint === "graphql" && (typeof query !== "string" || !/\bmutation\b/.test(query)))
       return [];
-    if (explicit === "GET" || !endpoint) return [];
+    if (!endpoint) return [];
     return [{ ...common, method: Method.parse(explicit), path: endpoint.replace(/^\//, "") }];
   }
-  if (
-    ["auth", "status"].includes(verb) ||
-    ["view", "list", "checks", "diff", "status"].includes(sub ?? "")
-  )
-    return [];
+  if (["auth", "status"].includes(verb)) return [];
   return [{ ...common, command: ["gh", verb, sub].filter(Boolean).join(" ") }];
 }
 
@@ -308,8 +359,10 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
     agent === undefined
       ? parent
       : (subagentSessions(dir).find(({ name }) => name === agent)?.entries ?? parent);
+  const daemonLog = jsonLines(file("daemon.log"), DaemonLine);
   const actions: Pending[] = [
-    ...jsonLines(file("daemon.log"), DaemonLine).flatMap(daemonAction),
+    ...daemonLog.flatMap(daemonAction),
+    ...daemonReadActions(parent, daemonLog),
     ...dispatchActions(
       Readback.parse(JSON.parse(readFileSync(file("dispatch-readback.json"), "utf8")))
     ),

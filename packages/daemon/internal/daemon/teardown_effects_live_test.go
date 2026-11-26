@@ -227,6 +227,11 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		roleOfClaim = claim.RoleTester
 	case "root-architect", "child-architect":
 		roleOfClaim = claim.RoleArchitect
+	case "headless-controller":
+		// The project's controller, which this daemon launches itself (`controller: daemon`): its
+		// claim holds no issue, and its token is the project's (claim.ControllerToken).
+		roleOfClaim = claim.RoleController
+		cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	}
 	if world.Daemon.ProductionCheck != nil && role == "" {
 		roleOfClaim = claim.RoleTester
@@ -243,9 +248,11 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := claim.NewToken(projectToken, key, roleOfClaim)
-	if err != nil {
-		t.Fatal(err)
+	token := claim.ControllerToken(projectToken)
+	if roleOfClaim != claim.RoleController {
+		if token, err = claim.NewToken(projectToken, key, roleOfClaim); err != nil {
+			t.Fatal(err)
+		}
 	}
 	st, err := store.Open(t.Context(), cfg.PostgresDSN)
 	if err != nil {
@@ -353,6 +360,13 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 	listed := r.dispatch.issue(r.key)
 	now := r.clock.Now()
 	delivery := supervise.Delivery{ID: "teardown-" + randomSuffix(t), Task: teardownEffectsTaskMarker + "\n" + task, Generation: 1, Phase: world.Daemon.Phase, QueuedAt: now}
+	// The controller's claim holds no issue, no step and no tree: its case's issue is one the
+	// daemon knows and has not admitted, and its wake is a delivery to the controller's claim,
+	// which the daemon's keeper launches at boot and hands its start message after this one.
+	controller := r.role == claim.RoleController
+	if controller {
+		delivery.Phase = ""
+	}
 	ctx := t.Context()
 	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		issue := record.Issue{Key: r.key, Title: listed.Title, Project: r.cfg.Project, Tree: r.key, Repo: r.repo, GitHubRepo: r.repo, DefaultBranch: r.base, Phase: world.Daemon.Phase, Generation: 1,
@@ -367,7 +381,7 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 		if err := r.records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
-		if step := world.Daemon.Step; step != nil {
+		if step := world.Daemon.Step; step != nil && !controller {
 			if err := r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: r.key, Role: r.role, Claim: r.token, StepPlace: step.Place, StepTask: step.Name}); err != nil {
 				return err
 			}
@@ -390,22 +404,29 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 				return err
 			}
 		}
-		if issue.Phase != phase.Done {
+		if issue.Phase != phase.Done && !controller {
 			return r.admit(ctx, tx, r.key)
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("seed daemon state: %v", err)
 	}
-	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatal(err)
-	}
 	c := supervise.Claim{Token: r.token, Project: r.project, Tree: r.key, Issue: r.key, Role: r.role, Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("seed-" + randomSuffix(t))}
 	if delivery.CheckLook.Look == 0 {
 		c.ServingGeneration = 1
 	}
-	if _, err := r.st.AdmitClaim(ctx, c); err != nil {
-		t.Fatal(err)
+	if controller {
+		c.Tree, c.Issue = "", ""
+		if err := r.st.PutClaim(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.st.AdmitClaim(ctx, c); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := r.st.PutDelivery(ctx, r.token, delivery); err != nil {
 		t.Fatal(err)
@@ -1058,6 +1079,13 @@ func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 			var answers []teardownEffectsAnswer
 			var differences []teardownEffectsDifference
 			var names []teardownEffectsHandoff
+			// Each stand-in answer goes to one call: the first in whose window it falls and whose
+			// own request it answered (the same method and route). Calls the model sent in one
+			// message share one window, so pairing answers by place alone would set one call's
+			// answer against another's.
+			taken := map[int]bool{}
+			seqOf := map[int]int{}
+			var windowed []int
 			for _, call := range calls {
 				if call.Session != session {
 					t.Fatal("cannot attribute legion calls from more than one claim session")
@@ -1066,23 +1094,34 @@ func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 				more, replies, handoffs, _ := r.call(seq, world.Clock.Add(call.At.Sub(realStart)), call.Args)
 				answers = append(answers, more...)
 				names = append(names, handoffs...)
-				var standin []teardownEffectsHTTP
-				for _, res := range old {
-					if teardownEffectsToolRoute(res.Path) && !res.At.Before(call.At) && (call.ResultAt.IsZero() || !res.At.After(call.ResultAt)) {
-						standin = append(standin, res)
+				var window []int
+				for k, res := range old {
+					if !taken[k] && teardownEffectsToolRoute(res.Path) && !res.At.Before(call.At) && (call.ResultAt.IsZero() || !res.At.After(call.ResultAt)) {
+						window = append(window, k)
+						if _, ok := seqOf[k]; !ok {
+							seqOf[k] = seq
+							windowed = append(windowed, k)
+						}
 					}
 				}
-				for i := range max(len(standin), len(replies)) {
-					var a, b teardownEffectsHTTP
-					if i < len(standin) {
-						a = standin[i]
+				for i, reply := range replies {
+					var a teardownEffectsHTTP
+					for _, k := range window {
+						if !taken[k] && old[k].Method == reply.Method && old[k].Path == reply.Path {
+							a, taken[k] = old[k], true
+							break
+						}
 					}
-					if i < len(replies) {
-						b = replies[i]
+					if !teardownEffectsSameAnswer(a, reply) {
+						differences = append(differences, teardownEffectsDifference{Seq: min(seq+i, len(answers)-1), Standin: a.status(), Daemon: reply.status()})
 					}
-					if !teardownEffectsSameAnswer(a, b) {
-						differences = append(differences, teardownEffectsDifference{Seq: min(seq+i, len(answers)-1), Standin: a.status(), Daemon: b.status()})
-					}
+				}
+			}
+			// A stand-in answer no replayed request matched: the run's call reached the stand-in
+			// with a request the real daemon never got.
+			for _, k := range windowed {
+				if !taken[k] {
+					differences = append(differences, teardownEffectsDifference{Seq: seqOf[k], Standin: old[k].status(), Daemon: teardownEffectsHTTP{}.status()})
 				}
 			}
 			got := r.evidence(outcome.ID, answers, differences, names)
@@ -1183,16 +1222,22 @@ func (r *teardownEffectsRun) mapBody(body json.RawMessage) string {
 	return string(data)
 }
 
+// result records a check result as the run did, each value through its `--<field>-file` flag: a
+// value given on the command line that starts with `-` (an observed `--- PASS: …` line) is read as
+// a flag, and `dispatch result` refuses the call.
 func (r *teardownEffectsRun) result(fields map[string]any, session string) {
 	r.t.Helper()
 	args := []string{"result", "--issue", r.key}
+	dir := r.t.TempDir()
 	for _, field := range []string{"check", "role", "verdict", "commit", "surface", "run", "observed", "negative-control"} {
 		value := teardownEffectsString(fields, field)
 		if field == "commit" {
 			value = r.sha(value)
 		}
 		if value != "" {
-			args = append(args, "--"+field, value)
+			file := filepath.Join(dir, field)
+			writeProofFile(r.t, file, value)
+			args = append(args, "--"+field+"-file", file)
 		}
 	}
 	r.cli(session, args...)

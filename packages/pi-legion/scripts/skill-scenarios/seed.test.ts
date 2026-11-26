@@ -1312,4 +1312,37 @@ describe("case-world Dispatch", () => {
     const uploaded = dispatch.calls.find(({ path }) => path === "/api/v1/issues/ACME-12/artifacts");
     expect(String(uploaded?.body?.content)).toContain('serves="dispatch://ACME-12/spec#b-r1"');
   });
+
+  // Catches: P02's task names its tester's comment as `dispatch://ACME-41/comment/c-1`, the case's
+  // own id, which Dispatch refuses (a comment id is a UUID), so the role could not read the comment
+  // its task points to.
+  test("names in the run's prompt the id Dispatch gave each comment and ask the case names", async () => {
+    const p09 = parseSkillUseFile(example("skilluse")).cases.find(({ id }) => id === "P09");
+    if (!p09) throw new Error("missing P09");
+    const world = structuredClone(p09.world);
+    const key = world.dispatch.issue.key;
+    const at = "2030-01-09T09:15:00Z";
+    world.dispatch.comments.push({ id: "c-1", author: "alice", body: "Which policy?", at });
+    world.dispatch.asks.push({
+      id: "a1",
+      author: "ses-qa",
+      question: "Keep it?",
+      options: ["Yes"],
+      state: "open",
+      answer: null,
+      at,
+    });
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    writeFileSync(
+      path.join(dir, "prompt.txt"),
+      `From the tester: dispatch://${key}/comment/c-1. See dispatch://${key}/ask/a1 and dispatch://ACME-1/comment/c-1.\n`
+    );
+    await seed.seedCaseDispatch(dir);
+    const comment = dispatch.comments.find(({ body }) => body === "Which policy?");
+    const ask = dispatch.asks.find(({ question }) => question === "Keep it?");
+    expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toBe(
+      `From the tester: dispatch://${key}/comment/${comment?.id}. See dispatch://${key}/ask/${ask?.id} and dispatch://ACME-1/comment/c-1.\n`
+    );
+  });
 });

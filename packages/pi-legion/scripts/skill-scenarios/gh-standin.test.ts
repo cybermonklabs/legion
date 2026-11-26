@@ -82,6 +82,80 @@ test("a body edit gives each object of a list answer that has a body the new bod
   });
 });
 
+// A review submission answers as GitHub does: the POST with the review it created, and every later
+// read of the pull request and of its review list holds that review, its decision following. A
+// pull request body edit leaves the reviews' own bodies alone.
+test("a review POST answers with the created review, and the pull request's reads then hold it", () => {
+  const review = { id: 5, body: "Looks fine at A.", state: "APPROVED", commit_id: "a".repeat(40) };
+  const view = {
+    number: 73,
+    url: "https://github.com/acme/widgets/pull/73",
+    headRefName: "legion/ACME-37",
+    headRefOid: "b".repeat(40),
+    body: "old",
+    reviews: [review],
+    reviewDecision: "APPROVED",
+  };
+  const run = runWith([
+    { match: "^gh pr view(?=.* 73(?: |$))", stdout: view },
+    { match: "^gh api .*repos/acme/widgets/pulls/73/reviews(?: |$)", stdout: [review] },
+    { match: "^gh api .*repos/acme/widgets/pulls/73(?: |$)", stdout: { ...view, state: "open" } },
+    { match: "^gh pr (edit|review)(?=.* 73(?: |$))", stdout: view.url },
+  ]);
+  writeFileSync(path.join(run, "clock.txt"), "2030-01-07T12:00:00Z\n");
+  writeFileSync(
+    path.join(run, "clock-real.txt"),
+    `${new Date().toISOString().replace("Z", "123456Z")}\n`
+  );
+  writeFileSync(
+    path.join(run, "review.json"),
+    JSON.stringify({ commit_id: "b".repeat(40), event: "REQUEST_CHANGES", body: "Changes at B." })
+  );
+  const posted = gh(
+    run,
+    "api",
+    "-X",
+    "POST",
+    "repos/acme/widgets/pulls/73/reviews",
+    "--input",
+    path.join(run, "review.json"),
+    "--jq",
+    "{id,state,commit_id}"
+  );
+  expect(posted).toEqual({
+    code: 0,
+    stdout: `{"commit_id":"${"b".repeat(40)}","id":6,"state":"CHANGES_REQUESTED"}\n`,
+    stderr: "",
+  });
+  const listed = JSON.parse(gh(run, "api", "repos/acme/widgets/pulls/73/reviews").stdout);
+  expect(listed.map((each: { state: string }) => each.state)).toEqual([
+    "APPROVED",
+    "CHANGES_REQUESTED",
+  ]);
+  expect(listed[1].submitted_at.startsWith("2030-01-07T12:00:0")).toBe(true);
+  expect(JSON.parse(gh(run, "pr", "view", "73", "--json", "reviewDecision").stdout)).toEqual({
+    reviewDecision: "CHANGES_REQUESTED",
+  });
+  expect(gh(run, "pr", "review", "73", "--approve", "--body", "Fine at B.").code).toBe(0);
+  const viewed = JSON.parse(gh(run, "api", "repos/acme/widgets/pulls/73").stdout);
+  expect(
+    viewed.reviews.map((each: { id: number; commit_id: string }) => [each.id, each.commit_id])
+  ).toEqual([
+    [5, "a".repeat(40)],
+    [6, "b".repeat(40)],
+    [7, "b".repeat(40)],
+  ]);
+  expect(viewed.reviewDecision).toBe("APPROVED");
+  expect(gh(run, "pr", "edit", "73", "--body", "new").code).toBe(0);
+  const after = JSON.parse(gh(run, "api", "repos/acme/widgets/pulls/73/reviews").stdout);
+  expect(after.map((each: { body: string }) => each.body)).toEqual([
+    "Looks fine at A.",
+    "Changes at B.",
+    "Fine at B.",
+  ]);
+  expect(JSON.parse(gh(run, "pr", "view", "73", "--json", "body").stdout)).toEqual({ body: "new" });
+});
+
 // Paged reads. Each testdata/f7-* fixture is the output of one real `gh` 2.98.0 call (its
 // `.command`, whose first line is the command, and its `.stdout`, `.stderr` and `.exit`) against
 // a public pull request with two review threads, paged a thread at a time. Each row runs that

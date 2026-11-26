@@ -959,6 +959,24 @@ export function dispatchBlockRefs(text: string): string {
   );
 }
 
+/** `text` with each reference to a comment or an ask of `key` by the case's own id
+ * (`dispatch://ACME-41/comment/c-1`) written with the id Dispatch gave it (`ids`, by
+ * `comment/<case id>` or `ask/<case id>`): Dispatch refuses an id it did not give. Any other
+ * reference, and any other text, is left as it is. */
+export function caseDispatchRefs(
+  text: string,
+  key: string,
+  ids: ReadonlyMap<string, string>
+): string {
+  return text.replace(
+    /dispatch:\/\/([A-Z][A-Z0-9]*-\d+)\/(comment|ask)\/([A-Za-z0-9][A-Za-z0-9_-]*)/g,
+    (whole, issue: string, kind: string, id: string) =>
+      issue === key && ids.has(`${kind}/${id}`)
+        ? `dispatch://${issue}/${kind}/${ids.get(`${kind}/${id}`)}`
+        : whole
+  );
+}
+
 /** File in a fresh scratch Dispatch. Dispatch allocates issue numbers; the placeholders reserve
  * preceding keys so the case's own references (including its parent's key) resolve unchanged.
  * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order. */
@@ -1015,6 +1033,8 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
   await createThrough(project, number, true);
   for (const { name, body } of documents)
     await createIssueArtifact(issue.key, { name, content: dispatchBlockRefs(body) }, seed);
+  // The case names its comments and asks by its own ids; Dispatch gives each one its own id.
+  const ids = new Map<string, string>();
   const steps: Step[] = [
     ...handoffs.map((record) => ({
       at: time(record.at, record.id),
@@ -1034,11 +1054,12 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
     ...comments.map((comment) => ({
       at: time(comment.at, comment.id),
       write: async () => {
-        await createComment(
+        const created = await createComment(
           issue.key,
           { body: dispatchBlockRefs(comment.body) },
           author(comment.author)
         );
+        ids.set(`comment/${comment.id}`, created.id);
       },
     })),
     ...asks.map((ask) => ({
@@ -1052,6 +1073,7 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
           },
           author(ask.author)
         );
+        ids.set(`ask/${ask.id}`, opened.id);
         if (ask.state === "answered") {
           if (ask.answer === null) throw new Error(`${ask.id}: answered with no answer`);
           const option = ask.options.find((label) => label === ask.answer);
@@ -1086,6 +1108,10 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
     })),
   ];
   for (const step of steps.sort((a, b) => byTime(a.at, b.at))) await step.write();
+  // The run's task names a comment or an ask as the case does: it now names the id Dispatch gave.
+  const prompt = path.join(runDir, "prompt.txt");
+  if (existsSync(prompt))
+    writeFileSync(prompt, caseDispatchRefs(readFileSync(prompt, "utf8"), issue.key, ids));
   // A closed issue refuses a document upload. Finish seeding the evidence before closing it.
   if (issue.status !== "triage") {
     await changeIssueStatus(issue.key, { status: issue.status, include_parent: true }, seed);
