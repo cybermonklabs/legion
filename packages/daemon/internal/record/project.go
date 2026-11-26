@@ -58,8 +58,10 @@ func OutOfWorkflow(status string) bool {
 // operation of the legion tool makes it. Each thing the rule says stops a loss
 // that the move alone does not stop. A fold names its carrier, and the issues that wait on the
 // folded child wait on the carrier first, because done starts them. A running child's worker
-// pushes first, because done ends its turn and its pod at once. An open pull request leaves the
-// merge queue and closes unless its work should land, because the daemon changes no pull request.
+// pushes first, because done ends its turn and its pod at once, except for the agent and session
+// of a retro that the close starts or finds running (workflow's retro.go). An open pull request
+// leaves the merge queue and closes unless its work should land, because the daemon changes no
+// pull request.
 // Backlog and icebox are for a person's request or a restart, and finished work is done. A child
 // already done takes no status, because a move out of done ends its production check. And a read
 // back after each move finds a move that the daemon set back.
@@ -79,7 +81,7 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
 	"Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
 	"Before done on a running child, have its worker push the work that the carrier needs. " +
-	"Done ends the worker's turn and the pod at once. " +
+	"Done ends the worker's turn and the pod at once, but keeps the agent and session of a retro it starts or finds running. " +
 	"Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
 	"When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
 	"Do this before done, or at once after a done that you wrote first. " +

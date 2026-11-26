@@ -636,7 +636,7 @@ export function createLegionTool(deps: {
         "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
         "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
         "Before done on a running child, have its worker push the work that the carrier needs. " +
-        "Done ends the worker's turn and the pod at once. " +
+        "Done ends the worker's turn and the pod at once, but keeps the agent and session of a retro it starts or finds running. " +
         "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
         "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
         "Do this before done, or at once after a done that you wrote first. " +
