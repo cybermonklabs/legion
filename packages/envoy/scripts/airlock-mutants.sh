@@ -132,12 +132,14 @@ if ! command -v patch >/dev/null 2>&1 && ! command -v git >/dev/null 2>&1; then
 fi
 
 # apply_patch applies one mutant inside the copy, never in the repository. GNU patch is the
-# tool the patches are written for; git apply reads the same unified diff, and is what this
-# script uses where patch is not installed.
+# tool the patches are written for, at --fuzz=0, so a patch whose context has moved is refused
+# rather than applied to whatever its other lines match; git apply reads the same unified diff, and
+# is what this script uses where patch is not installed. airlock-mutants-apply.test.sh holds every
+# patch to both.
 apply_patch() {
 	local copy="$1" patch_file="$2" log="$3"
 	if command -v patch >/dev/null 2>&1; then
-		patch -p1 -s --batch --forward -d "$copy" -i "$patch_file" >"$log" 2>&1
+		patch -p1 -s --batch --forward --fuzz=0 -d "$copy" -i "$patch_file" >"$log" 2>&1
 	else
 		(cd "$copy" && git apply -p1 "$patch_file") >"$log" 2>&1
 	fi

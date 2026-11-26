@@ -811,10 +811,12 @@ model mutants need `lake` and it is not installed. `airlock-check.sh k15` passes
 repository.
 
 `bash packages/envoy/scripts/airlock-mutants-apply.test.sh` checks that every mutant patch of
-those four directories still applies to the tree (`git apply --check -p1`, which writes
-nothing), so a change to the code a patch mutates cannot leave the patch stale unseen. It needs
-no database, model or Lean, and envoy-go-checks runs it. It exits 0 when every patch applies, 1
-naming each one that does not, and 3 when it found no patch.
+those four directories still applies to the tree under both tools that read it: GNU `patch` at
+`--fuzz=0`, which `airlock-mutants.sh` runs, and `git apply --check -p1`, its fallback. Neither
+writes anything. Each tool alone passes a patch the other refuses, so a change to the code a patch
+mutates cannot leave the patch stale unseen. It needs no database, model or Lean, and
+envoy-go-checks runs it. It exits 0 when every patch applies, 1 naming each one that does not,
+and 3 when it found no patch or GNU `patch` is not installed.
 
 ## listener-deploy-probe.sh
 
