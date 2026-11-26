@@ -144,14 +144,25 @@ test("the mode button keeps one width, and the menu's focused mode wears the pag
 
 // While a plan waits, the hint under the box says what Enter does (design v3, Keys; review N1):
 // in the empty box it approves, which the hint says wherever the card's Approve has scrolled to,
-// and with words in the box it sends them instead; before the plan is read it does nothing yet.
+// and with words in the box it sends them instead; before the plan is read it does nothing yet,
+// and once that read failed the hint says why, as the card does, not that it is being read.
 test("the hint under the box says Enter approves a plan that waits, and sends words instead of approving", () => {
-  const waits = { planWaits: true, runWaits: true };
+  const read = { answering: { unreadable: undefined } };
+  const waits = { ...read, planWaits: true, runWaits: true };
   expect(boxHint(waits, "")).toBe("↵ Approve");
   expect(boxHint(waits, "  ")).toBe("↵ Approve");
   expect(boxHint(waits, "keep it")).toBe("↵ sends your words instead of approving");
-  expect(boxHint({ planWaits: false, runWaits: true }, "")).toBe("Reading the plan…");
-  expect(boxHint({ planWaits: false, runWaits: false }, "")).toBeUndefined();
+  expect(boxHint({ ...read, planWaits: false, runWaits: true }, "")).toBe("Reading the plan…");
+  expect(boxHint({ ...read, planWaits: false, runWaits: false }, "")).toBeUndefined();
+  const failed = {
+    answering: {
+      unreadable: { message: "The run's plan could not be read.", retry: () => {}, retrying: false },
+    },
+  };
+  expect(boxHint({ ...failed, planWaits: false, runWaits: true }, "")).toBe(
+    "The run's plan could not be read."
+  );
+  expect(boxHint({ ...failed, planWaits: false, runWaits: false }, "")).toBeUndefined();
 });
 
 // The hint stands under the box, from the box's left edge (design v3, Keys: "the hint under the

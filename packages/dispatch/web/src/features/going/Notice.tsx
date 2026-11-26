@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
+import { Fragment, type ReactNode, useEffect, useSyncExternalStore } from "react";
 import { Link } from "react-router-dom";
 
 import { apiErrorMessage, goingRunUndoRequest } from "../../api/client";
@@ -8,7 +8,6 @@ import type { GoingUndoAnswer } from "../../api/types";
 import {
   borderDefault,
   card,
-  dangerText,
   focusVisibleRing,
   linkHoverText,
   linkText,
@@ -101,22 +100,21 @@ const actionClassName = `-my-0.5 rounded-md px-1.5 py-0.5 text-xs font-medium ou
 const dot = <span aria-hidden="true"> · </span>;
 
 /** Undo in a notice: the run's own undo, through the one keyed path every write of the page
- *  takes. Once it lands the notice says what was undone; a change that stayed says why. */
-function NoticeUndo({
-  ms,
-  onRefused,
-  undo,
-}: {
-  readonly ms: number;
-  readonly onRefused: (refusal: string) => void;
-  readonly undo: NonNullable<NoticeInput["undo"]>;
-}): ReactNode {
+ *  takes. Once Dispatch answers it, a notice of its own takes the place of the one that offered
+ *  it, for `ms`: what was undone, or the change that stayed and why, or, where Dispatch refused
+ *  the undo, why. The write is `inline`, which the shell's line of pending writes lets go once it
+ *  is refused, so the notice is the one place that says so. */
+function useNoticeUndo(ms: number) {
   const queryClient = useQueryClient();
-  const write = useKeyedWrite<GoingUndoAnswer, string>({
+  return useKeyedWrite<GoingUndoAnswer, NonNullable<NoticeInput["undo"]>>({
     inline: true,
     label: () => "Undo the command bar's run",
-    onError: (error) => onRefused(apiErrorMessage(error, "The undo did not reach Dispatch.")),
-    onSuccess: (answered) => {
+    onError: (error) =>
+      showNotice({
+        ms,
+        text: `Not undone: ${apiErrorMessage(error, "The undo did not reach Dispatch.")}`,
+      }),
+    onSuccess: (answered, undo) => {
       void queryClient.invalidateQueries({ queryKey: goingPlanQuery(undo.run).queryKey });
       void queryClient.invalidateQueries({ queryKey: goingConversationsQuery().queryKey });
       const kept = (answered?.lines ?? []).find((line) => !line.outcome.ok);
@@ -125,33 +123,32 @@ function NoticeUndo({
         text: kept === undefined ? undo.undone : `Not undone: ${kept.outcome.message}`,
       });
     },
-    request: (run) => goingRunUndoRequest(run),
-    target: planTarget,
+    request: (undo) => goingRunUndoRequest(undo.run),
+    target: (undo) => planTarget(undo.run),
   });
-  return (
-    <button
-      className={actionClassName}
-      data-testid="going-notice-undo"
-      disabled={write.isPending}
-      onClick={() => write.mutate(undo.run)}
-      type="button"
-    >
-      Undo
-    </button>
-  );
 }
 
-/** One showing of a notice, with the title of the issue it names, its actions, its Undo and the
- *  refusal of that Undo. */
+/** One showing of a notice, with the title of the issue it names, its actions and its Undo. It
+ *  goes once its time is up, but never while its Undo is out: the notice that says how the Undo
+ *  ended takes its place once Dispatch answers it. */
 function NoticeCard({ notice }: { readonly notice: ShownNotice }): ReactNode {
-  const [refusal, setRefusal] = useState<string>();
+  const offered = notice.undo;
+  const undo = useNoticeUndo(notice.ms);
+  const undoing = undo.isPending;
+  useEffect(() => {
+    if (undoing) {
+      return;
+    }
+    const timer = window.setTimeout(() => dropNotice(notice.id), notice.ms);
+    return () => window.clearTimeout(timer);
+  }, [notice, undoing]);
   const title = useQuery({
     ...issueSummaryQuery(notice.issue),
     enabled: notice.issue !== undefined,
   }).data?.title;
   // The words keep on their right the room each action keeps inside its fill (`px-1.5`), so each
   // "·" stands as far from what comes before it as from the action after it (review N5).
-  const followed = (notice.actions ?? []).length > 0 || notice.undo !== undefined;
+  const followed = (notice.actions ?? []).length > 0 || offered !== undefined;
   return (
     <div
       className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm shadow-lg ${card} ${borderDefault} ${textPrimaryOnSurface}`}
@@ -188,35 +185,31 @@ function NoticeCard({ notice }: { readonly notice: ShownNotice }): ReactNode {
             )}
           </Fragment>
         ))}
-        {notice.undo === undefined ? null : (
+        {offered === undefined ? null : (
           <>
             {dot}
-            <NoticeUndo ms={notice.ms} onRefused={setRefusal} undo={notice.undo} />
+            <button
+              className={actionClassName}
+              data-testid="going-notice-undo"
+              disabled={undoing}
+              onClick={() => undo.mutate(offered)}
+              type="button"
+            >
+              Undo
+            </button>
           </>
         )}
       </p>
-      {refusal === undefined ? null : (
-        <p className={`text-xs ${dangerText}`} role="alert">
-          {refusal}
-        </p>
-      )}
     </div>
   );
 }
 
 /**
  * The notice on the screen, if any, at the bottom right of the page, where the shell puts it.
- * It goes once its time is up, once one of its actions is pressed, or once a newer notice takes
- * its place.
+ * It goes once its time is up - but not while its Undo is out - once one of its actions is
+ * pressed, or once a newer notice takes its place.
  */
 export function Notice(): ReactNode {
   const notice = useNotice();
-  useEffect(() => {
-    if (notice === undefined) {
-      return;
-    }
-    const timer = window.setTimeout(() => dropNotice(notice.id), notice.ms);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
   return notice === undefined ? null : <NoticeCard key={notice.id} notice={notice} />;
 }

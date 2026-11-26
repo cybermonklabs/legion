@@ -43,7 +43,7 @@ import {
   useGoingValue,
 } from "./going-store";
 import { PlanCard } from "./PlanRows";
-import { appliedWords, undoneStateWords, undoRecord } from "./plan-rows";
+import { appliedWords, planWaits, undoneStateWords, undoRecord } from "./plan-rows";
 import { RunUndo } from "./RunUndo";
 import {
   cutsReply,
@@ -228,7 +228,9 @@ function AnswerFoot({
  * words", with Continue alone. A Stop reads "Stopped · read 1 item", then Continue (↵), since the
  * person stopped it on purpose. A failure is its sentence and Try again, or "Start a new
  * conversation" where this one grew too long. A Dispatch with no answering model says so in the
- * one sentence of state 13, and offers nothing.
+ * one sentence of state 13, and offers nothing. While a start is out (`starting`), its buttons are
+ * off: a second Continue would start a second follow-up, which would take the first one's place
+ * on the screen and hide it.
  */
 function RunEnd({
   actions,
@@ -243,6 +245,7 @@ function RunEnd({
   readonly onRetry: () => void;
   readonly words: EndWords;
 }): ReactNode {
+  const starting = useGoingValue((of) => of.starting !== undefined);
   if (words.noModel) {
     return (
       <p
@@ -262,6 +265,7 @@ function RunEnd({
         <button
           className={primaryButton}
           data-testid="going-run-continue"
+          disabled={starting}
           onClick={() => onContinue()}
           type="button"
         >
@@ -274,6 +278,7 @@ function RunEnd({
           <button
             className={secondaryButtonPaired}
             data-testid="going-run-continue-deep"
+            disabled={starting}
             onClick={() => onContinue("deep")}
             type="button"
           >
@@ -287,6 +292,7 @@ function RunEnd({
       <button
         className={primaryButton}
         data-testid="going-run-action"
+        disabled={starting}
         onClick={action === "new" ? newConversation : onRetry}
         type="button"
       >
@@ -431,7 +437,9 @@ function RunTurn({
       data-run={run.id}
       data-state={state}
       data-testid="going-run"
-      {...(newest && shownPlan?.state === "waiting" ? { [FOLLOW_ANCHOR]: "" } : {})}
+      {...(newest && shownPlan !== undefined && planWaits(shownPlan)
+        ? { [FOLLOW_ANCHOR]: "" }
+        : {})}
     >
       <Words testId="going-run-words" words={run.record.words} />
       {waitsForSteps ? <Thinking since={run.since} /> : null}
@@ -719,7 +727,8 @@ export function ConversationView({
     going.queued !== undefined && going.queued.run === newestRun(going)?.id
       ? going.queued
       : undefined;
-  const waiting = answering.plan?.state === "waiting" ? answering.plan : undefined;
+  const shownPlan = answering.plan;
+  const waiting = shownPlan !== undefined && planWaits(shownPlan) ? shownPlan : undefined;
   const scroll = useFollow(
     runs[0]?.record.conversation ?? "",
     runs.reduce((sum, run) => sum + run.read + 1, 0) +

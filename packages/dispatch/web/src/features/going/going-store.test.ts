@@ -114,6 +114,33 @@ test("Continue follows a bound-stopped run up at its own level, and Continue in 
   }
 });
 
+// A second Continue while the first one's start is out, such as Continue in Deep pressed after
+// Continue, starts nothing: a second follow-up would take the first start's place on the screen,
+// and the run Dispatch answers the first with would join no conversation shown. Once Dispatch
+// answers, that run joins the conversation.
+test("Continue starts no second follow-up while a start is out, and the first one joins the conversation", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "split CORE-1"));
+  try {
+    await startRun("split CORE-1", CONTEXT, "alice");
+    runs.send("r-1", "end", { offers: ["continue"], reason: "TIME_BUDGET: …", state: "stopped" });
+    const answered = Promise.withResolvers<GoingRun>();
+    runs.start
+      .mockReturnValueOnce(answered.promise)
+      .mockResolvedValueOnce(record("r-3", "c-1", "Continue"));
+    const first = continueRun("r-1", CONTEXT, "alice");
+    expect(goingState().starting?.follows).toBe("r-1");
+    expect(await continueRun("r-1", CONTEXT, "alice", "deep")).toBe(false);
+    expect(runs.start).toHaveBeenCalledTimes(2);
+
+    answered.resolve(record("r-2", "c-1", "Continue"));
+    expect(await first).toBe(true);
+    expect(goingState().conversation).toEqual(["r-1", "r-2"]);
+    expect(goingState().starting).toBeUndefined();
+  } finally {
+    runs.restore();
+  }
+});
+
 // A run started from the line on top records the line pressed; a run started anywhere else - a
 // follow-up typed in the box, a Continue - records none.
 test("a start sends the line on top it was pressed on, and a follow-up or a Continue sends none", async () => {

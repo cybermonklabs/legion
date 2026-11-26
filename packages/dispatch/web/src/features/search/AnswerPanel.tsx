@@ -85,15 +85,16 @@ function issueOf(href: string): string | undefined {
  * which the panel's foot says while that line is the selected row (`fullAnswer`). The text is the
  * stream's `text` frames drawn through the page's markdown renderer as plain text: the server
  * escaped every punctuation byte of it, so no link, image, tag or code span comes of anything the
- * model wrote. The answer's links are its `item` frames, and nothing else: an issue an item frame
- * names is its chip (design v3, state 4), once, in the text where the text writes its key - the
- * one reference the renderer reads in it - and beneath the text where it does not, as is every
- * other item, by its title, but for an item of an issue the text draws as its chip. The block,
- * where the answer draws one, follows the text, as its frame follows the text's. Each line below
- * says what the stream said about the answer: that it was cut, that the server changed it, that
- * the model wrote none, that it rests on no source, how fresh the roster it read was, or that it
- * failed. A failure says why and its own next step (`errorText`), so the foot does not say the
- * full answer again.
+ * model wrote. The text's links are its `item` frames: an issue an item frame names is its chip
+ * (design v3, state 4), once, in the text where the text writes its key - the one reference the
+ * renderer reads in it - and beneath the text where it does not, as is every other item, by its
+ * title, but for an item of an issue the text draws as its chip. The block, where the answer draws
+ * one, follows the text, as its frame follows the text's; a table's column of issue keys links
+ * each issue too (`TableBlock`), a key the server's steps put there from the run's own reads. Each
+ * line below says what the stream said about the answer: that it was cut, that the server changed
+ * it, that the model wrote none, that it rests on no source, how fresh the roster it read was, or
+ * that it failed. A failure says why and its own next step (`errorText`), so the foot does not say
+ * the full answer again.
  *
  * An answer to words the person has typed past (`stale`) is drawn as it stood when they typed
  * on, its links, block and lines with it, inside a dashed outline with its text muted, under a

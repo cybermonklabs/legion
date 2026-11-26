@@ -1,12 +1,14 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the keys of an IME composition below, which user-event has no form for
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { answerRoute } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
-import type { GoingRun } from "../../api/types";
+import type { GoingPlanAnswer, GoingRun } from "../../api/types";
 import { goingState, openConversation, resetGoingStore, setPlace } from "./going-store";
 import { SidePanel } from "./SidePanel";
 
@@ -304,6 +306,112 @@ test("the panel's box says what Enter does, and words sent while its run works g
   } finally {
     start.mockRestore();
     stream.mockRestore();
+  }
+});
+
+/** A plan of `started`'s run, waiting for its person, with no rows. */
+const waitingPlan: GoingPlanAnswer = {
+  mode: "ask",
+  plan: 1,
+  rows: [],
+  run: started.id,
+  state: "waiting",
+  summary: "Page the on-call.",
+  version: "v1",
+};
+
+/** Opens `started`'s conversation at the side, its run ended waiting on its plan, which Dispatch
+ *  answers with `read`; a read of the run's record again answers it waiting still. */
+function openWaitingRun(read: () => Promise<GoingPlanAnswer>): () => void {
+  const waiting: GoingRun = { ...started, state: "waiting" };
+  const spies: readonly { readonly mockRestore: () => void }[] = [
+    spyOn(api, "goingPlan").mockImplementation(read),
+    spyOn(api, "goingRun").mockResolvedValue(waiting),
+    spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+      onFrame("plan", { plan: 1, state: "waiting" });
+      onFrame("end", { offers: [], reason: "", state: "waiting" });
+      return Promise.withResolvers<void>().promise;
+    }),
+  ];
+  openConversation({ id: started.conversation, newest_at: started.created_at, runs: [waiting] });
+  renderPanel();
+  return () => {
+    for (const spy of spies) spy.mockRestore();
+  };
+}
+
+// A plan of a withdrawn run waits for nobody (`planWaits`): Dispatch approves and revises it for
+// nobody. Its read can come before the run's record says the run is withdrawn, on the delete that
+// withdrew it. The box then offers no Approve, and Enter with words keeps them in the box, where
+// a revision of the plan would have taken them from the box and sent them nowhere.
+test("a plan read withdrawn offers no Approve, and Enter keeps the person's words in the box", async () => {
+  const user = userEvent.setup();
+  const start = spyOn(api, "createGoingRun");
+  const revise = answerRoute<(run: string, body: unknown) => Promise<GoingPlanAnswer>>(
+    "POST",
+    "/api/v1/going/runs/*/plan/revise"
+  );
+  const restore = openWaitingRun(async () => ({ ...waitingPlan, withdrawn: true }));
+  try {
+    await screen.findByTestId("going-plan");
+    expect(screen.queryByTestId("going-plan-approve")).toBeNull();
+    const box = screen.getByRole("textbox", { name: "Ask the command bar" });
+    expect(screen.queryByTestId("going-box-hint")?.textContent ?? "").not.toMatch(
+      /Approve|approving/u
+    );
+    await user.type(box, "page the night shift too{Enter}");
+    expect(box).toHaveValue("page the night shift too");
+    expect(screen.queryByTestId("going-box-hint")?.textContent ?? "").not.toMatch(
+      /Approve|approving/u
+    );
+    expect(revise).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  } finally {
+    restore();
+    start.mockRestore();
+  }
+});
+
+// Before the plan is read, the hint under the box says it is being read; once that read failed,
+// it says why, as the card does above its Retry, and no longer that the plan is being read.
+test("once the plan's read failed, the hint under the box says why rather than Reading the plan…", async () => {
+  const restore = openWaitingRun(async () => {
+    throw new Error("the network dropped");
+  });
+  try {
+    const card = await screen.findByTestId("going-plan-unreadable");
+    expect(within(card).getByRole("alert")).toHaveTextContent("The run's plan could not be read.");
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "The run's plan could not be read."
+    );
+  } finally {
+    restore();
+  }
+});
+
+// An Enter that confirms an input method's conversion is the input method's: Chromium and Firefox
+// mark it `isComposing`, and Safari sends it after the composition's end, unmarked, with keyCode
+// 229. It sends nothing and leaves the words in the box; a plain Enter after it sends them.
+test("an Enter that confirms an input method's conversion in the panel's box sends nothing, and a plain Enter sends the words", async () => {
+  const user = userEvent.setup();
+  const starts = answerStarts();
+  try {
+    renderPanel();
+    const box = screen.getByRole("textbox", { name: "Ask the command bar" });
+    await user.type(box, started.words);
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(box, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(box, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(box).toHaveValue(started.words);
+    expect(goingState().starting).toBeUndefined();
+    expect(starts.start).not.toHaveBeenCalled();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(starts.start).toHaveBeenCalledTimes(1));
+    expect(starts.start.mock.calls[0]?.[0].words).toBe(started.words);
+    expect(box).toHaveValue("");
+  } finally {
+    starts.restore();
   }
 });
 

@@ -33,6 +33,7 @@ import {
 } from "../../theme/classes";
 import { conversationTitle, conversationWorking, setLevel, useGoingValue } from "./going-store";
 import type { Asking } from "./useAsk";
+import type { PlanAnswering } from "./usePlan";
 
 /** The three modes, in the order the menu lists them, each with the one line on what it is for
  *  (design v3, state 12). R10's budgets are the server's: no model and no number shows here. */
@@ -387,15 +388,21 @@ export function boxWords({
 /** What Enter does where the box's words do not say it (design v2, Keys, "Bar, a plan waits"):
  *  while a plan waits, Enter in the empty box approves it, which the hint says so the card's
  *  Approve need not be in view, and with words in the box it sends them instead of approving;
- *  before the plan is read, Enter does nothing yet. */
+ *  before the plan is read, Enter does nothing yet, and once its read failed the hint says why,
+ *  as the card does above its Retry, rather than that the plan is still being read. */
 export function boxHint(
-  asking: Pick<Asking, "planWaits" | "runWaits">,
+  asking: Pick<Asking, "planWaits" | "runWaits"> & {
+    readonly answering: Pick<PlanAnswering, "unreadable">;
+  },
   words: string
 ): string | undefined {
   if (asking.planWaits) {
     return words.trim() === "" ? "↵ Approve" : "↵ sends your words instead of approving";
   }
-  return asking.runWaits ? "Reading the plan…" : undefined;
+  if (!asking.runWaits) {
+    return undefined;
+  }
+  return asking.answering.unreadable?.message ?? "Reading the plan…";
 }
 
 /** The row of the conversation's box on the screen: the bar's or the panel's, one at a time. */

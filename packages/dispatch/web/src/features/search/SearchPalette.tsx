@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { goingConversationsQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { GoingContextInput, GoingLine, Project, SearchResult } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop50,
   badgeLow,
@@ -1251,8 +1252,11 @@ function PaletteDialog({
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
   // The box before Enter: "/" in the empty box opens the filters, Tab and Backspace move the
-  // chip, the arrows walk the list, and Enter acts on the highlighted row.
+  // chip, the arrows walk the list, and Enter acts on the highlighted row. A key of an input
+  // method's composition is the input method's (`inputMethodKey`): the Enter that confirms a
+  // conversion opens no row.
   const handleSearchKey = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (inputMethodKey(event.nativeEvent)) return;
     if (event.key === "/" && query === "") {
       // In a box with words, "/" is a character.
       event.preventDefault();
@@ -1287,8 +1291,11 @@ function PaletteDialog({
   // card that waits; Esc in the empty box while the run works stops the run, and any other Esc
   // is the dialog's, which closes the bar while a run goes on; Enter answers the plan that waits
   // (approves it from the empty box, revises it with words), does nothing before the plan is
-  // read, holds words sent while the run works until it ends, and otherwise asks the next turn.
+  // read, holds words sent while the run works until it ends, and otherwise asks the next turn. A
+  // key of an input method's composition is the input method's: the Enter that confirms a
+  // conversion sends nothing.
   const handleTalkKey = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (inputMethodKey(event.nativeEvent)) return;
     if (cardKeys(event)) {
       return;
     }

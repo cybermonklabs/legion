@@ -15,13 +15,16 @@ import {
   stopRun,
   useGoingValue,
 } from "./going-store";
+import { planWaits } from "./plan-rows";
 import { type PlanAnswering, useOpenPlan } from "./usePlan";
 
 /** What the bar's box and the panel's box do with the person's words and keys. */
 export interface Asking {
   /** The open plan, as this surface answers it. */
   readonly answering: PlanAnswering;
-  /** Whether the open conversation's newest run waits on its plan: Enter then answers it. */
+  /** Whether the open conversation's newest run waits on its plan: Enter then answers it. A plan
+   *  of a withdrawn run waits for nobody (`planWaits`), so Enter neither approves it nor sends
+   *  the words in the box to it, where they would be lost. */
   readonly planWaits: boolean;
   /** Whether the open conversation's newest run waits on its plan as its frames show it, which
    *  can come before the plan is read: until then Enter answers nothing and starts no run. */
@@ -60,7 +63,7 @@ export function useAsk(context: GoingContextInput): Asking {
   const queryClient = useQueryClient();
   const login = useQuery(whoAmIQuery()).data?.login;
   const answering = useOpenPlan();
-  const planWaits = answering.plan?.state === "waiting";
+  const waits = answering.plan !== undefined && planWaits(answering.plan);
   const runWaits = useGoingValue((of) => {
     const run = of.place === "closed" ? undefined : newestRun(of);
     return run !== undefined && shownState(run) === "waiting";
@@ -73,7 +76,7 @@ export function useAsk(context: GoingContextInput): Asking {
     });
   const enter = (words: string, line?: GoingLine): boolean => {
     const said = words.trim();
-    if (planWaits) {
+    if (waits) {
       // Enter stands for the card's Approve and keeps its guard (`approvable`): it approves
       // nothing with no row ticked, nor again while the first approval is out.
       if (said === "") return answering.approve();
@@ -108,7 +111,7 @@ export function useAsk(context: GoingContextInput): Asking {
       );
     },
     onContinue: (run, level) => listed(continueRun(run, context, login, level)),
-    planWaits,
+    planWaits: waits,
     retry: (words) => {
       enter(words);
     },

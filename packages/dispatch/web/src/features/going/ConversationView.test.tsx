@@ -293,7 +293,6 @@ test("an answer an earlier call wrote keeps no ellipsis when the reply length li
 // that line and the card count what the run read from the same steps, so they never disagree.
 test("a bound is a grey card with what the run did so far, Continue and Continue in Deep", async () => {
   const user = userEvent.setup();
-  const continued: (readonly [string, GoingRun["level"] | undefined])[] = [];
   const read = (step: number): readonly [string, unknown] => [
     "tool",
     { items: [`DEMO-${step}`], kind: "read", label: `Read DEMO-${step}`, step, tool: "read" },
@@ -310,8 +309,7 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
           state: "stopped",
         },
       ],
-    ],
-    { onContinue: (run, level) => continued.push([run, level]) }
+    ]
   );
   try {
     const bound = await screen.findByTestId("going-run-bound");
@@ -333,16 +331,63 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
       "Read DEMO-5",
       "Read DEMO-6",
     ]);
-    // Continue in Deep stands beside Continue at the same height.
+    // Continue, with the key that does it, and Continue in Deep beside it at the same height.
+    expect(within(bound).getByTestId("going-run-continue")).toHaveTextContent("Continue↵");
     expect(within(bound).getByTestId("going-run-continue-deep").className).toContain("py-[7px]");
-    await user.click(within(bound).getByTestId("going-run-continue"));
-    await user.click(within(bound).getByTestId("going-run-continue-deep"));
-    expect(continued).toEqual([
-      ["r-1", undefined],
-      ["r-1", "deep"],
-    ]);
   } finally {
     restore();
+  }
+});
+
+// Continue starts one follow-up through the store (`continueRun`), at the stopped run's own level.
+// While its start is out, the end card's buttons are off, and a second Continue starts nothing: a
+// second follow-up would take the first start's place on the screen, and the run Dispatch answers
+// the first with would join no conversation shown. Once Dispatch answers, that run joins this one.
+test("Continue starts one follow-up: while it starts the end card's buttons are off, and the follow-up joins the conversation", async () => {
+  const user = userEvent.setup();
+  const { promise: created, resolve: create } = Promise.withResolvers<GoingRun>();
+  const start = spyOn(api, "createGoingRun").mockReturnValue(created);
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+    if (id === "r-1") {
+      onFrame("end", {
+        offers: ["continue"],
+        reason: "TIME_BUDGET: this run worked the 5m0s a standard run may",
+        state: "stopped",
+      });
+    }
+    return new Promise<void>(() => {});
+  });
+  openConversation({
+    id: "c-1",
+    newest_at: new Date().toISOString(),
+    runs: [record("stopped")],
+  });
+  try {
+    renderWithQueries(<AskedConversation />);
+    const bound = await screen.findByTestId("going-run-bound");
+    await user.click(within(bound).getByTestId("going-run-continue"));
+    expect(screen.getByTestId("going-run-starting")).toBeInTheDocument();
+    expect(within(bound).getByTestId("going-run-continue")).toBeDisabled();
+    expect(within(bound).getByTestId("going-run-continue-deep")).toBeDisabled();
+    await user.click(within(bound).getByTestId("going-run-continue-deep"));
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      continues: "r-1",
+      level: "standard",
+      words: "Continue",
+    });
+
+    await act(async () => {
+      create(record("working", 1000, { continues: "r-1", id: "r-2", words: "Continue" }));
+      await created;
+    });
+    await waitFor(() => expect(screen.getAllByTestId("going-run")).toHaveLength(2));
+    expect(screen.queryByTestId("going-run-starting")).toBeNull();
+    expect(goingState().conversation).toEqual(["r-1", "r-2"]);
+    expect(start).toHaveBeenCalledTimes(1);
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
   }
 });
 
@@ -1397,6 +1442,71 @@ test("while the newest run's plan waits, the conversation follows no further tha
     expect(screen.getByTestId("going-plan").lastElementChild).toBe(actions);
     expect(within(actions).getByTestId("going-plan-approve")).toBeInTheDocument();
     expect(within(actions).getByTestId("going-plan-reject")).toBeInTheDocument();
+  } finally {
+    boxes.mockRestore();
+    stream.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// A plan of a withdrawn run waits for nobody (`planWaits`): Dispatch approves and revises it for
+// nobody. Its read can come before the run's record says the run is withdrawn, on the delete that
+// withdrew it; the conversation's scroll then stops at no question for it, and follows on to its
+// foot as it does with no plan waiting, with no Approve pinned there.
+test("a plan read withdrawn holds the conversation's scroll at no question: it follows on to the foot", async () => {
+  const withdrawn: GoingPlanAnswer = {
+    ...appliedPlan,
+    rows: (appliedPlan.rows ?? []).map((row) => ({ ...row, result: null, state: "waiting" })),
+    state: "waiting",
+    withdrawn: true,
+  };
+  let send: ((name: string, data: unknown) => void) | undefined;
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    send = onFrame;
+    return new Promise<void>(() => {});
+  });
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => withdrawn);
+  // The view stands 100 px down the window and the run's turn 700 px down the conversation,
+  // moving up as it scrolls, as a browser lays them out; every other box at the window's top.
+  const box = (top: number): DOMRect => ({
+    bottom: top + 100,
+    height: 100,
+    left: 0,
+    right: 700,
+    toJSON: () => ({}),
+    top,
+    width: 700,
+    x: 0,
+    y: top,
+  });
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.dataset.testid === "going-conversation-view") return box(100);
+    const scrolled =
+      document.querySelector<HTMLElement>('[data-testid="going-conversation-view"]')?.scrollTop ??
+      0;
+    return box(this.dataset.run === "r-1" ? 700 - scrolled : 0);
+  });
+  openConversation({
+    id: "c-1",
+    newest_at: new Date().toISOString(),
+    runs: [record("waiting", 1000, { words: "raise DEMO-10" })],
+  });
+  try {
+    renderWithQueries(<AskedConversation />);
+    const view = screen.getByTestId("going-conversation-view");
+    Object.defineProperty(view, "scrollHeight", { configurable: true, value: 2000 });
+    Object.defineProperty(view, "clientHeight", { configurable: true, value: 400 });
+    // The plan frame has the plan read; the run's end comes once the read has landed, and the
+    // conversation follows it to its foot.
+    act(() => send?.("plan", { plan: 1, state: "waiting" }));
+    await screen.findByTestId("going-plan");
+    expect(read).toHaveBeenCalledWith("r-1");
+    expect(screen.queryByTestId("going-plan-approve")).toBeNull();
+    expect(view.scrollTop).toBe(2000);
+    act(() => send?.("end", { offers: [], reason: "", state: "waiting" }));
+    expect(view.scrollTop).toBe(2000);
   } finally {
     boxes.mockRestore();
     stream.mockRestore();

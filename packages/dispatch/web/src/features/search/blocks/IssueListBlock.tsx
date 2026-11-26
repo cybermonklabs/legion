@@ -10,7 +10,8 @@ import { statusText } from "../../project/board-model";
 import { type BlockOf, cellText } from "./block-cells";
 
 /** A list of issues: each issue's key, title and status, as the read listed them. The keys are
- *  text, not links: an answer's links are its item frames alone. */
+ *  text, not links: the answer's item frames link what it cites, and a table's column of issue
+ *  keys links each issue (`TableBlock`). */
 export function IssueListBlock({ block }: { readonly block: BlockOf<"issue_list"> }): ReactNode {
   return (
     <ul className="text-xs" data-testid="going-block-issues">

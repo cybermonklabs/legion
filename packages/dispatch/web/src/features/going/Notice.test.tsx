@@ -220,9 +220,10 @@ test("Undo reverses the run through its own undo, and the notice says what was u
   );
 });
 
-// A refused Undo says why under its own notice, and the refusal goes with that notice: a newer
-// notice takes its place, saying nothing of an Undo it never offered.
-test("a refused Undo says why under its notice, and a newer notice shows none of it", async () => {
+// A refused Undo says why as a landed one says what it undid: in a notice of its own, in place of
+// the one that offered it, with no Undo to press again. A newer notice takes its place in turn,
+// saying nothing of it.
+test("a refused Undo says why in a notice, as a landed one says what it undid, and a newer notice shows none of it", async () => {
   const user = userEvent.setup();
   const undo = answerRoute<
     (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
@@ -241,9 +242,55 @@ test("a refused Undo says why under its notice, and a newer notice shows none of
   await user.click(
     within(screen.getByTestId("going-notice")).getByRole("button", { name: "Undo" })
   );
-  expect(await screen.findByRole("alert")).toHaveTextContent("nothing was undone");
+  await waitFor(() =>
+    expect(screen.getByTestId("going-notice-text").textContent).toBe(
+      "Not undone: nothing was undone"
+    )
+  );
+  expect(within(screen.getByTestId("going-notice")).queryByRole("button")).toBeNull();
 
   act(() => showNotice({ ms: 10_000, text: "Done: Count the moons" }));
   expect(screen.getByTestId("going-notice")).toHaveTextContent("Done: Count the moons");
-  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByTestId("going-notice")).not.toHaveTextContent("nothing was undone");
+});
+
+// The notice stays while its Undo is out, past its time: Dispatch's answer to the Undo, a refusal
+// as much as a landing, would otherwise come after the notice had gone, and show nowhere. Once it
+// comes, the notice that says so takes the place of the one that offered Undo, for its own time.
+test("a notice stays while its Undo is out, past its time, and the Undo's refusal then shows in its place", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const answered = Promise.withResolvers<GoingUndoAnswer>();
+  const undo = answerRoute<
+    (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
+  >("POST", "/api/v1/going/runs/*/undo");
+  undo.mockImplementationOnce(() => answered.promise);
+  try {
+    renderNotice();
+    act(() =>
+      showNotice({
+        ms: 3_000,
+        text: "Filed CORE-46",
+        undo: { run: "r-file", undone: "Undone · CORE-46 closed" },
+      })
+    );
+    await user.click(screen.getByRole("button", { name: "Undo" }));
+    await tick(4_000);
+    expect(undo).toHaveBeenCalledWith("r-file", undefined, keyedAttempt);
+    const notice = screen.getByTestId("going-notice");
+    expect(notice).toHaveTextContent("Filed CORE-46 · Undo");
+    expect(within(notice).getByRole("button", { name: "Undo" })).toBeDisabled();
+
+    answered.reject(new ApiError(409, { code: "GOING_UNDO_UNKNOWN", error: "nothing was undone" }));
+    await tick(0);
+    expect(screen.getByTestId("going-notice-text").textContent).toBe(
+      "Not undone: nothing was undone"
+    );
+    await tick(2_900);
+    expect(screen.getByTestId("going-notice")).toBeInTheDocument();
+    await tick(200);
+    expect(screen.queryByTestId("going-notice")).toBeNull();
+  } finally {
+    realClock();
+  }
 });

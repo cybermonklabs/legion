@@ -6,7 +6,8 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the keys of an IME composition below, which user-event has no form for
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
@@ -974,6 +975,32 @@ test("arrow keys move aria-activedescendant and Enter navigates to the active hr
     await user.keyboard("{ArrowUp}");
     await user.keyboard("{Enter}");
 
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      "/issues/LEGION-2/spec?q=astrolabe"
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// An Enter that confirms an input method's conversion is the input method's: Chromium and Firefox
+// mark it `isComposing`, and Safari sends it after the composition's end, unmarked, with keyCode
+// 229. It opens no hit; a plain Enter after it opens the highlighted one.
+test("an Enter that confirms an input method's conversion opens no hit, and a plain Enter opens the highlighted one", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+  try {
+    const input = await searchFor(user, "astrolabe");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(input, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+    expect(screen.getByRole("combobox", { name: "Search" })).toBe(input);
+
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/issues/LEGION-2/spec?q=astrolabe"
     );
@@ -2436,6 +2463,41 @@ test("words that wait go as the next turn of the conversation when the run ends 
       WORDS,
       "and its moons",
     ]);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// An Enter that confirms an input method's conversion in the box under the conversation is the
+// input method's, marked `isComposing` or, from Safari, sent unmarked with keyCode 229: it sends
+// nothing and leaves the words in the box. A plain Enter after it sends them as the next turn.
+test("an Enter that confirms an input method's conversion in the box under the conversation sends nothing, and a plain Enter sends the words", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "reply", { labels: [], text: "Nobody yet.", tools: [] });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+    const box = talkBox();
+    await user.type(box, "and its moons");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(box, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(box, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(box).toHaveValue("and its moons");
+    expect(bar.start).toHaveBeenCalledTimes(1);
+    expect(goingState().starting).toBeUndefined();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(bar.start).toHaveBeenCalledTimes(2));
+    expect(bar.start.mock.calls[1]?.[0]).toMatchObject({
+      continues: "r-1",
+      words: "and its moons",
+    });
+    expect(box).toHaveValue("");
   } finally {
     bar.restore();
     view.unmount();

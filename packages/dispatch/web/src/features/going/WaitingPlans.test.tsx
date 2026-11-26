@@ -175,6 +175,44 @@ test("until its plan is read a row names it by its summary, each time in it draw
   }
 });
 
+// A read of the plans that wait that failed says so at the head of the Inbox, with Retry, rather
+// than draw nothing, which says no plan waits; Retry reads them again, and the plans it lists take
+// the failure's place.
+test("a read of the plans that wait that failed says so with Retry, which reads them again", async () => {
+  const user = userEvent.setup();
+  const list = spyOn(api, "myGoingPlans")
+    .mockRejectedValueOnce(new Error("the network dropped"))
+    .mockResolvedValueOnce({ limit: 50, offset: 0, rows: [waiting], total: 1 });
+  const history = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [],
+    total: 0,
+  });
+  const plan = spyOn(api, "goingPlan").mockImplementation(() => new Promise(() => {}));
+  try {
+    renderWithQueries(<WaitingPlans />);
+    const section = await screen.findByTestId("inbox-going-plans");
+    expect(within(section).getByRole("heading")).toHaveTextContent("Plans that wait for you");
+    expect(within(section).getByRole("alert")).toHaveTextContent(
+      "The plans that wait for you could not be read."
+    );
+    expect(within(section).queryByTestId("inbox-going-plan")).toBeNull();
+
+    await user.click(within(section).getByRole("button", { name: "Retry" }));
+    const row = await screen.findByTestId("inbox-going-plan");
+    expect(within(row).getByTestId("inbox-going-plan-title")).toHaveTextContent(
+      "Split CORE-1 in two."
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(list).toHaveBeenCalledTimes(2);
+  } finally {
+    list.mockRestore();
+    history.mockRestore();
+    plan.mockRestore();
+  }
+});
+
 test("a refusal of a run's plan does not show under the plan the run proposes in its place", async () => {
   const user = userEvent.setup();
   let listed: GoingWaitingPlan = waiting;

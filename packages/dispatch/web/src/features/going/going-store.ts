@@ -620,7 +620,9 @@ export function stopRun(id: string, login: string | undefined): void {
 
 /** Continue on a run whose end offers it (`offersContinue`: a bound of its level, or its person's
  *  Stop): a follow-up of its conversation with a new budget of `level`, else of the stopped run's
- *  own level ("Continue in Deep" names Deep). It answers whether the follow-up started. */
+ *  own level ("Continue in Deep" names Deep). It answers whether the follow-up started. It starts
+ *  none while a start is out (`starting`): a second follow-up would take that start's place on the
+ *  screen, and the run the first one starts would join no conversation shown. */
 export function continueRun(
   id: string,
   context: GoingContextInput,
@@ -629,6 +631,7 @@ export function continueRun(
 ): Promise<boolean> {
   const run = state.runs.get(id);
   if (
+    state.starting !== undefined ||
     run === undefined ||
     !offersContinue(run) ||
     runNext(shownState(run), "continue").send !== "continue"

@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { api, apiErrorCodeIn, apiErrorMessage, goingPlanApproveRequest } from "../../api/client";
 import { goingConversationsQuery, goingPlanQuery, goingWaitingPlansQuery } from "../../api/queries";
 import type { GoingConversation, GoingPlanAnswer, GoingWaitingPlan } from "../../api/types";
+import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
   card,
@@ -180,13 +181,14 @@ function WaitingPlanRow({
  * approve it here hours later. The list is read again on each `going_plan.updated` that names the
  * person (`event-refresh.ts`), so a plan answered in another tab leaves it. Each row names its
  * conversation by its title, its first question, as History lists it, else by the words of the
- * plan's own run. Nothing shows while no plan waits.
+ * plan's own run. Nothing shows while no plan waits; a read of the list that failed says so, with
+ * its Retry, above any plans an earlier read listed.
  */
 export function WaitingPlans(): ReactNode {
   const plans = useQuery(goingWaitingPlansQuery());
   const rows = plans.data?.rows ?? [];
   const conversations = useQuery({ ...goingConversationsQuery(), enabled: rows.length > 0 });
-  if (rows.length === 0) {
+  if (rows.length === 0 && !plans.isError) {
     return null;
   }
   // History lists a conversation's runs the newest first: its first question is its last run's.
@@ -205,15 +207,24 @@ export function WaitingPlans(): ReactNode {
       >
         Plans that wait for you
       </h2>
-      <ul>
-        {rows.map((plan) => (
-          <WaitingPlanRow
-            key={plan.run}
-            plan={plan}
-            title={titles.get(plan.conversation) ?? plan.words}
-          />
-        ))}
-      </ul>
+      {plans.isError ? (
+        <QueryError
+          message={apiErrorMessage(plans.error, "The plans that wait for you could not be read.")}
+          onRetry={() => void plans.refetch()}
+          retrying={plans.isFetching}
+        />
+      ) : null}
+      {rows.length === 0 ? null : (
+        <ul>
+          {rows.map((plan) => (
+            <WaitingPlanRow
+              key={plan.run}
+              plan={plan}
+              title={titles.get(plan.conversation) ?? plan.words}
+            />
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

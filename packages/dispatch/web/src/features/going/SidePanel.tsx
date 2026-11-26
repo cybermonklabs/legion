@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { GoingContextInput } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import { issueProject } from "../../lib/issue-key";
 import { borderDefault, card, dangerText } from "../../theme/classes";
 import { nodeRouteFromHref, routeProjectOf } from "../refs/routes";
@@ -208,7 +209,9 @@ export function SidePanel(): ReactNode {
                 className={boxInputClassName}
                 onChange={(event) => setWords(event.target.value)}
                 onKeyDown={(event) => {
-                  if (cardKeys(event)) {
+                  // A key of an input method's composition is the input method's
+                  // (`inputMethodKey`): the Enter that confirms a conversion sends nothing.
+                  if (inputMethodKey(event.nativeEvent) || cardKeys(event)) {
                     return;
                   }
                   if (event.key === "Enter" && !event.shiftKey) {

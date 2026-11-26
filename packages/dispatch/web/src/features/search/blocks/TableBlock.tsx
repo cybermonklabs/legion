@@ -30,10 +30,12 @@ const ISSUE_KEY = /^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$/u;
  * each field the spec names, in its order, headed in the issue page's words, and one row for each
  * row the read returned, each value in Dispatch's words (`columnText`), at the size of the chips
  * beside them. A row whose first column is an issue's key draws that cell as the issue's chip, a
- * link to it, and the column is headed "Issue", which is what it holds. The header stays on top
- * while the rows scroll under it. With more rows than `TABLE_ROWS` and no `whole`, the table
- * shows the first of them and "Show all 42 ›", which calls `onShowAll` - the conversation opens
- * the table whole over the bar or the panel - or, with none given, shows every row in place.
+ * link to it, and the column is headed "Issue", which is what it holds: the server's steps put
+ * each row there from the run's own reads, never from the model's words, so the key is of an issue
+ * the run read, as an answer's item frame is. The header stays on top while the rows scroll under
+ * it. With more rows than `TABLE_ROWS` and no `whole`, the table shows the first of them and
+ * "Show all 42 ›", which calls `onShowAll` - the conversation opens the table whole over the bar
+ * or the panel - or, with none given, shows every row in place.
  */
 export function TableBlock({
   block,

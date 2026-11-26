@@ -99,7 +99,9 @@ export interface GoingAnswer {
   readonly state: GoingAnswerState;
   /** The answer's text so far: plain text whose every ASCII punctuation byte is escaped. */
   readonly text: string;
-  /** What the answer cites, each its own link: the only links an answer carries. */
+  /** What the answer cites, each its own link: the only links of its text. A table the answer
+   *  draws (`block`) links the issue keys of its issue column too, which the server's steps put
+   *  there from the run's own reads (`TableBlock`). */
   readonly items: readonly GoingItemEvent["data"][];
   /** The words the answer was cut to, where it was cut. */
   readonly cut: number | undefined;

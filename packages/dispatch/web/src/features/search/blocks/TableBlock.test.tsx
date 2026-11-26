@@ -137,7 +137,9 @@ test("a table shows an object by the field that names it, and its JSON only wher
 });
 
 // Design v2, state 5: a status by its word, at most 8 rows with "Show all 42 ›" under them, and
-// the first cell of a row that is an issue drawn as that issue's chip, a link to it.
+// the first cell of a row that is an issue drawn as that issue's chip, a link to it. The link
+// stays: the server's steps put each key there from the run's own reads, never from the model's
+// words, so it is to an issue the run read, as an answer's item frame is.
 const statuses = ["todo", "in_progress", "needs_review", "done"];
 const issues: BlockOf<"table"> = {
   kind: "table",
