@@ -772,6 +772,30 @@ test("each surface sends main's reads and no other", async ({ context }) => {
   }
 });
 
+// SLOW(>=2s): seed the real records, then load today's Spec tab, whose margin draws the cards.
+// On main this load, and the ask block's, send no GET /api/v1/reference-targets (the inventory
+// recorded at the merge-base holds none for "margin" or "document"), and R21 lets the margin
+// send no new read on load; `expectReads` lets that route through on every surface.
+test("today's Spec tab sends no reference-targets read on its load, as main sends none", async ({
+  page,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  const data = await seed();
+  await wide(page);
+  const traffic = watchApiRequests(page);
+  await page.goto(spec(data));
+  const card = margin(page).locator(CARD).filter({ hasText: data.decisions.second.heading });
+  await expect(card).toBeVisible();
+  await expect(ask(margin(page), data.records.anchored).locator(BODY)).toBeVisible();
+  await expectLoadSettled(traffic);
+  expect(
+    getPaths(traffic).filter(
+      (path) => new URL(path, "http://ask-body.test").pathname === "/api/v1/reference-targets"
+    ),
+    "today's Spec tab sent a reference-targets read on its load, which main does not send"
+  ).toEqual([]);
+});
+
 /** Main's shell reads and the issue, Inbox, Conversation, answer and document reads its surfaces
  *  already use. In particular a document read here must be for the document actually drawn,
  *  never decisions.md on a surface that shows only a decision card. */
