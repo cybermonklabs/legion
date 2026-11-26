@@ -152,7 +152,7 @@ bunx biome check --diagnostic-level=warn --max-diagnostics=none <package>/  # on
 (cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
 (cd packages/<package> && bun test <file> -t '<test name>')  # one test
 bun test scripts/<file or directory>                         # scripts/ is no workspace
-bunx tsc --noEmit -p scripts/dispatch                        # likewise each scripts/ directory with a tsconfig.json
+bun run --cwd packages/contracts gen:api && bunx tsc --noEmit -p scripts/dispatch  # likewise each scripts/ directory with a tsconfig.json
 go -C packages/daemon test ./...                             # the Legion daemon
 go -C packages/envoy test ./...                              # Envoy, Dispatch's server and the Secrets Broker
 go -C packages/daemon test ./internal/api -run '^TestName$'  # one test

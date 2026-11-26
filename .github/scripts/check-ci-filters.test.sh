@@ -36,13 +36,15 @@
 # step of every workflow must hand the action exactly the generated file, after the step that
 # writes it, every output of the changes job must name that step and a filter the gates declare
 # (but for the list of matched filters, held to its one value), a step reading its filter out of
-# that list must read it in its one shape and is the gate on that filter, and a hand-written read
-# that matches no file is refused. A script's go command is read under every step of each job that
-# may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller under
-# that caller alone, a run that changes a file of the tree, but those its mode writes (the
-# PUSH_WORKFLOWS workflows, generate's output and its .inputs file), fails naming each, as one does
-# that cannot read the tree through git, and the header's run recipe runs the check, or says why it
-# stops.
+# that list must read it in its one shape and is the gate on that filter, a hand-written read that
+# matches no file is refused, and every spec file the `references)` arm of
+# .github/scripts/dispatch-browser-shard-suite.sh lists in lane_files must be one the
+# dispatch_references filter matches. A script's go command is read under every step of each job
+# that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller
+# under that caller alone and reads its other jobs under every caller whose filter is not
+# EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
+# workflows, generate's output and its .inputs file), fails naming each, as one does that cannot
+# read the tree through git, and the header's run recipe runs the check, or says why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, the gate of that job and two excluded
@@ -3102,6 +3104,34 @@ check "fails" "$(is "$status" 1)"
 check "asks for the Run" \
   "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Vet the library" runs `go vet ./lib`, which no Run of a gate in .github/ci-gates lists')"
 
+# A workflow a gate's job calls can have a second caller whose filter is EXCLUDED (the fixture's
+# image, a file of .github/ci-gates), as ci.yaml's dispatch-references calls dispatch-browser.yaml
+# beside its dispatch-browser job: that caller hands its skip to the jobs it runs, so the check
+# reads them under the gated caller alone and asks the EXCLUDED one for no Run. The second caller
+# passes no ci-ok-changes, so the called report step skips under it, as dispatch-browser.yaml's
+# does under dispatch-references.
+echo "case: a called workflow a job with an EXCLUDED filter calls too is read under the gated caller alone"
+root=$(fixture called-workflow-excluded-caller)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" "        if: always()" "        if: always() && inputs.ci-ok-changes != ''"
+replace "$root/.github/workflows/ci.yaml" "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" \
+  "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\", \"preview\"]'"
+cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  preview:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/suite.yaml
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the EXCLUDED caller for no Run" "$(is "$(contains "$out" 'which job preview calls')" false)"
+replace "$root/.github/workflows/suite.yaml" "        run: go build ./cmd/app" "        run: go build ./cmd/app ./other"
+run_check "$root"
+check "a package outside the gated caller's filter still fails" "$(is "$status" 1)"
+check "naming the gated caller" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Build the app" runs `go build ./cmd/app ./other`')"
+check "and not the EXCLUDED one" "$(is "$(contains "$out" 'which job preview calls')" false)"
+
 # The rule of .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # for a step's `env:` rests on this: the called file's env: and shell: reach the gate's go commands,
 # so one the check cannot read drops them to everything a go command can read.
@@ -3260,7 +3290,7 @@ for written in "expression:\${{ inputs.job == 'tooling-checks' }}" "conjunction:
     "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: ${written#*:}\`: give it \`if: inputs.job == 'tooling-checks'\`")"
 done
 
-# dispatch-browser.yaml's merge job reports under whichever of its two callers ran it by reading
+# dispatch-browser.yaml's merge job reports under whichever of its callers ran it by reading
 # `job:` from the input, and a shared file's jobs may do the same, since each caller passes its
 # own id there.
 echo "case: a shared workflow's report steps that read the caller's id from the input"
@@ -5104,6 +5134,102 @@ mv "$root/.github/workflows/scan.yaml" "$root/.github/workflows/scan.yml"
 run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
+
+# references_lane <root>: a dispatch-browser.yaml whose shard job's browser step runs, from web,
+# a .github/scripts/dispatch-browser-shard-suite.sh whose `references)` arm names the two spec
+# files under web/e2e, and a dispatch_references filter naming both, kept by hand in its file of
+# .github/ci-gates (`EXCLUDED = excluded(...)`) and handed on by an output of the changes job.
+# The comment in the arm spells an assignment that names a third file, which is no entry.
+references_lane() {
+  mkdir -p "$1/web/e2e"
+  echo 'one' > "$1/web/e2e/one.e2e.ts"
+  echo 'two' > "$1/web/e2e/two.e2e.ts"
+  replace "$1/.github/workflows/ci.yaml" "$(every_job_output site)" "$(every_job_output site)"$'\n'"$(every_job_output dispatch_references)"
+  cat > "$1/.github/ci-gates/dispatch-references.py" <<'PY'
+EXCLUDED = excluded("dispatch_references", "a preview of the reference rows", ["web/e2e/one.e2e.ts", "web/e2e/two.e2e.ts"])
+PY
+  cat > "$1/.github/scripts/dispatch-browser-shard-suite.sh" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  full)
+    lane_files=""
+    ;;
+  references)
+    # lane_files="e2e/three.e2e.ts" in a comment is no entry.
+    lane_files="e2e/one.e2e.ts
+    e2e/two.e2e.ts"
+    ;;
+esac
+bunx playwright test $lane_files
+SH
+  cat > "$1/.github/workflows/dispatch-browser.yaml" <<'YAML'
+name: Browser suite
+on:
+  workflow_call:
+    inputs:
+      lane:
+        type: string
+        required: true
+jobs:
+  shard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Browser-test the rows
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ inputs.lane }}"
+        working-directory: web
+YAML
+}
+
+echo "case: every spec file the references lane runs is one its filter matches"
+# The dispatch_references filter, kept by hand in its file of .github/ci-gates, starts the job
+# that calls dispatch-browser.yaml's references lane, so a spec file the lane runs and the filter
+# misses is a change to the lane's own rows that starts no run of them.
+root=$(fixture references-lane)
+references_lane "$root"
+run_check "$root"
+check "passes while the filter names every entry" "$(is "$status" 0)"
+check "reports the lane" \
+  "$(contains "$out" '^report: .github/scripts/dispatch-browser-shard-suite.sh references lane: 2 spec files, 0 unmatched by filter dispatch_references$')"
+replace "$root/.github/scripts/dispatch-browser-shard-suite.sh" '    e2e/two.e2e.ts"' $'    e2e/two.e2e.ts\n    e2e/three.e2e.ts"'
+run_check "$root"
+check "fails once the lane runs a file the filter misses" "$(is "$status" 1)"
+check "naming the entry, the path from the step's directory, the filter and its file" \
+  "$(contains "$out" "::error file=.github/scripts/dispatch-browser-shard-suite.sh::.github/scripts/dispatch-browser-shard-suite.sh runs e2e/three.e2e.ts in the references lane (lane_files, run from web by job shard step \"Browser-test the rows\" of .github/workflows/dispatch-browser.yaml), which the filter dispatch_references (.github/ci-gates/dispatch-references.py) does not match as web/e2e/three.e2e.ts")"
+check "and no other entry" "$(is "$(contains "$out" 'runs e2e/one.e2e.ts in the references lane')" false)"
+
+echo "case: a references arm the check cannot read fails rather than holding the filter to nothing"
+root=$(fixture references-lane-unread)
+references_lane "$root"
+replace "$root/.github/scripts/dispatch-browser-shard-suite.sh" '  references)' '  refs)'
+run_check "$root"
+check "fails without the arm" "$(is "$status" 1)"
+check "naming what it looked for" \
+  "$(contains "$out" "::error file=.github/scripts/dispatch-browser-shard-suite.sh::.github/scripts/dispatch-browser-shard-suite.sh sets lane_files=\"...\" in no \`references)\` arm of its script")"
+
+echo "case: a references arm no step of the workflow runs"
+# The entries are paths from the directory of the step that runs the script, so a workflow that
+# runs it from no step leaves them read from nowhere.
+root=$(fixture references-lane-unrun)
+references_lane "$root"
+replace "$root/.github/workflows/dispatch-browser.yaml" '/.github/scripts/dispatch-browser-shard-suite.sh"' \
+  '/.github/scripts/dispatch-browser-shard-suite.sh.old"'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the script no step runs" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::no step of .github/workflows/dispatch-browser.yaml runs .github/scripts/dispatch-browser-shard-suite.sh")"
+
+echo "case: a references lane whose filter is gone"
+root=$(fixture references-lane-no-filter)
+references_lane "$root"
+rm "$root/.github/ci-gates/dispatch-references.py"
+replace "$root/.github/workflows/ci.yaml" \
+  "$(every_job_output site)"$'\n'"$(every_job_output dispatch_references)" \
+  "$(every_job_output site)"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the filter and where it is declared" \
+  "$(contains "$out" "::error file=.github/ci-gates::no file of .github/ci-gates declares the filter dispatch_references")"
 
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,
