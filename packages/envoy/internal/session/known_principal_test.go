@@ -54,8 +54,10 @@ func TestKnownSessionsKeepThePrincipalAWriteDoesNotCarry(t *testing.T) {
 		person    = "ada@example.com"
 		service   = "example-fleet"
 	)
-	clock := time.Now()
-	known := openKnown(t, func() time.Time { return clock })
+	// The store's watcher reads the clock on its own goroutine for each entry it applies
+	// (knownCache.Apply), so the subtests below move the clock through knownClock's lock.
+	clock := &knownClock{at: time.Now()}
+	known := openKnown(t, clock.Now)
 	ctx := context.Background()
 	requirePrincipal := func(t *testing.T, after, want string) {
 		t.Helper()
@@ -89,18 +91,18 @@ func TestKnownSessionsKeepThePrincipalAWriteDoesNotCarry(t *testing.T) {
 
 	t.Run("a rewrite of unchanged content past the refresh age keeps it", func(t *testing.T) {
 		before, _ := known.Get(sessionID)
-		clock = clock.Add(KnownSessionRefreshAge + time.Minute)
+		clock.set(clock.Now().Add(KnownSessionRefreshAge + time.Minute))
 		if err := known.RecordWithin(ctx, KnownSession{SessionID: sessionID, Topics: before.Topics}); err != nil {
 			t.Fatalf("rewrite the record: %v", err)
 		}
-		if record, _ := known.Get(sessionID); record.LastSeen != clock.UnixMilli() {
-			t.Fatalf("the rewrite left last_seen at %d, want the clock's %d: it was not written", record.LastSeen, clock.UnixMilli())
+		if record, _ := known.Get(sessionID); record.LastSeen != clock.Now().UnixMilli() {
+			t.Fatalf("the rewrite left last_seen at %d, want the clock's %d: it was not written", record.LastSeen, clock.Now().UnixMilli())
 		}
 		requirePrincipal(t, "a rewrite past the refresh age", person)
 	})
 
 	t.Run("a clean stop keeps it", func(t *testing.T) {
-		clock = clock.Add(time.Minute)
+		clock.set(clock.Now().Add(time.Minute))
 		if err := known.TouchWithin(ctx, sessionID); err != nil {
 			t.Fatalf("touch: %v", err)
 		}
@@ -113,12 +115,12 @@ func TestKnownSessionsKeepThePrincipalAWriteDoesNotCarry(t *testing.T) {
 			t.Fatalf("record a write carrying another principal: %v", err)
 		}
 		requirePrincipal(t, "a write that is no registration's carrying another principal", person)
-		clock = clock.Add(KnownSessionRefreshAge + time.Minute)
+		clock.set(clock.Now().Add(KnownSessionRefreshAge + time.Minute))
 		if err := known.RecordWithin(ctx, KnownSession{SessionID: sessionID, Topics: before.Topics, Principal: service, PrincipalRecorded: true}); err != nil {
 			t.Fatalf("record a write carrying another principal past the refresh age: %v", err)
 		}
-		if record, _ := known.Get(sessionID); record.LastSeen != clock.UnixMilli() {
-			t.Fatalf("the write left last_seen at %d, want the clock's %d: it was not written", record.LastSeen, clock.UnixMilli())
+		if record, _ := known.Get(sessionID); record.LastSeen != clock.Now().UnixMilli() {
+			t.Fatalf("the write left last_seen at %d, want the clock's %d: it was not written", record.LastSeen, clock.Now().UnixMilli())
 		}
 		requirePrincipal(t, "a write that is no registration's carrying another principal, past the refresh age", person)
 	})
@@ -674,9 +676,11 @@ func TestKnownSessionsAnAdmissionKeepsAStoppedSessionsRecord(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			conn := kvchunktest.SmallPayloadNATS(t)
 			stoppedAt := time.Now()
-			clock := stoppedAt
-			now := func() time.Time { return clock }
-			known := openKnownOn(t, conn, now)
+			// The store's watcher reads the clock on its own goroutine for each chunk it applies
+			// (knownCache.Apply), the chunk delete below among them, so the row moves the clock
+			// through knownClock's lock.
+			clock := &knownClock{at: stoppedAt}
+			known := openKnownOn(t, conn, clock.Now)
 			kv := rawKnown(t, conn)
 			topics := kvchunktest.Topics("stopped", row.topics)
 			if err := register(t, known, KnownSession{SessionID: row.sessionID, Title: "stopped session", Capabilities: []string{"steer"}, Topics: topics, Principal: service}); err != nil {
@@ -705,7 +709,7 @@ func TestKnownSessionsAnAdmissionKeepsAStoppedSessionsRecord(t *testing.T) {
 			}
 			// The session stopped: nothing writes its record for an hour, and then a registration
 			// of it as another principal is admitted, and refused after its admission.
-			clock = clock.Add(time.Hour)
+			clock.set(clock.Now().Add(time.Hour))
 			admission, err := known.AdmitRegistration(t.Context(), row.sessionID, person)
 			if err != nil {
 				t.Fatalf("admit the registration as %s: %v", person, err)
@@ -724,7 +728,7 @@ func TestKnownSessionsAnAdmissionKeepsAStoppedSessionsRecord(t *testing.T) {
 			if record.Principal != "" || record.PrincipalRecorded {
 				t.Errorf("the leader's record names %q, recorded %t; want no principal recorded", record.Principal, record.PrincipalRecorded)
 			}
-			for what, store := range map[string]*KnownSessions{"the writer's store": known, "a store that read the bucket afresh": openKnownOn(t, conn, now)} {
+			for what, store := range map[string]*KnownSessions{"the writer's store": known, "a store that read the bucket afresh": openKnownOn(t, conn, clock.Now)} {
 				held, ok := store.Get(row.sessionID)
 				if !ok {
 					t.Fatalf("%s answers no record of the stopped session; a send to it would answer 404", what)
