@@ -180,11 +180,13 @@ type outbox struct {
 	// served under its own name.
 	repositories *repositories
 	// privateNameRules is the deployment's private-name rule file as boot compiled it
-	// (plan.privateNameRules), which every branch create runs over the ref name before it writes
-	// (ghbranch.Create): an issue's branch, and a task's branch and join branch (joinBranch). Set by
-	// attach after newOutbox. Nil where the deployment names no
-	// rule file, and in a test that builds the outbox by hand: the create then runs no
-	// private-name rule.
+	// (plan.privateNameRules), which every write of the outbox through GitHub's REST API runs
+	// before it writes: each branch create over its ref name (ghbranch.Create: an issue's branch,
+	// and a task's branch and join branch, joinBranch), each merge of a join over its commit
+	// message (ghbranch.Merge), and the open and close of a task's pull request over its title,
+	// body and comment (ghbranch.OpenPullRequest, ghbranch.ClosePullRequest). Set by attach after
+	// newOutbox. Nil where the deployment names no rule file, and in a test that builds the outbox
+	// by hand: those writes then run no private-name rule.
 	privateNameRules *leakguard.RuleSet
 	// limits is every GitHub rate limit a row met, by the budget it exhausted, held until its
 	// deadline: a row that spends one of those budgets waits for the latest deadline among them

@@ -21,17 +21,23 @@ import (
 // branches and wrapping GitHub's *githubrest.Answer, GitHub's 422 for a head with no commit base
 // lacks among them.
 //
-// The title and the body are published on GitHub as a created ref's name is, so each passes this
-// repository's own private-name rules first (leakguard.Rules), as Create's ref name does: a text
-// they match, and a rule pass that could not be made to run, are each an error, and nothing is sent.
-func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, head, base, title, body string) (int, error) {
+// The title and the body are published on GitHub as a created ref's name is, so each passes the
+// deployment's private-name rules before anything is sent, as Create's ref name does: rules, the
+// rule set the daemon compiled from the deployment's rule file at boot, run alone
+// (leakguard.RuleSet.Check). A text they match, and a rule pass that could not be made to run, are
+// each an error, and nothing is sent. Nil rules are a deployment that names no rule file, and no
+// private-name rule runs. Either way the open reads no environment: the rules are what its caller
+// hands it, never a rule file its process's environment may point at.
+func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, head, base, title, body string, rules *leakguard.RuleSet) (int, error) {
 	failed := func(err error) error {
 		return fmt.Errorf("open the pull request of %s against %s on %s: %w", head, base, repo, err)
 	}
-	if err := leakguard.New(leakguard.Options{}).Rules(ctx,
-		leakguard.Record{Label: "the pull request's title", Text: title},
-		leakguard.Record{Label: "the pull request's body", Text: body}); err != nil {
-		return 0, failed(err)
+	if rules != nil {
+		if err := rules.Check(ctx, "the write",
+			leakguard.Record{Label: "the pull request's title", Text: title},
+			leakguard.Record{Label: "the pull request's body", Text: body}); err != nil {
+			return 0, failed(err)
+		}
 	}
 	var opened githubrest.PullRequest
 	err := github.Post(ctx, "/pulls", map[string]string{"title": title, "head": head, "base": base, "body": body}, &opened)
@@ -74,9 +80,13 @@ const ClosedByNull = "closed_by is null"
 // writes comment on it once, as login, the implement App's bot login, whose token github holds. A
 // retry of a row that closes pull requests runs it again from the top, so each step reads what an
 // earlier try made:
-//  1. The comment passes this repository's own private-name rules first (leakguard.Rules), since
-//     it is published on GitHub as a pull request's body is: a comment they match, and a rule pass
-//     that could not be made to run, are each an error, and nothing is sent.
+//  1. The comment passes the deployment's private-name rules first, since it is published on
+//     GitHub as a pull request's body is: rules, the rule set the daemon compiled from the
+//     deployment's rule file at boot, run alone (leakguard.RuleSet.Check). A comment they match,
+//     and a rule pass that could not be made to run, are each an error, and nothing is sent. Nil
+//     rules are a deployment that names no rule file, and no private-name rule runs. Either way
+//     the close reads no environment: the rules are what its caller hands it, never a rule file
+//     its process's environment may point at.
 //  2. GET /pulls/{number}. A merged pull request is left as it is: no close and no comment.
 //  3. An open one is closed (PATCH /pulls/{number} with the state closed), then commented (step
 //     5). A close GitHub refuses sends no comment, so no comment says Legion closed a pull request
@@ -95,12 +105,14 @@ const ClosedByNull = "closed_by is null"
 // Every answer other than 2xx is an error naming the repository and the pull request and wrapping
 // GitHub's *githubrest.Answer. An error at step 5 answers the close that stands (Closed.Now or
 // Closed.By), so the caller can tell a pull request closed with no comment from one left open.
-func ClosePullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, comment, login string) (Closed, error) {
+func ClosePullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, comment, login string, rules *leakguard.RuleSet) (Closed, error) {
 	failed := func(closed Closed, err error) (Closed, error) {
 		return closed, fmt.Errorf("close pull request #%d on %s: %w", number, repo, err)
 	}
-	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.Record{Label: "the pull request's comment", Text: comment}); err != nil {
-		return failed(Closed{}, err)
+	if rules != nil {
+		if err := rules.Check(ctx, "the write", leakguard.Record{Label: "the pull request's comment", Text: comment}); err != nil {
+			return failed(Closed{}, err)
+		}
 	}
 	var pull githubrest.PullRequest
 	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", number), &pull); err != nil {

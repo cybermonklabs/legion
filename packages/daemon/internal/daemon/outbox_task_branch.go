@@ -196,7 +196,7 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 	}
 	body := fmt.Sprintf("No step of task %s of %s implements, so Legion opened this pull request for the work its branch holds.\n\nDispatch: %s",
 		task, issue.Key, issue.Key)
-	_, err = ghbranch.OpenPullRequest(ctx, github, repo, branch, base, fmt.Sprintf("%s: %s", issue.Key, task), body)
+	_, err = ghbranch.OpenPullRequest(ctx, github, repo, branch, base, fmt.Sprintf("%s: %s", issue.Key, task), body, r.privateNameRules)
 	return err
 }
 
@@ -246,7 +246,7 @@ func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow
 	}
 	refused := &pullRequestsCloseRefused{issue: issue.Key, comment: payload.Comment}
 	for _, number := range payload.Numbers {
-		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment, login)
+		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment, login, r.privateNameRules)
 		line := []any{"row", row.ID, "issue", issue.Key, "pullRequest", number}
 		switch {
 		case err == nil && closed.Now:
@@ -405,7 +405,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 		if start.Branch == issue.DefaultBranch {
 			message = fmt.Sprintf("%s: join %s, which holds the work of %s", issue.Key, start.Branch, idsNamed("task", start.Holds))
 		}
-		joined, err := ghbranch.Merge(ctx, github, repo, onto, start.Branch, message)
+		joined, err := ghbranch.Merge(ctx, github, repo, onto, start.Branch, message, r.privateNameRules)
 		if err != nil {
 			if githubAnswered(err, http.StatusNotFound) && !mergeBaseMissing(err) {
 				return nil, false, missing(start, err)
@@ -422,7 +422,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	if err := ghbranch.Create(ctx, github, repo, branch, onto, r.privateNameRules); err != nil {
 		return nil, false, err
 	}
-	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", needs)))
+	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", needs)), r.privateNameRules)
 	if err != nil {
 		return nil, false, err
 	}

@@ -43,15 +43,21 @@ func (m MergeResult) String() string {
 // naming the repository and both branches and wrapping GitHub's *githubrest.Answer, a 404 for a base
 // or head GitHub does not have among them.
 //
-// The message is published on GitHub as a created ref's name is, so it passes this repository's
-// own private-name rules first (leakguard.Rules), as Create's ref name does: a message they match,
-// and a rule pass that could not be made to run, are each an error, and nothing is sent.
-func Merge(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, base, head, message string) (MergeResult, error) {
+// The message is published on GitHub as a created ref's name is, so it passes the deployment's
+// private-name rules before anything is sent, as Create's ref name does: rules, the rule set the
+// daemon compiled from the deployment's rule file at boot, run alone (leakguard.RuleSet.Check). A
+// message they match, and a rule pass that could not be made to run, are each an error, and
+// nothing is sent. Nil rules are a deployment that names no rule file, and no private-name rule
+// runs. Either way the merge reads no environment: the rules are what its caller hands it, never a
+// rule file its process's environment may point at.
+func Merge(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, base, head, message string, rules *leakguard.RuleSet) (MergeResult, error) {
 	failed := func(err error) error {
 		return fmt.Errorf("merge %s into %s on %s: %w", head, base, repo, err)
 	}
-	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.Record{Label: "the merge's commit message", Text: message}); err != nil {
-		return 0, failed(err)
+	if rules != nil {
+		if err := rules.Check(ctx, "the write", leakguard.Record{Label: "the merge's commit message", Text: message}); err != nil {
+			return 0, failed(err)
+		}
 	}
 	status, err := github.PostStatus(ctx, "/merges", map[string]string{"base": base, "head": head, "commit_message": message}, nil)
 	var answer *githubrest.Answer
