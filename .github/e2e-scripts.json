@@ -329,6 +329,14 @@
       "needs": "the worker image and the Job pack-memory-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and lib/pack-memory-peak.py into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache, fetch and provision on the Job's disk volume and judges nothing a runner could give it"
     },
     {
+      "script": "repository-cache-burst-job.sh",
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), kubectl, jq and a checkout of the head measured, whose double of Cloud Storage it writes into the Job's command, the worker image digest to test (--image, from the Worker Image run's Record digest step), and the deployment's compute class, storage class, labels and annotations (--node-selector, --storage-class, --label, --annotation, or --job-settings); it starts one gVisor Job of that image with a disk volume of 120Gi and 16 CPU for its fetchers by default, about ten minutes on the default repository (nodejs/node), and nothing of its own"
+    },
+    {
+      "script": "repository-cache-burst-probe.sh",
+      "needs": "the worker image and the Job repository-cache-burst-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and the double's sources into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache and provision against that double in three containers of one pod and judges nothing a runner could give it, bar its self-test, which runs on any Linux host with bash 4 or later, GNU coreutils, jq and awk"
+    },
+    {
       "script": "multi-repo-acceptance.sh",
       "needs": "a live multi-repository run on the production cluster: it is the operator's acceptance observer, reads that run's daemon, Dispatch, GitHub and kubectl, and starts nothing of its own"
     },

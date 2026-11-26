@@ -47,6 +47,15 @@ const tokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 // environment literal.
 const CacheTokenFileEnv = "LEGION_REPOSITORY_CACHE_TOKEN_FILE"
 
+// BucketEnv names the variable that tells a cache's container the Cloud Storage bucket it keeps
+// each pack it serves in (runtime.kubernetes.repository_cache.bucket). The daemon sets it on the
+// cache container alone, and only where the bucket is configured, together with the ServiceAccount
+// the cache pods alone run as (runtime.kubernetes.repository_cache.service_account), the one that
+// holds the bucket's grant: no issue pod or controller pod is told it, since an issue pod reads the
+// packs through the addresses its cache signs and holds no grant of its own. A cache told no bucket
+// serves /tar alone, and a cache of an earlier release ignores the variable.
+const BucketEnv = "LEGION_REPOSITORY_CACHE_BUCKET"
+
 // Options is one cache's: the repository, the volume its bare clone lives on (at
 // <Root>/<owner>/<repo>.git, workspace.CacheRepository's layout), the provisioning token's file,
 // the file holding the bearer token its clients present (read again for every request, so a token
@@ -54,6 +63,12 @@ const CacheTokenFileEnv = "LEGION_REPOSITORY_CACHE_TOKEN_FILE"
 // (the container's TMPDIR), how long between fetches, the address it serves on, its log, the runner
 // its git runs under, and the logger its HTTP server writes the errors of a connection to (nil is
 // Go's standard logger).
+//
+// Bucket is the Cloud Storage bucket the cache keeps each pack it serves in (BucketEnv), or empty
+// for none: a cache with none serves /tar alone and sends Google nothing, and one with a bucket
+// also uploads its packs there and answers GET /packs (Serve). Opening the bucket is no check of
+// the cache's start: a bucket that cannot be opened or written is logged at each sync, and the
+// cache serves /tar and /healthz as it would with none.
 type Options struct {
 	Repo           ghrepo.Repository
 	Root           string
@@ -62,6 +77,7 @@ type Options struct {
 	CredentialDir  string
 	Refresh        time.Duration
 	Listen         string
+	Bucket         string
 	Log            func(line string)
 	Run            workspace.Runner
 	ErrorLog       *log.Logger
@@ -160,13 +176,22 @@ var maxStreams = 32
 //	              under the read lock, so no fetch moves refs or packs while it streams, at most
 //	              maxStreams at once, a request past them waiting its turn; 503 before the narrowed
 //	              clone is there.
+//	GET /packs    where Options.Bucket names a bucket, and only there: the listed set, the refs
+//	              and every pack with its index of one snapshot of the narrowed clone, each pack
+//	              and index an object of the bucket with a V4 address signed for it on this
+//	              request, good for signedLife (workspace.PackManifest, servePacks); 503 while the
+//	              cache is not ready with its clone narrowed, as /tar, while no set is listed (a
+//	              narrowing drops the set it listed before, so the first set after it is made from
+//	              the narrowed packs), or when an address cannot be signed. A cache with no bucket
+//	              registers no /packs, so it answers the mux's plain 404 there, as a cache of an
+//	              earlier release does.
 //
-// /tar answers only a request whose `Authorization: Bearer` is the token CacheTokenFile holds now,
-// compared in constant time; any other is 401 and names nothing. /healthz answers any request: its
-// health holds no secret and nothing of the repository's content, the same class of information as
-// /readyz, so the daemon reads it with no credential at all. Both name the repository in
-// workspace.CacheRepositoryHeader on every answer they give, which a reader checks is the
-// repository it asked for before it takes anything.
+// /tar and /packs answer only a request whose `Authorization: Bearer` is the token CacheTokenFile
+// holds now, compared in constant time; any other is 401 and names nothing. /healthz answers any
+// request: its health holds no secret and nothing of the repository's content, the same class of
+// information as /readyz, so the daemon reads it with no credential at all. Each of them names the
+// repository in workspace.CacheRepositoryHeader on every answer it gives past the token, which a
+// reader checks is the repository it asked for before it takes anything.
 //
 // Every fetch holds the write lock for workspace.Fetch, which reaches GitHub with the one-shot
 // credential, the isolated git configuration and the pins every holder of a provisioning token
@@ -181,6 +206,20 @@ var maxStreams = 32
 // serves). A first clone that fails ends Serve with its failure: there is nothing to serve, and the
 // kubelet restarts the container. As its container's PID 1, Serve reaps every orphan git leaves it
 // after each refresh (reapOrphans).
+//
+// Where Options.Bucket names a bucket, the cache publishes its packs there (syncPacks) after every
+// fetch that succeeds, the first clone included, and again after every repack that succeeds; a
+// restart whose first fetch fails publishes the clone it serves as it was, once that clone is
+// narrowed. Each sync lists the bucket once, uploads the packs and indexes the listed set lacks and
+// each object that the listed set names and the new snapshot keeps, but that the bucket no longer
+// holds (putObjects), then switches the listed set to the clone's snapshot, so /packs answers the
+// set before it until every object of the new one is in the bucket whole, and then retires what no
+// set names any more (retire); a snapshot that lists what the listed set lists already keeps that
+// set, its lost objects put back. A narrowing that repacks the clone, and a fresh fill, drop the
+// listed set (narrow, fetch), so /packs answers 503 until the sync after it lists the narrowed
+// packs, and a failed fetch whose narrowing republished the clone syncs too (refresh). A sync holds
+// no lock /tar takes and fails on its own: the cache serves /tar and /healthz as it would with no
+// bucket.
 func Serve(ctx context.Context, opts Options) error {
 	if err := opts.check(); err != nil {
 		return err
@@ -197,6 +236,7 @@ func Serve(ctx context.Context, opts Options) error {
 		return fmt.Errorf("listen on %s: %w", opts.Listen, err)
 	}
 	c := newCache(opts, dir)
+	defer c.closeStore()
 	c.health.Store(&Health{Repo: opts.Repo.String()})
 	c.loadRepackFailure()
 	server := &http.Server{Handler: c.handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: opts.ErrorLog}
@@ -228,6 +268,9 @@ func Serve(ctx context.Context, opts Options) error {
 				return err
 			}
 		}
+		c.maint.Lock()
+		c.syncUnlisted(ctx)
+		c.maint.Unlock()
 	}
 	ticker := time.NewTicker(opts.Refresh)
 	defer ticker.Stop()
@@ -270,11 +313,22 @@ func (opts Options) check() error {
 }
 
 // cache is Serve's state: lock is the clone's refs and packs as a tar reads them, written by every
-// fetch and read by every tar; maint keeps a fetch and a repack from running at once, and is held
-// by refresh alone; health is what /healthz answers, swapped whole after each fetch and repack;
-// room is each step's last failure for lack of space, which /healthz joins to health at each
-// answer; streams holds one token per /tar stream being sent, maxStreams at most; inFlight counts
-// the /tar requests being sent or waiting for a token, which /healthz reports as Health.Streams.
+// fetch and read by every tar; maint keeps a fetch, a repack and a sync of the packs from running
+// at once, and is held by refresh, and by Serve for the sync of a clone whose first fetch failed;
+// health is what /healthz answers, swapped whole after each fetch and repack; room is each step's
+// last failure for lack of space, which /healthz joins to health at each answer; streams holds one
+// token per /tar stream being sent, maxStreams at most; inFlight counts the /tar requests being
+// sent or waiting for a token, which /healthz reports as Health.Streams.
+//
+// Where Options.Bucket names a bucket: listed is the listed set every /packs answer is signed from,
+// nil until a sync installed one and again from a narrowing that repacks the clone or a fresh
+// fill until the next sync (narrow, fetch), swapped whole by each sync that succeeds and finds the
+// clone's snapshot changed; and, under maint, store is the bucket a sync opened (nil until one did),
+// digests the figures of each pack and index file the last snapshot held (packDigest), absent the
+// objects no set names any more, each since the sync that first left it out (absence), foreign the
+// names under the prefix the cache does not write that it has logged, and lone the names of the
+// clone's packs without an index, and indexes without a pack, that it has logged leaving out of the
+// set (leaveOut). clock is the time the switches and retirement read, the real one but in a test.
 type cache struct {
 	opts       Options
 	dir        string
@@ -287,6 +341,13 @@ type cache struct {
 	lastRepack time.Time
 	streams    chan struct{}
 	inFlight   atomic.Int64
+	listed     atomic.Pointer[listedSet]
+	store      *bucket
+	digests    map[string]packDigest
+	absent     map[string]absence
+	foreign    map[string]bool
+	lone       map[string]bool
+	clock      clock.Clock
 }
 
 // room is the time of the fetch's and of the repack's last failure for lack of space since that
@@ -322,7 +383,11 @@ func (r *room) setRepack(at time.Time) {
 
 // newCache is the state Serve keeps for opts' clone at dir.
 func newCache(opts Options, dir string) *cache {
-	return &cache{opts: opts, dir: dir, streams: make(chan struct{}, maxStreams)}
+	return &cache{
+		opts: opts, dir: dir, streams: make(chan struct{}, maxStreams),
+		digests: map[string]packDigest{}, absent: map[string]absence{}, foreign: map[string]bool{}, lone: map[string]bool{},
+		clock: clock.Real(),
+	}
 }
 
 // outOfSpace is whether err, the failure of the fetch or of the repack, is one for lack of space:
@@ -360,6 +425,13 @@ func (c *cache) fillRoom(health *Health) {
 // failed repack does. Once both have ended, and no git of this process runs, the orphans git left
 // are reaped (reapOrphans).
 //
+// Where the cache keeps a bucket, a fetch that succeeds is followed by a sync of the packs
+// (syncPacks), before a repack that is due, and a repack that succeeds by another, so the listed
+// set follows each change of the clone's packs; a sync that fails changes nothing of the rest,
+// and the repack that is due still runs. A fetch that fails is followed by a sync only where the
+// cache serves its narrowed clone again and lists no set (syncUnlisted): its narrowing repacked
+// away a pack the failed fetch left, which dropped the set listed before.
+//
 // A fetch that fails for lack of space (outOfSpace, asked before the removal frees what it left)
 // is recorded in room, and the next fetch that succeeds clears it; the first clone, onto a volume
 // that held none, is not recorded, since a cache whose first clone fails never turns ready. The
@@ -378,9 +450,11 @@ func (c *cache) refresh(ctx context.Context) error {
 		if c.owned {
 			c.removePartialPacks()
 		}
+		c.syncUnlisted(ctx)
 		return err
 	}
 	c.room.setFetch(time.Time{})
+	c.syncPacks(ctx)
 	// A fresh fill (the first one onto an empty volume, or the one after a clone the cache removed)
 	// starts its own repack clock: its packs are new, and a record that outlived the old clone on
 	// the volume would repack the new one at once, on a volume that may have had no room minutes
@@ -400,9 +474,12 @@ func (c *cache) refresh(ctx context.Context) error {
 	if fetched.Sub(c.lastRepack) < repackEvery {
 		return nil
 	}
-	c.repack(ctx, fetched)
+	repacked := c.repack(ctx, fetched)
 	if err := c.publish(ctx, fetched); err != nil {
 		return fmt.Errorf("publish the clone after its repack: %w", err)
+	}
+	if repacked {
+		c.syncPacks(ctx)
 	}
 	return nil
 }
@@ -512,6 +589,9 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	headMissing := false
 	bound := workspace.FetchTimeout
 	if first {
+		// A fresh fill replaces whatever clone a set listed before it was made from (one this
+		// process removed): /packs answers none until the sync after the fill lists its packs.
+		c.listed.Store(nil)
 		bound = workspace.CacheFetchTimeout
 		if interrupted {
 			if err := c.clear(defaultBranchFetchFile); err != nil {
@@ -623,7 +703,8 @@ func (c *cache) runRepack(ctx context.Context) error {
 // One that fails for lack of space (outOfSpace, asked before the removal frees what it left) is
 // recorded in room and kept in repackOutOfSpaceFile, written once the removal has freed that room,
 // so the write has some; one that succeeds clears both. Neither changes when the next repack runs.
-func (c *cache) repack(ctx context.Context, fetched time.Time) {
+// It answers whether the repack succeeded, which is whether the clone's packs changed.
+func (c *cache) repack(ctx context.Context, fetched time.Time) bool {
 	c.recordRepack(fetched)
 	if err := c.runRepack(ctx); err != nil {
 		c.opts.Log(fmt.Sprintf("repack failed; tried again in %s: %s", repackEvery, oneLine(err)))
@@ -636,11 +717,12 @@ func (c *cache) repack(ctx context.Context, fetched time.Time) {
 		if outOfSpace {
 			c.keepRepackFailure(failed)
 		}
-		return
+		return false
 	}
 	c.room.setRepack(time.Time{})
 	c.dropRepackFailure()
 	c.opts.Log("repacked " + c.dir)
+	return true
 }
 
 // removePartialPacks removes, and logs, each partial pack a killed git left in the clone's
@@ -802,6 +884,9 @@ func (c *cache) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(health)
 	})
 	mux.HandleFunc("GET /tar", c.authorized(c.serveTar))
+	if c.opts.Bucket != "" {
+		mux.HandleFunc("GET /packs", c.authorized(c.servePacks))
+	}
 	return mux
 }
 

@@ -1324,6 +1324,34 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"an unreserved cache":       {func(o *Options) { o.RepositoryCache.Resources = corev1.ResourceRequirements{} }, "the repository cache reserves no cpu"},
 		"the issue pod unreserved":  {func(o *Options) { o.Resources.Issue = corev1.ResourceRequirements{} }, "the issue pod reserves no cpu"},
 		"the controller unreserved": {func(o *Options) { o.Resources.Controller = corev1.ResourceRequirements{} }, "the controller's pod reserves no cpu"},
+		"a cache bucket with no account": {
+			func(o *Options) { o.RepositoryCache.Bucket = "example-legion-packs" },
+			`repository cache bucket "example-legion-packs" and ServiceAccount "" are set together or not at all`,
+		},
+		"a cache account with no bucket": {
+			func(o *Options) { o.RepositoryCache.ServiceAccount = "legion-cache" },
+			`repository cache bucket "" and ServiceAccount "legion-cache" are set together or not at all`,
+		},
+		"a cache account the pods run as": {
+			func(o *Options) {
+				o.Pod.ServiceAccount = "legion-worker"
+				o.RepositoryCache.Bucket, o.RepositoryCache.ServiceAccount = "example-legion-packs", "legion-worker"
+			},
+			"repository cache ServiceAccount legion-worker is the one the issue pods run as",
+		},
+		"a cache account of default, which the pods run as when they name none": {
+			func(o *Options) {
+				o.RepositoryCache.Bucket, o.RepositoryCache.ServiceAccount = "example-legion-packs", "default"
+			},
+			"repository cache ServiceAccount default is the one the issue pods run as",
+		},
+		"a cache account the controller's pod runs as": {
+			func(o *Options) {
+				o.Pod.ServiceAccount, o.Pod.ControllerServiceAccount = "legion-worker", "legion-controller"
+				o.RepositoryCache.Bucket, o.RepositoryCache.ServiceAccount = "example-legion-packs", "legion-controller"
+			},
+			"repository cache ServiceAccount legion-controller is the one the controller's pod runs as",
+		},
 		"the file session store": {
 			func(o *Options) { o.SessionStore = ompsessions.Store{Kind: ompsessions.StoreVolume} },
 			"no session store that keeps sessions in a database",

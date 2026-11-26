@@ -96,10 +96,11 @@ const (
 	computeClassKey     = "cloud.google.com/compute-class"
 )
 
-// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler stop-eviction annotation
-// keys podTemplate sets unconditionally (probeManifest sets only the first): Karpenter's own
-// (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request for
-// extended-duration protection.
+// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler annotation keys:
+// Karpenter's own (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request
+// for extended-duration protection. podTemplate sets both against eviction, unconditionally;
+// probeManifest sets only the first; and cachePodTemplate sets the first and the second as "true",
+// so the cluster autoscaler may move a cache pod and remove the node it held.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
@@ -1776,13 +1777,15 @@ func (r *Runtime) initEnvironment(l launch) []corev1.EnvVar {
 
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
 // workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
-// repository's size: FetchBudget is the fill's wait for the repository cache, verification and
-// GitHub transfer; CloneTimeout is the fill's jj steps; and CheckoutTimeout is the issue's checkout,
-// the one command that writes the whole working copy (`jj sparse reset`, workspace.Provision).
-// workspace-init runs them in that order. It is how much longer than the boot timeout a launch may
-// wait for its pod's launcher, counted from when it first sees workspace-init running
-// (awaitRoleLauncher). The stream from the repository cache is the one part of the fill outside
-// those bounds: it ends when it falls below the low-speed bound rather than on any clock
+// repository's size: FetchBudget is the fill's wait for the repository cache, then one
+// BucketFetchTimeout for its attempt on the cache's bucket, then one FetchTimeout for the
+// verification of what the cache's /tar streamed when that attempt failed, then one of its own for
+// the GitHub transfer; CloneTimeout is the fill's jj steps; and CheckoutTimeout is the issue's
+// checkout, the one command that writes the whole working copy (`jj sparse reset`,
+// workspace.Provision). workspace-init runs them in that order. It is how much longer than the boot
+// timeout a launch may wait for its pod's launcher, counted from when it first sees workspace-init
+// running (awaitRoleLauncher). The stream from the repository cache is the one part of the fill
+// outside those bounds: it ends when it falls below the low-speed bound rather than on any clock
 // (workspace.CacheStreamLowSpeedBytes), so a stream that keeps receiving runs on into the slack
 // this bound holds over what its fill actually waited and checked.
 //

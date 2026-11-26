@@ -1251,19 +1251,20 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 	}
 }
 
-// ProvisionBound is the three provisioning phases' bounds together: workspace.FetchBudget (190m:
+// ProvisionBound is the three provisioning phases' bounds together: workspace.FetchBudget (205m:
 // the wait for the repository cache, which covers the cache's own first clone, then one bound for
-// the verification of what the cache streamed, then one of its own for the delta from GitHub),
+// the attempt on the cache's bucket, then one for the verification of what the cache's /tar
+// streamed when that attempt failed, then one of its own for the delta from GitHub),
 // workspace.CloneTimeout (30m) for the fill's jj steps, and workspace.CheckoutTimeout (60m) for
 // the issue's checkout, and nothing more. Workspace-init runs all three on the pod's own disk, so
 // no lock wait is added. The cache's stream holds the low-speed bound and no clock, so a stream that
-// keeps receiving runs on into the slack this bound holds over what its fetch actually waited and
-// checked. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
+// keeps receiving runs on into the slack this bound holds over what its fill actually waited and
+// checked. Pinned to a literal, 295 minutes, since no test can wait the real bound out.
 func TestProvisionBoundIsTheFillsWholeBudgetTheJjStepsBoundAndTheCheckouts(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
-	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 280*time.Minute || got != want {
-		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the verification's bound, the delta's own, the jj steps' and the checkout's", got, want)
+	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+workspace.BucketFetchTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 295*time.Minute || got != want {
+		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the bucket attempt's bound, the verification's, the delta's own, the jj steps' and the checkout's", got, want)
 	}
 }
 

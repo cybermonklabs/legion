@@ -403,8 +403,10 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	return nil
 }
 
-// issuePodClone fills the pod's only repository. Cached refs are unpacked solely for Git's pack
-// negotiation; the GitHub fetch and the cleanup below establish every ref the clone keeps.
+// issuePodClone fills the pod's only repository. The cache's refs, which come with its packs from
+// its bucket or its /tar (StreamCache), serve solely for Git's pack negotiation; the GitHub fetch
+// and the cleanup below establish every ref the clone keeps. The log says which of the cache's
+// sources filled the clone (logCacheSource), then its summary line.
 func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary string, source remote) error {
 	issue := source.issue
 	gitDir := filepath.Join(temporary, ".git")
@@ -419,6 +421,7 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 			Repo: issue.repository, URL: issue.cacheURL, Token: issue.cacheToken,
 			Log: issue.log, Clock: issue.clock, Bound: issue.bound,
 		}, gitDir)
+		logCacheSource(issue.log, stream)
 		if err != nil {
 			return err
 		}
@@ -452,11 +455,36 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 	issue.fetched = true
 	if issue.cacheURL == "" {
 		issue.log(fmt.Sprintf("no repository cache named: fetched the default branch of %s from GitHub (%s bytes)", issue.repository, groupedBytes(bytes)))
-	} else {
-		issue.log(fmt.Sprintf("%s bytes from the repository cache %s in %s, its history verified in %s; %s bytes from GitHub for the delta (%s)",
-			groupedBytes(stream.Bytes), issue.cacheURL, stream.Duration.Round(time.Millisecond), stream.VerifyDuration.Round(time.Millisecond), groupedBytes(bytes), refCount(refs)))
+		return nil
 	}
+	cache, size, took := issue.cacheURL, stream.Bytes, stream.Duration
+	if stream.Source == SourceBucket {
+		cache, size, took = issue.cacheURL+" (bucket)", stream.BucketBytes, stream.BucketDuration
+	}
+	issue.log(fmt.Sprintf("%s bytes from the repository cache %s in %s, its history verified in %s; %s bytes from GitHub for the delta (%s)",
+		groupedBytes(size), cache, took.Round(time.Millisecond), stream.VerifyDuration.Round(time.Millisecond), groupedBytes(bytes), refCount(refs)))
 	return nil
+}
+
+// logCacheSource says which of the repository cache's sources filled a fresh clone, once
+// StreamCache chose one, before the fill's summary line or its failure: `source=bucket`, then one
+// line for each pack and index downloaded and verified, `bucket object=<name> size=<bytes>
+// sha256=<hex>`, the object's name as the cache's manifest named it, its exact size and the
+// SHA-256 the fill computed of it, which matched the manifest's, for a reader to compare with the
+// bucket's own listing; or `source=/tar reason=<why the bucket was not used>`, `/packs is not
+// served` for a cache with no bucket or of a release before it. A reason is one line, and names no
+// signed address, query, token or ref's contents (StreamReport.TarReason). A report that chose no
+// source says nothing.
+func logCacheSource(log func(string), stream StreamReport) {
+	switch stream.Source {
+	case SourceBucket:
+		log("source=bucket")
+		for _, object := range stream.Objects {
+			log(fmt.Sprintf("bucket object=%s size=%d sha256=%s", object.Name, object.Size, object.SHA256))
+		}
+	case SourceTar:
+		log("source=/tar reason=" + strings.Join(strings.Fields(stream.TarReason), " "))
+	}
 }
 
 // fetchIssuePod configures origin's persistent narrow refspecs and fetches them without tags.

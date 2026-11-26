@@ -2254,28 +2254,47 @@ func TestAPackWithoutItsIndexIsIndexedInThePod(t *testing.T) {
 // had a bound of its own, a fill died there and its replacement streamed the cache again
 // (sjawhar/legion#2235). A delta that takes its whole bound leaves the Jujutsu import its own. A pack
 // whose indexing takes the whole verification bound fails the fill before GitHub is reached, and a
-// Jujutsu import that outlives CloneTimeout is killed there. Neither leaves a clone.
+// Jujutsu import that outlives CloneTimeout is killed there. Neither leaves a clone. The cache's
+// bucket has a bound of its own too: a cache ready on the wait's last ask whose bucket's history
+// takes past the bucket attempt's whole BucketFetchTimeout to check, which ends it there, leaves
+// /tar's verification its whole FetchTimeout, which it takes, and the delta its whole own bound;
+// the clone comes from /tar, the fill saying the bucket's check failed. Each other row's cache
+// serves no /packs, which costs no clock time, and the fill says so.
 func TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) {
 	polls := func(d time.Duration) int { return int(d / CachePoll) }
 	for _, tc := range []struct {
 		name     string
 		notReady int
+		// bucket has the cache serve its packs from a bucket (packsCache), whose attempt's history
+		// check is the step "bucket fsck" (bucketFirst).
+		bucket   bool
 		took     map[string]time.Duration
 		timeouts map[string][]time.Duration
 		fails    string
 		elapsed  time.Duration
+		// reason is how the reason of the fill's source line begins, for a fill that succeeds.
+		reason string
 	}{
 		{
 			name: "a cache ready 35 minutes in", notReady: polls(35 * time.Minute),
 			took:     map[string]time.Duration{"fsck": 25 * time.Minute},
 			timeouts: map[string][]time.Duration{"fsck": {FetchTimeout}, "fetch": {FetchTimeout}, "jj git init": {CloneTimeout}},
 			elapsed:  35*time.Minute + 25*time.Minute,
+			reason:   reasonNotServed,
 		},
 		{
 			name: "a history that takes the whole first bound to check", notReady: polls(CacheWaitTimeout) - 1,
 			took:     map[string]time.Duration{"fsck": FetchTimeout},
 			timeouts: map[string][]time.Duration{"fsck": {FetchTimeout}, "fetch": {FetchTimeout}, "jj git init": {CloneTimeout}},
 			elapsed:  CacheWaitTimeout - CachePoll + FetchTimeout,
+			reason:   reasonNotServed,
+		},
+		{
+			name: "a bucket attempt that runs its whole bound, then a tar history that takes its whole own", notReady: polls(CacheWaitTimeout) - 1, bucket: true,
+			took:     map[string]time.Duration{"bucket fsck": BucketFetchTimeout + time.Second, "fsck": FetchTimeout},
+			timeouts: map[string][]time.Duration{"bucket fsck": {BucketFetchTimeout}, "fsck": {FetchTimeout}, "fetch": {FetchTimeout}, "jj git init": {CloneTimeout}},
+			elapsed:  CacheWaitTimeout - CachePoll + BucketFetchTimeout + FetchTimeout,
+			reason:   reasonGit,
 		},
 		{
 			name: "a pack whose indexing takes the whole first bound", notReady: 0,
@@ -2289,6 +2308,7 @@ func TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T
 			took:     map[string]time.Duration{"fetch": FetchTimeout},
 			timeouts: map[string][]time.Duration{"fsck": {FetchTimeout}, "fetch": {FetchTimeout}, "jj git init": {CloneTimeout}},
 			elapsed:  FetchTimeout,
+			reason:   reasonNotServed,
 		},
 		{
 			name: "a Jujutsu import that outlives its bound", notReady: 0,
@@ -2303,21 +2323,30 @@ func TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T
 			pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "issue.txt")
 			clock := newTestClock()
 			start := clock.Now()
-			slow := &slowSteps{recordingRunner: run, clock: clock, step: fillStep, took: tc.took, timeouts: map[string][]time.Duration{}}
 			cache := cacheOf(t, run.remote)
 			if _, indexes := tc.took["index-pack"]; indexes {
 				if err := os.Remove(strings.TrimSuffix(packOf(t, cache), ".pack") + ".idx"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			served := &fakeCache{body: cacheTar(t, cache), notReady: tc.notReady}
+			step, url := fillStep, ""
+			if tc.bucket {
+				step, url = bucketFirst(fillStep), newPacksCache(t, cache, tc.notReady).serve(t, "")
+			} else {
+				url = (&fakeCache{body: cacheTar(t, cache), notReady: tc.notReady}).serve(t)
+			}
+			slow := &slowSteps{recordingRunner: run, clock: clock, step: step, took: tc.took, timeouts: map[string][]time.Duration{}}
+			var logged []string
 
-			clone, err := fillIssueClone(t, slow, clock, issuePodRemote(t, staticToken(testInstallationToken), served.serve(t), clock, func(string) {}))
+			clone, err := fillIssueClone(t, slow, clock, issuePodRemote(t, staticToken(testInstallationToken), url, clock, func(line string) { logged = append(logged, line) }))
 			if tc.fails == "" && err != nil {
 				t.Fatalf("the fill: %v", err)
 			}
 			if tc.fails != "" && (err == nil || !strings.Contains(err.Error(), tc.fails)) {
 				t.Fatalf("the fill = %v; want it failed: %q", err, tc.fails)
+			}
+			if tc.fails == "" && !slices.ContainsFunc(logged, func(line string) bool { return strings.HasPrefix(line, "source=/tar reason="+tc.reason) }) {
+				t.Errorf("the fill logged %q, want /tar as its source because %q", logged, tc.reason)
 			}
 			if !maps.EqualFunc(slow.timeouts, tc.timeouts, slices.Equal[[]time.Duration]) {
 				t.Errorf("the fill's commands were given %v, want %v: each stage's own bound, from when it began", slow.timeouts, tc.timeouts)
@@ -2361,6 +2390,21 @@ func (r *slowSteps) Run(ctx context.Context, command Command) (Result, error) {
 	}
 	r.clock.advance(took)
 	return r.recordingRunner.Run(ctx, command)
+}
+
+// bucketFirst is step with the first `git fsck` it names called "bucket fsck": a fill from a cache
+// whose packs are in a bucket checks the bucket's history first, and /tar's only after that
+// attempt failed.
+func bucketFirst(step func(argv []string) string) func(argv []string) string {
+	checked := false
+	return func(argv []string) string {
+		named := step(argv)
+		if named == "fsck" && !checked {
+			checked = true
+			return "bucket fsck"
+		}
+		return named
+	}
 }
 
 // fillStep names the steps of an issue pod's fill whose duration follows the repository's size:

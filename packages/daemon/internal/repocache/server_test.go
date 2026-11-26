@@ -510,7 +510,7 @@ func TestTarStreamsTheBareRepositorysRefsAndPacks(t *testing.T) {
 	}
 }
 
-// indexed checks the unpacked bare repository dir as an issue pod's fetch does: each pack the
+// indexed checks the unpacked bare repository dir as an issue pod's fill does: each pack the
 // cache streamed came with the index git reads it through, so none is indexed again, and the
 // history is whole.
 func indexed(t *testing.T, dir string) {
@@ -2416,7 +2416,9 @@ func TestCacheRepacksAfterTheDefaultBranchHistoryIsRewritten(t *testing.T) {
 
 // A force-push of the default branch makes the next refresh narrow again, and its repack holds the
 // write lock /tar waits on. While it runs the cache answers unready, so a pod waits for it instead
-// of stalling on /tar, and once it ends the cache serves the rewritten branch alone.
+// of stalling on /tar, and once it ends the cache serves the rewritten branch alone. The refresh
+// that fetched the rewritten branch is the one that narrows it: none fails comparing the two heads,
+// which would leave the cache unready until a later refresh narrowed it as an interrupted fetch.
 func TestACacheIsUnreadyWhileARewrittenDefaultBranchIsRepacked(t *testing.T) {
 	remote := newRemote(t)
 	advance(t, remote, "old")
@@ -2427,16 +2429,7 @@ func TestACacheIsUnreadyWhileARewrittenDefaultBranchIsRepacked(t *testing.T) {
 	c.ready(t)
 	started, release := holdRepack(t, run)
 	defer release()
-	work := filepath.Join(t.TempDir(), "work")
-	git(t, filepath.Dir(work), "clone", "--quiet", remote, work)
-	git(t, work, "reset", "--hard", "HEAD~1")
-	if err := os.WriteFile(filepath.Join(work, "rewritten.txt"), []byte("rewritten\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	git(t, work, "add", ".")
-	git(t, work, "commit", "--quiet", "-m", "rewritten")
-	git(t, work, "push", "--quiet", "--force", "origin", "HEAD:main")
-	rewritten := git(t, work, "rev-parse", "HEAD")
+	rewritten := forcePushMain(t, remote)
 
 	testwait.Receive(t, "the repack of the rewritten default branch", started)
 	// /readyz and /healthz first, and the test ends at a ready answer: a /tar asked of a cache that
@@ -2451,6 +2444,11 @@ func TestACacheIsUnreadyWhileARewrittenDefaultBranchIsRepacked(t *testing.T) {
 	release()
 	c.waitFor(t, "at the rewritten default branch", func(_ int, health Health) bool { return health.Head == rewritten })
 	assertTarObjectsAreOnMain(t, c)
+	for _, line := range c.log.all() {
+		if strings.Contains(line, "fetch failed") {
+			t.Errorf("a refresh failed across the force-push: %q", line)
+		}
+	}
 }
 
 func TestCacheRepacksAnInterruptedDefaultBranchFetch(t *testing.T) {
@@ -2466,15 +2464,7 @@ func TestCacheRepacksAnInterruptedDefaultBranchFetch(t *testing.T) {
 	}
 	first.done <- nil
 
-	work := filepath.Join(t.TempDir(), "work")
-	git(t, filepath.Dir(work), "clone", "--quiet", remote, work)
-	git(t, work, "reset", "--hard", "HEAD~1")
-	if err := os.WriteFile(filepath.Join(work, "rewritten.txt"), []byte("rewritten\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	git(t, work, "add", ".")
-	git(t, work, "commit", "--quiet", "-m", "rewritten")
-	git(t, work, "push", "--quiet", "--force", "origin", "HEAD:main")
+	forcePushMain(t, remote)
 	git(t, first.dir(), "--git-dir="+first.dir(), "fetch", "--quiet", "--no-tags", "file://"+remote, "+refs/heads/main:refs/heads/main")
 	if err := cacheOn(t, opts).mark(defaultBranchFetchFile); err != nil {
 		t.Fatal(err)
@@ -2889,15 +2879,22 @@ func assertTarObjectsAreOnMain(t *testing.T, c *running) {
 		t.Fatalf("/tar answers %d, want 200", status)
 	}
 	unpacked, _ := unpack(t, bytes.NewReader(body))
-	objects := map[string]bool{}
-	for _, line := range strings.Split(git(t, unpacked, "--git-dir="+unpacked, "rev-list", "--objects", "main"), "\n") {
-		if fields := strings.Fields(line); len(fields) != 0 {
-			objects[fields[0]] = true
-		}
-	}
 	indexes, err := filepath.Glob(filepath.Join(unpacked, "objects", "pack", "pack-*.idx"))
 	if err != nil || len(indexes) == 0 {
 		t.Fatalf("the tar holds indexes %q (%v), want at least one", indexes, err)
+	}
+	requireIndexedOnMain(t, unpacked, indexes, "the streamed index")
+}
+
+// requireIndexedOnMain fails the test unless every object each of indexes (pack index files)
+// names is one main reaches in the repository at gitDir; what names the indexes in a failure.
+func requireIndexedOnMain(t *testing.T, gitDir string, indexes []string, what string) {
+	t.Helper()
+	objects := map[string]bool{}
+	for _, line := range strings.Split(git(t, gitDir, "--git-dir="+gitDir, "rev-list", "--objects", "main"), "\n") {
+		if fields := strings.Fields(line); len(fields) != 0 {
+			objects[fields[0]] = true
+		}
 	}
 	for _, index := range indexes {
 		file, err := os.Open(index)
@@ -2905,7 +2902,7 @@ func assertTarObjectsAreOnMain(t *testing.T, c *running) {
 			t.Fatal(err)
 		}
 		command := exec.Command("git", "show-index")
-		command.Dir, command.Env, command.Stdin = unpacked, fixtureenv.Isolated(t.TempDir()), file
+		command.Dir, command.Env, command.Stdin = gitDir, fixtureenv.Isolated(t.TempDir()), file
 		out, err := command.Output()
 		closeErr := file.Close()
 		if err != nil {
@@ -2920,10 +2917,26 @@ func assertTarObjectsAreOnMain(t *testing.T, c *running) {
 				t.Fatalf("git show-index %s printed %q, want offset and object id", index, line)
 			}
 			if !objects[fields[1]] {
-				t.Errorf("the streamed index %s holds %s, which main does not reach", filepath.Base(index), fields[1])
+				t.Errorf("%s %s holds %s, which main does not reach", what, filepath.Base(index), fields[1])
 			}
 		}
 	}
+}
+
+// forcePushMain rewrites the remote's main: its last commit replaced by another, pushed with
+// --force, as a force-push of the default branch on GitHub does. It answers the new commit.
+func forcePushMain(t *testing.T, remote string) string {
+	t.Helper()
+	work := filepath.Join(t.TempDir(), "work")
+	git(t, filepath.Dir(work), "clone", "--quiet", remote, work)
+	git(t, work, "reset", "--hard", "HEAD~1")
+	if err := os.WriteFile(filepath.Join(work, "rewritten.txt"), []byte("rewritten\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "add", ".")
+	git(t, work, "commit", "--quiet", "-m", "rewritten")
+	git(t, work, "push", "--quiet", "--force", "origin", "HEAD:main")
+	return git(t, work, "rev-parse", "HEAD")
 }
 
 func packNames(t *testing.T, dir string) []string {

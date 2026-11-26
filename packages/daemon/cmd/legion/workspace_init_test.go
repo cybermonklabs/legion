@@ -247,7 +247,9 @@ type cacheFault struct {
 }
 
 // cacheTarServer serves, as the repository cache's GET /healthz and GET /tar, a ready cache of the
-// volume's remote's default branch, with fault, and returns its address and the tar's length.
+// volume's remote's default branch, with fault, and returns its address and the tar's length. Any
+// other path, /packs among them, is the mux's plain 404 naming no repository, as a cache with no
+// bucket answers it.
 func (v *issueVolume) cacheTarServer(t *testing.T, fault cacheFault) (string, int) {
 	t.Helper()
 	cache := filepath.Join(t.TempDir(), "widgets.git")
@@ -342,6 +344,7 @@ func (v *issueVolume) cacheTarServer(t *testing.T, fault cacheFault) (string, in
 			}
 			_, _ = w.Write(body)
 		default:
+			w.Header().Del(workspace.CacheRepositoryHeader)
 			http.NotFound(w, r)
 		}
 	}))
@@ -409,9 +412,10 @@ func (v *issueVolume) args(issue string) []string {
 	return []string{"provision", "--issue", issue, "--repo", winitRepo, "--root", v.root, "--credential-helper", winitHelper, "--default-branch", v.defaultBranch}
 }
 
-// runtimeOptionalEnv are the variables a runtime sets on an init container only for some
-// launches; no run in these tests inherits them from whoever runs the tests.
-var runtimeOptionalEnv = []string{"LEGION_PROVISION_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_URL", "LEGION_REPOSITORY_CACHE_TOKEN_FILE"}
+// runtimeOptionalEnv are the variables a runtime sets on an init container, or on a cache's
+// container, only for some launches; no run in these tests inherits them from whoever runs the
+// tests.
+var runtimeOptionalEnv = []string{"LEGION_PROVISION_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_URL", "LEGION_REPOSITORY_CACHE_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_BUCKET"}
 
 // process is what a run of the command inside this test process reads instead of the process's
 // own (runIn): proc, with its environment less runtimeOptionalEnv and with the volume's env over it
@@ -1571,7 +1575,8 @@ func TestWorkspaceInitPlainFetchesTolerateAbsentIssueBranches(t *testing.T) {
 }
 
 // A current cache streams its default branch into the clone's .git directory; GitHub then supplies
-// only this issue's branch. No object unique to an unrelated branch or tag reaches the pod.
+// only this issue's branch. No object unique to an unrelated branch or tag reaches the pod. The
+// summary line follows the line that says /tar was the source because this cache serves no /packs.
 func TestWorkspaceInitProvisionStreamsANarrowedRepositoryCache(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
@@ -1590,10 +1595,10 @@ func TestWorkspaceInitProvisionStreamsANarrowedRepositoryCache(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
-	line := regexp.MustCompile(`(?m)^workspace-init: ([0-9,]+) bytes from the repository cache ` + regexp.QuoteMeta(cache) + ` in .+, its history verified in .+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs\)$`)
+	line := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(notServedLine) + `workspace-init: ([0-9,]+) bytes from the repository cache ` + regexp.QuoteMeta(cache) + ` in .+, its history verified in .+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs\)$`)
 	match := line.FindStringSubmatch(stdout)
 	if match == nil {
-		t.Fatalf("stdout %q, want the cache stream and GitHub delta", stdout)
+		t.Fatalf("stdout %q, want /tar as the source, then the cache stream and GitHub delta", stdout)
 	}
 	if got := printedBytes(t, match[1]); got != int64(length) {
 		t.Fatalf("cache bytes %d, want tar length %d", got, length)

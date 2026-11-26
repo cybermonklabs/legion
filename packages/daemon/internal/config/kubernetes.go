@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // Kubernetes is the settled `runtime.kubernetes` block: where the Sandbox runtime runs its pods and
@@ -142,6 +143,17 @@ type RepositoryCacheConfig struct {
 	RefreshMinutes int
 	RetainHours    int
 	Resources      Reservation
+	// Bucket is `bucket`: the Cloud Storage bucket each cache keeps the packs it serves in, which
+	// an issue pod's provision downloads through the short-lived signed addresses its cache gives it.
+	// ServiceAccount is `service_account`: the Kubernetes ServiceAccount the cache pods alone run
+	// as, the one the bucket's grant goes to. The two are set together or not at all, and "" for
+	// both, the default, is off: each cache pod then runs as runtime.kubernetes.pod.service_account,
+	// as every issue pod does, and the controller's pod too where controller_service_account is
+	// unset, and serves /tar alone. ServiceAccount is never the account every issue pod runs as nor
+	// the controller's own (readCacheBucket), so no issue pod and no controller pod holds the
+	// bucket's grant.
+	Bucket         string
+	ServiceAccount string
 }
 
 // defaultRepositoryCache is the cache when the file sets none of it: a 20Gi volume, enough for one
@@ -761,7 +773,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.TestPostgres, err = readTestPostgres(fields["test_postgres"]); err != nil {
 		return nil, err
 	}
-	if block.RepositoryCache, err = readRepositoryCache(fields["repository_cache"]); err != nil {
+	if block.RepositoryCache, err = readRepositoryCache(fields["repository_cache"], block.Pod); err != nil {
 		return nil, err
 	}
 	if block.IdleRelease, err = readIdleRelease(fields["idle_release"]); err != nil {
@@ -822,8 +834,10 @@ func readSetup(value *yaml.Node) ([]string, error) {
 // sets, the default (DefaultRepositoryCache) for each it leaves out, its reservation field by field
 // as a role's is (settledRequest: a raised limit alone is requested in full). A zero volume, refresh
 // or retention is refused with the negatives, as no size and no interval, and a request past its
-// limit is refused naming both, as the API server would refuse the pod.
-func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
+// limit is refused naming both, as the API server would refuse the pod. The bucket and the cache's
+// own account are read as one pair (readCacheBucket) against pod, the file's
+// runtime.kubernetes.pod, whose accounts are "" where it sets none.
+func readRepositoryCache(value *yaml.Node, pod PodConfig) (RepositoryCacheConfig, error) {
 	const key = kubernetesKey + ".repository_cache"
 	settled := defaultRepositoryCache
 	if value == nil || value.Tag == "!!null" {
@@ -871,7 +885,67 @@ func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
 	if err := requestsUnderLimits(key+".resources", settled.Resources); err != nil {
 		return RepositoryCacheConfig{}, err
 	}
+	if settled.Bucket, settled.ServiceAccount, err = readCacheBucket(fields, key, pod); err != nil {
+		return RepositoryCacheConfig{}, err
+	}
 	return settled, nil
+}
+
+// defaultServiceAccount is the ServiceAccount Kubernetes runs a pod as when its spec names none:
+// the namespace's own `default`, which the issue pods and the image probe's pod run as while
+// runtime.kubernetes.pod.service_account is unset. The Sandbox runtime reads an unset account the
+// same way (serviceAccountOr, internal/runtime/sandbox), whose own constant this package cannot
+// import, since that package's imports reach this one.
+const defaultServiceAccount = "default"
+
+// readCacheBucket reads repository_cache's `bucket` and `service_account`, under key, from fields:
+// the Cloud Storage bucket each cache keeps its packs in and the ServiceAccount the cache pods alone
+// run as, both "" when the file sets neither, which is off. The pair is set whole or not at all,
+// so one alone is refused naming the other: the cache pods run as an account of their own only to
+// write the bucket, and they write it as no other. A blank value is refused, as optionalString
+// refuses one, and so is one still holding a `${…}` placeholder (unfilledPlaceholder) and an
+// account that is no ServiceAccount's name (serviceAccountName). The bucket must have the shape
+// workspace.ValidBucketName holds it to, the one rule a provision holds a /packs manifest's bucket
+// to as well. The account must not be the one the issue pods run as: pod.ServiceAccount, the file's
+// runtime.kubernetes.pod.service_account, or defaultServiceAccount where the file sets none, since
+// the bucket's grant to that account would reach every issue pod of the deployment. Nor may it be
+// pod.ControllerServiceAccount, the controller's own account where the file names one, since the
+// grant would then reach the controller's pod.
+func readCacheBucket(fields map[string]*yaml.Node, key string, pod PodConfig) (bucket, account string, err error) {
+	podAccount := pod.ServiceAccount
+	if bucket, err = optionalString(fields["bucket"], key+".bucket"); err != nil {
+		return "", "", err
+	}
+	if account, err = optionalString(fields["service_account"], key+".service_account"); err != nil {
+		return "", "", err
+	}
+	if err := unfilledPlaceholder(key+".bucket", bucket, "the Cloud Storage bucket's name"); err != nil {
+		return "", "", err
+	}
+	if err := unfilledPlaceholder(key+".service_account", account, "the ServiceAccount the cache pods run as"); err != nil {
+		return "", "", err
+	}
+	if err := serviceAccountName(key+".service_account", account); err != nil {
+		return "", "", err
+	}
+	switch {
+	case bucket == "" && account == "":
+		return "", "", nil
+	case account == "":
+		return "", "", fmt.Errorf("%s.bucket needs %s.service_account: the cache pods alone write the bucket, and they run as a ServiceAccount no other pod runs as to hold its grant alone", key, key)
+	case bucket == "":
+		return "", "", fmt.Errorf("%s.service_account needs %s.bucket: the cache pods run as a ServiceAccount of their own only to write the bucket", key, key)
+	case !workspace.ValidBucketName(bucket):
+		return "", "", fmt.Errorf("%s.bucket %q must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots", key, bucket)
+	case podAccount != "" && account == podAccount:
+		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod", key, account, podKey)
+	case podAccount == "" && account == defaultServiceAccount:
+		return "", "", fmt.Errorf("%s.service_account %q must differ from the account the issue pods run as, the namespace's %s while %s.service_account is unset: the bucket's grant to it would reach every issue pod",
+			key, account, defaultServiceAccount, podKey)
+	case pod.ControllerServiceAccount != "" && account == pod.ControllerServiceAccount:
+		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod", key, account, podKey)
+	}
+	return bucket, account, nil
 }
 
 // readIdleRelease reads `runtime.kubernetes.idle_release`, settled: each member the file sets and
@@ -1379,11 +1453,11 @@ func ReadPodFile(path string) (PodConfig, error) {
 // readPod reads `runtime.kubernetes.pod`, refusing a shape no pod could carry, and a
 // ServiceAccount, the pods' or the controller's, still holding a ${…} placeholder: nothing in
 // Legion expands one, as the token projection says, so the API server would refuse every pod for
-// an account that does not exist. It refuses a controller_service_account that is no
-// ServiceAccount's name too, a DNS-1123 subdomain as the API server requires, as readClaimSource
-// refuses a claim's: no pod at boot runs as that account, so the API server would refuse the name
-// only at the controller's launch, after load, `legion config check` and boot had all passed it.
-// service_account needs no such check, since the image probe's pod runs as it at boot.
+// an account that does not exist. A ServiceAccount, the pods' or the controller's, that is no
+// ServiceAccount's name is refused too (serviceAccountName), a DNS-1123 subdomain as the API server
+// requires, as readClaimSource refuses a claim's: for the controller's, no pod at boot runs as that
+// account, so the API server would refuse the name only at the controller's launch, after load,
+// `legion config check` and boot had all passed it.
 func readPod(value *yaml.Node) (PodConfig, error) {
 	if value == nil {
 		return PodConfig{}, nil
@@ -1412,14 +1486,17 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 	if err := unfilledPlaceholder(podKey+".service_account", pod.ServiceAccount, "the ServiceAccount the pods run as"); err != nil {
 		return PodConfig{}, err
 	}
+	if err := serviceAccountName(podKey+".service_account", pod.ServiceAccount); err != nil {
+		return PodConfig{}, err
+	}
 	if pod.ControllerServiceAccount, err = optionalString(fields["controller_service_account"], podKey+".controller_service_account"); err != nil {
 		return PodConfig{}, err
 	}
 	if err := unfilledPlaceholder(podKey+".controller_service_account", pod.ControllerServiceAccount, "the ServiceAccount the controller's pod runs as"); err != nil {
 		return PodConfig{}, err
 	}
-	if name := pod.ControllerServiceAccount; name != "" && len(validation.IsDNS1123Subdomain(name)) != 0 {
-		return PodConfig{}, fmt.Errorf("%s.controller_service_account %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", podKey, name)
+	if err := serviceAccountName(podKey+".controller_service_account", pod.ControllerServiceAccount); err != nil {
+		return PodConfig{}, err
 	}
 	return pod, nil
 }
@@ -1435,6 +1512,19 @@ func unfilledPlaceholder(key, value, put string) error {
 		return nil
 	}
 	return fmt.Errorf("%s %q is an unfilled placeholder: put %s in its place", key, value, put)
+}
+
+// serviceAccountName refuses value, key's, where it is set and is no ServiceAccount's name: the API
+// server names a ServiceAccount by a DNS-1123 subdomain, as it does a claim (readClaimSource), and
+// refuses a pod that names any other, so a name such as `Legion_Cache` or `a/b` would show only
+// when the first pod that runs as it was refused, far from the key that wrote it. Its caller
+// refuses a placeholder first (unfilledPlaceholder), whose own sentence says what to put there.
+// An unset key's "" is no error.
+func serviceAccountName(key, value string) error {
+	if value == "" || len(validation.IsDNS1123Subdomain(value)) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", key, value)
 }
 
 // readPodEnv is `pod.env`: a mapping of variable to value, refusing a variable shaped like a

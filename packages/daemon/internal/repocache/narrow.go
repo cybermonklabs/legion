@@ -83,8 +83,11 @@ func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err err
 	}
 	// The repack holds the write lock /tar waits on for up to repackTimeout. A cache that answered
 	// ready would pass every pod's wait and stall each one on /tar until its stream bound ends it, so
-	// the cache answers unready now; a pod waits for it as it waits for a cache not yet narrowed.
+	// the cache answers unready now; a pod waits for it as it waits for a cache not yet narrowed. The
+	// set /packs lists was made before this narrowing, so it goes too: /packs answers none until the
+	// sync after the narrowing lists the narrowed packs (syncPacks).
 	c.health.Store(&Health{Repo: c.opts.Repo.String()})
+	c.listed.Store(nil)
 	before, err := c.objectBytes()
 	if err != nil {
 		return err
@@ -130,6 +133,11 @@ func (c *cache) defaultBranchHead(ctx context.Context) (string, error) {
 	return strings.TrimSuffix(head.Stdout, "\n"), nil
 }
 
+// defaultBranchRewritten is whether the default branch's head moved from before to a commit that
+// does not reach it: a force-push, or a default branch GitHub renamed to another history. `git
+// rev-list before --not after` lists before when after does not reach it and nothing when it does,
+// exiting 0 either way; `git merge-base --is-ancestor` tells the two apart only by its exit, which a
+// checked run does not keep.
 func (c *cache) defaultBranchRewritten(ctx context.Context, before string) (bool, error) {
 	after, err := c.defaultBranchHead(ctx)
 	if err != nil {
@@ -138,14 +146,11 @@ func (c *cache) defaultBranchRewritten(ctx context.Context, before string) (bool
 	if before == after {
 		return false, nil
 	}
-	result, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "merge-base", "--is-ancestor", before, after)
-	if err == nil {
-		return false, nil
+	unreached, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "rev-list", "--max-count=1", before, "--not", after)
+	if err != nil {
+		return false, fmt.Errorf("compare the cache's default branch heads: %w", err)
 	}
-	if result.ExitCode == 1 {
-		return true, nil
-	}
-	return false, fmt.Errorf("compare the cache's default branch heads: %w", err)
+	return strings.TrimSpace(unreached.Stdout) != "", nil
 }
 
 func (c *cache) objectBytes() (int64, error) {
