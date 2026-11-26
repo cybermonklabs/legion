@@ -750,6 +750,54 @@ DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding
 `cd packages/dispatch && bun test e2e/__tests__/priority-list-production.test.ts` runs it against
 stand-ins of `curl`, `gh`, `gcloud` and `sleep` that reach nothing past the host.
 
+`e2e/acceptance/page-load.ts` is the driver of the checks `c-real-data` and `c-production`: it
+times five loads of the new issue page's Conversation of one issue on a running Dispatch, at 1440
+by 900 px with no slowing, each in a new browser context so that its cache is empty, and holds them
+to the bounds of `e2e/issue-page-load.e2e.ts` at the production check's limits.
+It reads each bound with that file's own instruments (`e2e/load-instruments.ts`), and after each
+load has ended it makes the acts at 1440 px that the row of every act after the load makes.
+It drives Playwright's Chromium, headless, with one renderer process: `--chromium <path>`, else
+Playwright's own build where it is installed, else `/usr/local/bin/chromium`.
+No request of the page that is not a GET leaves the browser; each is counted, and fails the run.
+The page's identity read, `GET /auth/whoami`, is answered in the browser for the reader
+`probe@example` with the event log's head, which the script reads on a socket of its own just
+before the load, and the new page is turned on for that login, so the script uses no person's
+credential.
+Every other GET to the Dispatch host carries the bearer, and a GET to another host goes as the
+page made it.
+The page's socket to the Dispatch host is opened by the script itself, with the bearer on its
+handshake, and the script carries its frames to the page and back; a socket to another host is the
+page's own, with no bearer.
+A frame the page sends that is neither a `subscribe` nor an `unsubscribe` goes nowhere and fails
+the run, and so does a handshake Dispatch refuses.
+
+Its inputs are `DISPATCH_URL`, the Dispatch, and `DISPATCH_TOKEN_FILE`, a file holding the agent
+bearer, which it reads as `read_bearer` (below) reads that file and prints nowhere; `--issue <KEY>`
+names the issue.
+It prints, once the five loads are done: `/proc/loadavg` before the first load; each request the
+page made, by what the script did with it, and the count of those it failed in the browser; each
+socket the page opened and the count of its frames the rule refused; one reading line for each
+bound, with its five readings and its limit, and the largest contentful paint's five readings,
+which no limit holds; the rows drawn, the elements and the bytes of text at the end of each load;
+the issue tree's `converted`; `/proc/loadavg` after the last load; and a last line,
+`page-load: pass` or `page-load: fail: <the bound, request or socket>: <the readings>`.
+A bound holds where the fourth smallest of its five readings meets it: the first screen's rows
+painted within 3,750 ms; each act's result within 300 ms, and where it needed a read, the event to
+the page showing it loads, the event to the read and the read's answer to the rows, each within
+300 ms, which leaves the server's time out; no task after the first drawing of the view row over
+300 ms; and a layout shift of at most 0.1.
+It exits 0 on a pass, 1 on a fail, and 2 where it cannot run (no `--issue`, no `DISPATCH_URL`, a
+token file it cannot read or that is empty, a tree read that does not answer, or no browser), with
+the reason on stderr and before it starts a browser. From `packages/dispatch`:
+
+```bash
+DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding the bearer> \
+  bun e2e/acceptance/page-load.ts --issue <KEY>
+```
+
+`cd packages/dispatch && bun run test:harness e2e/__tests__/page-load-policy.test.ts` holds what it
+does with each request, socket and frame, its verdict and its lines without a browser.
+
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
 nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
@@ -857,21 +905,28 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-Twenty-five of the twenty-nine drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
+Forty-eight of the fifty-seven drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
 preamble and the check vocabulary they share: it refuses an unset input or a missing command with
 exit 2, reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it,
 unsetting both so no process the script starts inherits it, and holds the `pass`, `fail`, `skip`,
-`want_status`, `expect` and `query` each of them checks with. Twenty-three source it themselves,
-and four of those (`answer-attribute-removal.sh`, `answered-decisions.sh`, `decision-nodes.sh` and
-`restore-redirects.sh`) source `lib-baseline.sh` beside it; `lens-schema.sh` and
+`want_status`, `expect` and `query` each of them checks with. Forty-six source it themselves, and
+eighteen of those source `lib-baseline.sh` beside it; `lens-schema.sh` and
 `node-visibility-census.sh` source `lib-processes.sh`, which sources `lib-baseline.sh`, which
-sources `lib.sh`. The other four source none of it:
+sources `lib.sh`. The other nine source none of it:
 `document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own,
-`outside-path-reach.sh` is handed to a person as one file (below), and `outside-edge-refusals.sh`
-is one file that sources nothing (below). `with-harness.sh` is no driver
+`outside-path-reach.sh` is handed to a person as one file (below), `outside-edge-refusals.sh`
+is one file that sources nothing (below), the outside agent's three legs
+(`outside-agent-tailnet.sh`, `outside-agent-public.sh` and `outside-agent-codex.sh`) source
+`outside-agent-lib.sh` instead, `tree-read-db-medians.sh` reads the three logs it is given and
+no Dispatch, and `page-load.ts` is TypeScript, which reads `DISPATCH_TOKEN_FILE` as `read_bearer`
+reads it. `with-harness.sh` is no driver
 and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `lib-tree.sh`,
 `seed-decisions.sh`, `node-visibility-census-lib.sh` and `node-visibility-census-stages.sh`
-(which `node-visibility-census.sh` sources) are files the drivers source, not drivers.
+(which `node-visibility-census.sh` sources), `outside-agent-lib.sh`, and
+`outside-agent-grants.sh`, `outside-agent-peer.sh`, `outside-agent-pins.sh` and
+`outside-agent-sweep.sh` (which `outside-agent-tailnet.sh` sources) are files the drivers source,
+not drivers; nor are the TypeScript programs drivers run (`broker-session.ts`, `socket-scope.ts`,
+`outside-agent-probe.ts`, `outside-agent-codex-model.ts` and `outside-agent-codex-provenance.ts`).
 
 The issue-tree drivers and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
 after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-baseline.sh`. It
