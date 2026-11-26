@@ -1,9 +1,0 @@
-kind: Changed
-body: |-
-  The controller skill and its admission and wakes references say that the admission waiting
-  line is ordered by Dispatch priority first, each issue at its own priority, else at its tree
-  root's, and that a returned issue goes before an unstarted one only within one priority. The
-  admission reference names `issues.<KEY>.priority` and `waitingLine.priority`.
-time: 2026-11-24T18:08:56Z
-custom:
-    Issue: controller-waiting-line-priority
