@@ -163,8 +163,8 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 // worker-shim.ts). A request the shim cannot act on is answered with the reason when it names an
 // id to answer. The answer goes out as one line, so a refusal carries at most maxAnswerErrorBytes
 // of its reason (cutAnswerError): jj's standard error has no bound of its own. An adoption that
-// ran answers the echo of each member it acted on: the fix's directory for fixFrom, and for moveTo
-// the commit the task's working copy then holds.
+// ran answers the echo of each member it acted on: the fix's directory for fixFrom, and the
+// commit the task's working copy moved to for moveTo.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -202,12 +202,6 @@ func fixWorkArgs(jj, fix, fixFrom string) []string {
 	return []string{jj, "log", "-r", fixFrom + "::@ ~ " + fixFrom + " ~ empty()", "--no-graph", "-T", `commit_id ++ "\n"`, "-R", fix}
 }
 
-// holdsArgs prints commit's id where the working copy of dir holds it: where commit is the commit
-// the working copy stands on (`@-`) or an ancestor of it. It prints nothing otherwise.
-func holdsArgs(jj, dir, commit string) []string {
-	return []string{jj, "log", "-r", commit + " & ::@-", "--no-graph", "-T", "commit_id", "-R", dir}
-}
-
 // runAdoption runs the adoption under the requested identity and budget, in the workspace the
 // shim's environment names in LEGION_WORKSPACE and with PATH's jj (openWorkspace): the one the
 // pane's own shell runs, since no runtime pins a jj on a pane or pod. Every role of an issue
@@ -223,25 +217,18 @@ func holdsArgs(jj, dir, commit string) []string {
 // (runWorkingCopyAdoption, worker-shim.ts); a PATH without jj refuses naming jj and the PATH
 // searched.
 //
-// A request may name two commits. With MoveTo, the task's working copy moves first, and only where
-// it does not hold MoveTo yet: one read (holdsArgs) asks whether MoveTo is the commit the copy
-// stands on or an ancestor of it, and a `jj new` onto MoveTo runs only where it is neither. A copy
-// that holds MoveTo stands on it or on commits a step made over it since, and a move would take
-// the copy off those commits, so it stays: the daemon chose MoveTo from what it read when it
-// queued the start, and only this read sees the copy as it is when the step starts. The answer
-// names MoveTo as moved to either way, since the copy holds it.
-//
-// With FixFrom, the adoption is of the fix's working copy, beside the workspace
-// (workspace.FixDir), in place of the workspace's: a jj workspace of the same clone added where
-// none is there, on the head of the fix's own branch where the request names it (FixBranch) and
-// origin holds it, and on FixFrom otherwise (fixStart). Where one is, it is brought up to date,
-// and one read (fixWorkArgs) asks whether it holds work of its own over FixFrom — a commit, or an
-// edit the read itself records. Where it does, it is this fix's copy, and it stays where it
-// stands: the adoption before a fix's task runs again each time that task is sent again, and the
-// pod that replaced a released one made the copy again at its own last working copy (the
-// launcher's restoreWorkspace). Where it does not, it starts on a fresh commit over FixFrom, as a
-// later fix of the task does. Then the adoption command there, so the fix's commits carry the
-// role's identity. The answer names that directory.
+// A request may name two commits. With MoveTo, the task's working copy moves first: one read of
+// the commit it stands on, and a `jj new` onto MoveTo only where that is another commit; the answer
+// names MoveTo as moved to. With FixFrom, the adoption is of the fix's working copy, beside the
+// workspace (workspace.FixDir), in place of the workspace's: a jj workspace of the same clone added
+// where none is there, on the head of the fix's own branch where the request names it (FixBranch)
+// and origin holds it, and on FixFrom otherwise (fixStart). Where one is, it is brought up to date, and one read (fixWorkArgs)
+// asks whether it holds work of its own over FixFrom — a commit, or an edit the read itself
+// records. Where it does, it is this fix's copy, and it stays where it stands: the adoption before a
+// fix's task runs again each time that task is sent again, and the pod that replaced a released one
+// made the copy again at its own last working copy (the launcher's restoreWorkspace). Where it does
+// not, it starts on a fresh commit over FixFrom, as a later fix of the task does. Then the adoption
+// command there, so the fix's commits carry the role's identity. The answer names that directory.
 // Every workspace of the clone shares its store, so a commit a step makes in the workspace is there
 // in the fix's working copy by its id, and a rewrite made from the fix's working copy of a commit
 // under the workspace's working copy leaves that working copy stale. So where the fix's working
@@ -266,11 +253,11 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo s
 		}
 	}
 	if request.MoveTo != "" {
-		held, err := run(nil, holdsArgs(jj, dir, request.MoveTo)...)
+		parent, err := run(nil, jj, "log", "-r", "@-", "--no-graph", "-T", "commit_id", "-R", dir)
 		if err != nil {
 			return "", "", err
 		}
-		if held == "" {
+		if parent != request.MoveTo {
 			if _, err := run(nil, jj, "new", request.MoveTo, "-R", dir); err != nil {
 				return "", "", err
 			}
