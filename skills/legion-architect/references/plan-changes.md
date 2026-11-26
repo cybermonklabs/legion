@@ -2,6 +2,8 @@
 
 ## Stopping and changing a task
 
+Your role prompt says what `stop_task` does, what holds a stopped task and what starts it again, and what each refusal of `stop_task` or of a plan's version means.
+
 - After `VERSION_NOT_IN_DISPATCH`, upload that version to Dispatch first.
 
 ## The notices

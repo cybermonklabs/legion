@@ -1,5 +1,7 @@
 # What the withheld capability is, and what it is not
 
+The withheld `operator-setup` row (`packages/daemon/internal/capabilities/capabilities.go`) reads "installs or configures its own dependencies in the pod: Legion owns its dependencies". It does not forbid the pinned runners of `skill://legion-worker/references/tools.md`: the image ships `uv`, `bun` and Go for a role to use (`packages/daemon/docker/worker.Dockerfile`), the `toolchain` row grants them, and the pod puts their caches on the issue's volume (`roleEnvironment` in `packages/daemon/internal/runtime/sandbox/manifest.go`, and `podkind.go`). What it withholds is a dependency the pod carries: something that outlives its command and that a later launch or another role resolves without asking for it.
+
 ## The test: where it lands, and what it leaves resolving
 
 An install of your own (an interpreter, a browser, a second toolchain, an extraction) is sanctioned only when both hold:

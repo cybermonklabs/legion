@@ -27,7 +27,8 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 - The implementer copies each such check's `Pull request line` into the `Checks` block.
   The next role that writes the body reads `dispatch results` again and replaces a no-result line.
 
-- A `ci_check` check goes in `failures` only when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` until the label is on (the last bullet below).
+- The tester runs and records only the checks with no `ci_check`.
+  A `ci_check` check goes in `failures` only when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` until the label is on (the last bullet below).
   A run still going fails no round: say so in `implementerProof.how`.
 
 - A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) does not run without it.

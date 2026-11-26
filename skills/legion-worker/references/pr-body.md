@@ -58,3 +58,6 @@ A stale `Outcome` is a finding against the implementer; the merger rewrites noth
   Applied: rerun the fast local checks and the issue's checks the simplify diff touches, and record them at the applied head.
   A defect the pass reports is fixed outside the pass and the results recorded again, never dropped as out of scope;
   the `Thermo` line names the count and the fixing commit.
+
+- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code;
+  the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them.

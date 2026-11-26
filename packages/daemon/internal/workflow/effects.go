@@ -1078,8 +1078,8 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // text before the colon of one of the task's lines. Every line of the task is built from its
 // label here, and TestEachTaskLabelIsALineTheTaskWrites holds each label's text, so a label renamed
 // here alone fails there.
-// testerVerdictLabel, above, and reviewround's CommitLabel and EntryLabel are three more, tied by
-// tests of their own.
+// testerVerdictLabel, above, is one more, tied by a test of its own. reviewround's CommitLabel and
+// EntryLabel are two more, which the reviewer's prompt names.
 const (
 	phaseLabel       = "Phase"
 	workingCopyLabel = "Working copy"

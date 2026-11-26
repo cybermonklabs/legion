@@ -31,7 +31,7 @@ description: "Use when you are a Legion root or child architect, before any life
 
 2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing should exist at all, what the smallest thing that gives the person what they asked for is, and what to delete.
 
-3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
+3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except three kinds it names.
    A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
 
 4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says.

@@ -17,6 +17,7 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 4. Every role writes the one workspace, so a file can change under your check.
    Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
    A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
+   A run whose output you did not capture can be neither confirmed nor cleared.
 
 5. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
 
@@ -102,13 +103,13 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 - The PR body, its `Thermo` line, the simplify pass: `skill://legion-worker/references/pr-body.md`.
 
-- A check's result, the evidence each phase owes, a red or missing CI check, no surface for the changed path: `skill://legion-worker/references/results.md`.
+- A check's result, a red or missing CI check, no surface for the changed path: `skill://legion-worker/references/results.md`.
 
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 
 - Review, approval, merge, production check: `skill://legion-worker/references/merge-gate.md`.
 
-- Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
+- Review threads: `skill://legion-worker/references/review-threads.md`.
 
 - A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit:
   `skill://legion-worker/references/conflicts-and-rewrites.md`.

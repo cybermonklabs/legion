@@ -25,6 +25,7 @@
 ## Never waiting on CI
 
 - The implementer re-runs once a red check whose failure is not in this pull request's code, with `gh run rerun <run-id> --failed`, and is woken by its settlement as `skill://envoy` says, never by sleeping.
+  A merge-group run is never re-run.
 
 - A required check missing at the head: read `gh pr view <n> --json mergeStateStatus` first.
   `DIRTY` means the head conflicts with its base, so no `pull_request` run starts and a body edit re-judges nothing: merge the base forward.

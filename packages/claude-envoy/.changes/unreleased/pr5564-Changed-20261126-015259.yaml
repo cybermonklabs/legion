@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    The plugin's `legion-worker` and `legion-architect` skills are 176 lines shorter. Each deleted
+    line is one that a role does not need: its role prompt already states it, a command or its
+    output gives it, or it tells how the daemon decides a thing that the role only obeys. Among
+    them, the architect skill no longer gives the cost of a large or a small pull request, which the
+    architects' role prompts give. The worker skill no longer says where a worker gets its
+    architect's decisions. Its CI reference no longer lists the jobs that run on every pull request
+    of cybermonklabs/legion.
+time: 2026-11-26T01:52:59Z
+custom:
+    Issue: pr5564
