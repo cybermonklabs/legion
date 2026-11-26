@@ -124,8 +124,10 @@ const TARGET_STATE_WORDS: AgentStateWords = {
 
 /** The words the reference picker in the box draws, in the page's kind words: its names
  *  (`BOX_PICKER_NAMES`), its lines (`BOX_PICKER_LINES`), the page's own words of a list of
- *  references still loading and one that could not be read, and the state mark before the agent
- *  a party's row names, as the target line names it (`TARGET_STATE_WORDS`). */
+ *  references still loading and one that could not be read, the state mark before the agent a
+ *  party's row names, as the target line names it (`TARGET_STATE_WORDS`), and that agent named by
+ *  the words the row draws for it, the page's word for a session nobody titled among them, never
+ *  its short form (`sessionNames`, decision 548). */
 const PICKER: RefPickerWords = {
   headings: BOX_PICKER_NAMES.headings,
   instruction: BOX_PICKER_LINES.instruction,
@@ -139,6 +141,7 @@ const PICKER: RefPickerWords = {
       none: BOX_PICKER_LINES.parts_none.documents,
     },
   },
+  sessionNames: "shown",
   states: {
     empty: BOX_PICKER_LINES.empty,
     loading: ANSWER_LINES.references_loading,

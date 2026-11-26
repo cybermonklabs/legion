@@ -174,21 +174,28 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
  *  session itself, or the one holding the role - which the list draws with its running state. A
  *  session's row opens its conversation's documents, as a node's opens its blocks; a role holds
  *  none of its own. */
-function partyRow(option: MentionOption, delivers: boolean): RefPickerRow | undefined {
+function partyRow(
+  option: MentionOption,
+  delivers: boolean,
+  named: string
+): RefPickerRow | undefined {
   // A `role:<token>` option names a role; a `session:` one names a session, which is the pair
   // `partyOfAddress` reads an address by (`routes.ts`).
   const party = partyOfAddress(option.target);
   if (delivers && party === undefined) return undefined;
   // A session option's holder is its own name, which is its row's label.
+  // The row names its agent by `named`, as its host's words ask (`RefPickerWords.sessionNames`):
+  // the image the list draws the agent as (`RowAgent`), and the head of a role's detail, which
+  // the list cuts that name off.
   const agent: RefPickerAgent = {
     sessionId: option.sessionId,
     storedTitle: option.sessionTitle,
-    words: option.holder,
+    words: named,
   };
   if (party?.kind === "role") {
     return {
       agent,
-      detail: `${option.holder} · ${option.detail}`,
+      detail: `${named} · ${option.detail}`,
       id: `ref-picker-role-${party.role}`,
       kind: "role",
       label: party.role,
@@ -375,7 +382,13 @@ export function useRefPicker({
       : [];
     const parties: RefPickerRow[] = [];
     for (const option of [...mentionOptions(live.agents, agentText), ...stopped]) {
-      const row = partyRow(option, delivers);
+      const row = partyRow(
+        option,
+        delivers,
+        words.sessionNames === "shown"
+          ? agentText.sessionShown(option.sessionId, option.sessionTitle)
+          : option.holder
+      );
       if (row !== undefined) parties.push(row);
     }
     const logins =
@@ -417,6 +430,7 @@ export function useRefPicker({
     live.current,
     open,
     users.data,
+    words.sessionNames,
     words.stoppedRole,
   ]);
 

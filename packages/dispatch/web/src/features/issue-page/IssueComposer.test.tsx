@@ -1351,6 +1351,41 @@ test("the box's list of who a comment is delivered to reads a stopped session by
   ).toEqual(["Planner", CONTROL_LABELS.unnamed_author, "planner"]);
 });
 
+// Decision 548: the box's picker names the image a party's row draws its agent as (`RowAgent`) by
+// the words the row draws for that agent (`sessionShown`). The row of a stopped role whose last
+// session nobody titled draws the page's word for an agent nothing names, and names its image so
+// too - never by the session's short form, an address that names nobody - while its detail still
+// draws that word and then the role's own words after it.
+test("the box's picker names the image of a session nobody titled by the page's word, never its short form", async () => {
+  const user = userEvent.setup();
+  (
+    api.getIssueCollaborators as unknown as Mock<typeof api.getIssueCollaborators>
+  ).mockResolvedValue(issueCollaborators({ agents: [UNTITLED_TESTER] }));
+  const { client } = renderPage();
+  act(() => client.setQueryData(["agents"], [plannerAgent()]));
+  await user.click(writeField());
+  await user.keyboard("@");
+  const parties = await within(composerBox()).findByRole("listbox", {
+    name: BOX_PICKER_NAMES.label,
+  });
+  const agent = await waitFor(() => {
+    const found = parties.querySelector(`[data-agent-name="${UNTITLED_TESTER.session_id}"]`);
+    if (found === null) throw new Error("the picker draws no row of the tester's role");
+    return found;
+  });
+  const image = agent.closest('[role="img"]');
+  const row = agent.closest('[role="option"]');
+  expect({
+    drawn: row?.textContent ?? "",
+    named: image?.getAttribute("aria-label"),
+  }).toEqual({
+    drawn: `${UNTITLED_ROLE.token}${CONTROL_LABELS.unnamed_author} · ${UNTITLED_ROLE.role} · ${BOX_PICKER_LINES.stopped_role}`,
+    named: CONTROL_LABELS.unnamed_author,
+  });
+  // What a screen reader reads the row by, which takes the image's name in place of its words.
+  expect(row).not.toHaveAccessibleName(new RegExp(UNTITLED_ROLE.short, "u"));
+});
+
 // The Design's "focused row": the box publishes how far up from the screen's foot it reaches
 // (`FOOT_HEIGHT_PROPERTY`) while it is drawn, keeps it as the box changes size, and takes it
 // away while it is hidden, so a row brought on screen is brought clear of it.
@@ -2425,8 +2460,8 @@ const STOPPED_REVIEWER: IssueCollaboratorAgent = {
  *  the short form of the session that last held it (`short`) - whose session nobody titled. The
  *  picker's row draws that session by the page's word for an agent nothing names, with no mark of
  *  a name somebody gave around it, so its state mark stands inside the image the row draws the
- *  agent as (`RowAgent`) and in no part marked as an author's; the image is named by the short
- *  form (`shortSessionId`), data the case names. */
+ *  agent as (`RowAgent`) and in no part marked as an author's. The box names that image by the
+ *  same word (decision 548), so the short form is no data of the box's: the row never draws it. */
 const UNTITLED_ROLE = {
   role: "tester",
   short: "session:untitled…",
@@ -2788,7 +2823,6 @@ test("every string the box draws, in each of its states, is a word or sentence o
     STOPPED_ROLE.title,
     UNTITLED_ROLE.token,
     UNTITLED_ROLE.role,
-    UNTITLED_ROLE.short,
     RELAY_HIT.snippet,
     shortForm(relay),
     QUESTION_HIT.snippet,
