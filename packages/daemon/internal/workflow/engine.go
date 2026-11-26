@@ -169,6 +169,15 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
+	// TestingLeavesCI is whether the testing move leaves out each check a CI job runs, the one
+	// whose state names its job's case (judgeStates' leaveCI, which decideTesting reads from here
+	// alone): true, the move reads only the checks that no CI job runs, and a failure of one a CI
+	// job runs reaches the implementer by its own message (tellCIFailure) while the later steps go
+	// on. The daemon wires it false (engineConfig) until the end of a task holds its checks that a
+	// CI job runs, and the change that builds that hold turns it on: before then a task whose steps
+	// after testing hold no review and no acceptance would end with no gate on those checks. The
+	// zero value reads every check.
+	TestingLeavesCI bool
 	// WorkspaceDir is the directory the runtime starts an issue's role processes in, the issue's
 	// working copy, which the task of each start and resume of a phase's worker names (the working
 	// copy line of task and of resumeText). The daemon reads it from the runtime it runs
@@ -2649,6 +2658,19 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, why)); err != nil {
 		return err
+	}
+	// The testing move's line is written where its notice is, from the same move: the move back's
+	// head and failing checks from why.Testing ("" and none where it is nil), and the move on's
+	// head the tester's handoff commit, which the reviewer's task names.
+	switch trigger {
+	case TriggerTesterFailed:
+		head := ""
+		if why.Testing != nil {
+			head = why.Testing.Head
+		}
+		e.logTestingMove(ctx, issue.Key, string(row.To), head, why.Testing)
+	case TriggerTesterPassed:
+		e.logTestingMove(ctx, issue.Key, string(row.To), handoff.HandoffCommit, nil)
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
 	// it, and a move at a head held in a confirmed conflict asks for it where the merge comes

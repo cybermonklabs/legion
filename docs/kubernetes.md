@@ -3111,7 +3111,7 @@ What the drop costs is the step a tester's completion named while it still waits
 Then run the way back of `20261125000602_phase_verdict_gone`.
 That migration keeps `phases.verdict`, which every earlier release reads and writes by name, and gives it the default `''`.
 This release writes nothing to the column, so a daemon of the earlier release, during the roll or after a rollback, reads each phase row this release wrote as one with no verdict and writes its own; a later release drops the column, once no running build reads it.
-Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial`, deletes the keys `head`, `waits_for`, `waiting` and `failing` from each queued notice and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
+Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial`, deletes the keys `head`, `waits_for`, `waiting` and `failing` from each queued notice and the keys `pull_request`, `head`, `check`, `ci_case`, `checks` and `statuses` from each queued role message, and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3119,6 +3119,7 @@ begin;
 update phases set verdict = '' where verdict <> '';
 alter table phases drop column if exists states_serial;
 update outbox set payload = payload - 'head' - 'waits_for' - 'waiting' - 'failing' where kind = 'notice';
+update outbox set payload = payload - 'pull_request' - 'head' - 'check' - 'ci_case' - 'checks' - 'statuses' where kind = 'role_message';
 delete from schema_version where version = 20261125000602;
 commit;
 SQL
@@ -3127,6 +3128,7 @@ SQL
 Each tester's row then reads as a completion with no verdict, which moves no issue in the earlier release, and none carries the verdict of an earlier completion that release took: a tester whose issue is still in `testing` completes again under that release.
 The tester's `phase-finished` notice of the testing move in this release carries what its `reason` names as fields: `head`, the tested head; `waits_for` and `waiting` for a wait; `failing` for a move back.
 The earlier release decodes a notice strictly and has none of these fields, so a queued notice that kept one would retry for ever there; no notice of the earlier release carries any of them, and the notice keeps its `reason`, which names the same head and checks.
+A CI settlement's role message and the implementer's message of a failed CI job carry what their `body` names as fields the same way (`pull_request`, `head`, `checks` and `statuses`; `pull_request`, `head`, `check` and `ci_case`), which the earlier release decodes strictly too; each keeps its `body`.
 A daemon of the earlier release that runs beside this one during the roll retries such a notice until this release's daemon sends it.
 The `verdict` key needs nothing: the earlier release decodes a notice with no `verdict`, since its field is omitted when empty.
 Then run the way back in the header of `20261125000601_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:

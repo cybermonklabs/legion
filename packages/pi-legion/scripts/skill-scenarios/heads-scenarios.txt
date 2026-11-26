@@ -4,10 +4,16 @@ reviewer-own-head no-implementer
 reviewer-own-head no-tester
 reviewer-own-head no-verdict-fail
 reviewer-own-head no-verdict-pass
+reviewer-own-head ci-check-fail
+reviewer-own-head ci-check-fail-other-head
 reviewer-pass-and-fail
 architect-pass-and-fail
 architect-pass-and-fail no-verdict-fail
 architect-pass-and-fail no-verdict-pass
+architect-pass-and-fail ci-check-fail
+architect-pass-and-fail ci-check-fail-other-head
 ci-pass-and-fail reviewer
 ci-pass-and-fail tester
 ci-pass-and-fail architect
+tester-reads-no-ci ci-late
+tester-reads-no-ci ci-red

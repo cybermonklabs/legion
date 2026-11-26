@@ -18,13 +18,16 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// settleInTheBackground runs one settle of issue by settler on a goroutine of its own and answers
-// a channel that closes once it ends.
+// settleInTheBackground runs one settle of issue by settler, held to one round (oneRound), on a
+// goroutine of its own and answers a channel that closes once it ends. Each caller holds the
+// settle's read and changes what GitHub or Dispatch holds meanwhile, so the settle's one round is
+// the one the caller held, whatever the time between its end and its kept marks' due time.
 func settleInTheBackground(settler *checkStatesSettler, issue string) <-chan struct{} {
+	held := oneRound(settler)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		settler.settle(store.WithTransactionTracking(context.Background()), issue)
+		held.settle(store.WithTransactionTracking(context.Background()), issue)
 	}()
 	return done
 }

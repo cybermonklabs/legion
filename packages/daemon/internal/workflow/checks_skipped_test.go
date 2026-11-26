@@ -4,7 +4,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -61,9 +60,9 @@ func TestASettlementNamesAHeldBackSuiteSkipped(t *testing.T) {
 		skippedRun("envoy-smoke", 9),
 		wordedRun("lint", 10, "success"),
 	}))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, `CI settled at head: "advice" neutral, "build" success, `+
-		`"dispatch-memory" skipped, "envoy-go" skipped, "envoy-go-docs-finalizers" skipped, "envoy-go-race" skipped, `+
-		`"envoy-go-race-api" skipped, "envoy-go-race-docs" skipped, "envoy-smoke" skipped, "lint" success; `+skippedSaid))
+	assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", "advice=neutral", "build=success",
+		"dispatch-memory=skipped", "envoy-go=skipped", "envoy-go-docs-finalizers=skipped", "envoy-go-race=skipped",
+		"envoy-go-race-api=skipped", "envoy-go-race-docs=skipped", "envoy-smoke=skipped", "lint=success")))
 }
 
 // A draft pull request's CI runs almost nothing: at cybermonklabs/legion#4180's head 061ca442
@@ -111,10 +110,9 @@ func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
 	names := slices.Sorted(maps.Keys(words))
 	named := make([]string, len(names))
 	for i, name := range names {
-		named[i] = strconv.Quote(name) + " " + words[name]
+		named[i] = name + "=" + words[name]
 	}
-	want := "CI settled at head: " + strings.Join(named, ", ") + "; " + skippedSaid
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, want))
+	assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", named...)))
 	line := settledChecks(recordedPR(t, pool, "LEGION-208"))
 	for _, count := range []struct {
 		said string
@@ -128,15 +126,15 @@ func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
 
 // A listener of an earlier release sends neither a skipped group nor a word, and its settlement
 // decodes to runs with neither (intake's
-// TestDecodeChecksReadsASettlementWithNoSkippedGroupOrConclusionWordAsToday): the CI message reads
-// word for word as it did before the daemon read either, and says nothing of a skipped check.
+// TestDecodeChecksReadsASettlementWithNoSkippedGroupOrConclusionWordAsToday): the CI message names
+// each check by the daemon's conclusion, as it did before the daemon read either, and none skipped.
 func TestASettlementWithNoSkippedGroupOrConclusionWordTellsTodaysLine(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(),
 		settledRunsAt("head", 1, []record.AttemptRun{{Name: "build", ID: 1}, {Name: "unit", ID: 2}}, "unit"))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, `CI settled at head: "build" succeeded, "unit" failed`))
+	assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", "build=succeeded", "unit=failed")))
 }
 
 // The listener as it stands before it carries a word sends the skipped group and no word: the CI
@@ -149,8 +147,7 @@ func TestASettlementWithASkippedGroupAndNoWordNamesThoseSkipped(t *testing.T) {
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(), settledRunsAt("head", 1, []record.AttemptRun{
 		{Name: "build", ID: 1}, {Name: "envoy-go", ID: 2, Conclusion: record.RunSkipped}, {Name: "unit", ID: 3}}, "unit"))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil,
-		`CI settled at head: "build" succeeded, "envoy-go" skipped, "unit" failed; `+skippedSaid))
+	assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", "build=succeeded", "envoy-go=skipped", "unit=failed")))
 }
 
 // settledOutcome is what a settlement of LEGION-208's head left beside what the CI message says:
@@ -235,10 +232,9 @@ func TestAHeadWhoseOnlyNonSuccessRunsAreSkippedMovesNoIssueSkipped(t *testing.T)
 			}
 			told := make([]record.RoleMessage, 0, len(tc.roles))
 			for _, role := range tc.roles {
-				told = append(told, record.RoleMessage{Role: roleToken(t, role),
-					Body: toldBody(`CI settled at head: "build" success, "dispatch-memory" skipped, "envoy-go" skipped; ` + skippedSaid)})
+				told = append(told, settledHead("head", "build=success", "dispatch-memory=skipped", "envoy-go=skipped").to(roleToken(t, role)))
 			}
-			assertRoleMessages(t, pool, "LEGION-208", told)
+			assertToldRows(t, pool, "LEGION-208", told)
 		})
 	}
 }
@@ -253,11 +249,11 @@ func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) 
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
 	applyRefusingNothing(t, pool, engine, settledRunsAt("head", 1, []record.AttemptRun{{Name: "build", ID: 1}, {Name: "envoy-go", ID: 2}}))
-	messages := tell(t, nil, `CI settled at head: "build" succeeded, "envoy-go" succeeded`)
-	assertRoleMessages(t, pool, "LEGION-208", messages)
+	messages := tell(t, nil, settledHead("head", "build=succeeded", "envoy-go=succeeded"))
+	assertToldRows(t, pool, "LEGION-208", messages)
 
 	applyRefusingNothing(t, pool, engine, settledRunsAt("head", 2, []record.AttemptRun{{Name: "build", ID: 1}, skippedRun("envoy-go", 2)}))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: "build" succeeded, "envoy-go" skipped; `+skippedSaid))
+	assertToldRows(t, pool, "LEGION-208", tell(t, messages, settledHead("head", "build=succeeded", "envoy-go=skipped")))
 	if got := issuePhase(t, pool); got != phase.Testing {
 		t.Fatalf("after the settlement the issue is in %s, want it left in testing", got)
 	}
@@ -314,8 +310,8 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 // cancelled is that and not skipped, which no listener sends, and a run it names failed or
 // cancelled with its own word (failure, timed_out or cancelled) is named failed or cancelled, as
 // before. A settlement with no skipped run gives the text it gave before, whatever other word
-// GitHub gave each run; one with no word either wakes the worker with the task it gave before,
-// word for word.
+// GitHub gave each run; one with no word either wakes the worker as a settlement's wake does, its
+// role and its kind.
 func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 	t.Parallel()
 	woken := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
@@ -387,9 +383,5 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 		rig := newWakeRig(t)
 		rig.apply("settled", settlement("head1"))
 		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks)
-		want := woken + "head1 passed every check. Read the checks before you decide anything."
-		if task := wakeStarts(t, rig.pool)[0].Task; task != want {
-			t.Fatalf("the woken role's task = %q, want today's %q", task, want)
-		}
 	})
 }

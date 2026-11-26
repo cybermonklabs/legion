@@ -20,9 +20,10 @@ import (
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
-// it says (tellChecks). It moves nothing: a failed CI check is information the worker holding the
-// phase decides on - rerun, wait, or fix - and not the daemon's to read the semantics of
-// (dispatch://INFRA-714/spec R1).
+// it says (tellChecks). It moves nothing: a failed CI check is information, not the daemon's to
+// read the semantics of, and the message asks no role to act on it: the tester reads no CI, the
+// implementer is told of a failed check a CI job runs by its own message (tellCIFailure), and the
+// reviewer and the architect read CI's state.
 //
 // It runs for every settlement fact, after the wake (wakeOnSettlement), and each settlement it
 // does not apply is named by one INFO line once the fact commits, since a pull request whose head
@@ -370,6 +371,20 @@ func settledChecks(pr record.PullRequest) string {
 	if pr.CheckedHead == "" {
 		return ""
 	}
+	shown, statuses := settledNames(pr)
+	named := namedStatuses(statuses)
+	if len(shown) == 0 {
+		return "CI settled at " + pr.CheckedHead + " reporting no check" + named
+	}
+	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(shown) + named + skippedClause(shown)
+}
+
+// settledNames is what settledChecks writes its sentence from, and the settlement's message its
+// fields from (settlementMessage): each check of the settlement standing for the checked head with
+// what it is named as (shownAs: GitHub's word where the settlement carried one, else the daemon's
+// conclusion), and each commit status the record keeps for that head, in context order
+// (keptStatuses).
+func settledNames(pr record.PullRequest) (shown map[string]string, statuses []record.CommitStatus) {
 	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns)+len(pr.Failing)+len(pr.Cancelled))
 	for _, run := range pr.CheckRuns {
 		conclusions[run.Name] = record.RunSucceeded
@@ -383,7 +398,7 @@ func settledChecks(pr record.PullRequest) string {
 	for _, name := range pr.Failing {
 		conclusions[name] = record.RunFailed
 	}
-	shown := make(map[string]string, len(conclusions))
+	shown = make(map[string]string, len(conclusions))
 	for name, conclusion := range conclusions {
 		shown[name] = string(conclusion)
 	}
@@ -391,11 +406,30 @@ func settledChecks(pr record.PullRequest) string {
 	for _, run := range pr.CheckRuns {
 		shown[run.Name] = shownAs(run, conclusions[run.Name])
 	}
-	statuses := namedStatuses(keptStatuses(pr, pr.CheckedHead))
-	if len(shown) == 0 {
-		return "CI settled at " + pr.CheckedHead + " reporting no check" + statuses
+	return shown, keptStatuses(pr, pr.CheckedHead)
+}
+
+// settlementMessage is the message a settlement of pr tells the role holder token: its body is
+// settledChecks' sentence and that nothing moved on it, and its fields are the values that
+// sentence is written from (settledNames): the pull request, the checked head, each check as
+// name=word in name order, and each commit status as context=state in context order.
+func settlementMessage(token string, pr record.PullRequest) record.RoleMessage {
+	shown, statuses := settledNames(pr)
+	names := make([]string, 0, len(shown))
+	for name := range shown {
+		names = append(names, name)
 	}
-	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(shown) + statuses + skippedClause(shown)
+	slices.Sort(names)
+	var checks []string
+	for _, name := range names {
+		checks = append(checks, name+"="+shown[name])
+	}
+	var contexts []string
+	for _, status := range statuses {
+		contexts = append(contexts, status.Context+"="+string(status.State))
+	}
+	return record.RoleMessage{Role: token, Body: fmt.Sprintf("Pull request #%d: %s. Nothing moved on it.", pr.Number, settledChecks(pr)),
+		PullRequest: pr.Number, Head: pr.CheckedHead, Checks: checks, Statuses: contexts}
 }
 
 // headChecks is every check run GitHub reported on the pull request's current head with what that
@@ -516,10 +550,14 @@ func namedStatuses(statuses []record.CommitStatus) string {
 }
 
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
-// request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
-// the worker that holds the phase decides whether to re-run, wait or fix
-// (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
-// phase, the implementer, whose code the checks ran on, and the architect that owns the issue
+// request's head says (settledChecks), and moves nothing: the daemon passes the CI result on and
+// asks nobody anything of it, no re-run, no wait and no fix, since the tester reads no CI and each
+// other role's prompt says what it does with CI's state. Each
+// message is settlementMessage's, its sentence and the values it is written from, and once they
+// are queued the line `workflow: a CI settlement is told` names, from those rows, the pull
+// request, the head, the checks, the statuses and each role told. One message goes to three
+// roles - the worker holding the issue's phase, the implementer, whose code the checks ran on, and
+// the architect that owns the issue
 // (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
 // a role holder with a message. In merging the implementer is not told: the merge and what breaks
 // it are the merger's to decide, and the merger asks the implementer when it needs it
@@ -579,11 +617,18 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if err != nil {
 		return err
 	}
-	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", pr.Number, settled)
+	var tokens []string
+	var row record.RoleMessage
 	for _, to := range addressed {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+		row = settlementMessage(string(to.token), *pr)
+		if err := e.enqueue(ctx, tx, to.issue, row); err != nil {
 			return err
 		}
+		tokens = append(tokens, row.Role)
+	}
+	if len(tokens) > 0 {
+		e.logOnCommit(ctx, "workflow: a CI settlement is told", "issue", issue.Key, "pull_request", row.PullRequest, "head", row.Head,
+			"checks", row.Checks, "statuses", row.Statuses, "told", tokens)
 	}
 	return nil
 }

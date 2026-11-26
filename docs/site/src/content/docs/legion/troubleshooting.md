@@ -1585,7 +1585,11 @@ These arrive as messages on the Dispatch issue:
   conclusion GitHub gave it, in one message each to the architect that owns the issue, the worker
   of the issue's current phase and the implementer, and judges none of them. Re-run a check that
   failed on itself, have the implementer fix code that is at fault, or leave it to GitHub, which
-  holds the merge under the base branch's own required checks.
+  holds the merge under the base branch's own required checks. When Dispatch's state says that a
+  check whose `ci_check` names a CI job fails at the pull request's head, because its job ended
+  there without a pass, the daemon also tells the implementer alone at once, in any phase, in one
+  message naming the check, the head and the job's case, and starts nothing; a second state that
+  says the same failure, or one at a head the pull request has left, tells nobody.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a

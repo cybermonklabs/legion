@@ -17,11 +17,11 @@ import path from "node:path";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { copyOfThisDirectory, rigFunctions } from "./catalog-copy";
-import { HEADS_SCENARIOS, isHeadsScenario } from "./heads-scenarios";
+import { HEADS_SCENARIOS, headsCases, isHeadsScenario } from "./heads-scenarios";
 import { fileRowLimit, RIG_STEP, SCRIPT_RUN } from "./test-limit";
 
-// The most a row runs as processes of their own: four rig.sh steps, one for each heads scenario.
-setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP));
+// The most a row runs as processes of their own: five rig.sh steps, one for each heads scenario.
+setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP));
 
 const makeDirectory = temporaryDirectories("heads-catalog");
 
@@ -31,7 +31,9 @@ test("the heads scenarios have one canonical membership", () => {
     "reviewer-pass-and-fail",
     "architect-pass-and-fail",
     "ci-pass-and-fail",
+    "tester-reads-no-ci",
   ]);
+  expect(headsCases("tester-reads-no-ci")).toEqual(["ci-late", "ci-red"]);
   expect(isHeadsScenario("reviewer-own-head")).toBe(true);
   expect(isHeadsScenario("measure-before-ask")).toBe(false);
 });
@@ -134,11 +136,18 @@ test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts
     ranWith,
     probed: JSON.parse(probed.stdout.toString()),
     usage: usage.includes(
-      "architect-pass-and-fail [no-verdict-fail|no-verdict-pass|no-verdict]|ci-pass-and-fail"
+      "architect-pass-and-fail [no-verdict-fail|no-verdict-pass|ci-check-fail|ci-check-fail-other-head|no-verdict]|ci-pass-and-fail"
     ),
   }).toEqual({
     batch: "exit=0 ",
-    runs: ["", " no-verdict-fail", " no-verdict-pass", " no-verdict"]
+    runs: [
+      "",
+      " no-verdict-fail",
+      " no-verdict-pass",
+      " ci-check-fail",
+      " ci-check-fail-other-head",
+      " no-verdict",
+    ]
       .map((which, at) => `run architect-pass-and-fail head 1 ${at + 1} 1700000000${which}\n`)
       .join(""),
     run: "exit=0 ",

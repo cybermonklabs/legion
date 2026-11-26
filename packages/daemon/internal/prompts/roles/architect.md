@@ -170,7 +170,7 @@ changed in the root's approved design. Read each named section and check at the 
 Then sign the child off, or send it back to the phase of an earlier step of its task, with a
 `reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
-issue's own head: each needs a pass standing at that head, which
+issue's own head: each must read yes at each open head of the issue, a check carrying `ci_check` among them, which
 `dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
 the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
 At acceptance, read each CI-proved check's derived result and each result its CI job recorded.

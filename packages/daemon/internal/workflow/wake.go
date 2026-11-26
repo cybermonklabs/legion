@@ -183,8 +183,10 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 	}
 	switch kind {
 	case pods.WakeChecks:
+		// What CI reported, and no question of it: the tester reads no CI, and each other role's
+		// prompt says what it does with CI's state.
 		return preamble + "The wake is a CI settlement on your pull request's head: " + detail +
-			". Read the checks before you decide anything."
+			". Nothing moved on it."
 	case pods.WakeRoleMessage:
 		return preamble + "The wake is a message somebody published to your role topic (" + detail +
 			") " + away + ". Envoy keeps a role message for one hour: a message kept for your role " +

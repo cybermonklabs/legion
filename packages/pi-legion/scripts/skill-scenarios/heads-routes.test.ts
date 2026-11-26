@@ -44,10 +44,11 @@ const DIFF703 =
   "diff --git a/README.md b/README.md\nindex aaaaaa..bbbbbb 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,3 +1,5 @@\n # widgets\n \n Small CLI helpers.\n+\n+Usage: see docs/usage.md.\n";
 
 /** The world of reviewer-own-head: #702 adds docs/usage.md, #703 points the README at it, the
- * base has no protection, and `named` and `approved` set what the case changes. */
+ * base has no protection, and `named`, `named703` and `approved` set what the case changes. */
 function world(
   options: {
     named?: HeadsWorld["pulls"][number]["named"];
+    named703?: HeadsWorld["pulls"][number]["named"];
     approved?: boolean;
     only702?: boolean;
   } = {}
@@ -70,7 +71,7 @@ function world(
       body: "Dispatch: ACME-7\n\n## Verification\n",
       files: [{ path: "README.md", additions: 2, deletions: 0 }],
       jobs: ["lint", "test"],
-      named: [],
+      named: options.named703 ?? [],
       diff: DIFF703,
       url: "https://github.com/example/widgets/pull/703",
       subject: "docs: point the README at the usage page (ACME-7)",
@@ -128,6 +129,20 @@ function world(
 
 const GO_CHECKS = { name: "go-checks", checkRun: 9101, run: 41, suite: 41, status: "in_progress" };
 const DOCS = { name: "docs", checkRun: 9001, run: 40, suite: 40, status: "completed" };
+/** A named job that ended without a pass, and its log: the failed test of the changed page. */
+const USAGE_LOG =
+  "usage-test\tRun go test ./docs/...\t--- FAIL: TestTheUsagePageListsEveryCommand (0.01s)\n" +
+  "usage-test\tRun go test ./docs/...\t    usage_test.go:21: docs/usage.md names 3 commands; `widgets --help` lists 4: add, export, list, remove\n" +
+  "usage-test\tRun go test ./docs/...\tFAIL\n";
+const USAGE_FAILED = {
+  name: "usage-test",
+  checkRun: 9201,
+  run: 42,
+  suite: 42,
+  status: "completed",
+  conclusion: "failure",
+  log: USAGE_LOG,
+};
 
 /** The route gh-standin.ts answers `call` with: the first whose match names it. */
 function routeOf(table: RouteTable, call: string): Route {
@@ -272,6 +287,70 @@ test("a named job in progress: gh pr checks exits 8, UNSTABLE, PENDING, in_progr
   const passed = renderHeadsRoutes(world({ named: [DOCS] }));
   expect(routeOf(passed, "gh pr checks").exit).toBe(0);
   expect(routeOf(passed, "gh pr checks 703").exit).toBe(0);
+});
+
+// Catches: a named job that ended without a pass read as passed (the routes knew only success and
+// in progress), and a log of the failed job that no read of gh answers, where the role texts send
+// the implementer and the reviewer to read it. A job that failed at #703's head alone leaves #702's
+// reads passed.
+test("a named job that failed: gh pr checks exits 1, its run and job fail, and its log is read", () => {
+  const failed = renderHeadsRoutes(world({ named: [USAGE_FAILED] }));
+  expect(routeOf(failed, "gh pr checks 702")).toMatchObject({
+    stdout:
+      "lint\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ntest\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\nusage-test\tfail\t10s\thttps://github.com/example/widgets/actions/runs/42/job/9201",
+    exit: 1,
+  });
+  expect(answer(failed, "gh pr view")).toMatchObject({
+    mergeStateStatus: "UNSTABLE",
+    statusCheckRollup: [
+      { name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "usage-test", status: "COMPLETED", conclusion: "FAILURE" },
+    ],
+  });
+  expect(answer(failed, "gh api graphql -f query=q")).toMatchObject({
+    data: {
+      repository: {
+        pullRequest: {
+          commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }] },
+        },
+      },
+    },
+  });
+  expect(answer(failed, `gh api repos/example/widgets/commits/${H702}/check-runs`)).toMatchObject({
+    check_runs: [
+      { id: 8000 },
+      { id: 8001 },
+      { id: 9201, status: "completed", conclusion: "failure" },
+    ],
+  });
+  expect(answer(failed, "gh api repos/example/widgets/actions/runs/42")).toMatchObject({
+    id: 42,
+    status: "completed",
+    conclusion: "failure",
+  });
+  expect(answer(failed, "gh api repos/example/widgets/actions/jobs/9201")).toMatchObject({
+    id: 9201,
+    conclusion: "failure",
+  });
+  for (const call of [
+    "gh api repos/example/widgets/actions/jobs/9201/logs",
+    "gh run view 42 --log-failed",
+    "gh run view 42 --repo example/widgets --log",
+    "gh run view --job 9201 --log",
+    "gh run view --log-failed --job=9201",
+  ])
+    expect(routeOf(failed, call)).toMatchObject({ stdout: USAGE_LOG });
+  expect(answer(failed, "gh run view 42")).toContain("X usage-test");
+  const elsewhere = renderHeadsRoutes(
+    world({
+      named: [{ ...DOCS, checkRun: 9202, run: 43, suite: 43, name: "usage-test" }],
+      named703: [USAGE_FAILED],
+    })
+  );
+  expect(routeOf(elsewhere, "gh pr checks 702").exit).toBe(0);
+  expect(routeOf(elsewhere, "gh pr checks 703").exit).toBe(1);
+  expect(routeOf(elsewhere, "gh run view --job 9201 --log")).toMatchObject({ stdout: USAGE_LOG });
 });
 
 // Catches: workflow runs or jobs of a head that disagree with its check runs, a named job served

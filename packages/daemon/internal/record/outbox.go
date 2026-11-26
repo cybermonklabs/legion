@@ -1513,9 +1513,25 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // exception is a row a project's pause held for a role a pause stopped: without the pause the role
 // would have had the message, so the row is published to the role after the resume, and that
 // publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
+//
+// A CI message carries what its body names as fields too, written from the one value the body is
+// written from, so a role reads each as a value and not only inside a sentence: a settlement's
+// message (workflow's settlementMessage) names the pull request, the head the settlement stands
+// for, each check as name=word in name order (Checks) and each commit status as context=state in
+// context order (Statuses); the implementer's message of a failed CI job (workflow's
+// ciFailureMessage) names the pull request, the head, the check and its job's case. No other
+// message carries them. A release before these keys decodes a role message strictly
+// (DisallowUnknownFields), so the way back of 20261125000602_phase_verdict_gone deletes them from
+// each queued role message before that release boots.
 type RoleMessage struct {
-	Role string `json:"role"`
-	Body string `json:"body"`
+	Role        string   `json:"role"`
+	Body        string   `json:"body"`
+	PullRequest int      `json:"pull_request,omitempty"`
+	Head        string   `json:"head,omitempty"`
+	Check       string   `json:"check,omitempty"`
+	CICase      string   `json:"ci_case,omitempty"`
+	Checks      []string `json:"checks,omitempty"`
+	Statuses    []string `json:"statuses,omitempty"`
 }
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
@@ -2639,6 +2655,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Body == "" {
 			return fmt.Errorf("role message requires body")
+		}
+		if (value.Check != "" || value.CICase != "" || len(value.Checks) > 0 || len(value.Statuses) > 0) && (value.PullRequest == 0 || value.Head == "") {
+			return fmt.Errorf("a role message that names checks names the pull request and the head they are of")
+		}
+		if (value.Check != "" || value.CICase != "") && (len(value.Checks) > 0 || len(value.Statuses) > 0) {
+			return fmt.Errorf("a role message names one failed CI job or a settlement's checks, not both")
 		}
 	case GatedStepsPublish:
 		if value.Project == "" {
