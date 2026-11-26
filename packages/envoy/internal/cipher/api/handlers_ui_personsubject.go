@@ -33,9 +33,9 @@ type personSubjectRevokedResponse = wire.PersonSubjectRevokedResponse
 // which might be its. What the holder made, and a service's login, are untouched. A repeat ends
 // nothing and answers zeros. A revoke whose session generation is below the greatest one a revoke
 // applied at the address carried was superseded by a later replacement there: it writes and ends
-// nothing, and answers state "superseded" with that greatest generation (superseded_by), so its
-// caller can tell that its own generations for the address are below the broker's; the line it
-// logs names both generations.
+// nothing, and answers wire.PersonSubjectSuperseded with that greatest generation
+// (superseded_by), so its caller can tell that its own generations for the address are below the
+// broker's; the line it logs names both generations.
 //
 // Every field is required, 400 otherwise (SESSION_GENERATION_REQUIRED for the session
 // generation), and the two accounts must differ: the holder is named so that a revoke of the holder
@@ -89,7 +89,7 @@ func (s *server) revokePersonSubject(w http.ResponseWriter, r *http.Request, cal
 		slog.Warn("person subject revocation superseded: a later replacement at the address has been applied, so this one changed nothing",
 			answer.ClipFields([]any{"caller", callerName, "person", person, "issuer", issuer, "subject", body.Subject,
 				"holder_subject", body.HolderSubject, "session_generation", *body.SessionGeneration, "superseded_by", *revoked.SupersededBy})...)
-		writeJSON(w, http.StatusOK, personSubjectRevokedResponse{State: "superseded", SupersededBy: revoked.SupersededBy})
+		writeJSON(w, http.StatusOK, personSubjectRevokedResponse{State: wire.PersonSubjectSuperseded, SupersededBy: revoked.SupersededBy})
 		return
 	}
 	slog.Info("person subject revocation relayed", answer.ClipFields([]any{"caller", callerName, "person", person, "issuer", issuer,
@@ -97,7 +97,7 @@ func (s *server) revokePersonSubject(w http.ResponseWriter, r *http.Request, cal
 		"signins", revoked.SignIns, "machine_logins", revoked.MachineLogins, "tokens_ended", revoked.Tokens,
 		"approval_sessions", revoked.ApprovalSessions})...)
 	writeJSON(w, http.StatusOK, personSubjectRevokedResponse{
-		State: "revoked", SignIns: revoked.SignIns, MachineLogins: revoked.MachineLogins, TokensEnded: revoked.Tokens,
+		State: wire.PersonSubjectRevoked, SignIns: revoked.SignIns, MachineLogins: revoked.MachineLogins, TokensEnded: revoked.Tokens,
 		ApprovalSessions: revoked.ApprovalSessions,
 	})
 }

@@ -18,11 +18,6 @@ import (
 // ends it by (DeleteSubjectBrowserSessionsTx). A decision made under a session reads it again in
 // its own transaction, under the person's lock (HoldBrowserSessionTx).
 
-// ErrBrowserSessionSubjectReplaced is a sign-in to the approval page by an account that no
-// longer holds the person's address: Dispatch gave the address to another account and named this
-// one as replaced (RecordReplacedSubjectTx), so the broker signs it in to no page under it.
-var ErrBrowserSessionSubjectReplaced = errors.New("store: another account holds this person's address now")
-
 // ErrBrowserSessionEnded is a decision whose approval-page session is no longer live when its
 // transaction reads it under the person's lock (HoldBrowserSessionTx): signed out, ended by
 // `broker end-sessions`, expired, or deleted by the revoke of the account that signed it in.
@@ -52,10 +47,10 @@ type BrowserSignIn struct {
 }
 
 // CreateBrowserSession writes in's session and deletes the browser's previous one, in one
-// transaction. It answers ErrBrowserSessionSubjectReplaced, writing and deleting nothing, when
+// transaction. It answers ErrSubjectReplaced, writing and deleting nothing, when
 // in.Account no longer holds in.Login's address.
 //
-// It takes the person's lock first (LockPerson), and then reads whether the account is replaced,
+// It takes the person's lock first and then reads whether the account is replaced (LockPersonAs),
 // as a sign-in trade does (RecordPersonSignIn): a revoke of that account
 // (enroll.Service.RevokePersonSubject) either commits before the read, which then refuses the
 // sign-in, or waits for this one to commit and deletes the session it wrote. Without the lock a
@@ -67,15 +62,8 @@ func (s *Store) CreateBrowserSession(ctx context.Context, in BrowserSignIn) erro
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if err := LockPerson(ctx, tx, in.Login); err != nil {
+	if err := LockPersonAs(ctx, tx, in.Login, in.Account); err != nil {
 		return err
-	}
-	replaced, err := SubjectReplaced(ctx, tx, in.Login, in.Account)
-	if err != nil {
-		return err
-	}
-	if replaced {
-		return ErrBrowserSessionSubjectReplaced
 	}
 	if in.Previous != nil {
 		if _, err := tx.Exec(ctx, `delete from browser_sessions where secret_hash = $1`, in.Previous[:]); err != nil {

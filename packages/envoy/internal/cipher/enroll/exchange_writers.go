@@ -55,7 +55,7 @@ func (s *Service) MachineCredentials() oauth.MachineCredentials {
 // store.SignInTrade.EndUnrecorded: whether a trade ends a sign-in recording no account and
 // everything it held before it writes the trade's own, which the broker command sets where
 // BROKER_PROJECT_ACCESS_URL is set. An account that no longer holds the person's address is
-// store.ErrSignInSubjectReplaced, a box key that person has revoked store.ErrSignInRevoked, and
+// store.ErrSubjectReplaced, a box key that person has revoked store.ErrSignInRevoked, and
 // one whose sign-in was made on another machine or by another account
 // store.ErrSignInMachineChanged or store.ErrSignInSubjectChanged; the exchange answers each
 // invalid_grant saying which.
@@ -71,7 +71,7 @@ func PersonSignIns(endUnrecorded bool) oauth.PersonSignIns {
 			EndUnrecorded: endUnrecorded,
 		})
 		switch {
-		case errors.Is(err, store.ErrSignInSubjectReplaced):
+		case errors.Is(err, store.ErrSubjectReplaced):
 			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectReplaced, err)
 		case errors.Is(err, store.ErrSignInRevoked):
 			return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)

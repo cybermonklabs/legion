@@ -2781,17 +2781,7 @@ func endSignIn(ctx context.Context, tx pgx.Tx, id, person, actor, reason string)
 	if err != nil || thumbprint == "" {
 		return false, 0, err
 	}
-	var credential, host string
-	var service *string
-	err = tx.QueryRow(ctx, `select id, host, service from launcher_credentials
-		where key_thumbprint = $1 and revoked_at is null for no key update`, thumbprint).Scan(&credential, &host, &service)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return true, ended, nil
-	case err != nil:
-		return false, 0, err
-	}
-	more, err := endCredential(ctx, tx, credential, host, service, actor, reason)
+	more, err := endKeyCredential(ctx, tx, thumbprint, nil, actor, reason)
 	if err != nil {
 		return false, 0, err
 	}
@@ -2818,20 +2808,31 @@ func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in store.SignInTrade) er
 	if err != nil || !ended {
 		return err
 	}
-	var credential, host string
-	var service *string
-	err = tx.QueryRow(ctx, `select id, host, service from launcher_credentials
-		where key_thumbprint = $1 and subject = $2 and revoked_at is null for no key update`,
-		in.Thumbprint, exchange.PersonSubject(in.Person, in.MachineAccount, in.Thumbprint)).Scan(&credential, &host, &service)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil
-	case err != nil:
-		return err
-	}
-	_, err = endCredential(ctx, tx, credential, host, service, NoAccountSignInActor,
+	subject := exchange.PersonSubject(in.Person, in.MachineAccount, in.Thumbprint)
+	_, err = endKeyCredential(ctx, tx, in.Thumbprint, &subject, NoAccountSignInActor,
 		"a trade ended the sign-in that held it, which recorded no account")
 	return err
+}
+
+// endKeyCredential ends, in tx, the live launcher credential that holds the box key thumbprint and
+// everything it holds (endCredential), writing actor and reason on every row it writes, and answers
+// how many live access tokens ended with it: 0 when no live credential holds the key. subject, when
+// not nil, ends only the credential that subject names, and leaves one of any other subject that
+// holds the key. The row is read `for no key update`, which is the hold endCredential asks of its
+// caller.
+func endKeyCredential(ctx context.Context, tx pgx.Tx, thumbprint string, subject *string, actor, reason string) (int, error) {
+	var credential, host string
+	var service *string
+	err := tx.QueryRow(ctx, `select id, host, service from launcher_credentials
+		where key_thumbprint = $1 and ($2::text is null or subject = $2) and revoked_at is null for no key update`,
+		thumbprint, subject).Scan(&credential, &host, &service)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, nil
+	case err != nil:
+		return 0, err
+	}
+	return endCredential(ctx, tx, credential, host, service, actor, reason)
 }
 
 // endCredential revokes launcher credential id in tx, whose row the caller holds: it sets

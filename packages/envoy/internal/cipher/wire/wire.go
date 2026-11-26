@@ -223,23 +223,23 @@ type RevokePersonSubjectRequest struct {
 	// that approver before this replacement, and answers a revoke below the greatest generation it
 	// applied at the address superseded. Required: the broker answers 400
 	// SESSION_GENERATION_REQUIRED without it. It is a pointer so that a body that leaves it out is
-	// told from one carrying 0; Dispatch sends it for every revocation it recorded with one, and a
-	// row an earlier head of this branch recorded without one stays owed until recorded again.
+	// told from one carrying 0. The route and the field came in one change, so no caller sends the
+	// route without it.
 	SessionGeneration *int64 `json:"session_generation,omitempty"`
 }
 
 // PersonSubjectRevokedResponse is POST /v1/person-subjects/revoke's answer.
 type PersonSubjectRevokedResponse struct {
-	// "revoked": the replaced account holds no credential and no approval-page session under the
-	// address, and the broker refuses it any new one, whether this call or an earlier one ended
-	// them. "superseded": the revoke carried a session generation below the greatest one a revoke
-	// the broker applied at the address carried (SupersededBy), so a later replacement at the
-	// address has been applied since, and this one changed nothing; Dispatch leaves it owed and
-	// reports it, since its own generations for the address are then below the broker's. The
+	// PersonSubjectRevoked: the replaced account holds no credential and no approval-page session
+	// under the address, and the broker refuses it any new one, whether this call or an earlier one
+	// ended them. PersonSubjectSuperseded: the revoke carried a session generation below the
+	// greatest one a revoke the broker applied at the address carried (SupersededBy), so a later
+	// replacement at the address has been applied since, and this one changed nothing; its caller
+	// can tell from it that its own generations for the address are below the broker's. The
 	// broker's migration 0045 says how such a revoke can arrive.
-	State string `json:"state"`
+	State string `json:"state" enum:"revoked,superseded"`
 	// The greatest session generation a revoke the broker applied at the address carried, which is
-	// above this revoke's; given with state "superseded" alone.
+	// above this revoke's; given with PersonSubjectSuperseded alone.
 	SupersededBy *int64 `json:"superseded_by,omitempty"`
 	// How many of the replaced account's sign-ins on a machine this call ended; 0 for a repeat
 	// and for a superseded revoke.
@@ -253,6 +253,12 @@ type PersonSubjectRevokedResponse struct {
 	// ended; 0 for a repeat and for a superseded revoke.
 	ApprovalSessions int `json:"approval_sessions"`
 }
+
+// The states PersonSubjectRevokedResponse.State answers.
+const (
+	PersonSubjectRevoked    = "revoked"
+	PersonSubjectSuperseded = "superseded"
+)
 
 // RecordSessionResp is a credential request's two possibly-differing session ids, read
 // independently (LEGION-587): Enrollment is the id the requesting session's own enrollment

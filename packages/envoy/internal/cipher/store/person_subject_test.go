@@ -93,7 +93,7 @@ func TestATradeRecordsTheAccountItsPersonTokenNames(t *testing.T) {
 }
 
 // TestATradeOfAReplacedAccountIsRefusedOnEveryBoxKey: once an account is recorded as no longer
-// holding a person's address, its trade is ErrSignInSubjectReplaced on a box key it never traded
+// holding a person's address, its trade is ErrSubjectReplaced on a box key it never traded
 // and writes nothing, while the holder's trade goes on; the same account is no one's replaced
 // account under another address; and a later record naming it as the holder, the address coming
 // back, lets it trade again and refuses the account it replaced in turn.
@@ -103,8 +103,8 @@ func TestATradeOfAReplacedAccountIsRefusedOnEveryBoxKey(t *testing.T) {
 	holder := store.IssuerSubject{Issuer: signInIssuer, Subject: "209" + signInPerson}
 	replace(t, st, signInPerson, replaced.Subject, holder.Subject)
 
-	if err := recordAs(t, st, signInPerson, signInBoxOne, signInMachine, replaced); !errors.Is(err, store.ErrSignInSubjectReplaced) {
-		t.Fatalf("the replaced account's trade of a new box key = %v, want %v", err, store.ErrSignInSubjectReplaced)
+	if err := recordAs(t, st, signInPerson, signInBoxOne, signInMachine, replaced); !errors.Is(err, store.ErrSubjectReplaced) {
+		t.Fatalf("the replaced account's trade of a new box key = %v, want %v", err, store.ErrSubjectReplaced)
 	}
 	if live, err := st.PersonSignIns(context.Background(), signInPerson); err != nil || len(live) != 0 {
 		t.Fatalf("the refused trade left the sign-ins %+v, %v; want none", live, err)
@@ -120,8 +120,8 @@ func TestATradeOfAReplacedAccountIsRefusedOnEveryBoxKey(t *testing.T) {
 	if err := recordAs(t, st, signInPerson, signInBoxOne, signInMachine, replaced); err != nil {
 		t.Fatalf("the account the address came back to: %v, want it recorded", err)
 	}
-	if err := recordAs(t, st, signInPerson, signInBoxThree, signInMachine, holder); !errors.Is(err, store.ErrSignInSubjectReplaced) {
-		t.Fatalf("the account the address moved away from = %v, want %v", err, store.ErrSignInSubjectReplaced)
+	if err := recordAs(t, st, signInPerson, signInBoxThree, signInMachine, holder); !errors.Is(err, store.ErrSubjectReplaced) {
+		t.Fatalf("the account the address moved away from = %v, want %v", err, store.ErrSubjectReplaced)
 	}
 }
 

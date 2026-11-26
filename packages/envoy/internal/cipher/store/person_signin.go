@@ -46,11 +46,6 @@ var ErrSignInMachineChanged = errors.New("store: this sign-in was made on anothe
 // ErrNoSignIn is a sign-in id that is not that person's, or is no sign-in at all.
 var ErrNoSignIn = errors.New("store: no sign-in of this person has that id")
 
-// ErrSignInSubjectReplaced is a trade whose person token names an account that no longer holds
-// the person's address: Dispatch gave the address to another account and named this one as
-// replaced (RecordReplacedSubjectTx), so the broker refuses it every sign-in, on any box key.
-var ErrSignInSubjectReplaced = errors.New("store: another account holds this person's address now")
-
 // ErrSignInSubjectChanged is a trade presenting a sign-in's box key with a person token of
 // another account than the one that made the sign-in. A sign-in is the account that made it as
 // well as the person, the key and the machine, since that account is what a revoke of a replaced
@@ -96,7 +91,7 @@ type PersonSignIn struct {
 
 // RecordPersonSignIn records, in tx, that in.Person signed in on the machine in.MachineAccount
 // names with the box key in.Thumbprint, as the account in.Account, and answers whether it ended a
-// sign-in that recorded no account to do so. It answers ErrSignInSubjectReplaced when that
+// sign-in that recorded no account to do so. It answers ErrSubjectReplaced when that
 // account no longer holds the person's address, ErrSignInRevoked when that person has revoked
 // that key, ErrSignInMachineChanged when the sign-in that key belongs to was made on another
 // machine, and ErrSignInSubjectChanged when it was made by another account.
@@ -119,7 +114,7 @@ type PersonSignIn struct {
 // access token it is minting together: a revoke that commits first refuses the trade, and one that
 // commits after it ends the token the trade minted (RevokePersonSignIn).
 //
-// It takes the person's lock first (LockPerson), and then reads whether the account is replaced,
+// It takes the person's lock first and then reads whether the account is replaced (LockPersonAs),
 // so a revoke of that account (enroll.Service.RevokePersonSubject) either commits before the read,
 // which then refuses the trade, or waits for this trade to commit and ends the row it wrote. The
 // read is what refuses a box key the person never traded before: no row conflicts with one. A
@@ -146,15 +141,8 @@ type PersonSignIn struct {
 // another person's k. The table's check refuses any login that is not lowercase. machineAccount,
 // a service account's address, is lowered here as it always was.
 func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in SignInTrade) (bool, error) {
-	if err := LockPerson(ctx, tx, in.Person); err != nil {
+	if err := LockPersonAs(ctx, tx, in.Person, in.Account); err != nil {
 		return false, err
-	}
-	replaced, err := SubjectReplaced(ctx, tx, in.Person, in.Account)
-	if err != nil {
-		return false, err
-	}
-	if replaced {
-		return false, ErrSignInSubjectReplaced
 	}
 	deleted, err := tx.Exec(ctx, `delete from person_signins
 		where $4 and person = $1 and thumbprint = $2 and revoked_at is null and subject is null and machine_account = lower($3)`,
