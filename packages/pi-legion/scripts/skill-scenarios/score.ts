@@ -3705,9 +3705,9 @@ const PathRequest = z.looseObject({ role: z.string(), paneDaemon: z.string() });
 /** A line of the model stand-in's log: in the mode standin-report, `toolResult` is the text of the
  * newest tool result of a scripted call that the turn's request carried back. */
 const StandinLine = z.looseObject({ toolResult: z.string().nullable().optional() });
-/** The defect text standin-script.json's first call reports. */
-const ScriptedReport = z.looseObject({
-  calls: z.array(z.looseObject({ input: z.looseObject({ defect: z.string() }) })).min(1),
+/** standin-script.json, as far as a path check reads it: the calls, the first of them the report. */
+const ScriptedCalls = z.looseObject({
+  calls: z.array(z.looseObject({ input: z.record(z.string(), z.unknown()) })).min(1),
 });
 
 /** pathCheck: whether the scripted model's two calls of a run (SKILL_SCENARIOS_MODEL=standin-report)
@@ -3746,8 +3746,10 @@ export function pathCheck(runDir: string): PathCheck {
   )?.toolResult;
   if (id === "" || result == null || !result.includes(id) || !result.includes("recorded"))
     return failed(PATH_FAILURES.result);
-  const scripted = json(path.join(runDir, "standin-script.json"), ScriptedReport).calls[0]?.input
-    .defect;
+  const scripted = text(
+    json(path.join(runDir, "standin-script.json"), ScriptedCalls).calls[0]?.input,
+    "defect"
+  );
   if (
     !record.defects.some(
       (defect) => defect.id === id && defect.text === scripted && defect.role === request.role

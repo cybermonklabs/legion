@@ -3493,7 +3493,7 @@ printf '%s\n' "${"${LEGION_TEST_PG_DSN:-}"}" >"$run/stub-pg"
 term=0
 trap 'term=1' TERM
 start=$(date +%s%3N)
-ready_at=$(jq '.readyAfterMs // 300' "$plan")
+ready_at=$(jq 'if has("readyAfterMs") and .readyAfterMs == null then null else (.readyAfterMs // 300) end' "$plan")
 statuses=$(jq -c '.statuses // []' "$plan")
 count=$(jq length <<<"$statuses")
 next=0 wrote=0
@@ -3649,6 +3649,8 @@ function labelRun(
   const result = bash(script, [root, R, co, work, worlds, scenarios], {
     USER: "rig",
     SKILL_SCENARIOS_OMP: omp,
+    // A run that never ends holds the row to the rig's bound, not the default 1500 s.
+    SKILL_SCENARIOS_TIMEOUT: "20",
     ...options.env,
   });
   const read = (file: string) =>
@@ -3682,6 +3684,7 @@ work=$SKILL_SCENARIOS_WORK
 printf '%s\n' "$*" >>"$work/rig-calls"
 case $1 in
 label-tree) [ -z "${"${PLANT_TREE_FAIL:-}"}" ] || { echo "the manifest $4 does not exist" >&2; exit 1; } ;;
+unpatch-holds) [ -z "${"${PLANT_UNPATCH_FAIL:-}"}" ] || { echo "the tree differs from its commit in more than the patch" >&2; exit 1; } ;;
 batch-scored)
   printf 'world=%s check=%s control=%s model=%s\n' "$SKILL_SCENARIOS_FORWARD_WORLD" "${"${SKILL_SCENARIOS_PATH_CHECK:-}"}" \
     "${"${SKILL_SCENARIOS_PATH_CONTROL:-}"}" "${"${SKILL_SCENARIOS_MODEL:-}"}" >>"$work/rig-env"
