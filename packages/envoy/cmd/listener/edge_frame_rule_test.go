@@ -261,7 +261,7 @@ func relayTopics(t *testing.T, sub *natsgo.Subscription) []string {
 		if _, probe := msg.Header[bus.ConnectionProbeHeader]; probe || !strings.HasPrefix(msg.Reply, bus.RelayReplyPrefix) {
 			continue
 		}
-		topic, named := envelopeTopic(msg.Data)
+		topic, named, _ := exactFrameTopic(msg.Data)
 		if !named {
 			topic = string(msg.Data)
 		}

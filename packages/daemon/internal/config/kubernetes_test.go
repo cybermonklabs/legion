@@ -1,6 +1,6 @@
 package config
 
-//ci:reads deploy/kubernetes/operator-route/pod.yml TestLoadForValidationRefusesUnderKubernetes
+//ci:reads deploy/kubernetes/operator-route/pod.yml `packages/daemon/internal/config/kubernetes_test.go#operatorRoutePod` reads it under ../../../.. for the tests of the operator route's placeholders
 
 import (
 	"fmt"
@@ -432,7 +432,9 @@ func TestTheRepositoryCacheCanRequestLessMemoryThanItsLimit(t *testing.T) {
 // past 253 characters) naming the key and the value. A cache account that is the one every other
 // pod runs as is refused: the configured runtime.kubernetes.pod.service_account, or, where that is
 // unset, the namespace's `default`, which is what every such pod runs as. The bucket's grant goes to
-// the cache's account, and on that account it would reach every pod.
+// the cache's account, and on that account it would reach every pod. So is the controller's own
+// account, runtime.kubernetes.pod.controller_service_account, on which the grant would reach the
+// controller's pod.
 func TestRepositoryCacheBucketSettings(t *testing.T) {
 	const key = "runtime.kubernetes.repository_cache"
 	cache := func(members string) string { return kubernetesFile + "    repository_cache: {" + members + "}\n" }
@@ -476,6 +478,9 @@ func TestRepositoryCacheBucketSettings(t *testing.T) {
 			want: key + `.service_account "legion-worker" must differ from runtime.kubernetes.pod.service_account, the account every other pod runs as: the bucket's grant to it would reach every pod`},
 		{name: "default where no pod account is set", body: cache("bucket: example-legion-packs, service_account: default"),
 			want: key + `.service_account "default" must differ from the account every other pod runs as, the namespace's default while runtime.kubernetes.pod.service_account is unset: the bucket's grant to it would reach every pod`},
+		{name: "the controller's own account", body: "controller: daemon\n" + kubernetesFile +
+			"    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n    repository_cache: {bucket: example-legion-packs, service_account: legion-controller}\n",
+			want: key + `.service_account "legion-controller" must differ from runtime.kubernetes.pod.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
@@ -1488,7 +1493,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "projects absent",
 			body: kubernetesWith("projects:\n  LEGSMOKE: {}\n", ""),
-			want: "projects is required when runtime is kubernetes: every pod works one issue of a configured project",
+			want: "projects is required when runtime is kubernetes: every pod works one issue of one of the projects it names",
 		},
 		{
 			name: "omp_invocation set",

@@ -437,15 +437,22 @@ func DefaultResources() PodResources {
 // PodConfig is `runtime.kubernetes.pod`, what the operator adds to every pod Legion runs, the image
 // probe's included, in the API's own types: variables and volume mounts for the agent's container,
 // the volumes they mount (each a Secret, a ConfigMap, a projection of ServiceAccount tokens,
-// Secrets, and ConfigMaps, a PersistentVolumeClaim, or an NFS export), and the ServiceAccount the pods run as. It passes through as written:
-// the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of Legion's own
-// or the worker image's (sandbox.CheckPod), and the API server the rest when it creates the
-// image probe's pod, which carries it, at boot.
+// Secrets, and ConfigMaps, a PersistentVolumeClaim, or an NFS export), the ServiceAccount the pods
+// run as, and the one the daemon-launched controller's pod runs as in its place when the file names
+// one (controller_service_account, which only `controller: daemon` reads). It passes through as
+// written: the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of
+// Legion's own or the worker image's (sandbox.CheckPod), and the API server the rest when it
+// creates the image probe's pod at boot, which carries all of it but controller_service_account:
+// that pod runs as service_account (sandbox's probeManifest), so the API server would first read
+// the controller's account at the controller's launch, and the loader checks that name itself
+// (readPod). Its fields are sandbox.Pod's, one for one, since the daemon converts the one into the
+// other.
 type PodConfig struct {
-	Env            map[string]string
-	Volumes        []corev1.Volume
-	VolumeMounts   []corev1.VolumeMount
-	ServiceAccount string
+	Env                      map[string]string
+	Volumes                  []corev1.Volume
+	VolumeMounts             []corev1.VolumeMount
+	ServiceAccount           string
+	ControllerServiceAccount string
 }
 
 const (
@@ -763,7 +770,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.TestPostgres, err = readTestPostgres(fields["test_postgres"]); err != nil {
 		return nil, err
 	}
-	if block.RepositoryCache, err = readRepositoryCache(fields["repository_cache"], block.Pod.ServiceAccount); err != nil {
+	if block.RepositoryCache, err = readRepositoryCache(fields["repository_cache"], block.Pod); err != nil {
 		return nil, err
 	}
 	if block.IdleRelease, err = readIdleRelease(fields["idle_release"]); err != nil {
@@ -825,9 +832,9 @@ func readSetup(value *yaml.Node) ([]string, error) {
 // as a role's is (settledRequest: a raised limit alone is requested in full). A zero volume, refresh
 // or retention is refused with the negatives, as no size and no interval, and a request past its
 // limit is refused naming both, as the API server would refuse the pod. The bucket and the cache's
-// own account are read as one pair (readCacheBucket) against podAccount, the file's
-// runtime.kubernetes.pod.service_account, "" where it sets none.
-func readRepositoryCache(value *yaml.Node, podAccount string) (RepositoryCacheConfig, error) {
+// own account are read as one pair (readCacheBucket) against pod, the file's
+// runtime.kubernetes.pod, whose accounts are "" where it sets none.
+func readRepositoryCache(value *yaml.Node, pod PodConfig) (RepositoryCacheConfig, error) {
 	const key = kubernetesKey + ".repository_cache"
 	settled := defaultRepositoryCache
 	if value == nil || value.Tag == "!!null" {
@@ -875,7 +882,7 @@ func readRepositoryCache(value *yaml.Node, podAccount string) (RepositoryCacheCo
 	if err := requestsUnderLimits(key+".resources", settled.Resources); err != nil {
 		return RepositoryCacheConfig{}, err
 	}
-	if settled.Bucket, settled.ServiceAccount, err = readCacheBucket(fields, key, podAccount); err != nil {
+	if settled.Bucket, settled.ServiceAccount, err = readCacheBucket(fields, key, pod); err != nil {
 		return RepositoryCacheConfig{}, err
 	}
 	return settled, nil
@@ -896,10 +903,13 @@ const defaultServiceAccount = "default"
 // refuses one, and so is one still holding a `${…}` placeholder (unfilledPlaceholder) and an
 // account that is no ServiceAccount's name (serviceAccountName). The bucket must have the shape
 // workspace.ValidBucketName holds it to, the one rule a fetch holds a /packs manifest's bucket to as
-// well. The account must not be the one every other pod runs as: podAccount, the file's
+// well. The account must not be the one every other pod runs as: pod.ServiceAccount, the file's
 // runtime.kubernetes.pod.service_account, or defaultServiceAccount where the file sets none, since
-// the bucket's grant to that account would reach every pod of the deployment.
-func readCacheBucket(fields map[string]*yaml.Node, key, podAccount string) (bucket, account string, err error) {
+// the bucket's grant to that account would reach every pod of the deployment. Nor may it be
+// pod.ControllerServiceAccount, the controller's own account where the file names one, since the
+// grant would then reach the controller's pod.
+func readCacheBucket(fields map[string]*yaml.Node, key string, pod PodConfig) (bucket, account string, err error) {
+	podAccount := pod.ServiceAccount
 	if bucket, err = optionalString(fields["bucket"], key+".bucket"); err != nil {
 		return "", "", err
 	}
@@ -929,6 +939,8 @@ func readCacheBucket(fields map[string]*yaml.Node, key, podAccount string) (buck
 	case podAccount == "" && account == defaultServiceAccount:
 		return "", "", fmt.Errorf("%s.service_account %q must differ from the account every other pod runs as, the namespace's %s while %s.service_account is unset: the bucket's grant to it would reach every pod",
 			key, account, defaultServiceAccount, podKey)
+	case pod.ControllerServiceAccount != "" && account == pod.ControllerServiceAccount:
+		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod", key, account, podKey)
 	}
 	return bucket, account, nil
 }
@@ -1436,10 +1448,13 @@ func ReadPodFile(path string) (PodConfig, error) {
 }
 
 // readPod reads `runtime.kubernetes.pod`, refusing a shape no pod could carry, and a
-// ServiceAccount still holding a ${…} placeholder: nothing in Legion expands one, as the token
-// projection says, so the API server would refuse every pod for an account that does not exist.
-// A ServiceAccount that is no ServiceAccount's name is refused too (serviceAccountName), for the
-// same reason.
+// ServiceAccount, the pods' or the controller's, still holding a ${…} placeholder: nothing in
+// Legion expands one, as the token projection says, so the API server would refuse every pod for
+// an account that does not exist. A ServiceAccount, the pods' or the controller's, that is no
+// ServiceAccount's name is refused too (serviceAccountName), a DNS-1123 subdomain as the API server
+// requires, as readClaimSource refuses a claim's: for the controller's, no pod at boot runs as that
+// account, so the API server would refuse the name only at the controller's launch, after load,
+// `legion config check` and boot had all passed it.
 func readPod(value *yaml.Node) (PodConfig, error) {
 	if value == nil {
 		return PodConfig{}, nil
@@ -1469,6 +1484,15 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 		return PodConfig{}, err
 	}
 	if err := serviceAccountName(podKey+".service_account", pod.ServiceAccount); err != nil {
+		return PodConfig{}, err
+	}
+	if pod.ControllerServiceAccount, err = optionalString(fields["controller_service_account"], podKey+".controller_service_account"); err != nil {
+		return PodConfig{}, err
+	}
+	if err := unfilledPlaceholder(podKey+".controller_service_account", pod.ControllerServiceAccount, "the ServiceAccount the controller's pod runs as"); err != nil {
+		return PodConfig{}, err
+	}
+	if err := serviceAccountName(podKey+".controller_service_account", pod.ControllerServiceAccount); err != nil {
 		return PodConfig{}, err
 	}
 	return pod, nil
@@ -2417,7 +2441,7 @@ func checkKubernetesKeys(file fileConfig) error {
 		{"operator_token_file", file.OperatorTokenFile == nil, "legion claims presents this token, as legion controller start does under controller: operator"},
 		{"dispatch_url", file.DispatchURL == nil, "the workflow is what launches every pod"},
 		{"github_apps", file.GitHubApps == nil, "every pod's workspace is cloned with the implement App's token"},
-		{"projects", file.Projects == nil, "every pod works one issue of a configured project"},
+		{"projects", file.Projects == nil, "every pod works one issue of one of the projects it names"},
 	} {
 		if rule.absent {
 			return fmt.Errorf("%s is required when runtime is kubernetes: %s", rule.key, rule.why)

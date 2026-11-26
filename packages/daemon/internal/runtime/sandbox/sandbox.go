@@ -330,7 +330,7 @@ func checkSupervision(opts Options) error {
 	case opts.CacheRepositories == nil:
 		return refuse("no repository set for the repository caches")
 	}
-	if err := opts.RepositoryCache.check(opts.Pod.ServiceAccount); err != nil {
+	if err := opts.RepositoryCache.check(opts.Pod); err != nil {
 		return refuse("%v", err)
 	}
 	host, ok := strings.CutPrefix(opts.StreamURL, "tcp://")
@@ -910,10 +910,12 @@ func serviceAccountOr(name string) string {
 }
 
 // accountDrift is the ServiceAccount p runs as, and whether it is not account, the one this
-// runtime creates a pod of p's kind with: runtime.kubernetes.pod.service_account for every pod but
-// a cache pod whose bucket is on, which runs as the cache's own account (cachePodAccount). A pod
-// runs as the account it was created with for its whole life — the field is fixed on the pod, and
-// nothing the daemon writes to the Sandbox moves it — so an operator who changes service_account
+// runtime creates p's kind of pod with, which each caller passes for the pod it holds: the kind's
+// own (podKind.serviceAccount — the controller's runtime.kubernetes.pod.controller_service_account
+// where the operator names one), the cache's own for a cache pod whose bucket is on
+// (cachePodAccount), and runtime.kubernetes.pod.service_account for every other pod. A pod runs as
+// the account it was created with for its whole life — the field is fixed on the pod, and nothing
+// the daemon writes to the Sandbox moves it — so an operator who changes any of those accounts
 // reaches a running pod only by replacing it: until then its agents hold the identity the old
 // account grants, whatever the configuration now says they may reach. Such a pod is replaced by
 // its own update round, which first asks every worker in it to do the steps of its update message
@@ -1307,13 +1309,16 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 
 // warnPodDrift logs, for the Sandbox u, what the pod it owns in the store runs that a pod created
 // now would not: a container on an image other than the runtime's (imageDrift), the pod running as
-// a ServiceAccount other than the configured one (accountDrift), and the recorded leak-check
-// manifest differing from the configured one (leakCheckDrift). Each kind of drift is one warning
-// of its own, naming the Sandbox and the held and current values, as ReconcileOrphans says, so a
-// pod holding several is named once for each. A same-named pod u does not own is an earlier
-// Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned
-// of, for the account as for the image: ReconcileOrphans passes over it before the call, since its
-// own sweep replaces its pod for either drift without a relaunch to wait for.
+// a ServiceAccount other than the one its kind is configured with (accountDrift,
+// podKind.serviceAccount: the controller's own account for the controller's pod where one is
+// named), and the recorded leak-check manifest differing from the configured one
+// (leakCheckDrift). Each kind of drift is one warning of its own, naming the Sandbox and the held
+// and current values, as ReconcileOrphans says, so a pod holding several is named once for each. A
+// Sandbox whose labels name no kind (podKindOf) is held to no account, since there is none its
+// kind takes; the sweep names it instead. A same-named pod u does not own is an earlier Sandbox's,
+// on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned of, for the
+// account as for the image: ReconcileOrphans passes over it before the call, since its own sweep
+// replaces its pod for either drift without a relaunch to wait for.
 func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 	pod := r.storedPod(u.GetName())
 	if !ownedBy(pod, u.GetUID()) {
@@ -1323,10 +1328,13 @@ func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs image %s, the configured image is %s; its agents call this daemon as the older release until its update round replaces the pod", u.GetName(), other, r.image),
 			"sandbox", u.GetName(), "pod", pod.UID)
 	}
-	if account, drifted := accountDrift(pod, r.pod.ServiceAccount); drifted {
-		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs as ServiceAccount %s, the configured ServiceAccount is %s; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does",
-			u.GetName(), account, serviceAccountOr(r.pod.ServiceAccount)),
-			"sandbox", u.GetName(), "pod", pod.UID)
+	if kind, err := podKindOf(u.GetLabels()); err == nil {
+		configured := kind.serviceAccount(r)
+		if account, drifted := accountDrift(pod, configured); drifted {
+			r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs as ServiceAccount %s, the configured ServiceAccount is %s; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does",
+				u.GetName(), account, serviceAccountOr(configured)),
+				"sandbox", u.GetName(), "pod", pod.UID)
+		}
 	}
 	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
 	if held, recorded := recordedLeakChecker(annotations, u.GetAnnotations(), string(pod.UID)); len(r.leakCheckDrift(held, recorded)) > 0 {

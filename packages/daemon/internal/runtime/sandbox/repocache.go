@@ -57,13 +57,14 @@ type RepositoryCache struct {
 	ServiceAccount string
 }
 
-// check is why c is no configuration a runtime whose other pods run as podAccount
-// (Options.Pod.ServiceAccount) can make caches with, or nil. Besides the sizes and the reservation,
-// it holds the bucket's pair as config's loader does (readCacheBucket): the bucket and the cache's
-// account set together or not at all, and the cache's account never the one every other pod runs
-// as, read as accountDrift reads an unset account (serviceAccountOr), since the bucket's grant to
-// that account would reach every pod.
-func (c RepositoryCache) check(podAccount string) error {
+// check is why c is no configuration a runtime whose other pods run as pod's accounts
+// (Options.Pod) can make caches with, or nil. Besides the sizes and the reservation, it holds the
+// bucket's pair as config's loader does (readCacheBucket): the bucket and the cache's account set
+// together or not at all, and the cache's account never the one every other pod runs as, read as
+// accountDrift reads an unset account (serviceAccountOr), since the bucket's grant to that account
+// would reach every pod, nor the controller's own account where one is named
+// (Pod.ControllerServiceAccount), since the grant would then reach the controller's pod.
+func (c RepositoryCache) check(pod Pod) error {
 	switch {
 	case c.Volume.Sign() <= 0:
 		return fmt.Errorf("repository cache volume %s is not a positive quantity", c.Volume.String())
@@ -73,8 +74,10 @@ func (c RepositoryCache) check(podAccount string) error {
 		return fmt.Errorf("repository cache retention %s is not positive", c.Retain)
 	case (c.Bucket == "") != (c.ServiceAccount == ""):
 		return fmt.Errorf("repository cache bucket %q and ServiceAccount %q are set together or not at all: the cache pods run as an account of their own only to write the bucket", c.Bucket, c.ServiceAccount)
-	case c.ServiceAccount != "" && c.ServiceAccount == serviceAccountOr(podAccount):
+	case c.ServiceAccount != "" && c.ServiceAccount == serviceAccountOr(pod.ServiceAccount):
 		return fmt.Errorf("repository cache ServiceAccount %s is the one every other pod runs as: the bucket's grant to it would reach every pod", c.ServiceAccount)
+	case c.ServiceAccount != "" && c.ServiceAccount == pod.ControllerServiceAccount:
+		return fmt.Errorf("repository cache ServiceAccount %s is the one the controller's pod runs as: the bucket's grant to it would reach the controller's pod", c.ServiceAccount)
 	}
 	return checkRequirements("the repository cache", c.Resources)
 }
