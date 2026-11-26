@@ -760,17 +760,15 @@ func (g *goingReadRun) issueProgress(ctx context.Context, q queryer, key string)
 	if g.asked != "" && issue.Project != g.asked {
 		return going.Read{}, going.Refuse("this question was asked of project %s, and %s is an issue of %s", g.asked, key, issue.Project)
 	}
-	// An issue may have children in other projects. Scope their rows before pagination
-	// and derive the progress bar from their filtered counts, not the issue loader's totals.
-	childProject := ""
-	if scope != "" {
-		childProject = g.asked
-	}
-	children, _, err := goingIssuePage(ctx, q, childProject, key, false, scope)
+	// An issue may have children in other projects, and a run asked of one project reads them
+	// all, as a run asked of none does. For a scoped author, the scope alone leaves out each
+	// child it may not read, before pagination, and the progress bar is derived from the
+	// filtered counts, not the issue loader's totals.
+	children, _, err := goingIssuePage(ctx, q, "", key, false, scope)
 	if err != nil {
 		return going.Read{}, err
 	}
-	statuses, err := goingStatusCounts(ctx, q, childProject, key, scope)
+	statuses, err := goingStatusCounts(ctx, q, "", key, scope)
 	if err != nil {
 		return going.Read{}, err
 	}

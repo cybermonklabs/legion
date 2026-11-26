@@ -423,22 +423,57 @@ func TestGoingUnassignedProjectReadsRespectTheAuthorScope(t *testing.T) {
 			}
 		})
 	}
-	readProgress := reads.funcs[going.ReadProgress]
-	t.Run("issue and children", func(t *testing.T) {
-		for _, key := range []string{"HIDDEN-1", "MISSING-1"} {
-			_, err := readProgress(ctx, json.RawMessage(fmt.Sprintf(`{"issue":%q}`, key)))
-			requireMissing(t, err)
-		}
-		got, err := readProgress(ctx, json.RawMessage(`{"issue":"DEMO-1"}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if rows := got.Tables[going.TableIssues]; len(rows) != 1 || rows[0][going.FieldKey] != "OTHER-1" {
-			t.Errorf("child rows = %v, want OTHER-1 alone", rows)
-		}
-		want := []map[string]any{{going.FieldLabel: "children", going.FieldDone: 0, going.FieldTotal: 1}}
-		if bars := got.Tables[going.TableProgress]; !reflect.DeepEqual(bars, want) {
-			t.Errorf("progress = %v, want only the public child counted: %v", bars, want)
+	// DEMO-1's children are OTHER-1, public, and HIDDEN-1, private and not the author's: the
+	// issue read lists and counts OTHER-1 alone. A run asked of DEMO reads the same children as
+	// a run asked of no project, since the author's scope, not the project the run was asked
+	// of, is what leaves a child out.
+	askedOfDemo := rig.served.goingRunReads(goingRequest{Project: "DEMO", Author: request.Author},
+		goingRunStart{reads: []string{going.ReadProgress}})
+	for _, run := range []struct {
+		name         string
+		readProgress going.ReadFunc
+	}{
+		{"issue and children", reads.funcs[going.ReadProgress]},
+		{"issue and children asked of DEMO", askedOfDemo.funcs[going.ReadProgress]},
+	} {
+		t.Run(run.name, func(t *testing.T) {
+			for _, key := range []string{"HIDDEN-1", "MISSING-1"} {
+				_, err := run.readProgress(ctx, json.RawMessage(fmt.Sprintf(`{"issue":%q}`, key)))
+				requireMissing(t, err)
+			}
+			got, err := run.readProgress(ctx, json.RawMessage(`{"issue":"DEMO-1"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rows := got.Tables[going.TableIssues]; len(rows) != 1 || rows[0][going.FieldKey] != "OTHER-1" {
+				t.Errorf("child rows = %v, want OTHER-1 alone", rows)
+			}
+			want := []map[string]any{{going.FieldLabel: "children", going.FieldDone: 0, going.FieldTotal: 1}}
+			if bars := got.Tables[going.TableProgress]; !reflect.DeepEqual(bars, want) {
+				t.Errorf("progress = %v, want only the public child counted: %v", bars, want)
+			}
+		})
+	}
+	// A query that is a bare number names the issue of that number in each project the author's
+	// scope covers (searchOwnIssueKeys): DEMO-1 and OTHER-1, and not HIDDEN-1, which the lookup
+	// with no scope answers too. The lookup's own rows are where its filter is held, since no hit
+	// of the search can show it: the lookup has no bound, its keys reach the search statement
+	// only as q.own_keys, which adds each key's own issue to the issue arm and leaves it out of
+	// the arm's word match, and that statement drops every row of a project the scope does not
+	// cover before it ranks, counts or pages any (searchKindsCTE's exclusion in
+	// goingCoveredKeywordSearch and goingCoveredMeaningSearch).
+	t.Run("number lookup", func(t *testing.T) {
+		for _, lookup := range []struct {
+			scope string
+			want  []string
+		}{
+			{"", []string{"DEMO-1", "HIDDEN-1", "OTHER-1"}},
+			{"DEMO", []string{"DEMO-1", "OTHER-1"}},
+		} {
+			keys, err := rig.served.searchOwnIssueKeys(ctx, searchParameters{text: "1", goingScope: lookup.scope})
+			if err != nil || !slices.Equal(keys, lookup.want) {
+				t.Errorf("issues numbered 1 under the scope %q = %v, %v; want %v", lookup.scope, keys, err, lookup.want)
+			}
 		}
 	})
 	t.Run("searches and body read", func(t *testing.T) {
@@ -468,6 +503,98 @@ func TestGoingUnassignedProjectReadsRespectTheAuthorScope(t *testing.T) {
 			t.Errorf("bodies after OTHER becomes private = %v, %v; want only DEMO-1", bodies, err)
 		}
 	})
+}
+
+// goingSearchIDs is the ids of what the run's search finds for query as author, asked of no
+// project, sorted.
+func goingSearchIDs(t *testing.T, rig blockRig, author model.Actor, query string) []string {
+	t.Helper()
+	hits, err := rig.served.goingSearch("", author)(t.Context(), query)
+	if err != nil {
+		t.Fatalf("search %q as %s: %v", query, author.ID, err)
+	}
+	ids := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		ids = append(ids, hit.ID)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// A scoped run's meaning search fills each meaning arm's candidates from the projects its
+// author's scope covers alone (meaningCoveredProjects), so a private project the author does not
+// name cannot take them: contracts.SearchKindDepth+1 issues of HIDDEN, one more than the issue
+// arm takes and every one nearer the query than OTHER-2, of a public project, leave OTHER-2
+// found. The control is the same search by an author scoped to no project: the crowd is the
+// arm's whole candidate set and OTHER-2 is not reached, which is what the scoped search answers
+// too when its scope is applied above the arm's limit alone.
+func TestAScopedRunsMeaningSearchFindsAPublicIssuePastAHiddenCrowd(t *testing.T) {
+	t.Parallel()
+	const query, crowd, visible = "wibbleflorp", "A hidden neighbour", "A visible neighbour"
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		query: queryVector(), crowd: angledVector(0.9, 1), visible: angledVector(0.5, 2),
+	}}
+	rig := newBlockRig(t, testServerOptions{embedder: embedder})
+	seedActivityFixture(t, rig.database)
+	rig.seed(t,
+		`insert into projects (key, name, default_assignee) values ('HIDDEN', 'Hidden', 'alice')`,
+		`update projects set visibility = 'private', owner = 'alice' where key in ('DEMO', 'HIDDEN')`,
+		fmt.Sprintf(`insert into issues (key, project_key, number, title, status, created_by, rank)
+			select 'HIDDEN-' || n, 'HIDDEN', n, '%s', 'todo', '{"kind":"system","id":"test"}', lpad(n::text, 4, '0')
+			from generate_series(1, %d) n`, crowd, contracts.SearchKindDepth+1),
+		fmt.Sprintf(`insert into issues (key, project_key, number, title, status, created_by, rank)
+			values ('OTHER-2', 'OTHER', 2, '%s', 'todo', '{"kind":"system","id":"test"}', 'V')`, visible),
+	)
+	processAllPending(t, rig.database, embedder)
+
+	scoped := model.Actor{Kind: "session", ID: "ses-scoped", Project: new("DEMO"), Proven: true}
+	if keywords, err := rig.served.runGoingSearch(t.Context(), query, "", scoped, true); err != nil || len(keywords.Results) != 0 {
+		t.Fatalf("the keyword leg alone found %+v, %v; want nothing, so every hit below is the meaning leg's", keywords.Results, err)
+	}
+	unscoped := model.Actor{Kind: "session", ID: "ses-unscoped", Proven: true}
+	if ids := goingSearchIDs(t, rig, unscoped, query); slices.Contains(ids, "OTHER-2") {
+		t.Fatalf("the unscoped search found OTHER-2 among %v, so the crowd of %d does not fill the issue arm's %d candidates and this test proves nothing",
+			ids, contracts.SearchKindDepth+1, contracts.SearchKindDepth)
+	}
+	if ids := goingSearchIDs(t, rig, scoped, query); !slices.Equal(ids, []string{"OTHER-2"}) {
+		t.Errorf("the scoped search matched %v, want OTHER-2 alone: HIDDEN's issues, which the scope does not cover, took the issue arm's candidates", ids)
+	}
+}
+
+// A scoped run's fallback keeps the searchBroadenWords rarest words of a query nothing answers,
+// rarest by their counts in the projects its author's scope covers alone
+// (goingCoveredRarestWordsSQL), so a private project the author does not name cannot make a word
+// common and push it out of the pick. No one issue holds the query's six words: DEMO-3 and DEMO-4
+// each hold five, and gnomon is held by OTHER-2, of a public project, and by three issues of
+// HIDDEN. Counted where the scope reaches, gnomon is the rarest word and is kept, and OTHER-2 is
+// found; counted in HIDDEN too, it is the commonest and the one word dropped, which the control,
+// the same search by an author scoped to no project, shows.
+func TestAScopedRunsFallbackPicksTheRarestWordsWhereItsScopeReaches(t *testing.T) {
+	t.Parallel()
+	const query = "astrolabe sextant quadrant alidade orrery gnomon"
+	rig := newBlockRig(t, testServerOptions{})
+	seedActivityFixture(t, rig.database)
+	rig.seed(t,
+		`insert into projects (key, name, default_assignee) values ('HIDDEN', 'Hidden', 'alice')`,
+		`update projects set visibility = 'private', owner = 'alice' where key in ('DEMO', 'HIDDEN')`,
+		`insert into issues (key, project_key, number, title, status, created_by, rank) values
+			('DEMO-3', 'DEMO', 3, 'Astrolabe sextant quadrant alidade orrery', 'todo', '{"kind":"system","id":"test"}', 'W'),
+			('DEMO-4', 'DEMO', 4, 'Astrolabe sextant quadrant alidade orrery', 'todo', '{"kind":"system","id":"test"}', 'X'),
+			('OTHER-2', 'OTHER', 2, 'Gnomon', 'todo', '{"kind":"system","id":"test"}', 'V')`,
+		`insert into issues (key, project_key, number, title, status, created_by, rank)
+			select 'HIDDEN-' || n, 'HIDDEN', n, 'Gnomon', 'todo', '{"kind":"system","id":"test"}', lpad(n::text, 4, '0')
+			from generate_series(1, 3) n`,
+	)
+	RefreshEverySearchTermStats(t.Context(), rig.database.Pool)
+
+	unscoped := model.Actor{Kind: "session", ID: "ses-unscoped", Proven: true}
+	if ids := goingSearchIDs(t, rig, unscoped, query); !slices.Equal(ids, []string{"DEMO-3", "DEMO-4"}) {
+		t.Fatalf("the unscoped search matched %v, want DEMO-3 and DEMO-4 alone: HIDDEN's counts are to make gnomon the word the fallback drops, or this test proves nothing", ids)
+	}
+	scoped := model.Actor{Kind: "session", ID: "ses-scoped", Project: new("DEMO"), Proven: true}
+	if ids := goingSearchIDs(t, rig, scoped, query); !slices.Equal(ids, []string{"DEMO-3", "DEMO-4", "OTHER-2"}) {
+		t.Errorf("the scoped search matched %v, want DEMO-3, DEMO-4 and OTHER-2: HIDDEN's counts, which the scope does not cover, pushed gnomon out of the fallback's words", ids)
+	}
 }
 
 // The roster read names every session that holds a claim (status-11 of the eval, which no try
