@@ -13026,3 +13026,138 @@ test("after the Inbox bar's Snooze lands with the pointer travelling over the li
     text
   ).toBe(true);
 });
+
+// INFRA-3135, round 29 (the tester's), by the architect's rulings of 2026-11-26 07:5xZ (a host's
+// layout for the commit is current before its bar hands the focus on: nothing the reader sees
+// changes but the frame in which the box takes its size) and 14:12Z, which counts this row. Measured
+// at b04db619 in builds Jobs infra-3135-l-h5-2prxr and infra-3135-l-h1b-ptjnb, in Chromium, Firefox
+// and WebKit at 1440x900: on the project List of an epic's ninety issues, with the two rows marked
+// last near the top of the list and the box scrolled to its end, so neither is drawn, Take out of
+// epic lands the focus on a checkbox while the box stands at 306 to 706 (its style height 400 px),
+// and one frame later the box stands at 306 to 736 (430 px): its bottom edge moves 30 px after the
+// landing. `fitHeight` (components/table-layout.ts:424-434, through `boxHeightNow` at :393-420,
+// called from IssuesTable.tsx:371) writes the height while main's foot still holds 100 px of room
+// for the bar, so the floor it writes is not the height the box keeps, and the foot's pass then has
+// `measure` write 430. At 53f87411 nothing writes the box's style and it stands at 306 to 736
+// throughout (infra-3135-l-b5-v65cm, infra-3135-l-b1b-9zdsr).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-29 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): ninety issues of an epic seeded, and one Take out of epic read for a second after it lands.
+test("after Take out of epic with the rows marked last far above the view lands, the project List's box keeps the frame it had when the focus landed @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 90; index++) {
+    await createIssue({ parent: epic.key, project: "CORE", title: `Epic row ${index}` });
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const box = page.getByTestId("issues-table-scroll");
+  await page.goto(`/projects/CORE/issues?f.epic=${encodeURIComponent(`${epic.key} · Table epic`)}`);
+  await expect.poll(() => page.locator("[data-issue-row]").count()).toBeGreaterThanOrEqual(12);
+  // The box's top 60 px below the window's top, scrolled to its own top, where it draws the first rows.
+  await box.evaluate((node) => {
+    window.scrollBy(0, node.getBoundingClientRect().top - 60);
+    node.scrollTop = 0;
+  });
+  await settledScrollTop(box);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  const order = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("[data-issue-row]")]
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+      .map((row) => row.getAttribute("data-issue-row") ?? "")
+  );
+  const upper = order[2] ?? "";
+  const lower = order[3] ?? "";
+  // The lower row first, so the row marked last is the upper one.
+  for (const key of [lower, upper]) {
+    const mark = page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+    await mark.focus();
+    await page.keyboard.press("Space");
+    await expect(mark).toBeChecked();
+  }
+  await expect(bar).toContainText("2 selected");
+  await box.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  await settledScrollTop(box);
+  await nextFrames(page);
+  await expect(page.locator(`[data-issue-row="${upper}"]`)).toHaveCount(0);
+  // Every frame from the press on, the page records the box's frame and the focused checkbox's top
+  // at the first frame the focus stands on a checkbox of the table with the bar gone, and the box's
+  // frame and that checkbox's top at every frame after.
+  await box.evaluate((node) => {
+    const w = window as unknown as {
+      __afterLanding?: {
+        first: number[] | null;
+        last: number[] | null;
+        landed: Element | null;
+        on: boolean;
+      };
+    };
+    const record = {
+      first: null as number[] | null,
+      last: null as number[] | null,
+      landed: null as Element | null,
+      on: true,
+    };
+    w.__afterLanding = record;
+    const step = () => {
+      if (!record.on) return;
+      const barGone =
+        document.querySelector('[role="toolbar"][aria-label="Selected issues"]') === null;
+      const active = document.activeElement;
+      if (
+        record.landed === null &&
+        barGone &&
+        active instanceof HTMLInputElement &&
+        active.type === "checkbox" &&
+        node.contains(active)
+      ) {
+        record.landed = active;
+      }
+      if (record.landed !== null) {
+        const frame = node.getBoundingClientRect();
+        const now = [frame.top, frame.bottom, record.landed.getBoundingClientRect().top];
+        if (record.first === null) record.first = now;
+        record.last = now;
+      }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+  await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(bar).toHaveCount(0, { timeout: 15_000 });
+  // A second after the bar has gone, past the foot's pass and the box's next measure, so the page's
+  // record holds every frame the box could still move in after the landing.
+  await page.waitForTimeout(1000);
+  // One read is the answer: the bar has gone a second ago and nothing the press started is out, so
+  // the record's first and last frames after the landing are final.
+  const seen = await page.evaluate(() => {
+    const w = window as unknown as {
+      __afterLanding?: { first: number[] | null; last: number[] | null; on: boolean };
+    };
+    const record = w.__afterLanding;
+    if (record !== undefined) record.on = false;
+    return { first: record?.first ?? null, last: record?.last ?? null };
+  });
+  const [topAt, bottomAt, markAt] = seen.first ?? [Number.NaN, Number.NaN, Number.NaN];
+  const [topNow, bottomNow, markNow] = seen.last ?? [Number.NaN, Number.NaN, Number.NaN];
+  const text =
+    seen.first === null
+      ? "the focus never stood on a checkbox of the table once the bar had gone"
+      : `at the landing the box stood at ${Math.round(topAt)} to ${Math.round(bottomAt)}, a second later at ` +
+        `${Math.round(topNow)} to ${Math.round(bottomNow)}, and the landed checkbox moved ${Math.round(markNow - markAt)} px`;
+  expect(
+    seen.first === null ||
+      (Math.abs(topNow - topAt) <= 1 &&
+        Math.abs(bottomNow - bottomAt) <= 1 &&
+        Math.abs(markNow - markAt) <= 1),
+    text
+  ).toBe(true);
+});
