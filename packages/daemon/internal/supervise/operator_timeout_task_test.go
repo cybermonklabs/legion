@@ -23,7 +23,7 @@ func TestAnOperatorStopTimeoutTakesBackTheConfirmedPhaseTask(t *testing.T) {
 	if !pending.Interrupted || !pending.ConfirmedAt.IsZero() || pending.ID == "outbox:7" {
 		t.Fatalf("after the forced stop pending %+v, want an interrupted, unconfirmed replacement", pending)
 	}
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	h.reach(StateReady)
 	if pending = h.pending(); !pending.Interrupted || pending.Task != "Continue testing." {
 		t.Fatalf("after the operator resume pending %+v, want the interrupted phase task", pending)

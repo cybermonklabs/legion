@@ -39,7 +39,7 @@ const (
 // moment that retro opened, its bound, the claim of its agent, its end and how it ended. It is
 // the one source of the rule that an issue whose last run had its retro gets none after its
 // close and of every fence that rule's retro stands behind: the outbox start, the completion
-// route, the linger and the pod gate. Migration 20261125213821_run_retros adds the table and
+// route, the linger and the pod gate. Migration 20261126164240_run_retros adds the table and
 // fills each recorded issue's current run from what the database held then; from then on the
 // methods below are its one writer and its one reader.
 //

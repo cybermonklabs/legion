@@ -987,7 +987,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
 	}
 	transport := cipherclient.NewTokenTransport(client, http.DefaultTransport)
-	daemonDispatch := dispatch.New(cfg.DispatchURL, transport)
+	daemonDispatch := daemonDispatchClient(cfg, transport)
 	var caller dispatch.Caller
 	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
 		var err error
@@ -1007,6 +1007,20 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 	}
 	log.Info(dispatchCredentialLine, attrs...)
 	return transport, nil
+}
+
+// daemonDispatchClient is the daemon's Dispatch client of cfg, whose every request goes through
+// transport (dispatchCredential). Under dispatch_token_broker every write names the session the
+// daemon's broker token proves, legion-daemon:<its own project> (dispatch.WritesAs). Dispatch
+// refuses a write whose actor names another session (403 ACTOR_SESSION_MISMATCH), and the daemon
+// writes the issues of other projects too, when it runs a claim on one (legion claims spawn). With
+// the setting off the bearer proves no session, and each write names the session of the daemon of
+// the issue's project (dispatch.DaemonSession), as it did before the setting.
+func daemonDispatchClient(cfg config.Config, transport http.RoundTripper) *dispatch.HTTPClient {
+	if !cfg.DispatchTokenBroker {
+		return dispatch.New(cfg.DispatchURL, transport)
+	}
+	return dispatch.New(cfg.DispatchURL, transport, dispatch.WritesAs(dispatch.DaemonSession(cfg.Project)))
 }
 
 // renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
@@ -1075,12 +1089,14 @@ func tradeTransient(err error) bool {
 	return !(errors.As(err, &refused) && refused.Permanent())
 }
 
-// checkDaemonCaller refuses a broker token Dispatch takes for a caller whose every write it would
-// refuse: another session than the daemon's (403 ACTOR_SESSION_MISMATCH, every write of the
-// daemon's naming its own session as the actor), another project than the daemon's (403
-// PROJECT_SCOPE) or no person (SIGN_IN_REQUIRED). The outbox reads a 401 and a 403 as an outage
-// (dispatch.PermanentRefusal), so it would wait on each such write for ever; each is a fault of
-// the secrets broker's exchange entry for the daemon's own account, which the refusal names.
+// checkDaemonCaller refuses a broker token that is not the daemon's own, as GET /api/v1/whoami
+// reads it. Dispatch refuses every write of a token whose session is not the daemon's (403
+// ACTOR_SESSION_MISMATCH, every write of the daemon's naming its own session as the actor). The
+// outbox reads a 401 and a 403 as an outage (dispatch.PermanentRefusal), so it would wait on each
+// such write for ever. A token whose project is not the daemon's, and one that names no owner (an
+// exchange entry that names a project names the person it acts for), are not the daemon's own
+// either. Each of the three is a fault of the secrets broker's exchange entry for the daemon's own
+// account, which the refusal names.
 func checkDaemonCaller(caller dispatch.Caller, project string) error {
 	session := dispatch.DaemonSession(project)
 	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
@@ -1089,10 +1105,10 @@ func checkDaemonCaller(caller dispatch.Caller, project string) error {
 		return fmt.Errorf("GET /api/v1/whoami answers the session %s for the daemon's broker token, not %s, and Dispatch refuses every write the daemon makes as %s with it (403 ACTOR_SESSION_MISMATCH): %s so that it fixes the session %s",
 			whoamiValue(caller.Session), session, session, entry, session)
 	case caller.Project == nil || *caller.Project != project:
-		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s, and Dispatch refuses every write of the daemon's to %s with it (403 PROJECT_SCOPE): %s so that it names the project %s",
-			whoamiValue(caller.Project), project, project, entry, project)
+		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s: the token's project is not the daemon's, which is a fault of the exchange entry that gave it, and %s so that it names the project %s",
+			whoamiValue(caller.Project), project, entry, project)
 	case caller.Owner == nil:
-		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, and Dispatch refuses every write of a token that acts for no person (SIGN_IN_REQUIRED): %s so that it names the person the daemon acts for",
+		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, which names the daemon's project, and an exchange entry that names a project names the person it acts for: %s so that it names the person the daemon acts for",
 			entry)
 	}
 	return nil
@@ -1195,8 +1211,8 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
-	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
-	// in a provider error; nil without a workflow, where nobody is told.
+	// providerErrorRunReached tells of a claim whose turns keep ending in a provider error, to the
+	// roles its own doc comment names; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
@@ -1800,15 +1816,37 @@ type supervision struct {
 	reports      map[claim.Token]capabilities.Report
 	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
 	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
-	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
-	// pace the sweep's openings under `pod_update_rounds_per_minute` and
-	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
-	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
-	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
-	// caller.
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue, each
+	// with the reasons it posted. The two pace the sweep's openings, and the controller's
+	// (requestPodUpdate), under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
+	// nothing of either is in the store, because neither decides a round, and a daemon that has
+	// just booted opens its first round at its first sweep. The sweep runs on one goroutine and the
+	// controller's request on an API one, and the mutex is what keeps their reads whole.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
-	podUpdateOpened   map[string]string
+	podUpdateOpened   map[string]podUpdateOpening
+	// podUpdateWalk is the turn the sweep's walk over the issues (walkPodUpdates) and the
+	// controller's request for one issue's round (requestPodUpdate) each hold: the walk from before
+	// its read of the pause holds, through its finish of each standing replacement record
+	// (finishReplacements, two API server reads of up to 30 seconds for each) and its read of the
+	// project's limits, to the last opening it makes on them; the request from its read of the
+	// claims to its post. The request comes on an API goroutine, and an opening weighed against
+	// limits another opening has moved since they were read would take the project over them: two
+	// openings each reading the one slot left. The sweep's replacements and its reads of kept pods
+	// run after the walk, outside it, since each waits on a pod. It is a one-slot semaphore rather
+	// than a mutex so the request waits for it only while its own context lives and at most
+	// roundRecordBound (postRequestedPodUpdate), as stream.Conn's negotiation is, and is refused
+	// POD_UPDATE_BUSY after that; the walk waits for it as long as it takes. podUpdateWalkOnce makes
+	// it at its first use (podUpdateWalkTurn), so a supervision a test builds by hand needs none of
+	// its own.
+	podUpdateWalkOnce sync.Once
+	podUpdateWalk     chan struct{}
+	// podRoundRecordBound is how long the controller's request for a pod's round waits for a claim
+	// to record the round it posted (awaitPodRoundRecorded), and at most how long it waits for the
+	// sweep's walk to give it the turn (postRequestedPodUpdate), both read through roundRecordBound;
+	// zero is defaultPodRoundRecordBound, the value the daemon runs. A test sets a shorter one so it
+	// need not wait out the default.
+	podRoundRecordBound time.Duration
 	// podUpdateRoundsMu guards podUpdateRounds, what the last sweep decided under those two limits
 	// as the operator's claim listing serves it (api.PodUpdateRounds, podUpdateRoundsView): the
 	// issues that held an open round and the issues each limit held back. It is the sweep's own
@@ -3111,6 +3149,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Supervisor:         s.supervisor,
 		AwaitStream:        s.awaitStream,
 		PodUpdateRounds:    s.podUpdateRoundsView,
+		RequestPodUpdate:   s.requestPodUpdate,
 		BootTokens:         s.tokens,
 		Project:            p.project,
 		DispatchProject:    cfg.Project,

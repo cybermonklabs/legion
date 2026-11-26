@@ -9,7 +9,7 @@ import (
 
 // runRetrosVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const runRetrosVersion = 20261125213821
+const runRetrosVersion = 20261126164240
 
 // runRetrosRelease names the release whose way back the migration's header carries, as a failure
 // to read that block names it.
@@ -132,7 +132,7 @@ func seedRunRetroIssues(t *testing.T, store *Store) {
 	seed.stepStart("LEGION-5052", "step", 1, 1, first)
 }
 
-// 20261125213821 adds run_retros, one row for each issue and run, which is the one source of
+// 20261126164240 adds run_retros, one row for each issue and run, which is the one source of
 // whether a run started and whether it had its retro (INFRA-5602's P1 and P2), and fills it from
 // what the database holds for each recorded issue's current run. The rows are the rules of that
 // fill: a run started where an issue stands in a phase that carries a run or has a step start of
@@ -217,7 +217,7 @@ func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 	})
 }
 
-// The way back of 20261125213821, the last paragraph of its header (migrations.WayBack), is what
+// The way back of 20261126164240, the last paragraph of its header (migrations.WayBack), is what
 // an operator runs with every daemon stopped before the release before starts. That release
 // decodes an outbox payload strictly (record.DecodeOutboxPayload, DisallowUnknownFields), so each
 // queued row this release writes and it does not know is deleted: a retro_bound row, a
@@ -261,7 +261,7 @@ func TestTheRunRetroMigrationsWayBackRemovesWhatTheReleaseBeforeCannotRead(t *te
 	const gone = `select (select count(*) from information_schema.tables where table_name = 'run_retros')::text
 		|| ' ' || (select count(*) from information_schema.columns where table_name = 'claims' and column_name = 'serving_retro_run')::text
 		|| ' ' || (select count(*) from information_schema.columns where table_name = 'pending_task_deliveries' and column_name = 'retro_run')::text
-		|| ' ' || (select count(*) from schema_version where version = 20261125213821)::text`
+		|| ' ' || (select count(*) from schema_version where version = 20261126164240)::text`
 	if got, want := rowsAsText(t, store, gone), []string{"0 0 0 0"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the way back the table, the claim's column, the delivery's column and the version row (counts) = %v, want none of them", got)
 	}

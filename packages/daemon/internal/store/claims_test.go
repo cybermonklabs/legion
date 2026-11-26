@@ -379,7 +379,7 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 // The ladder a provider error puts a task on outlives the daemon that armed it: the count says
 // which step the next send waits, and the sentence is what that send puts in front of the task
 // (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
-// what the controller's notice is counted from, and neither a restart nor a re-put of the
+// what the provider-errors notice is counted from, and neither a restart nor a re-put of the
 // delivery under a new id may lose either.
 func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -1015,8 +1015,8 @@ func TestASuspendedClaimsSourceRoundTripsAndTheSchemaRefusesAnUnknownOne(t *test
 	t.Parallel()
 	s := migratedStore(t)
 	ctx := context.Background()
-	for _, by := range []supervise.SuspendSource{supervise.SuspendedByOperator, supervise.SuspendedByDaemon, supervise.SuspendedByExit,
-		supervise.SuspendedByReleased, ""} {
+	for _, by := range []supervise.SuspendSource{supervise.SuspendedByOperator, supervise.SuspendedByController,
+		supervise.SuspendedByDaemon, supervise.SuspendedByExit, supervise.SuspendedByReleased, ""} {
 		c := supervise.Claim{Token: "legion-LEGION-209-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209",
 			Role: claim.RoleTester, Generation: 2, State: supervise.StateSuspended, Session: "ses_tester", SuspendedBy: by}
 		if err := s.PutClaim(ctx, c); err != nil {

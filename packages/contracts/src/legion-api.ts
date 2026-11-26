@@ -318,8 +318,9 @@ const legionClaimView = z.object({
   updateState: z.enum(["none", "open", "asked", "answered"]).optional(),
   /** How many turns of this claim ended in a provider error in a row, absent for a claim whose
    * last turn ended with none. It bounds nothing — a limit here would fail every claim of a
-   * project at once in a provider outage — and the project's controller is told of it once, at
-   * a run of six, so this is the only surface the number behind that telling reaches. */
+   * project at once in a provider outage. At a run of six the daemon sends the `provider-errors`
+   * notice once (`providerErrorRunReached` in `packages/daemon/internal/daemon/workflow.go` says to
+   * whom), so this key is the only surface that shows the count before or after that notice. */
   providerErrorRun: z.number().int().positive().optional(),
   /** The task the claim holds, reduced to what a reader of this body decides on and never
    * carrying its text; absent for a claim holding none. */
@@ -1262,7 +1263,9 @@ const legionCacheView = z.object({
 
 /** `api.AppInstallationsView` — each role App's installation on one repository (contract 152):
  * the implement App a worker pushes and opens pull requests with, and the review App a reviewer
- * approves with. No plugin code reads either (`LEGION_ANSWER_READS`), so both are optional. */
+ * approves with. The controller's `read_state` summary reads both on each `live` entry
+ * (`LEGION_ANSWER_READS`), and both stay optional: the daemon writes `apps` only once GitHub
+ * answered both reads. */
 const legionAppInstallations = z.object({
   implement: z.boolean().optional(),
   review: z.boolean().optional(),
@@ -1276,7 +1279,10 @@ const legionAppInstallations = z.object({
  * 404, or a read that did not answer); and `cache`, its repository cache under the Kubernetes
  * runtime. The daemon writes `repo` on every entry and each other key only once it holds
  * something. What Dispatch answered of its webhook App is in the block's `withoutWebhookApp`
- * alone. No plugin code reads an entry (`LEGION_ANSWER_READS`), so every key is optional. */
+ * alone. The controller's `read_state` summary reads `repo`, `servedAs`, `apps` and `readError`
+ * to print `legion state`'s line for each repository whose last read failed or that a role App is
+ * not installed on (`LEGION_ANSWER_READS`), and every key stays optional, since the summary
+ * leaves out what an entry does not carry. */
 const legionLiveRepository = z.object({
   repo: nonEmptyString.optional(),
   servedAs: nonEmptyString.optional(),
@@ -1300,9 +1306,10 @@ const legionWebhookAppGap = z.object({
  * by its lowercased `<owner>/<name>`; `withoutWebhookApp`, each of those that Dispatch's GitHub App
  * is not known to be installed on, in `live`'s order; and `caches`, the repository caches of
  * repositories no live record names, each kept until its `retainedUntil` (contract 32). The daemon
- * writes all three on every body, never null, and no plugin code reads any of them
- * (`LEGION_ANSWER_READS`), so each is optional here. A repository is served once GitHub answered
- * that both role Apps are installed on it, whatever names it.
+ * writes all three on every body, never null; the controller's `read_state` summary reads `live`
+ * and no plugin code reads the other two (`LEGION_ANSWER_READS`), so each is optional here. A
+ * repository is served once GitHub answered that both role Apps are installed on it, whatever
+ * names it.
  *
  * `withoutWebhookApp` is the block's one report of Dispatch's webhook App, and no `live` entry
  * carries a copy of it. It keeps contract 152's shape for every caller: the operator's `legion
@@ -1925,9 +1932,81 @@ const legionDeliveryView = z.object({
 
 /** Who a suspension is held for (`supervise.SuspendedBy`). `unknown` is a suspension recorded
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
- * the claim's phase and its pending task until the next wake for its role; only an `operator`
- * one holds against the daemon's rules. */
-const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released"]);
+ * the claim's phase and its pending task until the next wake for its role; an `operator` and a
+ * `controller` one hold against the daemon's rules, ranked in that order: the controller's
+ * `resume_agent` lifts its own and never the operator's (the agent-actions contract). */
+const legionSuspendedBy = z.enum([
+  "unknown",
+  "operator",
+  "controller",
+  "daemon",
+  "exit",
+  "released",
+]);
+
+/** `api.AgentActionResponse`, what four of the controller's actions on an agent (stop, retry,
+ * suspend, resume_agent, compact and fresh session of one agent, named by its issue and role)
+ * answer: stop, retry, suspend and resume
+ * (`POST /legion/v1/agents/stop|retry|suspend|resume`, each taking `LegionClaimRequest`, the
+ * agent-actions contract): the claim's `state` after the request — `retired` after a stop; `suspended` after a
+ * suspension that landed, and still `working` or `launching` with
+ * `suspensionHeld` after one held for the agent's turn or its ready; `launching` after a resume or
+ * a retry the claim's machine ran; and still `failed` or `retired` after a retry of a phase worker
+ * whose start its issue's phase queued. `suspendedBy` (while the claim is suspended) and
+ * `suspensionHeldBy` (while one is held) say who holds the suspension: `controller` for the
+ * controller's own, which its `resume_agent` and the operator's resume lift; and `operator` for
+ * the operator's, which only the operator lifts. These
+ * routes are the one session-facing surface that names a suspender, since no plugin below
+ * the agent-actions contract calls them; the state does not ("no session-facing response carries suspendedBy"
+ * in legion-api.test.ts). The `legion` tool hands the answer to its agent whole, which is no
+ * read, so the reader takes every field as optional (`LEGION_ANSWER_READS`), `state` among them,
+ * though the daemon always writes it. The three enumerations are the entry's enumerated rows
+ * (`enumeratedRows` of `contracts/20261125182642_agent-actions.json`), each whole at the
+ * agent-actions contract. */
+export const LegionAgentActionResponse = z.object({
+  state: z.enum(LEGION_CLAIM_STATES).optional(),
+  suspendedBy: legionSuspendedBy.optional(),
+  suspensionHeld: z.literal(true).optional(),
+  suspensionHeldBy: legionSuspendedBy.optional(),
+});
+
+/** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue
+ * of its project runs in (`POST /legion/v1/issues/pod-update`, the agent-actions contract): its grant and the
+ * issue. The daemon opens its update round over that pod as a drift opens one, and over a pod an
+ * earlier round kept as well: each role of the pod is asked to push its work and answer
+ * `ready_for_update`, and the round reaches its end once each has answered, no turn runs and each
+ * role's report since its last turn names no running background work, or at the round's bound
+ * (`pod_update_grace_minutes`). The daemon then reads the pod's workspace and replaces the pod only
+ * where that read finds nothing that no branch or tag on origin holds; where it finds such work, or
+ * fails, the round keeps the pod and ends with no replacement. It takes a controller
+ * grant alone (`CONTROLLER_REQUIRED`). An issue of another project, or one with no claim the daemon
+ * supervises, is `NO_CLAIM`; one whose claims run no worker in a pod is `NO_POD`; one whose pod is
+ * being replaced already is `POD_CHANGING`; an opening a limit of the project holds back is
+ * `POD_UPDATE_LIMITED`, whose message names the limit; and a round no claim records within the
+ * daemon's wait is `POD_UPDATE_NOT_RECORDED` (503), since a 200 is only ever a round a claim
+ * records in the daemon's store, which the daemon's sweeps carry across a restart. A request that
+ * waits more than the daemon's bound (30 s) for a sweep's walk over the project's issues, or ends
+ * before it, opens nothing and is `POD_UPDATE_BUSY` (503, with `Retry-After`, whose wait its
+ * sentence names). While the project is paused it is `PROJECT_PAUSED` (409, with the `pause` that
+ * stands). A pod a pause holds is `POD_HELD_BY_PAUSE` (409): the hold of a pause that began after
+ * the daemon read the project as running, or a hold the resume left on a pod none of whose roles
+ * is live yet. Neither opens a round. */
+export const LegionPodUpdateRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+});
+
+/** `api.PodUpdateResponse`, what the controller's pod update answers: the `round` over the issue's
+ * pod (`pod:<pod uid>`), the `reasons` it records, which its ask to each role states, and whether
+ * this request `opened` it — false for a round already open over the pod, a drift's or an earlier
+ * request's, which the request leaves as it stands. The `legion` tool's `replace_pod` hands the
+ * answer to its agent whole, which is no read, so the reader takes every field as optional
+ * (`LEGION_ANSWER_READS`), though the daemon always writes all three. */
+export const LegionPodUpdateResponse = z.object({
+  round: nonEmptyString.optional(),
+  reasons: z.string().optional(),
+  opened: z.boolean().optional(),
+});
 
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):
@@ -2662,6 +2741,18 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "capabilities[].status",
     "capabilities[].detail",
     "capabilities[].configLine",
+    // The summary prints `legion state`'s line for each repository the live records name that
+    // GitHub's last read did not name or a role App is not installed on (#4065), with the name it
+    // is served under. The block and its entries stay optional: a reader that finds none prints no
+    // such line.
+    "repositories",
+    "repositories.live",
+    "repositories.live[].repo",
+    "repositories.live[].servedAs",
+    "repositories.live[].apps",
+    "repositories.live[].apps.implement",
+    "repositories.live[].apps.review",
+    "repositories.live[].readError",
     // The summary's line on the wakes the pacing holds counts them and names the earliest
     // `dueAt`, and its line on the project's pause (contract 178) names the pause that stands,
     // with the roles whose stop it waits on and how many rows it holds, or the last pause with

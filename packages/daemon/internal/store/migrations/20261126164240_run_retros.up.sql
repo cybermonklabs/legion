@@ -1,4 +1,4 @@
--- 20261125213821_run_retros.up.sql — the record of each run's retro, from which Legion decides
+-- 20261126164240_run_retros.up.sql — the record of each run's retro, from which Legion decides
 -- whether an issue that closes owes the retro it runs after the close, and the mark a claim and
 -- its delivery carry of the retro after a close their worker took (INFRA-5602).
 --
@@ -49,10 +49,26 @@
 -- every row the upgrade finds.
 --
 -- The outbox's kind check is one list, so it is rewritten whole naming every kind: the list of
--- 20261122154643_outbox_kinds_with_the_basis_seeds.up.sql (the design news's list of
--- 20261119203047 with pending_basis_seed and reparent_seed added) with retro_bound added, the row
--- that ends a retro after a close nobody reported at its bound (record.RetroBound). Its version
--- stands above that list's, so it is the last word on any database.
+-- 20261126110259_merge_holds_changed.up.sql, its thirty-three kinds in its order, with retro_bound
+-- added, the row that ends a retro after a close nobody reported at its bound (record.RetroBound),
+-- thirty-four in all. Its version stands above that list's, and so above the lists of
+-- 20261122154643, 20261119203047, 20261119003157, 20261117023932 and 20261117000528, which that
+-- list stands above too, so on any database this list is the last word: Migrate applies every
+-- unrecorded migration in version order, and at a lower version any of those lists, none of which
+-- names retro_bound, would be applied after this one and refuse the kind. This list must name
+-- merge_holds_changed and every other kind of that list, because a database main's release
+-- migrated can hold a row of each of those kinds when this migration is applied over it, and a
+-- list without the kind would fail its ADD CONSTRAINT on that row (SQLSTATE 23514), and Migrate
+-- with it.
+--
+-- This migration was numbered 20261125213821 on earlier builds of this branch until the forward
+-- merge of 2026-11-26 brought in 20261126110259, which stood above it and left retro_bound out. No
+-- deployment ran that version. It stands below a list that does not name retro_bound, so on a
+-- fresh database that list would have been the last word and refused the kind, and on a database
+-- main's release migrated it was applied after 20261126110259, where its list, without
+-- merge_holds_changed, would have refused a pending row of that kind. A database a build of this
+-- branch migrated before this merge records the older version, and it is a test's own, to make
+-- again.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
@@ -84,7 +100,7 @@
 -- alter table claims drop column if exists serving_retro_run;
 -- alter table pending_task_deliveries drop column if exists retro_run;
 -- drop table if exists run_retros;
--- delete from schema_version where version = 20261125213821;
+-- delete from schema_version where version = 20261126164240;
 -- commit;
 create table run_retros (
   issue text not null,
@@ -123,7 +139,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'retro_bound'));
+  'merge_holds_changed', 'retro_bound'));
 
 -- own is each recorded issue's current run that started of itself: the issue stands in a phase
 -- that carries a run, or holds a step start of the run's generation. started_at is the run's
