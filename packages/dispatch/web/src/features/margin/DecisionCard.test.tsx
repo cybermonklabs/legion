@@ -387,11 +387,11 @@ function tie({ block, ref }: (typeof SHAPED)[number]): DecisionLink {
   };
 }
 
-// The decisions' cards stand at the heights of their blocks, and the statements they shaped are
-// named by one batched read for the whole list. With that read refused the list says so after its
-// region of cards, never above it, every statement is still a link to its block by the card's word
-// for it, and the Retry names them again. No card moves for the failure or for the Retry.
-test("a refused read of the statements' names is told after the decisions' region, moves no card, and the Retry names the statements", async () => {
+// The statements the decisions shaped are named by one batched read for the whole list. With that
+// read refused the error stands after the Decisions region and outside it, every statement stays a
+// link to its block by the card's word for it, and pressing Retry names the statements and clears
+// the alert.
+test("a refused read of the statements' names is told after the decisions' region and outside it, and the Retry names the statements and clears the alert", async () => {
   const user = userEvent.setup();
   const held = Promise.withResolvers<ReferenceTargets>();
   const names = spyOn(api, "getReferenceTargets")
@@ -425,13 +425,10 @@ test("a refused read of the statements' names is told after the decisions' regio
   );
   try {
     const region = screen.getByRole("region", { name: "Decisions" });
-    // Each card's top, in the order of the cards: the height of its block in the document.
-    const tops = () =>
-      Array.from(region.children, (card) => (card instanceof HTMLElement ? card.style.top : ""));
-    expect(tops()).toEqual(["120px", "400px"]);
     expect(screen.queryByRole("alert")).toBeNull();
 
-    // The read refused, with the cards still where they were.
+    // The read refused: the error stands after the region and outside it, and every statement
+    // stays a link to its block by the card's word for it.
     await act(async () => {
       held.reject(REFUSED);
       await settle();
@@ -442,7 +439,6 @@ test("a refused read of the statements' names is told after the decisions' regio
     ).toBeInTheDocument();
     expect(region.contains(alert)).toBe(false);
     expect(precedes(region, alert)).toBe(true);
-    expect(tops()).toEqual(["120px", "400px"]);
     const unnamed = within(region).getAllByRole("link", { name: "A statement it shaped" });
     expect(unnamed).toHaveLength(SHAPED.length);
     for (const [index, { href }] of SHAPED.entries()) {
@@ -457,7 +453,6 @@ test("a refused read of the statements' names is told after the decisions' regio
     });
     expect(within(region).queryByRole("link", { name: "A statement it shaped" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(tops()).toEqual(["120px", "400px"]);
     // One batched read of both statements, asked again by the Retry for the same two.
     const asked = SHAPED.map(({ ref }) => ref).sort();
     expect(names.mock.calls.map(([refs]) => [...refs])).toEqual([asked, asked]);

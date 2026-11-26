@@ -1079,13 +1079,14 @@ interface DecisionDocuments {
 }
 
 /**
- * One decision written as `writer` after the issue holds its first ones, and only the write: the
- * caller waits for the read to hold it (`awaitDecisions`). Where decisions are nodes it is a
- * `decision` block at the end of the spec (`decisionBlock`). On a bare main it is a section of
- * `decisions.md` (`decisionSection`): the whole document, made with it, where the issue has none,
- * else a section added at the end of the document, whose `##` heading closes the `## Replaced`
- * section before it. `writeDecisions` writes the first ones in one edit or one create, so that no
- * row reads them half written, and does not come through here.
+ * One decision, written as `writer` on its own and apart from the first ones that `writeDecisions`
+ * writes, and only the write: the caller waits for the read to hold it (`awaitDecisions`). Where
+ * decisions are nodes it is a `decision` block at the end of the spec (`decisionBlock`). On a bare
+ * main it is a section of `decisions.md` (`decisionSection`): the whole document, made with it,
+ * where the issue has none, else a section added at the end of the document (in
+ * `writeSecondDecision`, its `##` heading closes `## Replaced`). `writeDecisions` writes the first
+ * ones in one edit or one create, so that no row reads them half written, and does not come
+ * through here.
  */
 export async function writeDecision(
   key: string,
