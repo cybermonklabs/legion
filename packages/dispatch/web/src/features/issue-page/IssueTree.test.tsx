@@ -1282,7 +1282,7 @@ test("Home from a chip of the first row brings the row back on screen after the 
   // off: 400 px above the window's top. Every other box, and that one before, is empty.
   let scrolledOff = false;
   const off = { bottom: -360, top: -400 };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return scrolledOff && this.matches('[data-node-row][data-node-id="comment-1"]')
@@ -2159,7 +2159,7 @@ test("the row the reader is editing in places nothing of its own as it grows", a
   // The statement's row 100 px down and 40 px tall, whole on the screen, until it grows to three
   // windows' height, its foot far below the window's.
   let grown = false;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches("[data-node-row]") && this.dataset.nodeId === "spec#b-r1"
@@ -2442,7 +2442,7 @@ function pageAroundEditingRow(layout: RowLayout): EditingPage {
     const cap = Number.parseFloat(box.style.maxHeight);
     return new DOMRect(0, layout.stands, 800, Number.isNaN(cap) ? layout.drawn : cap);
   };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const held = this.matches("[data-node-row]")
@@ -6008,7 +6008,7 @@ test("a zoom into a row taller than the window places its crumb line, and the ro
   let tall = 2 * window.innerHeight;
   // The row given the tall box: the row `.` zooms into, then the row `,` takes the focus to.
   let tallRow = "comment-1";
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     if (this.matches("p") && this.querySelector("[data-crumb]") !== null) {
@@ -6131,7 +6131,7 @@ test(", from the row . zoomed into brings that row on screen and holds it there 
   // The one row given a box: how tall it is, and where it stands down the page. Every other row
   // is given none, which reads as whole on screen.
   let given = { height: 40, id: "comment-2", top: 300 };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches("[data-node-row]") && this.dataset.nodeId === given.id
@@ -6215,7 +6215,7 @@ test(", from a row under the zoom's root places the root's row alone, not the ro
   // Where each row given a box stands down the page, 40 px tall; a row given none reads as whole
   // on screen.
   let tops: Readonly<Record<string, number>> = {};
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const top = this.matches("[data-node-row]") ? tops[this.dataset.nodeId ?? ""] : undefined;
@@ -6271,7 +6271,7 @@ test("a press on a crumb zooms out with the focus left on the row the reader is 
   // until a press has started. Every other element is given no box, which reads as whole on
   // screen.
   let top: number | undefined;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const row = this.closest<HTMLElement>("[data-node-row]");
@@ -6367,7 +6367,7 @@ test("a press on a crumb keeps the row the reader is on drawn and focused where 
   // undefined until a press has started. Every other element is given no box, which reads as
   // whole on screen.
   let placed: { readonly id: string; readonly top: number } | undefined;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const row = this.closest<HTMLElement>("[data-node-row]");
@@ -6510,7 +6510,7 @@ test("z holds the focused row on screen as the page grows, with the focus on a c
   // The second row 300 px down and whole on screen, until the bodies drawn above it push it below
   // the window's foot.
   let top = 300;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches("[data-node-row]") && this.dataset.nodeId === "comment-2"
@@ -7658,7 +7658,7 @@ test("the first row the page opens on scrolls nothing, and the first j places th
   // box is empty.
   const tall = 2 * window.innerHeight;
   const second = { bottom: 100 + tall + 40, top: 100 + tall };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const id = this.matches("[data-node-row]") ? this.dataset.nodeId : undefined;
@@ -11803,7 +11803,7 @@ test("a comment's row drawn after the reader acted since following its address m
   const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const comments = spyOn(api, "listComments");
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches('[data-node-row][data-node-id="reply-b"]')

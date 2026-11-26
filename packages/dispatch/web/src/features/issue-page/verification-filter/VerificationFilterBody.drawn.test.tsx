@@ -2593,7 +2593,7 @@ function layOut(height: number): () => void {
     configurable: true,
     get: () => height,
   });
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 600, height)
   );
   return () => {
