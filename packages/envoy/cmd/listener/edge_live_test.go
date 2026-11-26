@@ -317,8 +317,10 @@ func nextRelayFrame(t *testing.T, sub *natsgo.Subscription, within time.Duration
 // its token names it.
 // The server refuses the edge nothing: a publish the edge's own user is refused, made last, is the
 // one violation the server logs, which shows the log is read. Without the edge's own inbox prefix
-// in its grant the start ends, naming the prefix, since every reply the listener asks for comes
-// under it.
+// in its grant the server refuses the listener's subscription to it, which every reply the
+// listener asks for comes under: the start waits for the grant, up and not ready, and each try
+// logs the refusal at ERROR naming a subject under the prefix (streamRefusedLine). Only the grant
+// lifts that refusal, so an exit would send every pod of the machine into a crash loop.
 func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 	t.Run("under its grant", func(t *testing.T) {
 		rig := newEdgeLiveRig(t, edgeLiveGrant(t))
@@ -372,24 +374,25 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 		}
 		rig := newEdgeLiveRig(t, grant)
 		edge := rig.startEdge(t)
-		edge.WaitExit(t, "its start")
-		output := edge.Output.String()
-		if code := edge.Cmd.ProcessState.ExitCode(); code != 1 {
-			t.Fatalf("the edge listener exited %d under a grant without its inbox prefix, want 1:\n%s", code, output)
+		refusals := func() []map[string]any {
+			return linesIn(edge.Output.String(), streamRefusedLine, map[string]any{"level": "ERROR", "stream": bus.Stream})
 		}
-		// The start's own refusal, wherever it falls in the output: a closing client can log its
-		// recovery's end after it.
-		refusal := "connect to NATS and reconcile the " + bus.Stream + " stream: "
-		var line string
-		for candidate := range strings.SplitSeq(output, "\n") {
-			if strings.Contains(candidate, refusal) {
-				line = candidate
+		// Two tries each log the refusal: the start went on trying, and did not end on the first.
+		waitFor(t, "the edge listener to name the refused inbox prefix at ERROR on two tries", func() bool {
+			select {
+			case <-edge.Exited:
+				t.Fatalf("the edge listener exited %d under a grant without its inbox prefix, want it up and trying again:\n%s",
+					edge.Cmd.ProcessState.ExitCode(), edge.Output.String())
+			default:
+			}
+			return len(refusals()) >= 2
+		})
+		for _, line := range refusals() {
+			if subject, _ := line["subject"].(string); !strings.HasPrefix(subject, prefix+".") {
+				t.Fatalf("a try's refusal names %q, want a subject under %s:\n%s", subject, prefix, edge.Output.String())
 			}
 		}
-		if !strings.Contains(line, prefix) {
-			t.Fatalf("the edge listener's start did not end naming %s; its refusal was %q:\n%s", prefix, line, output)
-		}
-		t.Logf("the start ended: %s", line)
+		requireLiveAndStarting(t, edge, "its grant refused the inbox prefix")
 	})
 }
 
