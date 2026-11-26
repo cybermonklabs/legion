@@ -244,19 +244,19 @@ kind: session
 operator: ada@example.com
 projects: -
 lease_expires_at: 2026-10-03T03:36:40Z
-source: the broker AGENT_SECRETS_URL names (memory)
+source: the broker AGENT_SECRETS_URL names (memory store)
 $ agent-secrets DEMO_READ_TOKEN -- printenv DEMO_READ_TOKEN
-agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (memory)
+agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (memory store)
 demo-read-token-value
 $ agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- sh -c 'echo "deploying with a ${#DEMO_API_KEY}-character key"'
 ```
 
 Every line about a secret names where it came from: the broker this stack runs, and the kind of
 store that broker reads. The local stack's store is the memory one, which
-`BROKER_SECRETS_STORE=memory` and `BROKER_MEMORY_SECRETS_FILE` name. No session's line names the
-broker's host or the store's account or region,
-since an agent's output is often quoted; `agent-secrets secret show` names the account and region
-its key ARN carries.
+`BROKER_SECRETS_STORE=memory` and `BROKER_MEMORY_SECRETS_FILE` name, and whose kind the lines
+call `memory store`. No session's line names the broker's host or the store's account, region or
+file, since an agent's output is often quoted; `agent-secrets secret show` names the store in full:
+the file here, the account and region a key ARN carries on AWS, the project on GCP.
 
 The last command waits for approval, and names who approves it and where (`waiting for
 ada@example.com to approve it on the secrets broker: <broker>/approve/<record>`). Open that
@@ -280,7 +280,7 @@ passed, while the session lives on:
 
 ```console
 $ agent-secrets DEMO_READ_TOKEN --ttl 2m -- printenv DEMO_READ_TOKEN
-agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (memory)
+agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (memory store)
 demo-read-token-value
 $ agent-secrets self
 enrollment_id: 7cf72ec3-d10f-46fd-984f-ddd856b229c2
@@ -288,7 +288,7 @@ kind: session
 operator: ada@example.com
 projects: -
 lease_expires_at: 2026-10-11T01:51:13Z
-source: the broker AGENT_SECRETS_URL names (memory)
+source: the broker AGENT_SECRETS_URL names (memory store)
 grant: f81251ab-6552-450c-9eca-12a793a29f4c (request 86237327-1f78-4c79-82a5-4f71174e71c5, expires 2026-10-11T01:38:14Z)
 ```
 
@@ -312,7 +312,7 @@ Every row is a login to the broker AGENT_SECRETS_URL names.
 $ agent-secrets grant list
 GRANT_ID                              SECRETS          GRANTED    APPROVER  DECIDED_BY  SESSION                                       OPERATOR         EXPIRES
 8fe92a26-b355-4c28-8679-60e8ce98b1d9  DEMO_READ_TOKEN  automatic  -         -           session/example-host-devbox:2856922:35395441  ada@example.com  session-end
-Every row is a grant from the broker AGENT_SECRETS_URL names (memory).
+Every row is a grant from the broker AGENT_SECRETS_URL names (memory store).
 ```
 
 Each list says on standard error which broker and store its rows are from, so the table on
@@ -342,10 +342,40 @@ process of your user, so such a process can also enroll a box and read your agen
 ## Write a secret and see it served
 
 The broker reads the memory secrets file again each time it lists the secrets, describes one or
-reads a value, so an edit to the file is what a write to the store is in production, where a
-person writes with `agent-secrets secret` ([manage a secret](/legion/broker/guides/manage-a-secret/));
-that CLI writes the cloud store a deployment runs on, not this file. Add a secret of
-`ada@example.com`'s to it, here with `jq`:
+reads a value, so a write to the file is what a write to the store is in production.
+`agent-secrets secret` writes this file on this stack as it writes the cloud store a deployment runs
+on ([manage a secret](/legion/broker/guides/manage-a-secret/)): the broker's settings name the file
+(`memory_secrets_file`), and the memory store takes no sign-in, so the owner is named outright
+(`--owner me` names no person there and is refused, exit 2). From the first shell's exports:
+
+```console
+$ printf 'demo-cli-token-value\n' | agent-secrets secret create DEMO_CLI_TOKEN --owner ada@example.com --tier agent
+agent-secrets secret create: using memory store: /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json
+created DEMO_CLI_TOKEN in memory store file /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json (owner=ada@example.com, tier=agent)
+broker: rereading DEMO_CLI_TOKEN from memory store file /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json
+...
+$ agent-secrets secret list
+agent-secrets secret list: using memory store: /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json
+NAME                       OWNER            TIER   TYPE        PROJECT  PROJECT_CHANNELS  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_API_KEY               ada@example.com  human  -           -        -                 -          -              yes    -        -
+DEMO_CLI_TOKEN             ada@example.com  agent  -           -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP            legion-daemon    agent  github-app  -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP_CASE_PAIR  legion-daemon    agent  github-app  -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP_HUMAN      ada@example.com  human  github-app  -        -                 -          -              yes    -        -
+DEMO_READ_TOKEN            ada@example.com  agent  -           -        -                 -          -              yes    -        -
+DEMO_SERVICE_TOKEN         legion-daemon    agent  -           -        -                 -          -              yes    -        -
+Every row is a secret in memory store file /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json.
+```
+
+The path is this run's `$DEV_BROKER_DIR/memory-secrets.json`. This create ran in a shell outside
+the session registered above, so its reread was not signed by a session of the stack and the line
+says `rereading`; the line it printed after (`...`) says the broker's view was not checked, and
+why. Inside that session the reread is signed and the line says `serving`. Every form, in order,
+against a fresh stack of its own: `packages/envoy/scripts/store-forms-check.sh --store memory`
+([scripts/README.md](https://github.com/cybermonklabs/legion/blob/main/packages/envoy/scripts/README.md#store-forms-checksh)).
+
+An edit of the file by hand is a write too. Add a secret of `ada@example.com`'s to it, here with
+`jq`:
 
 ```sh
 jq '.secrets += [{"name": "example/agent-secrets/demo-new-token",
@@ -649,7 +679,7 @@ $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP -- sh -c 'printf %s "$DEMO_GITHUB_APP" | jq -c ".installations | map_values(.installation_id)"'
 agent-secrets: the profile DEMO_GITHUB_APP left out issues, statuses:write, workflows for acme-org, since the installation there does not hold them
-agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (memory)
+agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (memory store)
 {"acme-org":7}
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 2
@@ -797,7 +827,7 @@ command's call to S goes through the broker:
 
 ```console
 $ agent-secrets AIRLOCK_DEMO_TOKEN --reason 'read the example service behind the airlock' -- sh -c 'printf "AIRLOCK_DEMO_TOKEN: %s characters, starting %s\n" "${#AIRLOCK_DEMO_TOKEN}" "${AIRLOCK_DEMO_TOKEN%%-*}"; printf "Authorization: Bearer %s" "$AIRLOCK_DEMO_TOKEN" | curl -sS https://s.airlock.test/read -H @-'
-agent-secrets: AIRLOCK_DEMO_TOKEN from the broker AGENT_SECRETS_URL names (memory)
+agent-secrets: AIRLOCK_DEMO_TOKEN from the broker AGENT_SECRETS_URL names (memory store)
 AIRLOCK_DEMO_TOKEN: 58 characters, starting agent
 the s stand-in answered
 ```
@@ -823,7 +853,7 @@ id:
 
 ```console
 $ agent-secrets AIRLOCK_SCOPED_TOKEN --reason 'a path its rule does not allow' -- sh -c 'printf "Authorization: Bearer %s" "$AIRLOCK_SCOPED_TOKEN" | curl -sS -o /dev/stdout -w " (%{http_code})\n" -X POST https://s.airlock.test/write -H @-'
-agent-secrets: AIRLOCK_SCOPED_TOKEN from the broker AGENT_SECRETS_URL names (memory)
+agent-secrets: AIRLOCK_SCOPED_TOKEN from the broker AGENT_SECRETS_URL names (memory store)
 airlock: not allowed by rule (answer c7f4a80240ca972a4baa9eb47b6648f2)
  (403)
 ```
