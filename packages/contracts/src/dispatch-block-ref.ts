@@ -587,11 +587,12 @@ export function askOpenerBlockId(line: string): string | undefined {
  * The ask that `line`, an ask block's opener as `askOpenerLines` gives it, carries on it, as a
  * Dispatch of the release before writes it there: the block id (`askOpenerBlockId`) and each of
  * the block's server-owned attributes the line holds, its value with the character references the
- * renderer writes read back (attributeValue), and `selected` read as the JSON list of strings it
- * is written as. An attribute the line does not hold, or a `selected` that holds no such list, is
- * absent. Undefined where the line names no block id. The CLI's reader of a live text and its check
- * of a version for open ask blocks, and the web's reader of a live text of the release before, all
- * read an opener's attributes here, so they read one line one way.
+ * renderer writes read back (attributeValue), `state` only where it is `open`, `answered` or
+ * `resolved`, and `selected` read as the JSON list of strings it is written as. An attribute the
+ * line does not hold, a `state` that is none of those three, or a `selected` that holds no such
+ * list, is absent. Undefined where the line names no block id. The CLI's reader of a live text and
+ * its check of a version for open ask blocks, and the web's reader of a live text of the release
+ * before, all read an opener's attributes here, so they read one line one way.
  */
 // kept for one release: release-before-text
 export function askOpenerAttributes(line: string): TextAsk | undefined {
@@ -605,9 +606,14 @@ export function askOpenerAttributes(line: string): TextAsk | undefined {
   }
   const id = askOpenerBlockId(line);
   if (id === undefined) return undefined;
+  // The line is text a document's writer controls, so its `state` may hold any string: it is read
+  // only where it is a state an ask holds.
+  const written = values.get("state");
+  const state: TextAsk["state"] | undefined =
+    written === "open" || written === "answered" || written === "resolved" ? written : undefined;
   return {
     block_id: id,
-    ...optional("state", values.get("state") as TextAsk["state"]),
+    ...optional("state", state),
     ...optional("answered_by", values.get("answered_by")),
     ...optional("answered_at", values.get("answered_at")),
     ...optional("selected", selectionOf(values.get("selected"))),

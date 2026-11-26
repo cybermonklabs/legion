@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import {
+  askOpenerAttributes,
   askOpenerBlockId,
   askOpenerLines,
   askOpeners,
@@ -379,4 +380,13 @@ test("askOpenerBlockId reads back each id as the renderer writes it, and no othe
   for (const line of [':::ask{id="a"}', ":::ask{#a.b}", ":::ask{#}", ':::ask{state="open" #a}']) {
     expect(askOpenerBlockId(line)).toBeUndefined();
   }
+});
+
+// An opening line is text a document's writer controls, so its `state` is read only where it is
+// one of the three states an ask holds, and any other string reads as no state.
+test("askOpenerAttributes reads a state only where it is open, answered or resolved", () => {
+  for (const state of ["open", "answered", "resolved"] as const) {
+    expect(askOpenerAttributes(`:::ask{#a state="${state}"}`)).toEqual({ block_id: "a", state });
+  }
+  expect(askOpenerAttributes(':::ask{#a state="bogus"}')).toEqual({ block_id: "a" });
 });

@@ -278,11 +278,14 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
  * The request header a reader of the text routes (`GET /api/v1/artifacts/{id}/text` and its issue
  * and project slug forms) sends, as `Dispatch-Asks: 1`, to say that it reads their `asks` member.
  * Dispatch then serves markdown with none of an ask block's eight server-owned attributes, which
- * the reader can upload back unchanged. A request without it, which is every reader of a release
- * before the header, is served the form kept for one release: each ask block keeps its state, its
+ * the reader can upload back unchanged. A request without it, as every reader of a release before
+ * the header sends, is served the form kept for one release: each ask block keeps its state, its
  * answerer, its time and a copy's provenance on its opening line, and holds no answer's words.
- * Both forms answer the same token. The `dispatch` command and the page send it on every read of
- * those routes.
+ * Both forms answer the same token. The reads that send it are packages/envoy-client's
+ * `DispatchClient.docRead` of a live text and `docReadWithBlocks`, which `dispatch doc-read`,
+ * `dispatch request-approval` and the document targets read through, and the page's reads of the
+ * text routes. `dispatch api` sends a GET of those routes as its caller writes it, a path and no
+ * header, so it is served the kept form.
  */
 export const DISPATCH_ASKS_HEADER = "Dispatch-Asks";
 
