@@ -3338,15 +3338,35 @@ func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim
 	}
 }
 
-// PhaseRowOf reads a role outside a plan. Task work must use PhaseRowAt or PhaseRowForClaim,
-// since a role alone is not a phase identity once several tasks can run.
+// PhaseRowOf is role's row where the role names one: its row outside a plan (no task) where the
+// issue holds one, else, where every row of role is of one task, the row of that task whose entry
+// was raised last (laterEntry), as a later agent of the task's step writes a row beside the
+// earlier agent's. So every issue of one task, a plan of one task included, reads its role's row by
+// the role. Rows of role in two tasks name no one row, and PhaseRowOf answers the zero row: work of
+// one of several tasks reads the row of its task (PhaseRowAt) or of its claim (PhaseRowForClaim).
 func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
+	var found PhaseRow
+	task, several := "", false
 	for _, row := range rows {
-		if row.Role == role && row.Key().Task == "" {
+		if row.Role != role {
+			continue
+		}
+		key := row.Key()
+		switch {
+		case key.Task == "":
 			return row
+		case found.Role == "":
+			found, task = row, key.Task
+		case key.Task != task:
+			several = true
+		case laterEntry(row, found):
+			found = row
 		}
 	}
-	return PhaseRow{}
+	if several {
+		return PhaseRow{}
+	}
+	return found
 }
 
 // PhaseRowForClaim is the latest entry this claim was handed on role. One agent can run
