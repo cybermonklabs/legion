@@ -335,7 +335,9 @@ func (r *daemonThreadRig) requireMovedByTheStep(t *testing.T, node, key, fromKin
 // approves the spec; the criterion's part_of is then written to her reply and the requirement's to
 // a block of that reply, as a parent pointer written before the rule placed them; she edits the
 // spec, which writes a version while they stand there; and an agent's session requests approval,
-// so a request is open at that version beside her approval of the one before.
+// so a request is open at that version beside her approval of the one before. Her edit adds a
+// requirement: R14 carries an approval across an edit the Spec query takes nothing of, as a
+// closing paragraph, so only an edit of what it takes leaves her approval stale.
 //
 // The census kind reads daemon_thread_parent=2, with both nodes' addresses. The step runs once:
 // it moves both, each under the issue's node by a part_of the step wrote, its old part_of retracted
@@ -368,7 +370,7 @@ func TestANodeUnderADaemonThreadMovesUnderItsIssue(t *testing.T) {
 	criterionPlaced := rig.placeUnder(t, criterion, string(refs.ItemMessage), first.reply)
 	requirementPlaced := rig.placeUnder(t, requirement, refs.ItemMessage.BlockKind(), first.replyBlock)
 	rig.request(t, http.MethodPost, "/api/v1/artifacts/"+first.spec+"/edits", map[string]any{
-		"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "A closing paragraph."}},
+		"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": ":::requirement{#req-closing}\nA closing requirement.\n:::"}},
 	}, "alice", http.StatusOK)
 	requested := rig.newestVersion(t, first.spec)
 	if requested <= approved {
@@ -378,7 +380,7 @@ func TestANodeUnderADaemonThreadMovesUnderItsIssue(t *testing.T) {
 		t.Fatalf("the version alice's edit wrote moved the criterion %s under %s %s: the fixture needs it under her reply %s", criterion, now.ToKind, now.ToID, first.reply)
 	}
 	rig.request(t, http.MethodPost, "/api/v1/artifacts/"+first.spec+"/approval-requests", map[string]any{
-		"summary": "The spec, with its closing paragraph.", "actor": map[string]any{"kind": "session", "id": "ses_architect"},
+		"summary": "The spec, with its closing requirement.", "actor": map[string]any{"kind": "session", "id": "ses_architect"},
 	}, "", http.StatusCreated)
 	if named := rig.requestedVersion(t, first.spec); named != requested {
 		t.Fatalf("the approval request opened on the spec of %s names version %d, want %d", first.key, named, requested)

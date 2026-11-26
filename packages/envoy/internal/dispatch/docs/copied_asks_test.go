@@ -1504,7 +1504,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		eventType = "ask.answered"
 		change := asks.Answered(*answer)
 		change.Who, change.At, change.Held = alice, answer.At, &held
-		settled, err := ledger.PlanSettle(closing, source.ID, change)
+		settled, err := ledger.PlanSettle(closing, source, change)
 		if err != nil {
 			return fmt.Errorf("plan the source's answer: %w", err)
 		}
