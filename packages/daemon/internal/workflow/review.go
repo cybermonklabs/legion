@@ -830,7 +830,7 @@ func (e *Engine) reviewBesideFix(ctx context.Context, tx pgx.Tx, issue record.Is
 		return "", err
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-	if err != nil || fix == nil || fix.StartedAt == nil || start.BesideFix != fix.Fix {
+	if err != nil || fix == nil || fix.StartedAt == nil || (fix.EndedAt != nil && fix.EndedAt.Before(start.StartedAt)) {
 		return "", err
 	}
 	return start.StartCommit, nil
