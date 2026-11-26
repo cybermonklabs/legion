@@ -272,9 +272,6 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		Addressing:                 addressing,
 		DeploymentInstructionsPath: s.instructions,
 	}
-	if OwnsPlan(c) {
-		spec.Prompt.PlanGuidancePath = s.planGuidance
-	}
 	// The arms are read from the record alone: a unit the daemon drew into an arm keeps that
 	// arm's overlays and its instructions while the project's file names them, whatever the
 	// experiment's mode is now — the mode decides which new units are drawn, and only taking the
