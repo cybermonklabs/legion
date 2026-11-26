@@ -2393,6 +2393,33 @@ func TestLegionVerdictTheSweepWritesOverAForeignSuccessWhileNoDecisionStands(t *
 	}
 }
 
+// R19's status half while no decision stands: the writers' sweep sets a status of the daemon's own
+// over the newest legion-verdict status of the App's bot that its record does not hold, at failure
+// where the daemon wrote nothing at the head, as it writes over a run. Here GitHub gives no answer to
+// the read of code's change from the owner's acceptance on.
+func TestLegionVerdictTheSweepWritesOverAForeignStatusWhileNoDecisionStands(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	rig.apply(t, rig.signOff(t))
+	rig.written(t)
+	rig.foreign(nil, []fakeStatus{{ID: 600, Head: "code", Context: verdict.CheckName, State: "success", Creator: verdictAppLogin}})
+	rig.swept(t)
+	rig.github.mu.Lock()
+	statuses := slices.Clone(rig.github.statuses)
+	rig.github.mu.Unlock()
+	if len(statuses) != 2 || statuses[1].State != "failure" || statuses[1].Context != verdict.CheckName {
+		t.Fatalf("statuses on code = %+v, want a newer legion-verdict status of the daemon's own at failure over status 600", statuses)
+	}
+	if over := statusesOver(t, rig.pool, "code"); !slices.Equal(over, []int64{600}) {
+		t.Fatalf("the daemon's statuses went over %v, want over the App's bot's status 600", over)
+	}
+	if runs := rig.github.legionRuns("code"); len(runs) != 0 {
+		t.Fatalf("legion-verdict runs on code = %+v, want none: no decision stands", runs)
+	}
+}
+
 // R19 on a merge group's commit while no decision stands: the writers' sweep writes over another
 // token's run of the App on the group of a pull request whose head GitHub gives no answer for, with
 // failure where the daemon wrote nothing on that group, and makes no run of its own there; before
