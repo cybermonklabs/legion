@@ -7,6 +7,8 @@ import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
   type LegionPhase,
+  LegionProjectP0BoundClearRequest,
+  LegionProjectP0BoundRequest,
   type LegionState,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
@@ -174,17 +176,22 @@ function daemonFixture(name: string): Record<string, unknown> {
 }
 
 /** The real daemon client over a daemon that answers each route of `answers` with that golden,
- * under `status`, and records what reached it. A tool call over it goes through the contract's
- * request and answer schemas, as it does in a session, and states this build's own contract,
- * as the extension's client does (`extensions/legion.ts`). */
-function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
+ * or, for a list, each call of the route with the next golden of the list, under `status`, and
+ * records what reached it. A tool call over it goes through the contract's request and answer
+ * schemas, as it does in a session, and states this build's own contract, as the extension's
+ * client does (`extensions/legion.ts`). */
+function goldenDaemon(answers: Readonly<Record<string, string | readonly string[]>>, status = 200) {
   const posted: Array<readonly [string, unknown]> = [];
+  const calls = new Map<string, number>();
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     posted.push([route, init?.body == null ? undefined : JSON.parse(init.body.toString())]);
-    const golden = answers[route];
+    const call = calls.get(route) ?? 0;
+    calls.set(route, call + 1);
+    const answer = answers[route];
+    const golden = typeof answer === "string" ? answer : answer?.[call];
     return golden === undefined
-      ? Response.json({ error: `no golden answers ${route}` }, { status: 404 })
+      ? Response.json({ error: `no golden answers call ${call + 1} of ${route}` }, { status: 404 })
       : Response.json(daemonFixture(golden), { status });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
@@ -271,6 +278,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "resume_agent",
         "pause",
         "resume",
+        "set_p0_bound",
+        "clear_p0_bound",
         "replay_give_up",
         "discard_give_up",
       ],
@@ -323,7 +332,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
@@ -356,6 +365,16 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       type: "number",
       description:
         "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups",
+    },
+    bound: {
+      type: "number",
+      description:
+        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number from 1 to 2147483647. Name it or unbounded, never both",
+    },
+    unbounded: {
+      type: "boolean",
+      description:
+        "set_p0_bound's no bound: true sets no P0 bound, whatever legion.yaml's admission_p0_bound says. Name it or bound, never both",
     },
   },
   required: ["op"],
@@ -2668,13 +2687,13 @@ test("the controller asks for the replacement of an issue's pod with its own gra
 // The architect's operation set, pinned whole: every `op` the tool's schema lists that an
 // architect's session is not refused as unavailable. It is the tree's workflow operations, the
 // phase ops and read_build, which every session holds; the controller's read_state, set_status,
-// replace_pod, the six agent actions, pause, resume and the intake's replay_give_up and
-// discard_give_up stay the controller's alone.
+// replace_pod, the six agent actions, pause, resume, set_p0_bound, clear_p0_bound and the
+// intake's replay_give_up and discard_give_up stay the controller's alone.
 test("an architect's operation set is the tree's operations and none of the agent actions", async () => {
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
   const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
-  expect(declared).toHaveLength(27);
+  expect(declared).toHaveLength(29);
   for (const architect of [claimSession("architect"), claimSession("architect", "LEGION-209")]) {
     const tool = toolFor(architect);
     const available: string[] = [];
@@ -2888,6 +2907,123 @@ test("the controller pauses the project with its reason and resumes it, and each
   }
   expect(posted).toHaveLength(2);
   expect(minted).toHaveLength(2);
+});
+
+// The P0 bound (C3 of dispatch://INFRA-5636, check c-bound-tool). The controller sets the bound
+// with one operation, which sends exactly the request the daemon API contract describes, a bound or
+// none with its reason, and clears it with another. Each goes through the real daemon client, so
+// the answer the controller reads is the golden the daemon's own route test wrote, parsed by the
+// contract's schema: the set of 2, then the set of none, whose bound in force and live bound are
+// null, then the clear. A call the tool can tell is wrong is refused before a grant is minted.
+test("the controller sets and clears the P0 bound, each request the contract's and each answer the daemon's golden", async () => {
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/project/p0-bound": ["p0-bound.json", "p0-bound-none.json"],
+    "/legion/v1/project/p0-bound/clear": "p0-bound-clear.json",
+  });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const reason = "the P0 issues outran the gateway";
+
+  const set = await run({ op: "set_p0_bound", bound: 2, reason });
+  expect(set.isError).toBeUndefined();
+  expect(set.details).toEqual(daemonFixture("p0-bound.json"));
+  const none = await run({ op: "set_p0_bound", unbounded: true, reason });
+  expect(none.isError).toBeUndefined();
+  expect(daemonFixture("p0-bound-none.json")).toMatchObject({ bound: null, live: { bound: null } });
+  expect(none.details).toEqual(daemonFixture("p0-bound-none.json"));
+  const cleared = await run({ op: "clear_p0_bound", reason: "back to the file" });
+  expect(cleared.details).toEqual(daemonFixture("p0-bound-clear.json"));
+  expect(posted).toEqual([
+    ["/legion/v1/project/p0-bound", { grantId: "controller-grant-1", bound: 2, reason }],
+    ["/legion/v1/project/p0-bound", { grantId: "controller-grant-1", unbounded: true, reason }],
+    [
+      "/legion/v1/project/p0-bound/clear",
+      { grantId: "controller-grant-1", reason: "back to the file" },
+    ],
+  ]);
+  // Each request is one the contract describes, as the daemon's request-shape records do.
+  expect(LegionProjectP0BoundRequest.safeParse(posted[0]?.[1]).success).toBeTrue();
+  expect(LegionProjectP0BoundRequest.safeParse(posted[1]?.[1]).success).toBeTrue();
+  expect(LegionProjectP0BoundClearRequest.safeParse(posted[2]?.[1]).success).toBeTrue();
+
+  const refusals = [
+    [
+      { op: "set_p0_bound", reason },
+      "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both",
+    ],
+    [
+      { op: "set_p0_bound", bound: 2, unbounded: true, reason },
+      "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both",
+    ],
+    [
+      { op: "set_p0_bound", bound: 0, reason },
+      "set_p0_bound's bound is a whole number from 1 to 2147483647",
+    ],
+    [
+      { op: "set_p0_bound", bound: 2147483648, reason },
+      "set_p0_bound's bound is a whole number from 1 to 2147483647",
+    ],
+    [{ op: "set_p0_bound", bound: 2 }, "set_p0_bound requires reason"],
+    [{ op: "clear_p0_bound" }, "clear_p0_bound requires reason"],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(posted).toHaveLength(3);
+  expect(minted).toHaveLength(3);
+});
+
+// read_state's summary gives the P0 holders, the bound in force and the live value that stands,
+// on one line after the admission cap's, and no such line for a body served below the P0 start's
+// contract entry, which carries neither key, nor for a body that carries one key and not the
+// other, which no daemon serves: it writes the two together.
+test("the read_state summary gives the P0 holders and the P0 bound in force", async () => {
+  const base = daemonFixture("state.json") as LegionState;
+  const summaryOf = async (state: LegionState) => {
+    const { daemon } = recordingDaemon({ state });
+    return (
+      await controllerTool(daemon, []).execute(
+        "",
+        { op: "read_state" },
+        undefined,
+        undefined,
+        context("ses_controller")
+      )
+    ).content[0];
+  };
+  const admission = base.admission;
+  const live = admission?.p0Bound?.live;
+  if (
+    admission?.p0Holders === undefined ||
+    live === undefined ||
+    live.setBy.kind !== "controller"
+  ) {
+    throw new Error(
+      "state.json carries no P0 holders or no live P0 bound set by the controller: this test proves nothing"
+    );
+  }
+  expect(await summaryOf(base)).toMatchObject({
+    text: expect.stringContaining(
+      `\np0 holders ${admission.p0Holders} bound ${admission.p0Bound?.bound} set ${live.bound} by the controller (session ${live.setBy.session}) at ${live.setAt}: ${live.reason}\n`
+    ),
+  });
+
+  const { p0Holders: _held, p0Bound: _bound, ...older } = admission;
+  for (const body of [
+    older,
+    { ...older, p0Holders: admission.p0Holders },
+    { ...older, p0Bound: admission.p0Bound },
+  ]) {
+    const summary = await summaryOf({ ...base, admission: body });
+    expect(summary).toMatchObject({ text: expect.stringContaining("\nadmission cap ") });
+    expect(summary).toMatchObject({ text: expect.not.stringContaining("\np0 holders") });
+  }
 });
 
 // The daemon's refusals reach the controller as every other write's do: the code, then the
