@@ -725,10 +725,19 @@ test("each file of the label's daemon in the rig parses, and one with an extra k
   expect(
     parsing({
       request: [RigDaemonRequest, { ...RIG_DAEMON_REQUEST, model: "claude-opus-5-5" }],
-      "request, another daemon": [RigDaemonRequest, { ...RIG_DAEMON_REQUEST, paneDaemon: "standin" }],
+      "request, another daemon": [
+        RigDaemonRequest,
+        { ...RIG_DAEMON_REQUEST, paneDaemon: "standin" },
+      ],
       "request without its moment": [RigDaemonRequest, without(RIG_DAEMON_REQUEST, "moment")],
-      "request without its Envoy bearer": [RigDaemonRequest, without(RIG_DAEMON_REQUEST, "envoyTokenFile")],
-      "request without its run directory": [RigDaemonRequest, without(RIG_DAEMON_REQUEST, "runDir")],
+      "request without its Envoy bearer": [
+        RigDaemonRequest,
+        without(RIG_DAEMON_REQUEST, "envoyTokenFile"),
+      ],
+      "request without its run directory": [
+        RigDaemonRequest,
+        without(RIG_DAEMON_REQUEST, "runDir"),
+      ],
       ready: [RigDaemonReady, { ...RIG_DAEMON_READY, pid: 7 }],
       "ready, a short head": [RigDaemonReady, { ...RIG_DAEMON_READY, head: COMMIT.slice(1) }],
       status: [RigDaemonStatus, { ...RIG_DAEMON_STATUS, phase: "retro" }],

@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -80,7 +88,9 @@ test("build in a label without the five test files exits 2, naming each missing 
 
 test("a label that lacks rig_daemon_test.go exits 2 naming it", () => {
   requireHostTools("bash", "git");
-  const { label, script, env } = committedLabel(tests.filter(([, file]) => file !== "rig_daemon_test.go"));
+  const { label, script, env } = committedLabel(
+    tests.filter(([, file]) => file !== "rig_daemon_test.go")
+  );
   const withBin = { ...env, RIG_TEXTS_BIN: directory("texts") };
 
   for (const argv of [["build"], ["build", "--compile"]]) {
@@ -102,13 +112,24 @@ test("world refuses a binary that ran no test, naming the missing PASS line", ()
   const texts = directory("texts");
   const bin = path.join(texts, commit);
   mkdirSync(bin, { recursive: true });
-  plant(path.join(bin, "workflow.test"), "#!/bin/sh\necho 'testing: warning: no tests to run'\necho PASS\nexit 0\n");
+  plant(
+    path.join(bin, "workflow.test"),
+    "#!/bin/sh\necho 'testing: warning: no tests to run'\necho PASS\nexit 0\n"
+  );
   const work = directory("run");
   const request = path.join(work, "world-request.json");
   const answer = path.join(work, "world-answer.json");
   writeFileSync(request, "{}\n");
 
-  const world = run(label, { ...env, RIG_TEXTS_BIN: texts }, "bash", script, "world", request, answer);
+  const world = run(
+    label,
+    { ...env, RIG_TEXTS_BIN: texts },
+    "bash",
+    script,
+    "world",
+    request,
+    answer
+  );
 
   expect(world.stderr).toContain("testing: warning: no tests to run");
   expect(world.stderr).toContain("--- PASS: TestRigWorld");
@@ -227,9 +248,22 @@ function daemonRun(daemon: string) {
     status: path.join(work, "status.json"),
     record: path.join(work, "record.json"),
   };
-  writeFileSync(files.request, `${JSON.stringify({ postgresUrl: "postgres://rig@127.0.0.1:5432/postgres" })}\n`);
+  writeFileSync(
+    files.request,
+    `${JSON.stringify({ postgresUrl: "postgres://rig@127.0.0.1:5432/postgres" })}\n`
+  );
   const verb = () =>
-    run(label, { ...env, RIG_TEXTS_BIN: texts }, "bash", script, "daemon", files.request, files.ready, files.status, files.record);
+    run(
+      label,
+      { ...env, RIG_TEXTS_BIN: texts },
+      "bash",
+      script,
+      "daemon",
+      files.request,
+      files.ready,
+      files.status,
+      files.record
+    );
   return { files, verb };
 }
 
@@ -247,7 +281,10 @@ test("the daemon verb needs the PASS line and its three files", () => {
 
   const whole = daemonRun(WHOLE_RUN);
   const passed = whole.verb();
-  expect({ status: passed.status, stderr: passed.status === 0 ? "" : passed.stderr }).toEqual({ status: 0, stderr: "" });
+  expect({ status: passed.status, stderr: passed.status === 0 ? "" : passed.stderr }).toEqual({
+    status: 0,
+    stderr: "",
+  });
   expect(passed.stdout).toContain("--- PASS: TestRigDaemonLive (");
   expect(readFileSync(whole.files.ready, "utf8")).toBe("postgres://rig@127.0.0.1:5432/postgres\n");
   expect(readFileSync(whole.files.status, "utf8")).toBe("-test.run ^TestRigDaemonLive$ -test.v\n");
@@ -256,9 +293,13 @@ test("the daemon verb needs the PASS line and its three files", () => {
   const noRecord = daemonRun(WHOLE_RUN.replace(/^.*RIG_TEXTS_RECORD.*\n/m, ""));
   const unrecorded = noRecord.verb();
   expect(unrecorded.status).toBe(1);
-  expect(unrecorded.stderr).toContain(`wrote no record file ${realpathSync(path.dirname(noRecord.files.record))}/record.json`);
+  expect(unrecorded.stderr).toContain(
+    `wrote no record file ${realpathSync(path.dirname(noRecord.files.record))}/record.json`
+  );
 
-  const noPass = daemonRun(WHOLE_RUN.replace(/^echo .*\n/m, "echo 'testing: warning: no tests to run'\necho PASS\n"));
+  const noPass = daemonRun(
+    WHOLE_RUN.replace(/^echo .*\n/m, "echo 'testing: warning: no tests to run'\necho PASS\n")
+  );
   const unpassed = noPass.verb();
   expect(unpassed.status).toBe(1);
   expect(unpassed.stderr).toContain("printed no '--- PASS: TestRigDaemonLive' line");
