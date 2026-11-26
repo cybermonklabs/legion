@@ -35,16 +35,20 @@ func TestVerdictReadsEachCheckInTheOneOrder(t *testing.T) {
 		words  string
 	}{
 		{"a person the gate serves", nil, Served, 0, "", ""},
-		{"a held answer the broker keeps", fmt.Errorf("%w: %s", ErrHeld, ada), Held, http.StatusForbidden, "MEMBERSHIP_HELD", heldWords},
+		{"a held answer the broker keeps", fmt.Errorf("%w: %s", errHeld, ada), Held, http.StatusForbidden, "MEMBERSHIP_HELD", heldWords},
 		{"a held answer the broker could not keep", heldUnwritten(ada, stored), HeldUnkept,
 			http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", cannot("the broker could not keep Dispatch's answer that holds them")},
 		{"a held answer the broker could not keep, joined the other way round",
-			errors.Join(fmt.Errorf("%w: %s", ErrHeld, ada), fmt.Errorf("%w: %s: %w", ErrUncheckable, ada, stored)), HeldUnkept,
+			errors.Join(fmt.Errorf("%w: %s", errHeld, ada), fmt.Errorf("%w: %s: %w", errUncheckable, ada, stored)), HeldUnkept,
 			http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", cannot("the broker could not keep Dispatch's answer that holds them")},
-		{"a not-held answer past its deadline", fmt.Errorf("%w: %s: %w, %s", ErrUncheckable, ada, ErrDeadlinePassed, "2026-11-16T00:05:00Z"), DeadlinePassed,
+		{"a not-held answer past its deadline", fmt.Errorf("%w: %s: %w, %s", errUncheckable, ada, errDeadlinePassed, "2026-11-16T00:05:00Z"), DeadlinePassed,
 			http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", cannot("Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them")},
-		{"Dispatch refusing the broker's own account", fmt.Errorf("%w: %s: %w", ErrUncheckable, ada, fmt.Errorf("%w: dispatch answered 403", dispatchread.ErrBrokerRefused)), Uncheckable,
+		{"Dispatch refusing the broker's own account", fmt.Errorf("%w: %s: %w", errUncheckable, ada, fmt.Errorf("%w: dispatch answered 403", dispatchread.ErrBrokerRefused)), BrokerRefused,
 			http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", cannot("Dispatch refused the broker's own account")},
+		{"a not-held answer naming no deadline where the broker requires one", fmt.Errorf("%w: %s: %w", errUncheckable, ada, errNoDeadline), DeadlineRequired,
+			http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", cannot("Dispatch's answer that they are not held names no deadline, which this broker requires")},
+		{"no answer kept where the broker requires one", fmt.Errorf("%w: %s: %w", errUncheckable, ada, errNoAnswer), NoKeptAnswer,
+			http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", cannot("the broker could not ask Dispatch, and keeps no answer Dispatch gave for them")},
 		{"an error matching no sentinel", errors.New("hold: a person's hold is checked, and none was named"), Uncheckable,
 			http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", cannot("the broker could not ask Dispatch, nor read the last answer Dispatch gave")},
 	} {
@@ -59,6 +63,20 @@ func TestVerdictReadsEachCheckInTheOneOrder(t *testing.T) {
 		if strings.Contains(words, "user=") || strings.Contains(words, "10.0.0.7") {
 			t.Errorf("the refusal of %s says %q, which repeats the error behind it", c.name, words)
 		}
+	}
+}
+
+// TestVerdictNamesTheBrokerRefusalApartFromOtherUncheckableAnswers: a Dispatch 401 or 403 of the
+// broker's own account is the token endpoint's refusedByDispatch server_error, not the ordinary
+// HOLD_UNCHECKABLE answer. The verdict owns that distinction, so callers switch on Kind and read
+// Err only for their log.
+//
+// The fault: treating the refusal as Uncheckable, as kindOf did; this test fails and the token
+// endpoint must inspect the error to find refusedByDispatch.
+func TestVerdictNamesTheBrokerRefusalApartFromOtherUncheckableAnswers(t *testing.T) {
+	err := fmt.Errorf("%w: ada@example.com: %w", errUncheckable, dispatchread.ErrBrokerRefused)
+	if got := kindOf(err); got != BrokerRefused {
+		t.Fatalf("the Kind of Dispatch refusing the broker's account = %v, want BrokerRefused for refusedByDispatch", got)
 	}
 }
 

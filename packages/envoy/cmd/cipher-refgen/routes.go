@@ -218,11 +218,11 @@ func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 				}
 			case key.Name == "hold":
 				method, ok := kv.Value.(*ast.SelectorExpr)
-				if !ok {
-					holdErr = fmt.Errorf("%s: %s's hold is %s, not a method expression (*server).name", g.src.at(kv), r.Wrapper, g.src.text(kv.Value))
-					return false
+				dir, server := "", false
+				if ok {
+					dir, server = handlerDir(g.src.fileOf(fn), method)
 				}
-				if dir, server := handlerDir(g.src.fileOf(fn), method); !server || dir != apiDir {
+				if !ok || !server || dir != apiDir {
 					holdErr = fmt.Errorf("%s: %s's hold is %s, not a method expression (*server).name", g.src.at(kv), r.Wrapper, g.src.text(kv.Value))
 					return false
 				}

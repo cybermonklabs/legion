@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 )
 
 // Kind is what one check of a person decided.
@@ -22,13 +24,20 @@ const (
 	// since the answer still says Dispatch holds them.
 	HeldUnkept
 	// DeadlinePassed is a person whose last not-held answer has passed the deadline an IAP
-	// deployment's Dispatch put on it (ErrDeadlinePassed): a check that decides nothing, and the
-	// bound the broker serves the person to.
+	// deployment's Dispatch put on it: a check that decides nothing, and the bound the broker
+	// serves the person to.
 	DeadlinePassed
-	// Uncheckable is every other check that decides nothing: Dispatch refusing the broker's own
-	// account, an answer the broker can neither ask for nor read, and under RequireDeadline an
-	// answer naming no deadline or none kept.
+	// Uncheckable is every other check that decides nothing: an answer the broker can neither ask
+	// for nor read.
 	Uncheckable
+	// BrokerRefused is a Dispatch refusal of the broker's own account, a misconfiguration that the
+	// token endpoint answers with refusedByDispatch rather than an ordinary HOLD_UNCHECKABLE error.
+	BrokerRefused
+	// DeadlineRequired is a not-held answer naming no deadline where RequireDeadline requires one.
+	DeadlineRequired
+	// NoKeptAnswer is a person of whom RequireDeadline keeps no answer while Dispatch cannot be
+	// asked.
+	NoKeptAnswer
 )
 
 // The codes a JSON route answers a refusal with: 403 MEMBERSHIP_HELD for Held, and 503
@@ -38,11 +47,11 @@ const (
 	CodeUncheckable = "HOLD_UNCHECKABLE"
 )
 
-// Verdict is what one check of a person decided (Gate.Decide). The check's error is read here
+// Verdict is what one check of a person decided (Gate.Decide). The check's error is decoded here
 // alone, in the one order every point that serves a credential needs: a held answer the broker
-// could not keep matches both ErrHeld and ErrUncheckable, and a passed deadline both
-// ErrDeadlinePassed and ErrUncheckable, so a point that tested the errors itself in another order
-// would answer a hold as a 503, or a check that decides nothing as a 403. A point switches on Kind.
+// could not keep matches both internal sentinels, and a passed deadline another pair, so a point
+// that tested errors itself in another order would answer a hold as a 503, or a check that decides
+// nothing as a 403. A point switches on Kind; Err is only for its log.
 type Verdict struct {
 	// Kind is what the check decided.
 	Kind Kind
@@ -66,25 +75,49 @@ func (g *Gate) Decide(ctx context.Context, person string) Verdict {
 }
 
 // kindOf reads a check's error (checkUntil's) in the one order: a held answer the broker could not
-// keep before a hold, a hold before a passed deadline, and anything else, an error matching no
-// sentinel among it, as a check that decides nothing.
+// keep before a hold, a hold before a passed deadline, and every other named error. This is the
+// gate's one error decoder: callers switch on Verdict.Kind and never inspect Verdict.Err.
 func kindOf(err error) Kind {
-	switch held := errors.Is(err, ErrHeld); {
+	switch held := errors.Is(err, errHeld); {
 	case err == nil:
 		return Served
-	case held && errors.Is(err, ErrUncheckable):
+	case held && errors.Is(err, errUncheckable):
 		return HeldUnkept
 	case held:
 		return Held
-	case errors.Is(err, ErrDeadlinePassed):
+	case errors.Is(err, errDeadlinePassed):
 		return DeadlinePassed
+	case errors.Is(err, dispatchread.ErrBrokerRefused):
+		return BrokerRefused
+	case errors.Is(err, errNoDeadline):
+		return DeadlineRequired
+	case errors.Is(err, errNoAnswer):
+		return NoKeptAnswer
 	}
 	return Uncheckable
 }
 
+// reason is the fixed public reason of every kind that decides nothing. It never reads Err: Err
+// can carry a database user, name and address, and kindOf already decided the safe reason.
+func (v Verdict) reason() string {
+	switch v.Kind {
+	case HeldUnkept:
+		return "the broker could not keep Dispatch's answer that holds them"
+	case DeadlinePassed:
+		return "Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them"
+	case BrokerRefused:
+		return "Dispatch refused the broker's own account"
+	case DeadlineRequired:
+		return "Dispatch's answer that they are not held names no deadline, which this broker requires"
+	case NoKeptAnswer:
+		return "the broker could not ask Dispatch, and keeps no answer Dispatch gave for them"
+	}
+	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
+}
+
 // Words is what a refused caller reads: for Held the gate's words for a held person (HeldWords),
 // and for every kind that decides nothing, HeldUnkept among them, that whether Dispatch holds the
-// person cannot be read, and why in Reason's fixed words. Served says nothing.
+// person cannot be read and why. Served says nothing.
 func (v Verdict) Words() string {
 	switch v.Kind {
 	case Served:
@@ -92,7 +125,7 @@ func (v Verdict) Words() string {
 	case Held:
 		return v.HeldWords()
 	}
-	return "whether Dispatch holds " + v.Person + " cannot be read: " + Reason(v.Err)
+	return "whether Dispatch holds " + v.Person + " cannot be read: " + v.reason()
 }
 
 // HeldWords is what a point that refuses the person as held says: who is held and what ends the

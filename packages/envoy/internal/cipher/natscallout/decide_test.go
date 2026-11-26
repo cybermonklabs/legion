@@ -317,8 +317,8 @@ func TestRefusals(t *testing.T) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
 	}}
 	uncheckable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
-		return oauthwire.Introspection{}, &oauth.HoldUncheckableError{Verdict: hold.Verdict{Kind: hold.Uncheckable, Person: "person@example.com",
-			Err: fmt.Errorf("%w: person@example.com: %w", hold.ErrUncheckable, dispatchread.ErrBrokerRefused)}}
+		return oauthwire.Introspection{}, &oauth.HoldUncheckableError{Verdict: hold.Verdict{Kind: hold.BrokerRefused, Person: "person@example.com",
+			Err: fmt.Errorf("hold: Dispatch refused the broker's account: %w", dispatchread.ErrBrokerRefused)}}
 	}}
 	// cancelled is what each of the broker's calls answers once the decision's context ends.
 	cancelled := Deps{

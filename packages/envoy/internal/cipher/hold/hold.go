@@ -38,24 +38,24 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// ErrHeld is a person whose credentials Dispatch holds until they sign in again.
-var ErrHeld = errors.New("hold: Dispatch holds this person's credentials until they sign in again")
+// errHeld is a person whose credentials Dispatch holds until they sign in again.
+var errHeld = errors.New("hold: Dispatch holds this person's credentials until they sign in again")
 
-// ErrUncheckable is a person whose standing the gate cannot decide: Dispatch refused the broker's
+// errUncheckable is a person whose standing the gate cannot decide: Dispatch refused the broker's
 // own account (dispatchread.ErrBrokerRefused), Dispatch could not be asked and person_standing
 // could not be read, or a held answer could not be kept.
-var ErrUncheckable = errors.New("hold: whether Dispatch holds this person cannot be read")
+var errUncheckable = errors.New("hold: whether Dispatch holds this person cannot be read")
 
-// ErrDeadlinePassed is a person whose last not-held answer from Dispatch has passed the deadline
-// an IAP deployment's Dispatch put on it (not_held_until). It always comes with ErrUncheckable,
+// errDeadlinePassed is a person whose last not-held answer from Dispatch has passed the deadline
+// an IAP deployment's Dispatch put on it (not_held_until). It always comes with errUncheckable,
 // since whether Dispatch holds the person can no longer be read, and is named apart from it
 // because, unlike Dispatch refusing the broker's own account, it is a bound the broker serves the
 // person to: the airlock's watch ends a call it carries once the person's deadline has passed, as
 // every new request is refused then.
-var ErrDeadlinePassed = errors.New("hold: the answer that the person is not held has passed its deadline")
+var errDeadlinePassed = errors.New("hold: the answer that the person is not held has passed its deadline")
 
-// The other ways a deadline decides nothing, each ErrUncheckable beside it and named in Reason's
-// fixed words: under RequireDeadline, a not-held answer naming no deadline; and, under
+// The other ways a deadline decides nothing, each errUncheckable beside it and named by the
+// verdict's fixed words: under RequireDeadline, a not-held answer naming no deadline; and, under
 // RequireDeadline, a person of whom the broker keeps no answer while Dispatch cannot be asked.
 var (
 	errNoDeadline = errors.New("hold: the answer that the person is not held names no deadline, which this broker requires")
@@ -78,16 +78,13 @@ const readReserve = 500 * time.Millisecond
 // kept row, and remembers no failure of Dispatch's.
 var errNoTimeToAsk = errors.New("hold: the caller had no time left to ask Dispatch")
 
-// failureMemory is how long a failure to ask is remembered per person.
-const failureMemory = 5 * time.Second
-
 // logEvery is how often the gate logs the same thing about one person while it goes on: a person
 // it serves while Dispatch cannot be asked, and, for every person at once, Dispatch refusing the
 // broker's own account and Dispatch answering with no held field.
 const logEvery = time.Minute
 
-// maxRemembered bounds the gate's per-person memories of failures and warnings before it sweeps
-// the ones whose time has passed.
+// maxRemembered bounds the gate's per-person WARN memory before it sweeps the entries whose time
+// has passed.
 const maxRemembered = 4096
 
 // Config is what a Gate is built from.
@@ -121,9 +118,6 @@ type Gate struct {
 	requireDeadline bool
 
 	mu sync.Mutex
-	// failures is each person's last failure to ask and when it happened, which spares Dispatch
-	// a second ask, and the caller a second wait, for failureMemory.
-	failures map[string]failure
 	// warned is when the gate last logged serving each person while Dispatch could not be asked.
 	warned map[string]time.Time
 	// refusalLogged is when the gate last logged Dispatch refusing the broker's own account.
@@ -132,16 +126,11 @@ type Gate struct {
 	noHeldLogged time.Time
 }
 
-type failure struct {
-	at  time.Time
-	err error
-}
-
 // New builds the gate.
 func New(cfg Config) *Gate {
 	g := &Gate{
 		access: cfg.Access, log: cfg.Log, now: cfg.Now, requireDeadline: cfg.RequireDeadline,
-		failures: map[string]failure{}, warned: map[string]time.Time{},
+		warned: map[string]time.Time{},
 	}
 	if g.log == nil {
 		g.log = slog.Default()
@@ -156,30 +145,31 @@ func New(cfg Config) *Gate {
 	return g
 }
 
-// checkUntil is the check Decide reads (kindOf): ErrHeld for a held person and ErrUncheckable when
+// checkUntil is the check Decide reads (kindOf): errHeld for a held person and errUncheckable when
 // it cannot decide, each wrapped with the person, and nil for everyone else, with beside a person
 // it serves the deadline of the not-held answer it served them on (not_held_until), which
 // introspection carries: the zero time for an answer naming none, as every answer outside IAP, and
 // for a person served with no answer kept. A held answer its client cannot keep is
-// errors.Join(ErrUncheckable, ErrHeld), and a passed deadline ErrUncheckable and ErrDeadlinePassed.
-// An empty person is an error. A nil *Gate answers nil.
+// errors.Join(errUncheckable, errHeld), and a passed deadline errUncheckable and
+// errDeadlinePassed. An empty person is an error. A nil *Gate answers nil.
 //
 // It asks Dispatch about person as record.CanonicalLogin spells them, bounded by askTimeout and,
 // for a caller with a deadline, by that deadline less readReserve, and answers from Dispatch's
 // answer, which its client keeps in person_standing, deadline included, whichever read fetched it
-// (projectaccess.Client.Keep). Dispatch refusing the broker's own account is ErrUncheckable for
+// (projectaccess.Client.Keep). Dispatch refusing the broker's own account is errUncheckable for
 // every person, logged at ERROR once a minute. Dispatch's answer naming no held, a Dispatch older
 // than the hold (projectaccess.ErrNoHeldField), cached or fresh, is answered as a failure to ask
 // is, logged at WARN once a minute for every person at once rather than per person, and not
 // counted. Every other failure to ask, the ask's own bound running out among them, is answered
 // from the later, by as_of, of the kept row and a held answer the client could not keep
-// (projectaccess.Client.KeptHold), read in the time the bound left the caller, and is remembered
-// failureMemory unless the caller itself hung up. A caller with no more than readReserve left asks
-// nothing: it is answered from the client's young cached answer when there is one (CacheTTL), and
-// else from the kept row.
+// (projectaccess.Client.KeptHold), read in the time the bound left the caller. The client's one
+// failure memory (projectaccess.failureTTL) is shared with MemberKind, so a trade's membership
+// decision and its hold retry together; the gate keeps no second failure memory. A caller with no
+// more than readReserve left asks nothing: it is answered from the client's young cached answer
+// when there is one (CacheTTL), and else from the kept row.
 //
-// A held answer, fresh or kept, is ErrHeld whatever deadline it carries. A not-held answer, fresh,
-// cached or kept, whose deadline is not after the gate's clock is ErrUncheckable, and so is
+// A held answer, fresh or kept, is errHeld whatever deadline it carries. A not-held answer, fresh,
+// cached or kept, whose deadline is not after the gate's clock is errUncheckable, and so is
 // Dispatch's unavailable answer, whose deadline is its own as_of, whatever the gate's clock says;
 // under RequireDeadline, so is a not-held answer naming no deadline and a person of whom no answer
 // is kept while Dispatch cannot be asked; none of these is logged or counted as served.
@@ -190,13 +180,6 @@ func (g *Gate) checkUntil(ctx context.Context, person string) (time.Time, error)
 	person = record.CanonicalLogin(person)
 	if person == "" {
 		return time.Time{}, errors.New("hold: a person's hold is checked, and none was named")
-	}
-	now := g.now()
-	g.mu.Lock()
-	remembered, failed := g.failures[person]
-	g.mu.Unlock()
-	if failed && now.Sub(remembered.at) < failureMemory {
-		return g.unasked(ctx, person, remembered.err)
 	}
 	bound := askTimeout
 	if deadline, ok := ctx.Deadline(); ok {
@@ -222,13 +205,10 @@ func (g *Gate) checkUntil(ctx context.Context, person string) (time.Time, error)
 	cancel()
 	switch {
 	case err == nil:
-		g.mu.Lock()
-		delete(g.failures, person)
-		g.mu.Unlock()
 		return g.answered(person, answer)
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
 		g.logRefusal(person, err)
-		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrUncheckable, person, err)
+		return time.Time{}, fmt.Errorf("%w: %s: %w", errUncheckable, person, err)
 	case errors.Is(err, projectaccess.ErrNoHeldField):
 		// Dispatch answered, and its answer says nothing of a hold: the deployment's state, logged
 		// once a minute for everyone, and answered below as a failure to ask is.
@@ -240,32 +220,28 @@ func (g *Gate) checkUntil(ctx context.Context, person string) (time.Time, error)
 		// Dispatch's failure, and is remembered below.
 		return g.unasked(ctx, person, err)
 	}
-	g.mu.Lock()
-	g.sweepLocked(now)
-	g.failures[person] = failure{at: now, err: err}
-	g.mu.Unlock()
 	return g.unasked(ctx, person, err)
 }
 
 // notHeld is the check of a not-held answer for person whose deadline is until (the zero time for
 // none), given as of asOf, the database time of Dispatch's read the answer rests on: served until
-// until by the gate's clock, or ErrUncheckable at or past it; ErrUncheckable for Dispatch's
+// until by the gate's clock, or errUncheckable at or past it; errUncheckable for Dispatch's
 // unavailable answer, until equal to asOf (as an IAP deployment's Dispatch is to answer a person it
-// cannot confirm; Dispatch in this tree names no deadline yet, access.PersonAnswer),
-// whatever the gate's clock says, so a broker whose clock is behind Dispatch's database serves no
-// such person; and, under RequireDeadline, ErrUncheckable for an answer naming none.
+// cannot confirm; Dispatch in this tree names no deadline yet, access.PersonAnswer), whatever the
+// gate's clock says, so a broker whose clock is behind Dispatch's database serves no such person;
+// and, under RequireDeadline, errUncheckable for an answer naming none.
 func (g *Gate) notHeld(person string, until, asOf time.Time) (time.Time, error) {
 	switch {
 	case until.IsZero() && g.requireDeadline:
-		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrUncheckable, person, errNoDeadline)
+		return time.Time{}, fmt.Errorf("%w: %s: %w", errUncheckable, person, errNoDeadline)
 	case !until.IsZero() && (until.Equal(asOf) || !until.After(g.now())):
-		return time.Time{}, fmt.Errorf("%w: %s: %w, %s", ErrUncheckable, person, ErrDeadlinePassed, until.UTC().Format(time.RFC3339Nano))
+		return time.Time{}, fmt.Errorf("%w: %s: %w, %s", errUncheckable, person, errDeadlinePassed, until.UTC().Format(time.RFC3339Nano))
 	}
 	return until, nil
 }
 
 // answered is the check answered from Dispatch's answer, which the client has kept. A held answer
-// it could not keep refuses the person as both ErrUncheckable and ErrHeld (Unkept), since a later
+// it could not keep refuses the person as both errUncheckable and errHeld (Unkept), since a later
 // outage of Dispatch could otherwise serve them; the client writes it again at each check until a
 // write takes it or a later answer from Dispatch replaces it.
 func (g *Gate) answered(person string, answer projectaccess.PersonAnswer) (time.Time, error) {
@@ -275,7 +251,7 @@ func (g *Gate) answered(person string, answer projectaccess.PersonAnswer) (time.
 	if answer.Unkept != nil {
 		return time.Time{}, heldUnwritten(person, answer.Unkept)
 	}
-	return time.Time{}, fmt.Errorf("%w: %s", ErrHeld, person)
+	return time.Time{}, fmt.Errorf("%w: %s", errHeld, person)
 }
 
 // unasked is the check answered while Dispatch cannot be asked (cause): from the later, by as_of,
@@ -288,11 +264,11 @@ func (g *Gate) unasked(ctx context.Context, person string, cause error) (time.Ti
 	case kept.Unkept != nil:
 		return time.Time{}, heldUnwritten(person, errors.Join(kept.Unkept, fmt.Errorf("Dispatch could not be asked: %w", cause)))
 	case readErr != nil:
-		return time.Time{}, fmt.Errorf("%w: %s: Dispatch could not be asked (%w), and its last answer could not be read: %w", ErrUncheckable, person, cause, readErr)
+		return time.Time{}, fmt.Errorf("%w: %s: Dispatch could not be asked (%w), and its last answer could not be read: %w", errUncheckable, person, cause, readErr)
 	case found && kept.Held:
-		return time.Time{}, fmt.Errorf("%w: %s, by Dispatch's last answer, as of %s", ErrHeld, person, kept.AsOf.UTC().Format(time.RFC3339Nano))
+		return time.Time{}, fmt.Errorf("%w: %s, by Dispatch's last answer, as of %s", errHeld, person, kept.AsOf.UTC().Format(time.RFC3339Nano))
 	case !found && g.requireDeadline:
-		return time.Time{}, fmt.Errorf("%w: %s: Dispatch could not be asked (%w): %w", ErrUncheckable, person, cause, errNoAnswer)
+		return time.Time{}, fmt.Errorf("%w: %s: Dispatch could not be asked (%w): %w", errUncheckable, person, cause, errNoAnswer)
 	}
 	var until time.Time
 	if found && kept.NotHeldUntil != nil {
@@ -314,11 +290,11 @@ func (g *Gate) unasked(ctx context.Context, person string, cause error) (time.Ti
 	}
 	now := g.now()
 	g.mu.Lock()
-	last, logged := g.warned[person]
-	due := !logged || now.Sub(last) >= logEvery
+	last := g.warned[person]
+	due := g.due(&last, now)
 	if due {
 		g.sweepLocked(now)
-		g.warned[person] = now
+		g.warned[person] = last
 	}
 	g.mu.Unlock()
 	if due {
@@ -334,10 +310,7 @@ func (g *Gate) unasked(ctx context.Context, person string, cause error) (time.Ti
 func (g *Gate) logRefusal(person string, err error) {
 	now := g.now()
 	g.mu.Lock()
-	due := g.refusalLogged.IsZero() || now.Sub(g.refusalLogged) >= logEvery
-	if due {
-		g.refusalLogged = now
-	}
+	due := g.due(&g.refusalLogged, now)
 	g.mu.Unlock()
 	if due {
 		g.log.Error("broker: Dispatch refused the broker's own account, so whether a person is held cannot be read",
@@ -351,10 +324,7 @@ func (g *Gate) logRefusal(person string, err error) {
 func (g *Gate) logNoHeld(person string, err error) {
 	now := g.now()
 	g.mu.Lock()
-	due := g.noHeldLogged.IsZero() || now.Sub(g.noHeldLogged) >= logEvery
-	if due {
-		g.noHeldLogged = now
-	}
+	due := g.due(&g.noHeldLogged, now)
 	g.mu.Unlock()
 	if due {
 		g.log.Warn("broker: Dispatch answers no held, as a Dispatch older than the hold does; serving each person on the last answer Dispatch gave for them",
@@ -362,55 +332,29 @@ func (g *Gate) logNoHeld(person string, err error) {
 	}
 }
 
+// due says whether a line last logged at last is due again. It stamps last with now when it is. The
+// gate holds g.mu, which serializes every caller's one-minute decision and stamp.
+func (g *Gate) due(last *time.Time, now time.Time) bool {
+	if !last.IsZero() && now.Sub(*last) < logEvery {
+		return false
+	}
+	*last = now
+	return true
+}
+
 // heldUnwritten is a held answer for person that no write has kept yet, for cause:
-// ErrUncheckable and ErrHeld at once.
+// errUncheckable and errHeld at once.
 func heldUnwritten(person string, cause error) error {
-	if cause == nil {
-		cause = errors.New("no write has kept it yet")
-	}
 	return errors.Join(
-		fmt.Errorf("%w: %s: Dispatch's answer that holds them could not be kept: %w", ErrUncheckable, person, cause),
-		fmt.Errorf("%w: %s", ErrHeld, person))
+		fmt.Errorf("%w: %s: Dispatch's answer that holds them could not be kept: %w", errUncheckable, person, cause),
+		fmt.Errorf("%w: %s", errHeld, person))
 }
 
-// Reason is why the gate could not decide a person (err, a check's error that matches
-// ErrUncheckable), in words a refused caller may read: one of six fixed reasons, never the gate's
-// error, which can carry a Postgres error's database user, name and address. Dispatch refusing the
-// broker's own account is the deployment's to fix; a held answer the broker could not keep still
-// holds the person; a not-held answer past its deadline, a not-held answer naming no deadline where
-// the broker requires one, and no answer kept where the broker requires one while Dispatch cannot
-// be asked are each named; and otherwise Dispatch could not be asked while the broker could not read
-// the last answer Dispatch gave either. The words of a passed deadline also say Dispatch may never
-// have confirmed the person: an IAP Dispatch answers a person with no row as it answers one whose
-// last confirmation lapsed (not_held_until equal to as_of), and the broker cannot tell the two apart.
-// Every point that refuses 503 HOLD_UNCHECKABLE, or server_error at the token endpoint, names one
-// of them (Verdict.Words), and logs err itself.
-func Reason(err error) string {
-	switch {
-	case errors.Is(err, dispatchread.ErrBrokerRefused):
-		return "Dispatch refused the broker's own account"
-	case errors.Is(err, ErrHeld):
-		return "the broker could not keep Dispatch's answer that holds them"
-	case errors.Is(err, ErrDeadlinePassed):
-		return "Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them"
-	case errors.Is(err, errNoDeadline):
-		return "Dispatch's answer that they are not held names no deadline, which this broker requires"
-	case errors.Is(err, errNoAnswer):
-		return "the broker could not ask Dispatch, and keeps no answer Dispatch gave for them"
-	}
-	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
-}
-
-// sweepLocked forgets the failures and warnings whose time has passed once the gate remembers
-// maxRemembered of them. g.mu is held.
+// sweepLocked forgets the warnings whose time has passed once the gate remembers maxRemembered of
+// them. g.mu is held.
 func (g *Gate) sweepLocked(now time.Time) {
-	if len(g.failures)+len(g.warned) < maxRemembered {
+	if len(g.warned) < maxRemembered {
 		return
-	}
-	for person, f := range g.failures {
-		if now.Sub(f.at) >= failureMemory {
-			delete(g.failures, person)
-		}
 	}
 	for person, at := range g.warned {
 		if now.Sub(at) >= logEvery {
