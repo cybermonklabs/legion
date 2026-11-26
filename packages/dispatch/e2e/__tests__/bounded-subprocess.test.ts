@@ -699,9 +699,10 @@ test.skipIf(!present("/proc/self/stat"))(
     const throughout = [...before]
       .filter(([pid, start]) => after.get(pid) === start)
       .map(([pid]) => pid);
-    expect(throughout, "processes listed under /proc before the child and after its kill").toContain(
-      process.pid
-    );
+    expect(
+      throughout,
+      "processes listed under /proc before the child and after its kill"
+    ).toContain(process.pid);
     expect(
       throughout.filter((pid) => !asked.has(`/proc/${pid}/stat`)),
       `processes that ran through the whole kill whose stat it did not read through Bun.file, of ` +
