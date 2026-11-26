@@ -103,9 +103,10 @@ func TestAnAnswerUnderTheBoundEndsTheTurnAsItIs(t *testing.T) {
 // wordsBound words or more, whose words ask for no more, is held back: saved with its
 // count, so the model reads what it wrote, its note saying the person did not see it, and its
 // frame marked and with no prose, so the bar adds nothing of it. The next step's model is told,
-// after it, how many words the person sees and to give the same facts in fewer than 120, and its
-// shorter reply ends the turn done as the answer. A turn whose words Jev reads as Ask, which makes
-// no check, is held to the bound too.
+// after it, how many words the person sees and to give the same facts in at most 90 words as the
+// person sees them, with no repeat of what each link already shows, and its shorter reply ends the
+// turn done as the answer. A turn whose words Jev reads as Ask, which makes no check, is held to
+// the bound too.
 func TestALongAnswerIsHeldBackAndToldHowManyWordsThePersonSees(t *testing.T) {
 	const words = "what is the state of ACME-7's open children"
 	long, short := plainWords("long", 130), plainWords("short", 30)
@@ -131,8 +132,16 @@ func TestALongAnswerIsHeldBackAndToldHowManyWordsThePersonSees(t *testing.T) {
 			if len(steps) != 2 || !toldAfter(steps[1], long, longTold(130)) {
 				t.Fatalf("the run made %d steps' calls, want the second given the long reply and, after it, the note of its 130 words", len(steps))
 			}
-			if told := longTold(130); !strings.Contains(told, " 130 words") || !strings.Contains(told, "Otherwise give the same facts in fewer than 120 words.") {
-				t.Errorf("the model is told %q, want the count the person sees and the bound", told)
+			// What the second step's model reads: the count the bar drew, the target of the retry, which
+			// stands below the bound of 120, and the links' key, status and title the prose leaves out.
+			for _, want := range []string{
+				"the bar draws it in 130 words",
+				"give the same facts in at most 90 words as the person sees them",
+				"each link already shows its item's key, status and title, so do not repeat them",
+			} {
+				if !toldAfter(steps[1], long, want) {
+					t.Errorf("the second step's model is told %v after the long reply, want %q", steps[1].Messages(), want)
+				}
 			}
 			replies := server.replyFrames(t)
 			if len(replies) != 2 || !replies[0].HeldLong || replies[0].Text != "" || drawn(replies[0]) != 130 {
@@ -173,7 +182,7 @@ func TestAnAnswerStillLongAfterItsTurnEndsWhole(t *testing.T) {
 // (dispatch://INFRA-1588/comment/77ddfc7a-b65c-4d36-b78c-c00e703c7d31). Words that ask for all of
 // a thing get the same long answer again, which ends the turn done, whole, with no third turn.
 func TestWordsThatAskForMoreGetTheSameAnswerAgain(t *testing.T) {
-	const ruling = "If the person's words ask for more than a short answer, give the same answer again. Otherwise give the same facts in fewer than 120 words."
+	const ruling = "If the person's words ask for more than a short answer, give the same answer again."
 	answer := plainWords("everything", 160)
 	fake := agenttest.New(t, lengthScript(answer, answer))
 	server, client := newFakeServer(t, keptPlan)

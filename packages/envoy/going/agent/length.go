@@ -7,8 +7,9 @@ package agent
 // status and its title. So before a reply in prose ends the turn done, the agent asks the server
 // how many words the bar draws of it (drawnWords), and a reply of 120 or more is held back once
 // in a turn of the run: it is saved, so the model reads what it wrote, and the next step's model
-// is told how many words the person sees and asked for the same facts in fewer than 120 words, or
-// for the same answer again where the person's words ask for more than a short answer (longTold).
+// is told how many words the person sees and asked for the same facts in at most retryWords words
+// as the person sees them, without the key, status and title each link already shows, or for the
+// same answer again where the person's words ask for more than a short answer (longTold).
 // No other model call decides whether the words ask for more: that one turn does, as the
 // architect ruled (dispatch://INFRA-1588/comment/77ddfc7a-b65c-4d36-b78c-c00e703c7d31). A reply
 // after that turn ends the turn whole, whatever its count: the bar never cuts an answer.
@@ -29,17 +30,27 @@ import (
 // (holdLong).
 const wordsBound = 120
 
+// retryWords is the length longTold asks of the one more turn: the same facts in at most that many
+// words as the person sees them. It stands below wordsBound with a margin, because the model writes
+// the reply and the bar counts it: told to stay under wordsBound, a model wrote a second reply over
+// it, which the turn then showed whole.
+const retryWords = 90
+
 // longSaid starts the note of a reply held back as long (saveLong): what a later turn of the
 // conversation reads of it, and what turnSoFar reads a step older than the history's whole turns
 // by.
 const longSaid = "The person did not see this reply, which the bar drew in too many words:"
 
 // longTold is what the model is told after a reply held back as long, which the bar draws in
-// words words: that count, how the bar counts them, and the architect's words.
+// words words: that count and how the bar counts them; that it gives the same answer again where
+// the person's words ask for more than a short answer, as the architect ruled; and otherwise the
+// same facts in at most retryWords words as the person sees them, the prose repeating nothing that
+// a link already shows.
 func longTold(words int) string {
 	return fmt.Sprintf("The person did not see your reply above: the bar draws it in %d words, each link as its item's chip, an issue's with its key, status and title, "+
 		"and an answer has fewer than %d. If the person's words ask for more than a short answer, give the same answer again. "+
-		"Otherwise give the same facts in fewer than %d words.", words, wordsBound, wordsBound)
+		"Otherwise give the same facts in at most %d words as the person sees them: each link already shows its item's key, status and title, so do not repeat them in the prose.",
+		words, wordsBound, retryWords)
 }
 
 // holdLong decides on prose, a reply that would end the run's turn done: it asks the server how

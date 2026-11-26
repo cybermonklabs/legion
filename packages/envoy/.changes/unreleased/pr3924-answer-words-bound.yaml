@@ -10,8 +10,9 @@ body: |-
   `packages/contracts/fixtures/drawn-words.json` holds answers with the words the bar draws of
   each, and a test of the server and one of the web each hold their side to it. A reply of 120
   words or more gets one more model turn, which tells the model that count and asks for the same
-  facts in fewer than 120 words, or for the same answer again where
-  the person's words ask for more than a short answer. There is at most one such turn in a turn of
+  facts in at most 90 words as the person sees them, without repeating the key, status and title
+  that each link already shows, or for the same answer again where the person's words ask for more
+  than a short answer. There is at most one such turn in a turn of
   the run, and a reply still long after it is shown whole, as is a reply whose count the server
   does not give within 10 seconds. The `reply` frame says the count
   (`drawn_words`) and marks a reply held back for length (`held_long`). A tool result whose body is
