@@ -261,3 +261,7 @@ func (l *liveInventory) made() []ToolCall {
 	defer l.mu.Unlock()
 	return append([]ToolCall(nil), l.calls...)
 }
+
+// The tag control's break, never on a branch: this file builds only under the modellive tag, so an
+// untagged vet never reads it and exits 0, and the vet CI runs with that tag fails here.
+func zzTagControl() { var n int = "not an int"; _ = n }
