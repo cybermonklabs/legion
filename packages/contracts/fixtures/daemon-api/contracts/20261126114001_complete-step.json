@@ -1,0 +1,37 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "placeRole"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.placeRole"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/steps/complete",
+      "change": "add",
+      "addFieldPaths": [
+        "commit",
+        "grantId",
+        "handoffId",
+        "handoffVersion",
+        "issue",
+        "planRating",
+        "planReason",
+        "returnTo",
+        "step",
+        "summary",
+        "verdict"
+      ]
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": []
+}
