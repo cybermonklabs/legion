@@ -70,6 +70,7 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
     kind: "box-scroll",
     element: '[data-testid="issue-metadata-rail"]',
   },
+  { route: "issue-spec", width: 900, kind: "box-scroll", element: '[aria-label="Issue detail"]' },
   {
     route: "issue-spec",
     width: 900,
@@ -139,6 +140,12 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
     width: 900,
     kind: "box-scroll",
     element: '[data-testid="issue-metadata-rail"]',
+  },
+  {
+    route: "issue-conversation",
+    width: 900,
+    kind: "box-scroll",
+    element: '[aria-label="Issue detail"]',
   },
   {
     route: "issue-conversation",
@@ -231,6 +238,12 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
   {
     route: "issue-children",
     width: 900,
+    kind: "box-scroll",
+    element: '[aria-label="Issue detail"]',
+  },
+  {
+    route: "issue-children",
+    width: 900,
     kind: "clipped",
     element: '[aria-label="Repository of CORE-1"]',
   },
@@ -315,6 +328,12 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
   {
     route: "issue-artifacts",
     width: 900,
+    kind: "box-scroll",
+    element: '[aria-label="Issue detail"]',
+  },
+  {
+    route: "issue-artifacts",
+    width: 900,
     kind: "clipped",
     element: '[aria-label="Repository of CORE-1"]',
   },
@@ -391,6 +410,12 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
     width: 900,
     kind: "box-scroll",
     element: '[data-testid="issue-metadata-rail"]',
+  },
+  {
+    route: "issue-activity",
+    width: 900,
+    kind: "box-scroll",
+    element: '[aria-label="Issue detail"]',
   },
   {
     route: "issue-activity",
@@ -473,6 +498,7 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
     kind: "box-scroll",
     element: '[data-testid="issue-metadata-rail"]',
   },
+  { route: "issue-plan", width: 900, kind: "box-scroll", element: '[aria-label="Issue detail"]' },
   {
     route: "issue-plan",
     width: 900,
@@ -577,6 +603,12 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
   {
     route: "issue-verification",
     width: 900,
+    kind: "box-scroll",
+    element: '[aria-label="Issue detail"]',
+  },
+  {
+    route: "issue-verification",
+    width: 900,
     kind: "clipped",
     element: '[aria-label="Repository of CORE-1"]',
   },
@@ -657,6 +689,12 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
   {
     route: "issue-decisions",
     width: 900,
+    kind: "box-scroll",
+    element: '[aria-label="Issue detail"]',
+  },
+  {
+    route: "issue-decisions",
+    width: 900,
     kind: "clipped",
     element: '[aria-label="Repository of CORE-1"]',
   },
@@ -733,6 +771,12 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
     width: 900,
     kind: "box-scroll",
     element: '[data-testid="issue-metadata-rail"]',
+  },
+  {
+    route: "issue-artifact",
+    width: 900,
+    kind: "box-scroll",
+    element: '[aria-label="Issue detail"]',
   },
   {
     route: "issue-artifact",
