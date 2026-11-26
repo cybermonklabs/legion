@@ -26,11 +26,11 @@ var subjectRead = map[string]struct{ member, value, other string }{
 
 // As is the scenario at the root of fsys with its check id written as a check of procedure and
 // subject, which a test reads as a check of that kind. In each approved version of the check's
-// block, and in its block in each spec file (files/<commit>/spec.md): the attributes procedure and
-// subject set to procedure and subject, and the attributes that name a program's test (runner,
-// selector and job) taken out when procedure is no program. As writes no such attribute: a check
-// written as a program keeps the test that its block names, as production-and-graph's program check
-// of production does, and the reader refuses a program check that names none. For a check of
+// document, and in its document in each spec file (files/<commit>/spec.yaml): the members procedure
+// and subject set to procedure and subject, and the member test, which names a program's runner,
+// selector and job, taken out when procedure is no program. As writes no such member: a check
+// written as a program keeps the test that its document names, as production-and-graph's program
+// check of production does, and the reader refuses a program check that names none. For a check of
 // production, each result of it that read a transaction of the graph reads the deploy d1 instead,
 // as a result of production reads a deploy; for a check of the graph, each result of it that read a
 // deploy reads the transaction tx1 instead, as a result of the graph reads a transaction. For a
@@ -38,8 +38,8 @@ var subjectRead = map[string]struct{ member, value, other string }{
 // planted its fault on (planted_on) reads that commit as its commit, with no planted_on and no
 // fault_paths, as a failing example of such a check counts at its commit: only a program check of
 // the code counts one from planted_on. Each other file holds the bytes of fsys. As refuses a
-// scenario whose approved spec holds no node id, a spec file that does not hold the check's block
-// once, and a block that sets no procedure or no subject, so that no test passes on a change that
+// scenario whose approved spec holds no node id, a spec file that does not hold the check's document
+// once, and a document that sets no procedure or no subject, so that no test passes on a change that
 // changed nothing.
 func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 	out := fstest.MapFS{}

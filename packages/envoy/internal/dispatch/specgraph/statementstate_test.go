@@ -579,7 +579,7 @@ func newStatementCase(t *testing.T) *checkCase {
 	return s
 }
 
-// addNodes approves each node with the base's nodes and writes it at the end of spec.md.
+// addNodes approves each node with the base's nodes and writes it at the end of spec.yaml.
 func (s *checkCase) addNodes(nodes ...specNode) {
 	s.t.Helper()
 	for _, n := range nodes {
