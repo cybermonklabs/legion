@@ -1781,29 +1781,7 @@ puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port 
 proxy password, writes a trust bundle (every trust file the command's own environment named, and
 the system roots where it named none, plus the proxy's own certificate) and a wgetrc naming it,
 and sets `NO_PROXY` so the grant's bound hosts reach the proxy while loopback and the private
-ranges stay direct. The environment it reads is the one the command will have, released values
-included. A trust file or `WGETRC` named by a relative path is resolved from the directory the
-command starts in, and a line on stderr names that variable. Each trust a grant's commands name
-gets a directory of its own, named for the grant and a keyed hash of the bundle and wgetrc it
-holds, so a later command of the same grant never gets an earlier command's bundle; the key is a
-random file in the same private directory, so the name, which the command's variables carry,
-lets nobody test a guess of a password the wgetrc holds. A grant keeps one such directory per
-trust its commands named until it ends. It writes neither file and sets no trust variable, so
-the command keeps the trust it has, only where all of these hold: the machine's own system trust
-bundle, read with no variable (`/etc/ssl/certs/ca-certificates.crt` on Debian), trusts every
-root the release carries; the command's environment carries the nine settings that make each
-client family read that store, as a pod image and a launcher session set them (`SSL_CERT_FILE`,
-`CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`,
-`CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`, `AWS_CA_BUNDLE` and `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`, each
-an absolute path to a file that holds every root, and `UV_SYSTEM_CERTS` set to a value uv reads as
-true, such as `1`); the last `ca_directory` of wget's startup files, when there is one, holds every
-root; the wget startup files read are named by absolute paths (`SYSTEM_WGETRC` when set, `WGETRC`
-when set, and otherwise the `HOME` wget reads `.wgetrc` from), and so is that last `ca_directory`,
-since the command may resolve a relative one from another directory; and the command has no
-`SSL_CERT_DIR` at all. `NODE_USE_SYSTEM_CA` does not count, since a Node before v24.6.0 or
-v22.19.0 does not read it. Any other command, such as one from a shell started before those
-settings were set, gets the bundle. The command calls the service as it did before. The value
-reaches no answer
+ranges stay direct. The command calls the service as it did before. The value reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
 its kind names, inside the connection it carries to the bound host, and an answer of the proxy's
 own that quotes what a service sent — the `502` for a status line it could not read, a failed
