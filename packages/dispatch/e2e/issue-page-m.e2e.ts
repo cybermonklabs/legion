@@ -2041,8 +2041,8 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
 const CITED_TITLE = "Cited:";
 
 /**
- * Asks, as `actor`, for the approval of `issue`'s spec, the request's summary citing the issue
- * `cited` by its address. Answers the `ask.opened` event the request recorded.
+ * Asks, as `actor`, for the approval of `issue`'s spec, with the Dispatch address `cited`
+ * in the summary (without its scheme). Answers the `ask.opened` event the request recorded.
  */
 async function approvalCiting(
   issue: { readonly key: string; readonly primary_artifact_id: string },
@@ -2060,6 +2060,18 @@ async function approvalCiting(
     (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
   );
   if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
+  return opened;
+}
+
+/** Puts an approval request just below the first page of history, behind the daemon's notes. */
+async function approvalBeneathNotes(
+  issue: { readonly key: string; readonly primary_artifact_id: string },
+  cited: string
+): Promise<DispatchEvent> {
+  const opened = await approvalCiting(issue, cited, { login: "bob" });
+  for (let index = 0; index < PAGE_SIZE; index += 1) {
+    await createMessage(issue.key, { body: `The daemon's note ${index}.` }, asDaemon);
+  }
   return opened;
 }
 
@@ -2082,10 +2094,7 @@ async function seedApprovalUnderFirstPage(): Promise<{ cited: string; key: strin
     spec: "The plan.",
     title: "An approval request under Show more",
   });
-  const opened = await approvalCiting(issue, cited.key, { login: "bob" });
-  for (let index = 0; index < PAGE_SIZE; index += 1) {
-    await createMessage(issue.key, { body: `The daemon's note ${index}.` }, asDaemon);
-  }
+  const opened = await approvalBeneathNotes(issue, cited.key);
   return { cited: cited.key, key: issue.key, seq: opened.seq };
 }
 
@@ -2175,6 +2184,56 @@ test("a keyboard press of the history's Show more keeps the reference link it fo
       names.resolve();
       await context.close();
     }
+  }
+});
+
+// The press gives a reference link the focus before its target answers. If the target is missing,
+// the renderer takes the link away. The first new entry still has controls, and the reader has
+// done nothing since pressing Show more. The focus must stay in that entry, not fall to the body.
+// SLOW(>=2s): one issue, an approval request and 20 notes written, then a sign-in and history load.
+test("the first new history entry keeps focus when its focused reference turns out to be missing", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "The plan.",
+    title: "An approval request citing a missing question",
+  });
+  const missing = crypto.randomUUID();
+  const opened = await approvalBeneathNotes(issue, `${issue.key}/ask/${missing}`);
+  const context = await reader(browser, "alice");
+  const target = Promise.withResolvers<void>();
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(DESKTOP);
+    for (const read of ["**/api/v1/reference-targets?**", `**/api/v1/asks/${missing}`]) {
+      await page.route(read, async (route) => {
+        await target.promise;
+        await route.continue();
+      });
+    }
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await newestHistoryEntry(page);
+    await historyShowMore(page).press("Enter");
+
+    const first = historyEntries(page).nth(PAGE_SIZE);
+    await expect(first, "the request is not the first new entry").toHaveAttribute(
+      "data-event-seq",
+      String(opened.seq)
+    );
+    const link = first.locator(`.dispatch-markdown a[href="/issues/${issue.key}/asks/${missing}"]`);
+    await expect(link, "Show more did not focus the unresolved reference").toBeFocused();
+    target.resolve();
+    await expect(link, "the missing reference is still a link").toHaveCount(0);
+    await expect
+      .poll(() => first.evaluate((entry) => entry.contains(document.activeElement)), {
+        message: "the first new history entry lost focus when the reference disappeared",
+      })
+      .toBe(true);
+  } finally {
+    target.resolve();
+    await context.close();
   }
 });
 
