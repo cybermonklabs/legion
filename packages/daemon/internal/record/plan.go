@@ -1018,6 +1018,7 @@ func (s *Postgres) SetTaskBase(ctx context.Context, tx pgx.Tx, issue string, gen
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("write the base %s of task %s of %s at generation %d: the plan holds no such task", base, task, issue, generation)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
