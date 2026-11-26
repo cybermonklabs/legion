@@ -100,6 +100,42 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 	return insertEnrollment(t, m.Store, "pod", name, nil, nil, &subject)
 }
 
+// jobPod is a pod of a service account an operator's job entry lists
+// (BROKER_EXCHANGE_JOB_ACCOUNTS): its credential names the entry's list and no person
+// (Exchange.MappedProjects). list is the entry's projects as the setting spells them.
+type jobPod struct {
+	list         string
+	enrollmentID string
+	key          *ecdsa.PrivateKey
+}
+
+// jobPods replaces m's exchange set with one job entry for each of lists, each spelled as the
+// setting spells it (exchange.ParseJobProjects), and enrolls a pod of each entry's account, with
+// the fixture's service as its launcher's, as TestAPodOfThePrivateProjectGetsItsSecret's pods are.
+func jobPods(t *testing.T, m *Machine, lists ...string) []jobPod {
+	t.Helper()
+	entries := make([]exchange.AccountEntry, len(lists))
+	for i, list := range lists {
+		job, err := exchange.ParseJobProjects(list)
+		if err != nil {
+			t.Fatalf("exchange.ParseJobProjects(%q): %v", list, err)
+		}
+		name := "job-" + strings.ToLower(strings.ReplaceAll(list, ",", "-"))
+		entries[i] = exchange.AccountEntry{Account: "system:serviceaccount:example:" + name, Job: job}
+	}
+	set, err := exchange.NewSet(entries, nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+	pods := make([]jobPod, len(lists))
+	for i, entry := range entries {
+		id, key := newServiceEnrollment(t, m.Store, fixtureService, entry.Account, "pod-"+entry.Account+"-"+t.Name())
+		pods[i] = jobPod{list: lists[i], enrollmentID: id, key: key}
+	}
+	return pods
+}
+
 // newProjectFixture is newPlaceholderFixture on a broker that checks projects: its loader serves
 // projectSecrets (Loader.ProjectChecks), rules are in force as the proxy blocks of profiles of
 // their own names (rulesProfiles), and Dispatch answers rows. The enrollment is a session of the
@@ -222,6 +258,43 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 	other, otherKey := newServiceEnrollment(t, m.Store, fixtureService, otherSubject, "pod-team-"+t.Name())
 	request, err := m.Create(t.Context(), other, signRequest(t, m, otherKey, "deploy", "PRIV_KEY"), "")
 	deniedFor(t, "a request for PRIV_KEY from a pod mapped to TEAM", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
+}
+
+// TestAJobPodGetsNoSecretOfAPrivateProjectItsListNames: a job entry's pod names its entry's list
+// and no person, so it sees no private project. A pod of the named list PRIV, and one of the public
+// list naming PRIV, are each denied PRIV_KEY project-not-named, a refusal and never
+// ErrProjectAccessUnavailable, and each is granted and released a shared secret of public TEAM.
+// Dispatch is asked each tagged project's visibility and nothing else: no question names a person,
+// and none asks whether nobody may see PRIV, whose answer a credential naming no person holds
+// already.
+func TestAJobPodGetsNoSecretOfAPrivateProjectItsListNames(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	retag(t, m, taggedSecret("TEAM_SHARED", policy.OwnerShared, policy.TierAgent, teamProject, "team-shared-v1"))
+	dispatch := m.Projects
+	for _, pod := range jobPods(t, m, privProject, "public,"+privProject) {
+		t.Run(pod.list, func(t *testing.T) {
+			asked := &askLog{inner: dispatch}
+			m.Projects = asked
+			request, err := m.Create(t.Context(), pod.enrollmentID, signRequest(t, m, pod.key, "deploy", "PRIV_KEY"), "")
+			deniedFor(t, "a request for PRIV_KEY from the pod of the job list "+pod.list, request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
+			_, grantID := grantOf(t, m, pod.enrollmentID, pod.key, "deploy", "TEAM_SHARED")
+			if release, err := m.Values(t.Context(), grantID, pod.enrollmentID, ReleaseCall{}); err != nil || release.Values["TEAM_SHARED"] != "team-shared-v1" {
+				t.Fatalf("Values(TEAM_SHARED) for the pod of the job list %s = %v, %v; want public TEAM's secret released", pod.list, release.Values, err)
+			}
+			if about := asked.askedAbout(); len(about) != 0 {
+				t.Errorf("the job pod's requests asked Dispatch's access route about %q; want no access question, since its credential names no person", about)
+			}
+			questions := asked.questions()
+			for _, q := range questions {
+				if !strings.HasPrefix(q, "states of ") {
+					t.Errorf("the job pod's requests asked Dispatch %q (they asked %v); want each tagged project's visibility and nothing else", q, questions)
+				}
+			}
+			if !slices.Contains(questions, "states of "+privProject) {
+				t.Errorf("the job pod's requests never asked PRIV's visibility (they asked %v); the refusal rests on nothing read", questions)
+			}
+		})
+	}
 }
 
 // TestAGrantOfAPrivateSecretEndsWhenTheSessionNoLongerNamesIt: a grant of TEAM's secret, made

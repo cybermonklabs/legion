@@ -764,9 +764,10 @@ const DaemonAccount = "system:serviceaccount:legion-system:legion-daemon-test"
 
 // WorkerAccount is the ServiceAccount the pods MintPodToken mints tokens for run as, which every
 // Rig's BROKER_SERVICES binds to the service DaemonAccount logs in as, as a Legion worker pod's
-// account is bound to legion-daemon. BROKER_POD_REGISTRARS lists DaemonAccount for it and no
-// BROKER_EXCHANGE_ACCOUNTS entry lists it, so a registration of one of its pods is refused by the
-// exchange policy (403 POD_ACCOUNT_NOT_LISTED), past the route's own checks.
+// account is bound to legion-daemon. BROKER_POD_REGISTRARS lists DaemonAccount for it, and no
+// entry of BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS or BROKER_EXCHANGE_JOB_ACCOUNTS
+// lists it, so a registration of one of its pods is refused by the exchange policy (403
+// POD_ACCOUNT_NOT_LISTED), past the route's own checks.
 const WorkerAccount = "system:serviceaccount:legion:worker"
 
 // MintAccountToken mints a projected ServiceAccount token for account, expiring lifetime from now

@@ -33,8 +33,8 @@ var sharedCloneLiveRepository = ghrepo.MustParse("tmux/tmux")
 
 // sharedCloneLiveResources is the proof's runtime.kubernetes reservations, sized so two issue pods
 // and the repository cache fit on the one node of a kind cluster on a GitHub-hosted runner (4 CPUs,
-// 16 GiB) beside the control plane and Agent Sandbox's controller: the daemon's defaults reserve 3
-// CPUs and 19Gi for each issue pod. The agent is a sleep stub, so the pods need little but the
+// 16 GiB) beside the control plane and Agent Sandbox's controller: the daemon's defaults reserve 2
+// CPUs and 8Gi for each issue pod. The agent is a sleep stub, so the pods need little but the
 // provision's git and jj.
 const sharedCloneLiveResources = `    resources:
       issue: {cpu: 2, cpu_request: 500m, memory: 4Gi, memory_request: 2Gi, ephemeral_storage: 20Gi, ephemeral_storage_request: 2Gi}
