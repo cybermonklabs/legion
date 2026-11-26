@@ -14,8 +14,10 @@ import (
 // LastTerminationState under a Waiting state, and the restart count goes up by one
 // (kubernetes v1.36.4, pkg/kubelet/kubelet_pods.go, convertToAPIContainerStatuses). The pod has no
 // deletionTimestamp, no DisruptionTarget condition and no status.reason. Such an end is a node
-// loss, which keeps the volume (R3), and not a fault on the volume (R6). So the next launch replaces
-// the pod and keeps the Sandbox and the claim that it owns.
+// loss, which keeps the volume (R3), and not a fault on the volume (R6). Inside workspace-init's
+// restart grace (initRestartGrace) the kubelet starts the container again, so the pod is still
+// provisioning and the next launch keeps it; past the grace the end is the pod's death, and the
+// next launch replaces the pod. Either way the launch keeps the Sandbox and the claim that it owns.
 func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 	t.Parallel()
 	name := SandboxName(workerToken)
@@ -36,12 +38,14 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 		return status
 	}
 	for _, tc := range []struct {
-		name     string
-		statuses []corev1.ContainerStatus
+		name        string
+		statuses    []corev1.ContainerStatus
+		podReplaced bool
 	}{
-		{"workspace-init lost, the runtime no longer knows it", []corev1.ContainerStatus{lost(initContainer, 1, true)}},
-		{"workspace-init lost, the runtime answers its state unknown", []corev1.ContainerStatus{lost(initContainer, 1, false)}},
-		{"workspace-init lost past its restart grace", []corev1.ContainerStatus{lost(initContainer, initRestartGrace+1, true)}},
+		{"workspace-init lost inside its restart grace, the runtime no longer knows it", []corev1.ContainerStatus{lost(initContainer, 1, true)}, false},
+		{"workspace-init lost inside its restart grace, the runtime answers its state unknown", []corev1.ContainerStatus{lost(initContainer, 1, false)}, false},
+		{"workspace-init lost past its restart grace, the runtime no longer knows it", []corev1.ContainerStatus{lost(initContainer, initRestartGrace+1, true)}, true},
+		{"workspace-init lost past its restart grace, the runtime answers its state unknown", []corev1.ContainerStatus{lost(initContainer, initRestartGrace+1, false)}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
@@ -64,8 +68,11 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 			if s := g.sandbox(name); s == nil || s.UID != before.UID {
 				t.Fatalf("the issue's Sandbox = %+v, want %s kept with its volume", s, before.UID)
 			}
-			if loc.Sandbox.PodUID == old.Sandbox.PodUID {
-				t.Fatalf("the launch kept the pod %s, whose init container the kubelet lost", old.Sandbox.PodUID)
+			if tc.podReplaced && loc.Sandbox.PodUID == old.Sandbox.PodUID {
+				t.Fatalf("the launch kept the pod %s, whose init container the kubelet lost past its restart grace", old.Sandbox.PodUID)
+			}
+			if !tc.podReplaced && loc.Sandbox.PodUID != old.Sandbox.PodUID {
+				t.Fatalf("the launch replaced the pod %s with %s, want it kept: workspace-init is still provisioning inside its restart grace", old.Sandbox.PodUID, loc.Sandbox.PodUID)
 			}
 		})
 	}
