@@ -2,8 +2,6 @@ package workspace
 
 import (
 	"context"
-	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -71,9 +70,9 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := markStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
+		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
 
-		called := sinceBoot(t)
+		called := testexec.SinceBoot(t)
 		started := time.Now()
 		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark})
 		returned := time.Now()
@@ -82,7 +81,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if _, statErr := os.Stat(ready); statErr != nil {
 			t.Fatalf("the command never reported that it was running (%v): its budget never passed, so this run proves nothing (RunCommand = %v)", statErr, err)
 		}
-		if began := startedAfter(t, mark, called); began > startBound {
+		if began := testexec.StartedAfter(t, mark, called); began > startBound {
 			t.Errorf("RunCommand started its command %s after the call, past the %s it has to start it in (RunCommand = %v)", began, startBound, err)
 		}
 		passed, ok := ctx.Deadline()
@@ -128,10 +127,10 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// so a helper nothing stopped is still there however long the row waits for it, and a run
 		// that waits on its pipes for ever fails the wait below rather than ending with the helper.
 		helper := `trap '' TERM; : >"$2"; while [ -d '` + dir + `' ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done`
-		script := markStart(`"$5"`) + `; sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
+		script := testexec.MarkStart(`"$5"`) + `; sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
 
 		returned := make(chan error, 1)
-		called := sinceBoot(t)
+		called := testexec.SinceBoot(t)
 		started := time.Now()
 		go func() {
 			_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped, mark})
@@ -148,7 +147,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if _, statErr := os.Stat(ready); statErr != nil {
 			t.Fatalf("the command never reported that it was running (%v): its budget never passed, so this run proves nothing (RunCommand = %v)", statErr, err)
 		}
-		if began := startedAfter(t, mark, called); began > startBound {
+		if began := testexec.StartedAfter(t, mark, called); began > startBound {
 			t.Errorf("RunCommand started its command %s after the call, past the %s it has to start it in (RunCommand = %v)", began, startBound, err)
 		}
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
@@ -167,7 +166,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
 		fakeGit := filepath.Join(dir, "git")
-		script := "#!/bin/sh\n" + markStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n: >\"" + ready + "\"\n" + commandLives + "\n"
+		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n: >\"" + ready + "\"\n" + commandLives + "\n"
 		if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
@@ -178,7 +177,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		run := NewRunner(timeout, map[string]string{"git": fakeGit})
 		ctx := budgetPassedOnceExists(t, ready)
 
-		called := sinceBoot(t)
+		called := testexec.SinceBoot(t)
 		started := time.Now()
 		result, err := run.Run(ctx, Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
 		elapsed := time.Since(started)
@@ -186,7 +185,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if _, statErr := os.Stat(ready); statErr != nil {
 			t.Fatalf("the git never reported that it was running (%v): its budget never passed, so this run proves nothing (Run = %v)", statErr, err)
 		}
-		if began := startedAfter(t, mark, called); began > startBound {
+		if began := testexec.StartedAfter(t, mark, called); began > startBound {
 			t.Errorf("execRunner.Run started its git %s after the call, past the %s it has to start it in (Run = %v)", began, startBound, err)
 		}
 		// exec reports a command whose Cancel succeeded and which then exited cleanly as the
@@ -238,100 +237,3 @@ func budgetPassedOnceExists(t *testing.T, path string) context.Context {
 // startBound is how soon after the call RunCommand, and execRunner.Run, start the command: main's
 // rows gave each command one second from just before the call to report that it was running.
 const startBound = time.Second
-
-// clockTick is the unit of /proc/<pid>/stat's starttime: USER_HZ, a hundredth of a second on every
-// Linux, which is also how finely /proc/uptime counts.
-const clockTick = 10 * time.Millisecond
-
-// markStart is shell that writes, to the file the shell word to names, when the kernel made the
-// process the shell runs in and when the shell reached this line: the starttime of
-// /proc/self/stat, which for a command a runner starts is that start itself, and /proc/uptime.
-// Both count from boot in hundredths of a second, so they are one clock, and sinceBoot reads the
-// same one. The shell reads both itself (`read` is a builtin), so /proc/self is its own process,
-// the one its runner started, and it forks nothing. The first time is the runner's alone: nothing
-// a loaded machine does to the shell after its start moves it. The second is that time plus how
-// long the machine took to bring the shell to this line (startMark.late).
-func markStart(to string) string {
-	return `read -r up </proc/uptime; read -r stat </proc/self/stat; printf '%s\n%s\n' "$up" "$stat" >` + to
-}
-
-// startMark is what markStart wrote: when the kernel made the process, and when its shell reached
-// the mark, each as a time since boot.
-type startMark struct{ started, reached time.Duration }
-
-// late is how long the machine took to bring the shell from its start to the mark.
-func (m startMark) late() time.Duration { return m.reached - m.started }
-
-// readStartMark reads the mark markStart wrote at path. The stat line's fields are counted from
-// after its last ')', since the command's name in parentheses may hold one, and starttime is its
-// field 22 (proc(5)).
-func readStartMark(path string) (startMark, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return startMark{}, err
-	}
-	up, stat, ok := strings.Cut(strings.TrimSuffix(string(raw), "\n"), "\n")
-	if !ok {
-		return startMark{}, fmt.Errorf("the start mark %s holds no stat line: %q", path, raw)
-	}
-	reached, err := uptimeOf(up)
-	if err != nil {
-		return startMark{}, fmt.Errorf("the start mark %s: %w", path, err)
-	}
-	end := strings.LastIndexByte(stat, ')')
-	if end < 0 {
-		return startMark{}, fmt.Errorf("the start mark %s holds no stat line: %q", path, stat)
-	}
-	const starttime = 22 - 3
-	fields := strings.Fields(stat[end+1:])
-	if len(fields) <= starttime {
-		return startMark{}, fmt.Errorf("the start mark %s holds no starttime: %q", path, stat)
-	}
-	ticks, err := strconv.ParseInt(fields[starttime], 10, 64)
-	if err != nil {
-		return startMark{}, fmt.Errorf("the start mark %s: starttime %q: %w", path, fields[starttime], err)
-	}
-	return startMark{started: time.Duration(ticks) * clockTick, reached: reached}, nil
-}
-
-// uptimeOf is the time since boot that a /proc/uptime line gives first, to its hundredth of a
-// second.
-func uptimeOf(line string) (time.Duration, error) {
-	seconds, _, _ := strings.Cut(strings.TrimSpace(line), " ")
-	value, err := strconv.ParseFloat(seconds, 64)
-	if err != nil {
-		return 0, fmt.Errorf("read the uptime %q: %w", line, err)
-	}
-	return time.Duration(math.Round(value*float64(time.Second/clockTick))) * clockTick, nil
-}
-
-// sinceBoot is the time since boot now, on the clock markStart's marks count on.
-func sinceBoot(t *testing.T) time.Duration {
-	t.Helper()
-	raw, err := os.ReadFile("/proc/uptime")
-	if err != nil {
-		t.Fatalf("read the time since boot: %v", err)
-	}
-	now, err := uptimeOf(string(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return now
-}
-
-// startedAfter is how long after called, a time since boot read just before a call, the kernel made
-// the process that wrote the start mark at path. Each of the two times can read up to a tick early,
-// so a start more than two ticks before the call is no start at all: the two clocks are not one on
-// this machine, and the row cannot read when its command started, which it says rather than pass.
-func startedAfter(t *testing.T, path string, called time.Duration) time.Duration {
-	t.Helper()
-	mark, err := readStartMark(path)
-	if err != nil {
-		t.Fatalf("read the command's start mark: %v", err)
-	}
-	began := mark.started - called
-	if began < -2*clockTick {
-		t.Fatalf("the command's start mark says the kernel made it %s before the call, which no start can be: this machine's /proc/uptime and its processes' start times are not one clock, so this row cannot read when the command started", -began)
-	}
-	return began
-}

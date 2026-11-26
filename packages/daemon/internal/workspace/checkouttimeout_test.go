@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -60,7 +61,7 @@ func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
 	t.Helper()
 	tools := testTools(t)
 	wrapper := filepath.Join(t.TempDir(), "jj")
-	mark := "[ -z \"${" + standInMark + "-}\" ] || { " + markStart(`"$`+standInMark+`"`) + "; }\n"
+	mark := "[ -z \"${" + standInMark + "-}\" ] || { " + testexec.MarkStart(`"$`+standInMark+`"`) + "; }\n"
 	script := "#!/bin/sh\n" + mark + "case \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; esac\nexec '" + tools["jj"] + "' \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -102,7 +103,7 @@ type budgetSpans struct {
 type overBudget struct {
 	argv   []string
 	span   time.Duration
-	mark   startMark
+	mark   testexec.StartMark
 	marked bool
 }
 
@@ -135,7 +136,7 @@ func (s *budgetSpans) Run(ctx context.Context, command Command) (Result, error) 
 	case checkout:
 		s.checkout = span
 	case held && span >= s.budget:
-		read, readErr := readStartMark(mark)
+		read, readErr := testexec.ReadStartMark(mark)
 		s.over = append(s.over, overBudget{argv: command.Argv, span: span, mark: read, marked: readErr == nil})
 	}
 	return result, err
@@ -161,7 +162,7 @@ func (s *budgetSpans) startedLate() (overBudget, bool) {
 		return overBudget{}, false
 	}
 	for _, over := range s.over {
-		if !over.marked || over.mark.late() < lateStart {
+		if !over.marked || over.mark.Late() < lateStart {
 			return overBudget{}, false
 		}
 	}
@@ -178,11 +179,11 @@ func (s *budgetSpans) notJudged(t *testing.T, runs int, within time.Duration, un
 		return false
 	}
 	if time.Now().Before(until) {
-		t.Logf("run %d is not judged: %q took %s, as long as the runner's %s budget, and its jj reached its first line %s after the runner started it (Provision = %v)", runs, late.argv, late.span, s.budget, late.mark.late(), err)
+		t.Logf("run %d is not judged: %q took %s, as long as the runner's %s budget, and its jj reached its first line %s after the runner started it (Provision = %v)", runs, late.argv, late.span, s.budget, late.mark.Late(), err)
 		return true
 	}
 	t.Fatalf("no run of the right order in %d runs over %s: in each, a command under the runner's %s budget took that long, its jj reaching its first line %s or more after the runner started it (in the last, %q took %s, its jj %s late; Provision = %v)",
-		runs, within, s.budget, lateStart, late.argv, late.span, late.mark.late(), err)
+		runs, within, s.budget, lateStart, late.argv, late.span, late.mark.Late(), err)
 	return false
 }
 
