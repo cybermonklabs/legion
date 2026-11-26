@@ -694,7 +694,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			PhaseNotRestarted: "the workflow refused the restart of implementing on LEGION-208",
 		}}},
 		AnswerCompact: {roots: typesOf(CompactResponse{}), bodies: []any{CompactResponse{
-			Compacted: false, Reason: "Nothing to compact (session too small)",
+			Compacted: false, Reason: "Nothing to hand off (already compacted)",
 		}}},
 		// The turn outcome's golden own value (TestTurnOutcomeResponseGolden): the two keys this
 		// answer always writes, neither of them omitempty, so `failed` is written false.
