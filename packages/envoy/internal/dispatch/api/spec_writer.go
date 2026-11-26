@@ -427,14 +427,25 @@ func specWriterDocumentName(artifact model.Artifact) (string, bool) {
 	return "", false
 }
 
+// specWriteOfDocument is the check's write of the stored document artifact - a write on the
+// document's issue, naming the document as the refusal names it (specWriterDocumentName) - and
+// whether the check holds the document at all.
+func specWriteOfDocument(artifact model.Artifact) (specWrite, bool) {
+	document, held := specWriterDocumentName(artifact)
+	if !held {
+		return specWrite{}, false
+	}
+	return specWrite{issue: *artifact.IssueKey, document: document}, true
+}
+
 // refuseSpecWriterOfDocument is the check of a write of the stored document artifact, which it
 // passes for a document the check does not hold.
 func refuseSpecWriterOfDocument(ctx context.Context, q queryer, writer specWriter, artifact model.Artifact) error {
-	document, held := specWriterDocumentName(artifact)
+	write, held := specWriteOfDocument(artifact)
 	if !held {
 		return nil
 	}
-	return refuseSpecWriter(ctx, q, writer, specWrite{issue: *artifact.IssueKey, document: document})
+	return refuseSpecWriter(ctx, q, writer, write)
 }
 
 // refuseSpecWriterOfDocuments is the check of a write of the stored documents ids, read through q
@@ -450,8 +461,8 @@ func refuseSpecWriterOfDocuments(ctx context.Context, q queryer, writer specWrit
 		if err != nil {
 			return err
 		}
-		if document, held := specWriterDocumentName(artifact); held {
-			return refuseSpecWriter(ctx, q, writer, specWrite{issue: *artifact.IssueKey, document: document})
+		if write, held := specWriteOfDocument(artifact); held {
+			return refuseSpecWriter(ctx, q, writer, write)
 		}
 	}
 	return nil

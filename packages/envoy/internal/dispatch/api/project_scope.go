@@ -182,14 +182,21 @@ func (s *server) projectOfProject(ctx context.Context, q queryer, r *http.Reques
 	return scanProjectKey(q.QueryRow(ctx, `select key from projects where key = $1`, r.PathValue("key")))
 }
 
-// projectOfArtifact reads the project_key every artifact carries (artifactColumns), which is
-// its issue's for an issue document and its own for a project document. An agent conversation's
-// artifact carries none, so it resolves to no project and a project-scoped caller is refused
-// it.
+// projectOfArtifact is the project of the artifact the path names (artifactProject).
 func (s *server) projectOfArtifact(ctx context.Context, q queryer, r *http.Request) (string, error) {
+	return artifactProject(ctx, q, r.PathValue("id"))
+}
+
+// artifactProject reads the project_key every artifact carries (artifactColumns), which is its
+// issue's for an issue document and its own for a project document. An agent conversation's
+// artifact carries none, so it resolves to no project and a project-scoped caller is refused it.
+// It is the one read of an artifact's project that both judges of a project-scoped token's write
+// make: the project check of a route that addresses an artifact (projectOfArtifact) and the
+// document socket's write decision (documentWritable), so the two cannot read it differently.
+func artifactProject(ctx context.Context, q queryer, id string) (string, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(project_key, '') from artifacts where id = $1
-	`, r.PathValue("id")))
+	`, id))
 }
 
 // projectOfAsk resolves an ask through the join askSnoozeEvent already makes: an ask hangs from

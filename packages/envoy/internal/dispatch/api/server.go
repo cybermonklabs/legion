@@ -575,6 +575,12 @@ type server struct {
 	// liveWriterBeforePick is each live socket's beforePick (live_socket.go): nil outside tests,
 	// and set by a test before the socket it drives opens.
 	liveWriterBeforePick func(socket *liveSocket, takesStream bool)
+	// brokerTokenHeartbeat is the one check both sockets' heartbeats ask of the broker-issued
+	// token their upgrade presented (callerStillResolves, documentSocketStillResolves), so a check
+	// added to it holds on both: brokerTokenStillLive, which register sets. It is read at each
+	// heartbeat, so a test that sets it on the server register returns, before that server takes
+	// a request, reaches both mounts; a package variable would reach the parallel tests beside it.
+	brokerTokenHeartbeat func(*http.Request) error
 	// agentWatchInterval is how often an agent view re-arms its session: agentStreamWatchInterval,
 	// which a test replaces.
 	agentWatchInterval time.Duration
@@ -746,11 +752,14 @@ type RouteMux interface {
 // Every route outside the read class (readClasses), GET /ws/live among them, answers a read-only
 // token 403 READ_ONLY_TOKEN before anything else it does, and every read but GET /api/v1/whoami
 // answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken).
+// GET /ws/doc/{room} answers a read-only broker-issued token 403 READ_ONLY_TOKEN too, and reads
+// no personal token, a read-only one included (refuseDocumentSocketCredential).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
-// websocket. The live socket takes a bearer as well as a cookie, so it runs under
-// decideBrokerToken; the document websocket takes a cookie alone and does not. It also holds the
+// websocket. The live socket takes every credential the API takes, a bearer among them. The
+// document websocket takes a sign-in or a broker-issued token, and reads no bearer. Both run
+// under decideBrokerToken (liveSocketHandler, documentSocketHandler). It also holds the
 // event stream relay (INFRA-66), which every events subscription reads and which starts its own
 // listening connection on the first of them, also on lifetime. lifetime is the process's own
 // context, cancelled when the server is shutting down (server.lifetime says what else it ends).
@@ -874,6 +883,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
+	s.brokerTokenHeartbeat = s.brokerTokenStillLive
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
@@ -935,11 +945,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
 	}); ok {
-		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
-		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
-		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
+		// A document service that serves no socket mounts none. The chain that admits a socket,
+		// a sign-in or a broker-issued token, is documentSocketHandler's (document_socket.go).
+		mux.Handle("GET "+documentSocketPattern, s.documentSocketHandler(websocket.ServeHTTP))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
@@ -1083,13 +1091,15 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // confirms, a revoked token) it cancels the connection's context, on which the document server and
 // the live socket close the socket. stillResolves is the mount's own admission asked again, never
 // a wider one: the live socket's is callerStillResolves, which resolves whichever credential
-// admitted it, and the document socket's is signInStillResolves, the browser credential alone
-// (a sign-in cookie, or an Identity-Aware Proxy assertion), since that is all the document service
-// admits it by. A check that resolved anything the request carries would let a credential that
-// admitted nothing keep the socket open once the one that did had ended. The check runs beside
-// the handler, which holds pooled connections of its own while it admits the socket, so it marks a
-// context of its own for the pool (store.ErrNestedAcquire), and it resolves on a context detached
-// from the access-log line, which names the caller the socket was admitted as (accesslog.Detached).
+// admitted it, and the document socket's is documentSocketStillResolves, which asks only of the
+// credential that admitted it - a broker-issued token, or the browser credential (a sign-in
+// cookie, or an Identity-Aware Proxy assertion) - and never of a bearer sent beside the cookie,
+// since the document socket admits by those two alone. A check that resolved anything the request
+// carries would let a credential that admitted nothing keep the socket open once the one that did
+// had ended. The check runs beside the handler, which holds pooled connections of its own while it
+// admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and it
+// resolves on a context detached from the access-log line, which names the caller the socket was
+// admitted as (accesslog.Detached).
 //
 // A refusal that is only the credential's own life ending (identity.ErrCredentialExpired: an IAP
 // assertion, which lives about ten minutes while IAP signs a fresh one for every request it
@@ -1100,6 +1110,12 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past
 // its assertion and none is cut as if its person had gone. An expired assertion that is wrong in
 // any other way (a key IAP withdrew, a person no longer admitted) is a refusal like any other.
+//
+// Any other refusal that carries a close code of its own (CloseCode, as errCredentialExpired
+// does) cancels the context with that refusal, whose close frame ygo sends the document socket's
+// peer: errDocumentWriteRevoked, on which the provider reconnects and the new upgrade decides the
+// write again. Every other refusal cancels the context with no cause, and the socket closes with no
+// close frame.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancelCause(r.Context())
@@ -1117,13 +1133,17 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 				case <-heartbeat.C():
 					heartbeat.Reset(s.deps.StreamHeartbeat)
 					// The check resolves the admission's credential from a detached copy of
-					// the request, which for a broker-issued token on the live socket asks the
-					// broker's answer alone rather than the proof the upgrade already spent
-					// (callerStillResolves).
+					// the request, which for a broker-issued token asks the broker's answer
+					// alone rather than the proof the upgrade already spent
+					// (brokerTokenHeartbeat).
 					if err := stillResolves(check); err != nil {
-						if errors.Is(err, identity.ErrCredentialExpired) {
+						var closing interface{ CloseCode() (int, string) }
+						switch {
+						case errors.Is(err, identity.ErrCredentialExpired):
 							closeConnection(errCredentialExpired)
-						} else {
+						case errors.As(err, &closing):
+							closeConnection(err)
+						default:
 							closeConnection(nil)
 						}
 						return
@@ -1139,37 +1159,58 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 // credential its upgrade carried has expired (identity.ErrCredentialExpired). ygo reads CloseCode
 // off the cause and sends the document socket's peer that close frame, and the live socket reads
 // the cause itself (liveSocket.write).
-var errCredentialExpired error = credentialExpired{}
+var errCredentialExpired error = admissionRevoked{
+	reason: "the credential this socket was opened with has expired; the page opens it again with a fresh one",
+}
 
-// credentialExpired is that cause's type: an error whose CloseCode ygo sends.
-type credentialExpired struct{}
+// errDocumentWriteRevoked is the cause whileCallerResolves cancels a writable document socket's
+// context with once the spec-writer rule no longer lets the broker-issued token that opened it
+// write its document, or the rule's read fails (documentSocketStillResolves). ygo reads CloseCode
+// off the cause and sends the peer that close frame, on which the provider reconnects with a
+// fresh proof, and the new upgrade decides the write afresh: read-only where the rule refuses.
+var errDocumentWriteRevoked error = admissionRevoked{
+	reason: "the spec-writer rule no longer lets the token this socket was opened with write its document, or its read failed; the provider reconnects and the new upgrade decides the write again",
+}
 
-func (credentialExpired) Error() string {
-	return "the credential this socket was opened with has expired; the page opens it again with a fresh one"
+// admissionRevoked is the type of those two causes: an error whose CloseCode ygo sends. The type
+// is comparable and each cause is one value with a reason of its own, so errors.Is tells the two
+// apart, as the live socket does when it reads the cause (liveSocket.write).
+type admissionRevoked struct{ reason string }
+
+func (c admissionRevoked) Error() string {
+	return c.reason
 }
 
 // CloseCode is the close frame ygo sends the document socket's peer: the document socket's code
 // for a socket whose admission no longer stands, on which the provider reconnects and the
 // reconnect is admitted again (contracts.DocumentAdmissionRevokedCloseCode).
-func (credentialExpired) CloseCode() (int, string) {
+func (admissionRevoked) CloseCode() (int, string) {
 	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
+}
+
+// signInLogin is the person the request's sign-in resolves to (Identity.Login): the sign-in
+// cookie, or under IAP identity the request's IAP assertion. It reads no Authorization header.
+// With no identity configured it is 500 IDENTITY_ERROR. It is the one read of a sign-in that the
+// API's caller (optionalActor), the document socket's credential rule
+// (refuseDocumentSocketCredential) and that socket's heartbeat (signInStillResolves) make.
+func (s *server) signInLogin(r *http.Request) (string, error) {
+	if s.deps.Identity == nil {
+		return "", errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+	}
+	return s.deps.Identity.Login(r)
 }
 
 // signInStillResolves answers whether the browser credential a document socket was admitted with
 // still resolves - the sign-in cookie, or under IAP identity the upgrade's IAP assertion - which
-// is what whileCallerResolves asks on that socket's every heartbeat. The document service admits a
-// socket by that credential and nothing else (docs.Service.requestActor, Identity.Login), and this
-// asks the API's Identity the same question; cmd/dispatch hands the API and the document service
-// one Identity, so the two read one credential the same way. It reads no Authorization header. A
-// bearer or a broker-issued token sent beside the cookie admitted nothing, so it keeps nothing open
-// either: resolved here, it would hold the socket open for the token's whole life after the cookie
-// ended, a read-only token's included, which may read a document through the API's reads and
-// never through this socket.
+// is what the document socket's heartbeat asks of a socket no broker-issued token opened
+// (documentSocketStillResolves). The api package admits such a socket by that credential and
+// nothing else (refuseDocumentSocketCredential, signInLogin), and this asks the same Identity
+// the same question. It reads no Authorization header. A bearer sent beside the cookie admitted
+// nothing, so it keeps nothing open either: resolved here, it would hold the socket open for the
+// bearer's whole life after the cookie ended, a read-only token's included, which may read a
+// document through the API's reads and never through this socket.
 func (s *server) signInStillResolves(r *http.Request) error {
-	if s.deps.Identity == nil {
-		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
-	}
-	_, err := s.deps.Identity.Login(r)
+	_, err := s.signInLogin(r)
 	return err
 }
 
@@ -1323,10 +1364,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 		return actor, false, nil
 	}
 	// What is left is credentialSignIn: no Authorization header, or a blank one.
-	if s.deps.Identity == nil {
-		return model.Actor{}, false, errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
-	}
-	login, err := s.deps.Identity.Login(r)
+	login, err := s.signInLogin(r)
 	if err != nil {
 		return model.Actor{}, false, err
 	}
@@ -1649,7 +1687,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // refuseReadOnlyToken is the one place a read-only credential (model.Credential.ReadOnly) is held
 // to the read class: register wraps every row of the table in it, name being the row's
 // "<method> <pattern>" and entry its read class (apiRoute.Read), and GET /ws/live with the zero
-// entry, which classes nothing. It reads every credential that can be read-only:
+// entry, which classes nothing. GET /ws/doc/{room} runs it with the zero entry too, but only on a
+// request that presents a broker-issued token (refuseDocumentSocketCredential), so there it
+// resolves no personal token. It reads every credential that can be read-only:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
@@ -1667,9 +1707,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 //
 // Then a caller whose credential is read-only (readOnlyCredential, which a results read reads the
 // caller by too) is answered 403 READ_ONLY_TOKEN on every row that is not a read
-// (readWritesNothing), every write among them, and on GET /ws/live, and next does not run. On a
-// read, a read-only credential that carries a cut (model.Credential.Cut) is
-// answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row but GET /api/v1/whoami,
+// (readWritesNothing), every write among them, and on GET /ws/live and GET /ws/doc/{room}, and
+// next does not run. On a read, a read-only credential that carries a cut (model.Credential.Cut)
+// is answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row but GET /api/v1/whoami,
 // since this build answers no read at a past time and must not answer one with the present.
 // Every other request runs next as it always did.
 //

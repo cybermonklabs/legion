@@ -413,31 +413,27 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 	return caller, nil
 }
 
-// Live is Verify without the proof check: the broker's answer alone, cached or fresh.
+// LiveUntil is Verify without the proof check: the broker's answer alone, cached or fresh, and the
+// instant that answer says the token stops being live, its 'exp', or the zero time when the broker
+// named none.
 //
 // It is for a connection that outlives the request that opened it and whose caller has to keep
-// resolving while it is open — a websocket Dispatch re-resolves on every heartbeat
-// (api.whileCallerResolves) — where the opening request's proof already authenticated the
-// caller. A proof is single use by its 'jti' and 'htu', so presenting that one again is a replay
-// and would close a sound connection; what is left to ask of an open connection is whether the
-// token is still live, which is this. Nothing admits a caller through it.
-func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
-	_, _, caller, err := v.live(ctx, r, true)
-	return caller, err
-}
-
-// LiveUntil is Live and the instant the broker's answer says the token stops being live: its
-// 'exp', or the zero time when the broker named none. A connection that outlives its request reads
-// it to tell a token whose life ended from one the broker ended early, since both answer
-// ErrNotActive once they are over and only the first was due: the listener's relay socket closes
-// the one for a fresh trade at once and the other as a refusal (cmd/listener, relay_socket.go).
+// resolving while it is open, where the opening request's proof already authenticated the caller:
+// Dispatch's document and live sockets, which ask it on every heartbeat (api.brokerTokenStillLive),
+// and the listener's relay socket (cmd/listener, relay_socket.go). A proof is single use by its
+// 'jti' and 'htu', so presenting that one again is a replay and would close a sound connection;
+// what is left to ask of an open connection is whether the token is still live, which is this.
+// Nothing admits a caller through it. A connection reads the instant to tell a token whose life
+// ended from one the broker ended early, since both answer ErrNotActive once they are over and
+// only the first was due: the relay socket closes the one for a fresh trade at once and the other
+// as a refusal.
 //
-// Unlike Live it spends nothing of the source address's bucket: its caller is a connection whose
-// opening request Verify admitted with its proof, which spent the bucket then, and which asks
-// again at an interval its own process sets (the relay socket's 20 s check, of at most
-// relaySocketMaxPerListener sockets). Charging it would let a stranger who empties the bucket of
-// an address, which every client behind one load balancer shares, close every connection opened
-// from it.
+// Unlike Verify, it spends nothing of the source address's bucket: its caller is a connection
+// whose opening request Verify admitted with its proof, which spent the bucket then, and which
+// asks again at an interval its own process sets (Dispatch's heartbeat, the relay socket's 20 s
+// check of at most relaySocketMaxPerListener sockets). Charging it would let a stranger who
+// empties the bucket of an address, which every client behind one load balancer shares, close
+// every connection opened from it.
 func (v *Verifier) LiveUntil(ctx context.Context, r *http.Request) (Caller, time.Time, error) {
 	_, answer, caller, err := v.live(ctx, r, false)
 	if err != nil {
@@ -448,9 +444,10 @@ func (v *Verifier) LiveUntil(ctx context.Context, r *http.Request) (Caller, time
 
 // live is the broker's half of both checks: the token r presents, the broker's answer about it,
 // and the caller sessionCaller reads that answer as, held to this verifier's read-only switch.
-// Verify and Live both read the answer through here, so an open connection's heartbeat is held to
-// the same rule as the request that opened it, the read-only switch included. spend says whether
-// an introspection spends the source address's bucket (known).
+// Verify and LiveUntil both read the answer through here, so an open connection's heartbeat is
+// held to the same rule as the request that opened it, the read-only switch included. spend says
+// whether an introspection spends the source address's bucket (known): Verify's does, and
+// LiveUntil's does not.
 func (v *Verifier) live(ctx context.Context, r *http.Request, spend bool) (string, Introspection, Caller, error) {
 	token, ok := Presented(r)
 	if !ok {
@@ -477,10 +474,10 @@ func SessionCaller(answer Introspection) (Caller, error) {
 }
 
 // sessionCaller is the one reading of the broker's answer about a token as a session's caller:
-// Verify and Live make it through live with their verifier's Options.ServesReadOnly, and the NATS
-// auth service through SessionCaller with the switch off. The token is live (ErrNotActive), bound
-// to a key (ErrKeyMismatch: no proof can be the key it does not have), and issued for acting as a
-// session in a shape this package reads, a read-only one only when servesReadOnly is set
+// Verify and LiveUntil make it through live with their verifier's Options.ServesReadOnly, and the
+// NATS auth service through SessionCaller with the switch off. The token is live (ErrNotActive),
+// bound to a key (ErrKeyMismatch: no proof can be the key it does not have), and issued for acting
+// as a session in a shape this package reads, a read-only one only when servesReadOnly is set
 // (ErrNotASession); the Caller it names is callerOf the answer.
 func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	if !answer.Active {

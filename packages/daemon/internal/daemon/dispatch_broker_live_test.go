@@ -75,6 +75,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"github.com/reearth/ygo/encoding"
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/cipherclient"
 	"github.com/sjawhar/envoy/ciphertest"
@@ -83,6 +85,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The rig's two projects: P, which every account of the rig's exchange names but one, and Q, the
@@ -633,21 +636,41 @@ func (r *dispatchBrokerRig) daemonSubject() (string, string) {
 	return r.file("daemon-exchange-token-"+pod, r.broker.MintSubjectToken(r.t, ciphertest.DaemonExchangeAccount, pod)), pod
 }
 
+// daemonBoot is the configuration and the environment the daemon of project P boots with under
+// dispatch_token_broker: Dispatch through the proxy, and its pod identity, the subject token in the
+// file subject, traded at the rig's broker.
+func (r *dispatchBrokerRig) daemonBoot(subject string) (config.Config, func(string) string) {
+	return config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenBroker: true}, getenvOf(map[string]string{
+		cipherclient.BrokerURLVar: r.broker.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
+		cipherclient.MachineTokenFileVar: subject,
+	})
+}
+
 // daemonClient is the daemon's Dispatch client of project P as boot builds it under
 // dispatch_token_broker (dispatchCredential): its pod identity, the subject token in the file
 // subject, traded at the rig's broker, read back by Dispatch's whoami through the proxy and
 // checked, and the transport that client presents its token through.
 func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, http.RoundTripper) {
 	r.t.Helper()
-	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenBroker: true}
-	transport, err := dispatchCredential(context.Background(), cfg, "", getenvOf(map[string]string{
-		cipherclient.BrokerURLVar: r.broker.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
-		cipherclient.MachineTokenFileVar: subject,
-	}), quietLogger())
+	cfg, getenv := r.daemonBoot(subject)
+	transport, err := dispatchCredential(context.Background(), cfg, "", getenv, quietLogger())
 	if err != nil {
 		r.t.Fatalf("the daemon's boot under dispatch_token_broker: %v", err)
 	}
 	return dispatch.New(cfg.DispatchURL, transport), transport
+}
+
+// daemonTokenClient is the broker client the daemon of project P trades its Dispatch credential
+// through, built as boot builds it (daemonBrokerClient, which dispatchCredential calls) from the
+// same boot as daemonClient's, for a caller that puts the token transport over a base of its own.
+func (r *dispatchBrokerRig) daemonTokenClient(subject string) *cipherclient.Client {
+	r.t.Helper()
+	cfg, getenv := r.daemonBoot(subject)
+	client, _, err := daemonBrokerClient(cfg, getenv, quietLogger())
+	if err != nil {
+		r.t.Fatalf("the daemon's broker client under dispatch_token_broker: %v", err)
+	}
+	return client
 }
 
 // sharedDaemonClient is the daemon's Dispatch client of project P as boot builds it without
@@ -662,10 +685,10 @@ func (r *dispatchBrokerRig) sharedDaemonClient(sharedTokenFile string) *dispatch
 	return dispatch.New(cfg.DispatchURL, transport)
 }
 
-// otherProjectDaemonClient is the daemon's client built from the same pieces (cipherclient's
-// client and token transport, dispatch.New) over OtherProjectAccount's pod identity, whose entry
-// fixes the session OtherProjectSession of project Q: K4's control, a token of another project.
-func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
+// otherProjectBrokerClient is a broker client built from the pieces daemonBrokerClient builds the
+// daemon's from (cipherclient's machine identity, key and client) over OtherProjectAccount's pod
+// identity, whose entry fixes the session OtherProjectSession of project Q.
+func (r *dispatchBrokerRig) otherProjectBrokerClient() *cipherclient.Client {
 	r.t.Helper()
 	subject := r.file("other-project-daemon-token", r.broker.MintSubjectToken(r.t, ciphertest.OtherProjectAccount, "rig-pod-other-daemon"))
 	getenv := getenvOf(map[string]string{cipherclient.IdentityVar: cipherclient.IdentityKubernetes, cipherclient.MachineTokenFileVar: subject})
@@ -684,7 +707,15 @@ func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return dispatch.New(r.url, cipherclient.NewTokenTransport(client, http.DefaultTransport))
+	return client
+}
+
+// otherProjectDaemonClient is the daemon's client built from the same pieces (cipherclient's
+// client and token transport, dispatch.New) over otherProjectBrokerClient: K4's control, a token
+// of another project.
+func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
+	r.t.Helper()
+	return dispatch.New(r.url, cipherclient.NewTokenTransport(r.otherProjectBrokerClient(), http.DefaultTransport))
 }
 
 // rigClients is scripts/e2e/dispatch-broker-clients.ts running in a role's environment: the
@@ -1749,6 +1780,261 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	}
 	if len(scoped.records) != 1 || scoped.records[0].Status != http.StatusForbidden || scoped.records[0].Code != "SESSION_SCOPE" {
 		t.Errorf("a token of the session %s uploading to the conversation of %s = %s, the proxy recorded %+v; want 403 SESSION_SCOPE", other.session, role.session, scoped.outcome, scoped.records)
+	}
+}
+
+// The Hocuspocus frame a document socket carries, as docs/docstest's Peer and sjawhar/ygo's
+// provider/websocket write it: the document's name, the message kind, and, for an auth message,
+// its sub-kind and one string, the client's token or the room's answer to it.
+const (
+	hocuspocusAuth          = 2 // the auth message kind
+	hocuspocusToken         = 0 // the client's token, which the document room reads as the page's schema version
+	hocuspocusDenied        = 1 // the room's refusal of the token, with its reason
+	hocuspocusAuthenticated = 2 // the room's grant, with its scope: "read-write" or "readonly"
+)
+
+// roomScope sends the room its token message on connection, as a Hocuspocus provider sends it once
+// its socket opens (docstest's Peer.Authenticate): the room's name, the auth kind, the token
+// sub-kind and version, the schema version the socket was opened at, which is the token the
+// document room reads. It then reads frames until the room's answer, passing over the sync and
+// awareness frames the room may send first, and answers the scope that answer grants. The write
+// and every read end at ctx's deadline.
+func roomScope(ctx context.Context, connection *websocket.Conn, room, version string) (string, error) {
+	deadline, _ := ctx.Deadline()
+	if err := connection.SetWriteDeadline(deadline); err != nil {
+		return "", err
+	}
+	if err := connection.SetReadDeadline(deadline); err != nil {
+		return "", err
+	}
+	message := encoding.EncodeBytes(func(e *encoding.Encoder) {
+		e.WriteVarString(room)
+		e.WriteVarUint(hocuspocusAuth)
+		e.WriteVarUint(hocuspocusToken)
+		e.WriteVarString(version)
+	})
+	if err := connection.WriteMessage(websocket.BinaryMessage, message); err != nil {
+		return "", fmt.Errorf("send the token message: %w", err)
+	}
+	for {
+		_, frame, err := connection.ReadMessage()
+		if err != nil {
+			return "", fmt.Errorf("the room sent no answer to the token message: %w", err)
+		}
+		decoder := encoding.NewDecoder(frame)
+		if _, err := decoder.ReadVarString(); err != nil { // the document's name
+			continue
+		}
+		if kind, err := decoder.ReadVarUint(); err != nil || kind != hocuspocusAuth {
+			continue
+		}
+		answer, err := decoder.ReadVarUint()
+		text := ""
+		if err == nil {
+			text, err = decoder.ReadVarString()
+		}
+		switch {
+		case err != nil:
+			return "", fmt.Errorf("the room's auth answer %x does not parse", frame)
+		case answer == hocuspocusAuthenticated:
+			return text, nil
+		case answer == hocuspocusDenied:
+			return "", fmt.Errorf("the room refused the token message: %s", text)
+		}
+	}
+}
+
+// headerTap is a RoundTripper that sends nothing: it keeps the headers of the request it is handed
+// and answers 204 with no body. Under a token transport it yields the headers that transport puts
+// on a request while the request reaches no one, so the proof among them is unspent.
+type headerTap struct{ header http.Header }
+
+func (h *headerTap) RoundTrip(request *http.Request) (*http.Response, error) {
+	h.header = request.Header.Clone()
+	return &http.Response{
+		Status: "204 No Content", StatusCode: http.StatusNoContent, Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+		Header: http.Header{}, Body: http.NoBody, Request: request,
+	}, nil
+}
+
+// presentedBy is client's token as the daemon's Dispatch client presents it: for an upgrade to
+// target, the Authorization and DPoP headers that the transport the client sends through
+// (cipherclient.NewTokenTransport, as dispatchCredential builds it) puts on GET target, read off a
+// headerTap in place of the network. The proof names the upgrade's own method and URL, and each
+// call signs a fresh one, since Dispatch spends the proof of a request it admits.
+func (r *dispatchBrokerRig) presentedBy(client *cipherclient.Client) func(target string) http.Header {
+	tap := &headerTap{}
+	transport := cipherclient.NewTokenTransport(client, tap)
+	return func(target string) http.Header {
+		r.t.Helper()
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		response, err := transport.RoundTrip(request)
+		if err != nil {
+			r.t.Fatalf("the daemon's token transport on GET %s: %v", target, err)
+		}
+		_ = response.Body.Close()
+		presented := http.Header{}
+		presented.Set("Authorization", tap.header.Get("Authorization"))
+		presented.Set("DPoP", tap.header.Get("DPoP"))
+		return presented
+	}
+}
+
+// docSocketAnswer is what one upgrade at a document's socket was answered: the credential it
+// carried, by name, and what that credential presented, naming no token; the answer's status and
+// the process its X-Dispatch-Process named; for a refusal, its Content-Type and body; and for a
+// socket that opened, the scope the room granted its token message, or why it granted none.
+type docSocketAnswer struct {
+	credential, presented string
+	status                int
+	process               string
+	contentType, body     string
+	scope                 string
+	scopeErr              error
+}
+
+// String is the answer in one line, for the log and the table.
+func (a docSocketAnswer) String() string {
+	line := fmt.Sprintf("%d %s, X-Dispatch-Process %q", a.status, http.StatusText(a.status), a.process)
+	switch {
+	case a.status != http.StatusSwitchingProtocols:
+		return fmt.Sprintf("%s, Content-Type %q, body %q", line, a.contentType, a.body)
+	case a.scopeErr != nil:
+		return fmt.Sprintf("%s, and no scope: %v", line, a.scopeErr)
+	}
+	return fmt.Sprintf("%s, the room's scope %q", line, a.scope)
+}
+
+// openDocument upgrades to room's socket through the proxy, at schema_version version, with the
+// headers credential puts on that upgrade, and answers and logs what it was answered. A socket that
+// opens sends the room its token message and reads the scope the room grants (roomScope), then
+// closes. The upgrade and the socket end at the test binary's deadline less testwait's margin.
+func (r *dispatchBrokerRig) openDocument(name string, credential func(target string) http.Header, room, version string) docSocketAnswer {
+	t := r.t
+	t.Helper()
+	target := r.url + "/ws/doc/" + room + "?schema_version=" + url.QueryEscape(version)
+	headers := credential(target)
+	answer := docSocketAnswer{credential: name, presented: "no credential"}
+	if scheme, _, _ := strings.Cut(headers.Get("Authorization"), " "); scheme != "" {
+		answer.presented = "Authorization " + scheme
+		if headers.Get("DPoP") != "" {
+			answer.presented += " beside a DPoP proof"
+		}
+	}
+	ctx := testwait.Context(t)
+	connection, response, err := (&websocket.Dialer{}).DialContext(ctx, "ws"+strings.TrimPrefix(target, "http"), headers)
+	if response == nil {
+		t.Fatalf("%s: the upgrade at %s got no answer: %v", name, target, err)
+	}
+	answer.status = response.StatusCode
+	answer.process, answer.contentType = response.Header.Get("X-Dispatch-Process"), response.Header.Get("Content-Type")
+	if connection != nil {
+		answer.scope, answer.scopeErr = roomScope(ctx, connection, room, version)
+		_ = connection.Close()
+	} else {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatalf("%s: read the answer to the upgrade at %s: %v", name, target, err)
+		}
+		answer.body = strings.TrimSpace(string(body))
+	}
+	t.Logf("%s, presenting %s, at GET /ws/doc/%s?schema_version=%s: %s", name, answer.presented, room, version, answer)
+	return answer
+}
+
+// TestARoleOpensADocumentWithItsOwnToken is dispatch://INFRA-5567's check c-ds-e2e: on the real
+// Dispatch, through the proxy DISPATCH_PROOF_ORIGINS names, the document socket GET /ws/doc/<room>
+// admits a broker-issued token with its DPoP proof, grants it the scope the API grants that token
+// on the document, and refuses every other credential before the upgrade, as JSON naming its
+// process. Each token's upgrade carries what the daemon's own Dispatch client puts on
+// GET <proxy>/ws/doc/<room>: the Authorization and DPoP headers of its token transport
+// (presentedBy), so each proof is fresh and names the upgrade's own method and URL. The room is
+// socket-notes.md, a document the rig's setup adds to the daemon's issue of P: the edits route lets
+// the daemon's token of P write it, since it is a document of P and neither the spec nor the
+// Verification document of its issue, which the spec-writer rule holds. The upgrade's
+// schema_version and the token message both carry the version GET /api/v1/schema/blocks answers,
+// the schema this server serves, so the fleet admits the page writable. Once a socket opens, the
+// test sends the room its token message and reads the scope the room grants.
+//
+// The rows, in order, and why each is there:
+//   - The daemon's token of P: 101, X-Dispatch-Process and the scope read-write. It is the
+//     admission itself, and the control of every row after it: the document, the issue and the
+//     schema version are writable to a token that may write them, and the 101 names the process.
+//   - OtherProjectAccount's daemon token, of Q, on the same document: 101 and readonly. The edits
+//     route refuses that token a document of P, so a writable socket would let it write there what
+//     the API refuses it.
+//   - The shared bearer alone: 401 DOC_SOCKET_CREDENTIAL_REFUSED as JSON, naming the process the
+//     101 named. The door the shared bearer once opened stays shut, and says why.
+//   - No credential: 401 NO_IDENTITY as JSON, naming the same process.
+//
+// Each answer is logged and written to the table before any row is judged. The first row fails
+// with Fatalf, since every later row is read against it: on a server whose document socket takes
+// the sign-in cookie alone, the run stops there, at that server's plain-text 401 "unauthorized".
+func TestARoleOpensADocumentWithItsOwnToken(t *testing.T) {
+	r := newDispatchBrokerRig(t, 15*time.Minute)
+	const document = "socket-notes.md"
+	var created struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}
+	r.call(http.MethodPost, "/api/v1/issues/"+r.pDaemon+"/artifacts", false, map[string]any{
+		"name": document, "actor": rigSetupActor,
+		"content": "Notes of the daemon of " + rigP + ", whose socket it opens with its own token.\n",
+	}, http.StatusCreated, &created)
+	room := created.Artifact.ID
+	if room == "" {
+		t.Fatalf("Dispatch created %s on %s with no id", document, r.pDaemon)
+	}
+	var schema struct {
+		Version *int `json:"version"`
+	}
+	r.call(http.MethodGet, "/api/v1/schema/blocks", false, nil, http.StatusOK, &schema)
+	if schema.Version == nil {
+		t.Fatal("GET /api/v1/schema/blocks answered no version")
+	}
+	version := strconv.Itoa(*schema.Version)
+
+	subject, _ := r.daemonSubject()
+	own := r.openDocument("the daemon's token of "+rigP, r.presentedBy(r.daemonTokenClient(subject)), room, version)
+	other := r.openDocument("OtherProjectAccount's daemon token, of "+rigQ, r.presentedBy(r.otherProjectBrokerClient()), room, version)
+	shared := r.openDocument("the shared bearer alone", func(string) http.Header {
+		return http.Header{"Authorization": {"Bearer " + r.dispatch.token}}
+	}, room, version)
+	none := r.openDocument("no credential", func(string) http.Header { return http.Header{} }, room, version)
+
+	report := r.report("c-ds-e2e: a role opens a document with its own token")
+	report.say("Each upgrade is GET /ws/doc/%s?schema_version=%s through the proxy %s, which DISPATCH_PROOF_ORIGINS names: the room of %s, a document of %s on the daemon's issue %s, at the schema version GET /api/v1/schema/blocks answers.",
+		room, version, r.url, document, rigP, r.pDaemon)
+	for _, answer := range []docSocketAnswer{own, other, shared, none} {
+		report.say("%s, presenting %s: %s.", answer.credential, answer.presented, answer)
+	}
+	report.write("doc-socket")
+
+	if own.status != http.StatusSwitchingProtocols || own.process == "" || own.scopeErr != nil || own.scope != "read-write" {
+		t.Fatalf("%s on %s, a document of %s that token may write, was answered %s; want 101 naming its process in X-Dispatch-Process, and the room's scope read-write",
+			own.credential, document, rigP, own)
+	}
+	if other.status != http.StatusSwitchingProtocols || other.scopeErr != nil || other.scope != "readonly" {
+		t.Errorf("%s on %s, a document of %s, was answered %s; want 101 and the room's scope readonly, since the edits route refuses that token a document of %s",
+			other.credential, document, rigP, other, rigP)
+	}
+	for _, refused := range []struct {
+		answer docSocketAnswer
+		code   string
+	}{{shared, "DOC_SOCKET_CREDENTIAL_REFUSED"}, {none, "NO_IDENTITY"}} {
+		var refusal struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(refused.answer.body), &refusal); err != nil || refused.answer.status != http.StatusUnauthorized || refusal.Code != refused.code {
+			t.Errorf("%s was answered %s; want 401 %s as JSON", refused.answer.credential, refused.answer, refused.code)
+		}
+		if refused.answer.process != own.process {
+			t.Errorf("the refusal of %s names the process %q in X-Dispatch-Process, want %q, the one the 101 named", refused.answer.credential, refused.answer.process, own.process)
+		}
 	}
 }
 

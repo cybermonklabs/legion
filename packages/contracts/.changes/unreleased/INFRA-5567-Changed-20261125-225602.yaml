@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The comment on `DISPATCH_READ_ONLY_TOKEN` says that Dispatch's document socket
+  (`GET /ws/doc/{room}`) refuses a read-only token that the secrets broker issued with this code
+  too. It also says that a read-only personal token with no sign-in beside it gets
+  `401 DOC_SOCKET_CREDENTIAL_REFUSED` there, as every personal token does. The comment on
+  `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE`, and the one on
+  `contracts.DocumentAdmissionRevokedCloseCode` that `bun run gen:go` writes, name one more close
+  with `4412`: a writable document socket that a broker-issued token opened on an issue's spec or
+  Verification document closes once the check of who writes those documents refuses that token,
+  or its read fails. No value changes.
+time: 2026-11-25T22:56:02Z
+custom:
+  Issue: INFRA-5567

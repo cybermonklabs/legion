@@ -1,0 +1,32 @@
+kind: Changed
+body: |-
+  Dispatch's document socket (`GET /ws/doc/{room}`) admits an access token that the secrets
+  broker issued, presented under DPoP, beside a person's sign-in. The socket decides such a token
+  as the API decides it: each refusal is the API's own code (`BROKER_TOKEN_*`), and a read-only
+  token is `403 READ_ONLY_TOKEN`. The connection is the session that the token names. It may
+  write only where the same token may write the document through
+  `POST /api/v1/artifacts/{id}/edits`: the token names a person, a token scoped to one project
+  writes only that project's documents, and the check of who writes an issue's spec and
+  Verification document lets the token write. Every other token's connection is read-only.
+
+  The socket still reads no bearer. It looks up no personal token, verifies no Kubernetes
+  service-account token and compares no shared token. A request whose sign-in does not resolve,
+  with such a bearer beside it, is `401 DOC_SOCKET_CREDENTIAL_REFUSED`. Before, the socket
+  answered a credential it did not admit `401` as text, a broker token among them. Now each
+  refusal is JSON and names nothing of the credential. Each refusal carries `X-Dispatch-Process`,
+  and so do the `400` answers to a room id or a query parameter that Dispatch cannot store.
+
+  A writable token socket on an issue's spec or Verification document is judged by that check
+  again at each heartbeat. Once the check refuses the token, or its read fails, the socket closes
+  with `4412` (`DOC_ADMISSION_REVOKED`). The provider reconnects, and the new socket is read-only
+  where the check refuses the token.
+
+  The heartbeats of both sockets, `GET /ws/live` and `GET /ws/doc/{room}`, ask one check of a
+  broker token: the broker's introspection answer alone (`api.brokerTokenStillLive`). That check
+  no longer spends the source address's introspection bucket, so a stranger who empties the
+  bucket of an address that many clients share closes no socket opened from it. A token that the
+  broker revoked, or that expired, still closes its socket once the answer Dispatch reuses runs
+  out.
+time: 2026-11-25T22:56:01Z
+custom:
+  Issue: INFRA-5567

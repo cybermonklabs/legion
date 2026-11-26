@@ -7,8 +7,9 @@ package api
 //
 // A DPoP proof is single use by its 'jti' and 'htu' (store.DPoPProofs), which is what the two
 // pieces below are for: decideBrokerToken decides a request's presentation once however many
-// times its handler resolves the caller, and callerStillResolves asks a connection's broker only
-// whether the token is still live, never checking the proof the upgrade already spent.
+// times its handler resolves the caller, and brokerTokenStillLive, the one check the heartbeats
+// of GET /ws/live and GET /ws/doc/{room} both ask, asks the broker only whether the token is
+// still live, never checking the proof the upgrade already spent.
 
 import (
 	"context"
@@ -53,22 +54,36 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // callerStillResolves answers whether the caller a live socket was admitted as still resolves,
 // which is what whileCallerResolves asks on that socket's every heartbeat. For every credential
 // but one that is the request's own resolution, unchanged. The document socket asks something
-// narrower, the sign-in cookie alone, which is all it is admitted by (signInStillResolves).
+// narrower, the credential that admitted it and nothing beside it (documentSocketStillResolves).
 //
 // The exception is a broker-issued token. The heartbeat's copy of the request still carries the
 // proof that opened the connection, and that proof is spent: checking it again would be the
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
-// ciphertoken.Verifier.Live. Nothing is admitted through this, only kept.
+// the one check both sockets ask of a token (server.brokerTokenHeartbeat, brokerTokenStillLive),
+// so a check added to it holds on the document socket too. Nothing is admitted through this,
+// only kept.
 func (s *server) callerStillResolves(r *http.Request) error {
 	if _, presented := ciphertoken.Presented(r); presented {
-		if s.deps.BrokerTokens == nil {
-			return errNoBrokerConfigured()
-		}
-		_, err := s.deps.BrokerTokens.Live(r.Context(), r)
-		return err
+		return s.brokerTokenHeartbeat(r)
 	}
 	_, _, err := s.optionalActor(r)
+	return err
+}
+
+// brokerTokenStillLive is the check an open socket's heartbeat asks of the broker-issued token
+// its upgrade presented, the live socket's and the document socket's alike: whether the broker
+// still holds the token live, read from the broker's answer alone and never from the proof the
+// upgrade spent (ciphertoken.Verifier.LiveUntil). It spends nothing of the source address's
+// introspection bucket, so a stranger who empties the bucket of an address that every client
+// behind one load balancer shares closes no socket opened from it. A token the broker revoked or
+// that expired is refused once the answer the verifier remembers runs out
+// (ciphertoken.AffirmativeCacheTTL). register sets server.brokerTokenHeartbeat to it.
+func (s *server) brokerTokenStillLive(r *http.Request) error {
+	if s.deps.BrokerTokens == nil {
+		return errNoBrokerConfigured()
+	}
+	_, _, err := s.deps.BrokerTokens.LiveUntil(r.Context(), r)
 	return err
 }
 
@@ -122,11 +137,11 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // account and writes nothing, as every read-only token does. Its credential is marked read-only
 // (model.Credential.ReadOnly), with the token's cut (model.Credential.Cut), and
 // refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route outside the read class
-// (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in check, an account
-// entry's write as its account and everything else the route does. While no build answers a read
-// at a past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
-// GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session
-// does.
+// (readClasses), on GET /ws/live and on GET /ws/doc/{room}, ahead of the scope gate, the sign-in
+// check, an account entry's write as its account and everything else the route does. While no
+// build answers a read at a past time, it answers one that carries a cut 403
+// AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. On a read it serves, it is the
+// session it names, reading as that session does.
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //

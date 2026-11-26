@@ -32,7 +32,7 @@ Each item below names a variable, then its purpose.
   One value, or several separated by whitespace, so the shared token can rotate with an overlap:
   write the new value followed by the old one, move every consumer to the new one, then write the new value alone.
   The first is the current value; the API accepts every value, comparing a bearer with each in constant time.
-  The document websocket takes no bearer at all: it is a person's cookie connection only.
+  The document websocket admits no bearer, the shared token included: it takes a person's sign-in or an access token the secrets broker issued (below).
   Whitespace at either end is ignored; startup refuses an empty entry (two whitespace characters in a row, a CR LF among them) or a repeated one, naming its position, never its value.
   A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the rightmost `X-Forwarded-For` entry, which is the load balancer's view of the caller, or the connection's own address without one), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
   Each field keeps its first 256 bytes, and the server remembers up to 10,000 callers; one past that is logged on each request.
@@ -150,10 +150,10 @@ Each item below names a variable, then its purpose.
 
 - `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
 
-  Each process's own caps on the document rooms it holds in memory and the browser connections to them, so two processes of one deployment hold up to twice each;
+  Each process's own caps on the document rooms it holds in memory and the socket connections to them, a browser's or a broker token's, so two processes of one deployment hold up to twice each;
   a document socket past either is refused `503` before it upgrades, never `401`.
   A socket takes its place under both caps before it loads anything, in the same step that checks each, so sockets that open at once never pass a cap:
-  the room cap counts the rooms held and the rooms sockets being admitted reserved, each room once, and the connection cap the browsers connected and the sockets being admitted.
+  the room cap counts the rooms held and the rooms sockets being admitted reserved, each room once, and the connection cap the sockets connected and the sockets being admitted.
   The caps are counts kept as rooms load and unload and as sockets come and go, so admission walks no rooms.
   Boot logs both with the cold reads' cache budget, `dispatch: document rooms' limits` with `max_live_rooms`, `max_doc_connections` and `read_budget_bytes`;
   that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
@@ -214,9 +214,24 @@ it names no session, it names neither a person nor a service, it was issued to a
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+The live socket (`GET /ws/live`) and the document socket (`GET /ws/doc/{room}`) each ask on every heartbeat whether the credential that opened them still resolves.
+For this credential both ask one check, the broker's introspection answer alone (`api.brokerTokenStillLive`):
 the upgrade's proof authenticated it and cannot be presented a second time.
+That check spends nothing of the source address's introspection bucket, so a stranger who empties the bucket of an address that every client behind one load balancer shares closes no socket opened from it.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
+
+The document socket (`GET /ws/doc/{room}`) takes two credentials: a person's sign-in, and an access token the secrets broker issued, presented under DPoP as on the API (`internal/dispatch/api/document_socket.go`).
+A broker token is decided there as the API decides it, with the same refusals (above), and a read-only one is `403 READ_ONLY_TOKEN` (below), each before the upgrade.
+A cookie beside a broker token is not read.
+The socket reads no bearer: it looks up no personal token, verifies no Kubernetes service-account token and compares no shared token, with or without `X-Dispatch-Actor`.
+A request whose sign-in resolves is admitted as that person, whatever bearer it carries beside it.
+A request that presents no broker token and whose sign-in does not resolve is `401 DOC_SOCKET_CREDENTIAL_REFUSED` when it carries an `Authorization` header that is not blank.
+With no such header, it is answered as the API answers it: `401 NO_IDENTITY`, or `503 SIGNIN_UNAVAILABLE` for a sign-in whose lapsed confirmation the issuer cannot renew.
+Each refusal is JSON, names nothing of the credential, and carries `X-Dispatch-Process` (Which process served a socket, below).
+A broker token's socket may write only where the same token may write the document through `POST /api/v1/artifacts/{id}/edits`:
+the token names a person, a token scoped to one project writes only that project's documents, and the check of who writes an issue's spec and Verification document lets the token write it (`403 DOCUMENT_WRITER_NOT_ARCHITECT`, Document errors below).
+Every other broker token's socket opens read-only, a token that names no person among them.
+The document service's own conditions, an open issue and a fleet that admits the page (Two builds at once, below), apply to both credentials.
 
 No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
 Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
@@ -274,9 +289,13 @@ A rate limit GitHub already answered still ends at its own time, whichever undo 
 
 Dispatch stops serving a read-only broker token at most ten seconds after the broker ends it: Dispatch reuses a live answer for `ciphertoken.AffirmativeCacheTTL`, five seconds, from the introspection that gave it, and an introspection already in flight when the token ends may take `introspectTimeout`, five seconds, to finish.
 
-The other mounts outside the table read no broker token: `/ws/doc/{room}` answers a read-only broker token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+The document socket answers a read-only broker token `403 READ_ONLY_TOKEN` too.
+It reads no personal token, so a read-only personal token with no sign-in beside it is `401 DOC_SOCKET_CREDENTIAL_REFUSED`, as every personal token is there (above).
+The other mounts outside the table, `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics`, take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries a read-only token as they answer any other caller, and none of the five makes a write for it.
-The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
+The document socket's heartbeat asks again only of the credential that opened it (`api.documentSocketStillResolves`).
+A socket that a broker token opened asks the broker, as the live socket does (above), and a socket that a sign-in opened checks only that sign-in again, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`).
+So a bearer sent beside a cookie, a read-only personal token among them, cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A Legion daemon's own broker token holds the OAuth scope `legion-status` and no other.
@@ -787,6 +806,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the live socket closes with `4001` (reason `credential expired`), on which the page reopens it at once and shows nothing, and the document socket with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects.
   The reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past its assertion, and an IAP user's sockets each reopen about every ten minutes.
   Any other refusal on a heartbeat closes the socket as before, an expired assertion that IAP's keys no longer verify (a key IAP withdrew) or whose person the rule no longer admits included: `1008` on the live socket, and no close frame (`1006`) on the document socket.
+  A writable document socket that a broker token opened closes with `4412` for one more cause, the check of who writes an issue's spec and Verification document (Two builds at once, below).
 
 - `header:<Header-Name>` is for tests and local harnesses only, never for a production Dispatch deployment.
   It accepts a header value, lowercases it and records the person.
@@ -1351,12 +1371,12 @@ Postgres is the only channel between the rooms (`docs/room_sync.go`), so the mes
   An edit that waits for its admission, or for its turn, holds none.
 
 - **Which process served a socket.**
-  Every answer that the document service's handler sends to a `/ws/doc/{room}` request carries `X-Dispatch-Process: <host name>`: the pod's name in production.
-  That includes the `101` upgrade and the handler's `401`, `404` and `503` answers.
-  A check that opens sockets through a load balancer reads it to record which process each socket reached.
+  Every answer to a `/ws/doc/{room}` request carries `X-Dispatch-Process: <host name>`: the pod's name in production.
+  The document service's handler sets it on its own answers, the `101` upgrade and the handler's `401`, `404` and `503` answers among them.
+  The api package sets the same name on every answer it gives the request before that handler runs (`api.nameDocumentSocketProcess`, with the name from `docs.Service.ProcessName`).
+  So every refusal of the socket's credential (Required configuration, above) carries it, and so do the `400` answers that refuse a room id or a query parameter that holds U+0000 or bytes that are not UTF-8.
+  A check that opens sockets through a load balancer reads it to record which process each socket reached, or which process refused it.
   A host name the process cannot read, or one that holds bytes a header cannot carry, sends no header.
-  The `400` answers sent before that handler carry no header.
-  They refuse a room id or a query parameter that holds U+0000 or bytes that are not UTF-8.
 
 The processes a question waits for are the members: the processes whose listener connection is named `dispatch-listener <process id>` in `pg_stat_activity`.
 Each process makes its id when it starts.
@@ -1478,6 +1498,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
   the close frame goes out once the message the server has in flight on that socket is out, which it waits at most a second for, so a peer too slow to take it in that second gets no close frame at all and reads the end as `1006`;
   the provider reconnects on either, the new socket is admitted again, and the reconnect's sync restores what was in flight, so the second is a bound on the close code a page reads and on nothing else.
   The same close ends a document socket whose upgrade's IAP assertion has expired (Identity, above), with the same reconnect.
+  It also ends a writable document socket that a broker token opened on an issue's spec or Verification document, at the first heartbeat (15 seconds, `api.documentSocketStillResolves`) after the check of who writes those documents stops letting that token write it (`403 DOCUMENT_WRITER_NOT_ARCHITECT`, Document errors below), or after that check's read fails.
+  The provider reconnects, and the new upgrade decides the write again: the socket is read-only where the check refuses the token.
   A change of ygo's own update encoding is the one stored-document change no build can answer and no test here proves: a build that meets history written with an encoding it does not know cannot decode it, and the build that cannot is already serving when the new encoding arrives, so the reader-first rule above has nothing to act on.
   An upgrade of that dependency that changes the encoding is therefore a release deployed with no server of the earlier release running, like the migrations that took that exception, rather than a roll.
   What this build does answer is an element it does not know (`DOC_NEWER_CONTENT`, above) and the encodings two deployed builds already speak, which the two-build documents test drives; neither is the upgrade.

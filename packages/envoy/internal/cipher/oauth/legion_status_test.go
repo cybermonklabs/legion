@@ -59,7 +59,7 @@ const (
 // The broker's answer about each token then reaches a verifier built with the options Dispatch
 // gives it (cmd/dispatch, brokerTokenVerifier), through a stub of the broker's introspection
 // route. The live route answers the provider's answer unchanged (internal/cipher/api,
-// handlers_introspect.go), so the stub gives the verifier what the route gives it. Verifier.Live
+// handlers_introspect.go), so the stub gives the verifier what the route gives it. Verifier.LiveUntil
 // reads that answer as Verify does, without the proof check. The Caller it answers has
 // LegionStatus set for the daemon's token alone.
 func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
@@ -205,7 +205,7 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 // newDispatchVerifier is a broker-token verifier built with the options Dispatch gives its own
 // (cmd/dispatch, brokerTokenVerifier), over a stub of the broker's introspection route. Only the
 // replay store differs: Dispatch's is a table of its database, and this one is the test's own.
-// Verifier.Live checks no proof, so it never writes to that store.
+// Verifier.LiveUntil checks no proof, so it never writes to that store.
 func newDispatchVerifier(t *testing.T) (*ciphertokentest.StubBroker, *ciphertoken.Verifier) {
 	t.Helper()
 	broker := ciphertokentest.NewStubBroker(t)
@@ -233,17 +233,17 @@ func liveCaller(t *testing.T, verifier *ciphertoken.Verifier, token string) ciph
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
 	request.Header.Set("Authorization", "DPoP "+token)
-	caller, err := verifier.Live(t.Context(), request)
+	caller, _, err := verifier.LiveUntil(t.Context(), request)
 	if err != nil {
-		t.Fatalf("Verifier.Live: %v", err)
+		t.Fatalf("Verifier.LiveUntil: %v", err)
 	}
 	return caller
 }
 
-// unusedProofs is a DPoP replay store that Verifier.Live never reaches. It records no proof and
+// unusedProofs is a DPoP replay store that Verifier.LiveUntil never reaches. It records no proof and
 // answers every call with an error, so a proof check that reaches it fails the test.
 type unusedProofs struct{}
 
 func (unusedProofs) CheckAndSetDPoPProofUsed(context.Context, string, string, string, string, string, time.Time) (bool, error) {
-	return false, errors.New("a DPoP proof reached the replay store, but Verifier.Live checks no proof")
+	return false, errors.New("a DPoP proof reached the replay store, but Verifier.LiveUntil checks no proof")
 }
