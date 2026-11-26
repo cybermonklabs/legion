@@ -2160,22 +2160,34 @@ function refusedRequests(): readonly RefusedRequest[] {
     {
       what: "POST /api/v1/issues/DSP-1/comments/x with an Idempotency-Key",
       send: sent("POST", `${COMMENTS}/x`, keyed(), body),
+      names: "api",
     },
     {
       what: "POST /api/v1/issues/DSP-1/artifacts/spec/edits with an Idempotency-Key",
       send: sent("POST", "/api/v1/issues/DSP-1/artifacts/spec/edits", keyed(), body),
+      names: "api",
     },
+    // A write outside /api/v1, which dispatch api does not send either.
+    { what: "POST /healthz", send: sent("POST", "/healthz", json, body) },
     { what: "GET /healthz", send: sent("GET", "/healthz"), names: "api" },
     { what: "GET /", send: sent("GET", "/"), names: "api" },
     { what: "GET /apix", send: sent("GET", "/apix"), names: "api" },
     { what: "HEAD /api/v1/issues", send: sent("HEAD", "/api/v1/issues"), bodiless: true },
-    { what: "PUT /api/v1/issues/DSP-1", send: sent("PUT", "/api/v1/issues/DSP-1", json, body) },
+    {
+      what: "PUT /api/v1/issues/DSP-1",
+      send: sent("PUT", "/api/v1/issues/DSP-1", json, body),
+      names: "api",
+    },
     {
       what: "PATCH /api/v1/issues/DSP-1",
       send: sent("PATCH", "/api/v1/issues/DSP-1", json, JSON.stringify({ title: "Renamed" })),
       names: "issue-update",
     },
-    { what: "DELETE /api/v1/issues/DSP-1", send: sent("DELETE", "/api/v1/issues/DSP-1") },
+    {
+      what: "DELETE /api/v1/issues/DSP-1",
+      send: sent("DELETE", "/api/v1/issues/DSP-1"),
+      names: "api",
+    },
     {
       what: "PATCH /api/v1/comments/c-1",
       send: sent("PATCH", "/api/v1/comments/c-1", json, body),
@@ -2332,11 +2344,11 @@ async function clientWrites(): Promise<ClientWrite[]> {
 
 /**
  * The command that the refusal of each request but a GET of each DispatchClient method names: the
- * `dispatch` command that sends that request (`dispatch-commands/`), or null where no command
- * sends it. A method that sends such a request and has no entry fails the walk below, and so does
- * an entry for a method that sends none.
+ * `dispatch` command that sends that request (`dispatch-commands/`), or `api` where no named
+ * command sends it, since `dispatch api --method` sends it. A method that sends such a request and
+ * has no entry fails the walk below, and so does an entry for a method that sends none.
  */
-const COMMAND_OF: Partial<Record<ClientMethod, string | null>> = {
+const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   issue: "issue",
   updateIssue: "issue-update",
   // `dispatch issue-update` with --include-children, --unlink-children or --include-parent.
@@ -2389,16 +2401,16 @@ const COMMAND_OF: Partial<Record<ClientMethod, string | null>> = {
   // `dispatch api --method` sends the route its caller names, with no key; the walk's call names
   // the issue comment route, whose refusal without a key names `dispatch comment`.
   sendRoute: "comment",
-  // No command sends these requests.
-  acceptMessageDelivery: null,
-  nameArtifactVersion: null,
+  // No named command sends these requests, so `dispatch api --method` is the one to use.
+  acceptMessageDelivery: "api",
+  nameArtifactVersion: "api",
 };
 
 /** The methods whose request is the one write that the proxy sends with its key (R2), a comment
  *  POST on an issue: the walk sends their request with no key, which the proxy refuses. */
 const SENT_WITH_A_KEY: Partial<Record<ClientMethod, true>> = { comment: true, suggest: true };
 
-test("refuses each write DispatchClient sends with 405 PROXY_METHOD_REFUSED, names the dispatch command that sends it or none, and sends nothing", async () => {
+test("refuses each write DispatchClient sends with 405 PROXY_METHOD_REFUSED, names the dispatch command that sends it, else dispatch api with the write's method, and sends nothing", async () => {
   // `CALLS` calls each method of the client.
   expect(clientMethodNames().sort()).toEqual(Object.keys(CALLS).sort());
   const writes = await clientWrites();
@@ -2417,15 +2429,19 @@ test("refuses each write DispatchClient sends with 405 PROXY_METHOD_REFUSED, nam
     if (key !== null && SENT_WITH_A_KEY[call] !== true) headers[IDEMPOTENCY_KEY_HEADER] = key;
     const answer = await viaSocket(run.socket, target, { method, headers });
     const { code, error } = refusalOf(answer);
-    const command = COMMAND_OF[call] ?? null;
-    const seen = { status: answer.status, code, commands: namedCommands(error) };
+    // Each call has its entry (above); "" is no command, so a refusal never matches it.
+    const command = COMMAND_OF[call] ?? "";
+    // `dispatch api` is named with the method that sends the write, not as the GET it sends alone.
+    const methodNamed = command !== "api" || error.includes(`dispatch api --method ${method} `);
+    const seen = { status: answer.status, code, commands: namedCommands(error), methodNamed };
     expect({ call, method, target, ...seen }).toEqual({
       call,
       method,
       target,
       status: 405,
       code: "PROXY_METHOD_REFUSED",
-      commands: command === null ? [] : [command],
+      commands: [command],
+      methodNamed: true,
     });
   }
 

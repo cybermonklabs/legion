@@ -1,7 +1,7 @@
 // packages/envoy-client/src/__tests__/dispatch-api-routes.test.ts
 //
-// The one guard of `dispatch api`'s table of write routes (`WRITE_ROUTES`,
-// src/dispatch-commands/api.ts), from which its AskGate refusal names the `dispatch` command that
+// The one guard of the table of write routes (`WRITE_ROUTES`, src/dispatch-commands/api.ts), from
+// which `dispatch api`'s AskGate refusal and `dispatch proxy`'s 405 name the `dispatch` command that
 // makes a write. It drives every method of DispatchClient through a recording fetch and holds the
 // table to the writes they send: each write route has a row, and each row is a route some method
 // sends. A write method added to DispatchClient later fails here until its route has a row, or it

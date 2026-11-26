@@ -10,6 +10,7 @@ import { constants } from "node:os";
 import type { Duplex } from "node:stream";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { brokerTokenFor } from "./broker-credential";
+import { writeRoute } from "./dispatch-commands/api";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS, tokenNotLive } from "./dispatch-http";
 import { proxyExitLine } from "./dispatch-proxy-command";
@@ -115,72 +116,6 @@ const NOT_COPIED = new Set([
 
 /** The one write the proxy sends (R2). */
 const COMMENT_PATH = /^\/api\/v1\/issues\/[^/]+\/comments$/;
-
-/**
- * The dispatch command that sends each other write of the `dispatch` commands: its name, the
- * method, and the route Dispatch serves the write at (`routes_table.go`), where each `{…}` stands
- * for one segment of the path. A refusal names the command of the row that has the method of the
- * request, and whose route the path of the request fills. No `dispatch` command sends a write that
- * no row holds, so its refusal names no command. The tool specs (`dispatchToolSpecs`) give no
- * method or route for a command, so the rows are written here. `dispatch-proxy.test.ts` sends each
- * write of `DispatchClient` through the proxy and reads the name in each refusal.
- *
- * Three names are not the obvious ones. `dispatch suggest` sends the comment routes too, which the
- * rows name `comment`. `dispatch message` uploads the pictures of a reply to a direct message to
- * the agent's artifacts. `dispatch artifact` checks an inline text with the markdown round trip
- * before it uploads the text. The second sync of `architecture-sync` is the route of a Dispatch
- * older than the first, which `DispatchClient` asks when the first has no route. The POST of
- * {@link COMMENT_PATH} has no row: the proxy sends it when it carries a key, and its refusal
- * without a key names `dispatch comment`.
- */
-const WRITE_COMMANDS: readonly (readonly [command: string, method: string, route: string])[] = [
-  ["issue", "POST", "/api/v1/issues"],
-  ["issue-update", "PATCH", "/api/v1/issues/{key}"],
-  ["issue-update", "POST", "/api/v1/issues/{key}/status-change"],
-  ["claim", "POST", "/api/v1/issues/{key}/claim"],
-  ["claim", "DELETE", "/api/v1/issues/{key}/claim"],
-  ["comment", "POST", "/api/v1/artifacts/{id}/comments"],
-  ["resolve-comment", "POST", "/api/v1/comments/{id}/resolve"],
-  ["edit-comment", "PATCH", "/api/v1/comments/{id}"],
-  ["delete-comment", "DELETE", "/api/v1/comments/{id}"],
-  ["message", "POST", "/api/v1/issues/{key}/messages"],
-  ["message", "POST", "/api/v1/messages/{id}/reply"],
-  ["message", "POST", "/api/v1/agents/{session_id}/artifacts"],
-  ["edit-message", "PATCH", "/api/v1/messages/{id}"],
-  ["delete-message", "DELETE", "/api/v1/messages/{id}"],
-  ["send-to-agent", "POST", "/api/v1/agents/{session_id}/messages"],
-  ["ask", "POST", "/api/v1/issues/{key}/asks"],
-  ["ask", "POST", "/api/v1/artifacts/{id}/asks"],
-  ["edit-ask", "PATCH", "/api/v1/asks/{id}"],
-  ["resolve-ask", "POST", "/api/v1/asks/{id}/resolve"],
-  ["follow", "PUT", "/api/v1/asks/{id}/followers/{session_id}"],
-  ["follow", "DELETE", "/api/v1/asks/{id}/followers/{session_id}"],
-  ["result", "POST", "/api/v1/issues/{key}/results"],
-  ["result", "POST", "/api/v1/issues/{key}/results/dry-run"],
-  ["result", "POST", "/api/v1/results/{id}/retract"],
-  ["handoff-write", "POST", "/api/v1/issues/{key}/handoffs/{phase}"],
-  ["artifact", "POST", "/api/v1/issues/{key}/artifacts"],
-  ["artifact", "POST", "/api/v1/projects/{key}/artifacts"],
-  ["artifact", "POST", "/api/v1/markdown/round-trip"],
-  ["doc-edit", "POST", "/api/v1/artifacts/{id}/edits"],
-  ["request-approval", "POST", "/api/v1/artifacts/{id}/approval-requests"],
-  ["plan-approve", "POST", "/api/v1/artifacts/{id}/plan-reviews"],
-  ["review", "POST", "/api/v1/artifacts/{id}/versions/{number}/reviews"],
-  ["project", "POST", "/api/v1/projects"],
-  ["project-update", "PUT", "/api/v1/projects/{key}/proven-sessions"],
-  ["project-update", "DELETE", "/api/v1/projects/{key}/proven-sessions"],
-  ["related", "POST", "/api/v1/projects/{key}/related"],
-  ["architecture-sync", "POST", "/api/v1/projects/{key}/architecture-sources/sync"],
-  ["architecture-sync", "POST", "/api/v1/projects/{key}/architecture-source/sync"],
-  ["architecture-sync", "POST", "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync"],
-];
-
-/** Each row of {@link WRITE_COMMANDS}, with its route cut at each `/` as a path is. */
-const WRITE_ROUTES = WRITE_COMMANDS.map(([command, method, route]) => ({
-  command,
-  method,
-  route: route.split("/"),
-}));
 
 /** What the exit line counts (`proxyExitLine`, R4). */
 class Tally {
@@ -448,11 +383,18 @@ function elsewhereRefusal(target: string, path: string): string | undefined {
   return `${SENDS} The target ${JSON.stringify(target)} reaches another route than the one it names (a dot segment, a backslash, a # or a control character). Name the route's own path, or read it with dispatch api.`;
 }
 
+/** A path `dispatch api --path` takes: `/api/v1`, or a path under it (`apiPathProblem`, the
+ *  contract's rule). The rest of that rule refuses only what {@link elsewhereRefusal} refused
+ *  first, or what a URL's path holds percent-encoded. */
+const API_ROUTE = /^\/api\/v1(?:\/|$)/;
+
 /**
  * Why the proxy sends no `method` to `path`, the path of the URL it would send below Dispatch's
- * own path, naming the dispatch command to use instead where a `dispatch` command sends the
- * request; undefined for the two kinds of request it sends (R2, R5): a GET under `/api/`, and the
- * comment POST that carries an `Idempotency-Key`.
+ * own path, naming the dispatch command to use instead; undefined for the two kinds of request it
+ * sends (R2, R5): a GET under `/api/`, and the comment POST that carries an `Idempotency-Key`. A
+ * write names the first command of its row of `WRITE_ROUTES` (`writeRoute`,
+ * dispatch-commands/api.ts), and a write under `/api/v1` that no row holds names `dispatch api`,
+ * which sends it outside a session whose AskGate reviews Dispatch writes.
  */
 function methodRefusal(method: string, path: string, key: string | undefined): string | undefined {
   const quoted = JSON.stringify(path);
@@ -467,30 +409,16 @@ function methodRefusal(method: string, path: string, key: string | undefined): s
       : `${SENDS} This comment POST carries no Idempotency-Key header. Send it with one, so a resend posts the comment once, or post the comment with dispatch comment.`;
   }
   if (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE") {
-    const named = writeCommand(method, path);
-    if (named === undefined) {
-      return `${SENDS} ${method} ${quoted} is another write, and no dispatch command sends it, so this refusal names no command to use instead.`;
+    const row = writeRoute(method, path);
+    if (row !== undefined) {
+      return `${SENDS} ${method} ${quoted} is another write. Send it with dispatch ${row.commands[0]}. AskGate reviews that call if it gates the command.`;
     }
-    return `${SENDS} ${method} ${quoted} is another write. Send it with dispatch ${named}. AskGate reviews that call if it gates the command.`;
+    if (!API_ROUTE.test(path)) {
+      return `${SENDS} ${method} ${quoted} is another write, outside /api/v1, and no dispatch command sends it.`;
+    }
+    return `${SENDS} ${method} ${quoted} is another write, and no named dispatch command sends it. Send it with dispatch api --method ${method} --path <path>. In a session whose AskGate reviews Dispatch writes, that command sends only GET, so it refuses this write.`;
   }
   return `${SENDS} ${method} is no method it sends. Read the route with a GET, or with dispatch api.`;
-}
-
-/** The dispatch command of the row of {@link WRITE_COMMANDS} that has `method`, and whose route
- *  `path` fills segment for segment; undefined where it fills no row's route. */
-function writeCommand(method: string, path: string): string | undefined {
-  const segments = path.split("/");
-  for (const row of WRITE_ROUTES) {
-    if (row.method !== method || row.route.length !== segments.length) continue;
-    if (row.route.every((part, at) => fills(part, segments[at] ?? ""))) return row.command;
-  }
-  return undefined;
-}
-
-/** Whether a path's `segment` fills `part` of a route: a `{…}` part takes each segment that is
- *  not empty, and each other part takes only itself. */
-function fills(part: string, segment: string): boolean {
-  return part.startsWith("{") ? segment !== "" : part === segment;
 }
 
 /** A percent-encoded `/` or `\`, in either case. */

@@ -488,9 +488,10 @@ The proxy sends two kinds of request, and refuses every other one:
 
 It sends no other write. A tool reads much and writes little. Where a `dispatch` command sends a
 write, the write goes through that command, so AskGate reviews it wherever AskGate gates that
-command. The proxy's refusal of the write names that command. Where no `dispatch` command sends
-the write, the refusal says so. The comment is the one write that a tool needs, such as a report
-that it posts at the end of a run.
+command. The proxy's refusal of the write names that command. Where no other `dispatch` command
+sends a write under `/api/v1`, the refusal names `dispatch api --method`, which sends it outside a
+session whose AskGate reviews Dispatch writes. The comment is the one write that a tool needs, such
+as a report that it posts at the end of a run.
 The `Idempotency-Key` lets the tool send the comment again after a lost answer, and Dispatch posts
 it once. The proxy sends a request once, and once more only after `401 BROKER_TOKEN_NOT_ACTIVE`.
 So the tool sends the comment again itself, with the same key.
@@ -554,7 +555,7 @@ answers 403 or 404 itself, so each 403 and 404 is Dispatch's answer.
 | Answer | When |
 | --- | --- |
 | `400 PROXY_TARGET_REFUSED` | The request target names a host: `http://…` or `//…`. |
-| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write that no `dispatch` command sends, the error says so. The proxy also refuses a target that holds a `#` or a control character, and a path with a `.` or `..` segment (plain or percent-encoded), a backslash, or `%2F` or `%5C` in either case: each can reach another route than the one the target names. |
+| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write under `/api/v1` that no other `dispatch` command sends, it names `dispatch api --method`. The proxy also refuses a target that holds a `#` or a control character, and a path with a `.` or `..` segment (plain or percent-encoded), a backslash, or `%2F` or `%5C` in either case: each can reach another route than the one the target names. |
 | `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
 | `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
 
