@@ -1323,7 +1323,10 @@ test("a node is edited in place in each filter", async ({ browser }) => {
       "the answered question"
     );
 
-    // The ordered steps edit the task's text; the chart opens the same task in Conversation.
+    // The ordered steps edit the task's text; Enter on the chart goes to the same task's address
+    // in the conversation, which Conversation draws no row of (its read names no plan task), so
+    // the address opens the filter of its kind, Plan, at the task (`slots/body.tsx`), as part K's
+    // row reads it (`issue-page-k.e2e.ts`).
     await pickPreset(page, PRESET_NAMES.plan);
     const block = seeded.planTasks[0];
     if (block === undefined) throw new Error("the seed has no plan task");
@@ -1343,9 +1346,11 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     await planView(page, "chart").click();
     await focusFilterRow(task.and(planChart(page).locator("[data-plan-bar-row]")));
     const chartSockets = countDocumentSockets(page);
+    const fragment = new RegExp(`#b-${block}$`);
+    await expect(page, "the chart's address names the task before Enter").not.toHaveURL(fragment);
     await page.keyboard.press("Enter");
-    await expect(page, "Enter on the chart does not go to the task in Conversation").toHaveURL(
-      new RegExp(`/issues/${seeded.key}#b-${block}$`)
+    await expect(page, "Enter on the chart does not go to the task's address").toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "plan")}#b-${block}$`)
     );
     expect(chartSockets(), "Enter on the chart opened a document socket").toBe(0);
   });
