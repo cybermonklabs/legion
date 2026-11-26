@@ -1,5 +1,5 @@
 {
-  "description": "Envoy for the Codex CLI: record which session the codex process runs for the Envoy MCP server and tell the model its open Dispatch asks and how to run dispatch, load the dispatch-first skill and what people wrote to the session in the last 72 hours, put messages that arrive during a turn into it at the next tool call, and stop delivering to a session once it ends.",
+  "description": "Envoy for the Codex CLI: record which session the codex process runs, or each thread of Codex's shared app server, for the Envoy MCP server and tell the model its open Dispatch asks and how to run dispatch, load the dispatch-first skill and what people wrote to the session in the last 72 hours, put messages that arrive during a turn into it at the next tool call, and stop delivering to a session once it ends.",
   "hooks": {
     "SessionStart": [
       {
@@ -28,7 +28,7 @@
           {
             "type": "command",
             "command": "bun \"${PLUGIN_ROOT}/dist/codex-hook.js\" session-end",
-            "timeout": 3
+            "timeout": 20
           }
         ]
       }

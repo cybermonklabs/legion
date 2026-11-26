@@ -7,11 +7,13 @@
 // Codex hands them no session id. It writes the record Claude Code's hook writes as well
 // (`sessions/<pid>/session-id`), so the server that owns the process's session
 // (`../src/codex/codex-owner`) follows `/new` to the new id the way it follows a Claude Code
-// `/clear`. Then it tells the model this session's open Dispatch asks and how to run `dispatch`
-// here, as plain output, which Codex adds to the model's context (measured on 0.154.0). The
-// dispatch-first skill and the answers list come from `dist/session-hook.js`, which
-// `codex/hooks/hooks.json` runs beside this. At SessionEnd it leaves the session's ended marker.
-// It always exits 0: a session must start without Envoy.
+// `/clear`. Under Codex's shared app server, which runs one session per thread, it records the
+// thread on its own instead (`codexThreadRecordFile`), and the server that owns that process
+// registers every recorded thread (`../src/codex/codex-threads`). Then it tells the model this
+// session's open Dispatch asks and how to run `dispatch` here, as plain output, which Codex adds to
+// the model's context (measured on 0.154.0). The dispatch-first skill and the answers list come
+// from `dist/session-hook.js`, which `codex/hooks/hooks.json` runs beside this. At SessionEnd it
+// leaves the session's ended marker. It always exits 0: a session must start without Envoy.
 
 import { rm } from "node:fs/promises"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
@@ -26,12 +28,14 @@ import {
   codexHome,
   codexProcessId,
   codexSessionRecordFile,
+  codexThreadEndedFile,
+  codexThreadRecordFile,
   markSessionEnded,
+  markThreadEnded,
   processStarted,
   pruneCodexSessionRecords,
   readCodexSessionRecord,
   recordOfProcess,
-  SHARED_APP_SERVER_NOTE,
   sharedAppServer,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
@@ -60,9 +64,10 @@ const SessionEndInput = z.object({ session_id: z.string().min(1) })
 /**
  * `SessionEnd`, which Codex runs when it unloads a thread (`thread_unload_delay`, 60 s by default,
  * after the thread is idle with no subscriber) or at exit: leaves the session's ended marker when the
- * process's record names it, so the server delivers nothing more to it until the next
- * `SessionStart` names the session that follows. It writes a file of its own and never the record,
- * which a `SessionStart` may be writing at that moment. The end of a fork leaves nothing.
+ * thread's own record (under the shared app server) or the process's record names it, so the server
+ * delivers nothing more to it until the next `SessionStart` names it, or the session that follows.
+ * It writes a file of its own and never the record, which a `SessionStart` may be writing at that
+ * moment. The end of a fork leaves nothing.
  */
 async function sessionEnd(raw: unknown): Promise<void> {
   const input = SessionEndInput.parse(raw)
@@ -71,6 +76,13 @@ async function sessionEnd(raw: unknown): Promise<void> {
   )
   if (pluginData === undefined) return
   const pid = codexProcessId()
+  const thread = await readCodexSessionRecord(
+    codexThreadRecordFile(pluginData, pid, input.session_id),
+  )
+  if (thread !== undefined) {
+    if (recordOfProcess(thread, pid)) await markThreadEnded(pluginData, pid, input.session_id)
+    return
+  }
   const file = codexSessionRecordFile(pluginData, pid)
   const record = await readCodexSessionRecord(file)
   if (record === undefined || record.session_id !== input.session_id) return
@@ -94,10 +106,7 @@ async function sessionStart(raw: unknown): Promise<void> {
     }
     try {
       const started = processStarted(pid)
-      if (sharedAppServer(pid)) {
-        // No record: two sessions of one process would share it (`sharedAppServer`).
-        process.stdout.write(`${SHARED_APP_SERVER_NOTE}\n\n`)
-      } else if (input.transcript_path === null || input.transcript_path === undefined) {
+      if (input.transcript_path === null || input.transcript_path === undefined) {
         // A fork (`/side`, `/btw`) or an ephemeral session (`codex exec --ephemeral`): it keeps no
         // transcript, recording a fork would move its session's registration to it, and Codex
         // refuses `codex queue` for an ephemeral thread, so nothing could reach it.
@@ -107,19 +116,31 @@ async function sessionStart(raw: unknown): Promise<void> {
           `envoy: this session was not recorded, because the start of codex process ${pid} cannot be read; it gets no Envoy messages\n`,
         )
       } else {
-        // The session again (`/resume`): it has not ended. The marker goes before the record is
-        // written, so a server that reads the new record never reads the old marker beside it.
-        await rm(codexEndedFile(pluginData, pid, input.session_id), { force: true })
-        await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), {
+        const record = {
           codex_executable: codexExecutable(pid) ?? null,
           codex_home: codexHome(process.env),
           codex_started: started,
           cwd: input.cwd,
           session_id: input.session_id,
           source: input.source ?? null,
-          transcript_path: input.transcript_path ?? null,
-        })
-        await writeSessionHandoff(sessionHandoffFile(pluginData, pid), input.session_id)
+          transcript_path: input.transcript_path,
+        }
+        if (sharedAppServer(pid)) {
+          // One record per thread. The thread again (`source: "resume"`) has not ended: its record
+          // is written before its marker goes, so the owner, which reads the whole directory on
+          // each look, never registers the thread from the record of its earlier load.
+          await writeCodexSessionRecord(
+            codexThreadRecordFile(pluginData, pid, input.session_id),
+            record,
+          )
+          await rm(codexThreadEndedFile(pluginData, pid, input.session_id), { force: true })
+        } else {
+          // The session again (`/resume`): it has not ended. The marker goes before the record is
+          // written, so a server that reads the new record never reads the old marker beside it.
+          await rm(codexEndedFile(pluginData, pid, input.session_id), { force: true })
+          await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), record)
+          await writeSessionHandoff(sessionHandoffFile(pluginData, pid), input.session_id)
+        }
       }
     } catch (error) {
       process.stderr.write(`envoy: could not record the session id — ${messageFor(error)}\n`)

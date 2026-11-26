@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  The Codex plugin registers each session of Codex's shared app server, which runs several
+  sessions in one process, one per thread: plain `codex` on Codex 0.170.0 and 0.171.0, a second
+  plain `codex` that joins it, and `codex agents`. Each thread whose hooks the person trusted shows
+  on the Agents page as its own session, under its thread id and titled by its directory and short
+  id, from its first prompt, whether or not its turns call a plugin tool, and gets its own Envoy
+  messages, through `codex queue` while idle and the `PostToolUse` hook during a turn, as a session
+  in a `codex` process of its own does. It leaves the Agents page when Codex unloads the thread,
+  the other threads keeping theirs, and comes back under the same id when Codex loads it again.
+  Every Envoy tool call there acts as the thread Codex names on it, whichever of the plugin's
+  servers Codex sends it to; a call that names no thread is refused. The `SessionEnd` hook may
+  take 20 s instead of 3 s.
+time: 2026-11-26T23:35:07Z
+custom:
+    Issue: codex-shared-threads

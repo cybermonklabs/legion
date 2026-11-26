@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process"
 import { readFileSync, readlinkSync, unwatchFile, watchFile } from "node:fs"
-import { mkdir, readFile, rename, utimes, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rename, utimes, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
+import { messageFor } from "@legion/envoy-client/errors"
 import { z } from "zod"
 import { processExists } from "../session-identity"
 import { pruneStateDirectory } from "../session-state"
@@ -18,6 +19,10 @@ import { pruneStateDirectory } from "../session-state"
  * starts one server per thread, so a process can have several; the one that owns the process's
  * session (`./codex-owner`) follows the record to each session the process runs. Measured on Codex
  * CLI 0.154.0.
+ *
+ * Codex's shared app server (`sharedAppServer`) runs several sessions at once, one per thread, so
+ * there the hook writes one record per thread instead (`codexThreadRecordFile`), and the server
+ * that owns the process registers every thread recorded there (`./codex-threads`).
  */
 export const CodexSessionRecord = z.object({
   session_id: z.string().min(1),
@@ -47,6 +52,114 @@ export function codexSessionRecordFile(stateDirectory: string, pid: number): str
  */
 export function codexEndedFile(stateDirectory: string, pid: number, sessionId: string): string {
   return join(stateDirectory, "codex-sessions", `${pid}.${encodeURIComponent(sessionId)}.ended`)
+}
+
+/**
+ * The directory of the records of Codex's shared app server `pid`: one record per thread, named
+ * by the thread's id, since that process runs several sessions at once. A `SessionStart` writes a
+ * thread's record, `SessionEnd` leaves its ended marker beside it, and a `SessionStart` that loads
+ * the thread again (`source: "resume"`) removes the marker before it writes the record again.
+ */
+export function codexThreadsDirectory(stateDirectory: string, pid: number): string {
+  return join(stateDirectory, "codex-sessions", String(pid))
+}
+
+/** The record of thread `threadId` of Codex's shared app server `pid`. */
+export function codexThreadRecordFile(
+  stateDirectory: string,
+  pid: number,
+  threadId: string,
+): string {
+  return join(codexThreadsDirectory(stateDirectory, pid), `${encodeURIComponent(threadId)}.json`)
+}
+
+/** The marker `SessionEnd` leaves when Codex unloaded thread `threadId` of its shared app server
+ *  `pid`. */
+export function codexThreadEndedFile(
+  stateDirectory: string,
+  pid: number,
+  threadId: string,
+): string {
+  return join(codexThreadsDirectory(stateDirectory, pid), `${encodeURIComponent(threadId)}.ended`)
+}
+
+/** Leaves thread `threadId`'s ended marker. The owner looks at the directory every
+ *  `intervalMs` (`watchThreads`), so nothing else needs to change for it to see the marker. */
+export async function markThreadEnded(
+  stateDirectory: string,
+  pid: number,
+  threadId: string,
+): Promise<void> {
+  const marker = codexThreadEndedFile(stateDirectory, pid, threadId)
+  await mkdir(dirname(marker), { mode: 0o700, recursive: true })
+  await writeFile(marker, "", { mode: 0o600 })
+}
+
+/**
+ * The threads of Codex's shared app server `pid` that are recorded and have not ended, by thread
+ * id: each record of the process now running under `pid` (`recordOfProcess`) with no ended marker
+ * beside it. A record that an earlier process with the same id left, a record that does not parse
+ * or that names another thread than its file, and a temporary file are passed over.
+ */
+export async function readLiveThreads(
+  stateDirectory: string,
+  pid: number,
+): Promise<Map<string, CodexSessionRecord>> {
+  const directory = codexThreadsDirectory(stateDirectory, pid)
+  const live = new Map<string, CodexSessionRecord>()
+  let names: string[]
+  try {
+    names = await readdir(directory)
+  } catch {
+    return live
+  }
+  const started = processStarted(pid)
+  if (started === undefined) return live
+  const ended = new Set(names.filter((name) => name.endsWith(".ended")))
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue
+    const encoded = name.slice(0, -".json".length)
+    if (ended.has(`${encoded}.ended`)) continue
+    const record = await readCodexSessionRecord(join(directory, name))
+    if (record === undefined || record.codex_started !== started) continue
+    if (encodeURIComponent(record.session_id) !== encoded) continue
+    live.set(record.session_id, record)
+  }
+  return live
+}
+
+/**
+ * Calls `changed` with the live threads of Codex's shared app server `pid` (`readLiveThreads`)
+ * once at once and then after every look, a look every `intervalMs` once the one before it ended,
+ * so a thread's record, its ended marker and a resume's new record are each seen within
+ * `intervalMs` of being written. Answers the stop.
+ */
+export function watchThreads(
+  stateDirectory: string,
+  pid: number,
+  changed: (live: ReadonlyMap<string, CodexSessionRecord>) => void,
+  intervalMs: number,
+  warn: (text: string) => void,
+): () => void {
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const look = (): void => {
+    void readLiveThreads(stateDirectory, pid)
+      .then(
+        (live) => {
+          if (!stopped) changed(live)
+        },
+        (error: unknown) => warn(`the thread records could not be read: ${messageFor(error)}`),
+      )
+      .finally(() => {
+        if (!stopped) timer = setTimeout(look, intervalMs)
+      })
+  }
+  look()
+  return () => {
+    stopped = true
+    clearTimeout(timer)
+  }
 }
 
 /**
@@ -228,11 +341,13 @@ export function recordOfProcess(record: CodexSessionRecord, pid: number): boolea
 
 /**
  * Whether the `codex` process `pid` is Codex's shared app server (`codex app-server`), which runs
- * several sessions in one process: a later plain `codex` reuses one `codex agents` started, and
- * Codex 0.170.0's terminal runs every session in a background `codex app-server --managed-daemon`
- * (measured on 0.170.0). This plugin keys a session by its process, so there two sessions would
- * share one record and one hand-off, and one would take the other's identity, so it registers none
- * of them with Envoy; `dispatch` still acts as the thread that calls it.
+ * several sessions in one process, one per thread: plain `codex` on Codex 0.170.0 and 0.171.0 runs
+ * every terminal session as a thread of a background `codex app-server --managed-daemon`, a second
+ * plain `codex` joins it, and `codex agents` uses it too, while `codex agents --no-daemon` runs the
+ * app server inside its own process (measured on 0.170.0 and 0.171.0). There a session is keyed
+ * by its thread, not by the process: the hook records each thread on its own
+ * (`codexThreadRecordFile`), and the server that owns the process registers each of them
+ * (`./codex-threads`).
  */
 export function sharedAppServer(pid: number): boolean {
   let argv: string[]
@@ -287,16 +402,13 @@ export function codexSubcommand(args: readonly string[]): string | undefined {
   return undefined
 }
 
-/** What a session of the shared app server is told about Envoy and Dispatch. */
-export const SHARED_APP_SERVER_NOTE =
-  "Codex runs this session in its shared app server (`codex app-server`), which runs several sessions in one process, so the Envoy plugin does not register it with Envoy: it receives no Envoy messages and does not show on Dispatch's Agents page. Its `dispatch` tool works, acting as this session."
-
 /** Removes what `codex` processes that have exited left (their records, ended markers and server
  *  entries), so a later process that reuses a pid never finds any of it. */
 export async function pruneCodexSessionRecords(stateDirectory: string): Promise<void> {
-  // Records and ended markers, then the server entries (`./codex-owner`), of exited codex pids.
+  // Records, ended markers and thread record directories, then the server entries
+  // (`./codex-owner`), of exited codex pids.
   await pruneStateDirectory(join(stateDirectory, "codex-sessions"), (file) => {
-    const match = /^(\d+)\.(?:json|.+\.ended)$/.exec(basename(file))
+    const match = /^(\d+)(?:\.json|\..+\.ended)?$/.exec(basename(file))
     return match !== null && !processExists(Number(match[1]))
   })
   await pruneStateDirectory(join(stateDirectory, "codex-servers"), (file) => {

@@ -297,18 +297,27 @@ other session on the machine: the file `ENVOY_CONFIG_FILE` names, else
 `~/.codex`) the plugin reads the session's transcript, writes only to the state directory Codex
 gives each plugin (`plugins/data/`), and adds to Codex's message queue through `codex queue`;
 it never touches Codex's configuration.
-Measured on Codex CLI 0.154.0.
+Measured on Codex CLI 0.154.0, and Codex's shared app server on 0.170.0 and 0.171.0.
 
-Which sessions get Envoy depends on how Codex runs them.
-A session in a `codex` process of its own (the terminal on 0.154.0, `codex exec`) registers with
-Envoy and gets everything below.
-Codex's shared app server runs several sessions in one process: `codex agents` (with or without `--no-daemon`), a plain `codex` that joins a running app server, and on 0.170.0 every terminal session, which runs in a background `codex app-server --managed-daemon`.
-The plugin cannot tell those sessions' Envoy traffic apart, so there it registers none of them:
-they get no Envoy messages and do not show on the Agents page, and the hook tells the model so.
-Everything else still runs there: the `dispatch` tool, as the session that calls it, and the
-`SessionStart` hooks (the open-asks summary, the dispatch-first skill and the answers list).
+Codex runs a session in one of two ways, and the plugin registers both.
+A session in a `codex` process of its own (the terminal on 0.154.0, `codex exec`,
+`codex --no-daemon`, `codex --dangerously-bypass-hook-trust`) registers with Envoy under its
+session id.
+Codex's shared app server runs several sessions in one process, one per thread: plain `codex` on
+0.170.0 and 0.171.0 runs every terminal session as a thread of a background
+`codex app-server --managed-daemon`, which a second plain `codex` joins, and `codex agents` (with
+or without `--no-daemon`) runs its sessions the same way.
+There each thread whose hooks the person trusted registers as its own session, under its thread
+id, from its first prompt, whether or not its turns call a plugin tool, and is titled by its
+directory's name and its short id.
+It leaves the Agents page when Codex unloads the thread (`thread_unload_delay`, 60 s by default,
+after it is idle with no client, and again 60 s after each turn a message starts meanwhile), and
+comes back under the same id when Codex loads it again (`codex resume`, `codex queue --resume`,
+or a client's `thread/resume`), from its first turn after the load.
+Either way the session gets everything below.
 A fork (`/side`, `/btw`) is never registered: its session's registration stays where it was.
-Neither is an ephemeral session (`codex exec --ephemeral`), which no message could reach.
+Neither is an ephemeral session (`codex exec --ephemeral`), which no message could reach, nor a
+session whose hooks the person did not trust, since its `SessionStart` hook never runs.
 
 - `codex/.codex-plugin/plugin.json` names the skills and one MCP server,
   `bun ./dist/envoy-channel.js --host codex`, run in the plugin's own directory (`"cwd": "./"`;
@@ -329,6 +338,19 @@ Neither is an ephemeral session (`codex exec --ephemeral`), which no message cou
   the session; messages to it arrive meanwhile, and its `dispatch` tool works.
   A fork or an ephemeral session (`codex exec --ephemeral`) keeps no transcript and is never
   registered, since Codex refuses `codex queue` for an ephemeral thread.
+- Under the shared app server the hook records each thread on its own,
+  `codex-sessions/<app server pid>/<thread id>.json`, and its `SessionEnd` leaves that thread's
+  ended marker beside it. The server that owns the process runs an Envoy session for every
+  recorded thread that has not ended (`src/codex/codex-threads.ts`), each with its own
+  registration, connection, inbox and live view; a thread's server cannot register its own
+  thread, since Codex names the thread to a server only on a tool call. A thread's marker shuts
+  its session down and leaves every other thread's running, and its load again starts a new one
+  under the same id. Every Envoy tool call there acts as the thread Codex names on it
+  (`_meta.threadId`): the owner runs it through that thread's session, and a server that stands
+  by sends it to the owner over a socket the owner serves (`src/codex/codex-tool-route.ts`); a
+  call that names no thread is refused. When Codex unloads the owner's own thread it stops the
+  owner's server, whose sessions end with it, and the next server takes the process over and
+  registers every thread that has not ended again, within a few seconds.
 - The `dispatch` tool acts as the thread whose turn called it, which Codex names on every tool
   call (`_meta.threadId`), and runs in the directory that thread's newest turn ran in.
 - A message reaches an idle session through `codex queue`, which Codex takes as a new turn a few
