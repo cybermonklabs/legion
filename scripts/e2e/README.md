@@ -1563,7 +1563,7 @@ CI does not run it.
   the listener refuses a registration that asks for none (`409 not_requested`), and no session receives from a plain NATS subscription ("Session consumers" in `packages/envoy/AGENTS.md`).
   The asker's consumer carries the answers to its questions.
   The controller stand-in holds both passes' controller roles, `legion-<project token>-controller`, since the listener stores a project's controller lane, `notifications.legion.<project token>.controller`, only for the session holding that role, so its consumer carries the notices the daemons publish there.
-  The third stand-in, A21's first holder, registers only for that row's last leg: it claims a role nobody holds, and its consumer carries what the listener kept for that role.
+  The third stand-in, A21's first holder, registers only for that row's last leg and again for A21's control, each time claiming the issue's `tester` role, which no other session of the run took, and its consumer carries what the listener kept for that role.
   The inbox writes each envelope it is relayed as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice on one topic — and then answers the frame `done`, which acknowledges it to the consumer.
   A dedupe key names one envelope on one topic and not one across the run: each daemon keys its controller notices by its own outbox row, so the second pass's daemon repeats the first one's keys on its own lane, and each of those notices is recorded.
   It answers the listener's connection probe on the same subject (`Envoy-Probe: 1`) `done` too, and records nothing of it.
@@ -1957,12 +1957,31 @@ What a row's read needs besides the message, the control does as the row does:
   Its placed reply, in the tester's name under the control's reply, is placed after that read, which holds the nothing-posted part too, and the read of that part alone must then fail.
 
 - A21: the control sends what the row sends: the person's mention of the failed implementer's role, the mention of the reviewer's role that no session of the run took (its id is the one the read takes), and a message to the failed role's topic under a marker of its own.
+  For the first holder's leg it mentions the issue's `merger` role, which no session of the run took either, under a marker of its own, and the first holder registers again and claims the leg's own role, the issue's `tester`, as the leg does (`a21_holder_claim`).
+  The leg's read (`a21_holder_read`) is run over that mention, whose marker must then not reach the first holder's inbox, since the holder claimed another role.
 
 - A22's and A23's configuration legs read this daemon's own boot line and `legion config check` line, read once for the pass, with the row's own absent and off lines, which the row kept.
 
-For a part of a row that says the loop posts nothing, the control places, after the row's main read, where the row looks, a post carrying the loop's mark (`<!-- legion-answer:c0de<tag><n> -->`), and that part's read must then fail too:
-A7's forwarded question and A12's reply out of form get a reply on the asker's topic in reply to the control's own question (`place_inbox_reply`), and A20's last sentence a reply in the tester's own name under the control's reply in A3's thread.
-A8's read of the parts that say the loop answers nothing, its own answer and an edit, is the daemon's log, so its control appends a JSON line to that log, an `answers: question` line naming the replaced tester's session and one naming the architect's, each with the marker and `placed_by` saying the control placed it and no daemon wrote it (`place_log_line`), and the control row's detail says so.
+For a part of a row that says the loop posts nothing, the control places, where the row looks, a post carrying the loop's mark (`<!-- legion-answer:c0de<tag><n> -->`, `control_mark`), and that part's own read must then fail too.
+Each post is placed after the row's main read, which holds that part too, but for A8's, which go in with the control's messages:
+
+- A7's forwarded question, A12's reply out of form and A18's resume leg get a reply on the asker's topic in reply to the control's own question (`place_inbox_reply`), which `a7_nothing_posted`, `a12_not_posted_read` and `a18_nothing_posted` read.
+  A18's control waits until the inbox holds its reply before that read.
+
+- A20's last sentence gets a reply in the tester's own name under the control's reply in A3's thread (`a20_nothing_posted`), and A21's read a reply in the failed implementer's name under the control's mention of the reviewer's role (`a21_nothing_posted`), each written in that session's own name over the agents' bearer (`place_comment`).
+
+- A22's second leg gets, on its target issue, the comment the planner's dispatch tool would post, in the planner's name with the control's marker and the tool's mark (`<!-- legion-answer:c0de<tag>22.1 -->`), and under it a reply in the name of the replaced tester, the session the row's comment mentions (`a22_nothing_posted`).
+  The placed comment mentions nobody, since a mention would hand the replaced tester's daemon a message, whose hand-offs A8's control counts.
+
+- A6's second leg gets an `agent-decision` notice of the control's reply on the controller stand-in's topic, sent in the asker's name and waited for until the inbox holds it (`place_controller_notice`), which `a6_nothing_posted` reads.
+
+- A17's leak-guard leg gets a comment on the implementer's pull request carrying the run's refusal marker, written as the implement App, as the loop's `gh` tool writes, with `lib/smoke-pull-request.ts comment`;
+  it is recorded so that the run's cleanup deletes it, and the control waits until GitHub's listing holds it.
+  The leg's part that no comment carries that marker (`refused_marker_absent`, read alone as `a17_nothing_written`, apart from the first leg's comment that `refused_write_absent` reads it beside) must then fail.
+
+- A8's read of the parts that say the loop answers nothing, its own answer and an edit, is the daemon's log, so its control appends a JSON line to that log, an `answers: question` line naming the replaced tester's session and one naming the architect's, each with the marker and `placed_by` saying the control placed it and no daemon wrote it (`place_log_line`), and the control row's detail says so.
+
+A21's first holder's leg, whose read says a kept message reaches the role's first holder, is read over the control's mention of a role the first holder did not claim (above).
 The asker's inbox is started again on A13's restarted NATS, since the controls read it.
 A run narrowed past A13 (`LEGION_E2E_ANSWER_LOOP_ONLY` without A13) runs no control row.
 
@@ -2049,7 +2068,7 @@ The run reads the smoke repository, and reads it as the implement App:
 it mints a read-only installation token of its own for each read (`smoke_gh`, which `mint_provision_token` mints from the App's key) and hands it to the compiled `gh`, since the rig's own `gh` reads nothing there
 — in a Legion pane the first `gh` on `PATH` is the `legion gh` wrapper, and the pane's token is narrowed to its own owner, so either answers `{"message":"Not Found",…}`, whose body is no array of comments and reads as none.
 Its writes there are A17's, A18's and A19's:
-the pull requests [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) opens as the implement App, the comments the stopped implementer posts, and A19's approvals;
+the pull requests [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) opens as the implement App, the comments the stopped implementer posts, the comment A17's control places with it as the implement App, and A19's approvals;
 each pull request and comment is recorded by id and closed (with its branch) or deleted as the implement App on exit.
 Each of those calls acts under the repository owner's installation token, which the App's own key mints and which stays inside that one process.
 A17's one write on the second owner's repository is the reviewer's workflow file, which GitHub refuses for want of the review App's `workflows` permission.

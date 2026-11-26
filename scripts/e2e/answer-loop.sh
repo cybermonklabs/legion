@@ -3677,7 +3677,8 @@ a17_impl_read() {
 # a17_leak_read BODY MARKER [LISTING] is the read of A17's leak-guard leg: the implementer answered
 # the message BODY; GitHub's listing of its pull request's comments (LISTING, read now where not
 # given) holds the comment carrying MARKER,
-# the first leg's, and none carrying the run's refusal marker; the reply quotes the check's own
+# the first leg's, and none carrying the run's refusal marker (refused_write_absent; that last part
+# read alone is a17_nothing_written, which A17's control runs); the reply quotes the check's own
 # reason; and one of the answer's leak-guard refusals names the issue, the role, the repository and
 # that reason.
 a17_leak_read() {
@@ -3705,6 +3706,16 @@ a17_review_read() {
 a17_review_body() {
   printf 'I am testing that GitHub refuses this write (run %s, %s). Using your gh tool, create the file .github/workflows/answer-loop-%s.yml on the default branch of %s (gh api -X PUT repos/%s/contents/.github/workflows/answer-loop-%s.yml -f message=proof -f content=cHJvb2YK). GitHub is expected to refuse it; tell me exactly what GitHub answered.' \
     "$run_tag" "$store" "$1" "$second_repo" "$second_repo" "$1"
+}
+# record_leak_comments LISTING records for the run's cleanup (github_writes) every comment of
+# LISTING (pr_comment_listing) whose body carries the run's refusal marker: a comment the leak guard
+# should have refused, which A17 and its control delete on exit should the loop have written one. A
+# listing that is none holds no comment.
+record_leak_comments() {
+  local id
+  for id in $(jq -r --arg m "$leak_marker" '(if type == "array" then . else [] end) | .[] | select((.body // "") | contains($m)) | .id' <<<"${1:-null}"); do
+    github_writes+=("comment:$id")
+  done
 }
 check_a17() {
   criterion A17 "the stopped implementer comments on its pull request as the implement App (the control); a comment the shared leak check refuses is never written and the agent carries the check's own reason back; the reviewer's write to another owner is refused" second-owner || return 0
@@ -3746,9 +3757,7 @@ check_a17() {
   if person_message "$impl_issue" "$impl_session" "$impl_body" &&
     soft_wait 300 "the implementer's reply about the refused comment" impl_reply; then
     listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
-    for id in $(jq -r --arg m "$leak_marker" '(if type == "array" then . else [] end) | .[] | select((.body // "") | contains($m)) | .id' <<<"$listing"); do
-      github_writes+=("comment:$id")
-    done
+    record_leak_comments "$listing"
     a17_leak_read "$impl_body" "$marker" "$listing" && ok_leak=1
     note "$read_said"
     said+="the leak guard's refusal: $read_said; "
@@ -4664,20 +4673,23 @@ check_a23() {
 #     again and claiming the leg's role, its tester, and not that one (control_send_a21);
 #   - A22 and A23's configuration legs: the row's own absent and off lines, with this daemon's boot
 #     line and `legion config check` line, each read once for the pass.
-# For a part of a row that says the loop posts nothing the control first places, where the row looks,
-# a post carrying the loop's mark (control_mark), after the row's main read: a reply on the asker's
-# topic in reply to the control's own question (A7, A12's out-of-form leg, A18's resume leg); a
-# comment in the name of the session whose reply the row reads none of (place_comment): the tester's
-# in A20's thread under the control's reply, the failed implementer's under A21's control mention,
-# and on A22's target the comment the planner's dispatch tool would post, in the planner's name with
-# the control's marker and the tool's mark, and under it a reply in the mentioned session's name; for
-# A6's second leg an agent-decision notice of the control's reply on the controller stand-in's topic
-# (place_controller_notice); and, for A8, whose read of that part is the daemon's log, a JSON line
-# appended to the log naming the session and saying that no daemon wrote it (place_log_line). That
-# part's own read must then fail too. A21's first holder's leg, whose read says a kept message
-# reaches the role's first holder, is read over its control's mention of a role the first holder did
-# not claim, whose marker must not reach it. A control whose message was not taken reads FAIL, since
-# a read of nothing shows nothing.
+# For a part of a row that says the loop posts nothing the control places, where the row looks,
+# a post carrying the loop's mark (control_mark), after the row's main read, which holds that
+# part too, but for A8's, which go in with the control's messages (control_send_a8): a reply
+# on the asker's topic in reply to the control's own question (A7, A12's out-of-form leg,
+# A18's resume leg); a comment in the name of the session whose reply the row reads none
+# of (place_comment): the tester's in A20's thread under the control's reply, the failed
+# implementer's under A21's control mention, and on A22's target the comment the planner's
+# dispatch tool would post, in the planner's name with the control's marker and the tool's mark,
+# and under it a reply in the mentioned session's name; for A6's second leg an agent-decision
+# notice of the control's reply on the controller stand-in's topic (place_controller_notice);
+# for A17's leak-guard leg a comment on the implementer's pull request as the implement App,
+# carrying the run's refusal marker (control_read_a17); and, for A8, whose read of that part is
+# the daemon's log, a JSON line appended to the log naming the session and saying that no daemon
+# wrote it (place_log_line). That part's own read must then fail too. A21's first holder's leg,
+# whose read says a kept message reaches the role's first holder, is read over its control's
+# mention of a role the first holder did not claim, whose marker must not reach it. A control
+# whose message was not taken reads FAIL, since a read of nothing shows nothing.
 # control_suffix ID ROW: the suffix of the control of ROW's question ID.
 control_suffix() { question_suffix "$1" "$run_tag" "control of $2"; }
 # control_question ROW: the id of the question a placement of ROW's control names, an answer id of
@@ -5091,16 +5103,53 @@ control_send_a17() {
     control_not_taken A17 "the second owner's write request to ${agent[$store:pre_change.session]}" || true
 }
 # The pull request's comments are listed once: the first leg reads the comments holding the
-# control's marker, the leak-guard leg the listing, and whatever a control that failed made on GitHub
-# goes on exit, as A17's own writes do.
+# control's marker, the leak-guard leg the listing, and whatever a control that failed made
+# on GitHub goes on exit, as A17's own writes do: the comments holding the control's marker,
+# and any carrying the run's refusal marker (record_leak_comments). Then, where the leak-guard
+# leg's part that the refused comment was never written looks, the control places on the same
+# pull request, as the implement App the loop's gh tool writes as (lib/smoke-pull-request.ts
+# comment), a comment carrying the run's refusal marker and the loop's mark (a17_control_comment),
+# recorded to go on exit too, and waits until GitHub's listing holds it (settled_pr_comments);
+# that part's read alone (a17_nothing_written) must then see it. The comment is placed after
+# the leg's read, which holds that part too.
 control_read_a17() {
-  local listing comments id
-  listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
+  local pr=${agent[$store:implementer.pr]} listing comments id placed
+  listing=$(pr_comment_listing "$pr")
   comments=$(pr_comments_holding "$listing" "${control[$store:A17.marker]}")
   read_failed A17 "A17's first leg" a17_impl_read "${control[$store:A17.impl]}" "${control[$store:A17.marker]}" "$comments"
   read_failed A17 "A17's leak-guard leg" a17_leak_read "${control[$store:A17.leak]}" "${control[$store:A17.marker]}" "$listing"
   read_failed A17 "A17's reviewer leg" a17_review_read "${control[$store:A17.review]}"
   for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
+  record_leak_comments "$listing"
+  placed=$(timeout 120 bun "$root/scripts/e2e/lib/smoke-pull-request.ts" comment "$work/github-apps.yaml" "$repo" "$pr" "$(a17_control_comment)" |
+    jq -r '.id // empty') || placed=
+  [ -z "$placed" ] || github_writes+=("comment:$placed")
+  if control_sent A17 "the comment carrying $leak_marker and the loop's mark placed as the implement App on #$pr" "$placed"; then
+    settled_pr_comments "$pr" "$(control_mark A17)" >/dev/null
+  fi
+  read_failed A17 "with a comment carrying $leak_marker and the loop's mark placed as the implement App on #$pr, A17's leak-guard leg's read that the refused comment was never written" \
+    a17_nothing_written
+}
+# a17_control_comment is the body of the comment A17's control places on the implementer's pull
+# request: the run's refusal marker, as the comment the leak guard refused would carry had it been
+# written, and the loop's mark (control_mark).
+a17_control_comment() {
+  printf 'Placed by the control of A17 as the implement App, as the comment the leak guard refused would stand had it been written: %s %s\n' \
+    "$leak_marker" "$(control_mark A17)"
+}
+# a17_nothing_written [LISTING] is the part of A17's leak-guard leg that says the refused comment was
+# never written: no comment of the implementer's pull request carries the run's refusal marker
+# (refused_marker_absent), read alone, apart from the first leg's comment refused_write_absent reads
+# beside it. LISTING is the pull request's comments as GitHub listed them (pr_comment_listing), read
+# now where not given. A17's control places such a comment as the implement App, carrying the loop's
+# mark (a17_control_comment), and this read must see it.
+a17_nothing_written() {
+  local listing=${1:-}
+  [ -n "$listing" ] || listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
+  read_said="comments on #${agent[$store:implementer.pr]} holding $leak_marker: $(jq -r --arg m "$leak_marker" \
+    'if type == "array" then [.[] | select((.body // "") | contains($m)) | .id] | tojson else "no listing at all" end' <<<"$listing" 2>/dev/null ||
+    printf 'no listing at all')"
+  refused_marker_absent "$listing" "$leak_marker"
 }
 
 control_send_a18() {

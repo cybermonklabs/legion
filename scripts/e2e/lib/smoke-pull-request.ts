@@ -1,13 +1,15 @@
 // scripts/e2e/lib/smoke-pull-request.ts: the GitHub writes a live proof makes on the smoke
 // repository as Legion's role Apps, and their undoing: a pull request an implementer would have
-// opened (a branch with one file, and the pull request from it), then its close, its branch's
-// deletion and the deletion of a comment by id, as the implement App; and an approval of a pull
-// request's head as the review App, with a body of the caller's. Each call acts under the
-// repository owner's installation token, which the App's own credential command releases or
-// mints; the token stays in this process.
+// opened (a branch with one file, and the pull request from it) and a comment on it with a body of
+// the caller's, then the pull request's close, its branch's deletion and the deletion of a comment
+// by id, as the implement App; and an approval of a pull request's head as the review App, with a
+// body of the caller's. Each call acts under the repository owner's installation token, which the
+// App's own credential command releases or mints; the token stays in this process.
 //
 //   bun scripts/e2e/lib/smoke-pull-request.ts open <legion.yaml> <owner/repo> <branch> <title>
 //     prints {"number":N,"branch":"<branch>","url":"<html url>","head":"<sha>"}
+//   bun scripts/e2e/lib/smoke-pull-request.ts comment <legion.yaml> <owner/repo> <number> <body>
+//     prints {"id":N,"user":"<login>"}
 //   bun scripts/e2e/lib/smoke-pull-request.ts close <legion.yaml> <owner/repo> <number> <branch>
 //   bun scripts/e2e/lib/smoke-pull-request.ts delete-comment <legion.yaml> <owner/repo> <comment id>
 //     each prints what it did; a pull request already closed, a branch or comment already gone is
@@ -26,6 +28,7 @@ import { type AppRole, appCredentialSources } from "./app-logins";
 const api = "https://api.github.com";
 const usage = `usage:
   bun scripts/e2e/lib/smoke-pull-request.ts open <legion.yaml> <owner/repo> <branch> <title>
+  bun scripts/e2e/lib/smoke-pull-request.ts comment <legion.yaml> <owner/repo> <number> <body>
   bun scripts/e2e/lib/smoke-pull-request.ts close <legion.yaml> <owner/repo> <number> <branch>
   bun scripts/e2e/lib/smoke-pull-request.ts delete-comment <legion.yaml> <owner/repo> <comment id>
   bun scripts/e2e/lib/smoke-pull-request.ts approve <legion.yaml> <owner/repo> <number> <head sha> <body>`;
@@ -139,6 +142,18 @@ if (import.meta.main) {
     } else if (command === "open" && rest.length === 2) {
       const [branch = "", title = ""] = rest;
       console.log(JSON.stringify(await openPullRequest(call, repo, branch, title)));
+    } else if (command === "comment" && rest.length === 2) {
+      const [number, body] = rest;
+      const comment = await expectOk(
+        await call("POST", `/repos/${repo}/issues/${number}/comments`, { body }),
+        `comment on #${number}`
+      );
+      console.log(
+        JSON.stringify({
+          id: Number(field(comment, "the comment", "id")),
+          user: field(comment, "the comment", "user", "login"),
+        })
+      );
     } else if (command === "close" && rest.length === 2) {
       const [number, branch] = rest;
       const closed = await call("PATCH", `/repos/${repo}/pulls/${number}`, { state: "closed" });

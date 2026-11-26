@@ -3228,6 +3228,26 @@ describe("GitHub", () => {
     expect(run(`refused_write_absent '' ${kept} ${refused}`).code).toBe(1);
   });
 
+  // The part of refused_write_absent that says the refused write was never made, which A17's
+  // control reads alone over the comment it places carrying the refusal marker.
+  test("refused_marker_absent reads that no comment of a listing carries the refusal marker", () => {
+    const refused = "answer-loop-leak-4242";
+    // Comments that lack the marker: the first leg's comment and one of the run's own.
+    expect(run(`refused_marker_absent "$(pr_comment_listing 41)" ${refused}`).code).toBe(0);
+    expect(run(`refused_marker_absent "$(pr_comment_listing 45)" ${refused}`).code).toBe(0);
+    // Alone it holds over a listing of no comment at all, as jq's `all` over an empty array is
+    // true: why refused_write_absent, which fails on that listing (above), reads it beside the
+    // comment the first leg posted.
+    expect(run(`refused_marker_absent "$(pr_comment_listing 46)" ${refused}`).code).toBe(0);
+    // The comment carrying the marker is on the pull request.
+    expect(run(`refused_marker_absent "$(pr_comment_listing 44)" ${refused}`).code).toBe(1);
+    // A listing nobody could read, and no marker, show nothing.
+    expect(run(`refused_marker_absent "$(pr_comment_listing 42)" ${refused}`).code).toBe(1);
+    expect(run(`refused_marker_absent null ${refused}`).code).toBe(1);
+    expect(run(`refused_marker_absent '' ${refused}`).code).toBe(1);
+    expect(run(`refused_marker_absent "$(pr_comment_listing 41)" ''`).code).toBe(1);
+  });
+
   test("leak_reason_quoted reads the check's own reason in the agent's reply", () => {
     const reason = "the answer loop proof stand-in refuses this call";
     expect(
@@ -4218,6 +4238,52 @@ a6_nothing_posted ${comment} && echo quiet || echo "posted: $read_said"`).out.tr
     expect(nothing("''")).toBe(
       "posted: agent-decision notices holding (no reply) at the controller stand-in: 0"
     );
+  });
+
+  // A17's leak-guard leg's part that the refused comment was never written: no comment on the
+  // implementer's pull request carries the run's refusal marker. Its control places one there as the
+  // implement App, a17_control_comment its body, and the read fails on it. A listing nobody could
+  // read shows nothing.
+  describe("a17_nothing_written", () => {
+    const nothing = (body: string) =>
+      run(`${rig("control_question")}\n${rig("control_mark")}\n${rigVariable("leak_marker")}\n${rig("a17_control_comment")}\n${rig("a17_nothing_written")}
+agent[files:implementer.pr]=41
+${body}`).out.trim();
+    // Pull request 41's comments with the one A17's control places added, as GitHub lists it.
+    const placed = `placed=$(jq -c --arg body "$(a17_control_comment)" '. + [{id: 9010, user: {login: "example-implement[bot]"}, body: $body}]' <<<"$(pr_comment_listing 41)")`;
+
+    test("holds over the pull request's comments, none of which carries the refusal marker", () => {
+      expect(nothing(`a17_nothing_written && echo quiet || echo written`)).toBe("quiet");
+      expect(
+        nothing(`a17_nothing_written "$(pr_comment_listing 45)" && echo quiet || echo written`)
+      ).toBe("quiet");
+    });
+
+    test("fails on the comment A17's control places, given or read now", () => {
+      const out = nothing(`${placed}
+jq -r '.[-1].body' <<<"$placed"
+a17_nothing_written "$placed" && echo quiet || echo "written: $read_said"`);
+      expect(out).toContain(
+        "Placed by the control of A17 as the implement App, as the comment the leak guard refused would stand had it been written: answer-loop-leak-4242 <!-- legion-answer:c0de424217 -->"
+      );
+      expect(out).toContain("written: comments on #41 holding answer-loop-leak-4242: [9010]");
+      expect(
+        nothing(`${placed}
+smoke_gh() { printf '%s\\n' "$placed"; }
+a17_nothing_written && echo quiet || echo written`)
+      ).toBe("written");
+    });
+
+    test("shows nothing where GitHub answered no listing", () => {
+      expect(
+        nothing(`agent[files:implementer.pr]=42
+a17_nothing_written && echo quiet || echo "written: $read_said"`)
+      ).toBe("written: comments on #42 holding answer-loop-leak-4242: no listing at all");
+      expect(
+        nothing(`smoke_gh() { return 1; }
+a17_nothing_written && echo quiet || echo "written: $read_said"`)
+      ).toBe("written: comments on #41 holding answer-loop-leak-4242: no listing at all");
+    });
   });
 
   test("tree_is_live accepts an issue held from the phase when asked to, and A6's use of it as before", () => {

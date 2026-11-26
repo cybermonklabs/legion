@@ -1472,10 +1472,24 @@ one_comment_by() {
     'type == "array" and length == 1 and .[0].user == $login and (.[0].body | contains("\"session\":\"" + $s + "\""))' \
     <<<"${1:-null}" >/dev/null 2>&1
 }
+# refused_marker_absent LISTING REFUSED: GitHub answered a listing of the pull request's comments
+# (pr_comment_listing), and none of its comments holds REFUSED, the run's refusal marker: the part
+# of A17's leak-guard leg that says the write the leak guard refused was never made, read alone.
+# A17's control runs it over the comment it places carrying REFUSED, and it must then fail. Alone it
+# holds over a listing of no comment at all, since jq's `all` over an empty array is true, so the
+# leg reads it beside the comment its first leg posted (refused_write_absent).
+#
+# A listing that is no listing (`null`: the read failed, or GitHub answered an error body) fails, as
+# does an empty REFUSED: a read nobody could make, or of no marker, has shown nothing.
+refused_marker_absent() {
+  jq -e --arg refused "$2" \
+    'type == "array" and $refused != "" and all(.[]; ((.body // "") | contains($refused)) | not)' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
 # refused_write_absent LISTING KEPT REFUSED: GitHub answered a listing of the pull request's
 # comments (pr_comment_listing), that listing holds the comment whose body carries KEPT, and none
-# of its comments holds REFUSED — the write the leak guard refused was never made, read on the
-# listing that proves it was read at all.
+# of its comments holds REFUSED (refused_marker_absent) — the write the leak guard refused was never
+# made, read on the listing that proves it was read at all.
 #
 # The KEPT half is what makes the REFUSED half mean anything. jq's `all` over an empty array is
 # true, so a listing of nothing passes "no comment holds the marker" having examined no comment:
@@ -1487,10 +1501,8 @@ one_comment_by() {
 # A listing that is no listing (`null`: the read failed, or GitHub answered an error body) fails
 # here too: a read nobody could make has shown nothing.
 refused_write_absent() {
-  jq -e --arg kept "$2" --arg refused "$3" \
-    'type == "array"
-      and any(.[]; (.body // "") | contains($kept))
-      and all(.[]; ((.body // "") | contains($refused)) | not)' <<<"${1:-null}" >/dev/null 2>&1
+  refused_marker_absent "${1:-}" "$3" &&
+    jq -e --arg kept "$2" 'type == "array" and any(.[]; (.body // "") | contains($kept))' <<<"${1:-null}" >/dev/null 2>&1
 }
 # refusal_mentioned REPLY: the agent's reply says GitHub refused its write.
 refusal_mentioned() { grep -qiE 'refus|denied|403|404|not accessible|permission' <<<"${1:-}"; }
