@@ -203,7 +203,7 @@ The tree orders siblings by rank.
 SPEC
 corpus_issue earlier "The tree of one issue, read as one" "$work/spec.md"
 key="$corpus_key"
-[[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail earlier "create the issue" "the key $key is no issue key"
+tree_key earlier "create the issue" "$key"
 readonly key
 cat >"$work/verification.md" <<VERIFICATION
 How the tree read is proved.

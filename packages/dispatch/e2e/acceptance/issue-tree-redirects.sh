@@ -215,7 +215,7 @@ printf 'The main issue, whose Verification document moves.\n\n:::requirement{#r-
   >"$work/main-spec.md"
 corpus_issue "$section" "The issue whose Verification document moves into its tree" "$work/main-spec.md"
 readonly main="$corpus_key"
-[[ "$main" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$section" "create the main issue" "the key $main is no issue key"
+tree_key "$section" "create the main issue" "$main"
 {
   printf 'How the main issue is proved.\n\n'
   printf ':::check{#c-target serves="dispatch://%s/spec#b-r-main" surface="cli" run="bash e2e/acceptance/issue-tree-redirects.sh" negative_control="Leave a moved_to tuple out and the citation dangles."}\n%s\n:::\n\n' \

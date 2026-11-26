@@ -323,7 +323,7 @@ function byPlacementThenNewest(left: Placed, right: Placed): number {
 
 const NO_THREADS: ReadonlySet<string> = new Set();
 const NO_PLACEMENTS: ReadonlyMap<string, boolean> = new Map();
-const NO_DECISIONS: DecisionMarginItem[] = [];
+const NO_DECISIONS: readonly DecisionMarginItem[] = [];
 
 export function useMarginItems(
   owner: MarginOwner | undefined,
@@ -533,7 +533,7 @@ export function useMarginItems(
   const documentsKey = issue?.key;
   const primaryArtifactId = issue?.primary_artifact_id;
   const issueArtifacts = issue?.artifacts;
-  const decisions = useMemo<DecisionMarginItem[]>(() => {
+  const decisions = useMemo<readonly DecisionMarginItem[]>(() => {
     if (!showsDecisions) return NO_DECISIONS;
     // Until the issue read answers, a decision is found only where the view names its document.
     const documents =
@@ -577,6 +577,9 @@ export function useMarginItems(
         kind: "decision" as const,
       }));
     });
+    // No decision beside the spec answers the shared empty list, so the items built from it keep
+    // their identity while the view's read or the issue's documents move.
+    if (decisionItems.length === 0) return NO_DECISIONS;
     return decisionItems.sort((left, right) =>
       byPlacementThenNewest(
         placedItem(left, markPlacements, blockPlacements),

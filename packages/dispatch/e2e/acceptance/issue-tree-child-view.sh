@@ -100,7 +100,7 @@ trap 'exit 143' TERM
 # held to an issue key's shape, since it goes into SQL, and added to the issues the run closes.
 issue_tree_child_view_issue() {
   corpus_issue "$@"
-  [[ "$corpus_key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "create the issue \"$2\"" "the key $corpus_key is no issue key"
+  tree_key "$1" "create the issue \"$2\"" "$corpus_key"
   keys+=("$corpus_key")
 }
 

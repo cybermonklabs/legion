@@ -885,13 +885,15 @@ after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-
 holds what they share, so no driver copies it: the request as the agent or as the person
 (`tree_send`, `tree_person_send`, and `tree_want`, whose failure names the request), the dev
 sign-in and the project create that names that person as its default assignee, the tree read
-(`GET /api/v1/issues/{key}/tree` with `view`, `v` and `cursor`), the `dispatch` client and the
-stamped `envoy-dispatch`, the boot of this head's server over the baseline's database with the
-test settings that hold the conversion step (`tree_boot_head`), the waits for the boot's store
-backfill and for this head's build announcement, each polled every 2 s for at most 300 s, the
-conversion (`envoy-dispatch convert-issues`), the reset of the upgrade database, which refuses
-any address but this machine's (`loopback_database_url`), and the socket peer the issue-room
-drivers write with. Its head comment names the variables each function reads.
+(`GET /api/v1/issues/{key}/tree` with `view`, `v` and `cursor`) and every page of it, the
+`dispatch` client and the stamped `envoy-dispatch`, the boot of this head's server over the
+baseline's database with the test settings that hold the conversion step (`tree_boot_head`), the
+waits for the boot's store backfill and for this head's build announcement, each polled every 2 s
+for at most 300 s, the conversion (`envoy-dispatch convert-issues`) and what it left, the reset of
+the upgrade database, which refuses, naming the driver, any address but this machine's
+(`loopback_database_url`), the checks of an issue key and a uuid, a node's tuples and its move,
+the person's edit, and the socket peer the issue-room drivers write with, the Bun program
+`e2e/acceptance/issue-room-peer.ts`. Its head comment names the variables each function reads.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
 measures which of our listed addresses a machine reaches over the path given to a person from

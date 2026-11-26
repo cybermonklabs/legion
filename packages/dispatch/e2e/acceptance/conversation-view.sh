@@ -138,7 +138,7 @@ trap 'exit 143' TERM
 # corpus_issue; it is closed when the run ends.
 conversation_view_create() {
   corpus_issue "$1" "$2" "$3" "${4:-}"
-  [[ "$corpus_key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "create the issue \"$2\"" "the key $corpus_key is no issue key"
+  tree_key "$1" "create the issue \"$2\"" "$corpus_key"
   keys+=("$corpus_key")
 }
 

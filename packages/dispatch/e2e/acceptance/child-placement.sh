@@ -98,22 +98,9 @@ child_placement_create() {
     '{project: $p, title: $t, spec: ("The issue \"" + $t + "\" of the child placement check."), force: true} + $more')"
   tree_want 201 "$1" "$tree_person creates the issue \"$2\""
   tree_field "$1" "create the issue \"$2\"" .key
-  [[ "$tree_value" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "create the issue \"$2\"" "the key $tree_value is no issue key"
+  tree_key "$1" "create the issue \"$2\"" "$tree_value"
   child_placement_key="$tree_value"
   keys+=("$tree_value")
-}
-
-# child_placement_move ISSUE NODE TAG BODY: the person sends PATCH
-# /api/v1/issues/{ISSUE}/nodes/{NODE}, NODE percent-encoded as one path segment, with the JSON
-# BODY and `If-Match: "TAG"`, with the cookie tree_sign_in left and the server's origin, as
-# tree_request sends a person's write; the answer in $work/body and `status`.
-child_placement_move() {
-  local path
-  path="/api/v1/issues/$(q "$1")/nodes/$(q "$2")"
-  tree_last_request="PATCH $path (If-Match: \"$3\")"
-  status="$(curl -sS -X PATCH -o "$work/body" -w '%{http_code}' -b "$work/jar" -H "Origin: $(base_origin)" \
-    -H "If-Match: \"$3\"" -H 'Content-Type: application/json' --data-binary "$4" \
-    "$base$path" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
 }
 
 # child_placement_node SECTION ISSUE KIND ID: the node of kind KIND and id ID that the tree read
@@ -159,7 +146,7 @@ child_placement_seqs() {
 # another number, the failure names the child, the answer and the seq it wants.
 child_placement_child_of_tag() {
   local child_of seq
-  tree_far_ends "$1" issue part_of "$3"
+  tree_node_far "$1" "issue/$3" part_of
   [[ -z "$answer" ]] || fail "$1" "$3 holds no part_of before a move places it" "its current part_of tuples name '$answer'"
   child_placement_seqs "$1" child_of "$3"
   [[ "$answer" =~ ^[0-9]+$ ]] || fail "$1" "$3 holds one current child_of" "its current child_of tuples have the seqs '$answer'"
@@ -181,8 +168,7 @@ child_placement_create P1 "Child placement check: the first issue $stamp" '{}'
 readonly first="$child_placement_key"
 corpus_comment person P1 "$first" "Which child takes the placement work? File one for it."
 readonly comment_id="$corpus_item"
-[[ "$comment_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
-  fail P1 "comment on $first" "the comment id $comment_id is no uuid"
+tree_uuid P1 "comment on $first" "$comment_id"
 readonly comment_ref="dispatch://$first/comment/$comment_id"
 pass P1 "created $first, on which $tree_person wrote the comment $comment_ref"
 child_placement_create P1 "Child placement check: the child filed from the comment $stamp" \
@@ -207,7 +193,7 @@ child_placement_child_of_tag P2 "$first" "$placed"
 readonly placement_seq="$child_placement_tag"
 place_body="$(jq -cn --arg c "comment/$comment_id" '{parent: $c}')"
 readonly place_body
-child_placement_move "$first" "issue/$placed" "$placement_seq" "$place_body"
+tree_node_send PATCH person "$first" "issue/$placed" "$placement_seq" "$place_body" ""
 tree_want 200 P2 "$tree_person places $placed under the comment $comment_id with the tag of its child_of"
 expect P2 "the move of $placed answers the comment as its parent" true \
   --arg c "$comment_id" '.parent | type == "string" and endswith($c)'
@@ -215,11 +201,11 @@ tree_field P2 "the move of $placed answers its new placement_seq" .placement_seq
 [[ "$tree_value" =~ ^[0-9]+$ && "$tree_value" != "$placement_seq" ]] ||
   fail P2 "the move of $placed answers a new placement_seq" "it answers $tree_value, and the tag it took was $placement_seq"
 readonly moved_seq="$tree_value"
-child_placement_move "$first" "issue/$placed" "$placement_seq" "$place_body"
+tree_node_send PATCH person "$first" "issue/$placed" "$placement_seq" "$place_body" ""
 tree_want 412 P2 "the same move of $placed again, with the tag of its child_of the move made stale"
 expect P2 "the repeat of the move of $placed answers PRECONDITION_FAILED" '"PRECONDITION_FAILED"' .code
-tree_far_ends P2 issue part_of "$placed"
-[[ "$answer" == "comment:$comment_id" ]] ||
+tree_node_far P2 "issue/$placed" part_of
+[[ "$answer" == "comment/$comment_id" ]] ||
   fail P2 "the store holds the one part_of tuple from $placed to the comment $comment_id" "its current part_of tuples name '$answer'"
 child_placement_seqs P2 part_of "$placed"
 [[ "$answer" == "$moved_seq" ]] ||
@@ -250,8 +236,8 @@ child_placement_off_comment P3 "$first"
 child_placement_tree P3 "$second"
 child_placement_off_comment P3 "$second"
 child_placement_under P3 "$second" "$placed" issue "$second"
-tree_far_ends P3 issue part_of "$placed"
-[[ ",$answer," != *",comment:$comment_id,"* ]] ||
+tree_node_far P3 "issue/$placed" part_of
+[[ ",$answer," != *",comment/$comment_id,"* ]] ||
   fail P3 "the move of $placed under $second retracts its part_of to the comment $comment_id" \
     "the child $placed still holds its part_of to the comment $comment_id of $first under its new parent $second: its current part_of tuples name '$answer'"
 pass P3 "the move of $placed under $second retracted its part_of to the comment $comment_id: its current part_of tuples name '${answer:-none}'"

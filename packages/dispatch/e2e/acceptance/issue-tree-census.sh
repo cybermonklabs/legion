@@ -134,7 +134,7 @@ issue_tree_census_issue() {
   } >"$work/$prefix-spec.md"
   corpus_issue "$section" "$title" "$work/$prefix-spec.md"
   key="$corpus_key"
-  [[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$section" "create the issue \"$title\"" "the key $key is no issue key"
+  tree_key "$section" "create the issue \"$title\"" "$key"
   {
     printf 'How the %s issue is proved.\n\n:::check{#%s serves="dispatch://%s/spec#b-r-%s" surface="cli" run="bash e2e/acceptance/issue-tree-census.sh" negative_control="Take the fresh id out and two nodes share one id."}\nThe %s issue is proved.\n:::\n\n' \
       "$prefix" "$check" "$key" "$prefix" "$prefix"

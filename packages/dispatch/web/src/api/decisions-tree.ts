@@ -155,7 +155,7 @@ export function decisionsFromTree(
  *
  * kept for one release: decisions-route
  */
-export type ReleaseBeforeDecisions = Omit<IssueDecisions, "entries"> & {
+type ReleaseBeforeDecisions = Omit<IssueDecisions, "entries"> & {
   readonly entries?: IssueDecisions["entries"];
 };
 

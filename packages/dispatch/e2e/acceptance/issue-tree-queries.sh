@@ -226,7 +226,7 @@ The format is the markdown the renderer writes.
 SPEC
 corpus_issue earlier "The queries of one issue, compared" "$work/spec.md"
 key="$corpus_key" spec="$corpus_spec"
-[[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail earlier "create the issue" "the key $key is no issue key"
+tree_key earlier "create the issue" "$key"
 readonly key spec
 cat >"$work/verification.md" <<VERIFICATION
 How the queries are proved.

@@ -276,17 +276,10 @@ issue_tree_graph_document() {
 }
 
 # issue_tree_graph_walk SECTION ISSUE FILE: the block nodes of ISSUE's tree read with no view, in
-# the walk's order across every page, one id a line, into FILE.
+# the walk's order across every page (lib-tree.sh's tree_read_all), one id a line, into FILE.
 issue_tree_graph_walk() {
-  local cursor=""
-  : >"$3"
-  while true; do
-    tree_read agent "$2" "" "" "$cursor"
-    tree_want 200 "$1" "read $2's tree"
-    jq -r '.nodes[] | select(.kind == "block") | .id' "$work/body" >>"$3"
-    cursor="$(jq -r '.cursor // ""' "$work/body")"
-    [[ -n "$cursor" ]] || return 0
-  done
+  tree_read_all "$1" "$work/walk.json" "$2"
+  jq -r '.nodes[] | select(.kind == "block") | .id' "$work/walk.json" >"$3"
 }
 
 # issue_tree_graph_sides SECTION HALF NAME ROWS NODES: the two-sided count of the projection NAME

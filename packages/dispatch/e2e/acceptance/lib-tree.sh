@@ -36,7 +36,6 @@
 #   answer        what lib.sh's query read, which the two waits read after each query
 #   driver        the script's name, which the database refusals name (lib.sh names it too)
 #   sections      the caller's count of sections, which tree_section adds one to
-#   peer_answer_seconds  how long the socket peer waits for a socket's answer
 # From lib-baseline.sh, after its baseline_start: baseline_database_url, baseline_boot (with the
 # baseline_boot_pid, baseline_boot_url and baseline_log it leaves), baseline_read_extra_env and
 # baseline_stop_pid.
@@ -55,7 +54,7 @@
 # part of an `&&` list: under `set -e` a failing command anywhere but last in such a list does not
 # stop the script.
 : "${work:=}" "${status:=}" "${base:=}" "${database_url:=}" "${token:=}" "${session:=}" "${project:=}"
-: "${answer:=}" "${driver:=}" "${sections:=}" "${peer_answer_seconds:=}"
+: "${answer:=}" "${driver:=}" "${sections:=}"
 : "${baseline_database_url:=}" "${baseline_boot_pid:=}" "${baseline_boot_url:=}" "${baseline_log:=}"
 
 tree_last_request=""
@@ -83,6 +82,10 @@ readonly tree_backfill_end='msg="dispatch: boot backfill done"'
 # How long each wait below polls, and how often: the Verification preamble's 300 s and 2 s.
 readonly tree_wait_seconds=300
 readonly tree_poll_seconds=2
+
+# How long the socket peer waits for a socket's answer; tree_peer waits 30 s more for one line of
+# it.
+readonly tree_peer_answer_seconds=60
 
 # tree_refuse WORDS…: a call this file will not take. It exits 2, as lib.sh's refusals do.
 tree_refuse() {
@@ -444,30 +447,37 @@ tree_wait_announcement() {
 # connecting to the `postgres` database of the same server with the same role. The drivers differ
 # only in the database names each takes, as the head comment of each states them.
 
+# tree_database_refuse WORDS…: a database this file will not drop. It exits 2, as tree_refuse
+# does, but names the caller's driver, the script its user ran and whose DATABASE_URL it refuses.
+tree_database_refuse() {
+  printf '%s: %s\n' "${driver:-lib-tree.sh}" "$*" >&2
+  exit 2
+}
+
 # tree_database_parts URL NAMES: URL split into the server it names (database_server, its URL with
 # the `postgres` database in place of its own), its database's name (database_name), and what a
 # database beside it is named from: the URL before its path (database_prefix) and its query
-# (database_query). It refuses, with status 2 and before any psql call, a URL that names no single
-# loopback postgres database with no connection override that libpq would connect by instead
-# (lib.sh's loopback_database_url), and a database whose name is not lowercase letters, digits and
-# _ matching NAMES, a glob pattern: the database the caller's head comment names, never
-# infra_1253, which `bun run dispatch:local` serves. A driver that refuses before it builds
-# anything calls it first; tree_reset_database calls it again.
+# (database_query). It refuses (tree_database_refuse), with status 2 and before any psql call, a
+# URL that names no single loopback postgres database with no connection override that libpq would
+# connect by instead (lib.sh's loopback_database_url), and a database whose name is not lowercase
+# letters, digits and _ matching NAMES, a glob pattern: the database the caller's head comment
+# names, never infra_1253, which `bun run dispatch:local` serves. A driver that refuses before it
+# builds anything calls it first; tree_reset_database calls it again.
 # shellcheck disable=SC2034 # database_query and database_prefix are read by the caller
 tree_database_parts() {
   local url="$1" names="$2"
   loopback_database_url "$url" ||
-    tree_refuse "DATABASE_URL names no single loopback postgres database: this driver drops and creates it"
+    tree_database_refuse "DATABASE_URL names no single loopback postgres database: this driver drops and creates it"
   # Read after loopback_database_url, whose own match replaces BASH_REMATCH.
   [[ "$url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] ||
-    tree_refuse "DATABASE_URL is no postgres:// URL naming a database"
+    tree_database_refuse "DATABASE_URL is no postgres:// URL naming a database"
   database_server="${BASH_REMATCH[1]}${BASH_REMATCH[3]}/postgres${BASH_REMATCH[5]}"
   database_name="${BASH_REMATCH[4]}"
   database_query="${BASH_REMATCH[5]}"
   database_prefix="${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
   # shellcheck disable=SC2053 # NAMES is a glob pattern, matched as one
   [[ "$database_name" =~ ^[a-z0-9_]+$ && "$database_name" == $names ]] ||
-    tree_refuse "DATABASE_URL names the database $database_name: this driver drops and creates only a database whose name, of lowercase letters, digits and _, matches $names"
+    tree_database_refuse "DATABASE_URL names the database $database_name: this driver drops and creates only a database whose name, of lowercase letters, digits and _, matches $names"
 }
 
 # tree_reset_database URL NAMES SECTION: drops the database URL names and creates it empty, once
@@ -580,9 +590,8 @@ tree_keep() {
 # tree_kept_expect FILE SECTION WHAT WANT JQ-ARGS…: lib.sh's expect over the answer kept in FILE
 # rather than over the last one, which it puts back as $work/body first.
 tree_kept_expect() {
-  local file="$1"
+  cp "$1" "$work/body"
   shift
-  [[ "$file" == "$work/body" ]] || cp "$file" "$work/body"
   expect "$@"
 }
 
@@ -667,19 +676,6 @@ tree_node_send() {
     status="curl failed: $(<"$work/curl")"
 }
 
-# tree_far_ends SECTION FROM_KIND KIND ID: the far ends of the current KIND tuples out of the node
-# FROM_KIND ID - for each far end, the newest tuple naming it is asserted - each written
-# <to_kind>:<to_id>, sorted and joined by commas, in $answer.
-tree_far_ends() {
-  with_vars "$1" "read the current $3 tuples out of $4" \
-    "select coalesce(string_agg(t.to_kind || ':' || t.to_id, ',' order by t.to_kind, t.to_id), '')
-     from (select distinct on (to_kind, to_id) to_kind, to_id, asserted from graph_tuples
-           where from_kind = :'from_kind' and from_id = :'id' and kind = :'kind' and to_kind <> 'value'
-           order by to_kind, to_id, seq desc) t
-     where t.asserted" \
-    from_kind="$2" id="$4" kind="$3"
-}
-
 # tree_block_node SECTION DOCUMENT BLOCK: the store address of block BLOCK of the document whose
 # artifact id is DOCUMENT, as its document_blocks row names it, read in the room the document is
 # edited in (its document_rooms row's room, else the document itself), in tree_block_node_id; empty
@@ -696,19 +692,22 @@ tree_block_node() {
 
 # --- the document socket peer ---------------------------------------------------------------------
 #
-# What c-one-room and c-room-cutover hold document sockets through. The functions below read the
-# caller's peer_answer_seconds, how long the peer waits for a socket's answer (the driver waits 30 s
-# more for one line of it), and leave the caller peer_pid, peer_in and peer_out, the coprocess and
-# the two descriptors the driver holds; reply, the peer's last line; and fragments, what
-# tree_peer_open read.
+# What c-one-room and c-room-cutover hold document sockets through: the Bun program
+# e2e/acceptance/issue-room-peer.ts, whose head comment names the commands it answers, run as a
+# coprocess. The functions below leave the caller peer_pid, peer_in and peer_out, the coprocess and
+# the two descriptors the driver holds, each of which the caller sets empty before its cleanup can
+# call tree_peer_stop; reply, the peer's last line; and fragments, what tree_peer_open read.
+
+# This package's directory, packages/dispatch, read once as this file is sourced: the socket peer
+# is its file e2e/acceptance/issue-room-peer.ts, which imports yjs and lib0 from its node_modules.
+tree_dispatch_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+readonly tree_dispatch_dir
 
 # tree_peer_require: refuses, exit 2, a checkout without this package's node_modules, which the
 # socket peer imports yjs and lib0 from. A driver calls it with its other input checks.
 tree_peer_require() {
-  local dispatch_dir
-  dispatch_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-  [[ -d "$dispatch_dir/node_modules/yjs" && -d "$dispatch_dir/node_modules/lib0" ]] || {
-    printf 'the socket peer imports yjs and lib0 from %s/node_modules: run bun install first\n' "$dispatch_dir" >&2
+  [[ -d "$tree_dispatch_dir/node_modules/yjs" && -d "$tree_dispatch_dir/node_modules/lib0" ]] || {
+    printf 'the socket peer imports yjs and lib0 from %s/node_modules: run bun install first\n' "$tree_dispatch_dir" >&2
     exit 2
   }
 }
@@ -725,300 +724,30 @@ tree_peer_cookie() {
   [[ -s "$work/cookie" ]] || fail setup "read the person's session cookie" "the jar holds no dsession cookie"
 }
 
-# tree_peer_program: writes the socket peer, a Bun program, to $work/issue-room-peer.ts, beside a
-# link to this package's node_modules, which it imports from.
-#
-# `bun issue-room-peer.ts <server> <cookie file> <schema version>` holds document sockets, each
-# by a name, as the person whose Cookie header the file holds, and answers each command it reads
-# on stdin with one line on stdout. A socket speaks the Hocuspocus framing the browser's provider
-# speaks: each frame starts with the document name the socket asked for, the token frame carries
-# the schema version, a sync step 1 follows the server's Authenticated answer, and the server
-# answers each update it is sent with one SyncStatus frame.
-#   open NAME DOCUMENT       opens NAME on DOCUMENT and syncs it; a closed NAME reconnects keeping
-#                            its document, so its sync step 1 presents the state vector it held:
-#                            `opened NAME <scope> <fragment,...>`, or `refused NAME <why>`
-#   freeze NAME / thaw NAME  stops taking the room's updates into NAME, or applies those held
-#   sv NAME                  `sv NAME <base64 state vector>`
-#   fragments NAME           `fragments NAME <fragment,...>`, every shared type of NAME's document
-#                            but the marks map; `open` answers the same list
-#   append NAME FRAGMENT J   appends the block the JSON J describes - {type, id, text, attrs?} - at
-#                            the end of FRAGMENT and waits for the server's answer:
-#                            `appended NAME <1|0>`, or `unsent NAME` on a closed socket
-#   blocks NAME FRAGMENT     `blocks NAME <json>`: each element of FRAGMENT with a blockId, {id,
-#                            type, text}, in document order
-#   wait-close NAME SECONDS  `closed NAME <code> <reason>` once the socket closes, else `open NAME`
-#   close NAME               `closed NAME`
-#   quit
-tree_peer_program() {
-  [[ -e "$work/node_modules" ]] ||
-    ln -s "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)/node_modules" "$work/node_modules"
-  cat >"$work/issue-room-peer.ts" <<'PEER'
-import * as Y from "yjs";
-import * as encoding from "lib0/encoding";
-import * as decoding from "lib0/decoding";
-
-// Bun's WebSocket client takes request headers; the DOM WebSocket type does not.
-const BunWebSocket = WebSocket as unknown as new (
-  url: string,
-  options: { readonly headers: Record<string, string> }
-) => WebSocket;
-
-const messageSync = 0;
-const messageAuth = 2;
-const messageSyncStatus = 8;
-const syncStep1 = 0;
-const syncStep2 = 1;
-const syncUpdate = 2;
-const authToken = 0;
-const authDenied = 1;
-const authAuthenticated = 2;
-const answerWithinMs = Number(process.env.PEER_ANSWER_MS ?? "60000");
-
-const [server, cookieFile, schemaVersion] = Bun.argv.slice(2);
-if (server === undefined || cookieFile === undefined || schemaVersion === undefined) {
-  console.error("usage: bun issue-room-peer.ts <server> <cookie file> <schema version>");
-  process.exit(2);
-}
-const origin = new URL(server).origin;
-const cookie = (await Bun.file(cookieFile).text()).trim();
-
-type Peer = {
-  doc: Y.Doc;
-  asked: string;
-  socket?: WebSocket;
-  scope?: string;
-  denied?: string;
-  synced: boolean;
-  frozen: boolean;
-  held: Uint8Array[];
-  sent: number;
-  statuses: number[];
-  closed?: string;
-};
-const peers = new Map<string, Peer>();
-
-function frame(name: string, write: (encoder: encoding.Encoder) => void): Uint8Array {
-  const encoder = encoding.createEncoder();
-  encoding.writeVarString(encoder, name);
-  write(encoder);
-  return encoding.toUint8Array(encoder);
-}
-
-function sendSync(peer: Peer, subtype: number, payload: Uint8Array): boolean {
-  if (peer.socket === undefined || peer.socket.readyState !== WebSocket.OPEN) return false;
-  peer.socket.send(
-    frame(peer.asked, (encoder) => {
-      encoding.writeVarUint(encoder, messageSync);
-      encoding.writeVarUint(encoder, subtype);
-      encoding.writeVarUint8Array(encoder, payload);
-    })
-  );
-  if (subtype !== syncStep1) peer.sent += 1;
-  return true;
-}
-
-async function until(test: () => boolean, ms = answerWithinMs): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  while (!test()) {
-    if (Date.now() > deadline) return false;
-    await Bun.sleep(50);
-  }
-  return true;
-}
-
-function receive(peer: Peer, data: ArrayBuffer): void {
-  const decoder = decoding.createDecoder(new Uint8Array(data));
-  decoding.readVarString(decoder);
-  const type = decoding.readVarUint(decoder);
-  if (type === messageAuth) {
-    const subtype = decoding.readVarUint(decoder);
-    const text = decoding.readVarString(decoder);
-    if (subtype === authAuthenticated) {
-      peer.scope = text;
-      sendSync(peer, syncStep1, Y.encodeStateVector(peer.doc));
-    } else if (subtype === authDenied) {
-      peer.denied = text;
-    }
-    return;
-  }
-  if (type === messageSyncStatus) {
-    peer.statuses.push(decoding.readVarUint(decoder));
-    return;
-  }
-  if (type !== messageSync) return;
-  const subtype = decoding.readVarUint(decoder);
-  const payload = decoding.readVarUint8Array(decoder);
-  if (subtype === syncStep1) {
-    sendSync(peer, syncStep2, Y.encodeStateAsUpdate(peer.doc, payload));
-    return;
-  }
-  if (subtype === syncStep2 || subtype === syncUpdate) {
-    if (peer.frozen) peer.held.push(payload);
-    else Y.applyUpdate(peer.doc, payload, "server");
-    if (subtype === syncStep2) peer.synced = true;
-  }
-}
-
-async function open(name: string, asked: string): Promise<string> {
-  let peer = peers.get(name);
-  if (peer !== undefined && peer.closed === undefined) return `refused ${name} it is open already`;
-  if (peer === undefined) {
-    const doc = new Y.Doc();
-    peer = { doc, asked, synced: false, frozen: false, held: [], sent: 0, statuses: [] };
-    peers.set(name, peer);
-    const held = peer;
-    doc.on("update", (update: Uint8Array, source: unknown) => {
-      if (source !== "server") sendSync(held, syncUpdate, update);
-    });
-  }
-  Object.assign(peer, { asked, scope: undefined, denied: undefined, closed: undefined, synced: false, sent: 0, statuses: [] });
-  const url = `${origin.replace(/^http/, "ws")}/ws/doc/${encodeURIComponent(asked)}?schema_version=${encodeURIComponent(schemaVersion)}`;
-  const socket = new BunWebSocket(url, { headers: { Cookie: cookie, Origin: origin } });
-  socket.binaryType = "arraybuffer";
-  peer.socket = socket;
-  const held = peer;
-  socket.addEventListener("open", () =>
-    socket.send(
-      frame(asked, (encoder) => {
-        encoding.writeVarUint(encoder, messageAuth);
-        encoding.writeVarUint(encoder, authToken);
-        encoding.writeVarString(encoder, schemaVersion);
-      })
-    )
-  );
-  socket.addEventListener("message", (event) => {
-    if (event.data instanceof ArrayBuffer) receive(held, event.data);
-  });
-  socket.addEventListener("close", (event) => {
-    held.closed = `${event.code} ${event.reason || "-"}`;
-  });
-  socket.addEventListener("error", () => {
-    held.closed ??= "error -";
-  });
-  const settled = await until(() => held.synced || held.denied !== undefined || held.closed !== undefined);
-  if (held.denied !== undefined) return `refused ${name} denied: ${held.denied}`;
-  if (held.closed !== undefined) return `refused ${name} closed: ${held.closed}`;
-  if (!settled) return `refused ${name} no sync within ${answerWithinMs / 1000} s`;
-  await until(() => held.statuses.length >= held.sent);
-  return `opened ${name} ${held.scope} ${fragments(held)}`;
-}
-
-// The fragments a socket's document holds: every shared type but the marks map (docs' marksMapName).
-function fragments(peer: Peer): string {
-  return [...peer.doc.share.keys()].filter((name) => name !== "marks").sort().join(",");
-}
-
-function build(spec: { type: string; id: string; text: string; attrs?: Record<string, unknown> }): Y.XmlElement {
-  const element = new Y.XmlElement(spec.type);
-  element.setAttribute("blockId", spec.id);
-  for (const [key, value] of Object.entries(spec.attrs ?? {})) {
-    element.setAttribute(key, value as string);
-  }
-  if (spec.type === "paragraph" || spec.type === "heading") {
-    element.insert(0, [new Y.XmlText(spec.text)]);
-  } else {
-    const paragraph = new Y.XmlElement("paragraph");
-    paragraph.setAttribute("blockId", `${spec.id}-text`);
-    paragraph.insert(0, [new Y.XmlText(spec.text)]);
-    element.insert(0, [paragraph]);
-  }
-  return element;
-}
-
-function blocks(fragment: Y.XmlFragment): { id: string; type: string; text: string }[] {
-  const found: { id: string; type: string; text: string }[] = [];
-  const walk = (node: Y.XmlElement | Y.XmlFragment) => {
-    for (const child of node.toArray()) {
-      if (!(child instanceof Y.XmlElement)) continue;
-      const id = child.getAttribute("blockId");
-      if (typeof id === "string" && id !== "") {
-        const text = child
-          .toArray()
-          .map((part) => (part instanceof Y.XmlText ? part.toString() : part instanceof Y.XmlElement ? part.toString() : ""))
-          .join("");
-        found.push({ id, type: child.nodeName, text: text.replace(/<[^>]*>/g, "") });
-      }
-      walk(child);
-    }
-  };
-  walk(fragment);
-  return found;
-}
-
-async function run(line: string): Promise<string> {
-  const [command = "", name = "", ...rest] = line.trim().split(" ");
-  const peer = peers.get(name);
-  switch (command) {
-    case "open":
-      return open(name, rest[0] ?? "");
-    case "quit":
-      for (const held of peers.values()) held.socket?.close();
-      process.exit(0);
-  }
-  if (peer === undefined) return `error ${name} no socket of that name`;
-  switch (command) {
-    case "freeze":
-      peer.frozen = true;
-      return `frozen ${name}`;
-    case "thaw": {
-      peer.frozen = false;
-      for (const update of peer.held.splice(0)) Y.applyUpdate(peer.doc, update, "server");
-      return `thawed ${name}`;
-    }
-    case "sv":
-      return `sv ${name} ${Buffer.from(Y.encodeStateVector(peer.doc)).toString("base64")}`;
-    case "fragments":
-      return `fragments ${name} ${fragments(peer)}`;
-    case "append": {
-      const fragment = rest[0] ?? "";
-      const spec = JSON.parse(rest.slice(1).join(" "));
-      if (peer.closed !== undefined) return `unsent ${name}`;
-      const before = peer.sent;
-      peer.doc.transact(() => {
-        const target = peer.doc.getXmlFragment(fragment);
-        target.insert(target.length, [build(spec)]);
-      }, "local");
-      if (peer.sent === before) return `unsent ${name}`;
-      const answered = await until(() => peer.statuses.length >= peer.sent || peer.closed !== undefined);
-      if (!answered || peer.statuses.length < peer.sent) return `unsent ${name}`;
-      return `appended ${name} ${peer.statuses[peer.statuses.length - 1]}`;
-    }
-    case "blocks":
-      return `blocks ${name} ${JSON.stringify(blocks(peer.doc.getXmlFragment(rest[0] ?? "")))}`;
-    case "wait-close": {
-      await until(() => peer.closed !== undefined, Number(rest[0] ?? "10") * 1000);
-      return peer.closed === undefined ? `open ${name}` : `closed ${name} ${peer.closed}`;
-    }
-    case "close":
-      peer.socket?.close();
-      await until(() => peer.closed !== undefined, 10_000);
-      return `closed ${name}`;
-    default:
-      return `error ${name} unknown command ${command}`;
-  }
-}
-
-for await (const line of console) {
-  if (line.trim() === "") continue;
-  try {
-    console.log(await run(line));
-  } catch (error) {
-    console.log(`error - ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-PEER
-}
-
 # tree_peer_start SCHEMA: starts the socket peer against $base as the person, on the block schema
-# version SCHEMA, as a coprocess whose stdin and stdout the driver holds.
+# version SCHEMA, as a coprocess whose stdin and stdout the driver holds. The peer waits
+# tree_peer_answer_seconds for a socket's answer.
 # shellcheck disable=SC2034 # peer_pid is this function's answer, read by its caller
 tree_peer_start() {
   tree_peer_cookie
   coproc TREE_PEER {
-    PEER_ANSWER_MS=$((peer_answer_seconds * 1000)) exec bun "$work/issue-room-peer.ts" "$base" "$work/cookie" "$1" 2>>"$work/peer.err"
+    PEER_ANSWER_MS=$((tree_peer_answer_seconds * 1000)) exec bun "$tree_dispatch_dir/e2e/acceptance/issue-room-peer.ts" \
+      "$base" "$work/cookie" "$1" 2>>"$work/peer.err"
   }
   peer_pid="$TREE_PEER_PID"
   exec {peer_in}>&"${TREE_PEER[1]}" {peer_out}<&"${TREE_PEER[0]}"
+}
+
+# tree_peer_stop: stops the socket peer through its `quit`, which closes every socket it holds, and
+# closes the two descriptors; safe when none runs.
+tree_peer_stop() {
+  [[ -n "$peer_pid" ]] || return 0
+  printf 'quit\n' >&"$peer_in" 2>/dev/null || true
+  exec {peer_in}>&- {peer_out}<&-
+  wait "$peer_pid" 2>/dev/null || true
+  peer_pid=""
+  peer_in=""
+  peer_out=""
 }
 
 # tree_peer SECTION WHAT COMMAND…: sends COMMAND to the peer and reads its one line into reply; a
@@ -1028,7 +757,7 @@ tree_peer() {
   shift 2
   printf '%s\n' "$*" >&"$peer_in" ||
     fail "$section" "$what" "the socket peer stopped: $(tail -n 20 "$work/peer.err" 2>/dev/null)"
-  IFS= read -r -t $((peer_answer_seconds + 30)) reply <&"$peer_out" ||
+  IFS= read -r -t $((tree_peer_answer_seconds + 30)) reply <&"$peer_out" ||
     fail "$section" "$what" "the socket peer answered nothing to '$1': $(tail -n 20 "$work/peer.err" 2>/dev/null)"
   [[ "$reply" != error* ]] || fail "$section" "$what" "the socket peer answered: $reply"
   printf 'peer: %s -> %s\n' "$1 ${2:-}" "$reply"

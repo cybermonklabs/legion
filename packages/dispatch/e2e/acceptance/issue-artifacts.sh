@@ -299,7 +299,7 @@ created_key=""
 created_spec=""
 issue_artifacts_issue() {
   corpus_issue "$1" "$2" "$3"
-  [[ "$corpus_key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "create the issue \"$2\"" "the key $corpus_key is no issue key"
+  tree_key "$1" "create the issue \"$2\"" "$corpus_key"
   created_key="$corpus_key"
   created_spec="$corpus_spec"
 }

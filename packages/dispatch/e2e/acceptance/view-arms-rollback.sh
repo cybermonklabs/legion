@@ -266,8 +266,7 @@ view_arms_boot_earlier() {
 view_arms_issue() {
   printf 'The issue "%s".\n' "$2" >"$work/spec.md"
   corpus_issue "$1" "$2" "$work/spec.md" "${3:-}" "${4:-}"
-  [[ "$corpus_key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] ||
-    fail "$1" "create the issue \"$2\"" "the key $corpus_key is no issue key"
+  tree_key "$1" "create the issue \"$2\"" "$corpus_key"
 }
 
 # view_arms_upload SECTION ISSUE NAME TEXT: the agent uploads TEXT as the document NAME of ISSUE;

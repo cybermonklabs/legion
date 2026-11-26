@@ -12,6 +12,7 @@ import {
   fakeDocumentRuntime as fakeSpecRuntime,
 } from "../../__tests__/document-runtime";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { details } from "../../__tests__/issue-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -284,46 +285,11 @@ test("ProofDocument shows a failed artifact read as its load failure and opens n
 
 /** The issue CORE-1, whose spec every case of this file opens, as its read answers it. */
 const issueRead: IssueDetails = {
-  route_status: null,
-  route_holder: null,
-  route_status_reason: null,
-  holder_state: null,
-  last_seen: null,
-  takeable_at: null,
-  advances: [],
-  advances_revision: 0,
-  artifacts: [],
-  children: [],
-  closed_at: null,
-  created_at: "2026-09-09T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  design_gates: [],
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
-  last_seq: 1,
-  number: 1,
-  parent: null,
-  blocked_by: [],
+  ...details,
   assignee: null,
-  claim: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  plan_artifact_id: "",
-  decisions_artifact_id: "",
-  primary_artifact_id: "artifact-1",
-  verification_artifact_id: "",
-  project: "CORE",
-  referenced_by_count: 0,
-  route: null,
-  repo: null,
-  resolved_repo: null,
-  status: "testing",
   priority: null,
-  rank: "U",
+  status: "testing",
   title: "Ship the release",
-  open_asks: [],
-  progress: { tasks: null, children: null },
-  updated_at: "2026-09-09T00:00:00Z",
 };
 
 /** A query client holding CORE-1's read, as an issue page holds it before it draws a document,
@@ -1302,10 +1268,11 @@ const WRITABLE_REFUSALS = [
   },
 ] as const;
 
-/** `document` on its own page, as the issue's page draws it (`ArtifactRoutePanel`): the editor,
- *  whose text read the server refuses with `refusal`, and the header around it, drawn with the
- *  toolbar the editor reports. Answers what the editor's alert says and which of
- *  DOCUMENT_ONLY_CONTROLS the page offers. */
+/** The editor of `document`, whose text read the server refuses with `refusal`, beside the
+ *  document header (`ArtifactHeader`) drawn with the toolbar the editor reports: the page a host
+ *  that mounts the editor of `document` builds. `ArtifactRoutePanel` builds it for a document and
+ *  draws a tree artifact as a blob, with no editor. Answers what the editor's alert says and which
+ *  of DOCUMENT_ONLY_CONTROLS the page offers. */
 async function documentPage(
   document: Artifact,
   fragment: string,

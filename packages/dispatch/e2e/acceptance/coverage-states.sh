@@ -105,8 +105,8 @@ trap 'exit 143' TERM
 # coverage_states_serves SECTION CHECK REQUIREMENT: the one current serves tuple out of the check
 # node CHECK names the requirement node REQUIREMENT.
 coverage_states_serves() {
-  tree_far_ends "$1" block serves "$2"
-  [[ "$answer" == "block:$3" ]] ||
+  tree_node_far "$1" "$2" serves
+  [[ "$answer" == "$3" ]] ||
     fail "$1" "the store holds the serves tuple from $2 to $3" "the current serves tuples out of $2 name '$answer'"
   pass "$1" "the store holds the serves tuple from $2 to $3, and no other out of it"
 }
@@ -192,7 +192,7 @@ SPEC
 corpus_issue S1 "Coverage states check $stamp" "$work/spec.md"
 readonly key="$corpus_key"
 keys+=("$key")
-[[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail S1 "create the issue" "the key $key is no issue key"
+tree_key S1 "create the issue" "$key"
 pass S1 "created $key in $project, whose spec holds r1 to r5"
 
 {
@@ -240,8 +240,7 @@ coverage_states_states S2 "$key" '{"r1":"gap","r2":"unproven","r3":"unproven","r
 # --- S3: a retracted pass is no result ---------------------------------------------------------------
 
 readonly retracted="${result_id[r5]}"
-[[ "$retracted" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
-  fail S3 "read the id of r5's result" "$retracted is no uuid"
+tree_uuid S3 "read the id of r5's result" "$retracted"
 coverage_states_row S3 "read the node of $retracted" \
   "select md5(row(n.*)::text) from graph_nodes n where n.kind = 'result' and n.id = :'id'" id="$retracted"
 readonly node_before="$answer"
@@ -332,7 +331,7 @@ SPEC
 corpus_issue S6 "Coverage states check, a Verification document past the block bound $stamp" "$work/large-spec.md"
 readonly large="$corpus_key" large_spec="$corpus_spec"
 keys+=("$large")
-[[ "$large" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail S6 "create the issue" "the key $large is no issue key"
+tree_key S6 "create the issue" "$large"
 {
   printf 'How the two requirements of %s are proved.\n\n' "$large"
   printf ':::check{#cb1 serves="dispatch://%s/spec#b-r1" surface="api" run="bash e2e/acceptance/coverage-states.sh" negative_control="Skip the typed pass and the check is not read."}\nThe first check of the large document.\n:::\n\n' "$large"

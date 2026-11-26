@@ -106,10 +106,10 @@ read_bearer
 
 # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
-# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
-# authenticates must name it (enforceCookieOrigin).
-base_host="${base#*://}"
-readonly origin="${base%%://*}://${base_host%%/*}"
+# The dashboard's origin, the scheme and host of DISPATCH_URL (lib.sh's base_origin): a write the
+# person's cookie authenticates must name it (enforceCookieOrigin).
+origin="$(base_origin)"
+readonly origin
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"

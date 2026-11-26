@@ -703,7 +703,9 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
-        [...ISSUE_RELATION_FIELDS, "components", "title"].some((field) => changes.has(field))
+        ISSUE_RELATION_FIELDS.some((field) => changes.has(field)) ||
+        changes.has("components") ||
+        changes.has("title")
       );
     }
     default:

@@ -1,4 +1,10 @@
-import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
+// The import attribute is what Node's loader requires of a JSON module: the browser suite's
+// modules load this file under Playwright, which runs on Node (`checkStanding` of
+// `issue-page/tree-drafts.ts`, which reads `declaredPointerItems`), and Node refuses the import
+// without it. Vite and Bun take it as they take the plain import.
+import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json" with {
+  type: "json",
+};
 import type { BlockSchema } from "../../api/types";
 import { schemaCreatable } from "./schema-creatable";
 

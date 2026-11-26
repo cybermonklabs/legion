@@ -48,7 +48,7 @@
 # spec digest moves for the write, and P's stays as it was.
 #
 # The socket speaks the Hocuspocus framing the browser's provider speaks, through the Bun program
-# lib-tree.sh's tree_peer_program writes into the run's work directory, driven line by line.
+# e2e/acceptance/issue-room-peer.ts, which lib-tree.sh's tree_peer_start runs, driven line by line.
 #
 # Inputs: DATABASE_URL, PROJECT, DEV_SIGNIN_LOGIN, BASELINE_SHA (or BASELINE_BINARY),
 # DISPATCH_TOKEN (the agent bearer every server here accepts), envoy-dispatch on PATH, and bun with
@@ -85,7 +85,7 @@ USAGE
 . "$(dirname "${BASH_SOURCE[0]}")/seed-corpus.sh"
 
 require_env DATABASE_URL PROJECT DEV_SIGNIN_LOGIN
-require_commands bun curl diff head jq ln openssl psql tail
+require_commands bun curl diff head jq openssl psql tail
 readonly driver=issue-room.sh
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 project="$PROJECT"
@@ -96,8 +96,6 @@ database_url="$DATABASE_URL"
 readonly person_login="$DEV_SIGNIN_LOGIN"
 tree_peer_require
 readonly tables="'doc_updates', 'doc_snapshots', 'doc_checkpoints'"
-# How long the peer waits for a socket's answer, and how long the driver waits for one line of it.
-readonly peer_answer_seconds=60
 
 work_dir
 stamp="$(date +%s)-$$"
@@ -307,7 +305,6 @@ tree_want 200 "$section" "read the block schema this head serves"
 tree_field "$section" "the block schema's version" .version
 schema="$tree_value"
 readonly schema
-tree_peer_program
 tree_peer_start "$schema"
 sections=$((sections + 1))
 
@@ -543,7 +540,5 @@ issue_room_digest "$section" "$parent"
 pass "$section" "$parent's spec digest reads $parent_digest still"
 sections=$((sections + 1))
 
-printf 'quit\n' >&"$peer_in" || true
-wait "$peer_pid" 2>/dev/null || true
-peer_pid=""
+tree_peer_stop
 printf 'PASS: %s complete %d sections\n' "$driver" "$sections"

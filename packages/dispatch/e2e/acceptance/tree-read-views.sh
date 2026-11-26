@@ -124,11 +124,11 @@ trap 'exit 143' TERM
 tree_read_views_get() {
   local section="$1" as="$2" path="$3" file="$4"
   if [[ "$as" == agent ]]; then
-    tree_send GET "$path"
-  else
-    request "cookie:$as" GET "$path"
-    tree_last_request="GET $path as $as"
+    tree_keep "$section" "$path" "$file"
+    return
   fi
+  request "cookie:$as" GET "$path"
+  tree_last_request="GET $path as $as"
   tree_want 200 "$section" "read $path as $as"
   cp "$work/body" "$file"
 }
@@ -191,7 +191,7 @@ tree_read_views_version() {
 # run ends.
 tree_read_views_create() {
   corpus_issue "$1" "$2" "$3" "${4:-}"
-  [[ "$corpus_key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "create the issue \"$2\"" "the key $corpus_key is no issue key"
+  tree_key "$1" "create the issue \"$2\"" "$corpus_key"
   keys+=("$corpus_key")
 }
 
@@ -384,7 +384,7 @@ tree_kept_expect "$work/b.json" converted "the child $child, which holds no requ
 tree_person_send POST "/api/v1/issues/$child/artifacts/spec/edits" \
   "$(jq -cn '{ops: [{op: "insert", after: "end", markdown: ":::requirement{#cr9}\nThe child'"'"'s own requirement.\n:::"}]}')"
 tree_want 409 converted "a requirement written on $child is refused"
-tree_kept_expect "$work/body" converted "the refusal is REQUIREMENT_BELONGS_TO_ANCESTOR naming $key" '[true,true]' \
+expect converted "the refusal is REQUIREMENT_BELONGS_TO_ANCESTOR naming $key" '[true,true]' \
   --arg k "$key" '[.code == "REQUIREMENT_BELONGS_TO_ANCESTOR", (.error | contains($k))]'
 
 # --- the spec view's context -----------------------------------------------------------------------
@@ -583,7 +583,7 @@ for read in "then:$work/a-spec-then.json:1" "now:$work/a-spec-now.json:0"; do
 done
 tree_send GET "/api/v1/issues/$key/tree?view=spec&v=$((tied_version + 1000))"
 tree_want 404 version "a version the spec query does not have is refused"
-tree_kept_expect "$work/body" version "a version the spec query does not have answers QUERY_VERSION_NOT_FOUND" '"QUERY_VERSION_NOT_FOUND"' '.code'
+expect version "a version the spec query does not have answers QUERY_VERSION_NOT_FOUND" '"QUERY_VERSION_NOT_FOUND"' '.code'
 tree_read_views_opener version "$key" spec d1
 opener="$tree_value"
 corpus_edit version "write the shaped tuple of d1 again" "$spec" \
@@ -749,7 +749,7 @@ readonly refused_body="A comment on words the decision does not hold."
 tree_person_send POST "/api/v1/issues/$key/comments" "$(jq -cn --arg b "$refused_body" --arg a "$spec" \
   '{body: $b, anchor: {artifact: $a, quote: "words the decision never held", block_id: "d1"}}')"
 tree_want 400 anchors "a comment whose anchor names d1 with a quote d1 does not hold is refused"
-tree_kept_expect "$work/body" anchors "the refusal is INVALID_ANCHOR naming block_id" '[true,true]' \
+expect anchors "the refusal is INVALID_ANCHOR naming block_id" '[true,true]' \
   '[.code == "INVALID_ANCHOR", (.error | contains("block_id"))]'
 tree_read_views_get anchors agent "/api/v1/issues/$key/comments" "$work/a-comments.json"
 tree_kept_expect "$work/a-comments.json" anchors "the issue holds no such comment" '0' \

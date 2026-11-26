@@ -58,7 +58,7 @@
 # within 300 s, and the store census reads no difference.
 #
 # The sockets speak the Hocuspocus framing the browser's provider speaks, through the Bun program
-# lib-tree.sh's tree_peer_program writes into the run's work directory.
+# e2e/acceptance/issue-room-peer.ts, which lib-tree.sh's tree_peer_start runs.
 #
 # Inputs: DATABASE_URL, PROJECT, BASELINE_SHA (the commit the baseline server is stamped with),
 # DISPATCH_TOKEN (the agent bearer every server here accepts), DEV_SIGNIN_LOGIN (optional, default
@@ -96,7 +96,7 @@ USAGE
 . "$(dirname "${BASH_SOURCE[0]}")/seed-corpus.sh"
 
 require_env DATABASE_URL PROJECT BASELINE_SHA
-require_commands bun cmp curl git go grep head jq ln psql tail
+require_commands bun cmp curl git go grep head jq psql tail
 readonly driver=issue-room-cutover.sh
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 project="$PROJECT"
@@ -116,7 +116,6 @@ readonly base_commit
 # The blocks of X1's Verification document: more than the 2,000 a write indexes in its own request
 # (deferBlockIndexBlocks), so that write leaves it to the reconciliation.
 readonly deferred_blocks=2100
-readonly peer_answer_seconds=60
 
 work_dir
 mkdir "$work/capture" "$work/bin"
@@ -130,7 +129,7 @@ beside_pid=""
 other_pid=""
 cleanup() {
   local code=$?
-  issue_room_cutover_peer_stop
+  tree_peer_stop
   drop_index_leases
   baseline_stop_pid "$beside_pid"
   baseline_stop_pid "$other_pid"
@@ -295,23 +294,11 @@ issue_room_cutover_text() {
 # holds; a peer already running is stopped first, since each one serves one server.
 issue_room_cutover_peer_start() {
   local schema
-  issue_room_cutover_peer_stop
+  tree_peer_stop
   tree_send GET /api/v1/schema/blocks
   tree_want 200 "$1" "read the block schema $base serves"
   schema="$(jq -r '.version' "$work/body")"
   tree_peer_start "$schema"
-}
-
-# issue_room_cutover_peer_stop: stops the socket peer, closing every socket it holds; safe when
-# none runs.
-issue_room_cutover_peer_stop() {
-  [[ -n "$peer_pid" ]] || return 0
-  printf 'quit\n' >&"$peer_in" 2>/dev/null || true
-  exec {peer_in}>&- {peer_out}<&-
-  wait "$peer_pid" 2>/dev/null || true
-  peer_pid=""
-  peer_in=""
-  peer_out=""
 }
 
 # issue_room_cutover_append SECTION NAME FRAGMENT ID WORDS: NAME appends a paragraph ID of WORDS
@@ -355,7 +342,6 @@ base="$baseline_url"
 tree_init
 tree_sign_in "$section" "$person_login"
 tree_create_project "$section" "$project" "The cutover of an issue's three rooms"
-tree_peer_program
 sections=$((sections + 1))
 
 # --- base: three issues the earlier release writes, A's documents edited through its sockets ----
@@ -381,7 +367,7 @@ for document in "$whole_spec" "$whole_verification" "$whole_plan"; do
     "A paragraph the earlier release's socket wrote into this document."
   tree_peer "$section" "close the socket on $document" close "edit-$edits"
 done
-issue_room_cutover_peer_stop
+tree_peer_stop
 corpus_wait_settled "$section"
 pass "$section" "the earlier release's sockets edited each of $whole's three documents"
 for document in "$whole_spec" "$whole_verification" "$whole_plan"; do
@@ -560,8 +546,8 @@ issue_room_cutover_append "$section" spec "$whole_spec" "$into_spec" "A block wr
 issue_room_cutover_append "$section" verification "$whole_verification" "$into_verification" \
   "A block written through the Verification document's socket."
 deadline=$((SECONDS + 60))
-until tree_peer_holds holds spec "$whole_verification" "$into_verification" &&
-  tree_peer_holds holds verification "$whole_spec" "$into_spec"; do
+until tree_peer_holds "$section" spec "$whole_verification" "$into_verification" &&
+  tree_peer_holds "$section" verification "$whole_spec" "$into_spec"; do
   ((SECONDS < deadline)) ||
     fail "$section" "the writes through $whole's spec and Verification document land in one room" \
       "after 60 s each socket still lacks the other's block: the two writes land in two rooms of one issue"
@@ -570,7 +556,7 @@ done
 pass "$section" "the blocks written through $whole's spec and its Verification document land in one room, each socket reading both"
 tree_peer "$section" "close the spec's socket" close spec
 tree_peer "$section" "close the Verification document's socket" close verification
-issue_room_cutover_peer_stop
+tree_peer_stop
 corpus_wait_settled "$section"
 sections=$((sections + 1))
 
@@ -756,7 +742,7 @@ tree_peer_open "$section" rolled "$rolled_spec"
 [[ "$fragments" == prosemirror ]] ||
   fail "$section" "the spec socket of $rolled is admitted to the spec's own room, as today" "its fragments: $fragments"
 tree_peer "$section" "close the spec socket of $rolled" close rolled
-issue_room_cutover_peer_stop
+tree_peer_stop
 pass "$section" "the spec socket of $rolled is admitted to the spec's own room"
 baseline_stop_pid "$beside_pid"
 beside_pid=""

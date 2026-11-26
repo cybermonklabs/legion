@@ -512,7 +512,7 @@ tree_person_send POST /api/v1/issues "$(jq -cn --arg p "$project" --arg t "The t
 tree_want 201 "$section" "create the issue of the text cases through this head"
 tree_field "$section" "the key of the issue of the text cases" .key
 key="$tree_value"
-[[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$section" "create the issue of the text cases" "the key $key is no issue key"
+tree_key "$section" "create the issue of the text cases" "$key"
 # Not readonly: the move helpers take a local `key`, which a readonly name refuses.
 tree_field "$section" "the spec of $key" .primary_artifact_id
 readonly spec_doc="$tree_value"

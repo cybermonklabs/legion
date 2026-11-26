@@ -498,6 +498,18 @@ function isNoRouteOnEveryAttempt(error: unknown): boolean {
   );
 }
 
+// What `read` answers, or null where every attempt of it met a Dispatch process with no route for
+// it (isNoRouteOnEveryAttempt), as a server of the release before answers for a route this build
+// added; any other failure is thrown.
+async function unlessNoRouteOnEveryAttempt<T>(read: Promise<T>): Promise<T | null> {
+  try {
+    return await read;
+  } catch (error) {
+    if (isNoRouteOnEveryAttempt(error)) return null;
+    throw error;
+  }
+}
+
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
  *  message, shown wherever a view would otherwise say an agent is absent. */
 export const AGENT_LIST_REFILLING = "The agent list is refilling. Try again in a moment.";
@@ -1319,12 +1331,9 @@ export class DispatchApiClient {
    *  `view_of`, or null where it is none. A server of the release before serves no tree read and
    *  holds no view, so a read every attempt of which met no route answers null. */
   async getIssueViewOf(key: string): Promise<string | null> {
-    try {
-      return (await this.getIssueTree(key, { view: "spec" })).view_of;
-    } catch (error) {
-      if (isNoRouteOnEveryAttempt(error)) return null;
-      throw error;
-    }
+    // kept for one release: view-of-route
+    const tree = await unlessNoRouteOnEveryAttempt(this.getIssueTree(key, { view: "spec" }));
+    return tree === null ? null : tree.view_of;
   }
 
   /** What a reference to the issue or one of its documents shows: title, status and each
@@ -1743,10 +1752,7 @@ export class DispatchApiClient {
    *  the release before serves no tree read: where every attempt of the first page met no route,
    *  the entries are read from that server's Decisions read instead (`decisionsFromRead`). */
   async getIssueDecisions(key: string) {
-    const first = await this.getIssueTree(key, { view: "decisions" }).catch((error: unknown) => {
-      if (isNoRouteOnEveryAttempt(error)) return null;
-      throw error;
-    });
+    const first = await unlessNoRouteOnEveryAttempt(this.getIssueTree(key, { view: "decisions" }));
     if (first === null) {
       // kept for one release: decisions-route
       return decisionsFromRead(key, await this.read("/api/v1/issues/{key}/decisions", { key }));
