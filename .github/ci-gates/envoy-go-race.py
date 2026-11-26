@@ -24,7 +24,7 @@ GATE = gate("envoy_go_race", "envoy-go-race",
               f"go test -race over each race leg's packages of {GO_LEGS}", {"race": True}),
          ], workflow=ENVOY_RACE_FILE),
      ],
-     reads=ceiling_reads(ENVOY_RACE_LEGS_JOB, ENVOY_RACE_FILE) + crash_safety_reads(ENVOY_RACE_LEGS_JOB, ENVOY_RACE_FILE)
+     reads=ceiling_reads(ENVOY_RACE_LEGS_JOB, ENVOY_RACE_FILE) + service_settings_reads(ENVOY_RACE_LEGS_JOB, ENVOY_RACE_FILE)
      + reads((FORCED_ORDER_TEST, f"{at(ENVOY_RACE_LEGS_JOB, ENVOY_FORCED_ORDER_TEST_STEP, ENVOY_RACE_FILE)} runs it"),
              (GO_LEGS_SCRIPT, at(ENVOY_RACE_LEGS_JOB, ENVOY_RACE_STEP, ENVOY_RACE_FILE)),
              (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
