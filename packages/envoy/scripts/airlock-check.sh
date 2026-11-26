@@ -416,6 +416,12 @@ bound_call_lines() { # <log>...
 	jq -Rc 'fromjson? | select(.message == "airlock proxy: a call to a bound host" or (.message == "broker: answer refused" and .caller_class == "airlock"))' "$@" 2>/dev/null || true
 }
 
+# tunnel_lines is the proxy's line for each socket it opens to a host it does not read - a CONNECT
+# to an unbound host, tunnelled end to end. k3's one tunnel is its call to T.
+tunnel_lines() { # <log>...
+	jq -Rc 'fromjson? | select(.message == "airlock proxy: a tunnel")' "$@" 2>/dev/null || true
+}
+
 # refusal_lines counts the proxy's refusal lines coded <code> in this stack's brokers' logs, to
 # <host> alone when one is given.
 refusal_lines() { # <code> [host]
@@ -920,6 +926,7 @@ check_k3() {
 	s_before="$(records_count s)"
 	t_before="$(records_count t)"
 	log_before="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
+	tunnel_before="$(tunnel_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
 	# T is reached end-to-end through the CONNECT tunnel the proxy opens to it, and T presents
 	# its own certificate, which the stands' authority signs (PROXY_STANDS_CA_CERT_FILE). The
 	# command verifies T against its own trust bundle, the system ca-bundle agent-secrets points
@@ -1010,36 +1017,39 @@ EOF
 	judge "$([ "${K3[minted]}" = 403 ] && contains "still carries a placeholder after the swap" "${K3[minted_error]}" && [ "$minted_records" = 0 ] && [ "$left_lines" -ge 5 ] && echo 0 || echo 1)" \
 		"a GET of /read carrying a minted placeholder's form in X-Other is refused 403 PLACEHOLDER_NOT_SWAPPED, and S records it not" \
 		"it answered ${K3[minted]}, saying ${K3[minted_error]}; S recorded $minted_records requests carrying it, and the brokers logged $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for the five requests that carry a placeholder left after the swap"
-	judge "$(contains "not allowed by rule" "${K3[post_error]}" && contains "not allowed by rule" "${K3[other_error]}" && [ "$post_records" = 0 ] && [ "$other_records" = 0 ] && echo 0 || echo 1)" \
-		"POST /read and GET /other get an error that names the rule, and S records neither" \
-		"both answered ${K3[post]} and ${K3[other]} with 'not allowed by rule'; S recorded $post_records POST and $other_records /other"
-	judge "$(contains "agent-secrets-placeholder" "$t_ph" && echo 0 || echo 1)" \
-		"T records the placeholder" "T's Authorization was $(shape "$t_ph"), the grant's placeholder"
-	judge "$( { contains "t.airlock.test" "${K3[mismatch_sni]}" || contains "mismatch" "${K3[mismatch_sni]}"; } && [ "$(printf '%s' "$recs" | jq --arg v "$scoped_value" '[.[] | select(.host == "t.airlock.test")] | length')" = 0 ] && echo 0 || echo 1)" \
-		"the request whose TLS name and Host name T is refused with an error that names the mismatch, and neither S nor T records a value" \
-		"it was refused: ${K3[mismatch_sni]}; the same request with the Host alone changed was refused ${K3[mismatch_host]}"
+	judge "$(contains "not allowed by rule" "${K3[post_error]}" && contains "not allowed by rule" "${K3[postbody_error]}" && contains "not allowed by rule" "${K3[other_error]}" && [ "$post_records" = 0 ] && [ "$other_records" = 0 ] && echo 0 || echo 1)" \
+		"POST /read with the placeholder in its header and in its body, and GET /other, get an error that names the rule, and S records neither" \
+		"the header POST answered ${K3[post]}, the body POST ${K3[postbody]} and GET /other ${K3[other]}, each with 'not allowed by rule'; S recorded $post_records POST and $other_records /other"
+	judge "$(contains "agent-secrets-placeholder" "$t_ph" && [ "$(printf '%s' "$t_recs" | jq length)" = 1 ] && echo 0 || echo 1)" \
+		"T records the placeholder, and only the one call to T reaches it" \
+		"T recorded $(printf '%s' "$t_recs" | jq length) request(s) (want 1), its Authorization $(shape "$t_ph"), the grant's placeholder: the two mismatch requests reach it not"
+	judge "$( { contains "t.airlock.test" "${K3[mismatch_sni]}" || contains "mismatch" "${K3[mismatch_sni]}"; } && contains "host header mismatch" "${K3[mismatch_host]}" && [ "$(printf '%s' "$recs" | jq --arg v "$scoped_value" '[.[] | select(.host == "t.airlock.test")] | length')" = 0 ] && echo 0 || echo 1)" \
+		"the request whose TLS name and Host name T fails the handshake, the Host-only mismatch is refused 'host header mismatch', and neither S nor T records a value for T" \
+		"the TLS-name mismatch was refused: ${K3[mismatch_sni]}; the Host-only mismatch was refused: ${K3[mismatch_host]}"
 	judge "$(contains "already carries the value" "${K3[carries]}" && echo 0 || echo 1)" \
 		"the request that already carries the value is refused with an error that names it, and S records nothing" \
 		"it was refused: ${K3[carries]}"
 
-	# Sixteen of the seventeen requests this command makes reach the proxy on a CONNECT to a
-	# bound host and so log a line: the one that does not is the TLS-name mismatch, whose
-	# handshake fails before a request exists. A carried call logs its call line and a refused
-	# one its refusal record in that line's place, so the two are counted together
-	# (bound_call_lines). The run also checks that both a carried and a refused call are among
-	# them, the refused one with the reason its record names. Each number comes from one read of
-	# the logs, so a line written between two reads cannot make them disagree.
-	local calls log_after log_lines allowed refused
+	# The 17 requests this command makes leave exactly 17 log rows by request: 16 reach the proxy
+	# on a CONNECT to a bound host and log a line (bound_call_lines - a carried call logs its call
+	# line, a refused one its refusal record in that line's place), the call to T logs one tunnel
+	# line (it is no bound host, so it is tunnelled unread), and the TLS-name mismatch logs none,
+	# its handshake failing before a request exists. The counts are exact, not a lower bound: a
+	# broker that wrote no tunnel line, wrote one request twice, or logged the handshake is caught.
+	# Each number comes from one read of the logs, so a line written between two reads cannot make
+	# them disagree.
+	local calls log_after tunnel_after log_lines allowed refused
 	calls="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log)"
 	log_after="$(jq -s length <<<"$calls")"
+	tunnel_after="$(tunnel_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
 	log_lines="$(printf '%s' "$calls" | tail -n 3 | sed 's/^/    /')"
 	allowed="$(jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length' <<<"$calls")"
 	refused="$(jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length' <<<"$calls")"
-	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run (call lines and the proxy's refusal records), $allowed of them allowed and $refused refused with a reason; the last three:"
+	observe "the brokers logged $((log_after - log_before)) bound-call lines and $((tunnel_after - tunnel_before)) tunnel line this run, $allowed of the bound-call lines allowed and $refused refused with a reason; the last three bound-call lines:"
 	observe "$log_lines"
-	judge "$([ "$((log_after - log_before))" -ge 16 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
-		"the broker's log has a line for each call to S, allowed or refused with its reason" \
-		"$((log_after - log_before)) lines for the 16 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
+	judge "$([ "$((log_after - log_before))" -eq 16 ] && [ "$((tunnel_after - tunnel_before))" -eq 1 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
+		"the broker's log has exactly 17 rows by request: one bound-call line for each of the 16 calls to S, one tunnel line for the call to T, and none for the handshake that failed" \
+		"$((log_after - log_before)) bound-call lines for the 16 requests that reached the proxy (want 16), $((tunnel_after - tunnel_before)) tunnel line for T (want 1), $allowed allowed and $refused refused with the reason their refusal record names"
 
 	# The negative control. The stack's AIRLOCK_DEMO_TOKEN profile has the scoped profile's proxy
 	# block with its allow removed: the same host and the authorization header, and no allow list.
