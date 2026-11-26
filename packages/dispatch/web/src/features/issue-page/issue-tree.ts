@@ -19,6 +19,7 @@ import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { PublishedReferences, ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
+import type { LensFacts } from "./lenses/lens-drafts";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
 import { storedReading } from "./stored-reading";
@@ -275,6 +276,9 @@ export interface TreeNode {
   /** The person who kept this decision as it reads now (`DecisionKeep.kept_by`), whose name the
    *  row draws after "Kept by" (R2); absent for every other node. */
   readonly keptBy?: Actor;
+  /** What a lens, a finding, a risk or a constraint carries beyond these fields, and the chips of
+   *  a statement a constraint names; absent on every other node. */
+  readonly lens?: LensFacts;
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
@@ -738,6 +742,7 @@ export function assemble(
       id: draft.id,
       ...(draft.child === undefined ? {} : { child: draft.child }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
+      ...(draft.lens === undefined ? {} : { lens: draft.lens }),
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,

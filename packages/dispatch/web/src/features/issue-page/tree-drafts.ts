@@ -42,6 +42,7 @@ import type {
   NodeOption,
   TreeAsk,
 } from "./issue-tree";
+import type { LensFacts } from "./lenses/lens-drafts";
 import {
   type AskState,
   type CheckState,
@@ -111,6 +112,9 @@ export interface Draft {
   child?: IssueChild;
   /** The person who kept this decision as it reads now (`TreeNode.keptBy`). */
   keptBy?: Actor;
+  /** The lens facts of a lens, a finding, a risk, a constraint or a statement a constraint names
+   *  (`TreeNode.lens`). */
+  lens?: LensFacts;
   /** Whether this ask takes more than one of its options (`TreeNode.multiple`). */
   multiple?: true;
   /** The choices an ask offers (`TreeNode.options`). */
