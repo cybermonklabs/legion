@@ -414,10 +414,12 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Warm: 5.5 and 4.1 min a leg, save included (jobs 138290290807, 138290290989). Cold: 6.2 and
-    # 4.0 min before the save, the test binaries 5.1 and 3.2 min, leaving 3.5 GB to save, which
-    # took up to 1.9 min warm (probe run 45375660275, jobs 138381154602 and 138381154546). 30 is
-    # about four times the cold job with its save.
+    # Warm, on main's newest entry: 2.9 and 2.7 min a leg (x64, arm64), save included, the test
+    # binaries 106 s and 93 s (jobs 139585272770 and 139585272357 of scratch run 45722872215).
+    # Cold, from an empty module and build cache: 4.5 and 4.2 min before the save, the test
+    # binaries 212 s and 199 s (jobs 139585272567 and 139585272758), against 274 s and 214 s for
+    # the `go test -c` fill it replaced (jobs 139585274552 and 139585275017 of run 45722872667); a
+    # save of the 0.7 GB entry took 8 s warm. 30 is about six times the cold job with its save.
     timeout-minutes: 30
     outputs:
       # The key each leg saved, named by family and architecture as the daemon job's are.

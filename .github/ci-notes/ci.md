@@ -2753,8 +2753,8 @@ go commands of the job, and they download and compile the set from nothing. In t
 merge groups after 2026-11-24T08:40Z, the sizing step took 27 s, against 2 s before, when
 the previous build's compile had filled the caches first. In the dispatch-two-builds job of run
 45360231949, the two steps printed 16 and 67 `go: downloading` lines. Each push to main fills
-go-envoy-test with `go test -c -o /dev/null ./...` over the envoy module, so it holds what both
-steps build. Measured with
+go-envoy-test with `go test -count=1 -run '^$' ./...` over the envoy module, which builds the
+test binary of every package and runs no test, so it holds what both steps build. Measured with
 `go list -deps -test -tags twobuild ./cmd/dispatch ./internal/dispatch/store/cmd/connections`
 at main 1b636f3193e, the steps need 626 packages of 80 modules, and `go list -deps -test ./...`
 holds every one. go-envoy's build of the listener and natsd lacks 485 of the packages and 53
