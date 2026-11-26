@@ -272,7 +272,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		Addressing:                 addressing,
 		DeploymentInstructionsPath: s.instructions,
 	}
-	if OwnsPlan(c) {
+	if true {
 		spec.Prompt.PlanGuidancePath = s.planGuidance
 	}
 	// The arms are read from the record alone: a unit the daemon drew into an arm keeps that
