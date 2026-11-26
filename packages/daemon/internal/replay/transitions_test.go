@@ -253,14 +253,16 @@ var nonDispatchFacts = []string{
 // wantFacts is the way the design decides for the facts it names: the API's sign-off, backward
 // move, close, retry, release of children and gate registration, a failed claim's hold and a
 // merge rebuilt from the record and injected, and the facts only a Dispatch event brings decoded
-// from the recorded events; the tick, the boot, a linger's close and a hand-over made by the
-// replay's own driver and worker stub as the daemon's own producers make them.
+// from the recorded events; the tick, the boot, a linger's close, a hand-over and a signal's
+// deadline made by the replay's own driver and worker stub as the daemon's own producers make
+// them.
 var wantFacts = map[string]FactWay{
 	"SignOff": FactInjected, "BackwardMove": FactInjected, "CloseRoot": FactInjected, "RetryOrEscalate": FactInjected,
 	"ChildAdoption": FactInjected, "GateRegistered": FactInjected, "ClaimFailed": FactInjected, "PullRequestMerged": FactInjected,
 	"DispatchAskOpened": FactInjected, "DispatchAskRestored": FactInjected, "DispatchAskClosed": FactInjected,
 	"DispatchAskReply": FactInjected, "DispatchApprovalMoved": FactInjected, "DispatchAskTurn": FactInjected, "DispatchClaim": FactInjected,
 	"ControllerTick": FactProduced, "DaemonBooted": FactProduced, "LingerExpired": FactProduced, "Handover": FactProduced,
+	"SignalDeadline": FactProduced,
 }
 
 // A replay feeds the daemon's chain every kind of fact the daemon applies, or says why it leaves

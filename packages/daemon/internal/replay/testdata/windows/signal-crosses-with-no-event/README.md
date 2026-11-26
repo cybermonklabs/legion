@@ -15,3 +15,21 @@ Both runs start with one issue in flight. ACME-1 works throughout all 35 minutes
 The deadline expectation uses the hand-worked kill series from the launcher for this fixture, not a stochastic fit. The model's fitting and draws are tested separately. `checks` distinguishes an event, tick and deadline even when they happen to produce the same final scorecard.
 
 ACME-2 is the one issue with a priority: P0, filed `todo` at 10:10, before the measured span, and still `todo` at its start, so its wait of urgent work counts from 10:20. Under both rules it takes its slot at 10:31, a wait of 11 minutes, and is not done by 10:55, the end of the window, which has no run-out: 35 minutes, one cut. No pair of a holder and a waiting issue has the holder below in either order, since ACME-2, P0 and `a02`, holds above ACME-3, with no priority and `a03`, so `priorityTakenBanded` is 0 as `priorityTaken` is.
+
+## The signals, worked by hand
+
+The window holds a record of the kills alone, from 09:00 to 10:55 (`signals.kills` in `window.json`), with the launcher's lines of the kills of ACME-1's pod at 09:40 and 09:50.
+Both kills fall before the window's start, where the replay keeps the record's course, so the kill model keeps each at its recorded time.
+The window holds no span of any other signal, and no provider's record, no merge queue file and no settings events.
+
+Under `signals`, with its limit of 2 kills alone, the run writes the kills at 10:31 and 10:40, as the table above works them out: 2 at 10:31, the hour from 09:31 holding both kills, and 1 at 10:40, once 09:40's leaves the hour.
+
+Under `main`, the run limits all six signals, which `main` admits by none, so they decide nothing and `main` keeps no deadline (`deadlines` is `[]`).
+At 10:31 it writes:
+
+- `idle`: unrecorded, since the window names no span of the idle share's record.
+- `queue`: unrecorded: no merge queue file and no span of its record.
+- `provider`: unrecorded: no minute of the provider's record.
+- `refusals`: unrecorded: no minute of the provider's record before 10:31.
+- `kills`: 2, the kills of 09:40 and 09:50, both in the hour from 09:31, inside the record's span.
+- `approvals`: unrecorded, since the window names no span of the approvals' record.

@@ -42,6 +42,7 @@ This file gives the conventions every window is written and worked by, once: the
 | `drawn-boot-earlier-phase` | a boot's draw in an earlier phase than the one its stretch ends in enters its conflict at the stretch's end, in that phase | `legion-v20.42.5` |
 | `drawn-touching-merges` | a draw counts the merges that change a path of the issue's profile, and a stretch with none draws no conflict | `legion-v20.42.5` |
 | `drawn-work-conflict` | drawn work keeps its source's recorded conflict on the main branch, and draws it by its source's profile on the branch that draws | `main`, on two branches |
+| `random-experiment` | a workflow experiment in the `random` mode is drawn for each issue the daemon records, keyed to no issue: the run names those draws as unkeyed, and a comparison pairs no run of the window | `main` |
 
 The three windows of R10, the start of a P0 issue outside the cap, run it under `p0-at-once`, and under `main` once cybermonklabs/legion#5488 merges and `main` starts a P0 issue outside the cap.
 Until then each run under `main` waits on the skip list (`pending_test.go`, ruling D16), and its expected values are those of the run under `p0-at-once`.
@@ -57,11 +58,12 @@ The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "T
 ## What a directory holds
 
 - `window.json`, `log.jsonl` and `events/<KEY>.jsonl` (and `merges/<owner>__<name>.jsonl` in `clock-far-from-now`, `conflict-from-fitted-rate` and the seven windows of the git branch and the generator, which hold base-branch commits, and `git/<owner>__<name>.jsonl` in the five of them that hold git's reading), in the format of `window.go`: `ReadWindow` checks each input against the sha256 `files` records.
-  A window that holds a record of R11's signals holds its inputs too, each optional: `launcher/log.jsonl` (`{time, pod, text}`, the launcher's lines, in `signal-crosses-with-no-event` and `no-crossing-due`), `signals/provider.jsonl`, `signals/memory.jsonl`, `queue/<owner>__<name>.jsonl` and `settings/events.jsonl`.
+  A window that holds a record of R11's signals holds its inputs too, each optional: `launcher/log.jsonl` (`{time, pod, text}`, the launcher's lines, in `signal-crosses-with-no-event` and `no-crossing-due`), `signals/provider.jsonl`, `queue/<owner>__<name>.jsonl` and `settings/events.jsonl`.
   Its `window.json` names each signal's spans in `signals` (`{"kills": [{"from", "to"}]}`), and may give `defaultAssignee` and the P0 bound's changes in `p0Bounds` (`[{"at", "bound"}]`, in `p0-at-its-bound`).
   It may name in `missingAncestors` each ancestor on a Dispatch parent chain whose events `collect` could not read (`["ACMEAUX-1"]`, in `p0-recorded-descendant-update`).
   Every other window names none: each holds the events of every parent its events name, but `p0-inherited-ancestor-missing`, which lacks ACMEAUX-1's as a window collected before `collect` read each ancestor can.
   `replay.md`'s "The records of the signals" gives each file's form.
+  No fixture window holds `signals/memory.jsonl`, the pods' memory series that `collect` wrote before no model read it, which `ReadWindow` checks by its sha256 alone.
   After an edit of an input, write its new hash into `files`: `sha256sum log.jsonl events/*.jsonl`, adding `merges/*.jsonl`, `git/*.jsonl` and each signal input where the window has them.
   `TestFixtureWindows` reads every window with `ReadWindow` before it replays it (it needs `LEGION_TEST_PG_DSN`), and `TestTheFixtureWindowsCoverK1` reads each window of k1's list without a database, so a hash that differs fails them.
 
@@ -91,6 +93,10 @@ The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "T
     A missing field fails even if its expected value is zero or an empty array.
     `log` lists structured lines, comparing each named attribute.
     These assertions cover the bound refusal, deadline history, slot pass kinds, timed signal values, the reads of the branch that asks git and the draws of a stretch's conflict.
+    `run`'s `limits` and the moments of its `signalValues` are the run's inputs too: `TestFixtureWindows` replays the window under that rule with those limits (`RunConfig.Limits`) and a probe at each of those moments (`RunConfig.Probes`), and `run.json` echoes both.
+    `signalValues` gives, at each moment, each signal that `limits` names, `null` where the window holds no record of it then.
+    Every window names each of R11's six signals at a moment at least once (`TestEveryWindowHasEachSignalAtAMoment`), its values worked out by hand in its README, under "The signals, worked by hand".
+    A window that holds no record of a signal names it unrecorded, and the rules that admit by no signal decide nothing by its limit.
 
   - `refused` (optional): `{"<rule>": "<text>"}`, each rule under which `legion replay run` must refuse the window, on the window's branch, with an error that holds the text, in place of a `Scorecard` in `rules` and of `checks`.
     `p0-inherited-ancestor-missing` names `p0-at-once`, whose refusal must name `ACMEAUX-1`, the ancestor whose history the window lacks.

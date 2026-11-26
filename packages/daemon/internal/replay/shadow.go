@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // shadow is a replay's copy of Dispatch (design 10.4): each issue's current payload as Dispatch
@@ -41,6 +43,13 @@ type shadow struct {
 	// first: each next one takes the id after it, past every recorded one, so each fact's id
 	// (dispatch-<id>) is the replay's own.
 	lastID int64
+	// approvals is the approvals signal's state as the events the copy applied leave it, each ask of
+	// an issue of the project and each such issue's assignee (noteApprovals), fed where readsApprovals
+	// says a run reads the signal; approvalsMoved counts the changes, so a reader of the count knows
+	// when it stands as it did.
+	approvals      signals.ApprovalState
+	readsApprovals bool
+	approvalsMoved int
 }
 
 // shadowIssue is one issue of the shadow.
@@ -243,7 +252,40 @@ func (s *shadow) take(iss *shadowIssue, e envelope, before map[string]json.RawMe
 	if err := s.notePayload(iss, e, at); err != nil {
 		return nil, err
 	}
+	if err := s.noteApprovals(iss, e); err != nil {
+		return nil, err
+	}
 	return iss.event(fields, at)
+}
+
+// noteApprovals applies what e, as the copy applied it to iss, says to the approvals signal
+// (approvalEventOf) where the run reads the signal (readsApprovals): an ask's event and a comment on
+// an ask of an issue of the project, and the assignee an issue event of one names, as the copy
+// holds it once the event applied, at the moment the copy applies it.
+func (s *shadow) noteApprovals(iss *shadowIssue, e envelope) error {
+	if !s.readsApprovals || !claim.KeyOfProject(s.project, iss.key) {
+		return nil
+	}
+	read, err := approvalEventOf(e.kind, iss.key, e.fields["payload"])
+	if err != nil {
+		return fmt.Errorf("replay: read the %s event of %s for the approvals: %w", e.kind, iss.key, err)
+	}
+	switch {
+	case read.assigns:
+		assignee := read.assignee
+		if member, held := iss.payload["assignee"]; held {
+			var person *string
+			if err := json.Unmarshal(member, &person); err != nil {
+				return fmt.Errorf("replay: read the assignee of %s for the approvals: %w", iss.key, err)
+			}
+			assignee = personOf(person)
+		}
+		s.approvals.Assign(iss.key, assignee)
+		s.approvalsMoved++
+	case read.asks && s.approvals.ApplyAsk(read.ask):
+		s.approvalsMoved++
+	}
+	return nil
 }
 
 // stamp writes the shadow's bookkeeping fields for an event at at.

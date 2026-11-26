@@ -140,3 +140,16 @@ ACME-2's children wait from 12:00, open at 15:00: `open`, count 1, 3 hours.
 The same facts, at their own times: [1, 2, 4, 7, 9, 10, 11, 15, 17] (7:
 the gate holds ACME-3 from 11:50 to 12:00; 11: ACME-1's slot, freed at 11:30, to ACME-2, and ACME-2's, freed at 12:00, to ACME-3).
 `scenario` is `none`.
+
+## The signals, worked by hand
+
+The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
+So at 09:00, the window's start, the run under each rule that `expect.json` names writes each signal unrecorded (`null`) in `signalValues`.
+Each run limits all six signals (`limits`), and run.json echoes them; neither rule here admits by signals, so the limits decide nothing.
+
+- `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
+- `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
+- `provider`: no minute of the provider's record, so the tokens model has no minute to read.
+- `refusals`: no minute of the provider's record before 09:00.
+- `kills`: no launcher's lines and no span of the kills' record, so the kill model is not fitted.
+- `approvals`: no span of the approvals' record, so the replay's copy of Dispatch gives no recorded count.

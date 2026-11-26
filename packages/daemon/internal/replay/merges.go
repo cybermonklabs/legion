@@ -66,6 +66,16 @@ type MergesConfig struct {
 	Rate    float64
 }
 
+// MergesCollected is what a collect-merges wrote (CollectMerges).
+type MergesCollected struct {
+	// Merges is the branch's commits as written, oldest first.
+	Merges []Merge
+	// Unread is how many commits walked keep their committer's time because GitHub would not read
+	// a pull request their merge event rests on (tooManyFiles), and its list of the commit's pull
+	// requests gave nothing to match it by either (mergeEvent): a run again later can place them.
+	Unread int
+}
+
 // CollectMerges reads cfg.Branch's first-parent history in [cfg.From, cfg.To) from GitHub and
 // writes it into the window in cfg.Window as merges/<owner>__<name>.jsonl, in place of the commits
 // of that branch the file held and beside those of the repository's other base branches, with
@@ -96,41 +106,45 @@ type MergesConfig struct {
 // estimate and no merge event, with no pull request, whatever its subject names. Each commit
 // written keeps its committer's time as Merge.Committed too, beside the time it landed. Those reads
 // follow the listing and the read of a lacking parent, and read nothing of a commit the walk did
-// not reach. It sends GET alone: a read GitHub refuses for now (a 5xx, no answer) is tried again
-// with a growing wait, and one GitHub's rate limit refuses is tried again after the wait GitHub
-// names, each such wait told on stderr and bounded (githubReader.read); any other refusal but the
-// 404 of a pull request a subject names, or an answer that is no commit or pull request, fails
-// the read, and nothing is written. It leaves the daemon and the other roles that share GitHub's
-// quota cfg.Reserve requests of it and sends at most cfg.Rate requests a second (githubReader). It
-// returns the branch's commits as written, oldest first.
+// not reach. It sends GET alone: a read GitHub refuses for now (a 5xx, its 422 of a pull request
+// whose diff it cannot compute, no answer) is tried again with a growing wait, and one GitHub's
+// rate limit refuses is tried again after the wait GitHub names, each such wait told on stderr and
+// bounded (githubReader.read); any other refusal but the 404 of a pull request a subject names and
+// that 422 of a pull request a commit's merge rests on, which leaves the commit at its committer's
+// time where GitHub's list of the commit's pull requests gives nothing to match it by (mergeEvent),
+// or an answer that is no commit or pull request, fails the read, and nothing is written. It
+// leaves the daemon and the other roles that share GitHub's quota cfg.Reserve requests of it and
+// sends at most cfg.Rate requests a second (githubReader). It returns the branch's commits as
+// written, oldest first, and how many commits walked a pull request that did not read left at
+// their committer's time (MergesCollected).
 //
 // It reads the window once, a line at a time (walkWindow), and refuses every window ReadWindow
 // refuses, before any read of GitHub. Of the window it holds its window.json and the lines of
 // cfg.Repo's merges file alone, never another input. It writes that file and window.json alone,
 // each through a temporary file renamed into place (replaceInput); every other input of the window
 // keeps its bytes.
-func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
+func CollectMerges(ctx context.Context, cfg MergesConfig) (MergesCollected, error) {
 	owner, name, ok := splitRepo(cfg.Repo)
 	switch {
 	case !ok:
-		return nil, fmt.Errorf("replay: collect-merges: %q is no owner/name of a repository", cfg.Repo)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: %q is no owner/name of a repository", cfg.Repo)
 	case cfg.Branch == "":
-		return nil, errors.New("replay: collect-merges: no branch is named")
+		return MergesCollected{}, errors.New("replay: collect-merges: no branch is named")
 	case !cfg.From.Before(cfg.To):
-		return nil, fmt.Errorf("replay: collect-merges: the span [%s, %s) is empty", cfg.From.Format(time.RFC3339), cfg.To.Format(time.RFC3339))
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: the span [%s, %s) is empty", cfg.From.Format(time.RFC3339), cfg.To.Format(time.RFC3339))
 	case cfg.Token == "":
-		return nil, errors.New("replay: collect-merges: no GitHub token is given")
+		return MergesCollected{}, errors.New("replay: collect-merges: no GitHub token is given")
 	}
 	if err := CheckGitHubShare(cfg.Reserve, cfg.Rate); err != nil {
-		return nil, fmt.Errorf("replay: collect-merges: %w", err)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: %w", err)
 	}
 	api, err := url.Parse(strings.TrimRight(cmp.Or(cfg.API, DefaultGitHubAPI), "/"))
 	if err != nil || (api.Scheme != "https" && api.Scheme != "http") || api.Host == "" {
-		return nil, fmt.Errorf("replay: collect-merges: %q is no http or https URL of GitHub's API", cfg.API)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: %q is no http or https URL of GitHub's API", cfg.API)
 	}
 	head, err := readWindowHead(cfg.Window)
 	if err != nil {
-		return nil, fmt.Errorf("replay: collect-merges: %w", err)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: %w", err)
 	}
 	var held []Merge
 	err = walkWindow(cfg.Window, head, func(input windowInput) func(json.RawMessage, any) {
@@ -140,7 +154,7 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 		return func(_ json.RawMessage, merge any) { held = append(held, merge.(Merge)) }
 	})
 	if err != nil {
-		return nil, fmt.Errorf("replay: collect-merges: %w", err)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: %w", err)
 	}
 	reader := newGitHubReader(api, cfg.Token, cfg.Wait, cfg.Reserve, cfg.Rate)
 	since := cfg.From.Add(-mergesMargin).UTC().Truncate(time.Second)
@@ -153,29 +167,34 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	first.RawQuery = query.Encode()
 	pages, err := reader.pages(ctx, first)
 	if err != nil {
-		return nil, fmt.Errorf("replay: collect-merges: the commits of %s %s: %w", cfg.Repo, cfg.Branch, err)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: the commits of %s %s: %w", cfg.Repo, cfg.Branch, err)
 	}
 	walk, lacking, err := ParseMerges(cfg.Branch, pages...)
 	if err != nil {
-		return nil, fmt.Errorf("replay: collect-merges: %w", err)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: %w", err)
 	}
 	if lacking != "" && !walk[0].At.Before(cfg.From) {
 		// The walk ends inside the span. A first parent committed before since is where a branch
 		// quiet before the span ends; one committed later is a commit the listing lacks.
 		parentAt, err := reader.committed(ctx, repository.JoinPath("commits", lacking))
 		if err != nil {
-			return nil, fmt.Errorf("replay: collect-merges: the commit %s of %s: %w", lacking, cfg.Repo, err)
+			return MergesCollected{}, fmt.Errorf("replay: collect-merges: the commit %s of %s: %w", lacking, cfg.Repo, err)
 		}
 		if !parentAt.Before(since) {
-			return nil, fmt.Errorf("replay: collect-merges: the first-parent history of %s %s is cut inside the span [%s, %s): "+
+			return MergesCollected{}, fmt.Errorf("replay: collect-merges: the first-parent history of %s %s is cut inside the span [%s, %s): "+
 				"the walk of GitHub's listing since %s ends at %s, committed %s, and the listing lacks its first parent %s, committed %s; "+
 				"nothing is written", cfg.Repo, cfg.Branch, cfg.From.UTC().Format(time.RFC3339), cfg.To.UTC().Format(time.RFC3339),
 				since.Format(time.RFC3339), walk[0].SHA, walk[0].At.UTC().Format(time.RFC3339), lacking, parentAt.UTC().Format(time.RFC3339))
 		}
 	}
+	unread := 0
 	for i, commit := range walk {
-		if walk[i], err = reader.mergeEvent(ctx, repository, cfg.Branch, commit); err != nil {
-			return nil, fmt.Errorf("replay: collect-merges: the merge of the commit %s of %s %s: %w", commit.SHA, cfg.Repo, cfg.Branch, err)
+		var left bool
+		if walk[i], left, err = reader.mergeEvent(ctx, repository, cfg.Branch, commit); err != nil {
+			return MergesCollected{}, fmt.Errorf("replay: collect-merges: the merge of the commit %s of %s %s: %w", commit.SHA, cfg.Repo, cfg.Branch, err)
+		}
+		if left {
+			unread++
 		}
 	}
 	merges := slices.DeleteFunc(walk, func(m Merge) bool { return m.At.Before(cfg.From) || !m.At.Before(cfg.To) })
@@ -185,12 +204,12 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	slices.SortStableFunc(kept, func(a, b Merge) int { return a.At.Compare(b.At) })
 	lines, err := marshalLines(kept)
 	if err != nil {
-		return nil, fmt.Errorf("replay: collect-merges: %w", err)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: %w", err)
 	}
 	if err := replaceInput(cfg.Window, head, path.Join(mergesDir, owner+"__"+name+".jsonl"), lines); err != nil {
-		return nil, fmt.Errorf("replay: collect-merges: %w", err)
+		return MergesCollected{}, fmt.Errorf("replay: collect-merges: %w", err)
 	}
-	return merges, nil
+	return MergesCollected{Merges: merges, Unread: unread}, nil
 }
 
 // The share of the GitHub quota a collector takes by default (githubReader): it leaves the daemon
@@ -424,55 +443,84 @@ func (r githubReader) committed(ctx context.Context, commit *url.URL) (time.Time
 // not bear out names no stretch's own merge. Either way the commit keeps its committer's time as
 // Committed too, the At ParseMerges read. An answer that is no list of pull requests, or no pull
 // request, is refused.
-func (r githubReader) mergeEvent(ctx context.Context, repository *url.URL, branch string, merge Merge) (Merge, error) {
+//
+// A pull request GitHub still refuses to read whole after the reader's tries, with its 422 of a
+// pull request whose diff it cannot compute for now (tooManyFiles), is matched by the listing
+// instead: merge.PR by its entry there, taken where it matches and passed over, as one read whole
+// that did not match, where it does not. Where the listing holds no entry of merge.PR that gives
+// merge_commit_sha, or that refusal meets the read of an entry that leaves it out, nothing GitHub
+// answers says whether that pull request merged as the commit: the commit keeps its committer's
+// time, as one no pull request matches, and mergeEvent answers true beside it, so the collection
+// counts it.
+func (r githubReader) mergeEvent(ctx context.Context, repository *url.URL, branch string, merge Merge) (Merge, bool, error) {
 	matches := func(pull githubrest.PullRequest) bool {
 		return pull.MergeCommitSHA == merge.SHA && pull.Base.Ref == branch && pull.MergedAt != nil
 	}
 	landed := func(pull githubrest.PullRequest) Merge {
 		return Merge{SHA: merge.SHA, At: *pull.MergedAt, Committed: merge.At, Branch: merge.Branch, PR: pull.Number, Event: true}
 	}
+	// unreadPR is merge.PR where GitHub would not read it whole, until the listing gives what it is
+	// matched by; unread says GitHub would not read whole an entry of the listing that leaves out
+	// merge_commit_sha.
+	unreadPR, unread := 0, false
 	if merge.PR != 0 {
 		pull, err := r.pullRequest(ctx, repository, merge.PR)
 		var refusal *githubRefusal
 		switch {
 		case err == nil && matches(pull):
-			return landed(pull), nil
+			return landed(pull), false, nil
+		case tooManyFiles(err):
+			unreadPR = merge.PR
 		case err != nil && (!errors.As(err, &refusal) || refusal.status != http.StatusNotFound):
-			return Merge{}, fmt.Errorf("the pull request #%d its subject names: %w", merge.PR, err)
+			return Merge{}, false, fmt.Errorf("the pull request #%d its subject names: %w", merge.PR, err)
 		}
 	}
 	listing := repository.JoinPath("commits", merge.SHA, "pulls")
 	listing.RawQuery = url.Values{"per_page": {fmt.Sprint(mergesPageSize)}}.Encode()
 	pages, err := r.pages(ctx, listing)
 	if err != nil {
-		return Merge{}, fmt.Errorf("its pull requests: %w", err)
+		return Merge{}, false, fmt.Errorf("its pull requests: %w", err)
 	}
 	var matched []githubrest.PullRequest
 	for _, page := range pages {
 		var pulls []githubrest.PullRequest
 		if err := json.Unmarshal(page, &pulls); err != nil {
-			return Merge{}, fmt.Errorf("GitHub's answer is no list of its pull requests: %w", err)
+			return Merge{}, false, fmt.Errorf("GitHub's answer is no list of its pull requests: %w", err)
 		}
 		for _, pull := range pulls {
 			switch number := pull.Number; {
 			case number <= 0:
-				return Merge{}, errors.New("GitHub lists a pull request of it without its number")
-			case number == merge.PR:
-				continue // read whole above, where it did not match
-			case pull.MergeCommitSHA == "" && pull.Base.Ref == branch && pull.MergedAt != nil:
-				if pull, err = r.pullRequest(ctx, repository, number); err != nil {
-					return Merge{}, fmt.Errorf("the pull request #%d GitHub lists of it: %w", number, err)
+				return Merge{}, false, errors.New("GitHub lists a pull request of it without its number")
+			case number == unreadPR && pull.MergeCommitSHA != "":
+				// GitHub would not read it whole, so its entry here is matched in its place.
+				if matches(pull) {
+					return landed(pull), false, nil
 				}
+				unreadPR = 0
+				continue
+			case number == merge.PR:
+				continue // read whole above, where it did not match; or not, and its entry here gives nothing to match
+			case pull.MergeCommitSHA == "" && pull.Base.Ref == branch && pull.MergedAt != nil:
+				whole, err := r.pullRequest(ctx, repository, number)
+				switch {
+				case tooManyFiles(err):
+					unread = true // the listing, which leaves out its merge_commit_sha, is all there is to match it by
+					continue
+				case err != nil:
+					return Merge{}, false, fmt.Errorf("the pull request #%d GitHub lists of it: %w", number, err)
+				}
+				pull = whole
 			}
 			if matches(pull) {
 				matched = append(matched, pull)
 			}
 		}
 	}
-	if len(matched) != 1 {
-		return Merge{SHA: merge.SHA, At: merge.At, Committed: merge.At, Branch: merge.Branch}, nil
+	unread = unread || unreadPR != 0
+	if unread || len(matched) != 1 {
+		return Merge{SHA: merge.SHA, At: merge.At, Committed: merge.At, Branch: merge.Branch}, unread, nil
 	}
-	return landed(matched[0]), nil
+	return landed(matched[0]), false, nil
 }
 
 // pullRequest reads pull request number of repository (GET <repository>/pulls/<number>) as
@@ -621,16 +669,32 @@ type githubUnanswered struct{ err error }
 func (e *githubUnanswered) Error() string { return "GitHub gave no answer: " + e.err.Error() }
 func (e *githubUnanswered) Unwrap() error { return e.err }
 
-// retryableGitHub says whether GitHub refused a read for now: it answered a 5xx, or gave no whole
-// answer, the client's own timeout among them (net/http reports it as a deadline exceeded). A
-// refusal of GitHub's rate limit, a 429 among them, is tried again after the wait GitHub names
-// instead (githubReader.read). A read the caller cancelled is no refusal of GitHub's, and is not
-// tried again; a caller's deadline that passed ends the wait before the next attempt (retry).
+// retryableGitHub says whether GitHub refused a read for now: it answered a 5xx, or its 422 of a
+// pull request whose diff it cannot compute for now (tooManyFiles), or gave no whole answer, the
+// client's own timeout among them (net/http reports it as a deadline exceeded). A refusal of
+// GitHub's rate limit, a 429 among them, is tried again after the wait GitHub names instead
+// (githubReader.read). A read the caller cancelled is no refusal of GitHub's, and is not tried
+// again; a caller's deadline that passed ends the wait before the next attempt (retry).
 func retryableGitHub(err error) bool {
 	var refusal *githubRefusal
 	if errors.As(err, &refusal) {
-		return !refusal.limited && refusal.status >= 500
+		return !refusal.limited && (refusal.status >= 500 || tooManyFiles(refusal))
 	}
 	var unanswered *githubUnanswered
 	return errors.As(err, &unanswered) && !errors.Is(err, context.Canceled)
+}
+
+// githubTooManyFiles is the message of GitHub's 422 Unprocessable Entity refusal of a read of a
+// pull request whose diff it cannot compute: GET /repos/<owner>/<name>/pulls/<n> computes the pull
+// request's diff. A collect-merges of a real repository met it, and the same read answered 200 OK
+// five minutes later, so it is a refusal for now (retryableGitHub). GitHub's list of a commit's
+// pull requests (GET /repos/<owner>/<name>/commits/<sha>/pulls) computes no diff, and answered the
+// same commit at once (mergeEvent).
+const githubTooManyFiles = "The request could not be processed because too many files changed"
+
+// tooManyFiles says whether err is GitHub's 422 whose message is githubTooManyFiles. No other 422
+// is one.
+func tooManyFiles(err error) bool {
+	var refusal *githubRefusal
+	return errors.As(err, &refusal) && refusal.status == http.StatusUnprocessableEntity && strings.Contains(refusal.body, githubTooManyFiles)
 }

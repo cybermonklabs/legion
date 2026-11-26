@@ -111,6 +111,12 @@ const (
 	TurnRefused = "refused"
 )
 
+// TurnCodeCyberPolicy is the one class of a refused turn the daemon reads off its report
+// (TurnOutcomeRequest.Code): OpenAI refused the session's content for cyber policy, or Oh My Pi
+// held a request after such a refusal. It is Oh My Pi's own word for the class, the `code` its
+// prompt_result carries for the same refusal.
+const TurnCodeCyberPolicy = "cyber_policy"
+
 // TurnOutcomeCaller is one of the two identities a turn outcome, or a report of model requests, is
 // reported under, and the type of whichever one its body named (TurnOutcomeRequest.Caller,
 // ModelRequestsRequest.Caller). They are two types rather than five fields of one, so the route
@@ -169,6 +175,15 @@ func (c BootCaller) named() bool { return c.BootToken != "" }
 // clean report, marked or not, ends the claim's run of provider-error turns when no later turn's
 // report has reached the daemon before it.
 //
+// Code is the class the producer gave a refused turn, where it gives one: TurnCodeCyberPolicy, set
+// by pi-legion from Oh My Pi's own classifier (`isCyberPolicyRefusal` of `@oh-my-pi/pi-ai/error`,
+// the same reading that sets a prompt_result's `code`), and nothing for every other refusal and
+// every clean turn. A Claude Code producer sends none. The daemon reads it off an Unprompted
+// report alone, beside the status: such a refusal fails the claim at once with cause
+// cyber_policy, whatever the status (supervise's unpromptedTurnEnded), since a later prompt of
+// the daemon's would end Oh My Pi's hold and send the refused content again. It takes any other
+// word as no code, with a warning that names it (api's turnOutcome).
+//
 // The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
 // its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same
 // union).
@@ -181,6 +196,7 @@ type TurnOutcomeRequest struct {
 	Message    string `json:"message,omitempty"`
 	HTTPStatus int    `json:"httpStatus,omitempty"`
 	Unprompted bool   `json:"unprompted,omitempty"`
+	Code       string `json:"code,omitempty"`
 }
 
 // Caller is the identity the body named, and false when it named both or neither: each says who
@@ -207,13 +223,15 @@ func callerOf(agent AgentCaller, boot BootCaller) (TurnOutcomeCaller, bool) {
 // place an operator sees the count being made.
 //
 // Failed is whether this report failed the claim. A run of refused turns fails no claim
-// (dispatch://INFRA-4508), so only one report does: that of a turn that ran no prompt of the
-// daemon's (TurnOutcomeRequest.Unprompted) and that the provider refused with a status that
-// cannot clear, a 4xx other than 401, 403, 408 and 429, which fails the claim at once and holds
-// the issue for its architect, as such a prompt's result does. A daemon from before
-// dispatch://INFRA-4508 set it when the report took the run to the launch failure limit. This is
-// where the rule is stated, with its TypeScript mirror (LegionTurnOutcomeResponse in
-// packages/contracts/src/legion-api.ts); every other reader of Failed points here.
+// (dispatch://INFRA-4508), so only one kind of report does: that of a turn that ran no prompt of
+// the daemon's (TurnOutcomeRequest.Unprompted) and that the provider refused with a status that
+// cannot clear, a 4xx other than 401, 403, 408 and 429, or that the producer classed as OpenAI's
+// cyber-policy refusal (TurnOutcomeRequest.Code), whatever its status. Either fails the claim at
+// once and holds the issue for its architect, as such a prompt's result does; the second under
+// cause cyber_policy. A daemon from before dispatch://INFRA-4508 set it when the report took the
+// run to the launch failure limit. This is where the rule is stated, with its TypeScript mirror
+// (LegionTurnOutcomeResponse in packages/contracts/src/legion-api.ts); every other reader of
+// Failed points here.
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`

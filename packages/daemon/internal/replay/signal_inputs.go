@@ -130,21 +130,6 @@ func cmpOrTime(a, b *time.Time) *time.Time {
 	return b
 }
 
-// MemorySample is one pod's memory in one minute: the bytes of the pod's roles container in use.
-type MemorySample struct {
-	Minute time.Time `json:"minute"`
-	Pod    string    `json:"pod"`
-	Bytes  int64     `json:"bytes"`
-}
-
-// check refuses a sample with no minute or no pod, and one below zero.
-func (s MemorySample) check() error {
-	if s.Minute.IsZero() || s.Pod == "" || s.Bytes < 0 {
-		return errors.New("a memory sample lacks its minute or its pod, or counts bytes below zero")
-	}
-	return nil
-}
-
 // memoryGuardPrefix is what every line of the launcher's memory guard starts with.
 const memoryGuardPrefix = "launcher: memory guard: "
 

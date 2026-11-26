@@ -221,8 +221,8 @@ func changedFiles(before, after map[string]fileState) []string {
 
 // collect-queue and collect-merges write their repository's file and window.json alone: every
 // other input of the window, here inputsWindow's log, events, merges of another repository, queue
-// of another repository, provider record, launcher log, memory file and settings events, keeps its
-// bytes and its time of modification, and the command leaves no other file. The window they leave
+// of another repository, provider record, launcher log and settings events, keeps its bytes and
+// its time of modification, and the command leaves no other file. The window they leave
 // is, byte for byte and as ReadWindow reads it, the window their code before it streamed the
 // window left: the Window it read, with the queue of cybermonklabs/legion replaced by the timelines'
 // queue events and the queue signal's record set over the reach and run-out, or with the merges of
@@ -277,7 +277,7 @@ func TestCollectQueueAndMergesLeaveEveryOtherInputAsItWas(t *testing.T) {
 }
 
 // collect-queue and collect-merges check the whole window, as ReadWindow does, also the inputs
-// they keep nothing of: a window whose memory file's sha256 is not the one window.json records,
+// they keep nothing of: a window whose launcher log's sha256 is not the one window.json records,
 // and a window with an events file window.json does not name, are each refused with ReadWindow's
 // own refusal, before any read of GitHub and with nothing written. It fails where a command reads
 // only the inputs it keeps something of.
@@ -288,7 +288,7 @@ func TestCollectQueueAndMergesRefuseWhatReadWindowRefuses(t *testing.T) {
 			for _, tc := range []struct {
 				name, spoiled, line string
 			}{
-				{"a memory file whose sha256 differs", memoryFile, `{"minute":"2001-03-05T08:01:00Z","pod":"legion-acme-acme-1","bytes":1000}`},
+				{"a launcher log whose sha256 differs", launcherFile, `{"time":"2001-03-05T08:01:00Z","pod":"legion-acme-acme-1","text":"launcher: started"}`},
 				{"an input file window.json does not name", "events/ACME-9.jsonl",
 					string(inputsEvent(9, 1, "ACME-9", "issue.created", "2001-03-05T08:40:00Z", `{"key":"ACME-9","status":"todo","changed":["status"]}`))},
 			} {
@@ -323,13 +323,13 @@ func TestCollectQueueAndMergesRefuseWhatReadWindowRefuses(t *testing.T) {
 	}
 }
 
-// largeSamples is how many samples largeMemoryWindow's memory file holds.
-const largeSamples = 200_000
+// largeLines is how many lines largeLauncherWindow's launcher log holds.
+const largeLines = 200_000
 
-// largeMemoryWindow is a window of ACME whose memory file holds largeSamples samples, eight pods'
-// a minute, beside the events of ACME-1, to which an attribution moves acme/widgets#1; and the
-// size of that memory file. It holds the Window it writes no longer than it writes it.
-func largeMemoryWindow(t *testing.T) (string, int64) {
+// largeLauncherWindow is a window of ACME whose launcher log holds largeLines lines, eight pods'
+// a second, beside the events of ACME-1, to which an attribution moves acme/widgets#1; and the
+// size of that launcher log. It holds the Window it writes no longer than it writes it.
+func largeLauncherWindow(t *testing.T) (string, int64) {
 	t.Helper()
 	pods := make([]string, 8)
 	for i := range pods {
@@ -337,15 +337,16 @@ func largeMemoryWindow(t *testing.T) (string, int64) {
 	}
 	w := Window{Project: "ACME", From: clock(9, 0), To: clock(11, 0), Before: Duration(time.Hour), Caps: []CapAt{{At: clock(8, 0), Cap: 2}},
 		Parts: []Part{}, Lines: []string{}, Events: map[string][]json.RawMessage{"ACME-1": {inputsAttribution(1, 1, "ACME-1", "acme/widgets", 1)}},
-		Memory: make([]MemorySample, 0, largeSamples)}
-	for i := range largeSamples {
-		w.Memory = append(w.Memory, MemorySample{Minute: day.Add(time.Duration(i/len(pods)) * time.Minute), Pod: pods[i%len(pods)], Bytes: int64(i) * 4096})
+		Launcher: make([]LauncherLine, 0, largeLines)}
+	for i := range largeLines {
+		w.Launcher = append(w.Launcher, LauncherLine{Time: day.Add(time.Duration(i/len(pods)) * time.Second), Pod: pods[i%len(pods)],
+			Text: fmt.Sprintf("launcher: line %d of the test's launcher log", i)})
 	}
 	dir := filepath.Join(t.TempDir(), "window")
 	if err := w.Write(dir); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(memoryFile)))
+	info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(launcherFile)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,15 +362,15 @@ func liveHeap() int64 {
 }
 
 // collect-queue and collect-merges hold of a window no more than they keep of it: while each reads
-// GitHub, the window read, its heap holds less than a quarter of the bytes of largeMemoryWindow's
-// memory file more than it held before the command began. The stub GitHub answers each read with
+// GitHub, the window read, its heap holds less than a quarter of the bytes of largeLauncherWindow's
+// launcher log more than it held before the command began. The stub GitHub answers each read with
 // an empty page, and measures the heap before it answers. It fails where a command holds the
-// window's samples as it reads GitHub, as one that reads the whole window before it reads GitHub
+// window's lines as it reads GitHub, as one that reads the whole window before it reads GitHub
 // does.
 func TestCollectQueueAndMergesHoldOneLineAtATime(t *testing.T) {
 	// Serial: the test measures the process's heap (liveHeap), which the allocations of a test
 	// running beside it would move, so it runs before the parallel tests start.
-	dir, size := largeMemoryWindow(t)
+	dir, size := largeLauncherWindow(t)
 	bound := size / 4
 	for _, command := range []struct {
 		name    string
@@ -411,7 +412,7 @@ func TestCollectQueueAndMergesHoldOneLineAtATime(t *testing.T) {
 			}
 			for _, grown := range held {
 				if grown >= bound {
-					t.Errorf("%s held %d bytes more as it read GitHub, want under %d, a quarter of the memory file's %d", command.name, grown, bound, size)
+					t.Errorf("%s held %d bytes more as it read GitHub, want under %d, a quarter of the launcher log's %d", command.name, grown, bound, size)
 				}
 			}
 		})
@@ -419,36 +420,36 @@ func TestCollectQueueAndMergesHoldOneLineAtATime(t *testing.T) {
 }
 
 // The walk of a window holds one line at a time: walked with a visitor that keeps nothing, the
-// heap holds, at every 40,000th line of largeMemoryWindow's memory file, less than a quarter of the
-// file's bytes more than before the walk. The bound is no test unless a walk can pass it: walked
-// with a visitor that keeps every line and every sample, as ReadWindow's does, the heap holds more
-// than that by the file's last line. It fails where the walk holds an input whole as it hands its
-// lines to the visitor, as one that reads each file whole before it splits it does.
+// heap holds, at every 40,000th line of largeLauncherWindow's launcher log, less than a quarter of
+// the file's bytes more than before the walk. The bound is no test unless a walk can pass it:
+// walked with a visitor that keeps every line and every line read, as ReadWindow's does, the heap
+// holds more than that by the file's last line. It fails where the walk holds an input whole as it
+// hands its lines to the visitor, as one that reads each file whole before it splits it does.
 func TestTheWalkOfAWindowHoldsOneLineAtATime(t *testing.T) {
 	// Serial: the test measures the process's heap (liveHeap), which the allocations of a test
 	// running beside it would move, so it runs before the parallel tests start.
-	dir, size := largeMemoryWindow(t)
+	dir, size := largeLauncherWindow(t)
 	head, err := readWindowHead(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bound := size / 4
 	// walk is the most the heap holds more than before the walk, at every 40,000th line of the
-	// memory file, walked with a visitor that keeps every line or none.
+	// launcher log, walked with a visitor that keeps every line or none.
 	walk := func(keep bool) int64 {
 		var kept []json.RawMessage
-		var samples []MemorySample
+		var read []LauncherLine
 		var lines int
 		var held int64
 		base := liveHeap()
 		err := walkWindow(dir, head, func(input windowInput) func(json.RawMessage, any) {
-			if input.kind != memoryFile {
+			if input.kind != launcherFile {
 				return nil
 			}
-			return func(line json.RawMessage, sample any) {
+			return func(line json.RawMessage, launched any) {
 				if keep {
 					kept = append(kept, bytes.Clone(line))
-					samples = append(samples, sample.(MemorySample))
+					read = append(read, launched.(LauncherLine))
 				}
 				if lines++; lines%40_000 == 0 {
 					held = max(held, liveHeap()-base)
@@ -458,13 +459,13 @@ func TestTheWalkOfAWindowHoldsOneLineAtATime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("walkWindow: %v", err)
 		}
-		if lines != largeSamples {
-			t.Fatalf("the walk handed %d lines of the memory file to the visitor, want %d", lines, largeSamples)
+		if lines != largeLines {
+			t.Fatalf("the walk handed %d lines of the launcher log to the visitor, want %d", lines, largeLines)
 		}
 		return held
 	}
 	if held := walk(false); held >= bound {
-		t.Errorf("the walk held %d bytes more with a visitor that keeps nothing, want under %d, a quarter of the memory file's %d", held, bound, size)
+		t.Errorf("the walk held %d bytes more with a visitor that keeps nothing, want under %d, a quarter of the launcher log's %d", held, bound, size)
 	}
 	if held := walk(true); held < bound {
 		t.Errorf("the walk held %d bytes more with a visitor that keeps every line, under the bound %d, so the bound tests nothing", held, bound)

@@ -27,3 +27,16 @@ The run gives neither: `expect.json` leaves `urgentWaits` out and gives `priorit
 
 A replay that guesses the missing ancestor's priority, or reads ACME-2 as having none, and so compares a rule with the new P0 start on this window, fails it.
 `pending_test.go` skips the window by name until the replay reads the resolved priority and refuses a window that lacks a required ancestor (plan task t39).
+
+## The signals, worked by hand
+
+The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
+So at 09:00, the window's start, the run under `main` writes each signal unrecorded (`null`) in `signalValues`; the run under `p0-at-once` is refused, and writes none.
+The run limits all six signals (`limits`), and run.json echoes them; `main` admits by no signal, so the limits decide nothing.
+
+- `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
+- `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
+- `provider`: no minute of the provider's record, so the tokens model has no minute to read.
+- `refusals`: no minute of the provider's record before 09:00.
+- `kills`: no launcher's lines and no span of the kills' record, so the kill model is not fitted.
+- `approvals`: no span of the approvals' record, so the replay's copy of Dispatch gives no recorded count.

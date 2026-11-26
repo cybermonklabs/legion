@@ -26,8 +26,16 @@ body: |-
     `validate` checks all three conflict branches and reports Git read counts and conflict hours.
     `--main-only` runs just the main branch at slowdown 1. `forecast` checks the tool against
     a recorded change of rule. `compare` compares rules on two windows and writes each issue's first slot
-    and done time under each rule beside the record. `rules` prints the twenty rules that a
-    replay can run, each with its commit: the daemon's own, the rules of three recorded windows
+    and done time under each rule beside the record. It judges each rule against `main` seed by
+    seed on the issues finished, the owner's three costs and the wait of P0 and P1 work: a rule is
+    better or worse on a measure only where the 95% interval of the paired difference excludes zero
+    and its near end is past the replay's own error across the change of rule, every other
+    difference is a tie with the seeds it would need, and only a rule that keeps the owner's
+    direction (`signals`, `signals-backoff`) can be named best. `run.json` gives each draw of a
+    stretch's conflict with its key and value, and `compare` counts the draws that each rule's runs
+    share with `main`'s and gives each run's admissions with no recorded work. `rules` prints the
+    twenty rules that a replay can run, each with its commit: the daemon's own, the rules of three
+    recorded windows
     (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The
     daemon's own rule and every candidate place the line by Dispatch priority first, as the daemon
     does, and the rules of the recorded windows, whose releases came before that order, do not; the
@@ -38,8 +46,17 @@ body: |-
     arrival, `p0-at-once` starts a P0 issue above the cap, `idle-return-1h` gives back the slot of
     a holder that waits on its children or on a person once none of its roles has had a turn for an
     hour, and `p0-idle` joins the last two. `signals` and `signals-backoff` admit below P0 by
-    signals, the second with an allowance that falls at each refusal and kill; a replay of this
-    version supplies them no signals, so they admit as `p0-at-once`. The daemon keeps no first slot or arrival after a slot
+    signals, the second with an allowance that falls at each refusal and kill. `run --limit` sets
+    each signal's limit, `--idle-after` the idle time that the idle share counts, and `--probe`
+    each moment at which `run.json` gives each limited signal's value. `--token-limit` gives `run`,
+    `signals`, `validate`, `forecast` and `compare` the project's token limit, which a replay takes
+    in each minute whose provider record holds no limit of the project's own. A replay reads the idle
+    share and the approvals from its own course, and the provider's headroom, its refusals, the
+    kills and the merge queue from the load models, which move with the replay's work in flight.
+    Under these two rules it runs an admission pass at each moment that a signal would cross its
+    limit with no event, the deadline's pass, and `run.json` names the limits, the ceiling, each
+    slot that each pass gave out or took back with the pass's kind, and each change of the
+    deadline. The daemon keeps no first slot or arrival after a slot
     goes back, so a replay keeps them in tables of its own. For each rule with a grace, `compare`
     names how many of the waits that gave a slot back in each window's record the grace keeps the
     slot through, and the slot-hours that it keeps. The tool writes nothing to a running daemon, to

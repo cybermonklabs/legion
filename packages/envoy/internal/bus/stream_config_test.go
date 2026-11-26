@@ -180,11 +180,7 @@ func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
 	if err := conn.ForceReconnect(); err != nil {
 		t.Fatalf("force reconnect: %v", err)
 	}
-	select {
-	case <-reconnected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("connection did not automatically reconnect after its initial context expired")
-	}
+	testwait.Receive(t, "the connection to reconnect on its own after its initial context expired", reconnected)
 }
 
 func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testing.T) {

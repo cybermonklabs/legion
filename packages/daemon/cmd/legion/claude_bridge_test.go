@@ -240,7 +240,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	}
 	defer stderr.Close()
 	ready := filepath.Join(dir, "ready")
-	p.cmd = exec.Command(os.Args[0], "claude-bridge", "--", claude, "--resume", "s")
+	p.cmd = exec.Command(legionCopy(t), "claude-bridge", "--", claude, "--resume", "s")
 	p.cmd.Env = append(os.Environ(), testMainEnv+"=1", "TMPDIR="+p.tmp, "CLAUDE_CONFIG_DIR="+t.TempDir(),
 		"LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7", "CLAUDE_STANDIN_READY="+ready)
 	p.cmd.Env = append(p.cmd.Env, env...)

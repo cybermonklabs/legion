@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -88,23 +89,43 @@ func partsRule(parts []Part) string {
 // inside its span, which its conflict model is fitted on (windowConflicts), with how many ended in
 // a conflict, which say whether a branch of it draws (draws), that model itself, whose terms the
 // comparison prints, each wait on another issue that gave a slot back in its record
-// (waitsGaveBack), which the comparison reads what each rule's grace keeps from (graceKeeps), and
-// each span of one cap its daemon served (capSpans), which the cap backtest reads.
+// (waitsGaveBack), which the comparison reads what each rule's grace keeps from (graceKeeps), each
+// span of one cap its daemon served (capSpans), which the cap backtest reads, and each experiment
+// its window.json lists (Window.Experiments), which collect writes none of, with its mode: a run
+// draws an experiment of the random mode in an order a rule moves (UnkeyedDraws), so the comparison
+// pairs no run of a window that lists one (windowRecord.unpaired).
 type windowRecord struct {
-	Name          string         `json:"name"`
-	Order         int            `json:"order"`
-	Project       string         `json:"project"`
-	From          time.Time      `json:"from"`
-	To            time.Time      `json:"to"`
-	After         Duration       `json:"after,omitempty"`
-	Rule          string         `json:"rule"`
-	Parts         []Part         `json:"parts"`
-	Scorecard     Scorecard      `json:"scorecard"`
-	Stretches     int            `json:"stretches"`
-	Conflicted    int            `json:"conflicted"`
-	Conflicts     ConflictModel  `json:"conflicts"`
-	WaitsGaveBack []waitGaveBack `json:"waitsGaveBack"`
-	CapSpans      []CapSpan      `json:"capSpans"`
+	Name          string             `json:"name"`
+	Order         int                `json:"order"`
+	Project       string             `json:"project"`
+	From          time.Time          `json:"from"`
+	To            time.Time          `json:"to"`
+	After         Duration           `json:"after,omitempty"`
+	Rule          string             `json:"rule"`
+	Parts         []Part             `json:"parts"`
+	Scorecard     Scorecard          `json:"scorecard"`
+	Stretches     int                `json:"stretches"`
+	Conflicted    int                `json:"conflicted"`
+	Conflicts     ConflictModel      `json:"conflicts"`
+	WaitsGaveBack []waitGaveBack     `json:"waitsGaveBack"`
+	CapSpans      []CapSpan          `json:"capSpans"`
+	Experiments   []windowExperiment `json:"experiments"`
+}
+
+// windowExperiment is one experiment a window's window.json lists, as its record names it: its
+// name and its mode (config.Experiment).
+type windowExperiment struct {
+	Name string `json:"name"`
+	Mode string `json:"mode"`
+}
+
+// windowExperiments is each of experiments as a window's record names it.
+func windowExperiments(experiments []config.Experiment) []windowExperiment {
+	named := make([]windowExperiment, 0, len(experiments))
+	for _, experiment := range experiments {
+		named = append(named, windowExperiment{Name: experiment.Name, Mode: string(experiment.Mode)})
+	}
+	return named
 }
 
 // draws says whether a replay of the window on branch draws anything with its seed: a conflict,
@@ -144,7 +165,7 @@ func newWindowRecord(w Window, name string, order int) (windowRecord, error) {
 func (in *windowInputs) record(w Window, name string, order int) windowRecord {
 	return windowRecord{Name: name, Order: order, Project: w.Project, From: w.From, To: w.To, After: w.After, Rule: partsRule(w.Parts), Parts: w.Parts,
 		Scorecard: scoreTrace(in.trace), Stretches: in.conflicts.Stretches, Conflicted: in.conflicts.Conflicts, Conflicts: in.conflicts,
-		WaitsGaveBack: waitsGaveBack(in.trace), CapSpans: capSpans(w, in.trace.Boots)}
+		WaitsGaveBack: waitsGaveBack(in.trace), CapSpans: capSpans(w, in.trace.Boots), Experiments: windowExperiments(w.Experiments)}
 }
 
 // partRun is one branch of a part's plan with the seeds it runs.
@@ -230,18 +251,20 @@ type RunDone struct {
 // database on, how many runs at once, the seeds of a branch with a draw, whether each run's log is
 // kept, who is told of each run as it ends, the commit of the legion binary that makes the runs
 // (RunConfig.BuildCommit), the cap every run serves under in place of the record's
-// (RunConfig.Cap, 0 for the record's), and whether a run there already is kept only where the same
+// (RunConfig.Cap, 0 for the record's), the project's token limit every run takes
+// (RunConfig.TokenLimit, 0 for none), and whether a run there already is kept only where the same
 // commit made it (sameBuild).
 type runOptions struct {
-	root      string
-	pgDSN     string
-	parallel  int
-	perDraw   int
-	keepLogs  bool
-	progress  func(RunDone)
-	build     string
-	cap       int
-	sameBuild bool
+	root       string
+	pgDSN      string
+	parallel   int
+	perDraw    int
+	keepLogs   bool
+	progress   func(RunDone)
+	build      string
+	cap        int
+	tokenLimit int64
+	sameBuild  bool
 }
 
 // runWindows runs every part of windows, one window at a time so one window's inputs are in memory
@@ -372,16 +395,17 @@ func (held partRecord) with(plan partRecord) partRecord {
 // phases (ConflictModel.Phases nil), the measures its trace alone gives (Scorecard.GateClosedHours
 // or Scorecard.Filed nil, traceMeasures), the wait of urgent work and priority taken in today's
 // line's order (Scorecard.UrgentWaits nil, which Measure gives with them), what the forecast reads
-// of its line timeline (Scorecard.DailyMaxima nil, forecastReadings) or the spans of one cap its
-// daemon served (CapSpans nil); either way it is written back with ws's place, where that changes
-// the file.
+// of its line timeline (Scorecard.DailyMaxima nil, forecastReadings), the spans of one cap its
+// daemon served (CapSpans nil) or the experiments its window.json lists (Experiments nil, or other
+// than the window's); either way it is written back with ws's place, where that changes the file.
 func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windowInputs, error)) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
 	held, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(held, &rec) != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) ||
 		!rec.To.Equal(w.To) || rec.After != w.After || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil || rec.Scorecard.GateClosedHours == nil ||
-		rec.Scorecard.UrgentWaits == nil || !holdsLineReadings(rec.Scorecard) || rec.CapSpans == nil {
+		rec.Scorecard.UrgentWaits == nil || !holdsLineReadings(rec.Scorecard) || rec.CapSpans == nil || rec.Experiments == nil ||
+		!slices.Equal(rec.Experiments, windowExperiments(w.Experiments)) {
 		in, err := inputs()
 		if err != nil {
 			return windowRecord{}, err
@@ -401,10 +425,12 @@ func runDir(root, window, rule string, at BranchAt, seed int64) string {
 }
 
 // runOne makes the run p plans of w, whose inputs inputs answers, under rule on opts.pgDSN's
-// server at opts.cap, unless its three files are there already, and deletes its log unless opts
-// keeps it: the run reads its log back for its line scorecard (Run), and a window's log is the
-// largest file a run writes. A run there already that ran at another cap is refused, and so, where
-// opts asks for the same build, is one that another commit of the legion binary made.
+// server at opts.cap and opts.tokenLimit, unless its three files are there already, and deletes its
+// log unless opts keeps it: the run reads its log back for its line scorecard (Run), and a window's
+// log is the largest file a run writes. A run there already that ran at another cap, or with
+// another token limit, is refused, a run.json that names no token limit, as one written before
+// runs named it holds, reading as none; and so, where opts asks for the same build, is one that
+// another commit of the legion binary made.
 func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error), window string, rule record.SlotRule, p planned,
 	opts runOptions) (RunDone, error) {
 	done := RunDone{Window: window, Rule: rule.Name, Branch: p.at, Seed: p.seed}
@@ -418,13 +444,16 @@ func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error),
 		if ran.Cap != opts.cap {
 			return done, fmt.Errorf("replay: the run in %s ran at the cap %d (0 for the record's), and this one runs at %d", p.dir, ran.Cap, opts.cap)
 		}
+		if ran.TokenLimit != opts.tokenLimit {
+			return done, fmt.Errorf("replay: the run in %s ran with the token limit %d (0 for none), and this one runs with %d", p.dir, ran.TokenLimit, opts.tokenLimit)
+		}
 		if build := cmp.Or(opts.build, unknownBuild); opts.sameBuild && cmp.Or(ran.BuildCommit, unknownBuild) != build {
 			return done, fmt.Errorf("replay: the run in %s was made by the legion binary of %s, not this one's %s: delete it or give another directory of runs",
 				p.dir, cmp.Or(ran.BuildCommit, unknownBuild), build)
 		}
 	} else {
 		if _, err := Run(ctx, RunConfig{Window: w, Rule: rule, Branch: p.at.Branch, Seed: p.seed, Slowdown: p.at.Slowdown, PGDSN: opts.pgDSN, Out: p.dir,
-			BuildCommit: opts.build, Cap: opts.cap, inputs: inputs}); err != nil {
+			BuildCommit: opts.build, Cap: opts.cap, TokenLimit: opts.tokenLimit, inputs: inputs}); err != nil {
 			return done, fmt.Errorf("replay: %s under %s on %s, seed %d: %w", window, rule.Name, p.at.Label(), p.seed, err)
 		}
 		if !opts.keepLogs {
@@ -501,18 +530,22 @@ type Runs struct {
 // partKey names a part: a window and a rule.
 type partKey struct{ window, rule string }
 
-// partRead is one part read back: its plan, and each run of each of its branches and break-even
-// factors, by the branch's label, in the order of its seeds.
+// partRead is one part read back: its plan, each run of each of its branches and break-even
+// factors, by the branch's label, in the order of its seeds, and the place of each stretch its runs
+// drew, by its key (keyedDraws), which names a stretch two runs drew another value at.
 type partRead struct {
-	plan partRecord
-	runs map[string][]runRead
+	plan   partRecord
+	runs   map[string][]runRead
+	places map[uint64]stretchDraw
 }
 
 // runRead is what a report reads of one run: its seed, its scorecard from the snapshot timeline
 // with the decision's costs read from it, its scorecard from the line timeline, the gap of each
 // measure between the two (run.json's, each issue's own left out), the assumptions and the
 // scenario it ran under, and the commit of the legion binary that made it (unknownBuild for a
-// run.json that names none) with the moment on the wall clock it started. A run that no
+// run.json that names none) with the moment on the wall clock it started, its admissions with no
+// work with the slot-hours they hold (Divergence), each draw of a stretch's conflict it made by its
+// key (keyedDraws), and the draws it made that it keys to no stretch (UnkeyedDraws). A run that no
 // validation, no forecast and no comparison's issues file reads (keepsIssues, readPart) keeps no
 // issue's times of its line scorecard, and no run keeps its snapshot scorecard's, which no report
 // reads.
@@ -531,6 +564,10 @@ type runRead struct {
 	gitTable      map[string]GitReadTable
 	conflicts     ConflictModel
 	keptOpenLoops int
+	noWork        int
+	noWorkHours   float64
+	draws         []keyedDraw
+	unkeyedDraws  UnkeyedDraws
 }
 
 // ReadRuns reads every window's record and every part, with its runs, that dirs hold. A part found
@@ -626,7 +663,7 @@ func (r Runs) keepsIssues(key partKey) bool {
 // says.
 func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 	partDir := filepath.Join(dir, key.window, key.rule)
-	part := &partRead{runs: map[string][]runRead{}}
+	part := &partRead{runs: map[string][]runRead{}, places: map[uint64]stretchDraw{}}
 	if err := readJSON(filepath.Join(partDir, partFile), &part.plan); err != nil {
 		return nil, err
 	}
@@ -639,7 +676,7 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 			continue
 		}
 		for _, seed := range run.Seeds {
-			read, err := readRun(runDir(dir, key.window, key.rule, at, seed), keepIssues || at.Label() == MainBranchAt.Label())
+			read, err := readRun(runDir(dir, key.window, key.rule, at, seed), keepIssues || at.Label() == MainBranchAt.Label(), part.places)
 			if err != nil {
 				return nil, err
 			}
@@ -651,12 +688,13 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 }
 
 // readRun reads one run's three files from dir; keepIssues keeps each issue's times of its line
-// scorecard. A run whose scorecards were written before they held the wait of urgent work and
+// scorecard, and places, where it is not nil, takes the place of each stretch the run drew by its
+// key (keyedDraws). A run whose scorecards were written before they held the wait of urgent work and
 // priority taken in today's line's order (Scorecard.UrgentWaits nil, which Measure gives with
 // them), or whose line scorecard was written before it held what a line timeline alone gives
 // beside the measures of R4 (holdsLineReadings), is refused, naming it: read, it would give every
 // report 0 in each of those measures.
-func readRun(dir string, keepIssues bool) (runRead, error) {
+func readRun(dir string, keepIssues bool, places map[uint64]stretchDraw) (runRead, error) {
 	var read runRead
 	var ran runRecord
 	if err := readJSON(filepath.Join(dir, runFile), &ran); err != nil {
@@ -690,6 +728,8 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 	read.build, read.started = cmp.Or(ran.BuildCommit, unknownBuild), ran.StartedAt
 	read.gitReads, read.gitHours, read.gitTable = ran.GitReads, ran.GitLoopHours, ran.GitReadTable
 	read.conflicts, read.keptOpenLoops = ran.Conflicts, ran.Divergence.KeptOpenLoops
+	read.noWork, read.noWorkHours, read.draws = ran.Divergence.NoWorkAdmissions, ran.Divergence.NoWorkSlotHours, keyedDraws(ran.Draws, places)
+	read.unkeyedDraws = ran.UnkeyedDraws
 	return read, nil
 }
 

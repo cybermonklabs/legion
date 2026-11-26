@@ -111,3 +111,16 @@ None.
 8 (ACME-4, handed to Legion, never started in the record);
 9; 11 (ACME-1's slot, freed at 11:30, to ACME-3; ACME-2's, freed at 11:35, to ACME-4); 15 (three issues in flight at 14:00).
 `assumptions` is [1, 2, 8, 9, 11, 15] under every scenario; `scenario` is `none`, `drawn` and `drawn-done` in turn.
+
+## The signals, worked by hand
+
+The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
+So at 09:00, the window's start, the run under `main` in each scenario that `expect.json` names writes each signal unrecorded (`null`) in `signalValues`.
+Each run limits all six signals (`limits`), and run.json echoes them; `main` admits by no signal, so the limits decide nothing.
+
+- `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
+- `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
+- `provider`: no minute of the provider's record, so the tokens model has no minute to read.
+- `refusals`: no minute of the provider's record before 09:00.
+- `kills`: no launcher's lines and no span of the kills' record, so the kill model is not fitted, and the drawn work's kills have no rate.
+- `approvals`: no span of the approvals' record, so the replay's copy of Dispatch gives no recorded count.

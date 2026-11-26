@@ -240,6 +240,10 @@ type script struct {
 	// issue counts once.
 	flight   map[string][][2]time.Time
 	inFlight stretchCount
+	// drawnWork is each issue the record never started that the never-started scenario gave the
+	// work of another issue (drawNeverStarted): work the record never ran, which the kill model
+	// gives the day's kills for each hour in flight.
+	drawnWork map[string]bool
 }
 
 // anchorKind is what places an event of the record in a replay where no piece of work does

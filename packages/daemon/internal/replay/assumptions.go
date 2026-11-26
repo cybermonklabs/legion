@@ -31,9 +31,10 @@ type Assumption struct {
 // review of the tool's replays of a recorded window (38 to 44: the merge queue, a person's hours,
 // the slowdown factor's fit, work done outside Legion, main's base rules, answer offsets and the
 // noise of a validation's redrawn conflicts); then the four of R11's signals (45 to 48: the
-// models' one input, the refusals the record keeps as recorded, a signal with no record, and the
-// provider's limit between two observations of it, the architect's D13). A run names the ones its
-// measures rest on by these numbers.
+// models' forms, the refusals the record keeps as recorded, a signal with no record, and the
+// provider's limit between two observations of it, the architect's D13); and the project's token
+// limit a replay takes from its caller where the record holds none (49: RunConfig.TokenLimit). A
+// run names the ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -168,17 +169,22 @@ var Assumptions = []Assumption{
 		Text:      "Redrawing conflicts can change the first-slot test of a replay of the recorded rule.",
 		Direction: "Two seeds can give an issue different first slots. Main keeps recorded conflicts, so this noise does not affect its test. The git and drawn branches face the same gaps as main."},
 	{Number: 45,
-		Text:      "The three modelled signals depend on the work in flight alone.",
-		Direction: "Doubtful: even at a full cap, one window had 299, 88, 57 and 110 memory kills on successive days. Unmodelled changes can favour or disfavour a signal rule. Compare each model's daily reading with the record at the recorded work in flight."},
+		Text: "Each modelled signal moves with the work in flight only as its model's form says.",
+		Direction: "Doubtful: a minute's tokens scale with the issues in flight, a kill moves with the work segment of its issue, work the record never ran takes the day's kills for each hour of an issue in flight, and each repository's queue is served by its recorded exits and rate; " +
+			"every other cause, such as a release or a queue's checks, stays as recorded, and one window had 299, 88, 57 and 110 memory kills on successive days at a full cap. " +
+			"Compare the rate each model rests on across two records whose work in flight differs, and read it in each range of 20 issues in flight."},
 	{Number: 46,
 		Text:      "A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says.",
-		Direction: "A provider refusal stays as recorded. An unsplit refusal counts as the project's own and the result says so. This can overstate the project's own refusals if some came from the provider. Check against a record that separates the counts."},
+		Direction: "A provider refusal stays as recorded, and so do both kinds in a minute with no record of the project's limit. An unsplit refusal counts as the project's own and the result says so. This can overstate the project's own refusals if some came from the provider. Check against a record that separates the counts."},
 	{Number: 47,
 		Text:      "A signal with no record in a span does not bind there.",
 		Direction: "If an unrecorded signal would exceed its limit, the replay favours a rule that starts work in that span. Check the decision on a span where that signal is recorded."},
 	{Number: 48,
 		Text:      "The provider's limit holds from one observation to the next.",
-		Direction: "Doubtful: a change between observations is read late, so headroom is misread over that stretch, high after a cut and low after a raise. Use the limit in each 429 line's \"of its N\" and in each recorded change, naming the source of each value. Before the first observation headroom is unrecorded, does not bind and is not fitted. Check any recorded limit change against the next 429's N."},
+		Direction: "Doubtful: a change between observations is read late, so headroom is misread over that stretch, high after a cut and low after a raise. Use the limit in each 429 line's \"of its N\" and in each recorded change, naming the source of each value. Before the first observation headroom is unrecorded and does not bind, and the tokens model tests no refused minute there. Check any recorded limit change against the next 429's N."},
+	{Number: assumeSuppliedTokenLimit,
+		Text:      "The project's token limit is the one the replay's caller gives (--token-limit) in each minute whose provider record holds no limit of the project's own.",
+		Direction: "Favours a signal rule: the window's work runs under a limit that the record did not have, and the replay keeps each work segment's recorded length, so it shows no slowdown that the refusals would have caused, and a signal rule's measures look better than they would by that slowdown; no record confirms the refused minutes it models there. A limit the record holds stands, and R11's daily test reads only the minutes where the record holds one. Check on a window that records the project's limit throughout."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -202,3 +208,9 @@ const assumeRootRanksByNextStart = 36
 // candidates built on it, which the daemon the replay runs leaves to the merger
 // (driver.conflictFor), and which a run names where it leaves one (Divergence.ConflictsToMerger).
 const assumeConflictToMerger = 37
+
+// assumeSuppliedTokenLimit is the assumption a run rests on where it models a minute of the
+// provider's record against the project's token limit its caller gives (RunConfig.TokenLimit),
+// the record holding no limit of the project's own there, which a run names where its load models
+// read one such minute (ModelReader.SuppliedMinutes).
+const assumeSuppliedTokenLimit = 49

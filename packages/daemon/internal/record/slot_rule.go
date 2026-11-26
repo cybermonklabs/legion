@@ -683,6 +683,17 @@ func (r SlotRule) SignalsLet(kind signals.PassKind, s signals.Snapshot, capped, 
 	return signals.Decide(r.OrMain().Signals.Or(s.Mode), kind, s, capped, ceiling)
 }
 
+// KeepsOwnersDirection says whether r admits as the owner directed on 2026-11-24, the one kind of
+// rule a comparison of rules may name best (the replay's spec, R7): R10 above P0 (P0AboveCap), and
+// below it the next issue in the line's priority order (PriorityFirst) while each signal of R11 is
+// under its limit, with the cap as a ceiling only (Signals, in either of its modes). Of the rules
+// the repository keeps, signals and signals-backoff keep it; the daemon's own rule admits below P0
+// under the cap, and every other rule is measured beside them.
+func (r SlotRule) KeepsOwnersDirection() bool {
+	r = r.OrMain()
+	return r.P0AboveCap && r.PriorityFirst && r.Signals != signals.Off
+}
+
 // SlotRuleNamed is the rule SlotRules keeps under name, and whether it keeps one.
 func SlotRuleNamed(name string) (SlotRule, bool) {
 	for _, rule := range SlotRules() {

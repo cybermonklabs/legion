@@ -98,3 +98,16 @@ None: ACME-1 stands past admitted while its children are open, which is no wait 
 1; 2 (the children past their review); 9 (slots given out); 10 (children); 15 (ACME-1's work left at 12:00); 17 (the children filed after ACME-1 started).
 No slot is freed for a waiting issue, so 11 is not named.
 `assumptions` is [1, 2, 9, 10, 15, 17]; `scenario` is `none`.
+
+## The signals, worked by hand
+
+The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
+So at 09:00, the window's start, the run under `main` writes each signal unrecorded (`null`) in `signalValues`.
+The run limits all six signals (`limits`), and run.json echoes them; `main` admits by no signal, so the limits decide nothing.
+
+- `idle`: no span of the idle share's record, so the replay's own holders give no recorded share, though the root holds its slot with no turn.
+- `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
+- `provider`: no minute of the provider's record, so the tokens model has no minute to read.
+- `refusals`: no minute of the provider's record before 09:00.
+- `kills`: no launcher's lines and no span of the kills' record, so the kill model is not fitted.
+- `approvals`: no span of the approvals' record, so the replay's copy of Dispatch gives no recorded count.

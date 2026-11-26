@@ -83,3 +83,16 @@ The span is 60 minutes. No issue finishes, returns a slot, waits on another issu
 The rule with the new P0 start starts ACME-2 when only the cap holds it; ACME-3, an explicit P1 under the same Dispatch root, does not pass the cap; ACMEAUX-2's raise at 09:40 moves ACME-4 from P2 to P0 at that moment and starts it; and the recorded rule starts nothing outside the cap.
 A replay that reads each issue's own priority, or its tree root's, as the replay did before the resolved priority, starts neither ACME-2 nor ACME-4 under `p0-at-once`, and counts only ACME-3 in the urgent waits of either rule; one that takes the new P0 classification only at a later pass starts ACME-4 late.
 `pending_test.go` skips the window by name until the replay reads the resolved priority (plan task t39).
+
+## The signals, worked by hand
+
+The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
+So at 09:00, the window's start, the run under each rule that `expect.json` names writes each signal unrecorded (`null`) in `signalValues`.
+Each run limits all six signals (`limits`), and run.json echoes them; neither rule here admits by signals, so the limits decide nothing.
+
+- `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
+- `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
+- `provider`: no minute of the provider's record, so the tokens model has no minute to read.
+- `refusals`: no minute of the provider's record before 09:00.
+- `kills`: no launcher's lines and no span of the kills' record, so the kill model is not fitted.
+- `approvals`: no span of the approvals' record, so the replay's copy of Dispatch gives no recorded count.

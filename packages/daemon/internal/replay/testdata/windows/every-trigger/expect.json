@@ -249,5 +249,29 @@
         "trigger": "pull_request_merged"
       }
     ]
+  },
+  "checks": {
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        }
+      }
+    }
   }
 }

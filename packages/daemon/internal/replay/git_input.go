@@ -34,12 +34,14 @@ const (
 )
 
 // The reasons a git input gives for an input the collector could not get (GitMissing.Reason):
-// GitHub has no such pull request in the repository; GitHub's timeline of the pull request does
-// not read as one, or names a head it gives no commit of; the remote holds no head, or no base
-// commit, the collector fetched; git failed; or the guard killed git past its memory cap or its
-// time (gitGuard).
+// GitHub has no such pull request in the repository; GitHub still refuses to read the pull request
+// after the reader's tries, with its 422 of a pull request whose diff it cannot compute for now
+// (tooManyFiles); GitHub's timeline of the pull request does not read as one, or names a head it
+// gives no commit of; the remote holds no head, or no base commit, the collector fetched; git
+// failed; or the guard killed git past its memory cap or its time (gitGuard).
 const (
 	GitPullNotFound    = "pull-not-found"
+	GitPullUnread      = "pull-unread"
 	GitTimelineUnread  = "timeline-unread"
 	GitHeadUnreachable = "head-unreachable"
 	GitBaseUnreachable = "base-unreachable"
@@ -49,12 +51,14 @@ const (
 )
 
 // gitReasons is every reason a missing line may give.
-var gitReasons = []string{GitPullNotFound, GitTimelineUnread, GitHeadUnreachable, GitBaseUnreachable, GitError, GitMemoryCap, GitTimeout}
+var gitReasons = []string{GitPullNotFound, GitPullUnread, GitTimelineUnread, GitHeadUnreachable, GitBaseUnreachable, GitError, GitMemoryCap, GitTimeout}
 
 // githubReason says whether reason is one GitHub's reads give (collect-git's GitHub phase) rather
-// than git's.
+// than git's. GitPullUnread is GitHub's: like GitPullNotFound it leaves the pull request no pull
+// line and its reads unanswered, the git phase keeps it, and a run again reads the pull request
+// again (githubHeld).
 func githubReason(reason string) bool {
-	return reason == GitPullNotFound || reason == GitTimelineUnread
+	return reason == GitPullNotFound || reason == GitPullUnread || reason == GitTimelineUnread
 }
 
 // GitInput is a window's git/<owner>__<name>.jsonl: what git says of the pull requests of the

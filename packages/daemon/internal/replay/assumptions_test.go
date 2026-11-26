@@ -26,14 +26,14 @@ func listsAssumption(number int) bool {
 }
 
 // specAssumptions is the number of each assumption the tool's list must hold: the eighteen in the
-// spec's Design, the plan's 19 to 25, D10's 38 to 44 and the signal assumptions 45 to 48. Their
+// spec's Design, the plan's 19 to 25, D10's 38 to 44 and the signal assumptions 45 to 49. Their
 // words are the list's own (Assumptions), which the docs page gives
 // (TestTheDocsPageGivesEveryAssumption), and the replay's tests hold what each says the tool does.
 var specAssumptions = []int{
 	1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
 	19, 20, 21, 22, 23, 24, 25,
 	38, 39, 40, 41, 42, 43, 44,
-	45, 46, 47, 48,
+	45, 46, 47, 48, 49,
 }
 
 // The list must hold each numbered assumption above, and cannot repeat a number.

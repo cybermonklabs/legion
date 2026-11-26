@@ -98,6 +98,10 @@ type item struct {
 	piece               *piece
 	eventKey, eventKind string
 	done                bool
+	// timer says the item is the daemon's own timer (a signal's deadline, or the next change of a
+	// modelled signal's input), which the daemon keeps in memory: one that falls while the daemon
+	// is down is dropped, never held for its next boot.
+	timer bool
 	// dispatch is the item's change to the replay's copy of Dispatch, which runs at its moment
 	// whether or not the daemon is up (Dispatch is), and run its act on the daemon, which waits
 	// for the daemon's next boot while it is down (assumption 24).
@@ -139,6 +143,7 @@ var tapped = []string{
 	mergeForwardAskedLine,
 	mergeForwardLandedLine,
 	admit.CoverTakenLine,
+	admit.P0StartLine,
 }
 
 // driver is one replay's run: the window and its reading, the replay's database, its simulated
@@ -172,8 +177,13 @@ type driver struct {
 	engine    *workflow.Engine
 	admission *admit.Admission
 	handlers  []intake.Handler
+	// cap is the admission cap the newest chain serves under (newChain), the ceiling of a rule that
+	// admits by signals.
+	cap int
 	// boots is how many boots the replay has made, which names each boot's facts.
 	boots int
+	// sig is what the run reads and records of R11's signals (setupSignals).
+	sig *runSignals
 
 	queue itemQueue
 	seq   int64
@@ -261,6 +271,12 @@ type driver struct {
 	// noWork is each issue the replay admitted with no work, recorded or drawn (neverStartedWork),
 	// whose slot-hours the run counts (Divergence.NoWorkSlotHours).
 	noWork map[string]bool
+	// drawn is each draw of a stretch's conflict the run made, in its order, with its key and its
+	// value (recordDraw), which run.json records (runRecord.Draws).
+	drawn []StretchDraw
+	// unkeyed counts the draws the run made that it keys to no stretch (newChain), which run.json
+	// records (runRecord.UnkeyedDraws).
+	unkeyed UnkeyedDraws
 }
 
 // Divergence is what a replay counts of where it left the record's course, which a replay under
@@ -369,7 +385,10 @@ func (d *driver) now() time.Time { return d.clock.Now() }
 // settings and the cap the daemon process running from at served under (processCap), or the run's
 // own cap where it names one (RunConfig.Cap), the replay's tables of what a rule the daemon does not
 // run records (ruleTables), the replay's own handler before the chain, and its reading of the
-// recorded first starts right before the admission pass (firstStartsHandler).
+// recorded first starts right before the admission pass (firstStartsHandler). The source of the
+// experiments' draws starts afresh from the run's seed at each boot and is read in the order the
+// engine and the pass record their trees and issues, keyed to no issue, so the run counts each
+// draw of it (UnkeyedDraws.Experiments).
 func (d *driver) newChain(at time.Time) {
 	w := d.window
 	source := rand.New(rand.NewPCG(uint64(d.cfg.Seed), experimentStream))
@@ -377,6 +396,7 @@ func (d *driver) newChain(at time.Time) {
 		if bound == 0 {
 			return 0, fmt.Errorf("draw a value below %d: there is no value below zero", bound)
 		}
+		d.unkeyed.Experiments++
 		return source.Uint64N(bound), nil
 	}
 	d.engine = workflow.New(d.records, workflow.Config{Project: w.Project, Steps: w.GateSteps, ReviewRoundCap: w.ReviewRoundCap,
@@ -386,17 +406,20 @@ func (d *driver) newChain(at time.Time) {
 	if d.cfg.Cap > 0 {
 		limit = d.cfg.Cap
 	}
-	d.admission = admit.New(d.records, d.engine, limit, w.Project, d.log)
+	d.admission, d.cap = admit.New(d.records, d.engine, limit, w.Project, d.log), limit
 	d.admission.UseRuleTables(ruleTables{})
 	d.admission.UseClock(d.clock.Now)
 	d.admission.UseExperiments(w.Experiments)
 	d.admission.UseStalledTreeNotice(time.Duration(w.StalledTreeNotice))
 	d.admission.UseWorkerSilence(time.Duration(w.WorkerSilence), time.Duration(w.WorkerBackground))
-	d.admission.UsePassObserver(d.snap.pass)
+	d.admission.UsePassObserver(d.observePass)
 	// R10's P0 bound in force at the moment of each pass, from the window's record of its changes
 	// (p0BoundAt): a rule that starts a P0 issue outside the cap admits under it, and every other
 	// rule reads it not at all.
 	d.admission.UseP0Bound(func() *int { return p0BoundAt(w, d.clock.Instant()) })
+	// R11's signals as the replay reads them (readSignals), which a pass admits below P0 by under a
+	// rule whose mode is not Off and reads not at all under any other.
+	d.admission.UseSignals(d.readSignals)
 	// Each of the replay's own facts runs the pass, whatever it wrote (ownFact).
 	d.admission.UsePassFacts(ownFact)
 	d.handlers = []intake.Handler{replayHandler{engine: d.engine, clock: d.clock.Now, rule: d.rule, records: d.records, project: w.Project}}
@@ -548,8 +571,9 @@ func (r replayRepositories) ResolveRepository(resolved string) (workflow.Resolut
 	return workflow.Resolution{Repo: resolved, GitHubRepo: resolved, DefaultBranch: cmp.Or(r.branches[resolved], defaultBranch)}, nil
 }
 
-// apply applies fact as source's eventID through the chain, on the simulated clock, and reads
-// what the daemon's lines say it did.
+// apply applies fact as source's eventID through the chain, on the simulated clock, reads what the
+// daemon's lines say it did, and, the pass having run, computes the project's deadline again
+// (recomputeDeadline), which the pass arms once the daemon process now running has served one.
 func (d *driver) apply(source, eventID string, fact intake.Fact) (intake.Result, error) {
 	began := time.Now()
 	d.released = false
@@ -567,7 +591,8 @@ func (d *driver) apply(source, eventID string, fact intake.Fact) (intake.Result,
 			return result, err
 		}
 	}
-	return result, nil
+	d.sig.armed = true
+	return result, d.recomputeDeadline()
 }
 
 // factID names one of the replay's own facts uniquely in its run.
@@ -587,6 +612,11 @@ func (d *driver) factID(kind string, parts ...any) string {
 // move a root's rank under the recorded order of first starts (take), and what the run's
 // assumptions are named from.
 func (d *driver) observe() error {
+	// A slot taken after a slot released in one fact is a freed slot given out in the pass that freed
+	// it (assumption 11), unless the issue starts outside the cap (admit.P0StartLine), which takes no
+	// slot of the cap. The two lines of one issue may come in either order.
+	var takenAfterRelease []string
+	outsideCap := map[string]bool{}
 	for _, line := range d.tap.take() {
 		key := line.str("issue")
 		switch line.msg {
@@ -613,7 +643,9 @@ func (d *driver) observe() error {
 				delete(d.stretches, key)
 			}
 			if to == phase.Done {
-				delete(d.inFlight, key)
+				if err := d.setFlight(key, false); err != nil {
+					return err
+				}
 			}
 			d.endedGitLoops(key, to)
 			d.openOnPhase(key, to)
@@ -622,7 +654,9 @@ func (d *driver) observe() error {
 				return err
 			}
 		case leftWorkflowLine:
-			delete(d.inFlight, key)
+			if err := d.setFlight(key, false); err != nil {
+				return err
+			}
 			delete(d.started, key)
 			delete(d.childWait, key)
 			if err := d.cancelWork(key); err != nil {
@@ -644,7 +678,9 @@ func (d *driver) observe() error {
 			}
 		case slotTakenLine:
 			d.used[9] = true
-			d.inFlight[key] = true
+			if err := d.setFlight(key, true); err != nil {
+				return err
+			}
 			// Only the first slot of the run the issue stands in is a first start: a slot taken
 			// again in a run, after a return or a wait's end, starts nothing (firstStartIn).
 			_, again := d.started[key]
@@ -656,8 +692,10 @@ func (d *driver) observe() error {
 				d.placeStarted(key)
 			}
 			if d.released {
-				d.used[11] = true
+				takenAfterRelease = append(takenAfterRelease, key)
 			}
+		case admit.P0StartLine:
+			outsideCap[key] = true
 		case slotReleasedLine:
 			d.released = true
 		case waitsForChildrenLine:
@@ -676,6 +714,11 @@ func (d *driver) observe() error {
 			d.snap.roundEnds(key, d.clock.Instant())
 		case admit.CoverTakenLine:
 			d.used[14] = true
+		}
+	}
+	for _, key := range takenAfterRelease {
+		if !outsideCap[key] {
+			d.used[11] = true
 		}
 	}
 	d.placeAnchored()
@@ -817,6 +860,12 @@ func (d *driver) run() error {
 	if err := d.seed(); err != nil {
 		return err
 	}
+	// The load models read the replay's own issues in flight from its start on.
+	if m := d.sig.models; m != nil {
+		if err := m.Flight(w.From, len(d.inFlight)); err != nil {
+			return err
+		}
+	}
 	// The copy of Dispatch starts where the record stands at the window's start: every recorded
 	// event before it, the daemon's own writes among them, at its recorded time and sequence, in
 	// the script's order (shadow.seedEvent).
@@ -905,6 +954,9 @@ func (d *driver) run() error {
 	d.dirty = true
 	for d.queue.Len() > 0 {
 		it := heap.Pop(&d.queue).(*item)
+		// Every act at or before each probe before this item has run: the probe reads the replay
+		// as they left it.
+		d.readProbes(it.at, false)
 		if !it.at.Before(end) {
 			break
 		}
@@ -935,7 +987,11 @@ func (d *driver) run() error {
 			}
 		}
 		if it.class != classBoot && (d.down(it.at) || it.at.Before(d.serving)) {
-			d.held = append(d.held, it)
+			// The daemon's timer is in its memory, so one that falls while the daemon is down never
+			// fires: the boot's first pass computes the deadline again.
+			if !it.timer {
+				d.held = append(d.held, it)
+			}
 			continue
 		}
 		if err := it.run(); err != nil {
@@ -960,6 +1016,7 @@ func (d *driver) run() error {
 	for i := range d.script.events {
 		unplaced(d.script.events[i].awaiting)
 	}
+	d.readProbes(time.Time{}, true)
 	return d.settle()
 }
 
@@ -1053,7 +1110,9 @@ func (d *driver) seed() error {
 				continue
 			}
 			if withinStretches(d.script.flight[issue.Key], d.window.From) {
-				d.inFlight[issue.Key] = true
+				if err := d.setFlight(issue.Key, true); err != nil {
+					return err
+				}
 			}
 			if first := d.firstSlotBefore(issue.Key); !first.IsZero() {
 				d.started[issue.Key] = first
@@ -1531,6 +1590,7 @@ func answers(fact intake.Fact) bool {
 func (d *driver) boot(boot Boot) error {
 	d.boots++
 	d.used[assumeBootRepairsNothing] = true
+	d.bootDropsTimer()
 	d.newChain(boot.At)
 	if err := d.serialized(func(ctx context.Context, tx pgx.Tx) error {
 		_, err := d.engine.OpenUncountedRuns(ctx, tx)

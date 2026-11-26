@@ -1,0 +1,90 @@
+{
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T13:00:00Z",
+      "unplaced": 0,
+      "done": 2,
+      "workLeft": 2,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.3333333333333333,
+        "max": 1,
+        "hours": 1.3333333333333333
+      },
+      "priorityTaken": 0.125,
+      "priorityTakenBanded": 0.125,
+      "loops": {},
+      "waits": {},
+      "slotHoursInTurn": 7.916666666666667,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 2.3125,
+        "max": 3,
+        "hours": 9.25
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 4
+      },
+      "medianSlotWaitMinutes": 45,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:00:00Z",
+        "ACME-2": "2001-03-05T09:05:00Z",
+        "ACME-3": "2001-03-05T11:00:00Z",
+        "ACME-4": "2001-03-05T12:00:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T12:40:00Z",
+        "ACME-2": "2001-03-05T11:40:00Z"
+      },
+      "assumptions": [1, 2, 9, 11, 15],
+      "scenario": "none"
+    }
+  },
+  "checks": {
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        },
+        "unkeyedDraws": {
+          "experiments": 4
+        }
+      }
+    }
+  }
+}

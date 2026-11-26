@@ -1140,7 +1140,10 @@ func (d *driver) writeTurnStart(key string, role claim.Role) error {
 		return fmt.Errorf("write the step of the claim %s: %w", c.Token, err)
 	}
 	d.log.Info(turnStartedLine, turnLineArgs(c)...)
-	return d.settled(key, role)
+	if err := d.settled(key, role); err != nil {
+		return err
+	}
+	return d.idleMoved()
 }
 
 // writeTurnEnd is the turn of key's role's worker under way ending: its claim idle from now, and
@@ -1159,7 +1162,10 @@ func (d *driver) writeTurnEnd(key string, role claim.Role) error {
 		return err
 	}
 	d.log.Info(turnEndedLine, turnLineArgs(c)...)
-	return d.settled(key, role)
+	if err := d.settled(key, role); err != nil {
+		return err
+	}
+	return d.idleMoved()
 }
 
 // turnLineArgs is the attributes of the line a turn of c writes as it starts or ends: the claim, its

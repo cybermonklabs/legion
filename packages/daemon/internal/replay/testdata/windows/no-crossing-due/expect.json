@@ -1,5 +1,53 @@
 {
   "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "to": "2001-03-05T12:00:00Z",
+      "unplaced": 0,
+      "done": 0,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "startedWithoutSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "priorityTaken": 0,
+      "loops": {},
+      "waits": {},
+      "slotHoursInTurn": 0.0,
+      "slotHoursNoTurn": 0.0,
+      "inFlight": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "slotsGivenByDay": {},
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {},
+      "doneAt": {},
+      "assumptions": [1],
+      "scenario": "none",
+      "from": "2001-03-05T09:00:00Z"
+    },
     "signals": {
       "source": "replay",
       "rule": "signals",
@@ -50,6 +98,47 @@
     }
   },
   "checks": {
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "ceiling": 1,
+        "deadlines": [],
+        "slotPasses": [],
+        "signalValues": {
+          "2001-03-05T09:41:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": 1,
+            "approvals": null
+          },
+          "2001-03-05T10:40:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": 2,
+            "approvals": null
+          },
+          "2001-03-05T10:50:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": 1,
+            "approvals": null
+          }
+        }
+      }
+    },
     "signals": {
       "run": {
         "limits": {

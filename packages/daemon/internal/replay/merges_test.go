@@ -39,8 +39,10 @@ var (
 // its merged_at, its merge_commit_sha and its base.ref, where unset the committer's time, the
 // commit's own sha and main, so that the commit is the pull request's merge into main, merged as
 // it was committed. bare says GitHub's list of the pull requests of the commit leaves out
-// merge_commit_sha, as that list's schema allows, and broken that GitHub answers the read of the
-// pull request with no pull request.
+// merge_commit_sha, as that list's schema allows, broken that GitHub answers the read of the pull
+// request with no pull request, and refused how many reads of the pull request by its number GitHub
+// answers with its 422 of too many files changed (tooManyFilesChanged) before it serves one, every
+// read where refused is below 0.
 type stubCommit struct {
 	sha         string
 	at          time.Time
@@ -53,6 +55,7 @@ type stubCommit struct {
 	into        string
 	bare        bool
 	broken      bool
+	refused     int
 }
 
 // stubSHA is the sha of the stub commit numbered n: n in hex, 40 digits long.
@@ -124,9 +127,10 @@ func (c stubCommit) pull() map[string]any {
 // before it, but a commit marked unlisted. Each commit of history, unlisted or not, is served by
 // its sha (/repos/acme/widgets/commits/<sha>). The pull request each commit merged is served as
 // GitHub records its merge (stubCommit.pull): by its number (/repos/acme/widgets/pulls/<n>), with
-// no pull request where the commit is broken, and among the pull requests of the commit it was
-// merged as (/repos/acme/widgets/commits/<sha>/pulls), with no merge_commit_sha where the commit
-// is bare. A request for anything else, or without the token, is refused.
+// no pull request where the commit is broken, and GitHub's 422 of too many files changed for as
+// many reads as the commit's refused says; and among the pull requests of the commit it was merged
+// as (/repos/acme/widgets/commits/<sha>/pulls), with no merge_commit_sha where the commit is bare.
+// A request for anything else, or without the token, is refused.
 func githubListing(t *testing.T, history []stubCommit) (*httptest.Server, *stubRequests) {
 	t.Helper()
 	requests := &stubRequests{}
@@ -146,6 +150,16 @@ func githubListing(t *testing.T, history []stubCommit) (*httptest.Server, *stubR
 		if number, one := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/pulls/"); one {
 			for _, commit := range history {
 				if commit.pr != 0 && strconv.Itoa(commit.pr) == number {
+					reads := 0 // of this pull request, this one among them
+					for _, request := range requests.all() {
+						if request.Target == r.URL.RequestURI() {
+							reads++
+						}
+					}
+					if commit.refused < 0 || reads <= commit.refused {
+						http.Error(w, tooManyFilesChanged.body, tooManyFilesChanged.status)
+						return
+					}
 					if commit.broken {
 						serve("no pull request")
 						return
@@ -211,13 +225,16 @@ func githubListing(t *testing.T, history []stubCommit) (*httptest.Server, *stubR
 }
 
 // walkRun is one collect-merges of acme/widgets's main over [walkFrom, walkTo) against
-// githubListing: what it answered, the window it wrote into, that window's files before it ran,
-// and the requests the stub served.
+// githubListing: what it answered, the merges written and how many commits it left unread
+// (MergesCollected), the window it wrote into, that window's files before it ran, each wait it
+// made, recorded rather than slept, and the requests the stub served.
 type walkRun struct {
 	merges   []Merge
+	unread   int
 	err      error
 	window   string
 	before   map[string][]byte
+	waits    []time.Duration
 	requests []stubRequest
 }
 
@@ -231,8 +248,13 @@ func collectWalk(t *testing.T, history ...stubCommit) walkRun {
 	}
 	run.before = windowFiles(t, run.window)
 	server, seen := githubListing(t, history)
-	run.merges, run.err = CollectMerges(context.Background(), MergesConfig{Repo: "acme/widgets", Branch: "main",
-		From: walkFrom, To: walkTo, Token: stubGitHubToken, API: server.URL, Window: run.window})
+	collected, err := CollectMerges(context.Background(), MergesConfig{Repo: "acme/widgets", Branch: "main",
+		From: walkFrom, To: walkTo, Token: stubGitHubToken, API: server.URL, Window: run.window,
+		Wait: func(_ context.Context, d time.Duration) error {
+			run.waits = append(run.waits, d)
+			return nil
+		}})
+	run.merges, run.unread, run.err = collected.Merges, collected.Unread, err
 	run.requests = seen.all()
 	return run
 }
@@ -536,6 +558,101 @@ func TestCollectMergesRefusesAnAnswerThatIsNoPullRequest(t *testing.T) {
 	}
 }
 
+// eventReads is the targets of the requests among requests that read how GitHub records the merge
+// of c (eventRead), in order.
+func eventReads(requests []stubRequest, c stubCommit) []string {
+	var targets []string
+	for _, request := range requests {
+		if eventRead(request, c) {
+			targets = append(targets, request.Target)
+		}
+	}
+	return targets
+}
+
+// GitHub's answer to a read of a pull request computes the pull request's diff, and GitHub can
+// refuse it for now with a 422 whose message says too many files changed (githubTooManyFiles): a
+// collection of a real repository met it, and the same read answered 200 OK five minutes later. The
+// read is tried again as a 5xx is: GitHub refuses the first read of #801, which main's commit of
+// 03:00 names, and answers the read after one wait of a second, told through the reader's wait. The
+// commit lands at #801's merge, 03:30, with its pull request, and no commit is left unread. It
+// fails where the 422 fails the collection.
+func TestCollectMergesReadsAPullRequestAgainAfterGitHubsTooManyFiles(t *testing.T) {
+	t.Parallel()
+	below := stubbed(t, 0x800, "2026-11-19T12:00:00Z", 800, 0x7ff)
+	wide := stubbed(t, 0x801, "2026-11-20T03:00:00Z", 801, 0x800)
+	wide.mergedAt, wide.refused = capturedTime(t, "2026-11-20T03:30:00Z"), 1
+	run := collectWalk(t, wide, below)
+	run.wantWritten(t, []Merge{{SHA: wide.sha, At: wide.mergedAt, Committed: wide.at, Branch: "main", PR: 801, Event: true}})
+	if !slices.Equal(run.waits, []time.Duration{retryFirstWait}) || run.unread != 0 {
+		t.Errorf("collect-merges waited %v and left %d commits unread, want one wait of %s and none", run.waits, run.unread, retryFirstWait)
+	}
+	if got, want := eventReads(run.requests, wide), []string{"/repos/acme/widgets/pulls/801", "/repos/acme/widgets/pulls/801"}; !slices.Equal(got, want) {
+		t.Errorf("collect-merges read the merge of %s with %v, want %v", wide.sha, got, want)
+	}
+}
+
+// A pull request GitHub still refuses to read whole after the reader's tries is matched by GitHub's
+// list of the commit's pull requests, which computes no diff and gives the pull request's
+// merge_commit_sha, merged_at and base.ref: every read of #801, which main's commit of 03:00 names,
+// answers the 422 of too many files changed, retryAttempts reads, each after a wait but the first,
+// and the commit's list holds #801, merged as that commit into main at 03:30. The commit lands there
+// with #801, and is not counted unread. It fails where the refusal fails the collection, or where
+// the commit keeps its committer's time.
+func TestCollectMergesMatchesAPullRequestGitHubWillNotReadByTheCommitsList(t *testing.T) {
+	t.Parallel()
+	below := stubbed(t, 0x800, "2026-11-19T12:00:00Z", 800, 0x7ff)
+	wide := stubbed(t, 0x801, "2026-11-20T03:00:00Z", 801, 0x800)
+	wide.mergedAt, wide.refused = capturedTime(t, "2026-11-20T03:30:00Z"), -1
+	run := collectWalk(t, wide, below)
+	run.wantWritten(t, []Merge{{SHA: wide.sha, At: wide.mergedAt, Committed: wide.at, Branch: "main", PR: 801, Event: true}})
+	want := append(slices.Repeat([]string{"/repos/acme/widgets/pulls/801"}, retryAttempts), "/repos/acme/widgets/commits/"+wide.sha+"/pulls?per_page=100")
+	if got := eventReads(run.requests, wide); !slices.Equal(got, want) {
+		t.Errorf("collect-merges read the merge of %s with %v, want %v", wide.sha, got, want)
+	}
+	if len(run.waits) != retryAttempts-1 || run.unread != 0 {
+		t.Errorf("collect-merges waited %v and left %d commits unread, want %d waits and none", run.waits, run.unread, retryAttempts-1)
+	}
+}
+
+// Where GitHub still refuses to read a pull request whole after the reader's tries, and its list of
+// the commit's pull requests gives nothing to match it by, nothing GitHub answers says whether it
+// merged as the commit. The collection goes on: it keeps the commit at its committer's time, with no
+// merge event and no pull request, as one no pull request matches, and counts it unread, so that a
+// run again later can place it. Every read of #801 answers the 422 of too many files changed, and
+// the list of main's commit of 03:00 does not hold #801, which the commit names; holds #801 without
+// its merge_commit_sha; or, for a merge commit, which names no pull request, holds #801 without its
+// merge_commit_sha, so that #801 is read whole to match it. It fails where the refusal fails the
+// collection, where the commit lands at a merge event, or where it is not counted.
+func TestCollectMergesKeepsACommitWhosePullRequestDoesNotReadAtItsCommitterTime(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		set  func(c *stubCommit)
+	}{
+		{name: "the list does not hold it", set: func(c *stubCommit) { c.mergedAs = stubSHA(0x8f1) }},
+		{name: "the list gives no merge_commit_sha of it", set: func(c *stubCommit) { c.bare = true }},
+		{name: "a merge commit whose list gives no merge_commit_sha of it", set: func(c *stubCommit) { c.mergeCommit, c.bare = true, true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			below := stubbed(t, 0x800, "2026-11-19T12:00:00Z", 800, 0x7ff)
+			wide := stubbed(t, 0x801, "2026-11-20T03:00:00Z", 801, 0x800)
+			wide.mergedAt, wide.refused = capturedTime(t, "2026-11-20T03:30:00Z"), -1
+			tc.set(&wide)
+			run := collectWalk(t, wide, below)
+			run.wantWritten(t, []Merge{{SHA: wide.sha, At: wide.at, Committed: wide.at, Branch: "main"}})
+			if run.unread != 1 {
+				t.Errorf("collect-merges left %d commits unread, want 1", run.unread)
+			}
+			reads := eventReads(run.requests, wide)
+			if got := slices.DeleteFunc(slices.Clone(reads), func(target string) bool { return target != "/repos/acme/widgets/pulls/801" }); len(got) != retryAttempts {
+				t.Errorf("collect-merges read the merge of %s with %v, want %d reads of #801", wide.sha, reads, retryAttempts)
+			}
+		})
+	}
+}
+
 // stubAnswer is one answer limitStub gives: its status, the headers it carries and its body.
 type stubAnswer struct {
 	status int
@@ -603,6 +720,50 @@ var (
 	secondaryLimit = `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","status":"403"}`
 	notPermitted   = `{"message":"Resource not accessible by integration","status":"403"}`
 )
+
+// GitHub's 422 answers of the tests of a read it refuses: its refusal of a pull request whose diff
+// it cannot compute for now, as a collection of a real repository met it (githubTooManyFiles), and
+// a validation failure, a 422 that no later read clears.
+var (
+	tooManyFilesChanged = stubAnswer{status: http.StatusUnprocessableEntity,
+		body: `{"message":"The request could not be processed because too many files changed","documentation_url":"https://docs.github.com/rest/pulls/pulls#get-a-pull-request","status":"422"}`}
+	validationFailed = `{"message":"Validation Failed","documentation_url":"https://docs.github.com/rest","status":"422"}`
+)
+
+// GitHub answers 422 for refusals that no later read clears, a validation failure among them. Of
+// them, only its refusal of a pull request whose diff it cannot compute for now, whose message says
+// too many files changed (githubTooManyFiles), is tried again, after a wait of a second, as a 5xx
+// is. Any other 422 is the read's answer at once, with no wait and one request, naming GitHub's
+// status and words. It fails where every 422 is tried again, or where none is.
+func TestGitHubReaderTriesNo422AgainButTooManyFilesChanged(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		answer  stubAnswer
+		refused bool
+		waits   []time.Duration
+	}{
+		{name: "a validation failure", answer: stubAnswer{status: http.StatusUnprocessableEntity, body: validationFailed}, refused: true},
+		{name: "too many files changed", answer: tooManyFilesChanged, waits: []time.Duration{retryFirstWait}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			read := readThroughLimits(t, tc.answer, emptyPage)
+			switch {
+			case tc.refused && (read.err == nil || !strings.Contains(read.err.Error(), "422 Unprocessable Entity") || !strings.Contains(read.err.Error(), "Validation Failed")):
+				t.Errorf("the read answered %v, want GitHub's 422 and its message", read.err)
+			case !tc.refused && read.err != nil:
+				t.Errorf("the read refused with %v, want it read again after its wait", read.err)
+			}
+			if !slices.Equal(read.waits, tc.waits) {
+				t.Errorf("the read waited %v, want %v", read.waits, tc.waits)
+			}
+			if want := 1 + len(tc.waits); len(read.requests) != want {
+				t.Errorf("the read sent %v, want %d requests", read.requests, want)
+			}
+		})
+	}
+}
 
 // spentUntil is GitHub's answer when the primary rate limit is spent until reset: a 403 with
 // x-ratelimit-remaining 0 and x-ratelimit-reset at reset, in epoch seconds.

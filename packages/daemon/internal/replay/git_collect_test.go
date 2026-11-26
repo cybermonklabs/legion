@@ -429,6 +429,51 @@ func TestCollectGitWritesEachHeadsVerdictsAndSendsGetAlone(t *testing.T) {
 	}
 }
 
+// A pull request GitHub still refuses to read after the reader's tries, with its 422 of too many
+// files changed (githubTooManyFiles), is a pull-unread missing input, as one GitHub has no record of
+// is a pull-not-found one, and the collection goes on to the next pull request. Every read of #12
+// answers so, retryAttempts reads, and #12's timeline is not read; the git file holds no pull or
+// head line of #12 but its missing line, which the git phase keeps, beside #13 as one run writes it
+// (gitCase), and the run counts it. It fails where the refusal fails the collection, where #12's
+// timeline is read, or where the missing line is dropped.
+func TestCollectGitWritesAPullRequestGitHubWillNotReadAsPullUnread(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	stub, seen := c.server.Config.Handler, &stubRequests{}
+	c.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.add(r)
+		if r.URL.Path != "/repos/acme/widgets/pulls/12" {
+			stub.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, tooManyFilesChanged.body, tooManyFilesChanged.status)
+	}))
+	t.Cleanup(c.server.Close)
+	dir := c.windowDir(t)
+	collected, err := CollectGit(context.Background(), c.config(dir, filepath.Join(t.TempDir(), "clones"), &gitCalls{}))
+	if err != nil {
+		t.Fatalf("CollectGit: %v", err)
+	}
+	detail, err := json.Marshal("the pull request of acme/widgets#12: GitHub answered 422 Unprocessable Entity: " + tooManyFilesChanged.body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := slices.DeleteFunc(c.wantLines(true), func(line string) bool { return strings.Contains(line, `"pr":12,`) })
+	// #12's missing line sorts before #13's, the file's last.
+	want = slices.Insert(want, len(want)-1, fmt.Sprintf(`{"kind":"missing","pr":12,"head":"","base":"","reason":"pull-unread","detail":%s}`, detail))
+	if got := gitFileLines(t, dir, fetchFailed); !slices.Equal(got, want) {
+		t.Errorf("the git file holds%s\nwant%s", describeLines(got), describeLines(want))
+	}
+	if collected.Missing[GitPullUnread] != 1 || collected.Missing[GitHeadUnreachable] != 1 || len(collected.Missing) != 2 {
+		t.Errorf("collect-git counts the missing inputs %v, want one pull-unread and one head-unreachable", collected.Missing)
+	}
+	wantRequests := append(slices.Repeat([]stubRequest{{http.MethodGet, "/repos/acme/widgets/pulls/12"}}, retryAttempts),
+		stubRequest{http.MethodGet, "/repos/acme/widgets/pulls/13"}, stubRequest{http.MethodGet, "/repos/acme/widgets/issues/13/timeline?per_page=100"})
+	if got := seen.all(); !slices.Equal(got, wantRequests) {
+		t.Errorf("the GitHub stub saw %v, want %v", got, wantRequests)
+	}
+}
+
 // A run on a window whose git file collect-git wrote asks GitHub and git for nothing the file
 // holds: run again with the same clones, it sends GitHub no request, since the file holds both
 // pull requests with no missing input of GitHub's, and runs no git but what reaches for #13's head,

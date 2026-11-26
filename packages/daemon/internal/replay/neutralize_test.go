@@ -495,14 +495,15 @@ func TestNeutralizeRefusesADenyWordItMustKeep(t *testing.T) {
 }
 
 // The signals' inputs are renamed as every other input is: a pod name's project and issue key
-// in the launcher's lines and the pods' memory, as a claim token's are; a host in the launcher's
-// own words; the repository of a queue file; a GitHub account in the merge queue's events, its
-// login as the person's login and its numeric id, node id and links; the project, the people, the
-// sessions, the repositories, the token's name and the free text of the project's settings
-// events; a person's login and an issue key in a pull request's branch; and the default assignee.
-// The provider's minutes hold no name, and keep their values. So no file of the neutral window
-// holds a private name, every line of an input keeps its shape, and each name is the one it
-// becomes in the other inputs.
+// in the launcher's lines, as a claim token's are; a host in the launcher's own words; the
+// repository of a queue file; a GitHub account in the merge queue's events, its login as the
+// person's login and its numeric id, node id and links; the project, the people, the sessions, the
+// repositories, the token's name and the free text of the project's settings events; a person's
+// login and an issue key in a pull request's branch; and the default assignee. The provider's
+// minutes hold no name, and keep their values. The pods' memory series of a window collected while
+// collect wrote one, which nothing reads, is dropped with its pod names: the neutral window holds
+// no signals/memory.jsonl and names none. So no file of the neutral window holds a private name,
+// every line of an input keeps its shape, and each name is the one it becomes in the other inputs.
 func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
 	t.Parallel()
 	w := privateRecord(t)
@@ -515,7 +516,6 @@ func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
 		{Time: at(3), Pod: pod, Text: `launcher: memory guard: ended pid=9 role=implementer size=1 reading=2 counter=3 shmem=0 limit=4 executable="node"`},
 		{Time: at(4), Pod: pod, Text: "launcher: memory guard: report unsent sequence=1 pid=9 reason=dial tcp: lookup " + privateHost + ": no such host; the next connection carries it"},
 	}
-	w.Memory = []MemorySample{{Minute: at(3), Pod: pod, Bytes: 4096}}
 	w.Provider = []ProviderMinute{{Minute: at(3), Uncached: 7, Limit: &limit, LimitSource: &source, Own: 1}}
 	w.Queue = map[string][]json.RawMessage{privateRepo: {json.RawMessage(`{"pullRequest":88,"item":{"id":5,` +
 		`"url":"https://api.github.com/repos/` + privateRepo + `/issues/events/5","event":"added_to_merge_queue",` +
@@ -537,6 +537,8 @@ func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
 	if err := w.Write(in); err != nil {
 		t.Fatal(err)
 	}
+	const series = "signals/memory.jsonl"
+	rewriteWindow(t, in, nil, map[string]string{series: `{"minute":"2026-03-02T10:03:00Z","pod":"` + pod + `","bytes":4096}` + "\n"})
 	scratch := t.TempDir()
 	out := filepath.Join(scratch, "neutral")
 	names, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: filepath.Join(scratch, "map.json"), Deny: []string{privateWord}})
@@ -561,8 +563,11 @@ func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
 		t.Errorf("the launcher's lines became %s, want each of pod %s, its text kept but the host's name, %s", describeReading(neutral.Launcher),
 			neutralPod, names.Hosts[privateHost])
 	}
-	if want := []MemorySample{{Minute: at(3), Pod: neutralPod, Bytes: 4096}}; !sameReading(neutral.Memory, want) {
-		t.Errorf("the pods' memory became %s, want %s", describeReading(neutral.Memory), describeReading(want))
+	if _, err := os.Stat(filepath.Join(out, filepath.FromSlash(series))); !os.IsNotExist(err) {
+		t.Errorf("the neutral window holds the pods' memory series %s (%v), want it dropped", series, err)
+	}
+	if _, named := neutral.Files[series]; named {
+		t.Errorf("the neutral window names %s among its files %v, want it dropped", series, neutral.Files)
 	}
 	if !sameReading(neutral.Provider, w.Provider) {
 		t.Errorf("the provider's minutes became %s, want them as recorded, %s", describeReading(neutral.Provider), describeReading(w.Provider))
