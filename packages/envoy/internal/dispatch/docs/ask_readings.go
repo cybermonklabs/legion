@@ -156,8 +156,7 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 		} else if project != nil {
 			ref.Project = *project
 		}
-		// Read states the answer state it was given, so State is set.
-		answers[id] = askAnswer{id: id, address: refs.AskRef(ref), named: named, answered: *node.State == asks.StateAnswered}
+		answers[id] = askAnswer{id: id, address: refs.AskRef(ref), named: named, answered: state == asks.StateAnswered}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the answers of the asks readings stand in: %w", err)

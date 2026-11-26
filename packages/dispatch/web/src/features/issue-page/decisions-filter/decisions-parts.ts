@@ -271,7 +271,10 @@ export function decisionsParts({
   const personal = new Map<string, ReadEntry[]>();
   for (const row of decided) {
     const ask = personDecisionAsk(row);
-    if (ask !== undefined) personal.set(ask, [...(personal.get(ask) ?? []), row]);
+    if (ask === undefined) continue;
+    const held = personal.get(ask);
+    if (held === undefined) personal.set(ask, [row]);
+    else held.push(row);
   }
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
   const isStatement = (reference: string): boolean =>

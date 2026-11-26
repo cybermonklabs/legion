@@ -15,51 +15,34 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// formsOwed is every row of the forms queue as "kind id", in kind then id order.
+// formsOwed is every row of the forms queue as "kind id", in kind then id order (queuedRows).
 func formsOwed(t *testing.T, q Queryer) []string {
 	t.Helper()
-	rows, err := q.Query(context.Background(), `
-		select kind || ' ' || id::text from refs_forms_owed order by kind, id
-	`)
-	if err != nil {
-		t.Fatalf("read refs_forms_owed: %v", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("scan refs_forms_owed: %v", err)
-	}
-	return owed
+	return queuedRows(t, q, RefsFormsOwed)
 }
 
-// decisionsFormsOwed is every row of the decisions forms queue as "kind id", in kind then id order.
+// decisionsFormsOwed is formsOwed of the decisions forms queue.
 func decisionsFormsOwed(t *testing.T, q Queryer) []string {
 	t.Helper()
-	rows, err := q.Query(context.Background(), `
-		select kind || ' ' || id::text from refs_decisions_forms_owed order by kind, id
-	`)
-	if err != nil {
-		t.Fatalf("read refs_decisions_forms_owed: %v", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("scan refs_decisions_forms_owed: %v", err)
-	}
-	return owed
+	return queuedRows(t, q, RefsDecisionsFormsOwed)
 }
 
-// decisionsFormsSeedOwed is every row of the decisions forms queue's bootstrap half as "kind id",
-// in kind then id order.
+// decisionsFormsSeedOwed is formsOwed of the decisions forms queue's bootstrap half.
 func decisionsFormsSeedOwed(t *testing.T, q Queryer) []string {
 	t.Helper()
-	rows, err := q.Query(context.Background(), `
-		select kind || ' ' || id::text from refs_decisions_forms_seed_owed order by kind, id
-	`)
+	return queuedRows(t, q, RefsDecisionsFormsSeedOwed)
+}
+
+// queuedRows is every row of queue as "kind id", in kind then id order.
+func queuedRows(t *testing.T, q Queryer, queue OwedQueue) []string {
+	t.Helper()
+	rows, err := q.Query(context.Background(), `select kind || ' ' || id::text from `+queue.table+` order by kind, id`)
 	if err != nil {
-		t.Fatalf("read refs_decisions_forms_seed_owed: %v", err)
+		t.Fatalf("read %s: %v", queue.table, err)
 	}
 	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("scan refs_decisions_forms_seed_owed: %v", err)
+		t.Fatalf("scan %s: %v", queue.table, err)
 	}
 	return owed
 }
