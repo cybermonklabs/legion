@@ -146,20 +146,23 @@ func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in SignInTrade) (bool, e
 	if err := LockPersonAs(ctx, tx, in.Person, in.Account); err != nil {
 		return false, err
 	}
-	deleted, err := tx.Exec(ctx, `delete from person_signins
-		where $4 and person = $1 and thumbprint = $2 and revoked_at is null and subject is null and machine_account = lower($3)`,
-		in.Person, in.Thumbprint, in.MachineAccount, in.EndUnrecorded)
-	if err != nil {
-		return false, err
+	ended := false
+	if in.EndUnrecorded {
+		deleted, err := tx.Exec(ctx, `delete from person_signins
+			where person = $1 and thumbprint = $2 and revoked_at is null and subject is null and machine_account = lower($3)`,
+			in.Person, in.Thumbprint, in.MachineAccount)
+		if err != nil {
+			return false, err
+		}
+		ended = deleted.RowsAffected() > 0
 	}
-	ended := deleted.RowsAffected() > 0
 	if ended {
 		if _, err := tx.Exec(ctx, endSignInTokensSQL, in.Person, in.Thumbprint); err != nil {
 			return false, err
 		}
 	}
 	var recorded int
-	err = tx.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account, issuer, subject)
+	err := tx.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account, issuer, subject)
 		values ($1, $2, lower($3), $4, $5)
 		on conflict (person, thumbprint) do update
 			set last_used_at = now()
