@@ -45,6 +45,13 @@ const POST_TEXT = "The sample has room for another sample.";
 const MESSAGE_TEXT = "Use a marker when the marker is visible.";
 const LENS_TEXT = "The verdict keeps the verdict near its source.";
 const RISK_TEXT = "A delay hides the delay from the next reader.";
+// The lens on a statement, which Conversation and Graph draw as rows under it: each of its three
+// texts holds two words twice, the seed's comment quoting the second match of one and row 2's
+// selection the second match of the other.
+const ROW_LENS_TEXT = "Each margin note keeps its margin, and each note stays in view.";
+const ROW_FINDING_TEXT = "The record shows a line, and the line shows the record.";
+const ROW_RISK_TEXT = "A slow reply leaves a slow reader behind the reply.";
+const ROW_RISK_WARNING = "The warning comes before the reader asks.";
 const ASK_TEXT = "Should a draft stay visible after another draft arrives?";
 const PART = "b1";
 
@@ -153,6 +160,10 @@ interface Layout {
   verificationSlug: string;
 }
 
+/** The lens on the comment on the statement (on the statement itself in `seedNoThreads`), which
+ *  `seedMarginIssue` draws in that comment's thread (R7), and the lens on the resolved statement
+ *  (`row…`), whose verdict, finding and risk Conversation and Graph draw as rows under it: the
+ *  node anchors of `GatedThreads` name the second. */
 interface ReasoningNodes {
   finding: string;
   findingAddress: string;
@@ -161,6 +172,13 @@ interface ReasoningNodes {
   lensAddress: string;
   risk: string;
   riskAddress: string;
+  rowFinding: string;
+  rowFindingAddress: string;
+  rowFindingBlock: string;
+  rowLens: string;
+  rowLensAddress: string;
+  rowRisk: string;
+  rowRiskAddress: string;
   triggerLens: string;
 }
 
@@ -433,6 +451,21 @@ async function seedReasoning(layout: Layout, statementComment?: string): Promise
     lens: lens.address,
     prevention: "Keep the reader's place when more text arrives.",
   });
+  // Part W draws a lens under a row only for a node a view draws as a row, so the lens on the
+  // comment stands in the comment's thread and a comment on its words stands in no margin; this
+  // one stands under a statement, and the comments on its nodes' words stand beside their rows.
+  const rowLens = await invokeLens(key, {
+    kind: "pre-mortem",
+    on: specBlockRef(key, layout.resolvedStatement),
+    verdict: ROW_LENS_TEXT,
+  });
+  const rowFinding = await addFinding(key, rowLens.address, ROW_FINDING_TEXT);
+  const rowRisk = await writeRisk(key, {
+    early_warning: ROW_RISK_WARNING,
+    heading: ROW_RISK_TEXT,
+    lens: rowLens.address,
+    prevention: "Answer each reply in the order it came.",
+  });
   return {
     finding: finding.id,
     findingAddress: finding.address,
@@ -441,6 +474,13 @@ async function seedReasoning(layout: Layout, statementComment?: string): Promise
     lensAddress: lens.address,
     risk: risk.id,
     riskAddress: risk.address,
+    rowFinding: rowFinding.id,
+    rowFindingAddress: rowFinding.address,
+    rowFindingBlock: rowFinding.block_id,
+    rowLens: rowLens.id,
+    rowLensAddress: rowLens.address,
+    rowRisk: rowRisk.id,
+    rowRiskAddress: rowRisk.address,
     triggerLens: trigger.id,
   };
 }
@@ -522,13 +562,14 @@ async function seedGated(layout: Layout, reasoning: ReasoningNodes): Promise<Gat
       "note"
     ),
     criterionComment: await roomComment("criterion", layout.criterion, "boundary"),
-    findingComment: await onNode("finding", reasoning.findingAddress, "finding"),
-    lensComment: await onNode("lens", reasoning.lensAddress, "verdict"),
+    // The lens's nodes the rows draw, not those of the lens on the comment (`seedReasoning`).
+    findingComment: await onNode("finding", reasoning.rowFindingAddress, "record"),
+    lensComment: await onNode("lens", reasoning.rowLensAddress, "margin"),
     messageQuotedReply,
     postQuotedReply,
     postQuotedReplyFollowup,
     resultComment: await onNode("result", `result/${layout.result}`, "reading"),
-    riskComment: await onNode("risk", reasoning.riskAddress, "delay"),
+    riskComment: await onNode("risk", reasoning.rowRiskAddress, "slow"),
     skipped,
   };
 }

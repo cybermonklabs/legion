@@ -1,6 +1,8 @@
 /** comments on text are written through the server's routes and drawn beside their nodes from its
  *  tree, comments and messages reads */
 
+import { type Result, routeUrl } from "../web/src/api/paths";
+import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
   LENS_WORDS,
@@ -9,8 +11,9 @@ import {
   sentenceCase,
 } from "../web/src/features/issue-page/page-words";
 import { MARGIN_ANSWERS, MARGIN_WORDS } from "../web/src/features/issue-page/page-words-margin";
+import { treeIdOfNode } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { buildIssuePath } from "../web/src/features/refs/routes";
-import { deleteComment, getComment, listComments } from "./api";
+import { deleteComment, editArtifact, getComment, listComments } from "./api";
 import {
   closeDetails,
   contentsPane,
@@ -26,6 +29,7 @@ import {
   blockNode,
   DESKTOP,
   expectOpeningLanded,
+  focusRow,
   nodeRow,
   PHONE,
   parentOfRow,
@@ -35,6 +39,7 @@ import {
 import {
   type MarginSeed,
   type NoThreadsSeed,
+  readWithTrees,
   seedMarginIssue,
   seedNoThreads,
 } from "./issue-page-margin";
@@ -42,7 +47,7 @@ import { GATES } from "./issue-page-margin-gates";
 import { boxesPastTheirCard, verificationCardBoxes } from "./issue-page-v";
 import { lensCatalogue, requestedTreeRead } from "./issue-page-w";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, type Response, test } from "./test";
 import {
   type ApiRequest,
   type ApiRequests,
@@ -70,21 +75,25 @@ import { assertPageFits, assertWhole } from "./unclipped";
  * `[data-thread-lens]` row (`data-thread-lens-read` its read id). The quoted words carry the
  * highlights `text-comment` and `text-comment-focus` (`CSS.highlights`, `highlights.ts`), and
  * below 1024 px each node's threads stand in its sheet `[data-text-threads]` (`NodeThreads.tsx`).
+ * A selection inside one row's words draws the control named `MARGIN_WORDS.comment` beside its
+ * end (`SelectionComment.tsx`), which opens the composer `[data-text-composer]` in the column
+ * (`SelectionComposer.tsx`); the root of the thread its send writes takes the focus.
  *
  * A reading that waits on a gate does not run: the row records it owed with an annotation of the
  * type `owed` that names the gate, read from `e2e/issue-page-margin-gates.ts` (the mirror of
- * `text-comments/gates.ts`), and passes on what it reads (decision 61). At this base every gate
- * is off, so rows 2 and 3 (G5 and their own gates), row 7 (G7) and row 8 (part U) annotate each
- * of their readings and read nothing; each still runs, so a run finds it by its title. Row 2
- * holds its (9) already, behind G4 and G5.
+ * `text-comments/gates.ts`), and passes on what it reads (decision 61). At this base G5
+ * (`COMPOSER`) and G2 (`NODE_ANCHOR`) are on and every other gate is off, so each row reads what
+ * those two bring - the control, the composer and its sends, the stacking, and the comments on a
+ * node's words - and annotates the rest; row 7 (G7) and row 8 (part U) read nothing, and each
+ * still runs, so a run finds it by its title.
  *
  * Before and after: at the merge-base, with this file, its seed (`e2e/issue-page-margin.ts`), the
  * gate table and `web/src/features/issue-page/page-words-margin.ts` (the words these rows read,
  * which draws nothing) copied in, row 1 fails on `the thread stands right of the main column`,
- * row 4 on `the lens stands under the comment in its thread`, row 5 on `the named reply has the
- * focus in its thread` and row 6 on `the region draws each seeded thread`: each reads first what
- * the base does draw (the rows of its nodes, the comment on the statement as no row), then the
- * column, which the base draws none of.
+ * row 2 on `Comment stands beside the selection`, row 4 on `the lens stands under the comment in
+ * its thread`, row 5 on `the named reply has the focus in its thread` and row 6 on `the region
+ * draws each seeded thread`: each reads first what the base does draw (the rows of its nodes,
+ * the comment on the statement as no row), then the column, which the base draws none of.
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -223,23 +232,53 @@ interface Spot {
   readonly what: string;
 }
 
+/** A seeded comment a row reads the place of: its id, the tree id of its node and its name. */
+interface SpotRoot {
+  readonly id: string;
+  readonly node: string;
+  readonly what: string;
+}
+
 /**
- * The seeded threads whose words are in a node of a document of the issue, each with the quote
- * its anchor holds as the comments read answers it and the tree id of its node (the document's
- * slug and the anchor's block). A document anchor stands at the first match of its quote until
- * the tree read's anchor answers `occurrence` (G3b, `text-threads.ts`), so the page places the
- * comments the seed wrote on the second match at the first until then.
+ * The spots of `roots`, each a seeded comment whose words are in a node of a document of the
+ * issue, with the quote its anchor holds as the comments read answers it. A document anchor
+ * stands at the first match of its quote until the tree read's anchor answers `occurrence` (G3b,
+ * `text-threads.ts`), so the page places the comments the seed wrote on the second match at the
+ * first until then.
  */
-async function threadSpots(seeded: MarginSeed): Promise<Spot[]> {
+async function documentSpots(seeded: MarginSeed, roots: readonly SpotRoot[]): Promise<Spot[]> {
   const comments = await listComments(seeded.key);
   const slugs = new Map([
     [seeded.specArtifactId, seeded.specSlug],
     [seeded.verificationArtifactId, seeded.verificationSlug],
     [seeded.planArtifactId, seeded.planSlug],
   ]);
+  return roots.map(({ id, node, what }) => {
+    const anchor = comments.find((comment) => comment.id === id)?.anchor ?? null;
+    const slug = anchor === null ? undefined : slugs.get(anchor.artifact_id);
+    if (anchor === null || slug === undefined || anchor.block_id === null) {
+      throw new Error(`the comments read of ${seeded.key} holds no document anchor of ${what}`);
+    }
+    // The generated contract declares no `occurrence` on a read anchor until G3b.
+    const stored =
+      "occurrence" in anchor && typeof anchor.occurrence === "number" ? anchor.occurrence : 0;
+    return {
+      id,
+      node,
+      occurrence: GATES.ANCHOR_OCCURRENCE ? stored : 0,
+      quote: anchor.quote,
+      replies: id === seeded.statementComment ? 1 : 0,
+      what,
+    };
+  });
+}
+
+/** The seeded threads whose words are in a node of a document of the issue, each with the tree id
+ *  of its node (the document's slug and the anchor's block): `documentSpots`. */
+function threadSpots(seeded: MarginSeed): Promise<Spot[]> {
   // Each comment anchored to words of a typed block stores its inner paragraph's id in
   // `anchor.block_id`, not the block's own id; the view draws the typed block's node.
-  const roots = [
+  return documentSpots(seeded, [
     ...seeded.threadsS1.map((id, at) => ({
       id,
       node: blockNode(seeded.specSlug, seeded.statementS1),
@@ -280,36 +319,93 @@ async function threadSpots(seeded: MarginSeed): Promise<Spot[]> {
       node: blockNode(seeded.specSlug, seeded.pagedChild55),
       what: "the comment on the 55th child",
     },
-  ];
-  return roots.map(({ id, node, what }) => {
-    const anchor = comments.find((comment) => comment.id === id)?.anchor ?? null;
-    const slug = anchor === null ? undefined : slugs.get(anchor.artifact_id);
-    if (anchor === null || slug === undefined || anchor.block_id === null) {
-      throw new Error(`the comments read of ${seeded.key} holds no document anchor of ${what}`);
-    }
-    // The generated contract declares no `occurrence` on a read anchor until G3b.
-    const stored =
-      "occurrence" in anchor && typeof anchor.occurrence === "number" ? anchor.occurrence : 0;
-    return {
-      id,
-      node,
-      occurrence: GATES.ANCHOR_OCCURRENCE ? stored : 0,
-      quote: anchor.quote,
-      replies: id === seeded.statementComment ? 1 : 0,
-      what,
-    };
+  ]);
+}
+
+/** The spot of the Change, part Q's comment on the words of the agent decision. */
+async function changeSpot(seeded: MarginSeed): Promise<Spot> {
+  const [change] = await documentSpots(seeded, [
+    {
+      id: seeded.change,
+      node: blockNode(seeded.specSlug, seeded.agentDecision),
+      what: "the Change",
+    },
+  ]);
+  if (change === undefined) throw new Error("the seed wrote no Change");
+  return change;
+}
+
+/** The seeded comments on the words of a node (G2): the lens on the resolved statement, its
+ *  finding and its risk, the issue's constraint and the check's result, each by its name. */
+function nodeComments(seeded: MarginSeed): { readonly id: string; readonly what: string }[] {
+  return (
+    [
+      [seeded.lensComment, "the comment on the lens's verdict"],
+      [seeded.findingComment, "the comment on the finding"],
+      [seeded.riskComment, "the comment on the risk's heading"],
+      [seeded.constraintComment, "the comment on the constraint's standard"],
+      [seeded.resultComment, "the comment on the result's observed words"],
+    ] as const
+  ).map(([id, what]) => {
+    if (id === null) throw new Error(`the seed wrote no ${what}`);
+    return { id, what };
   });
 }
 
+/** A comment's node anchor as the server holds it (INFRA-1253 R31). */
+type NodeAnchor = NonNullable<Result<"/api/v1/comments/{id}", "get">["comment"]["node_anchor"]>;
+
+/** The node anchor the server holds for comment `id`: the comment read with `node_anchor=true`,
+ *  which names the node its words are in by its id in the tree read. */
+async function nodeAnchorOf(id: string): Promise<NodeAnchor> {
+  const read = await readWithTrees<Result<"/api/v1/comments/{id}", "get">>(
+    routeUrl("/api/v1/comments/{id}", { id }, { node_anchor: true })
+  );
+  const anchor = read.comment.node_anchor;
+  if (anchor === undefined) throw new Error(`the server holds no node anchor of comment ${id}`);
+  return anchor;
+}
+
+/** The tree id the page draws the node `readId` of Graph's read `answer` of issue `key` under
+ *  (`tree-read/tree-nodes.ts`'s `treeIdOfNode`), which every view draws it under. */
+function treeIdIn(answer: IssueTreeRead, key: string, readId: string, what: string): string {
+  const node = answer.nodes?.find((one) => one.id === readId);
+  if (node === undefined) throw new Error(`Graph's tree read of ${key} holds no node of ${what}`);
+  return treeIdOfNode(node, key);
+}
+
+/** The spots of the seeded comments on the words of a node (`nodeComments`), each at the node and
+ *  the match its node anchor names, which the page places it at from G2. */
+async function nodeSpots(page: Page, seeded: MarginSeed): Promise<Spot[]> {
+  const answer = await requestedTreeRead(page, seeded.key);
+  return Promise.all(
+    nodeComments(seeded).map(async ({ id, what }) => {
+      const anchor = await nodeAnchorOf(id);
+      return {
+        id,
+        node: treeIdIn(answer, seeded.key, anchor.node.id, what),
+        occurrence: anchor.occurrence ?? 0,
+        quote: anchor.quote,
+        replies: 0,
+        what,
+      };
+    })
+  );
+}
+
 /** The threads whose nodes `view` draws for certain, at 1440 px, after an outline's branches are
- *  unfolded: the rest are read wherever the view draws their nodes. */
+ *  unfolded: the rest are read wherever the view draws their nodes. Graph draws every node of
+ *  its read, the Change's decision and from G2 the nodes of the comments on a node's words among
+ *  them, and Conversation the Change's decision. */
 function mustDraw(seeded: MarginSeed, view: View): ReadonlySet<string> {
   const top = [...seeded.threadsS1, seeded.agentComment, seeded.resolvedThread];
   const both = [...top, ...seeded.threadsS2];
+  const change = GATES.COMPOSER ? [seeded.change] : [];
+  const nodes = GATES.NODE_ANCHOR ? nodeComments(seeded).map(({ id }) => id) : [];
   const ids: Readonly<Record<View, readonly string[]>> = {
-    conversation: both,
+    conversation: [...both, ...change],
     decisions: [seeded.decisionComment],
-    graph: [...both, seeded.checkComment, seeded.planTaskComment],
+    graph: [...both, seeded.checkComment, seeded.planTaskComment, ...change, ...nodes],
     plan: [seeded.planTaskComment],
     spec: top,
     verification: [...seeded.threadsS1, seeded.checkComment],
@@ -614,21 +710,35 @@ function readMarks(
   );
 }
 
-/** (2): no comment of a thread is a row of `view`; once G4 is on the base, nor is a reply that
- *  quotes the post, the ask's part or the message, nor a reply in their threads. */
+/** Which of row 1's readings that wait on a gate are on this base: the threads of the replies
+ *  that quote (G4), the stacking (G5), the Change's thread (G5) and the threads on a node's words
+ *  (G2). */
+interface RowOneGates {
+  readonly change: boolean;
+  readonly nodes: boolean;
+  readonly quoted: boolean;
+  readonly stacking: boolean;
+}
+
+/** (2): no comment of a thread is a row of `view`; from G5 nor is the Change, from G2 nor is a
+ *  comment on a node's words, and once G4 is on the base, nor is a reply that quotes the post,
+ *  the ask's part or the message, nor a reply in their threads. */
 async function expectNoThreadRows(
   page: Page,
   seeded: MarginSeed,
   view: View,
-  quoted: boolean
+  gates: RowOneGates
 ): Promise<void> {
-  const quotedReplies = quoted
+  const quotedReplies = gates.quoted
     ? ([
         [seeded.postQuotedReply, "the reply that quotes the post is no row"],
         [seeded.postQuotedReplyFollowup, "the reply in the post's quoted thread is no row"],
         [seeded.askQuotedReply, "the reply that quotes the ask's part is no row"],
         [seeded.messageQuotedReply, "the reply that quotes the message is no row"],
       ] as const)
+    : [];
+  const nodeComment = gates.nodes
+    ? nodeComments(seeded).map(({ id, what }) => [id, `${what} is no row`] as const)
     : [];
   const none: readonly (readonly [string | null, string])[] = [
     [seeded.statementComment, "the comment on the statement is no row"],
@@ -638,6 +748,8 @@ async function expectNoThreadRows(
     [seeded.checkComment, "the comment on the check is no row"],
     [seeded.planTaskComment, "the comment on the plan task is no row"],
     [seeded.decisionComment, "the comment on the decision is no row"],
+    ...(gates.change ? ([[seeded.change, "the Change is no row"]] as const) : []),
+    ...nodeComment,
     ...quotedReplies,
   ];
   for (const [id, message] of none) {
@@ -822,30 +934,80 @@ async function openView(page: Page, traffic: ApiRequests, key: string, view: Vie
 }
 
 /** (1) to (4) at 1440 px in each view, (2) first: the base this part stands on already draws no
- *  row of a comment on text, so a run at the merge-base reads (2) and fails on (1). */
+ *  row of a comment on text, so a run at the merge-base reads (2) and fails on (1). The Change's
+ *  thread, where `change` holds it, is read in the two outlines, which draw the agent decision as
+ *  a row: the Spec view draws it as a cell of part J's column of decisions, and Decisions draws
+ *  the Change in part U's row (row 8). */
 async function readEveryView(
   page: Page,
   traffic: ApiRequests,
   seeded: MarginSeed,
   spots: readonly Spot[],
-  gates: { readonly quoted: boolean; readonly stacking: boolean }
+  change: Spot | undefined,
+  gates: RowOneGates
 ): Promise<void> {
   for (const view of VIEWS) {
     await openView(page, traffic, seeded.key, view);
     const must = mustDraw(seeded, view);
-    for (const spot of spots) {
+    const read = change === undefined || !OUTLINES[view] ? spots : [...spots, change];
+    for (const spot of read) {
       if (!must.has(spot.id)) continue;
       await expect(
         stageRow(page, spot.node).first(),
         inView(view, `the view draws the row of the node of ${spot.what}`)
       ).toBeAttached();
     }
-    await expectNoThreadRows(page, seeded, view, gates.quoted);
+    await expectNoThreadRows(page, seeded, view, gates);
     if (view === "conversation") await expectPostRows(page, seeded);
-    await expectPlaced(page, spots, must, view, gates.stacking);
-    await expectCards(page, seeded, spots, must, view);
-    if (view === "graph") await expectCheckOnce(page, seeded, spots);
+    await expectPlaced(page, read, must, view, gates.stacking);
+    await expectCards(page, seeded, read, must, view);
+    if (view === "graph") await expectCheckOnce(page, seeded, read);
   }
+}
+
+/** (5) in Conversation at 1440 px, where S1's three long threads push S2's first thread under
+ *  its words: with the focus on S2's row, S2's first thread stands level with its words (within
+ *  2 px), and S1's last thread stands higher than it stood before the focus moved. */
+async function readFocusedStack(
+  page: Page,
+  traffic: ApiRequests,
+  seeded: MarginSeed,
+  spots: readonly Spot[]
+): Promise<void> {
+  await page.setViewportSize(DESKTOP);
+  await openView(page, traffic, seeded.key, "conversation");
+  const last = spots.find((spot) => spot.id === seeded.threadsS1.at(-1));
+  const first = spots.find((spot) => spot.id === seeded.threadsS2[0]);
+  if (last === undefined || first === undefined) {
+    throw new Error("the seed wrote no thread on S1 or on S2");
+  }
+  await expect
+    .poll(async () => offWords(await readSpots(page, spots), spots, true), {
+      message:
+        "the threads stand at their words, or under the thread above, before the focus moves",
+    })
+    .toEqual([]);
+  // The poll above waited until the column placed every thread, so one reading is S1's last.
+  const [before] = (await readSpots(page, [last])).spots;
+  const top = before?.box?.top;
+  if (top === undefined) throw new Error("S1's last thread is not drawn before the focus moves");
+  await focusRow(page, first.node);
+  await expect
+    .poll(
+      async () => {
+        const [s1, s2] = (await readSpots(page, [last, first])).spots;
+        return {
+          s1Higher: s1?.box != null && s1.box.top < top - 0.5,
+          s2Level:
+            s2?.box != null && s2.words !== null && Math.abs(s2.box.top - s2.words.first.top) <= 2,
+        };
+      },
+      {
+        message:
+          "with the focus on S2's row, S2's first thread stands level with its words and S1's last thread higher than before",
+      }
+    )
+    .toEqual({ s1Higher: true, s2Level: true });
 }
 
 /** The main column's left and right edges, in whole pixels. */
@@ -1375,10 +1537,10 @@ async function readNoThreads(page: Page, seeded: NoThreadsSeed): Promise<void> {
 
 // c-margin.
 // SLOW(>=2s): the whole seeded issue read in six views at 1440 px with every outline branch
-// opened, Details opened twice and resized, Plan's chart resized through two searches of its
-// steps and the Verification view through one, each view resized through nine widths, then the
-// issue with no thread read again in six views and at six widths of Plan; on `iphone`, six views
-// at 390 px.
+// opened, Conversation again with the focus moved to a row, Details opened twice and resized,
+// Plan's chart resized through two searches of its steps and the Verification view through one,
+// each view resized through nine widths, then the issue with no thread read again in six views
+// and at six widths of Plan; on `iphone`, six views at 390 px.
 test("a comment on text stands beside its node in every view @phone", async ({ browser }) => {
   test.setTimeout(900_000);
   const phone = test.info().project.name === "iphone";
@@ -1406,13 +1568,22 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     "(3) after the API deletes the post, the reply that quoted it is a row under the post's deleted row and stands in no thread",
     "REPLY_QUOTE"
   );
-  onBase(
+  const nodes = onBase(
     "(1) and (3) the threads on the words of the lens, the finding, the risk, the constraint and the result",
     "NODE_ANCHOR"
   );
-  onBase(
-    "(1) and (2) the Change's thread beside the agent decision, and the Change as no row",
+  const changeThread = onBase(
+    "(1) and (2) the Change's thread beside the agent decision in Conversation and in Graph, and the Change as no row",
     "COMPOSER"
+  );
+  onBase(
+    "(1) the Change's thread beside the agent decision's cell in the Spec view's column of decisions",
+    "COMPOSER",
+    "PART_J"
+  );
+  onBase(
+    "(4) in Conversation and in Graph, the comment on the restating decision block's words stands in the region beside the ask that block restates, with the block's words as its quote, and no row draws it (decision 513)",
+    "PART_U"
   );
   onBase(
     "(1) and (3) the place and the mark of the comments on the second of two equal words of the check, the plan task and the decision (until then the page places each at the first)",
@@ -1427,13 +1598,20 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     "PART_J"
   );
   await phase(browser, seedMarginIssue, async (page, seeded) => {
-    const spots = await threadSpots(seeded);
+    const spots = [...(await threadSpots(seeded)), ...(nodes ? await nodeSpots(page, seeded) : [])];
+    const change = changeThread ? await changeSpot(seeded) : undefined;
     const traffic = watchApiRequests(page);
     if (phone) {
       await readPhone(page, traffic, seeded, spots);
       return;
     }
-    await readEveryView(page, traffic, seeded, spots, { quoted, stacking });
+    await readEveryView(page, traffic, seeded, spots, change, {
+      change: changeThread,
+      nodes,
+      quoted,
+      stacking,
+    });
+    if (stacking) await readFocusedStack(page, traffic, seeded, spots);
     await readDetails(page, traffic, seeded, spots);
     await readPlanSteps(page, traffic, seeded);
     await readVerificationSteps(page, traffic, seeded);
@@ -1522,36 +1700,509 @@ async function keepNoQuote(page: Page): Promise<ReadonlySet<string>> {
   return stripped;
 }
 
-/** Selects match `occurrence` of `quote` in the words of the row of `node` by pointer: a press at
- *  its first character's left and a drag to its last character's right. */
+/** The first and the last line of a match of words, as `readSpots` measures them. */
+type WordsBox = NonNullable<SpotReading["words"]>;
+
+/** Scrolls the first row of `node` to the middle of the window at once, so a pointer reaches its
+ *  words and the rows beside it. */
+async function showRow(page: Page, node: string): Promise<void> {
+  await stageRow(page, node)
+    .first()
+    .evaluate((row) => row.scrollIntoView({ behavior: "instant", block: "center" }));
+}
+
+/** The lines of match `occurrence` of `quote` in the words of the row of `node`, where the window
+ *  shows them now. */
+async function wordsAt(
+  page: Page,
+  node: string,
+  quote: string,
+  occurrence: number
+): Promise<WordsBox> {
+  // The view's load has settled before this, so one reading finds the words to select.
+  const [reading] = (
+    await readSpots(page, [{ id: "", node, occurrence, quote, replies: 0, what: quote }])
+  ).spots;
+  const words = reading?.words ?? null;
+  if (words === null) {
+    throw new Error(`the row of ${node} draws no match ${occurrence} of ${quote}`);
+  }
+  return words;
+}
+
+/** Presses at the left of the first character of `from` and drags to the right of the last
+ *  character of `to`, as a pointer selects words. */
+async function dragAcross(page: Page, from: WordsBox, to: WordsBox): Promise<void> {
+  await page.mouse.move(from.first.left + 1, (from.first.top + from.first.bottom) / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.last.right - 1, (to.last.top + to.last.bottom) / 2, { steps: 4 });
+  await page.mouse.up();
+}
+
+/** Selects match `occurrence` of `quote` in the words of the row of `node` by pointer, its row
+ *  brought into the window first: a press at its first character's left and a drag to its last
+ *  character's right. */
 async function selectWords(
   page: Page,
   node: string,
   quote: string,
   occurrence: number
 ): Promise<void> {
-  // The view's load has settled before this, so one reading finds the words to select.
-  const [reading] = (
-    await readSpots(page, [{ id: "", node, occurrence, quote, replies: 0, what: quote }])
-  ).spots;
-  const words = reading?.words ?? null;
-  if (words === null)
-    throw new Error(`the row of ${node} draws no match ${occurrence} of ${quote}`);
-  await page.mouse.move(words.first.left + 1, (words.first.top + words.first.bottom) / 2);
-  await page.mouse.down();
-  await page.mouse.move(words.last.right - 1, (words.last.top + words.last.bottom) / 2, {
-    steps: 4,
-  });
-  await page.mouse.up();
+  await showRow(page, node);
+  const words = await wordsAt(page, node, quote, occurrence);
+  await dragAcross(page, words, words);
 }
 
-// c-write, row 2. Every reading waits on G5 at this base, (9) on G4 as well: until then the row
-// records each owed and reads nothing.
+/** The lines of the first match of `quote` in the element `line` locates - a line a row draws
+ *  under its words - scrolled to the middle of the window first. */
+async function lineWords(line: Locator, quote: string): Promise<WordsBox> {
+  // The row that holds the line is drawn above, so one reading of the line finds its words.
+  const words = await line.first().evaluate((element, wanted) => {
+    element.scrollIntoView({ behavior: "instant", block: "center" });
+    const rect = (box: DOMRect) => ({
+      bottom: box.bottom,
+      left: box.left,
+      right: box.right,
+      top: box.top,
+    });
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const at = node.textContent?.indexOf(wanted) ?? -1;
+      if (at === -1) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + wanted.length);
+      const lines = range.getClientRects();
+      const first = lines.item(0);
+      const last = lines.item(lines.length - 1);
+      return first === null || last === null ? null : { first: rect(first), last: rect(last) };
+    }
+    return null;
+  }, quote);
+  if (words === null) throw new Error(`the line draws no ${quote}`);
+  return words;
+}
+
+/** The control "Comment" that stands beside a selection's end (`SelectionComment.tsx`). */
+function commentControl(page: Page): Locator {
+  return page.getByRole("button", { exact: true, name: MARGIN_WORDS.comment });
+}
+
+/** The box a composer of this part stands in, in the column or in a node's sheet. */
+function composerBox(page: Page): Locator {
+  return page.locator("[data-text-composer]");
+}
+
+/** The field of the composer of this part. */
+function composerField(page: Page): Locator {
+  return composerBox(page).getByRole("textbox").first();
+}
+
+/** Whether `response` answers a write of a comment on an issue. */
+function commentWrite(response: Response): boolean {
+  return (
+    response.request().method() === "POST" &&
+    /^\/api\/v1\/issues\/[^/]+\/comments$/u.test(new URL(response.url()).pathname)
+  );
+}
+
+/** Waits out three animation frames: the control reads the selection a pointer left at most once
+ *  in a frame (`SelectionComment.tsx`), and draws what it read in the next. */
+function framesPass(page: Page): Promise<void> {
+  return page.evaluate(async () => {
+    for (let frame = 0; frame < 3; frame += 1) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      requestAnimationFrame(() => resolve());
+      await promise;
+    }
+  });
+}
+
+/** What a send from the composer wrote: the members of the `anchor` its request carried, the id
+ *  Dispatch's answer names, and the answer's status. */
+interface Sent {
+  readonly anchor: Readonly<Record<string, unknown>>;
+  readonly id: string;
+  readonly status: number;
+}
+
+/** Presses the Comment that stands beside the selection `at` names, writes `words` in the
+ *  composer it opens and sends them, and answers what the send wrote. */
+async function sendFromControl(page: Page, words: string, at: string): Promise<Sent> {
+  const control = commentControl(page);
+  await expect(control, `Comment stands beside the selection ${at}`).toBeVisible();
+  await control.click();
+  const field = composerField(page);
+  await field.fill(words);
+  const written = page.waitForResponse(commentWrite);
+  await field.press("ControlOrMeta+Enter");
+  const response = await written;
+  const body: unknown = response.request().postDataJSON();
+  const answer: unknown = await response.json();
+  return {
+    anchor:
+      typeof body === "object" &&
+      body !== null &&
+      "anchor" in body &&
+      typeof body.anchor === "object" &&
+      body.anchor !== null
+        ? Object.fromEntries(Object.entries(body.anchor))
+        : {},
+    id: typeof answer === "object" && answer !== null && "id" in answer ? String(answer.id) : "",
+    status: response.status(),
+  };
+}
+
+/** (3) after a send: the thread of `spot` stands in the region beside its node, right of the main
+ *  column and level with its words, with the focus on its root (R5). */
+async function expectLanded(page: Page, spot: Spot, view: View): Promise<void> {
+  await expect(
+    threadBox(page, spot.id),
+    inView(view, `the thread on ${spot.what} stands beside its node`)
+  ).toHaveAttribute("data-text-thread-node", spot.node);
+  await expect(
+    threadCard(page, spot.id),
+    inView(view, `the focus is on the root of the thread on ${spot.what}`)
+  ).toBeFocused();
+  await expect
+    .poll(
+      async () => {
+        const reading = await readSpots(page, [spot]);
+        const [drawn] = reading.spots;
+        return {
+          level:
+            drawn?.box != null &&
+            drawn.words !== null &&
+            Math.abs(drawn.box.top - drawn.words.first.top) <= 2,
+          right: drawn?.box != null && drawn.box.left >= reading.mainRight - 0.5,
+        };
+      },
+      {
+        message: inView(
+          view,
+          `the thread on ${spot.what} stands right of the main column, level with its words`
+        ),
+      }
+    )
+    .toEqual({ level: true, right: true });
+}
+
+/** A block row 2 comments on, in the view that draws it: its node, its document and its block,
+ *  the words whose second match it selects, and the seeded comment on the same text of the block,
+ *  whose stored anchor names the paragraph the server stores the new one in. */
+interface BlockWrite {
+  readonly artifact: string;
+  readonly block: string;
+  readonly node: string;
+  readonly quote: string;
+  readonly seededOn: string;
+  readonly view: View;
+  readonly what: string;
+}
+
+/** (1)'s blocks: a statement under Spec, a check under Verification, a plan task under Plan and a
+ *  decision under Decisions. Each text holds its quote twice: "A reader finds the first note and
+ *  the last marker in order.", "Check the placement before and the placement after a reply.",
+ *  "Build the column and keep the column beside the text." and "Keep the space between cards and
+ *  the space between rows." (`e2e/issue-page-margin.ts`). */
+function blockWrites(seeded: MarginSeed): BlockWrite[] {
+  const [onS2] = seeded.threadsS2;
+  if (onS2 === undefined) throw new Error("the seed wrote no thread on statement S2");
+  return [
+    {
+      artifact: seeded.specArtifactId,
+      block: seeded.statementS2,
+      node: blockNode(seeded.specSlug, seeded.statementS2),
+      quote: "the",
+      seededOn: onS2,
+      view: "spec",
+      what: "statement",
+    },
+    {
+      artifact: seeded.verificationArtifactId,
+      block: seeded.check,
+      node: blockNode(seeded.verificationSlug, seeded.check),
+      quote: "placement",
+      seededOn: seeded.checkComment,
+      view: "verification",
+      what: "check",
+    },
+    {
+      artifact: seeded.planArtifactId,
+      block: seeded.planTask,
+      node: blockNode(seeded.planSlug, seeded.planTask),
+      quote: "column",
+      seededOn: seeded.planTaskComment,
+      view: "plan",
+      what: "plan task",
+    },
+    {
+      artifact: seeded.specArtifactId,
+      block: seeded.decision,
+      node: blockNode(seeded.specSlug, seeded.decision),
+      quote: "between",
+      seededOn: seeded.decisionComment,
+      view: "decisions",
+      what: "decision",
+    },
+  ];
+}
+
+/** (1) to (3) on each block of `blockWrites`, in its own view: the selection's Comment, the send,
+ *  the write's anchor and the anchor the server stored, and the thread beside the block with the
+ *  focus on its root. A document anchor stands at the first match of its quote until G3b. */
+async function writeOnBlocks(page: Page, traffic: ApiRequests, seeded: MarginSeed): Promise<void> {
+  for (const target of blockWrites(seeded)) {
+    const { view, what } = target;
+    await openView(page, traffic, seeded.key, view);
+    await selectWords(page, target.node, target.quote, 1);
+    const sent = await sendFromControl(
+      page,
+      `A comment on words of the ${what}.`,
+      inView(view, `in the ${what}`)
+    );
+    expect(sent.status, inView(view, `the comment on the ${what} is written`)).toBe(201);
+    expect(
+      sent.anchor.artifact,
+      inView(view, `the ${what}'s anchor names its document's artifact`)
+    ).toBe(target.artifact);
+    expect(sent.anchor.block_id, inView(view, `the ${what}'s anchor carries block_id`)).toBe(
+      target.block
+    );
+    expect(
+      { occurrence: sent.anchor.occurrence, quote: sent.anchor.quote },
+      inView(view, `the comment on the ${what} is written on the second match of its words`)
+    ).toEqual({ occurrence: 1, quote: target.quote });
+    const [stored, beside] = await Promise.all([getComment(sent.id), getComment(target.seededOn)]);
+    const paragraph = beside.comment.anchor?.block_id;
+    if (typeof paragraph !== "string") {
+      throw new Error(`the seed's comment on the ${what} stores no block`);
+    }
+    expect(
+      { block_id: stored.comment.anchor?.block_id, quote: stored.comment.anchor?.quote },
+      inView(
+        view,
+        `the server stores the comment on the ${what} in its text, on the selected words`
+      )
+    ).toEqual({ block_id: paragraph, quote: target.quote });
+    await expectLanded(
+      page,
+      {
+        id: sent.id,
+        node: target.node,
+        occurrence: GATES.ANCHOR_OCCURRENCE ? 1 : 0,
+        quote: target.quote,
+        replies: 0,
+        what: `the ${what}`,
+      },
+      view
+    );
+  }
+}
+
+/** The read id of the finding under the lens on the resolved statement, in Graph's read
+ *  `answer`: the node under that lens that holds the finding's block. */
+function rowFindingOf(seeded: MarginSeed, answer: IssueTreeRead): string {
+  const finding = answer.nodes?.find(
+    (node) => node.parent?.id === seeded.rowLens && node.block_id === seeded.rowFindingBlock
+  );
+  if (finding === undefined) {
+    throw new Error(`Graph's tree read of ${seeded.key} holds no finding of the statement's lens`);
+  }
+  return finding.id;
+}
+
+/** A node row 2 comments on in Graph: its id in the tree read, the words whose second match it
+ *  selects, and its name. */
+interface NodeWrite {
+  readonly quote: string;
+  readonly read: string;
+  readonly what: string;
+}
+
+/** (1)'s nodes in Graph, each holding its quote twice: the verdict of the lens on the resolved
+ *  statement, its finding and its risk's heading (`seedReasoning`), the standard of the issue's
+ *  constraint, and the observed words of the check's result. */
+function nodeWrites(seeded: MarginSeed, answer: IssueTreeRead): NodeWrite[] {
+  return [
+    { quote: "note", read: seeded.rowLens, what: "lens's verdict" },
+    { quote: "line", read: rowFindingOf(seeded, answer), what: "finding" },
+    { quote: "reply", read: seeded.rowRisk, what: "risk's heading" },
+    { quote: "standard", read: seeded.constraint, what: "constraint's standard" },
+    { quote: "reading", read: seeded.result, what: "result's observed words" },
+  ];
+}
+
+/** (1) to (3) on each node of `nodeWrites` in Graph, whose read is `answer`: the selection's
+ *  Comment, the send, the write's `anchor.node` and the node anchor the server stored, the thread
+ *  beside the node with the focus on its root; then, after a reload, the thread beside its node
+ *  in every view that draws the node, Graph among them. */
+async function writeOnNodes(
+  page: Page,
+  traffic: ApiRequests,
+  seeded: MarginSeed,
+  answer: IssueTreeRead
+): Promise<void> {
+  await openView(page, traffic, seeded.key, "graph");
+  const written: Spot[] = [];
+  for (const target of nodeWrites(seeded, answer)) {
+    const { what } = target;
+    const node = treeIdIn(answer, seeded.key, target.read, `the ${what}`);
+    await selectWords(page, node, target.quote, 1);
+    const sent = await sendFromControl(
+      page,
+      `A comment on words of the ${what}.`,
+      inView("graph", `in the ${what}`)
+    );
+    expect(sent.status, inView("graph", `the comment on the ${what} is written`)).toBe(201);
+    expect(
+      sent.anchor,
+      inView("graph", `the comment on the ${what} is written on its node, on the second match`)
+    ).toEqual({ node: expect.stringContaining(target.read), occurrence: 1, quote: target.quote });
+    const stored = await nodeAnchorOf(sent.id);
+    expect(
+      { node: stored.node.id, occurrence: stored.occurrence, quote: stored.quote },
+      inView("graph", `the comment on the ${what} stores occurrence 1 of its words on its node`)
+    ).toEqual({ node: target.read, occurrence: 1, quote: target.quote });
+    const spot = { id: sent.id, node, occurrence: 1, quote: target.quote, replies: 0, what };
+    await expectLanded(page, { ...spot, what: `the ${what}` }, "graph");
+    written.push({ ...spot, what: `the thread written on the ${what}` });
+  }
+  const known = [...(await threadSpots(seeded)), ...(await nodeSpots(page, seeded))];
+  for (const view of VIEWS) {
+    await openView(page, traffic, seeded.key, view);
+    const must = new Set(view === "graph" ? written.map(({ id }) => id) : []);
+    await expectPlaced(page, [...known, ...written], must, view, true);
+  }
+}
+
+/**
+ * (4) in Graph, whose read is `answer`: no control stands on a selection across two rows, after
+ * which `$mod+Alt+m` writes nothing and opens no composer; none on a risk's early warning line;
+ * none on the author-only node; and none on the child issue's row. Before each, a selection in
+ * a row beside it takes the control, so the control can stand there, and is let go, so the
+ * control drawn for it stands over no words the next selection presses; each refused selection
+ * is read once the page has had the frames it reads a selection in (`framesPass`).
+ */
+async function readNoControl(
+  page: Page,
+  traffic: ApiRequests,
+  seeded: MarginSeed,
+  answer: IssueTreeRead
+): Promise<void> {
+  await openView(page, traffic, seeded.key, "graph");
+  const idOf = (read: string, what: string) => treeIdIn(answer, seeded.key, read, what);
+  const lens = idOf(seeded.rowLens, "the lens");
+  const finding = idOf(rowFindingOf(seeded, answer), "the finding");
+  const risk = idOf(seeded.rowRisk, "the risk");
+  const constraint = idOf(seeded.constraint, "the constraint");
+  const authorOnly = idOf(seeded.authorOnly, "the author-only constraint");
+  const child = idOf(seeded.child, "the child issue");
+  const control = commentControl(page);
+  const takes = async (node: string, quote: string, what: string) => {
+    await selectWords(page, node, quote, 0);
+    await expect(control, `Comment stands beside a selection in ${what}`).toBeVisible();
+    await page.evaluate(() => document.getSelection()?.removeAllRanges());
+    await expect(control, `the control goes with the selection in ${what}`).toHaveCount(0);
+  };
+
+  await takes(lens, "view", "the lens's verdict");
+  await showRow(page, lens);
+  await dragAcross(
+    page,
+    await wordsAt(page, lens, "margin", 0),
+    await wordsAt(page, finding, "record", 0)
+  );
+  await framesPass(page);
+  await expect(control, "no control stands on a selection across two rows").toHaveCount(0);
+  await expectLoadSettled(traffic);
+  traffic.reset();
+  await page.keyboard.press("ControlOrMeta+Alt+KeyM");
+  await expectLoadSettled(traffic);
+  expect(
+    traffic.requests
+      .filter(({ method }) => method !== "GET")
+      .map(({ method, route }) => `${method} ${route}`),
+    "$mod+Alt+m on a selection across two rows writes nothing"
+  ).toEqual([]);
+  await expect(
+    composerBox(page),
+    "$mod+Alt+m on a selection across two rows opens no composer"
+  ).toHaveCount(0);
+
+  await takes(risk, "slow", "the risk's heading");
+  // The risk's early warning line: "The warning comes before the reader asks."
+  const warning = await lineWords(
+    stageRow(page, risk).first().locator('[data-lens-line="early_warning"]'),
+    "comes"
+  );
+  await dragAcross(page, warning, warning);
+  await framesPass(page);
+  await expect(
+    control,
+    "no control stands on a selection in a risk's early warning line"
+  ).toHaveCount(0);
+
+  await takes(constraint, "standard", "the constraint's standard");
+  await selectWords(page, authorOnly, "author", 0);
+  await framesPass(page);
+  await expect(control, "no control stands on a selection in the author-only node").toHaveCount(0);
+
+  await takes(lens, "view", "the lens's verdict");
+  await selectWords(page, child, "titles", 0);
+  await framesPass(page);
+  await expect(control, "no control stands on a selection in the child issue's row").toHaveCount(0);
+}
+
+/** The resolved statement's words, which (5) edits away between a selection and its send. */
+const SETTLED_WORDS = "A settled question still has a place.";
+
+/** The draft (5) writes, which stays once the send is refused. */
+const KEPT_DRAFT = "A comment on words an edit takes away before the send.";
+
+/** (5) under Spec: the statement's words edited through the API between a selection and its
+ *  send: the send draws the words-gone line with the role `status`, and the draft stays. */
+async function readWordsGone(page: Page, traffic: ApiRequests, seeded: MarginSeed): Promise<void> {
+  await openView(page, traffic, seeded.key, "spec");
+  await selectWords(page, blockNode(seeded.specSlug, seeded.resolvedStatement), "place", 0);
+  const control = commentControl(page);
+  await expect(
+    control,
+    "Comment stands beside the selection in the resolved statement, in Spec"
+  ).toBeVisible();
+  await control.click();
+  const field = composerField(page);
+  await field.fill(KEPT_DRAFT);
+  await editArtifact(seeded.specArtifactId, {
+    ops: [{ find: SETTLED_WORDS, op: "replace", with: "A settled question still waits." }],
+  });
+  const refused = page.waitForResponse(commentWrite);
+  await field.press("ControlOrMeta+Enter");
+  await refused;
+  await expect(
+    composerBox(page).getByRole("status").filter({ hasText: MARGIN_ANSWERS.words_gone }),
+    "the send of words an edit took away says they are no longer in this text"
+  ).toBeVisible();
+  await expect(composerField(page), "the draft stays once the words are gone").toHaveValue(
+    KEPT_DRAFT
+  );
+}
+
+// c-write, row 2. Below 1024 px the composer stands in its node's sheet, which each view's row
+// draws once the part that last reshapes it is on the base (G6, departure five), so on `iphone`
+// the row reads (4) alone and records the writes owed on those parts too.
+// SLOW(>=2s): the whole seeded issue, a comment sent on a block in each of four views and on five
+// nodes in Graph, each read back from the server, six views loaded again, four refused
+// selections, and a send of words an edit took away.
 test("a person comments on selected text of each kind of node @phone", async ({ browser }) => {
+  test.setTimeout(900_000);
   const phone = test.info().project.name === "iphone";
-  onBase(
-    "(1) to (3) a selection, its Comment and its send on a statement, a check, a plan task and a decision, read back from the server with its anchor's block_id, quote and occurrence 1, and the thread beside its node with the focus on its root",
-    "COMPOSER"
+  const sheet = (...views: View[]): Gate[] =>
+    phone ? [...new Set(views.map((view) => SHEET_PART[view]))] : [];
+  const blocks = onBase(
+    "(1) to (3) a selection, its Comment and its send on a statement, a check, a plan task and a decision, read back from the server with its anchor's artifact, block_id, quote and occurrence 1, and the thread beside its node with the focus on its root",
+    "COMPOSER",
+    ...sheet("spec", "verification", "plan", "decisions")
   );
   onBase(
     "(1) to (3) on a criterion and on a block written in the conversation, with the issue's `tree` artifact",
@@ -1564,13 +2215,19 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
     "COMPOSER",
     "REPLY_QUOTE"
   );
-  onBase(
-    "(1) to (3) on a lens's verdict, a finding, a risk's heading, a constraint's standard and a result's observed words, with anchor.node",
+  const nodes = onBase(
+    "(1) to (3) on a lens's verdict, a finding, a risk's heading, a constraint's standard and a result's observed words, with anchor.node, and after a reload the thread beside its node in every view that draws it",
     "COMPOSER",
-    "NODE_ANCHOR"
+    "NODE_ANCHOR",
+    ...sheet("graph")
   );
   onBase(
     "(3) the thread beside a block node after a reload, in every view that draws it",
+    "COMPOSER",
+    "ANCHOR_OCCURRENCE"
+  );
+  onBase(
+    "(3) right after its send, a block's thread level with the second match of its quote, the selected words (until then the page places it at the first)",
     "COMPOSER",
     "ANCHOR_OCCURRENCE"
   );
@@ -1582,13 +2239,26 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
     "PART_J",
     "PART_Y"
   );
-  onBase(
-    "(4) no control on a selection across two rows (and `$mod+Alt+m` writes nothing), across two blocks of one post, on a risk's early warning line, on the author-only node and on the child issue's row",
-    "COMPOSER"
+  const refused = onBase(
+    "(4) no control on a selection across two rows (and `$mod+Alt+m` writes nothing), on a risk's early warning line, on the author-only node and on the child issue's row",
+    "COMPOSER",
+    "NODE_ANCHOR"
   );
   onBase(
-    "(5) the statement's and the post's words edited between a selection and its send: the send draws the words-gone line with the role status and the draft stays",
-    "COMPOSER"
+    "(4) no control on a selection across two blocks of one post (until then no selection in a post takes the control, so none stands to refuse it)",
+    "COMPOSER",
+    "REPLY_QUOTE"
+  );
+  const gone = onBase(
+    "(5) the statement's words edited between a selection and its send: the send draws the words-gone line with the role status and the draft stays",
+    "COMPOSER",
+    ...sheet("spec")
+  );
+  onBase(
+    "(5) the post's words edited between a selection and its send: the send draws the words-gone line with the role status and the draft stays",
+    "COMPOSER",
+    "REPLY_QUOTE",
+    ...sheet("conversation")
   );
   onBase(
     "(6) the statement's editor's Comment opens the composer in the region with an anchor of `artifact` and `mark_id` alone, and its Suggest stands as a thread with Accept and Reject",
@@ -1611,10 +2281,20 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
     "(9) a reply whose 201 holds no quote: a row under the post, the line that says the words were not kept, and no thread in the region",
     "COMPOSER",
     "REPLY_QUOTE",
-    ...(phone ? (["PART_X"] as const) : [])
+    ...sheet("conversation")
   );
+  if (blocks || nodes || refused || gone) {
+    await phase(browser, seedMarginIssue, async (page, seeded) => {
+      await page.setViewportSize(phone ? PHONE : DESKTOP);
+      const traffic = watchApiRequests(page);
+      const answer = await requestedTreeRead(page, seeded.key);
+      if (blocks) await writeOnBlocks(page, traffic, seeded);
+      if (nodes) await writeOnNodes(page, traffic, seeded, answer);
+      if (refused) await readNoControl(page, traffic, seeded, answer);
+      if (gone) await readWordsGone(page, traffic, seeded);
+    });
+  }
   if (!notKept) return;
-  test.setTimeout(300_000);
   await phase(browser, seedMarginIssue, async (page, seeded) => {
     await page.setViewportSize(phone ? PHONE : DESKTOP);
     const stripped = await keepNoQuote(page);
@@ -1622,16 +2302,12 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
     await gotoIssue(page, presetPath(seeded.key, "conversation"));
     await expectLoadSettled(traffic);
     await selectWords(page, seeded.post, "sample", 1);
-    const control = page.getByRole("button", { exact: true, name: MARGIN_WORDS.comment });
+    const control = commentControl(page);
     await expect(control, "Comment stands beside the selection").toBeVisible();
     await control.click();
-    const field = page.locator("[data-text-composer]").getByRole("textbox").first();
+    const field = composerField(page);
     await field.fill("The second sample, said from a build that keeps no quote.");
-    const written = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        /^\/api\/v1\/issues\/[^/]+\/comments$/u.test(new URL(response.url()).pathname)
-    );
+    const written = page.waitForResponse(commentWrite);
     await field.press("ControlOrMeta+Enter");
     const answer: unknown = await (await written).json();
     const reply =
@@ -1648,11 +2324,50 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
   });
 });
 
-// c-write, row 3. Every reading waits on G5 at this base (R6's Enter, the composer and the
-// stacking), and on its own gates: the row records each owed and reads nothing.
-test("the keyboard comments on selected text and reaches the margin", async ({
-  browser: _browser,
-}) => {
+/** How many stops Tab passes at most on its way from a row to the region. */
+const TAB_STOPS_AT_MOST = 200;
+
+/** Where the focus stands: in the region, with the thread whose box holds it; in the main column;
+ *  or elsewhere; and the stop itself, by its tag and its first words. */
+interface FocusPlace {
+  readonly place: "column" | "other" | "region";
+  readonly stop: string;
+  readonly thread: string | null;
+}
+
+function focusPlace(page: Page): Promise<FocusPlace> {
+  return page.evaluate((name): FocusPlace => {
+    const focused = document.activeElement;
+    const column =
+      [...document.querySelectorAll('[role="region"]')].find(
+        (element) => element.getAttribute("aria-label") === name
+      ) ?? null;
+    const stage = document.querySelector('[data-testid="issue-column"]');
+    const stop =
+      focused === null
+        ? "nothing"
+        : `${focused.tagName.toLowerCase()} "${(focused.textContent ?? "").trim().slice(0, 40)}"`;
+    if (focused !== null && column?.contains(focused) === true) {
+      return {
+        place: "region",
+        stop,
+        thread: focused.closest("[data-text-thread]")?.getAttribute("data-text-thread") ?? null,
+      };
+    }
+    return {
+      place: focused !== null && stage?.contains(focused) === true ? "column" : "other",
+      stop,
+      thread: null,
+    };
+  }, MARGIN_WORDS.region);
+}
+
+// c-write, row 3. R6's caret on a post waits on G4 as well, and the statement's editor caret on
+// part Y; the foot's box, which Tab passes, is part L's.
+// SLOW(>=2s): the whole seeded issue, loaded in Conversation with every branch opened, and Tab
+// pressed from a row across the main column's later stops into the region.
+test("the keyboard comments on selected text and reaches the margin", async ({ browser }) => {
+  test.setTimeout(300_000);
   onBase(
     "on a post's row Enter puts the caret in the post's text, a key typed there changes nothing, Shift with the right arrow selects four characters, `$mod+Alt+m` opens the composer beside the post headed by them, Enter sends and Escape leaves the caret for the row",
     "COMPOSER",
@@ -1663,10 +2378,56 @@ test("the keyboard comments on selected text and reaches the margin", async ({
     "COMPOSER",
     "PART_Y"
   );
-  onBase(
-    "from the row Tab passes the main column's later stops, the box at its foot among them, and reaches the region's first thread, and Escape in that thread puts the focus on its node's row",
+  const tab = onBase(
+    "from the row Tab passes the main column's later stops and reaches the region's first thread, and Escape in that thread puts the focus on its node's row",
     "COMPOSER"
   );
+  owe(
+    "the box at the main column's foot among the stops Tab passes from the row",
+    "part L (INFRA-3949) fills the foot (`slots/foot.tsx`), which no line of the gate table holds: at this base the foot draws no box"
+  );
+  if (!tab) return;
+  await phase(browser, seedMarginIssue, async (page, seeded) => {
+    const traffic = watchApiRequests(page);
+    await openView(page, traffic, seeded.key, "conversation");
+    const first = region(page).locator("[data-text-thread]:not([hidden])").first();
+    await expect(first, "the region draws a thread").toBeVisible();
+    // The wait above holds until the column draws its first thread, so one reading names it.
+    const named = await first.evaluate((box) => ({
+      node: box.getAttribute("data-text-thread-node"),
+      thread: box.getAttribute("data-text-thread"),
+    }));
+    await focusRow(page, blockNode(seeded.specSlug, seeded.statementS1));
+    const passed: string[] = [];
+    let reached: FocusPlace | undefined;
+    for (let press = 0; press < TAB_STOPS_AT_MOST && reached === undefined; press += 1) {
+      await page.keyboard.press("Tab");
+      // Tab moves the focus before its press resolves, so one reading names the stop it reached.
+      const at = await focusPlace(page);
+      if (at.place === "region") reached = at;
+      else passed.push(`${at.place}: ${at.stop}`);
+    }
+    expect(
+      passed.filter((stop) => !stop.startsWith("column:")),
+      "from the row Tab passes the main column's later stops alone before it reaches the region"
+    ).toEqual([]);
+    expect(reached?.thread ?? null, "Tab from the row reaches the region's first thread").toBe(
+      named.thread
+    );
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const focused = document.activeElement;
+            return focused?.matches("[data-node-row]") === true
+              ? focused.getAttribute("data-node-id")
+              : null;
+          }),
+        { message: "Escape in the thread puts the focus on the row of its node" }
+      )
+      .toBe(named.node);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -1882,20 +2643,25 @@ function entryPlace(
 
 // c-address. The named reply's focus is read first: at the merge-base the row fails there, and
 // with an address that opens the issue's own address instead.
-// SLOW(>=2s): the whole seeded issue, loaded at two comment addresses, one of them past the
-// first page of a statement's children, and at the issue's own address for its Contents pane.
+// SLOW(>=2s): the whole seeded issue, loaded at the addresses of a reply, the Change, the thread
+// past the first page of a statement's children, the risk's comment in two views and a comment
+// no view draws, and at the issue's own address for its Contents pane.
 test("the address of a comment on text opens its thread", async ({ browser }) => {
   test.setTimeout(300_000);
   const risk = onBase(
-    "`?comment=<id>` of the risk's comment opens Graph with the focus in that thread",
+    "`?comment=<id>` of the risk's comment opens the view that draws the risk's row, with the focus in that thread: Graph at Graph's address, and Conversation at the issue's own, since Conversation draws the risk (R8)",
     "NODE_ANCHOR"
   );
   const message = onBase(
     "`/issues/<key>/messages/<id>` of the reply that quotes the message opens Graph there",
     "REPLY_QUOTE"
   );
+  onBase(
+    "the address of the comment on the restating decision block's words opens Conversation with that thread beside the ask the block restates and the focus on it",
+    "PART_U"
+  );
   const unseen = onBase(
-    "the address of a comment whose node no view draws opens the issue's own address with no line (at this base such a comment, on a block no node of the read stands for, stays a row: `on-text.ts`)",
+    "the address of a comment whose node no view draws opens the issue's own address with no line",
     "COMPOSER"
   );
   onBase("the address of a comment whose node no view draws opens it in Threads", "THREADS");
@@ -1945,14 +2711,20 @@ test("the address of a comment on text opens its thread", async ({ browser }) =>
     if (risk) {
       const comment = seeded.riskComment;
       if (comment === null) throw new Error("the seed wrote no comment on the risk");
-      await gotoIssue(page, `${presetPath(key, "conversation")}?comment=${comment}`);
-      await expect(page, "?comment= of the risk's comment opens Graph").toHaveURL(
-        (url) => url.pathname === presetPath(key, "graph")
-      );
-      await expect(
-        threadCard(page, comment),
-        "?comment= of the risk's comment puts the focus in its thread"
-      ).toBeFocused();
+      // R8 opens Conversation where Conversation draws the thread's node, else Graph. The risk
+      // stands under the lens on the resolved statement, and a risk is a kind of Conversation's
+      // read, so Conversation draws its row and the issue's own address keeps the thread there.
+      for (const view of ["graph", "conversation"] as const) {
+        await gotoIssue(page, `${presetPath(key, view)}?comment=${comment}`);
+        await expect(
+          page,
+          inView(view, "?comment= of the risk's comment opens the view that draws the risk's row")
+        ).toHaveURL((url) => url.pathname === presetPath(key, view));
+        await expect(
+          threadCard(page, comment),
+          inView(view, "?comment= of the risk's comment puts the focus in its thread")
+        ).toBeFocused();
+      }
     }
     if (message) {
       const reply = seeded.messageQuotedReply;
@@ -2055,16 +2827,47 @@ async function loadOnce(
   };
 }
 
+/** The words row 6 sends from the composer, whose requests it counts. */
+const COUNTED_SEND = "A comment whose send row 6 counts the requests of.";
+
+/** From the page Graph's load `load` left: selects the second "the" of statement S2 ("A reader
+ *  finds the first note and the last marker in order."), opens the composer by its Comment, and
+ *  answers every request from the send of `COUNTED_SEND` to the page's next quiet window. */
+async function sendCounted(
+  page: Page,
+  traffic: ApiRequests,
+  seeded: MarginSeed
+): Promise<readonly ApiRequest[]> {
+  await expectOpeningLanded(page);
+  await unfoldEveryBranch(page);
+  await selectWords(page, blockNode(seeded.specSlug, seeded.statementS2), "the", 1);
+  const control = commentControl(page);
+  await expect(
+    control,
+    "Comment stands beside the selection in statement S2, in Graph"
+  ).toBeVisible();
+  await control.click();
+  const field = composerField(page);
+  await field.fill(COUNTED_SEND);
+  await expectLoadSettled(traffic);
+  traffic.reset();
+  const written = page.waitForResponse(commentWrite);
+  await field.press("ControlOrMeta+Enter");
+  await written;
+  await expectLoadSettled(traffic);
+  return [...traffic.requests];
+}
+
 // c-reads. The seed's threads are read first: at the merge-base the row fails there.
 // SLOW(>=2s): two seeded issues, each loaded at Conversation's route and at Graph's, each load
-// waited out to a 1.5 s quiet window.
+// waited out to a 1.5 s quiet window, and a send from the composer waited out to that window.
 test("the margin adds no request", async ({ browser }) => {
   test.setTimeout(300_000);
   const agentsEqual = onBase(
-    "the load with threads sends no agents read that the load without them does not (ThreadCard's always-open MentionComposer reads /api/v1/agents once until G5)",
+    "the load with threads reads /api/v1/agents as often as the load without them, since a fixed-open card's reply composer reads the agents only once its reply is used",
     "COMPOSER"
   );
-  onBase(
+  const sends = onBase(
     "a send from the composer sends its write and the re-reads of part T's R6 alone",
     "COMPOSER"
   );
@@ -2084,6 +2887,28 @@ test("the margin adds no request", async ({ browser }) => {
         .toEqual([]);
       withThreads.set(view, load);
     }
+    if (!sends) return;
+    // The page stands at Graph's load, the last of `LOADS`: each read a write sends again is a
+    // read of that load.
+    const graph = withThreads.get("graph");
+    if (graph === undefined) throw new Error("row 6 holds no load of Graph");
+    const sent = await sendCounted(page, traffic, seeded);
+    const reread = new Set(graph.routes.map(({ route }) => route));
+    expect(
+      sent
+        .filter(({ method }) => method !== "GET")
+        .map(({ method, route }) => `${method} ${route}`),
+      "a send from the composer sends its write alone"
+    ).toEqual([`POST ${COMMENTS_READ}`]);
+    expect(
+      sent
+        .filter(
+          ({ method, route }) =>
+            method === "GET" && SHELL_TIMED_READS[route] !== true && !reread.has(route)
+        )
+        .map(({ path }) => path),
+      "a send from the composer reads again only what Graph's load read, as part T's R6 re-reads after a write"
+    ).toEqual([]);
   });
   await phase(browser, seedNoThreads, async (page, seeded) => {
     const traffic = watchApiRequests(page);
@@ -2103,14 +2928,9 @@ test("the margin adds no request", async ({ browser }) => {
       load.requests.filter((request) => request.route === "/api/v1/agents").length;
     if (agentsEqual) {
       expect(
-        agentReads(threaded) > 0,
-        inView(view, "the load with threads reads the agents as the load without them does")
-      ).toBe(agentReads(plain) > 0);
-    } else {
-      expect(
         agentReads(threaded),
-        inView(view, "before G5, the column's reply composer reads /api/v1/agents at most once")
-      ).toBeLessThanOrEqual(1);
+        inView(view, "the load with threads reads the agents as often as the load without them")
+      ).toBe(agentReads(plain));
     }
     expect(
       threaded.requests
@@ -2154,8 +2974,9 @@ test("an opened document draws its threads in the margin @phone", async ({ brows
   onBase("on `iphone` at 390 px each thread stands under its block", "PART_N");
 });
 
-// c-change. Owed until part U is on the base, and until G5 for the Change's place, since at this
-// base the Change stays a row (`on-text.ts`): the row records each reading owed and reads nothing.
+// c-change. Owed until part U is on the base (G5, the Change's place in the margin, is on it, and
+// row 1 reads the Change's thread in Conversation and in Graph): the row records each reading
+// owed and reads nothing.
 test("a Change stands in the margin and Decisions keeps Changed by", async ({
   browser: _browser,
 }) => {
