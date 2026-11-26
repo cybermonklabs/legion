@@ -95,7 +95,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAWaitByDesignIsNeverToldAsAStall", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
 	{file: "internal/api/handoff.go", fn: "server.answerCompletion"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
-	{file: "internal/api/operator.go", fn: "server.restartWorkedPhase"}: {calls: 1, tests: []string{
+	{file: "internal/api/claimstart.go", fn: "server.restartWorkedPhase"}: {calls: 1, tests: []string{
 		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
 	{file: "internal/intake/facts.go", fn: "EntryFence"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit",

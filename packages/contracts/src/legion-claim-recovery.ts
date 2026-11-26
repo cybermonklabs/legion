@@ -5,9 +5,9 @@ import { isStepRole } from "./legion-roles";
  * The two claim recoveries the controller asks for, `fresh_session` and `compact`: the body they
  * share, and the answer each gives through the controller's door and the operator's alike.
  *
- * Go owns all three shapes, `packages/daemon/internal/api/freshsession.go` (`ClaimRequest`,
- * `FreshSessionResponse`) and `compact.go` (`CompactResponse`), and the fixtures pin them as they
- * pin the rest of the API (`legion-api.test.ts`). Importers read them through
+ * Go owns all three shapes, `packages/daemon/internal/api/agentdoor.go` (`ClaimRequest`),
+ * `freshsession.go` (`FreshSessionResponse`) and `compact.go` (`CompactResponse`), and the
+ * fixtures pin them as they pin the rest of the API (`legion-api.test.ts`). Importers read them through
  * `@legion/contracts/legion-api`, which re-exports all three; this module has no export entry of
  * its own (`package.json`).
  */
