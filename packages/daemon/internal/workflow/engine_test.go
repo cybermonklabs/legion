@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -370,6 +371,29 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	if strings.Contains(task, "Handoff verdict") {
 		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)
 	}
+}
+
+// rolePrompt is role's composed prompt as its pane reads it: every part Compose names, read back
+// and joined in order.
+func rolePrompt(t *testing.T, role claim.Role) string {
+	t.Helper()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	parts, err := composer.Compose(role, false)
+	if err != nil {
+		t.Fatalf("compose the %s's prompt: %v", role, err)
+	}
+	var prompt strings.Builder
+	for _, path := range parts.RolePromptPaths {
+		part, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read role prompt part %s: %v", path, err)
+		}
+		prompt.Write(part)
+	}
+	return prompt.String()
 }
 
 // The architect learns what a phase produced from its phase-finished notice: the worker's own
