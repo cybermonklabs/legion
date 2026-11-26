@@ -64,6 +64,12 @@ gateway, which the download-retry-images job and the five runs of the download-r
 job of .github/workflows/ci-job-download-retry.yaml bind to and pass into the build as http_proxy.
 Nothing else changes: a caller that names no --bind listens where it always did.
 
+It reaches an origin as apt does. It resolves the name once, starts the first address, and starts
+the next one 0.25 s later while none has connected, or at once when every one it started has
+failed. The first address that connects carries the request, and the attempt gives up after 30 s
+in all. So an address that drops the SYN costs a request 0.25 s here, as it does on apt's own
+path, and not the 30 s that one address after another would cost.
+
 It makes no fetch of its own: every byte it sends upstream is one a client sent it. It is Python
 3 from the runner image, with nothing to install.
 """
@@ -71,6 +77,7 @@ It makes no fetch of its own: every byte it sends upstream is one a client sent 
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import select
 import socket
@@ -82,6 +89,17 @@ from collections.abc import Callable
 
 READ_SIZE = 65536
 HEADER_LIMIT = 65536
+# How long the proxy gives an origin to take a connection in all. It is also the socket timeout of
+# the connection that then carries the request, as socket.create_connection(timeout=30) gave it.
+CONNECT_TIMEOUT = 30.0
+# How long the proxy waits on the attempts it has started before it starts the origin's next
+# address as well. It is apt's own wait: Acquire::http::ConnectionAttemptDelayMsec, 250 ms by
+# default, in apt's methods/connect.cc. On apt's own path an address that drops the SYN costs a
+# request 250 ms. The proxy used to connect with socket.create_connection, which gives each
+# address the whole timeout in turn. There the same address cost each request 30 s. In job
+# 139835657575 of run 45797742953 that made apt-get update run past its 120 s bound on
+# security.ubuntu.com, whose name has nine addresses, after the outage had ended.
+CONNECT_STAGGER = 0.25
 
 
 def log(message: str) -> None:
@@ -92,6 +110,70 @@ def log(message: str) -> None:
 def plain_seconds(value: float) -> str:
     """A number of seconds as a person writes it: 5 for 5.0, and 2.5 for 2.5."""
     return str(int(value)) if value.is_integer() else str(value)
+
+
+def connect_staggered(addresses: list[tuple], timeout: float, stagger: float) -> socket.socket:
+    """A connection to the first of the addresses that takes one, with the addresses tried as
+    apt tries them.
+
+    The addresses are getaddrinfo's tuples, started in its order. The first is started at once.
+    Each next one is started stagger seconds after the one before while no attempt has
+    connected, or at once when every attempt started so far has failed. An attempt that fails as
+    it starts has failed at once. The first attempt that connects wins, and every other socket is
+    closed. The call gives up with TimeoutError once timeout seconds have passed. It gives up with
+    the last error once every address has failed. The winner has timeout as its socket timeout,
+    as socket.create_connection gives its connection.
+    """
+    deadline = time.monotonic() + timeout
+    waiting = list(addresses)
+    attempts: list[socket.socket] = []
+    error: OSError = OSError("getaddrinfo returned no address")
+    next_start = 0.0
+    winner: socket.socket | None = None
+    try:
+        while winner is None:
+            now = time.monotonic()
+            if not waiting and not attempts:
+                raise error
+            if now >= deadline:
+                raise TimeoutError("timed out")
+            if waiting and (not attempts or now >= next_start):
+                family, kind, proto, _name, address = waiting.pop(0)
+                try:
+                    attempt = socket.socket(family, kind, proto)
+                except OSError as failed:
+                    error = failed
+                    continue
+                attempts.append(attempt)
+                attempt.setblocking(False)
+                code = attempt.connect_ex(address)
+                if code == 0:
+                    winner = attempt
+                elif code == errno.EINPROGRESS:
+                    next_start = now + stagger
+                else:
+                    error = OSError(code, os.strerror(code))
+                    attempts.remove(attempt)
+                    attempt.close()
+                continue
+            wait = deadline - now
+            if waiting:
+                wait = min(wait, next_start - now)
+            _, ready, _ = select.select([], attempts, [], wait)
+            for attempt in ready:
+                code = attempt.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if code == 0:
+                    winner = attempt
+                    break
+                error = OSError(code, os.strerror(code))
+                attempts.remove(attempt)
+                attempt.close()
+    finally:
+        for attempt in attempts:
+            if attempt is not winner:
+                attempt.close()
+    winner.settimeout(timeout)
+    return winner
 
 
 class Fault:
@@ -275,9 +357,11 @@ class Handler(socketserver.StreamRequestHandler):
         return True
 
     def connect_upstream(self, host: str, port: int, what: str) -> socket.socket | None:
-        """The connection to the origin, or None once a 502 has answered for its refusal."""
+        """The connection to the origin, or None once a 502 has answered for its refusal. The
+        name is resolved once, and its addresses are tried as connect_staggered tries them."""
         try:
-            upstream = socket.create_connection((host, port), timeout=30)
+            addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            upstream = connect_staggered(addresses, CONNECT_TIMEOUT, CONNECT_STAGGER)
         except OSError as error:
             log(f"502 {what}: {error}")
             self.answer(502, f"ci-fault-proxy: {error}\n".encode())

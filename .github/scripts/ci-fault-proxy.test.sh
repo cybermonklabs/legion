@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests for `ci-fault-proxy.py`: each of its three modes over plain HTTP and over CONNECT, a
-# host outside --hosts passed on in every one of them, --bind, the window of its own that
-# --per-host-window gives each host under --mode recover, and the outages --coalesce-outage-gap
-# makes the hosts of one call share, with its --probe-host; the counts by host that
+# host outside --hosts passed on in every one of them, --bind, the connect it reaches an origin's
+# addresses with, the window of its own that --per-host-window gives each host under --mode
+# recover, and the outages --coalesce-outage-gap makes the hosts of one call share, with its
+# --probe-host; the counts by host that
 # `.github/scripts/download-retry-proof.sh#report` makes of the requests the proxy logged as
 # passed on and as faulted; for a run that faults one host, the window the rig's probe opens and
 # the report's faulted-host and attempt checks; and for an image build, the attempt check
@@ -437,6 +438,95 @@ check "--coalesce-outage-gap of 0 s" \
 run_proxy --mode recover --hosts fetch.invalid --probe-host download-retry-probe.fetch.invalid
 check "--probe-host without --coalesce-outage-gap" \
   "$(is "$status:$(contains "$out" '^ci-fault-proxy\.py: error: .*--coalesce-outage-gap')" 2:true)"
+
+# The connect cases below drive the proxy's connect_staggered directly, as the cases above drive
+# its Fault, in a python process of their own over real sockets on 127.0.0.1. The driver makes
+# one address of each kind it is given, in order. A live address is a listener. A refused address
+# is a port bound with no listener, so the kernel answers a SYN to it with a reset and no other
+# process takes the port. A dead address is a listener of backlog 0 whose one queued connection
+# is never accepted, so the kernel drops every further SYN to it, as one of security.ubuntu.com's
+# addresses did in job 139835657575 of run 45797742953. The driver passes the addresses to
+# connect_staggered with the total timeout and the stagger it is given, - for the proxy's own. It
+# prints one line: `connected <kind>` or `error <exception>`, the seconds the call took, how many
+# sockets the call left open, and the winner's socket timeout, - for none.
+cat > "$work/staggered.py" <<'STAGGERED'
+import importlib.util, os, socket, sys, time
+
+spec = importlib.util.spec_from_file_location("ci_fault_proxy", sys.argv[1])
+proxy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(proxy)
+timeout = proxy.CONNECT_TIMEOUT if sys.argv[2] == "-" else float(sys.argv[2])
+stagger = proxy.CONNECT_STAGGER if sys.argv[3] == "-" else float(sys.argv[3])
+held = []
+kinds = {}
+addresses = []
+for kind in sys.argv[4:]:
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    held.append(server)
+    server.bind(("127.0.0.1", 0))
+    if kind == "live":
+        server.listen(16)
+    elif kind == "dead":
+        server.listen(0)
+        held.append(socket.create_connection(server.getsockname(), timeout=5))
+    kinds[server.getsockname()] = kind
+    addresses += socket.getaddrinfo(*server.getsockname(), type=socket.SOCK_STREAM)
+
+def open_files():
+    return len(os.listdir("/proc/self/fd"))
+
+before = open_files()
+start = time.monotonic()
+try:
+    connection = proxy.connect_staggered(addresses, timeout, stagger)
+except OSError as error:
+    outcome, socket_timeout = f"error {type(error).__name__}", "-"
+else:
+    outcome, socket_timeout = f"connected {kinds[connection.getpeername()]}", connection.gettimeout()
+elapsed = time.monotonic() - start
+print(f"{outcome} {elapsed:.3f} {open_files() - before} {socket_timeout}")
+STAGGERED
+# staggered <timeout> <stagger> <kind>...: the driver's line in $out, printed under the case, and
+# its fields in $st_status, $st_kind, $st_seconds, $st_left and $st_timeout.
+staggered() {
+  set +e
+  out=$(python3 "$work/staggered.py" "$proxy_script" "$@" 2>&1)
+  set -e
+  read -r st_status st_kind st_seconds st_left st_timeout _ <<<"$out" || true
+  indent "$out"
+}
+# between <seconds> <low> <high>: true when the seconds are a number, at least low and under high.
+between() {
+  awk -v s="$1" -v low="$2" -v high="$3" \
+    'BEGIN { print (s ~ /^[0-9]+(\.[0-9]+)?$/ && s + 0 >= low + 0 && s + 0 < high + 0 ? "true" : "false") }'
+}
+
+echo "case: the proxy connects as apt does: a dead address before a live one costs the 0.25 s stagger, not the 30 s timeout"
+staggered - - dead live
+check "the call connects to the live address" "$(is "$st_status $st_kind" 'connected live')"
+check "in under 3 s, where one address after another waits the dead one's whole 30 s" "$(between "$st_seconds" 0 3)"
+check "and no sooner than the 0.25 s stagger, so the dead address was started first" "$(between "$st_seconds" 0.25 3)"
+check "the dead address's attempt is closed: the winner is the one socket the call left open" "$(is "$st_left" 1)"
+check "and the winner has the 30 s socket timeout that create_connection gave it" "$(is "$st_timeout" 30.0)"
+
+echo "case: with every address dead, the connect gives up at the total timeout it is given"
+staggered 1 - dead dead
+check "the call fails with a timeout" "$(is "$st_status $st_kind" 'error TimeoutError')"
+check "after the 1 s it was given, and well before 3 s" "$(between "$st_seconds" 1 3)"
+check "and leaves no socket open" "$(is "$st_left" 0)"
+
+echo "case: a refused address is left at once for the next one, with no stagger waited"
+# A 5 s stagger, so a call that waited it reads apart from one that did not on any runner.
+staggered - 5 refused live
+check "the call connects to the live address" "$(is "$st_status $st_kind" 'connected live')"
+check "in under 2 s, well inside the 5 s stagger" "$(between "$st_seconds" 0 2)"
+check "and the refused attempt is closed" "$(is "$st_left" 1)"
+
+echo "case: with every address refused, the connect fails with the refusal at once, not at the timeout"
+staggered - 5 refused refused
+check "the call fails with the refusal" "$(is "$st_status $st_kind" 'error ConnectionRefusedError')"
+check "in under 2 s, well inside the 5 s stagger and the 30 s timeout" "$(between "$st_seconds" 0 2)"
+check "and leaves no socket open" "$(is "$st_left" 0)"
 
 echo "case: --mode stall sends nothing, so each attempt ends at the client's own bound"
 start_proxy stall --mode stall --hosts fetch.invalid

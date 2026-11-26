@@ -498,6 +498,21 @@ in round 65, which dropped the sum.golang.org run: .github/workflows/ci-job-down
 comment above the job's id derives 13342 + 3416 = 16758 s and 280 minutes, where it read 303
 before round 64 and 285 after it.
 
+## How the proxy reaches an origin
+
+The proxy resolves an origin's name once and connects to its addresses as apt does
+(`.github/scripts/ci-fault-proxy.py#connect_staggered`). It starts the first address, and it
+starts the next one 0.25 s later while none has connected, or at once when every one it started
+has failed. The first that connects carries the request, and the proxy gives up after 30 s in all.
+The 0.25 s is apt's own wait before a host's next address:
+Acquire::http::ConnectionAttemptDelayMsec, 250 ms by default, in apt's methods/connect.cc. The
+proxy used to connect with socket.create_connection, which gives each address the whole 30 s in
+turn, so an address that drops the SYN cost each request through the proxy 30 s. In job
+139835657575 of run 45797742953, the `browser-apt` arm, each request to security.ubuntu.com,
+whose name has nine addresses, waited about 30 s or 60 s for its answer. apt-get update then ran
+past its 120 s bound on attempts 4 and 5, after the injected outage had ended. The rig failed a
+site that apt passes on its own path.
+
 ## Report verdict
 
 Each report uses `continue-on-error: true` so a failed report does not skip later arms.
