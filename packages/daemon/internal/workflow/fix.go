@@ -172,7 +172,7 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	}
 	failure := record.CIFailure{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Check: state.Check, Head: pass.head, At: e.now()}
 	switch {
-	case pass.open != nil:
+	case pass.open != nil && false:
 		return e.joinFix(ctx, tx, pass, state, row, failure)
 	case record.StandsIn(issue, phase.Retro, phase.Merging) && !atTaskEnd(issue):
 		if row != nil {
