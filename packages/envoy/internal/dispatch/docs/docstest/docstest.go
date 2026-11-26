@@ -397,14 +397,22 @@ func (p *Peer) CloseFrame() int {
 }
 
 // DroppedWithoutCloseFrame reports whether the peer received no valid close frame and its read
-// ended on the transport. It excludes timeouts and protocol errors, and returns the last read
-// error for diagnostics. It waits for Ended.
+// ended on the transport (ReadEndedOnTransport). It returns the last read error for diagnostics.
+// It waits for Ended.
 func (p *Peer) DroppedWithoutCloseFrame() (bool, error) {
 	<-p.Ended
+	return p.frameCode == 0 && ReadEndedOnTransport(p.readErr), p.readErr
+}
+
+// ReadEndedOnTransport reports whether err, the error that ended a gorilla read of a websocket,
+// says the connection under it ended: the end of the stream, which gorilla reports as a 1006 no
+// frame carried, or a failed read of the connection, such as a reset. It excludes a timeout, a
+// close this side made, and a protocol or parse error. It reads err alone, so a test of any
+// websocket client can take it.
+func ReadEndedOnTransport(err error) bool {
 	var transport *net.OpError
-	disconnected := gws.IsCloseError(p.readErr, gws.CloseAbnormalClosure) ||
-		(errors.As(p.readErr, &transport) && transport.Op == "read" && !transport.Timeout() && !errors.Is(transport, net.ErrClosed))
-	return p.frameCode == 0 && disconnected, p.readErr
+	return gws.IsCloseError(err, gws.CloseAbnormalClosure) ||
+		(errors.As(err, &transport) && transport.Op == "read" && !transport.Timeout() && !errors.Is(transport, net.ErrClosed))
 }
 
 // read applies every sync frame the room sends and answers its sync step 1, keeps every awareness
