@@ -370,7 +370,7 @@ func stallStopClause(words stallEndWords, stop supervise.StallBackstopStop) stri
 // ends it (supervise's endHeld, stopPrevious). stallProcessNotStopped is the end that asked
 // for no stop at all, where that room and that disk are what nothing of the daemon's has given
 // back, and where the claim goes on recording the process until the queued launch comes due
-// (supervise's reserveWake, parkWake).
+// (supervise's reserveWake, waitOnMachine).
 const (
 	stallProcessStopped    = "Its stalled process was stopped."
 	stallProcessNotStopped = "The daemon made no stop of its stalled process, and the claim records that process still, so nothing the daemon has done has taken away what that process holds."
@@ -378,10 +378,10 @@ const (
 )
 
 // stallFill fills the two values a clause of the notice names where it names them: the claim's
-// role, and the moment the launch a park queued is due to run
-// (supervise.StallBackstopStop.WakeDue). They are written into the clauses as words rather than
-// handed to a format string so that each row of stallBackstopEnds reads as the sentence the
-// owner gets, and so that a clause naming neither needs nothing of its caller.
+// role, and the moment the wake pacing estimated, when the stop was built, that it lets out the
+// launch a park queued (supervise.StallBackstopStop.WakeDue). They are written into the clauses
+// as words rather than handed to a format string so that each row of stallBackstopEnds reads as
+// the sentence the owner gets, and so that a clause naming neither needs nothing of its caller.
 func stallFill(c supervise.Claim, stop supervise.StallBackstopStop) *strings.Replacer {
 	return strings.NewReplacer(stallRoleWord, string(c.Role), stallDueWord, stallInstant(stop.WakeDue))
 }
@@ -508,9 +508,9 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 		process: stallProcessLetGo},
 	supervise.EndRelaunchParked: {
 		did: "and queued the replacement launch",
-		end: "the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallDueWord +
-			": what the park settled is that launch queued and the claim waiting on it until then. What comes due at " + stallDueWord +
-			" may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
+		end: "the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallDueWord +
+			": a change to the pacing's queues or to its pace can move that moment earlier or later, for example a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later. " +
+			"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out. What the pacing lets out then may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
 			"the lifecycle recheck every launch makes refusing this one, the tree's close dropping the queued launch, a take-back the store refuses when that launch comes due, a launch whose own write or start the daemon cannot make, " +
 			"and an operator's task that runs this launch before it is due are among the things that can change it",
 		process: stallProcessKept},
