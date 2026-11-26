@@ -123,7 +123,7 @@ func requestPrincipal(r *http.Request) string {
 // Retry-After: 1, as for a handover record that did not store, so the client claims again and the
 // handover is judged then, rather than refused on a read that did not answer. A bucket that is
 // not open is no such read: it opens only once an attempt of the store's own succeeds
-// (session.KnownSessions, attempts at most 5 minutes apart), which on a listener whose NATS grant
+// (session.KnownSessions says how often it attempts), which on a listener whose NATS grant
 // does not carry the bucket is not before the grant does, so the claim is refused instead
 // (handoverRefusal) rather than answered a 503 its client would retry for as long as that lasts.
 var errHandoverUnjudged = errors.New("the claim landed, but whether this claim may hand over the messages of the session it replaces could not be read, so claim again")
@@ -160,14 +160,15 @@ const handoverReadBound = roleHolderReadTimeout
 // A claim is refused where replaced's record does not say which principal replaced last
 // registered as (recordedPrincipal): a session the bucket holds no record of (principalAbsent:
 // none registered within the retention), one whose record names no principal a registration of
-// this build recorded (principalUnrecorded: a listener of an earlier build wrote it last), and a
-// store that cannot answer (principalUnavailable: its bucket is not open, a listener with no
+// this build recorded (principalUnrecorded: a listener of an earlier build wrote it last, or a
+// registration as another principal cleared it and has not written its own yet), and a store
+// that cannot answer (principalUnavailable: its bucket is not open, a listener with no
 // known-session store at all among them). The refused claim is answered 200 with a warning, and
 // its client does not name replaced again, so replaced's messages stay on its own subject. On a
 // listener with a store, a bucket that is not open is no lasting state: the store attempts it
-// again on its own, at most 5 minutes apart, and picks up a grant that lands later with no
-// restart, so a claim refused in the window before an attempt opens it loses a handover a later
-// claim would have made. What only a later claim can read is the error, wrapping
+// again on its own (session.KnownSessions says how often), and picks up a grant that lands
+// later with no restart, so a claim refused in the window before an attempt opens it loses a
+// handover a later claim would have made. What only a later claim can read is the error, wrapping
 // errHandoverUnjudged: a read the leader did not answer, and a claimant whose own registration is
 // not recorded with its principal - a registration whose record did not store, or one an earlier
 // build took - which its next registration writes.
@@ -185,7 +186,7 @@ func handoverRefusal(ctx context.Context, r *http.Request, known *session.KnownS
 	case principalAbsent:
 		return fmt.Sprintf("this listener holds no record of the principal %s last registered as", replaced), nil
 	case principalUnrecorded:
-		return fmt.Sprintf("%s last registered through a listener of an earlier build, which recorded no principal for it", replaced), nil
+		return fmt.Sprintf("no principal is recorded for %s: a listener of an earlier build wrote its record last, or a registration as another principal cleared the record and has not written its own yet", replaced), nil
 	}
 	own, state, err := recordedPrincipal(ctx, known, claimant)
 	if err != nil {

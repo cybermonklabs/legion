@@ -404,11 +404,13 @@ func wantIf(want bool, eventIDs ...string) []string {
 
 // A claim is refused where no record says which principal the replaced session last registered
 // as (recordedPrincipal). The replaced session with no record in an open store, one whose record a
-// listener of an earlier build wrote last (no principal recorded), and a store that cannot answer
-// - one whose bucket is not open, which reads no record and records no principal until an attempt
-// of its own opens the bucket, and a listener with no store at all, which reads as one - are
-// refused, and the refusal names why. What only a later claim can read is errHandoverUnjudged,
-// which the claim route answers 503: a claimant whose own registration is not recorded with its
+// listener of an earlier build wrote last (no principal recorded), one whose record a registration
+// as another principal cleared and has not written its own over yet, and a store that cannot
+// answer - one whose bucket is not open, which reads no record and records no principal until an
+// attempt of its own opens the bucket, and a listener with no store at all, which reads as one -
+// are refused, and the refusal names why, the two records with no principal recorded by one
+// warning that names both causes. What only a later claim can read is errHandoverUnjudged, which
+// the claim route answers 503: a claimant whose own registration is not recorded with its
 // principal yet. The control is the same claim where both sessions registered on no credential,
 // as the claim's own does, which stands.
 func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
@@ -450,6 +452,9 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 			t.Errorf("handoverRefusal(%s replaced by %s) = %q, %v; want %v, for the claim to be made again", replaced, claimant, why, err, errHandoverUnjudged)
 		}
 	}
+	unrecorded := func(sessionID string) string {
+		return "no principal is recorded for " + sessionID + ": a listener of an earlier build wrote its record last, or a registration as another principal cleared the record and has not written its own yet"
+	}
 
 	t.Run("case: an open store holds no record of the replaced session", func(t *testing.T) {
 		register(t, "ses_gate_unit_claimant_a")
@@ -458,7 +463,15 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 	t.Run("case: a listener of an earlier build wrote the replaced session's record last", func(t *testing.T) {
 		register(t, "ses_gate_unit_claimant_b")
 		writtenByAnEarlierBuild(t, "ses_gate_unit_earlier")
-		refused(t, known, "ses_gate_unit_earlier", "ses_gate_unit_claimant_b", "earlier build")
+		refused(t, known, "ses_gate_unit_earlier", "ses_gate_unit_claimant_b", unrecorded("ses_gate_unit_earlier"))
+	})
+	t.Run("case: a registration as another principal cleared the replaced session's record", func(t *testing.T) {
+		register(t, "ses_gate_unit_claimant_g")
+		registerAs(t, known, "service:example-fleet", "ses_gate_unit_cleared")
+		if _, err := known.AdmitRegistration(t.Context(), "ses_gate_unit_cleared", "service:another-fleet"); err != nil {
+			t.Fatalf("admit ses_gate_unit_cleared's registration as another principal: %v", err)
+		}
+		refused(t, known, "ses_gate_unit_cleared", "ses_gate_unit_claimant_g", unrecorded("ses_gate_unit_cleared"))
 	})
 	t.Run("case: the listener keeps no known-session store", func(t *testing.T) {
 		refused(t, nil, "ses_gate_unit_any", "ses_gate_unit_claimant_c", knownBucketNotOpenRefusal)
@@ -832,20 +845,21 @@ func (rig *gateRig) registerTitled(t *testing.T, token, sessionID, title string)
 }
 
 // A listener whose known-session bucket is not open - its NATS grant does not carry the bucket -
-// can read and write no session's record, and no retry of a client's changes that. So it admits
-// each registration, heartbeats included, with no principal recorded, and answers it 200 with a
-// warning that says so (knownBucketNotOpenWarning), logged at most once a minute for the whole
-// listener with the count it held back; and it refuses every claim's handover: a claim through it
-// that names the session it replaces stands, is answered 200 with a warning naming why, and writes
-// no handover record. Both sessions first register as one person through the listener whose
-// bucket is open, so the bucket holds a record of each that a handover would be judged by; then
-// the routes are served as a listener whose store has no bucket open serves them. The cases fail
-// where such a registration is answered 503 - which refuses every session's registration and
-// heartbeat on a listener whose grant lacks the bucket - or written, or answered without the
-// warning; where each registration logs its own line, or the line after a minute does not count
-// the one held back; and where the claim is answered 503 or writes a handover record. The control
-// is the next registration through the store whose bucket is open, answered 200 with no such
-// warning and its principal recorded.
+// can read and write no session's record until an attempt of the store's own opens the bucket
+// (session.KnownSessions says how often it attempts), which is not before the grant carries it.
+// So it admits each registration, heartbeats included, with no principal recorded, and answers it
+// 200 with a warning that says so (knownBucketNotOpenWarning), logged at most once a minute for
+// the whole listener with the count it held back; and it refuses every claim's handover: a claim
+// through it that names the session it replaces stands, is answered 200 with a warning naming
+// why, and writes no handover record. Both sessions first register as one person through the
+// listener whose bucket is open, so the bucket holds a record of each that a handover would be
+// judged by; then the routes are served as a listener whose store has no bucket open serves them.
+// The cases fail where such a registration is answered 503 - which refuses every session's
+// registration and heartbeat on a listener whose grant lacks the bucket - or written, or answered
+// without the warning; where each registration logs its own line, or the line after a minute does
+// not count the one held back; and where the claim is answered 503 or writes a handover record.
+// The control is the next registration through the store whose bucket is open, answered 200 with
+// no such warning and its principal recorded.
 func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning(t *testing.T) {
 	const line = "listener registered a session with no principal recorded"
 	rig := newGateRig(t)

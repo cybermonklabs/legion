@@ -3431,7 +3431,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		//
 		// A store whose bucket is not open (session.ErrKnownSessionsUnavailable) can read and
 		// write no record. It opens only once an attempt of the store's own succeeds
-		// (session.KnownSessions, attempts at most 5 minutes apart), which on a listener whose NATS
+		// (session.KnownSessions says how often it attempts), which on a listener whose NATS
 		// grant does not carry the bucket is not before the grant does, so a 503 here would refuse
 		// every registration and heartbeat for as long as that lasts. Such a registration is
 		// admitted with no principal recorded, and answered with a warning that says so

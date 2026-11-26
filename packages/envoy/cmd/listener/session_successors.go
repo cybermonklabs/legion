@@ -45,9 +45,9 @@ const sessionSuccessorsPattern = "/v1/sessions/{session}/successors"
 // (writeBusUnavailable). A listener whose known-session bucket is not open can read no principal
 // any session registered as, so it names no successor, as the claim route refuses every handover
 // there (knownBucketNotOpenRefusal), and answers 200 rather than 503: the bucket opens only once
-// an attempt of the store's own succeeds (session.KnownSessions, attempts at most 5 minutes
-// apart), which on a listener whose NATS grant does not carry the bucket is not before the grant
-// does, and Dispatch would answer every successor's reply 503 for as long as that lasts. So a
+// an attempt of the store's own succeeds (session.KnownSessions says how often it attempts),
+// which on a listener whose NATS grant does not carry the bucket is not before the grant does,
+// and Dispatch would answer every successor's reply 503 for as long as that lasts. So a
 // successor's reply Dispatch reads this for in the window before an attempt opens the bucket is
 // refused 403, which its sender does not retry. The route reads another session's records by
 // design, so a broker token is not narrowed to its own session here, as the registry route's read
