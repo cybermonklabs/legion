@@ -41,7 +41,7 @@ trap 'rm -rf "$work"' EXIT
 source "$script_dir/test-lib.sh"
 
 # fixture <name>: a tree that passes. Echoes the fixture root.
-#   - ci.yaml's `ci-ok` needs `lint`, which runs the search, `go`, which runs the Go module's
+#   - the ci-ok job of ci.yaml needs `lint`, which runs the search, `go`, which runs the Go module's
 #     tests (its unit step over ./..., and its tagged step with the `live` tag and FIXTURE_DSN),
 #     and `bun`, which runs the Bun package's tests with FIXTURE_FLAG;
 #   - live_test.go skips without FIXTURE_DSN, a `set` row naming `go`, and flag.test.ts skips
@@ -1252,7 +1252,7 @@ YAML
 run_check "$root"
 check "release-unbuilt: fails" "$(is "$status" 1)"
 check "release-unbuilt: names the entry" \
-  "$(contains "$out" '^check-test-reach: release: .github/release-checks.yaml:2: .github/workflows/release.yaml / image / Smoke-test the target: it runs go test, and its environment holds no variable an earlier step of its job built')"
+  "$(contains "$out" '^check-test-reach: release: \.github/release-checks\.yaml:2: \.github/workflows/release\.yaml / image / Smoke-test the target: it runs go test, and its environment holds no variable an earlier step of its job built')"
 
 # Race-impossible tests: a //go:build !race file, and a test that reads raceEnabled, count as run
 # only by a step without -race whose -run and -skip select them; a //go:build race file only by
@@ -1621,7 +1621,7 @@ required_job "$root" nightly '    runs-on: ubuntu-24.04
 run_check "$root"
 check "listed-stale: fails" "$(is "$status" 1)"
 check "listed-stale: names the stale entry" \
-  "$(contains "$out" '^check-test-reach: listed: .github/test-reach-unhomed.yaml:2: tag: packages/envoy/unit/nightly_test.go: nightly: the list names it as a test with no home yet (test-value-md 9.9, a row of the fixture), and the search no longer finds it: a job ci-ok needs runs it now, or it is gone')"
+  "$(contains "$out" '^check-test-reach: listed: \.github/test-reach-unhomed\.yaml:2: tag: packages/envoy/unit/nightly_test\.go: nightly: the list names it as a test with no home yet (test-value-md 9\.9, a row of the fixture), and the search no longer finds it: a job ci-ok needs runs it now, or it is gone')"
 
 echo "case: a list entry of no kind the search finds"
 root=$(fixture listed-unreadable)
@@ -1629,7 +1629,7 @@ unhomed "$root" "flaky: packages/envoy/unit/unit_test.go: TestUnit"
 run_check "$root"
 check "listed-unreadable: exits 2" "$(is "$status" 2)"
 check "listed-unreadable: names the entry" \
-  "$(contains "$out" 'cannot read an input: .github/test-reach-unhomed.yaml:2: `flaky: packages/envoy/unit/unit_test.go: TestUnit` is no')"
+  "$(contains "$out" 'cannot read an input: \.github/test-reach-unhomed\.yaml:2: `flaky: packages/envoy/unit/unit_test\.go: TestUnit` is no')"
 
 # dispatch://INFRA-5794's check a-search: a whole-daemon driver added under `//go:build e2e`
 # beside the daemon's untagged tests, which the daemon's go test step runs, fails by its file.

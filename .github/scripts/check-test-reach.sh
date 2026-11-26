@@ -78,7 +78,7 @@
 # input: a workflow, the registry, the list of release checks, a step whose `go test` it cannot
 # read, a `-skip` or `-run` it cannot read.
 #
-# A required job is one ci.yaml's `ci-ok` needs, and `ci-ok` and `pr-title` themselves; a job of
+# A required job is one that the ci-ok job of ci.yaml needs, and ci-ok and pr-title themselves; a job of
 # a workflow such a job calls (ci.yaml's jobs call their .github/workflows/ci-job-<id>.yaml) is a
 # part of it, whatever its own filter: ci-ok needs it, and a merge group runs it. A part whose
 # `if:` admits only `schedule` or `workflow_dispatch`, a step whose own `if:` does, and a step
@@ -101,10 +101,11 @@
 # `.github/scripts/go_legs.py <module> <job> <leg> <legs>` lister prints (the union of the packages
 # .github/go-legs.yaml lists for every leg of that job, each read whole), `for` loops, `-tags`,
 # `-race`, `-run`, `-skip`, `-exec`, a gotestsum command (its `--packages`, and the `go test`
-# flags after its `--`), a go command behind .github/scripts/race_memory.py, a script the step
-# runs whose lines the reader reads, and the scripts its AUDITED_SCRIPTS reads (database-skips.sh,
-# backend-count.sh, race-unit.sh and forced-order.sh, by their arguments); a `-run "$pattern"`
-# from .github/scripts/go-tagged-tests.sh is the alternation that script prints, read off the
+# flags after its `--`), a go command behind .github/scripts/race_memory.py or
+# .github/scripts/go-test.sh, a script the step runs whose lines the reader reads, and the scripts
+# its AUDITED_SCRIPTS reads (database-skips.sh, backend-count.sh, race-unit.sh and forced-order.sh,
+# by their arguments); a -run of the pattern .github/scripts/go-tagged-tests.sh prints is the
+# alternation that script prints, read off the
 # source as it reads it. A script of TEST_BINARY_SCRIPTS (pmdoc's
 # differential.sh) is read by each `<binary> -test.run '<pattern>'` it runs, with the variables it
 # sets for that run. A test file is in a step's build when its constraint and its file name hold

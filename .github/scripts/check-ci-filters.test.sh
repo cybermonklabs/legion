@@ -3788,9 +3788,13 @@ check "passes" "$(is "$status" 0)"
 check "the report says the filter takes every Go file, the command starting with that script" \
   "$(contains "$out" "this check does not reduce (it starts with \`../.github/scripts/go-run.sh\`, not go)")"
 
+# The gate's Run claims the vet the step now runs, so the claim holds and what is left to read is
+# the line itself, which the reducer does not reduce.
 echo "case: go-test.sh before a go command that is not go test"
 root=$(fixture go-test-wrapper-vet)
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/go-test.sh go vet ./cmd/app ./lib"
+replace "$root/.github/ci-gates/app.py" ': go test ./cmd/app ./lib", step="Test the app",' ': go vet ./cmd/app ./lib", step="Test the app", mode="vet",'
+replace "$root/.github/ci-gates/app.py" 'text="go test ./cmd/app ./lib")' 'text="go vet ./cmd/app ./lib")'
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "the report says the filter takes every Go file, go-test.sh running go test alone" \
