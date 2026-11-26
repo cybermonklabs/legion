@@ -17,19 +17,17 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// mainListFilteredTerm is the `filtered` term of the four listing statements at the merge base of
-// dispatch://INFRA-5609, written out rather than built from the package's constants, as
-// issue_list_equality_test.go writes out main's laterals: built from them, both sides would agree
-// however the term changed. It is the one part of the statements that change moved, into the
-// `matched` and `filtered` terms, so the merge base's text of a statement is that statement with
-// this term in place of those two (mainListStatement). Its `advances` filter joins `advancing`
-// and `advances_originating` to every issue, where the change tests each key's membership in
-// them, and it is read straight from its scan, where the change reads it back by its places in an
-// array.
+// mainListFilteredTerm keeps the merge base's query shape: the `advances` filter joins
+// `advancing` and `advances_originating` to each issue, and the query reads rows straight
+// from that scan. The optimized query tests each key's membership and reads the matched
+// rows back from an array. The oracle uses the current label-fold map at $16 and $17,
+// with the pinned login at $18, so both statements accept the same arguments and match
+// labels the same way. The term is written out independently so a change to the production
+// priority query cannot change both sides of the comparison.
 func mainListFilteredTerm(pinned bool) string {
 	pinnedJoin := ""
 	if pinned {
-		pinnedJoin = "\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $16 and s.pinned"
+		pinnedJoin = "\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $18 and s.pinned"
 	}
 	return `filtered as (
 		select i.key, i.status, i.rank, i.created_at
@@ -40,7 +38,7 @@ func mainListFilteredTerm(pinned bool) string {
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
-		  and ($5::text[] = '{}' or (select array_agg(lower(label)) from unnest(i.labels) as label) @> $5)
+		  and ($5::text[] = '{}' or (select array_agg(translate(label, $16::text, $17::text)) from unnest(i.labels) as label) @> $5)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
@@ -72,11 +70,11 @@ func mainListStatement(t *testing.T, sent string) string {
 	})
 }
 
-// TestAPriorityListAnswersAsTheMergeBaseAnswers holds the listing to R2 of dispatch://INFRA-5609:
-// it answers what the merge base's statement answers, byte for byte. Over the corpus of
-// production's counts (seedListCorpus), each request below is made of the server, and the listing
-// statement it sends is run again with the same arguments twice: in the merge base's text on a
-// connection that plans each run for its arguments, and in its own text on one forced to the
+// TestAPriorityListAnswersAsTheMergeBaseAnswers checks that the optimized listing gives the
+// same bytes as the merge base's query shape, with both queries using the current label matching.
+// Over the corpus of production's counts (seedListCorpus), each request below is made of the
+// server, and the listing statement it sends is run again with the same arguments twice: in the
+// oracle's text on a connection that plans each run for its arguments, and in its own text on one
 // generic plan. The answer the server wrote, and the generic plan's answer encoded as the server
 // encodes it, must each be the bytes of the merge base's answer.
 //

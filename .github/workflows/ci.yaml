@@ -98,6 +98,7 @@ env:
     [
       "cancel-started",
       "ci-ok",
+      "dispatch-references",
       "pr-title"
     ]
 
@@ -158,6 +159,8 @@ jobs:
       dispatch_browser: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_browser')) && steps.filter.outputs.dispatch_browser || 'false' }}
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
       dispatch_browser_pr: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_browser_pr }}
+      # why: .github/ci-notes/ci.md#the-reference-rows-preview-job
+      dispatch_references: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_references }}
       claude_envoy: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.claude_envoy }}
       envoy_go: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go')) && steps.filter.outputs.envoy_go || 'false' }}
       # why: .github/ci-notes/ci.md#why-envoy-gos-build-and-checks-come-back-on-every-push
@@ -598,6 +601,18 @@ jobs:
       lane: pull-request
       job: dispatch-browser-pr
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#the-reference-rows-preview-job
+  dispatch-references:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.dispatch_references == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/dispatch-browser.yaml
+    with:
+      lane: references
+      job: dispatch-references
 
   claude-envoy:
     needs: changes

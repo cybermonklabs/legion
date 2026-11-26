@@ -27,4 +27,5 @@ GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + reads(
     ("packages/*/.changie.yaml", f"{at(TOOLING_JOB, FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
     ("packages/*/.changes/unreleased/**", f"{at(TOOLING_JOB, FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
 ) + envoy_client_dep("`scripts/dispatch/ask-census.ts#DispatchClient` (tsc -p scripts/dispatch)")
+  + dispatch_api_types(at(TOOLING_JOB, "Typecheck the Dispatch census script"))
   + biome(at(TOOLING_JOB, "Lint the Dispatch census script")) + bun_job(TOOLING_JOB))
