@@ -65,9 +65,10 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
-  [--reading-models <file>] [--again <case id>]... [--confirm-flagged] \
+  [--reading-models <file>] [--again <case id>]... [--confirm-flagged] [--control-informative] \
   [--allow-runners <digest>[,<digest>...]] [--store-only <file>] [--route-id <arm>=<uuid>]...
-                                 (--again, --confirm-flagged: confirm only; --store-only: report only;
+                                 (--again, --confirm-flagged: confirm only; --control-informative:
+                                  control only; --store-only: report only;
                                   --route-id: screen, confirm and control only)
 bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <skill-cuts.json> --out <dir> \
   --old <dir> --new <dir> --cases <case file> [--cache-dir <dir>] [--scratch <dir>]
@@ -155,7 +156,21 @@ skill's cases (`cases.ts`), one JSON object per line.
   must be a loss, or the test could not see a loss. The false-loss control, old against `twin`,
   must be no loss, or the test calls a loss where the texts are the same. A skill whose planted-loss
   control is no loss, or whose false-loss control is a loss, gets no verdict, and the report says
-  which control failed.
+  which control failed. `control` makes no run where the skill has fewer than 6 informative cases,
+  or no case left to be the control case.
+  `--control-informative` runs the control even where the skill has fewer than 6 informative
+  cases, where `control` without it makes no run, so that the judge's call of a loss in one case
+  has its control (the runner's architect, 2026-11-26T12:51Z). It overrides that reason only: a
+  skill with no case to be the control case (no informative case, or each one dropped) still gets
+  no control run. It runs the same control stage on the same control case (the first informative
+  case of the control rule's order that is not dropped), with the same `minus` line
+  (`--planted-line` or the case's) and the same three arms, and a control made before is skipped
+  as without it. The control stage it runs records it in the case's results
+  (`controlInformative`), so `report` needs no option to know it: the report of such a run gives
+  the control case's line as any report does, and as its verdict line
+  `verdict: case result only; no skill verdict stands (--control-informative)`, never a skill
+  verdict; a run with a confirm made by `--confirm-flagged` too names both,
+  `(--confirm-flagged, --control-informative)`. The other commands refuse the option (exit 2).
 - In every stage, a case one of whose captures needs a directory no read can give (the commit
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
@@ -217,8 +232,9 @@ skill's cases (`cases.ts`), one JSON object per line.
   `pooled confirms` line naming each such case with its three results and the pooled numbers; the
   control case's passes of old, `minus` and `twin` and what each control says, and each dropped
   case the control case took the place of; the skill's verdict and its reason (`keeps` prints as
-  "no loss detected by the registered rule"; a run with a confirm made by `--confirm-flagged` gets
-  the verdict line under `confirm` above in its place), ending with how many of the skill's
+  "no loss detected by the registered rule"; a run with a confirm made by `--confirm-flagged` or a
+  control made by `--control-informative` gets the verdict line under `confirm` or `control` above
+  in its place), ending with how many of the skill's
   screened cases have a listing that could not be measured (no listing measure, or one that says
   so); the drops per judge control and the drops counted as `model-not-served`, as
   `unreadable-directory`, as `legion-tool-undefined`, as `listing-misses`, as `listing-adds`, as

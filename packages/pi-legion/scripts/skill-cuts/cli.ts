@@ -16,6 +16,7 @@
  *       [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>]
  *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
  *       [--reading-models <file>] [--again <case id>]... [--confirm-flagged] (both confirm only)
+ *       [--control-informative] (control only)
  *       [--allow-runners <digest>[,<digest>...]] [--store-only <file>] (report only)
  *       [--route-id <arm>=<uuid>]... (screen, confirm and control only)
  *   bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <file> --out <dir> --old <dir>
@@ -117,10 +118,15 @@
  *   line of the case's file that is the case's line, trimmed, or less every line that is
  *   `--planted-line`: a rule written twice is still the rule, so each copy goes; arms.ts) and
  *   `twin` (old again, its own capture: the false-loss control, which must be no loss). Old
- *   against `minus` is the planted-loss control, which must be a loss.
+ *   against `minus` is the planted-loss control, which must be a loss. `--control-informative`
+ *   runs the control though the skill has fewer than MIN_INFORMATIVE_CASES informative cases, so
+ *   a loss of one case has its control: the same control case (the control rule's), planted line,
+ *   arms and stage as without it, and a skill with no case to be the control case still gets no
+ *   control run. The control stage it runs records it (StageResult's `controlInformative`).
  *   confirm and control need the screen finished, and make no run when the skill can get no verdict
  *   (fewer than MIN_INFORMATIVE_CASES informative cases, a planted-loss control that is no loss,
- *   or a false-loss control that is a loss), except `confirm --confirm-flagged`.
+ *   or a false-loss control that is a loss), except `confirm --confirm-flagged` and
+ *   `control --control-informative`.
  *   In any stage, a case one of whose captures needs a directory no read can give (context.ts's
  *   UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree
  *   short even read alone) is dropped as `unreadable-directory`, its drop naming the repository,
@@ -197,9 +203,10 @@
  *   reading sessions by model were not given, and its verdict names no models. A drop at confirm
  *   of a case its screen did not flag cannot happen, since only flagged cases are confirmed: a
  *   result that shows one fails `report`, and every stage command, naming the case (exit 1). A
- *   run any of whose confirms `confirm --confirm-flagged` made gives the case results as any run
- *   does, and the verdict line `case result only; no skill verdict stands (--confirm-flagged)`
- *   (CONFIRM_FLAGGED_VERDICT), never a skill verdict. With `--store-only <file>` (attribute.ts's
+ *   run any of whose confirms `confirm --confirm-flagged` made, or whose control `control
+ *   --control-informative` made, gives the case results as any run does, and the verdict line
+ *   `case result only; no skill verdict stands (<option>)`, naming each option that made one
+ *   (`caseResultOnly`), never a skill verdict. With `--store-only <file>` (attribute.ts's
  *   `<cut id>/store-only/<skill>.json` of the skill), it prints, beside the reading sessions by
  *   model and whatever the verdict, the skill's counted sessions and how many of them only the
  *   transcript store holds, by host, which were never case sources; when a skill gets no verdict
@@ -1107,13 +1114,15 @@ export const SENDS = "each run its own session id; a round's arms interleaved in
  *  never the calls of a round stopped before it was saved. `runner` is the runner that started it
  *  (`runnerDigest`), absent in a stage started before the runner was recorded; each of its runs
  *  records its own. `confirmFlagged` is true in a confirm that `behaviour
- *  confirm --confirm-flagged` ran, in any of its rounds, and absent otherwise: report then gives
- *  no skill verdict (CONFIRM_FLAGGED_VERDICT). `continued` is set on a stage `behaviour
- *  continue-mixed` wrote from a saved one: the saved `--out` it came from (`from`, as an absolute
- *  path), how many rounds the saved stage held (`savedRounds`), so a run of a later round that
- *  names no ContinueMixedRun is a fresh run made after it, and whether a run of the command
- *  selected it (`selected`: `--only` named it, or no `--only` was given), so its saved runs were
- *  continued, where false they were all kept; absent on every other stage. */
+ *  confirm --confirm-flagged` ran, in any of its rounds, and absent otherwise; `controlInformative`
+ *  is true in a control that `behaviour control --control-informative` ran, in any of its rounds,
+ *  and absent otherwise: report gives no skill verdict over either (`caseResultOnly`).
+ *  `continued` is set on a stage `behaviour continue-mixed` wrote from a saved one: the saved
+ *  `--out` it came from (`from`, as an absolute path), how many rounds the saved stage held
+ *  (`savedRounds`), so a run of a later round that names no ContinueMixedRun is a fresh run made
+ *  after it, and whether a run of the command selected it (`selected`: `--only` named it, or no
+ *  `--only` was given), so its saved runs were continued, where false they were all kept; absent
+ *  on every other stage. */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
@@ -1125,6 +1134,7 @@ const StageResult = z.strictObject({
   usd: z.number(),
   runner: z.string().optional(),
   confirmFlagged: z.literal(true).optional(),
+  controlInformative: z.literal(true).optional(),
   continued: z
     .strictObject({
       from: z.string(),
@@ -1402,7 +1412,8 @@ interface Behaviour {
  *  a read of another skill from (context.ts's `installedCopies`). `runner` is this runner's code
  *  (`runnerDigest`), which each stage it starts and each run it makes records; `again` the cases
  *  `--again` names, and `confirmFlagged` whether `--confirm-flagged` is given (both confirm
- *  only); `routePins` the routing id `--route-id` pins each arm it names to (none without it). */
+ *  only); `controlInformative` whether `--control-informative` is given (control only);
+ *  `routePins` the routing id `--route-id` pins each arm it names to (none without it). */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: { readonly old: string; readonly new: string };
@@ -1418,6 +1429,7 @@ interface Runner extends Behaviour {
   readonly runner: string;
   readonly again: readonly string[];
   readonly confirmFlagged: boolean;
+  readonly controlInformative: boolean;
   readonly routePins: ReadonlyMap<ArmName, string>;
 }
 
@@ -2077,8 +2089,9 @@ async function runRound(
  * READS_PAST_LAST_ROUND (`readsPastDrop`); else one
  * in each of whose arms that lack their judged runs the provider refused, on a content policy,
  * every run with no verdict, under PROVIDER_REFUSED (`refusedDrop`). A stage it starts records
- * this runner (`r.runner`), and a confirm it runs or goes on with under `--confirm-flagged`
- * records that (`confirmFlagged`). The runs numbered n of every arm go with one routing id, a
+ * this runner (`r.runner`), a confirm it runs or goes on with under `--confirm-flagged` records
+ * that (`confirmFlagged`), and a control it runs or goes on with under `--control-informative`
+ * records that (`controlInformative`). The runs numbered n of every arm go with one routing id, a
  * random UUID drawn for n the first time this call needs it (so a stage command started again
  * draws its own), and a pinned arm's runs with its `--route-id` pin (`r.routePins`): so round n
  * of runs, old's, new's and none's run n (minus's and twin's in a control), goes to the one
@@ -2110,6 +2123,7 @@ async function runStage(
     runner: r.runner,
   };
   if (r.confirmFlagged) state = { ...state, confirmFlagged: true };
+  if (r.controlInformative && stage === "control") state = { ...state, controlInformative: true };
   let spentAt = r.gateway.spend().usd;
   let current = result;
   const update = (next: StageResult): void => {
@@ -2411,7 +2425,7 @@ function againRefusal(
  *  `confirmScore`); and one more of each case `--again` names, where `againRefusal` allows it.
  *  None runs while the skill can get no verdict (`noVerdict`), unless `--confirm-flagged` is given:
  *  then the same confirms run all the same, of flagged cases only, so a case run again alone can be
- *  confirmed, and report gives no skill verdict over them (CONFIRM_FLAGGED_VERDICT). A flagged
+ *  confirmed, and report gives no skill verdict over them (`caseResultOnly`). A flagged
  *  case's saved last confirm of another runner refuses the command before any model call
  *  (`checkRunners`); earlier confirms are pooled by `confirmScore`'s rule. */
 async function confirmCommand(r: Runner): Promise<void> {
@@ -2467,8 +2481,12 @@ async function confirmCommand(r: Runner): Promise<void> {
   }
 }
 
-/** `behaviour control`. The control case's saved control of another runner refuses the command
- *  before any model call (`checkRunners`). */
+/** `behaviour control`. None runs while the skill has fewer than MIN_INFORMATIVE_CASES informative
+ *  cases, unless `--control-informative` is given: then the control case's control runs all the
+ *  same, so a loss of one case has its control, and report gives no skill verdict over it
+ *  (`caseResultOnly`). A skill with no case to be the control case (`noControl`, or no informative
+ *  case at all) gets none either way. The control case's saved control of another runner refuses
+ *  the command before any model call (`checkRunners`). */
 async function controlStageCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) => [s.controlCase]);
   const tooFew = skillVerdict({
@@ -2477,20 +2495,32 @@ async function controlStageCommand(r: Runner): Promise<void> {
     falseLoss: false,
     losses: 0,
   });
-  if (tooFew.verdict === null) {
-    say(r, `no control runs: the skill gets no verdict: ${tooFew.reason}`);
+  const overridden = tooFew.verdict === null ? tooFew.reason : undefined;
+  if (overridden !== undefined && !r.controlInformative) {
+    say(r, `no control runs: the skill gets no verdict: ${overridden}`);
     return;
   }
   if (score.noControl !== undefined) {
     say(r, `no control runs: the skill gets no verdict: ${score.noControl}`);
     return;
   }
+  const id = score.controlCase;
+  // With no informative case the control rule chooses none; only --control-informative gets here.
+  if (id === undefined) {
+    say(r, "no control runs: no case is informative, so the skill has no control case");
+    return;
+  }
+  if (r.controlInformative) {
+    say(
+      r,
+      `--control-informative: the control case's control runs${overridden === undefined ? "" : `, though the skill gets no verdict (${overridden})`}; report gives the case results only, and no skill verdict`
+    );
+  }
   // The control case's own work starts here: reading and scoring every case's result is no part
   // of its stage.
   const phases = newPhases();
-  const id = score.controlCase;
   const c = r.cases.find((each) => each.id === id);
-  const result = id === undefined ? undefined : results.get(id);
+  const result = results.get(id);
   if (c === undefined || result === undefined) throw new Error(`no control case ${id}`);
   checkRunners(r, [result], "control");
   const planted = r.dirs.plantedLine;
@@ -2836,29 +2866,44 @@ function listingWords(
   return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, ${taken} of the ${screened.length} installed names their recorded listing gave them (fromRecorded), and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
 }
 
-/** The verdict line of a run any of whose confirms `behaviour confirm --confirm-flagged` made:
- *  those confirms ran whatever the skill's informative count and controls, so they give case
- *  results only. */
-const CONFIRM_FLAGGED_VERDICT = "case result only; no skill verdict stands (--confirm-flagged)";
+/** The verdict line of a run some of whose stages an option made that runs a stage whatever the
+ *  skill can get, or undefined when none did: a confirm `behaviour confirm --confirm-flagged`
+ *  made (a case's earlier confirms too), which ran whatever the skill's informative count and
+ *  controls, and a control `behaviour control --control-informative` made, which ran though the
+ *  skill has fewer than MIN_INFORMATIVE_CASES informative cases. Such stages give case results
+ *  only; the line names each option that made one of `results`. */
+function caseResultOnly(results: ReadonlyMap<string, CaseResult>): string | undefined {
+  const all = [...results.values()];
+  const options = [
+    ...(all.some((result) => confirmStages(result).some((stage) => stage.confirmFlagged === true))
+      ? ["--confirm-flagged"]
+      : []),
+    ...(all.some((result) => result.stages.control?.controlInformative === true)
+      ? ["--control-informative"]
+      : []),
+  ];
+  return options.length === 0
+    ? undefined
+    : `case result only; no skill verdict stands (${options.join(", ")})`;
+}
 
 /** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
  *  ends with the reading sessions it speaks for (`speaksFor`), and a verdict or its reason with
  *  how many screened cases' listings could not be measured, took names from their recorded
  *  listing, and rest on the assumption that their session had Dispatch (`listingWords`). A run
- *  any of whose confirms, earlier ones too, records `confirmFlagged` gets CONFIRM_FLAGGED_VERDICT
- *  and no verdict. With `--reading-models`, a skill too few of whose reading sessions are on
- *  served models (`servedScreeningRefusal`) gets none. With `--store-only`, the reason of a skill
- *  with fewer than MIN_INFORMATIVE_CASES informative cases ends with how many of its counted
- *  sessions only the transcript store holds, so were never case sources (`storeOnlyWords`). */
+ *  any of whose confirms, earlier ones too, records `confirmFlagged`, or whose control records
+ *  `controlInformative`, gets `caseResultOnly`'s line and no verdict. With `--reading-models`, a
+ *  skill too few of whose reading sessions are on served models (`servedScreeningRefusal`) gets
+ *  none. With `--store-only`, the reason of a skill with fewer than MIN_INFORMATIVE_CASES
+ *  informative cases ends with how many of its counted sessions only the transcript store holds,
+ *  so were never case sources (`storeOnlyWords`). */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
   score: SkillScore
 ): string {
-  const byOption = [...results.values()].some((result) =>
-    confirmStages(result).some((stage) => stage.confirmFlagged === true)
-  );
-  if (byOption) return CONFIRM_FLAGGED_VERDICT;
+  const byOption = caseResultOnly(results);
+  if (byOption !== undefined) return byOption;
   const refusal =
     b.readingModels === undefined ? undefined : servedScreeningRefusal(b.readingModels.count);
   if (refusal !== undefined) return `none: ${refusal.reason}`;
@@ -4812,6 +4857,7 @@ const BEHAVIOUR_USAGE = [
   "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
   "  [--again <case id>]... (confirm only: one more confirm of that flagged case)",
   "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only)",
+  `  [--control-informative] (control only: run the control case's control even where the skill has fewer than ${MIN_INFORMATIVE_CASES} informative cases; report then gives case results only)`,
   "  [--allow-runners <digest>[,<digest>...]] (take saved stages of these runners as this runner's; report: report results of these runners together)",
   "  [--store-only <file>] (report only: the skill's <cut id>/store-only/<skill>.json, written by attribute)",
   "  [--route-id <arm>=<uuid>]... (screen, confirm, control: a diagnostic: every run of that arm, in every round, goes with that routing id in place of its round's)",
@@ -4898,6 +4944,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "reading-models": { type: "string" },
       again: { type: "string", multiple: true },
       "confirm-flagged": { type: "boolean" },
+      "control-informative": { type: "boolean" },
       "allow-runners": { type: "string" },
       "store-only": { type: "string" },
       "route-id": { type: "string", multiple: true },
@@ -4914,6 +4961,11 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   if (values["confirm-flagged"] !== undefined && command !== "confirm") {
     throw new Refused(
       `--confirm-flagged goes with behaviour confirm only: report reads from the case results whether their confirms were made with it. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  if (values["control-informative"] !== undefined && command !== "control") {
+    throw new Refused(
+      `--control-informative goes with behaviour control only: report reads from the case results whether their controls were made with it. ${BEHAVIOUR_USAGE}`
     );
   }
   const storeOnlyFile = values["store-only"];
@@ -5107,6 +5159,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     runner: runnerDigest(),
     again: values.again ?? [],
     confirmFlagged: values["confirm-flagged"] === true,
+    controlInformative: values["control-informative"] === true,
     routePins,
   };
   if (routePins.size > 0) {
