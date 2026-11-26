@@ -2562,13 +2562,17 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
     };
     const filters = PRESET_ORDER.filter((preset) => preset !== "conversation");
     const counts = presetRow(page).locator("[data-preset-count]");
-    /** The left edge and the width of each control of `controls`, by its name. */
+    /** A control's left edge and its width. */
+    type ControlBox = { readonly width: number; readonly x: number };
+    /** The left edge and the width of each control of `controls`, by its name, read together. */
     const boxesOf = async (
       controls: readonly (readonly [string, Locator])[]
-    ): Promise<ReadonlyMap<string, { readonly width: number; readonly x: number }>> => {
-      const read = new Map<string, { readonly width: number; readonly x: number }>();
-      for (const [name, control] of controls) {
-        const box = await control.boundingBox();
+    ): Promise<ReadonlyMap<string, ControlBox>> => {
+      const boxes = await Promise.all(
+        controls.map(async ([name, control]) => [name, await control.boundingBox()] as const)
+      );
+      const read = new Map<string, ControlBox>();
+      for (const [name, box] of boxes) {
         if (box === null) throw new Error(`${name} draws no box`);
         read.set(name, { width: box.width, x: box.x });
       }
@@ -2577,7 +2581,7 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
     /** That each control of `controls` stands, within 1 px, where `before` read it at `width`. */
     const expectUnmoved = async (
       controls: readonly (readonly [string, Locator])[],
-      before: ReadonlyMap<string, { readonly width: number; readonly x: number }>,
+      before: ReadonlyMap<string, ControlBox>,
       width: number
     ): Promise<void> => {
       const after = await boxesOf(controls);

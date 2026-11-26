@@ -111,8 +111,7 @@ function checkNode(n: number, state: CheckState, text = `Check ${n}`): TreeNode 
 /** What the slot names the summary's references by (`useIssueNames`), handed to `onNames` as it
  *  is read and each time it changes. */
 function SlotNames({ onNames }: { onNames: (lineNames: LineNames) => void }): ReactNode {
-  const issue = useMemo(() => issueDetails(), []);
-  const { lineNames } = useIssueNames(issue);
+  const lineNames = useIssueNames(KEY);
   useLayoutEffect(() => onNames(lineNames), [lineNames, onNames]);
   return null;
 }

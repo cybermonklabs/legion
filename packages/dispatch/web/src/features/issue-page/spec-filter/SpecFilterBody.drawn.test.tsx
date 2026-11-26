@@ -66,6 +66,7 @@ import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { type CaretAt, caretInBlock } from "../node-caret";
 import { shortDay } from "../node-time";
 import { TWO_THREADS } from "../outline-fixtures";
+import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
 import { AUTHOR_TEXT_ATTRIBUTE, KEY_REPORTS } from "../page-structure";
 import {
@@ -346,7 +347,7 @@ function drawBody(
       emptyLine={EMPTY_STATE_LINES.spec}
       holdsEscape={false}
       issue={over}
-      namesLine={[]}
+      namesLine={NO_FAILED_READS}
       onEditing={onEditing}
       published={published}
       reader={reader}

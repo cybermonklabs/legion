@@ -90,6 +90,9 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   // texts count nothing more.
   let counted: Element | null = null;
   for (let drawn = walker.nextNode(); drawn !== null; drawn = walker.nextNode()) {
+    // An element counts only where it is drawn in place of the editor's text (below), which is
+    // where it is one of `HELD_OTHERWISE` itself, so every other element is passed unread.
+    if (drawn instanceof Element && !drawn.matches(HELD_OTHERWISE)) continue;
     const element = drawn instanceof Element ? drawn : drawn.parentElement;
     if (element?.closest("[data-node-trail]") != null) continue;
     const other = element?.closest(HELD_OTHERWISE) ?? null;

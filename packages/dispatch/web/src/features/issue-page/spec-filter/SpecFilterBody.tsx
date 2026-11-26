@@ -76,6 +76,7 @@ import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
+import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { issueAsksQuery } from "../useIssueTree";
@@ -314,9 +315,11 @@ export function SpecFilterBody({
     .filter(({ stands }) => stands);
   // What a reference a plain line cites is named by - in the three sentences, a quote, a
   // question, a group's heading - the names the page published, as a row of the outline names it
-  // (`referenceStandIns`), and how this issue addresses a node, which is the one rule the tree was
-  // built with, so a `shaped` tie resolves to the node it names (`tree-drafts.ts`).
-  const { lineNames, nodeIdOf } = useIssueNames(issue);
+  // (`referenceStandIns`, `useIssueNames`); and how this issue addresses a node, which is the one
+  // rule the tree was built with, so a `shaped` tie resolves to the node it names
+  // (`tree-drafts.ts`'s `treeContext`).
+  const lineNames = useIssueNames(issue.key);
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const { groups, others } = useMemo(
     () =>
       specDecidedBy({

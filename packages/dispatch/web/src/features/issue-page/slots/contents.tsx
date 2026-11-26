@@ -54,7 +54,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const producing = useMemo(() => producingMessages(root), [root]);
   // What a reference the sentences and the entries cite is named by: the names the page
   // published, as the node's row in the outline names it (`referenceStandIns`).
-  const { lineNames } = useIssueNames(issue);
+  const lineNames = useIssueNames(issue.key);
   const ask = useAskOutline();
   const [focusBranch, setFocusBranch] = useFocusBranch();
   const chosen = useContentsChosen();

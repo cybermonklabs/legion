@@ -1,8 +1,15 @@
 import { expect, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
+import type { Actor, Agent } from "../../api/types";
+import { POST_MARK_WORDS, type PostDeletion } from "../refs/post-marks";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { drawnLine, firstLineOf } from "./first-line";
-import { type LineNames, oneLineCut, referenceStandIns } from "./one-line";
+import { type LineNames, oneLineCut, referenceStandIns, useIssueNames } from "./one-line";
 import { NODE_TYPE_NAMES } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { knownIssueKeys } from "./row-references";
 
 /** A face that draws every character 7 px wide, so each budget below is a sum a reader can
@@ -339,4 +346,76 @@ test("a run that ends with the author's own ellipsis is measured with that one a
     under: false,
     wraps: false,
   });
+});
+
+/** One session the agent registry lists as live under `title`, which the listener last heard at
+ *  `lastSeen`, as `GET /api/v1/agents` lists it. */
+function listed(sessionId: string, title: string, lastSeen: number): Agent {
+  return {
+    capabilities: [],
+    dir: "/w",
+    host: "host",
+    last_activity: null,
+    last_seen: lastSeen,
+    machine_id: "host",
+    open_asks: 0,
+    roles: [],
+    session_id: sessionId,
+    state: "live",
+    title,
+  };
+}
+
+// A plain line's names are read once for every Contents entry, every sentence of the summary
+// and every group of the Spec view, and each is built again where they change. The page's rule
+// for an author is made anew at every poll of the agent registry, while a plain line reads it
+// only for the actor of a deleted post (`rowReferenceNames`), so a poll that names every such
+// actor as before - a live agent heard again, nothing renamed - hands on the same names, and one
+// that renames such an actor hands on new names, which name it anew.
+test("a plain line's names are kept while a registry poll names the deleted posts' actors alike", () => {
+  const writer = "writer-session";
+  const helper = "helper-session";
+  const comment = "dispatch://KEY-1/comment/c-deleted";
+  const by: Actor = { id: writer, kind: "session" };
+  const deleted = new Map<string, PostDeletion>([[comment, { at: "2026-11-05T10:00:00Z", by }]]);
+  // The page publishes the deleted comment's name with the delete, as its batched read does: its
+  // deleted line, the actor named as no registry knows them.
+  const name = `${POST_MARK_WORDS.deleted_by} ${writer}`;
+  const published = publishedNames(new Map([[comment, name]]), { deleted });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["agents"], [listed(writer, "Planner", 1), listed(helper, "Helper", 1)]);
+  const names = renderHook(() => useIssueNames("KEY-1"), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(
+          ReferenceNamesProvider,
+          null,
+          createElement(Publisher, { published }),
+          children
+        )
+      ),
+  });
+  const line = (lineNames: LineNames): string => {
+    const references = referenceStandIns(lineNames);
+    return references.named(references.standIn(`See ${comment}.`));
+  };
+  try {
+    const first = names.result.current;
+    expect(line(first)).toBe(`See ${POST_MARK_WORDS.deleted_by} Planner.`);
+    // A poll that answers the registry anew: the helper, still live, was heard again.
+    act(() => {
+      client.setQueryData(["agents"], [listed(writer, "Planner", 1), listed(helper, "Helper", 2)]);
+    });
+    expect(names.result.current).toBe(first);
+    // A poll that renames the deleted comment's actor.
+    act(() => {
+      client.setQueryData(["agents"], [listed(writer, "Reviewer", 1), listed(helper, "Helper", 2)]);
+    });
+    expect(names.result.current).not.toBe(first);
+    expect(line(names.result.current)).toBe(`See ${POST_MARK_WORDS.deleted_by} Reviewer.`);
+  } finally {
+    names.unmount();
+  }
 });

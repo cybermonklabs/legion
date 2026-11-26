@@ -56,13 +56,22 @@ export function wordsOf(node: DisplayTree): string {
   return words;
 }
 
+/** Whether a node holds any words, its children's included: whether `wordsOf(node)` holds
+ *  anything but spaces, read without joining its text. `wordsOf` joins its text runs with at most
+ *  one space, so its words are blank exactly where every text run is. */
+function holdsWords(node: DisplayTree): boolean {
+  const text = textOf(node);
+  if (text !== undefined) return text.trim() !== "";
+  return childrenOf(node)?.some(holdsWords) ?? false;
+}
+
 /** The blocks `firstWordedBlock` walks into rather than reads whole. */
-const CONTAINER_BLOCKS = {
-  blockquote: true,
-  bullet_list: true,
-  list_item: true,
-  ordered_list: true,
-};
+const CONTAINER_BLOCKS: ReadonlySet<string> = new Set([
+  "blockquote",
+  "bullet_list",
+  "list_item",
+  "ordered_list",
+]);
 
 /**
  * `reading` holding the first of its blocks that holds any words (`wordsOf`) and nothing else;
@@ -76,12 +85,10 @@ const CONTAINER_BLOCKS = {
 export function firstWordedBlock(reading: DisplayTree): DisplayTree | undefined {
   const children = childrenOf(reading);
   if (children === undefined) return undefined;
-  const at = children.findIndex((child) => wordsOf(child).trim() !== "");
+  const at = children.findIndex(holdsWords);
   const block = children[at];
   if (block === undefined) return undefined;
-  const kept = Object.hasOwn(CONTAINER_BLOCKS, block.type)
-    ? (firstWordedBlock(block) ?? block)
-    : block;
+  const kept = CONTAINER_BLOCKS.has(block.type) ? (firstWordedBlock(block) ?? block) : block;
   if (reading.type === "ordered_list" && at > 0) {
     const attrs = reading.attrs as { readonly order?: unknown } | undefined;
     const order = typeof attrs?.order === "number" ? attrs.order : 1;

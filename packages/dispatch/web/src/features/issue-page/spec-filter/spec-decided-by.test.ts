@@ -531,8 +531,7 @@ test("a person's answer that cites a block carries its whole text for the focus,
     }),
   ]);
   // The page publishes the chip's name to the names store, which `useIssueNames` reads.
-  const issue = issueDetails();
-  const names = renderHook(() => useIssueNames(issue).lineNames, {
+  const names = renderHook(() => useIssueNames(KEY), {
     wrapper: publishingNames(new Map([[cited, "the one-line rule"]])),
   });
   try {

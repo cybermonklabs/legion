@@ -78,7 +78,7 @@ export function IssuePresets({
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). Conversation draws
    *  no signal. The whole record is undefined until the counts can be read
    *  (`slots/view-row.tsx`), and until then each filter holds its signal's room empty. */
-  signals?: Readonly<Partial<Record<Preset, PresetSignal>>>;
+  signals?: Readonly<Record<Filter, PresetSignal>>;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -258,7 +258,7 @@ export function IssuePresets({
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
               {PRESET_ORDER.map((preset) => {
-                const signal = signals?.[preset];
+                const signal = isFilter(preset) ? signals?.[preset] : undefined;
                 return (
                   // Named by its name and any signal it draws; checked where it is the one on.
                   <button
@@ -315,7 +315,7 @@ export function IssuePresets({
       >
         {PRESET_ORDER.map((preset) => {
           const on = preset === active;
-          const signal = signals?.[preset];
+          const signal = isFilter(preset) ? signals?.[preset] : undefined;
           return (
             // The prototype's `.tab`: the name and any signal on one baseline, the rule under
             // both, ink and semibold for the one on.

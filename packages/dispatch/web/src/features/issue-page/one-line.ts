@@ -1,6 +1,5 @@
 import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 
-import type { IssueDetails } from "../../api/types";
 import { type AgentText, useAgentText } from "../refs/AgentName";
 import { type KnownReferences, useKnownReferences } from "../refs/reference-names";
 import { drawnLine, firstLineOf } from "./first-line";
@@ -11,7 +10,6 @@ import {
   rowReferences,
   rowReferenceWords,
 } from "./row-references";
-import { treeContext } from "./tree-drafts";
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its
@@ -388,22 +386,35 @@ export function referenceStandIns({
 }
 
 /**
- * What a plain line of one issue's page names the references it cites by (`LineNames`), read
- * from what the page published, and how that issue addresses a node, which a caller that
- * resolves a decision's tie reads too. Only the addressing of the issue's context is read.
+ * The page's rule for an author (`AgentText.author`) as a plain line reads it, which is only
+ * through the deleted line of a post in `deleted` (`rowReferenceNames`). The rule is made anew
+ * at every poll of the agent registry, though it names those posts' actors alike almost every
+ * time, so the rule read before is kept while `deleted` stands and the new rule names every
+ * actor in it as the kept one does.
  */
-export function useIssueNames(issue: IssueDetails): {
-  readonly lineNames: LineNames;
-  readonly nodeIdOf: (reference: string) => string | undefined;
-} {
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
-  const { ambiguous, deleted, edited, lines, names } = useKnownReferences();
+function useDeletedActorsAuthor(deleted: LineNames["deleted"]): AgentText["author"] {
   const { author } = useAgentText();
-  const issues = useMemo(() => knownIssueKeys(names), [names]);
-  const key = issue.key;
-  const lineNames = useMemo(
-    () => ({ ambiguous, author, deleted, edited, issue: key, issues, lines, names }),
-    [ambiguous, author, deleted, edited, issues, key, lines, names]
+  // Each deleted post's actor as `author` names it, the name its deleted line draws, and null
+  // for a post that names no actor, whose line names none (`deletedLineText`).
+  const actors = JSON.stringify(
+    [...deleted.values()].map(({ by }) => (by === null ? null : author(by)))
   );
-  return { lineNames, nodeIdOf };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `author` is kept while `deleted` and `actors` stand, since `actors` is everything `author` is read for here
+  return useMemo(() => author, [actors, deleted]);
+}
+
+/**
+ * What a plain line of the issue `issueKey`'s page names the references it cites by
+ * (`LineNames`), read from what the page published. It is the same object while nothing a line
+ * names a reference by changes, a poll of the agent registry that names every deleted post's
+ * actor alike included (`useDeletedActorsAuthor`).
+ */
+export function useIssueNames(issueKey: string): LineNames {
+  const { ambiguous, deleted, edited, lines, names } = useKnownReferences();
+  const author = useDeletedActorsAuthor(deleted);
+  const issues = useMemo(() => knownIssueKeys(names), [names]);
+  return useMemo(
+    () => ({ ambiguous, author, deleted, edited, issue: issueKey, issues, lines, names }),
+    [ambiguous, author, deleted, edited, issueKey, issues, lines, names]
+  );
 }

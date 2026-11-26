@@ -1,14 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
-import {
-  createElement,
-  Fragment,
-  type ReactElement,
-  type ReactNode,
-  useEffect,
-  useMemo,
-} from "react";
+import { createElement, Fragment, type ReactElement, type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -18,7 +11,7 @@ import type { Actor } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PublishedReferenceNames, ReferenceNamesProvider } from "../refs/reference-names";
 import { producingMessages } from "./contents-entries";
-import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import { KEY } from "./decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
@@ -520,8 +513,7 @@ test("an entry draws a reference the page published no name for as written, neve
 /** The Contents list over `root` as the slot draws it, its entries' references named by what the
  *  page published (`useIssueNames`). */
 function PublishedContents({ root }: { root: TreeNode }): ReactNode {
-  const issue = useMemo(() => issueDetails(), []);
-  const { lineNames } = useIssueNames(issue);
+  const lineNames = useIssueNames(KEY);
   return createElement(ContentsList, {
     focusBranch: false,
     lineNames,
