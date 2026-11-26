@@ -1243,10 +1243,13 @@ function InboxBody({
   // the room between and the others keeping their width. Each part takes the line's height, so
   // every part's box starts at the line's top. It stands 8 px over the control bar, and every
   // return below draws it first in one fragment, while the list loads and where it failed too.
-  // A reading view below 1280 px hides it (`hidden`) with the list and the bar, and keeps it
-  // mounted, so the reader comes back to the box as they left it.
-  const headerLineOf = (hidden: boolean): ReactNode => (
-    <div className="mb-2 flex flex-nowrap gap-3" data-inbox-header-line="" hidden={hidden}>
+  // A reading view below 1280 px keeps the title and what ends the line above it, as main's page
+  // keeps its heading above that view, and hides the search box there (`reading`), as main hides
+  // its search with the list and the bar, mounted so the reader comes back to the box as they
+  // left it: the line then stands under the selection bar, which a phone draws under the
+  // header, rather than the view's own head with its way back to the list.
+  const headerLineOf = (reading: boolean): ReactNode => (
+    <div className="mb-2 flex flex-nowrap justify-between gap-3" data-inbox-header-line="">
       {header.kind === "page" ? (
         <h1 className="flex shrink-0 items-center text-[22px] font-semibold tracking-tight">
           Inbox
@@ -1260,6 +1263,7 @@ function InboxBody({
       )}
       <SearchBox
         className="flex-1"
+        hidden={reading}
         // `f`, the key that puts the reader in the box (`inboxKeys` below).
         hint="f"
         label="Search asks"

@@ -22,6 +22,9 @@ export interface SearchBoxProps {
   };
   /** For a caller keeping a test id that a browser row already names. */
   readonly "data-testid"?: string;
+  /** Hides the box and keeps it mounted, the words in it and the caret with it: the Inbox's,
+   *  while a reading view stands in the place of its list (`Inbox.tsx`'s header line). */
+  readonly hidden?: boolean;
   /** The key that puts the reader in the box, drawn inside the box at its end - the Inbox's `f`
    *  - and told to a screen reader as the box's shortcut (`aria-keyshortcuts`). The box keeps
    *  its `data-control`; the hint is a mark beside the text, drawn over the box's own room. */
@@ -60,6 +63,7 @@ export function SearchBox({
   className,
   combobox,
   "data-testid": testId,
+  hidden,
   hint,
   label,
   maxLength = SEARCH_QUERY_MAX,
@@ -98,6 +102,8 @@ export function SearchBox({
       className={boxClass}
       data-control={CONTROL.searchBox}
       data-testid={testId}
+      // The box itself where it is the whole control; with a hint, the wrapper below.
+      hidden={hint === undefined ? hidden : undefined}
       maxLength={maxLength === null ? undefined : maxLength}
       onBlur={onBlur}
       onChange={(event) => onChange(event.target.value)}
@@ -111,7 +117,10 @@ export function SearchBox({
   );
   if (hint === undefined) return box;
   return (
-    <span className={`relative block min-w-0${className === undefined ? "" : ` ${className}`}`}>
+    <span
+      className={`relative block min-w-0${className === undefined ? "" : ` ${className}`}`}
+      hidden={hidden}
+    >
       {box}
       {/* Hidden from a screen reader, which hears the key as the box's `aria-keyshortcuts`. */}
       <span
