@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -534,56 +533,53 @@ func TestAReplyToADirectMessageComesFromTheSessionThatReplacedItsRecipient(t *te
 }
 
 // A successor answers the replaced session's delivery only on a credential that acts for the
-// principal the listener names the successors for (actsForSuccessorPrincipal): the listener
-// names them by the records of the sessions' last registrations, and a session run on another
-// principal's broker token before a registration records that may not answer the earlier
-// principal's deliveries. A person's direct message goes to session A; the listener names B as
-// A's successor for one principal; B replies under a broker token that proves B and acts for a
-// principal of its own. Each case row, a token acting for another person or for a service, is
-// refused 403 REPLY_FORBIDDEN and leaves the attempt unanswered, and fails where Dispatch takes
-// the listener's list alone. Each control is accepted: a token acting for the person, or the
-// service, the listener names, and the shared agent token, which proves no session and may name
-// A itself, and so is asked nothing more.
+// principal the listener names the successors for (actsForSuccessorPrincipal), in the form that
+// names the token's kind and scope (ciphertoken.Caller.Principal): the listener names them by the
+// records of the sessions' last registrations, and a session run on another principal's broker
+// token before a registration records that may not answer the earlier principal's deliveries. A
+// person's direct message goes to session A; the listener names B as A's successor for one
+// principal; B replies under a broker token that proves B and acts for a principal of its own.
+// Each case row - a token acting for another person, for a service, or for the same person on a
+// project an operator's entry names, which is an agent's and not the person's own - is refused 403
+// REPLY_FORBIDDEN and leaves the attempt unanswered, and fails where Dispatch takes the listener's
+// list alone, or compares the token's person alone. Each control is accepted: a token acting for
+// the person, the service, or the project entry the listener names, and the shared agent token,
+// which proves no session and may name A itself, and so is asked nothing more.
 func TestASuccessorsReplyIsHeldToThePrincipalTheListenerNamesIt(t *testing.T) {
 	t.Parallel()
 	listener := newRoleRouteListener(t)
 	brokered := newBrokerTokenRigOn(t, testServerOptions{envoyURL: listener.server.URL})
 	rig := &roleRouteReplies{listener: listener, handler: brokered.handler, database: brokered.database}
-	tokenOf := func(t *testing.T, caller *brokerCaller, session, person, service string) string {
-		t.Helper()
-		token := "a-token-of-" + session + "-for-" + person + service
-		answer := ciphertoken.Introspection{
-			Active:       true,
-			Session:      session,
-			Person:       person,
-			ProjectScope: ciphertoken.ProjectScopePerson,
-			Scope:        "dispatch.write",
-			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
-			ClientID:     ciphertoken.ExchangeClientID,
-			Thumbprint:   caller.jkt,
+	// Each answer is the broker's for a token of the successor's session: a person-scoped token
+	// of a person, an account entry's naming no person (personlessAccountToken, whose service is
+	// the whole account subject: one of the person scope naming no person is a machine nobody
+	// signed in on, which writes nothing), and a project entry's acting for alice on
+	// brokerTestProject (liveNamedToken).
+	personToken := func(person string) func(string) ciphertoken.Introspection {
+		return func(jkt string) ciphertoken.Introspection {
+			answer := personScopedTokenAnswer(jkt)
+			answer.Person = person
+			return answer
 		}
-		if service != "" {
-			// A service's token that writes is an account entry's (personlessAccountToken), whose
-			// service is the whole account subject: one of the person scope naming no person is a
-			// machine nobody signed in on, which writes nothing, and a named one naming any other
-			// service is no token the broker mints (ciphertoken.ErrNotASession).
-			answer = personlessAccountToken(caller.jkt)
-			answer.Session = session
-		}
-		brokered.broker.Says(token, answer)
-		return token
 	}
+	const (
+		alice        = "person:" + brokerTestPerson
+		aliceOnEntry = "named:" + brokerTestProject + ":" + brokerTestPerson
+		account      = "service:" + brokerTestAccount
+	)
 	for i, row := range []struct {
 		name              string
 		named             string
-		person, service   string
+		answer            func(jkt string) ciphertoken.Introspection
 		shared, forbidden bool
 	}{
-		{name: "case: the successor's token acts for another person", named: brokerTestPerson, person: "bob", forbidden: true},
-		{name: "case: the successor's token acts for a service", named: brokerTestPerson, service: brokerTestAccount, forbidden: true},
-		{name: "control: the successor's token acts for the person the listener names", named: brokerTestPerson, person: brokerTestPerson},
-		{name: "control: the successor's token acts for the service the listener names", named: brokerTestAccount, service: brokerTestAccount},
-		{name: "control: the shared agent token, which proves no session", named: brokerTestPerson, shared: true},
+		{name: "case: the successor's token acts for another person", named: alice, answer: personToken("bob"), forbidden: true},
+		{name: "case: the successor's token acts for a service", named: alice, answer: personlessAccountToken, forbidden: true},
+		{name: "case: the successor's token is a project entry's acting for the person whose own session the listener names", named: alice, answer: liveNamedToken, forbidden: true},
+		{name: "control: the successor's token acts for the person the listener names", named: alice, answer: personToken(brokerTestPerson)},
+		{name: "control: the successor's token acts for the service the listener names", named: account, answer: personlessAccountToken},
+		{name: "control: the successor's token is the project entry's the listener names", named: aliceOnEntry, answer: liveNamedToken},
+		{name: "control: the shared agent token, which proves no session", named: alice, shared: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			replaced, successor := fmt.Sprintf("ses_principal_a%d", i), fmt.Sprintf("ses_principal_b%d", i)
@@ -596,7 +592,11 @@ func TestASuccessorsReplyIsHeldToThePrincipalTheListenerNamesIt(t *testing.T) {
 				reply = bearerRequest(t, rig.handler, http.MethodPost, path, body)
 			} else {
 				caller := newBrokerCaller(t)
-				reply = brokered.serve(caller.presenting(t, http.MethodPost, path, tokenOf(t, caller, successor, row.person, row.service), body))
+				token := fmt.Sprintf("a-token-of-%s-row-%d", successor, i)
+				answer := row.answer(caller.jkt)
+				answer.Session = successor
+				brokered.broker.Says(token, answer)
+				reply = brokered.serve(caller.presenting(t, http.MethodPost, path, token, body))
 			}
 			if row.forbidden {
 				replyRefused(t, "the successor's reply on a token of another principal", reply)

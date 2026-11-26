@@ -230,8 +230,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// is marked as one, with the cut it reads at, which are what refuseReadOnlyToken reads, and
 		// the project scope is carried as its base word (ciphertoken.Caller.ProjectScope), which is
 		// how writeNeedsASignedInPerson tells an account entry's token naming no person from a
-		// machine's nobody signed in on.
-		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, Cut: caller.Cut, ProjectScope: caller.ProjectScope},
+		// machine's nobody signed in on. The principal is the one the listener records a
+		// registration on this token as, which a successor's reply is held to.
+		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, Cut: caller.Cut, ProjectScope: caller.ProjectScope, Principal: caller.Principal()},
 		Proven:     true,
 	}
 	// A caller names a person or a service, never both and never neither (ciphertoken.Caller),

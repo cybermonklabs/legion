@@ -1463,7 +1463,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	var roleReply roleHolderReply
 	var err error
 	if fitsIntegerColumn(input.Attempt) {
-		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		roleReply, err = s.roleHolderReplyOf(r, actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3

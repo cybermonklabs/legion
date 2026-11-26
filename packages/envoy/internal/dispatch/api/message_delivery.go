@@ -1070,7 +1070,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// below (fitsIntegerColumn) answers it, where it always has.
 	var roleReply roleHolderReply
 	if fitsIntegerColumn(input.Attempt) {
-		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		roleReply, err = s.roleHolderReplyOf(r, actor, r.PathValue("id"), `
 		select coalesce(m.target, ''), d.session_id
 		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
 		where m.id = $1

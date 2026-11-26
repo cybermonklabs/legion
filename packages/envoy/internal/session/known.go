@@ -103,11 +103,11 @@ type KnownSession struct {
 	// SessionEntry.UpdatedAt is.
 	LastSeen int64 `json:"last_seen"`
 	// Principal is the principal of the credential the session last registered on
-	// (cmd/listener's requestPrincipal): a broker token's person, else its service; else an
-	// identity token's subject or account; and empty for a credential that proves none, the
-	// shared token and an open /v1. The registration writes it (RecordRegistrationWithin), and
-	// every other write that carries none keeps the one the bucket holds (RecordWithin,
-	// TouchWithin).
+	// (cmd/listener's requestPrincipal), in the form that names the credential's kind and scope
+	// beside the person or service (internal/ciphertoken's Caller.Principal and
+	// IdentityPrincipal), and empty for a credential that proves none, the shared token and an
+	// open /v1. The registration writes it (RecordRegistrationWithin), and every other write that
+	// carries none keeps the one the bucket holds (RecordWithin, TouchWithin).
 	Principal string `json:"principal,omitempty"`
 	// PrincipalRecorded says Principal is a registration's, none included: every registration of
 	// this build sets it, and every other write keeps it with the principal. A listener of an
@@ -174,13 +174,12 @@ func WithKnownSessionClock(now func() time.Time) KnownSessionsOption {
 //
 // A store whose bucket is not open is the degraded listener: one whose NATS user may not open the
 // bucket keeps the store, which answers nothing and whose writes do nothing, and opens the bucket
-// as soon as an attempt of its own succeeds (repairUntilStopped). A registration through it is
-// the one caller it refuses (AdmitRegistration and RecordRegistrationWithin answer
-// ErrPrincipalUnrecorded), since the principal it cannot record can be another one the bucket
-// holds, so a listener whose bucket does not open admits no registration until it does. A nil
-// *KnownSessions answers nothing and writes nothing too, and answers every write nil, a
-// registration's included, for a
-// listener that could not build a JetStream context at all and for a test that builds the
+// as soon as an attempt of its own succeeds (repairUntilStopped). A registration through it
+// records no principal (AdmitRegistration and RecordRegistrationWithin answer
+// ErrKnownSessionsUnavailable), which the registration route admits with a warning, and the claim
+// route refuses every handover while it reads ErrKnownSessionsUnavailable. A nil *KnownSessions
+// answers nothing and writes nothing too, and answers every write nil, a registration's included,
+// for a listener that could not build a JetStream context at all and for a test that builds the
 // handlers without a store, so every method here is safe on a nil receiver and no call site
 // carries a nil check.
 type KnownSessions struct {
@@ -711,6 +710,8 @@ func (s *KnownSessions) Get(sessionID string) (KnownSession, bool) {
 
 // ErrKnownSessionsUnavailable is Read's answer from a store whose bucket is not open, a nil store
 // among them: it holds nothing it could answer from, so whether it knows the session was not read.
+// It is also what a registration's admission and its write answer from a non-nil store whose
+// bucket is not open (AdmitRegistration, RecordRegistrationWithin), which record no principal.
 var ErrKnownSessionsUnavailable = errors.New("session: the known-session store does not answer: its bucket is not open")
 
 // Read returns sessionID's record as the bucket's stream leader holds it now
@@ -855,13 +856,14 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // gate reading a principal this session did not last register as, or one nobody confirmed it
 // did, so the registration route answers 503 and the client registers again.
 //
-// A store whose bucket is not open writes nothing, and its registration is ErrPrincipalUnrecorded
-// too, wrapping ErrKnownSessionsUnavailable, as AdmitRegistration answers it before the session is
-// admitted. A nil store, the listener's that could build no JetStream context at all and a
-// test's, answers nil, as every one of its writes does.
+// A store whose bucket is not open writes nothing, and its registration is
+// ErrKnownSessionsUnavailable, as AdmitRegistration answers it: the route admits such a
+// registration with no principal recorded, and the claim route refuses every handover while the
+// bucket is not open. A nil store, the listener's that could build no JetStream context at all
+// and a test's, answers nil, as every one of its writes does.
 func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, admission Admission, record KnownSession) error {
 	if s != nil && record.SessionID != "" && s.watch() == nil {
-		return fmt.Errorf("%w: %w", ErrPrincipalUnrecorded, ErrKnownSessionsUnavailable)
+		return ErrKnownSessionsUnavailable
 	}
 	record.PrincipalRecorded = true
 	err := s.writeWithin(ctx, record, true, &admission)
@@ -909,12 +911,14 @@ type Admission struct {
 // The answer is the revision the read found or the clear wrote (Admission), which the
 // registration's own write is fenced on.
 //
-// A record the bucket's leader did not answer for, a clear the bucket refused (another write
-// landed since the read, or the bucket takes none), and a store whose bucket is not open, which
-// can read nothing, are ErrPrincipalUnrecorded, which the route answers 503 with Retry-After: 1,
-// with nothing of the registration admitted. A nil store, the listener's that could build no
-// JetStream context at all and a test's, admits every registration, as each of its writes answers
-// nil.
+// A record the bucket's leader did not answer for, and a clear the bucket refused (another write
+// landed since the read, or the bucket takes none), are ErrPrincipalUnrecorded, which the route
+// answers 503 with Retry-After: 1, with nothing of the registration admitted. A store whose bucket
+// is not open can read and write nothing, and answers ErrKnownSessionsUnavailable: the route
+// admits that registration with no principal recorded and a warning, as the bucket stays shut
+// until the listener's grant covers it, and every handover is refused on that listener meanwhile
+// (cmd/listener's handoverRefusal). A nil store, the listener's that could build no JetStream
+// context at all and a test's, admits every registration, as each of its writes answers nil.
 //
 // Of two registrations of one session that are each admitted before the other writes its record,
 // at most one writes it: each write is a compare-and-swap at its own admission's revision, and
@@ -931,7 +935,7 @@ func (s *KnownSessions) AdmitRegistration(ctx context.Context, sessionID, princi
 	}
 	watcher := s.watch()
 	if watcher == nil {
-		return Admission{}, fmt.Errorf("%w: %w", ErrPrincipalUnrecorded, ErrKnownSessionsUnavailable)
+		return Admission{}, ErrKnownSessionsUnavailable
 	}
 	kv, _ := watcher.Handle()
 	stored, err := kv.ReadFromLeader(ctx, sessionID)

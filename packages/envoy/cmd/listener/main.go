@@ -1513,14 +1513,16 @@ func runListener(credentialWait time.Duration) {
 	legionAgents := openLegionAgentRegistry(client.Conn, logger, legionagents.WithReplicas(cfg.NATSReplicas), legionagents.WithLogger(logger.Slog()))
 
 	// The known-session store answers which sessions registered in the last 30 days, whether or
-	// not they are registered now; no delivery depends on it, so it never stops a start, and it is
-	// opened the way the Legion agent registry above is. A listener whose NATS user may not open
-	// the bucket - on a hub whose grant does not carry it - keeps the store, which logs the bucket
-	// it could not open once, answers no record and writes none, and retries the open in the
-	// background with a backoff and at once after each connection event
-	// (session.OpenKnownSessions), so a grant applied after this start is picked up with no
-	// restart. This line is the one failure that leaves no store at all, a connection that gives
-	// no JetStream context, which answers as an empty store does.
+	// not they are registered now, and the principal each last registered as, which a handover is
+	// held to; no delivery depends on it, so it never stops a start, and it is opened the way the
+	// Legion agent registry above is. A listener whose NATS user may not open the bucket - on a
+	// hub whose grant does not carry it - keeps the store, which logs the bucket it could not open
+	// once, answers no record and writes none, and retries the open in the background with a
+	// backoff and at once after each connection event (session.OpenKnownSessions), so a grant
+	// applied after this start is picked up with no restart. Meanwhile each registration is
+	// admitted with no principal recorded and a warning, and every claim's handover is refused
+	// (subscribeHandler, handoverRefusal). This line is the one failure that leaves no store at
+	// all, a connection that gives no JetStream context, which answers as an empty store does.
 	known, knownErr := session.OpenKnownSessions(
 		starting,
 		client.Conn,

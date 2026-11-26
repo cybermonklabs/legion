@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const (
@@ -28,6 +30,7 @@ const (
 	gatePerson    = "ada@example.com"
 	gateOther     = "grace@example.com"
 	gateService   = "example-fleet"
+	gateProject   = "ACME"
 	gateNoneToken = ""
 )
 
@@ -80,6 +83,17 @@ func (rig *gateRig) personToken(sessionID, person string) string {
 func (rig *gateRig) serviceToken(sessionID, service string) string {
 	token := "access-token-of-" + sessionID + "-for-" + service
 	rig.broker.Says(token, serviceAnswer(sessionID, service, rig.caller.JKT()))
+	return token
+}
+
+// namedToken is the access token of sessionID that an operator's entry gave person for project
+// (ciphertoken.ProjectScopeNamed): a worker pod's, which acts for person on that one project and
+// is an agent's, not the person's own.
+func (rig *gateRig) namedToken(sessionID, project, person string) string {
+	token := "access-token-of-" + sessionID + "-for-" + person + "-on-" + project
+	answer := sessionAnswer(sessionID, person, rig.caller.JKT())
+	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopeNamed, []string{project}
+	rig.broker.Says(token, answer)
 	return token
 }
 
@@ -200,12 +214,16 @@ func gateClaimDrainHeld(role string) bool { return role == gateRole }
 
 // A claim that names the session it replaces hands that session's unread messages to the claimant
 // only when the credential the claim presents, the claimant's last registration and the replaced
-// session's last registration all name one principal (handoverRefusal): a broker token's person,
-// else its service, else an identity token's principal, else none. A session's own broker token
-// proves only that the claimant is itself, so without this rule any session could name a stopped
-// session - a person's among them - and read its messages. Each refused row fails where the rule
-// is not kept: the claimant receives the unread direct message, the role message of the role the
-// replaced session held reaches that role's kept lane, and the role holds a handover record.
+// session's last registration all name one principal (handoverRefusal), in the form that names the
+// credential's kind and scope (ciphertoken.Caller.Principal): a person's own token, a token an
+// operator's entry gave a person for a project, a service, an identity token, or none. A session's
+// own broker token proves only that the claimant is itself, so without this rule any session could
+// name a stopped session - a person's among them - and read its messages, and a worker agent on a
+// project entry that names a person could read that person's own session's. Each refused row
+// fails where the rule is not kept: the claimant receives the unread direct message, the role
+// message of the role the replaced session held reaches that role's kept lane, the role holds a
+// handover record, and the successor read names the claimant, which lets Dispatch take its reply
+// to the replaced session's deliveries.
 //
 // The row where neither session's credential proves a principal is the existing handover tests'
 // (TestASessionThatReplacesAnotherReceivesItsUnreadMessages,
@@ -221,18 +239,30 @@ func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T)
 		replaced, claimant func(rig *gateRig, sessionID string) string
 		claimsAs           func(rig *gateRig, sessionID string) string
 		handedOver         bool
+		// principal is the principal a row that hands over names both sessions for, as the
+		// successor read answers it.
+		principal string
 	}{
 		{
 			name:       "a allowed: both sessions act for one person",
 			replaced:   func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
 			claimant:   func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
 			handedOver: true,
+			principal:  "person:" + gatePerson,
 		},
 		{
 			name:       "a allowed: both sessions act for one service",
 			replaced:   func(rig *gateRig, s string) string { return rig.serviceToken(s, gateService) },
 			claimant:   func(rig *gateRig, s string) string { return rig.serviceToken(s, gateService) },
 			handedOver: true,
+			principal:  "service:" + gateService,
+		},
+		{
+			name:       "a allowed: both sessions are one project entry's, acting for one person",
+			replaced:   func(rig *gateRig, s string) string { return rig.namedToken(s, gateProject, gatePerson) },
+			claimant:   func(rig *gateRig, s string) string { return rig.namedToken(s, gateProject, gatePerson) },
+			handedOver: true,
+			principal:  "named:" + gateProject + ":" + gatePerson,
 		},
 		{
 			name:     "b refused: a service's session names a person's session",
@@ -243,6 +273,11 @@ func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T)
 			name:     "b refused: one person's session names another person's session",
 			replaced: func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
 			claimant: func(rig *gateRig, s string) string { return rig.personToken(s, gateOther) },
+		},
+		{
+			name:     "b refused: a project entry's session acting for a person names that person's own session",
+			replaced: func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
+			claimant: func(rig *gateRig, s string) string { return rig.namedToken(s, gateProject, gatePerson) },
 		},
 		{
 			name:     "c refused: the replaced session registered on a credential that proves no principal",
@@ -293,8 +328,22 @@ func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T)
 						t.Errorf("role %s holds %d handover records from %s to %s; want exactly one", gateRole, n, gateReplaced, gateClaimant)
 					}
 				})
+				t.Run("control: the successor read names the claimant, for the principal both registered as", func(t *testing.T) {
+					successors, recorder := readSuccessors(t, rig.mux, gateReplaced)
+					requireStatus(t, recorder, http.StatusOK, "the successors of "+gateReplaced)
+					if !slices.Equal(successors.Successors, []string{gateClaimant}) || successors.Principal != row.principal {
+						t.Errorf("the successors of %s = %v for %q; want [%s] for %q", gateReplaced, successors.Successors, successors.Principal, gateClaimant, row.principal)
+					}
+				})
 				return
 			}
+			t.Run("case: the successor read names no session, so Dispatch refuses the claimant's reply to the replaced session's deliveries", func(t *testing.T) {
+				successors, recorder := readSuccessors(t, rig.mux, gateReplaced)
+				requireStatus(t, recorder, http.StatusOK, "the successors of "+gateReplaced)
+				if len(successors.Successors) != 0 {
+					t.Errorf("the successors of %s = %v for %q; want none", gateReplaced, successors.Successors, successors.Principal)
+				}
+			})
 			t.Run("case: the claim stands and warns that no message of the replaced session is handed over", func(t *testing.T) {
 				if !warned {
 					t.Errorf("the claim's warnings are %q; want one naming %s and saying no message of it is handed over", warnings, gateReplaced)
@@ -351,11 +400,12 @@ func wantIf(want bool, eventIDs ...string) []string {
 
 // A record decides the rule for good only where it says which principal its session last
 // registered as. The replaced session with no record in an open store, one whose record a
-// listener of an earlier build wrote last (no principal recorded), and a listener with no store
-// at all are refused, and the refusal names why. What only a later claim can read is
-// errHandoverUnjudged, which the claim route answers 503: a store whose bucket is not open, and a
-// claimant whose own registration is not recorded with its principal yet. The control is the same
-// claim where both sessions registered on no credential, as the claim's own does, which stands.
+// listener of an earlier build wrote last (no principal recorded), a listener with no store at
+// all, and a store whose bucket is not open, which reads no record and records no principal
+// until its grant covers the bucket, are refused, and the refusal names why. What only a later
+// claim can read is errHandoverUnjudged, which the claim route answers 503: a claimant whose own
+// registration is not recorded with its principal yet. The control is the same claim where both
+// sessions registered on no credential, as the claim's own does, which stands.
 func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
@@ -415,7 +465,7 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 		unjudged(t, known, "ses_gate_unit_replaced_d", "ses_gate_unit_claimant_earlier")
 	})
 	t.Run("case: a store whose bucket is not open", func(t *testing.T) {
-		unjudged(t, &session.KnownSessions{}, "ses_gate_unit_replaced_d", "ses_gate_unit_claimant_e")
+		refused(t, &session.KnownSessions{}, "ses_gate_unit_replaced_d", "ses_gate_unit_claimant_e", "known-session bucket (envoy_known_sessions) is not open")
 	})
 	t.Run("control: both sessions registered on no credential, and the claim presents none", func(t *testing.T) {
 		register(t, "ses_gate_unit_replaced_f", "ses_gate_unit_claimant_f")
@@ -643,19 +693,16 @@ func TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns(t *tes
 // registers as a service; then the bucket takes no write (its stream's largest message is one
 // byte, so the record naming the service can be neither cleared nor written over) and it registers
 // again, with a new title. The case is a registration as a person, which fails where it is
-// answered 200, or admitted before the 503, whatever principal it leaves recorded. The second case
-// is a registration as a person through a listener whose known-session store's bucket is not
-// open, over the same bus as the listener that recorded the service, which fails where such a
-// store, writing nothing, admits the registration and leaves the service standing as the
-// principal the session last registered as. The controls are a registration as the same service,
-// whose failed write leaves its own principal recorded and is answered 200, and a registration as
-// a person through a bucket that takes the write, each admitted with its new title.
+// answered 200, or admitted before the 503, whatever principal it leaves recorded. The controls
+// are a registration as the same service, whose failed write leaves its own principal recorded and
+// is answered 200, and a registration as a person through a bucket that takes the write, each
+// admitted with its new title. A listener whose bucket is not open is
+// TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning's.
 func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing.T) {
 	const sessionID = "ses_gate_registration_unrecorded"
 	for _, row := range []struct {
 		name      string
 		refused   bool
-		notOpen   bool
 		registers func(rig *gateRig) string
 		status    int
 		stored    string
@@ -665,40 +712,25 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 			refused:   true,
 			registers: func(rig *gateRig) string { return rig.personToken(sessionID, gatePerson) },
 			status:    http.StatusServiceUnavailable,
-			stored:    gateService,
-		},
-		{
-			name:      "case: the session registers again as a person through a listener whose known-session bucket is not open",
-			notOpen:   true,
-			registers: func(rig *gateRig) string { return rig.personToken(sessionID, gatePerson) },
-			status:    http.StatusServiceUnavailable,
-			stored:    gateService,
+			stored:    "service:" + gateService,
 		},
 		{
 			name:      "control: the session registers again as the same service and the bucket takes no write",
 			refused:   true,
 			registers: func(rig *gateRig) string { return rig.serviceToken(sessionID, gateService) },
 			status:    http.StatusOK,
-			stored:    gateService,
+			stored:    "service:" + gateService,
 		},
 		{
 			name:      "control: the session registers again as a person and the bucket takes the write",
 			registers: func(rig *gateRig) string { return rig.personToken(sessionID, gatePerson) },
 			status:    http.StatusOK,
-			stored:    gatePerson,
+			stored:    "person:" + gatePerson,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newGateRig(t)
 			rig.registerOn(t, rig.serviceToken(sessionID, gateService), sessionID)
-			known := rig.deps.known
-			if row.notOpen {
-				// The routes read the deps at each request, so the registration below is served as
-				// a listener whose store has no bucket open serves it; the store the record is read
-				// from below is the open one, over the same bucket.
-				rig.deps.known = &session.KnownSessions{}
-				t.Cleanup(func() { rig.deps.known = known })
-			}
 			if row.refused {
 				js := rig.harness.client.JS()
 				info, err := js.StreamInfo("KV_" + bus.KnownSessionBucket)
@@ -710,17 +742,7 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 					t.Fatalf("make the known-session stream take no write: %v", err)
 				}
 			}
-			body, err := json.Marshal(map[string]any{
-				"session_id":      sessionID,
-				"self_subscribed": true,
-				"title":           "a session registered again",
-				"topics":          []string{},
-				"delivery":        map[string]any{"consumer": true, "epoch": "epoch-" + sessionID},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			recorder := rig.postOn(t, row.registers(rig), "/v1/interests/subscribe", string(body))
+			recorder := rig.registerTitled(t, row.registers(rig), sessionID, "a session registered again")
 			if recorder.Code != row.status {
 				t.Errorf("the registration answered %d %s; want %d", recorder.Code, recorder.Body.String(), row.status)
 			}
@@ -734,7 +756,7 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 			if entry, err := rig.harness.sessions.Get(sessionID); err != nil || entry.Title != wantTitle {
 				t.Errorf("the session's entry after the registration = %+v, %v; want the title %q", entry, err, wantTitle)
 			}
-			record, found, err := known.Read(t.Context(), sessionID)
+			record, found, err := rig.deps.known.Read(t.Context(), sessionID)
 			if err != nil || !found {
 				t.Fatalf("read %s's record from the bucket's leader: found %t, %v", sessionID, found, err)
 			}
@@ -743,6 +765,128 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 			}
 		})
 	}
+}
+
+// registerTitled registers sessionID in consumer mode with title, presenting token, and answers
+// what the route answered, as it came.
+func (rig *gateRig) registerTitled(t *testing.T, token, sessionID, title string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"session_id":      sessionID,
+		"self_subscribed": true,
+		"title":           title,
+		"topics":          []string{},
+		"delivery":        map[string]any{"consumer": true, "epoch": "epoch-" + sessionID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rig.postOn(t, token, "/v1/interests/subscribe", string(body))
+}
+
+// A listener whose known-session bucket is not open - its NATS grant does not carry the bucket -
+// can read and write no session's record, and no retry of a client's changes that. So it admits
+// each registration, heartbeats included, with no principal recorded, and answers it 200 with a
+// warning that says so (knownBucketNotOpenWarning), logged at most once a minute for the whole
+// listener with the count it held back; and it refuses every claim's handover: a claim through it
+// that names the session it replaces stands, is answered 200 with a warning naming why, and writes
+// no handover record. Both sessions first register as one person through the listener whose
+// bucket is open, so the bucket holds a record of each that a handover would be judged by; then
+// the routes are served as a listener whose store has no bucket open serves them. The cases fail
+// where such a registration is answered 503 - which refuses every session's registration and
+// heartbeat on a listener whose grant lacks the bucket - or written, or answered without the
+// warning; where each registration logs its own line, or the line after a minute does not count
+// the one held back; and where the claim is answered 503 or writes a handover record. The control
+// is the next registration through the store whose bucket is open, answered 200 with no such
+// warning and its principal recorded.
+func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning(t *testing.T) {
+	const line = "listener registered a session with no principal recorded"
+	rig := newGateRig(t)
+	token := rig.personToken(gateClaimant, gatePerson)
+	rig.registerOn(t, rig.personToken(gateReplaced, gatePerson), gateReplaced)
+	rig.registerOn(t, token, gateClaimant)
+	open := rig.deps.known
+	// The routes read the deps at each request, so what follows is served as a listener whose
+	// store has no bucket open serves it; the records are read from the open store, over the same
+	// bucket.
+	rig.deps.known = &session.KnownSessions{}
+	t.Cleanup(func() { rig.deps.known = open })
+	// No other test runs beside this one (it is not parallel), so the listener-wide minute starts
+	// here.
+	knownBucketNotOpenWarnings.mu.Lock()
+	knownBucketNotOpenWarnings.last, knownBucketNotOpenWarnings.held = time.Time{}, 0
+	knownBucketNotOpenWarnings.mu.Unlock()
+	before, found, err := open.Read(t.Context(), gateClaimant)
+	if err != nil || !found || before.Principal != "person:"+gatePerson {
+		t.Fatalf("%s's record before the registrations = %+v, found %t, %v; the case needs it naming person:%s", gateClaimant, before, found, err, gatePerson)
+	}
+	logged := func() []string {
+		var lines []string
+		for _, entry := range strings.Split(rig.harness.logs.String(), "\n") {
+			if strings.Contains(entry, line) {
+				lines = append(lines, entry)
+			}
+		}
+		return lines
+	}
+	registerWarned := func(t *testing.T, title string) {
+		t.Helper()
+		recorder := rig.registerTitled(t, token, gateClaimant, title)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("the registration answered %d %s; want 200", recorder.Code, recorder.Body.String())
+		}
+		var answer listenerwire.SubscribeResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode the registration's answer %s: %v", recorder.Body.String(), err)
+		}
+		if !slices.Contains(answer.Warnings, knownBucketNotOpenWarning) {
+			t.Errorf("the registration's warnings are %q; want %q", answer.Warnings, knownBucketNotOpenWarning)
+		}
+		if entry, err := rig.harness.sessions.Get(gateClaimant); err != nil || entry.Title != title {
+			t.Errorf("the session's entry after the registration = %+v, %v; want the title %q", entry, err, title)
+		}
+	}
+
+	t.Run("case: each registration is admitted with the warning, and writes no record", func(t *testing.T) {
+		registerWarned(t, "registered with the bucket shut")
+		registerWarned(t, "a heartbeat with the bucket shut")
+		after, found, err := open.Read(t.Context(), gateClaimant)
+		if err != nil || !found || after.Principal != before.Principal || after.LastSeen != before.LastSeen || after.Title != before.Title {
+			t.Errorf("%s's record after the registrations = %+v, found %t, %v; want it as it was, %+v", gateClaimant, after, found, err, before)
+		}
+	})
+	t.Run("case: the listener logs the registrations once a minute, counting what it held back", func(t *testing.T) {
+		if lines := logged(); len(lines) != 1 || !strings.Contains(lines[0], `"level":"WARN"`) || !strings.Contains(lines[0], `"held_back":0`) {
+			t.Fatalf("the listener logged %q for two registrations within a minute; want one WARN line holding back none", lines)
+		}
+		knownBucketNotOpenWarnings.mu.Lock()
+		knownBucketNotOpenWarnings.last = time.Now().Add(-2 * time.Minute)
+		knownBucketNotOpenWarnings.mu.Unlock()
+		registerWarned(t, "registered a minute later")
+		if lines := logged(); len(lines) != 2 || !strings.Contains(lines[1], `"held_back":1`) {
+			t.Errorf("the listener logged %q once a minute had passed; want a second line holding back one", lines)
+		}
+	})
+	t.Run("case: a claim naming the session it replaces stands, warns why, and hands nothing over", func(t *testing.T) {
+		warning, warned := gateWarning(rig.claimOn(t, token))
+		if !warned || !strings.Contains(warning, knownBucketNotOpenRefusal) {
+			t.Errorf("the claim's warning is %q; want one naming %s and saying %q", warning, gateReplaced, knownBucketNotOpenRefusal)
+		}
+		if n := rig.handoverRecords(t, gateRole, gateReplaced, gateClaimant); n != 0 {
+			t.Errorf("role %s holds %d handover records from %s to %s; want none", gateRole, n, gateReplaced, gateClaimant)
+		}
+	})
+	t.Run("control: a registration through the store whose bucket is open records its principal, with no such warning", func(t *testing.T) {
+		rig.deps.known = open
+		recorder := rig.registerTitled(t, token, gateClaimant, "registered with the bucket open")
+		if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "is not recorded, since this listener's known-session bucket") {
+			t.Fatalf("the registration answered %d %s; want 200 with no warning of a shut bucket", recorder.Code, recorder.Body.String())
+		}
+		after, found, err := open.Read(t.Context(), gateClaimant)
+		if err != nil || !found || after.Title != "registered with the bucket open" || after.Principal != "person:"+gatePerson || !after.PrincipalRecorded {
+			t.Errorf("%s's record after the registration = %+v, found %t, %v; want it written, naming person:%s", gateClaimant, after, found, err, gatePerson)
+		}
+	})
 }
 
 // A handover record waits for its replaced session for as long as that session stays live: a pass

@@ -133,6 +133,11 @@ type Credential struct {
 	// account (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in
 	// on, which writes nothing. Empty for every other credential.
 	ProjectScope string
+	// Principal is who a broker-issued token acts for, in the form that names its kind and scope
+	// (ciphertoken.Caller.Principal): the one the Envoy listener records a registration on that
+	// token as, which a successor's reply is held to (api's callerPrincipal and
+	// actsForSuccessorPrincipal). Empty for every other credential.
+	Principal string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a

@@ -53,6 +53,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -419,29 +420,29 @@ func publishHandover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 	return nil
 }
 
-// requestPrincipal is the principal r's credential acts for: a broker token's person, else the
-// service it names (brokerCaller, ciphertoken.Caller); for a request with no broker token, the
-// principal an identity token proved (verifiedPrincipal), a projected service account's subject
-// or a Google account; and empty for a credential that proves none, the shared token and a
-// request on an open /v1. The registration route records it as the session's principal
-// (session.KnownSession.Principal), and the claim route holds a handover to it (handoverRefusal).
+// requestPrincipal is the principal r's credential acts for, in the one form that names the kind
+// of credential too (ciphertoken.Caller.Principal): a broker token's, which tells a person's own
+// token from a token an operator's entry gave that person for a project, and from a service; for
+// a request with no broker token, the identity token's subject (verifiedPrincipal,
+// ciphertoken.IdentityPrincipal), a projected service account's or a Google account's; and empty
+// for a credential that proves none, the shared token and a request on an open /v1. The
+// registration route records it as the session's principal (session.KnownSession.Principal), and
+// the claim route holds a handover to it (handoverRefusal).
 func requestPrincipal(r *http.Request) string {
 	if caller, ok := brokerCaller(r); ok {
-		if caller.Person != "" {
-			return caller.Person
-		}
-		return caller.Service
+		return caller.Principal()
 	}
-	return verifiedPrincipal(r)
+	return ciphertoken.IdentityPrincipal(verifiedPrincipal(r))
 }
 
 // errHandoverUnjudged wraps a claim that landed and named the session it replaces when the
 // listener could not read whether the handover is one principal's (handoverRefusal): the
-// known-session store's bucket is not open, its leader did not answer, or the claimant's own
-// registration is not recorded with its principal yet. The claim stands, and the claim route
-// answers 503 with Retry-After: 1, as for a handover record that did not store, so the client
-// claims again and the handover is judged then, rather than refused for good on a read that did
-// not answer.
+// known-session bucket's leader did not answer, or the claimant's own registration is not
+// recorded with its principal yet. The claim stands, and the claim route answers 503 with
+// Retry-After: 1, as for a handover record that did not store, so the client claims again and the
+// handover is judged then, rather than refused for good on a read that did not answer. A bucket
+// this listener cannot open is no such read: it stays shut until the listener's grant covers it,
+// so the claim is refused instead (handoverRefusal).
 var errHandoverUnjudged = errors.New("the claim landed, but whether this claim may hand over the messages of the session it replaces could not be read, so claim again")
 
 // handoverReadBound bounds the reads of the two known-session records a handover is judged by
@@ -465,21 +466,23 @@ const handoverReadBound = roleHolderReadTimeout
 // this rule any session could name a stopped session - a person's among them - and read its
 // messages. A Legion claim's fresh session and the session it replaces register on credentials of
 // one principal, so that handover stands. An agent session that names a person's session is
-// refused by design: its credential acts for its service, or for another principal, and not for
-// the person. A credential that proves no principal acts for any session on every route already,
-// and may name a session whose last registration proved none either, which is every handover on a
-// listener its clients reach with no credential; it may not name a session that registered as a
-// principal.
+// refused by design: its credential acts for its service, for another principal, or for that
+// person on a project an operator's entry names, which is another principal than the person's own
+// token (ciphertoken.Caller.Principal). A credential that proves no principal acts for any session
+// on every route already, and may name a session whose last registration proved none either,
+// which is every handover on a listener its clients reach with no credential; it may not name a
+// session that registered as a principal.
 //
 // replaced's record decides a refusal for good: a session the bucket holds no record of (none
 // registered within the retention), one whose record a listener of an earlier build wrote last,
-// which names no principal anybody recorded (session.KnownSession.PrincipalRecorded), and a
-// listener with no known-session store at all (known nil, a connection with no JetStream) are
-// refused, since nothing says which principal replaced last registered as. What only a later
-// claim can read is the error, wrapping errHandoverUnjudged: a store whose bucket is not open
-// (a hub whose grant does not carry the bucket yet among them), a read the leader did not answer,
-// and a claimant whose own registration is not recorded with its principal - a registration whose
-// record did not store, or one an earlier build took - which its next registration writes.
+// which names no principal anybody recorded (session.KnownSession.PrincipalRecorded), a listener
+// with no known-session store at all (known nil, a connection with no JetStream), and a store
+// whose bucket is not open (session.ErrKnownSessionsUnavailable: a listener whose NATS grant does
+// not carry the bucket, whose registrations record no principal) are refused, since nothing says
+// which principal replaced last registered as. What only a later claim can read is the error,
+// wrapping errHandoverUnjudged: a read the leader did not answer, and a claimant whose own
+// registration is not recorded with its principal - a registration whose record did not store,
+// or one an earlier build took - which its next registration writes.
 // Dispatch lets a session answer a delivery attempt of the session it replaced only where a
 // handover record names it and the two still register as one principal (sessionSuccessorsHandler),
 // so that reply rule is held to this one too.
@@ -490,20 +493,23 @@ func handoverRefusal(ctx context.Context, r *http.Request, known *session.KnownS
 	readCtx, cancel := context.WithTimeout(ctx, handoverReadBound)
 	defer cancel()
 	previous, found, err := known.Read(readCtx, replaced)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", errHandoverUnjudged, err)
-	}
 	switch {
+	case errors.Is(err, session.ErrKnownSessionsUnavailable):
+		return knownBucketNotOpenRefusal, nil
+	case err != nil:
+		return "", fmt.Errorf("%w: %w", errHandoverUnjudged, err)
 	case !found:
 		return fmt.Sprintf("this listener holds no record of the principal %s last registered as", replaced), nil
 	case !previous.PrincipalRecorded:
 		return fmt.Sprintf("%s last registered through a listener of an earlier build, which recorded no principal for it", replaced), nil
 	}
 	own, found, err := known.Read(readCtx, claimant)
-	if err != nil {
+	switch {
+	case errors.Is(err, session.ErrKnownSessionsUnavailable):
+		return knownBucketNotOpenRefusal, nil
+	case err != nil:
 		return "", fmt.Errorf("%w: %w", errHandoverUnjudged, err)
-	}
-	if !found || !own.PrincipalRecorded {
+	case !found || !own.PrincipalRecorded:
 		return "", fmt.Errorf("%w: the registration of %s is not recorded with its principal yet", errHandoverUnjudged, claimant)
 	}
 	principal := requestPrincipal(r)
@@ -514,6 +520,47 @@ func handoverRefusal(ctx context.Context, r *http.Request, known *session.KnownS
 		return fmt.Sprintf("this claim's credential acts for another principal than the one %s last registered as", replaced), nil
 	}
 	return "", nil
+}
+
+// knownBucketNotOpenRefusal is why handoverRefusal refuses every claim's handover on a listener
+// whose known-session bucket is not open: it can read no principal a session registered as, and
+// records none for the registrations it takes (subscribeHandler).
+const knownBucketNotOpenRefusal = "this listener's known-session bucket (envoy_known_sessions) is not open, so it can read no principal any session registered as, and records none"
+
+// knownBucketNotOpenWarning is the warning a registration through a listener whose known-session
+// bucket is not open is answered with (subscribeHandler): the registration is admitted, but no
+// principal is recorded for it, and the listener refuses every claim's handover until the bucket
+// opens (knownBucketNotOpenRefusal).
+const knownBucketNotOpenWarning = "this registration's principal is not recorded, since this listener's known-session bucket (envoy_known_sessions) is not open: until it opens, no claim through this listener is handed the unread messages of the session it replaces"
+
+// knownBucketNotOpenWarnings holds back warnKnownBucketNotOpen's line for a minute after each one,
+// counting what it held back: the bucket stays shut until the listener's grant covers it, and
+// every registration and heartbeat meets it meanwhile.
+var knownBucketNotOpenWarnings struct {
+	mu   sync.Mutex
+	last time.Time
+	held int
+}
+
+// warnKnownBucketNotOpen logs a registration of sessionID admitted with no principal recorded
+// because the known-session bucket is not open, at most once a minute for the whole listener,
+// naming the bucket, the session and how many such registrations it held back since its last line.
+func warnKnownBucketNotOpen(logger *logging.Logger, sessionID string) {
+	w := &knownBucketNotOpenWarnings
+	w.mu.Lock()
+	now := time.Now()
+	if !w.last.IsZero() && now.Sub(w.last) < time.Minute {
+		w.held++
+		w.mu.Unlock()
+		return
+	}
+	held := w.held
+	w.last, w.held = now, 0
+	w.mu.Unlock()
+	logger.Warn("listener registered a session with no principal recorded: its known-session bucket is not open, so it hands over no replaced session's messages until the bucket opens",
+		slog.String("bucket", bus.KnownSessionBucket),
+		slog.String("session_id", sessionID),
+		slog.Int("held_back", held))
 }
 
 // handoverRefusedWarning is the warning a claim of role that named replaced as the session it

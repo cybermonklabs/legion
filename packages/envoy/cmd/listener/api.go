@@ -2608,7 +2608,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					handoverErr = err
 				case why != "":
 					handoverRefused = handoverRefusedWarning(body.Role, replaced, tries.replaced == replaced, why)
-					logger.Info("listener role claim hands over no message of the session it replaces: the claim and the two sessions' last registrations do not name one principal",
+					logger.Info("listener role claim hands over no message of the session it replaces: the rule that holds a handover to one principal refused it, for the reason logged",
 						slog.String("role", body.Role),
 						slog.String("previous_session_id", replaced),
 						slog.String("session_id", body.SessionID),
@@ -3444,12 +3444,21 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// read name it, for a principal it no longer acts for. The admission clears only the
 		// principal, by a compare-and-swap at the bucket's leader, and keeps the rest of the
 		// record, so a registration refused below leaves its session known as it was
-		// (session.KnownSessions.AdmitRegistration). A record that could not be read or cleared,
-		// and a store whose bucket is not open, refuse the registration 503 with Retry-After: 1
-		// with nothing admitted, and the client registers again. The revision the admission read
-		// or wrote is the one the registration's own record write is fenced on, below.
-		admission, err := d.known.AdmitRegistration(ctx, body.SessionID, requestPrincipal(r))
-		if err != nil {
+		// (session.KnownSessions.AdmitRegistration). A record that could not be read or cleared
+		// refuses the registration 503 with Retry-After: 1 with nothing admitted, and the client
+		// registers again. The revision the admission read or wrote is the one the registration's
+		// own record write is fenced on, below.
+		//
+		// A store whose bucket is not open (session.ErrKnownSessionsUnavailable) can read and
+		// write no record: its NATS grant does not carry the bucket, which no retry of the client's
+		// changes. Such a registration is admitted with no principal recorded, and answered with a
+		// warning that says so (knownBucketNotOpenWarning), and this listener refuses every
+		// claim's handover while its bucket stays shut (handoverRefusal), as the base did before
+		// any registration recorded a principal.
+		principal := requestPrincipal(r)
+		admission, err := d.known.AdmitRegistration(ctx, body.SessionID, principal)
+		knownNotOpen := errors.Is(err, session.ErrKnownSessionsUnavailable)
+		if err != nil && !knownNotOpen {
 			logger.Warn("listener refused a registration whose principal it could not record first",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
 			w.Header().Set("Retry-After", "1")
@@ -3698,8 +3707,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// session as the one it replaces is held to (handoverRefusal): the session binding above
 		// refused a broker token naming any other session, so a principal is recorded only from
 		// this session's own credential or from one that acts for every session. A record naming
-		// another principal had its principal cleared before the registration was admitted, and a
-		// store whose bucket is not open refused it there (session.KnownSessions.AdmitRegistration).
+		// another principal had its principal cleared before the registration was admitted.
 		// The write is a compare-and-swap at exactly the revision that admission read or wrote: a
 		// record written since - by another registration of this session, through any listener,
 		// whose admission cleared this principal or whose write recorded its own, or by an interest
@@ -3712,14 +3720,24 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// gate would read another principal, or none, as the one this session last registered as,
 		// so it is answered 503 with Retry-After: 1, and the client registers again until the
 		// record names the principal it registers as; everything this registration wrote before it
-		// stands, and its next attempt, admitted afresh, writes the same again.
-		if err := d.known.RecordRegistrationWithin(ctx, admission, session.KnownSession{
-			SessionID:    body.SessionID,
-			Title:        body.Title,
-			Capabilities: body.Capabilities,
-			Topics:       item.Topics,
-			Principal:    requestPrincipal(r),
-		}); err != nil {
+		// stands, and its next attempt, admitted afresh, writes the same again. A store whose
+		// bucket is not open, at the admission or now, writes nothing: the registration is
+		// answered with knownBucketNotOpenWarning and logged at most once a minute.
+		if !knownNotOpen {
+			err = d.known.RecordRegistrationWithin(ctx, admission, session.KnownSession{
+				SessionID:    body.SessionID,
+				Title:        body.Title,
+				Capabilities: body.Capabilities,
+				Topics:       item.Topics,
+				Principal:    principal,
+			})
+			knownNotOpen = errors.Is(err, session.ErrKnownSessionsUnavailable)
+		}
+		switch {
+		case knownNotOpen:
+			warnings = append(warnings, knownBucketNotOpenWarning)
+			warnKnownBucketNotOpen(logger, body.SessionID)
+		case err != nil:
 			logger.Warn("listener known-session record not written",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
 			if errors.Is(err, session.ErrPrincipalUnrecorded) {
