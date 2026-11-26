@@ -2389,7 +2389,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
-			"members_owed", "priority",
+			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from",
 			"merge_number", "merge_head", "merge_sha", "merge_base", "merge_repo", "merged_at", "close_wait_since",
 			"close_wait", "closed_on_checks_at", "next_change", "next_changes", "merger_completion_owed", "standing_told_at", "tree_generation"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},

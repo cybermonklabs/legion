@@ -18,8 +18,13 @@ import (
 // through everything before it whatever lands beside it.
 const membersOwedVersion = 20261123224717
 
-// issuePriorityVersion is the migration that adds issues.priority, which PutIssue writes.
-const issuePriorityVersion = 20261124060500
+// issuePriorityVersion is the migration that adds issues.priority, and p0StartVersion the one that
+// adds issues.resolved_known, resolved_priority and priority_from (dispatch://INFRA-5636), each of
+// which PutIssue writes.
+const (
+	issuePriorityVersion = 20261124060500
+	p0StartVersion       = 20261125181828
+)
 
 // membersOwedRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
@@ -42,17 +47,18 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, membersOwedVersion-1)
-	// The seed goes through this release's PutIssue, which writes issues.priority, a column the
-	// waiting line's issue priority (20261124060500) adds above this migration, and the close
-	// wait's columns, which the done-by-checks migration (20261125004932) adds. Those two are
-	// applied with the seed's schema, and Migrate, which decides each migration on its own row,
-	// then applies this one; none of them reads or writes another's column.
+	// The seed goes through this release's PutIssue, which writes issues.priority (the waiting line's
+	// issue priority, 20261124060500), the close wait's columns (the done-by-checks migration,
+	// 20261125004932) and the resolved priority's three columns (the P0 start, 20261125181828), each
+	// adding its columns above this migration. Those are applied with the seed's schema, and Migrate,
+	// which decides each migration on its own row, then applies this one; none reads or writes
+	// another's column.
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
 	for _, migration := range all {
-		if migration.Version != issuePriorityVersion && migration.Version != doneByChecksVersion {
+		if migration.Version != issuePriorityVersion && migration.Version != doneByChecksVersion && migration.Version != p0StartVersion {
 			continue
 		}
 		if _, err := store.apply(ctx, migration); err != nil {

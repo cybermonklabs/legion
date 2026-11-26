@@ -72,7 +72,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // an assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
 // runs reads the columns but the back-fill of 20261111045636_experiment_assignments. The merge
 // snapshot reads as the empty Merge where none stands.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, ` +
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from, ` +
 	`coalesce(merge_number, 0), coalesce(merge_head, ''), coalesce(merge_sha, ''), coalesce(merge_base, ''), coalesce(merge_repo, ''), merged_at, ` +
 	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), next_changes, merger_completion_owed, standing_told_at, tree_generation`
 
@@ -301,7 +301,8 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// record's like every column above it, written whole by both halves, so a registration that
 	// finds no ancestor to be a view on writes the view away. The priority is written as
 	// Dispatch's own level, the record's Priority.Level, null for NoPriority, as issueColumns
-	// reads it back.
+	// reads it back, and the resolved priority beside it the same way, with resolved_known and
+	// priority_from: its level is null wherever Dispatch sent none, as the column's check holds it.
 	// The merge snapshot (merge_number, merge_head, merge_sha, merge_base, merge_repo, merged_at)
 	// is PutMergeSnapshot's alone, so neither half names it: a whole new record of a merged issue,
 	// a re-entered child's among them, keeps its merge. The wait's columns (close_wait_since to
@@ -313,6 +314,10 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// keeps its own. Every other update leaves it, so a root's next change, which raises the root's
 	// generation, leaves the tree's run, and only a rerun of the whole tree raises it
 	// (ClearTreeGeneration).
+	var resolvedLevel *int
+	if issue.Resolved.Known {
+		resolvedLevel = issue.Resolved.Priority.Level()
+	}
 	var closeWait any
 	if len(issue.CloseWait) > 0 {
 		closeWait = []byte(issue.CloseWait)
@@ -325,11 +330,13 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, told_parent, view_of,
 		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at, priority,
+		resolved_known, resolved_priority, priority_from,
 		close_wait_since, close_wait, closed_on_checks_at, next_change, next_changes, merger_completion_owed, standing_told_at, tree_generation)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::text, ''),
 		$32, $33, $34, $35, nullif($36::text[], '{}'), $37, $38,
-		$39, $40, $41, $42, $43, $44, $45, coalesce(nullif($46::bigint, 0), $7))
+		$39, $40, $41,
+		$42, $43, $44, $45, $46, $47, $48, coalesce(nullif($49::bigint, 0), $7))
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -346,7 +353,8 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		children_wait_start = excluded.children_wait_start, children_wait_task = excluded.children_wait_task,
 		children_wait_reason = excluded.children_wait_reason, children_wait_since = excluded.children_wait_since,
 		children_wait_children = excluded.children_wait_children, children_waited_at = excluded.children_waited_at,
-		priority = excluded.priority,
+		priority = excluded.priority, resolved_known = excluded.resolved_known, resolved_priority = excluded.resolved_priority,
+		priority_from = excluded.priority_from,
 		close_wait_since = excluded.close_wait_since, close_wait = excluded.close_wait, closed_on_checks_at = excluded.closed_on_checks_at,
 		next_change = excluded.next_change, next_changes = excluded.next_changes, merger_completion_owed = excluded.merger_completion_owed,
 		standing_told_at = excluded.standing_told_at,
@@ -357,7 +365,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.ViewOf,
 		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, childrenWaitChildren, issue.ChildrenWaitedAt,
-		issue.Priority.Level(),
+		issue.Priority.Level(), issue.Resolved.Known, resolvedLevel, issue.Resolved.From,
 		issue.CloseWaitSince, closeWait, issue.ClosedOnChecksAt, nextChange, issue.NextChanges, issue.MergerCompletionOwed, issue.StandingToldAt,
 		int64(issue.TreeGeneration),
 	)
@@ -574,7 +582,7 @@ func scanIssue(row scanner) (*Issue, error) {
 	var since, declaredAt, treeStalledToldAt, releasedForWaitAt, childrenWaitSince, childrenWaitedAt *time.Time
 	var childrenWaitStart, childrenWaitTask, childrenWaitReason *string
 	var childrenWaitChildren []string
-	var priority *int
+	var priority, resolvedPriority *int
 	var mergedAt, closeWaitSince, closedOnChecksAt, standingToldAt *time.Time
 	var closeWait []byte
 	var nextChange, treeGeneration int64
@@ -584,7 +592,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
-		&childrenWaitedAt, &issue.MembersOwed, &priority,
+		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From,
 		&issue.Merge.Number, &issue.Merge.Head, &issue.Merge.SHA, &issue.Merge.Base, &issue.Merge.Repo, &mergedAt,
 		&closeWaitSince, &closeWait, &closedOnChecksAt, &nextChange, &issue.NextChanges, &issue.MergerCompletionOwed, &standingToldAt,
 		&treeGeneration); err != nil {
@@ -603,8 +611,10 @@ func scanIssue(row scanner) (*Issue, error) {
 		return nil, fmt.Errorf("issue %s has negative tree generation %d", issue.Key, treeGeneration)
 	}
 	issue.TreeGeneration = uint64(treeGeneration)
-	// The column's check holds it to Dispatch's 0 to 3 or null, each of which DispatchPriority reads.
+	// The columns' checks hold both to Dispatch's 0 to 3 or null, each of which DispatchPriority
+	// reads, and the resolved one to null wherever Dispatch sent none.
 	issue.Priority, _ = DispatchPriority(priority)
+	issue.Resolved.Priority, _ = DispatchPriority(resolvedPriority)
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()
 	}
