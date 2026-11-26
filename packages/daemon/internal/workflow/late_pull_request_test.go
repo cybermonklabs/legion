@@ -259,8 +259,12 @@ func TestALateOpenedOfAPullRequestAnEarlierGenerationClearedRecordsNothing(t *te
 			fact: lateOpened("head-a", lateApplied.Add(-time.Hour))},
 		{name: "a closed pull request's late reopen", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
 			fact: lateReopened("head-b", lateApplied.Add(-30*time.Minute))},
+		// The opened names its head's repository, as GitHub's does, so it reaches the cleared clock's
+		// fence: one that names none is refused before it (pullRequestOpened, as a fork's is), and the
+		// case would pass whatever that fence did.
 		{name: "a late opened under the name the repository moved to", seed: record.PullRequestClosed, engine: renamedEngine(renamedLegion),
-			fact: intake.PullRequestOpened{Repo: "cybermonklabs/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)}},
+			fact: intake.PullRequestOpened{Repo: "cybermonklabs/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-a", HeadRepo: "cybermonklabs/legion",
+				UpdatedAt: lateApplied.Add(-time.Hour)}},
 		{name: "a reopen after the clear", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
 			fact: lateReopened("head-d", lateApplied.Add(time.Hour)), reopened: true},
 	} {
@@ -307,6 +311,9 @@ func TestALateOpenedUnderTheNewNameOfAPullRequestClearedUnderTheOldRecordsNothin
 		return nil
 	})
 	apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	// The opened names its head's repository, as GitHub's does, so it reaches the cleared clock's
+	// fence: one that names none is refused before it (pullRequestOpened, as a fork's is), and the
+	// test would pass whatever that fence did.
 	lateChangesNothing(t, pool, apply, "late", intake.PullRequestOpened{Repo: to, Number: 42, Branch: "legion/LEGION-208",
-		HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)})
+		HeadSHA: "head-a", HeadRepo: to, UpdatedAt: lateApplied.Add(-time.Hour)})
 }
