@@ -1140,11 +1140,7 @@ test("a landing dropped to the body in the frame after the commit takes the focu
       (document.activeElement as HTMLElement).blur();
     });
     expect(document.body).toHaveFocus();
-    const painted = Promise.withResolvers<void>();
-    requestAnimationFrame(() => painted.resolve());
-    await act(async () => {
-      await painted.promise;
-    });
+    await act(nextFrame);
     expect(rowBox("CORE-14")).toHaveFocus();
   } finally {
     answered();
@@ -1204,12 +1200,9 @@ test("a landing the view moved away from under the reader is shown whole again b
 // again from the rows the list holds now: the nearest row before it that the reader can see takes
 // the focus, shown whole by the least scroll. Here the window ends at 150 px, which leaves
 // CORE-14's mark below it and cuts CORE-11's.
-// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): the box takes the room the bar's foot
-// had back from it several frames after the marks clear - at 390x664 the project List's box still
-// ended at 494 two frames after the landing and at 474 later (builds Jobs
-// `infra-3135-infra-3135-r29q-probe-7r2kg` and `-r29r-probe-c6gtz`) - so a reading whose sight is
-// not the one before it owes another, however whole the landing looks in it.
-test("a landing is read again while the sight around it is still moving", async () => {
+// INFRA-3135, round 29: the readings are owed only until the reader's own next action
+// (`READER_ACTS`), because where they are then is theirs.
+test("a key of the reader's own ends the readings", async () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
   const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
@@ -1221,27 +1214,95 @@ test("a landing is read again while the sight around it is still moving", async 
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
     );
     expect(rowBox("CORE-14")).toHaveFocus();
-    // Two frames in which the landing stands whole, as the List's box did while it still held the
-    // bar's room, and then the sight the box leaves behind.
-    for (let frame = 0; frame < 2; frame++) {
-      const painted = Promise.withResolvers<void>();
-      requestAnimationFrame(() => painted.resolve());
-      await act(async () => {
-        await painted.promise;
-      });
-    }
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "j" }));
+    // The box's edges move in after that key, and no reading of this landing is left to see it.
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
-    const painted = Promise.withResolvers<void>();
-    requestAnimationFrame(() => painted.resolve());
-    await act(async () => {
-      await painted.promise;
-    });
-    // CORE-14's mark stands at 200 to 300 under a window that ends at 150, so the reading passes it
-    // over and hands the place off again: CORE-11, at 100 to 200, is the nearest before it in sight.
-    expect(focusedName()).toBe("Select CORE-11");
+    await act(nextFrame);
+    await act(nextFrame);
+    expect(rowBox("CORE-14")).toHaveFocus();
   } finally {
     answered();
     disarm();
+    if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", height);
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 29: a landing nothing settles costs `READINGS` frames and no more, so the
+// readings of a landing the reader never answers stop of their own accord.
+test("the readings of a landing stop at the bound", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(rowBox("CORE-14")).toHaveFocus();
+    for (let frame = 0; frame < 70; frame++) await act(nextFrame);
+    // The readings have stopped, so a box that moves now moves nothing: the reader's own next
+    // action is the only thing left that answers for this landing.
+    const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    try {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
+      await act(nextFrame);
+      expect(rowBox("CORE-14")).toHaveFocus();
+    } finally {
+      if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
+      else Object.defineProperty(window, "innerHeight", height);
+    }
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): the box takes the room the bar's foot
+// had back from it several frames after the marks clear - at 390x664 the project List's box still
+// ended at 494 two frames after the landing and at 474 later (builds Jobs
+// `infra-3135-infra-3135-r29q-probe-7r2kg` and `-r29r-probe-c6gtz`) - so the landing is read in
+// every frame to `READINGS` of them, however whole it looks in the frames before.
+test("a landing is read again while the sight around it is still moving", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  // The scroll the landing spent on a mark this reading passes over goes back to the reader.
+  const given: ScrollToOptions[] = [];
+  const back = spyOn(window, "scrollTo").mockImplementation(((options: ScrollToOptions) => {
+    given.push(options);
+  }) as typeof window.scrollTo);
+  let answered: () => void = () => undefined;
+  const stood = { left: window.scrollX, top: window.scrollY };
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(rowBox("CORE-14")).toHaveFocus();
+    // Two frames in which the landing stands whole, as the List's box did while it still held the
+    // bar's room, and then the sight the box leaves behind.
+    for (let frame = 0; frame < 2; frame++) {
+      await act(nextFrame);
+    }
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
+    await act(nextFrame);
+    // CORE-14's mark stands at 200 to 300 under a window that ends at 150, so the reading passes it
+    // over and hands the place off again: CORE-11, at 100 to 200, is the nearest before it in sight.
+    expect(focusedName()).toBe("Select CORE-11");
+    // The reading gives back the scroll the landing spent before it shows the row it keeps, so the
+    // kept landing costs its own least scroll from where the reader pressed and no more.
+    expect(given).toEqual([stood]);
+  } finally {
+    answered();
+    disarm();
+    back.mockRestore();
     if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
     else Object.defineProperty(window, "innerHeight", height);
     view.unmount();
@@ -1264,17 +1325,16 @@ test("a landing with no commit after it is finished in the frame that commit pai
     pressInBar("Dismiss");
     // The host holds the press through its write, as the Inbox and the List hold theirs.
     answered = holdHandOff();
-    // The one commit: the bar goes with the marks, the rows go with the write, and the box's own
-    // edges move in with what the page draws where the bar stood.
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
+    // The one commit: the bar goes with the marks and the rows go with the write, and the landing
+    // stands on the row now at the place.
     view.rerender(
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
     );
-    const painted = Promise.withResolvers<void>();
-    requestAnimationFrame(() => painted.resolve());
-    await act(async () => {
-      await painted.promise;
-    });
+    expect(rowBox("CORE-14")).toHaveFocus();
+    // The box's own edges then move in with what the page draws where the bar stood, in no commit
+    // of its own: the frame that paints the commit is where the reading finds it.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
+    await act(nextFrame);
     // CORE-14's mark stands at 200 to 300 under a window that ends at 150; CORE-11's, at 100 to
     // 200, is the nearest before it that the reader can see.
     expect(focusedName()).toBe("Select CORE-11");

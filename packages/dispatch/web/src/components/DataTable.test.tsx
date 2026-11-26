@@ -634,9 +634,9 @@ test("walks the rows by the attribute and the keymap scope the caller gives", as
   expect(rows[0]).toHaveFocus();
 });
 
-/** The same words for a table drawn beside a page's main one, as the Delivery page draws its pull
- *  requests (`features/delivery/PRList.tsx`): the same keys under the same ids, answered only from
- *  one of this table's own rows. */
+/** The same words for a table walked only from its own rows, as the Delivery page's pull requests
+ *  are (`features/delivery/PRList.tsx`, whose page answers the arrows itself): the same keys under
+ *  the same ids, answered only while the focus stands in one of this table's own rows. */
 const BESIDE_NAMES: DataTableNames = {
   ...DEPLOY_NAMES,
   keymap: { ...DEPLOY_NAMES.keymap, moveFrom: "row" },

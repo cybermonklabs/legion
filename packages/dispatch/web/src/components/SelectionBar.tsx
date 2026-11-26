@@ -32,7 +32,10 @@ import {
   outOfSight,
   pressMadeIn,
   pressOnRowMark,
+  putScrollBack,
   repeatTookFocusFrom,
+  type ScrollPlaces,
+  takeScrollOf,
   viewScrollOf,
   visibleMarkPoint,
 } from "./focus-place";
@@ -98,7 +101,8 @@ export interface MarkedList {
 /**
  * The hand-off of the selection bar's focus to a row of the list it stands over. The hook reads,
  * after each commit that draws the bar, the order of the list's rows while the row marked last is
- * in it. It answers the function a page's `returnFocus` calls first.
+ * in it. It answers `MarkedPlace`: `land`, which a page's `returnFocus` calls first, and `own`,
+ * the page's own landing on a row it had to draw.
  *
  * Where the row marked last is still listed and no press is taking it away, the function puts the
  * focus on that row's mark, out of sight or not. Where the list lists that row without drawing
@@ -134,13 +138,20 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // own closure holds the render's `shown`, which the bar's going has moved on from.
   const latest = useRef(list);
   latest.current = list;
-  // The landing the hand-off last made, until the commit that takes the press's rows and the bar
-  // away has run: the mark's row, the row marked last that chose it, and how far the view the
-  // reader saw it through was scrolled once it landed (`viewScrollOf`). Null while no landing is
-  // owed that reading.
-  const landed = useRef<{ at: number; id: string; last: string | null } | null>(null);
-  // What takes the reading back once the reader acts, and the frame that reads the landing's focus
-  // once more after the commit that finished it. Null while neither waits.
+  // The landing the hand-off last made, while its readings are owed: the mark's row, the row
+  // marked last that chose it, how far the view the reader saw it through was scrolled once it
+  // landed (`viewScrollOf`; null until the page's own landing draws its row) and where that view
+  // stood before the landing scrolled it (`takeScrollOf`). Null while no landing is owed a
+  // reading: before the first, and once the readings end at `READINGS` or at the reader's own next
+  // action.
+  const landed = useRef<{
+    at: number | null;
+    id: string;
+    last: string | null;
+    spent: ScrollPlaces;
+  } | null>(null);
+  // What takes the readings back once the reader acts, and the frame that takes the next reading.
+  // Null while neither waits.
   const watch = useRef<(() => void) | null>(null);
   const frame = useRef<number | null>(null);
   // How many readings one landing is given before it is let be: a landing nothing settles costs
@@ -171,14 +182,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // What the frame calls, held in a ref because the reading and the frame that takes the next one
   // name each other.
   const read = useRef<(() => void) | null>(null);
-  useEffect(
-    () => () => {
-      if (frame.current !== null) window.cancelAnimationFrame(frame.current);
-      watch.current?.();
-      watch.current = null;
-    },
-    []
-  );
+  useEffect(() => forget, [forget]);
   // After every commit, so the commit that takes the row away keeps the reading before it.
   useLayoutEffect(() => {
     if (!list.shown) return;
@@ -203,9 +207,9 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   //    changed around it, which is a landing the reader cannot see: it is passed over, as the
   //    hand-off passes over a row out of sight, and the place is handed off again from the rows
   //    the list holds now, ending at the list's own stop where no row in sight can take it.
-  // A mark the commit leaves cut is shown whole by the landing's own least scroll, or by the
-  // list's anchor where the landing took it with no scroll of its own (`ViewportAnchor`), and
-  // nothing here moves the view for it; a mark the reader has left for another control is theirs,
+  // A mark the commit leaves cut is shown whole by the least scroll from the view the reader
+  // pressed in, since a mark cut at an edge is not a mark they can see whole; a mark the reader
+  // has left for another control is theirs,
   // and nothing here takes the focus back from it. The reading is owed only until the reader's own
   // next action (`READER_ACTS`): a press, a key or a wheel of theirs means they have moved on, and
   // nothing of this follows them.
@@ -219,23 +223,34 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // through. A reading that finds nothing owed changes nothing, so the readings run to `READINGS`
   // of them or to the reader's own next action, whichever comes first.
   const finish = useCallback((): void => {
-    const landing = landed.current;
+    let landing = landed.current;
     if (landing === null) return;
     const list = latest.current;
     const { leaving } = list;
     const order = list.order();
-    // The press's rows and its bar are still going: read it again when they have gone, and spend
-    // none of the readings on the wait, which is as long as the write is.
-    if (list.shown || (leaving !== undefined && order.some((row) => leaving(row)))) {
+    // The press's rows are still going: read it again when they have gone, and spend none of the
+    // readings on the wait, which is as long as the write is.
+    if (leaving !== undefined && order.some((row) => leaving(row))) {
       readings.current = 0;
       again();
       return;
     }
-    const mark = list.control(landing.id);
-    if (mark === null || !mark.isConnected) {
+    // The bar is drawn with no row going: the landing is owed after a press that took rows away,
+    // so a bar standing here is a selection of the reader's own and the reading is theirs to end.
+    if (list.shown) {
       forget();
       return;
     }
+    const mark = list.control(landing.id);
+    if (mark === null || !mark.isConnected) {
+      // The page's own landing is owed on a row its window has not drawn: it draws it in a commit
+      // of its own, so the mark is read for until it stands (`own`). A mark that stood and has
+      // gone is nothing this reading can land on.
+      if (landing.at === null) again();
+      else forget();
+      return;
+    }
+    if (landing.at === null) landed.current = { ...landing, at: viewScrollOf(mark) };
     const lost = focusOnDocument();
     // A control the reader moved to is theirs, and nothing here takes the focus from it.
     if (!lost && document.activeElement !== mark) {
@@ -252,12 +267,23 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     }
     // The row the reader marked last takes the focus wherever it stands, so its own mark is shown
     // whole rather than passed over; and so is a mark the view moved away from under them.
-    if (landing.id === landing.last || viewScrollOf(mark) !== landing.at) {
-      if (lost && !focusNoScroll(mark)) {
+    // Whether the view moved under the reader is read before anything of this reading moves it.
+    const away = landing.at !== null && viewScrollOf(mark) !== landing.at;
+    // The scroll the landing spent was spent to show a mark the going then moved: the reader is
+    // owed the view they pressed in, and the least scroll from there to the landing that is kept
+    // (the architect's rule of 2026-11-25 05:3xZ). So the first reading that finds something owed
+    // gives it back, once, and every least scroll after that stands on the view the reader pressed
+    // in rather than undoing the reading before it.
+    if (landing.spent.length > 0) {
+      putScrollBack(landing.spent);
+      landing = { ...landing, spent: [] };
+      landed.current = landing;
+    }
+    if (landing.id === landing.last || away) {
+      if (!landNearest(mark, head)) {
         forget();
         return;
       }
-      landNearest(mark, head);
       again();
       return;
     }
@@ -267,7 +293,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         : markAtPlace(order, before.current, landing.last, list.control, EMPTY_LANDING, head);
     const now = place === null ? null : list.control(place);
     if (place !== null && now !== null) {
-      landMark(now, undefined, head);
+      landNearest(now, head);
+      // The landing is this row's now, so the readings that follow read it: the box can move again
+      // under it, and an engine can drop its focus as it paints the commit that drew it.
+      landed.current = { ...landing, at: viewScrollOf(now), id: place };
       again();
       return;
     }
@@ -278,19 +307,18 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   useLayoutEffect(finish);
   /** Records a landing, by the row of the mark it is on, and sees it read again as the hand-off's
    *  own landings are. */
-  const owe = (id: string, mark: HTMLElement, last: string | null): void => {
+  const owe = (id: string, at: number | null, last: string | null, spent: ScrollPlaces): void => {
     forget();
-    landed.current = { at: viewScrollOf(mark), id, last };
-    readings.current = 0;
-    const acted = () => forget();
+    landed.current = { at, id, last, spent };
+    const acted = new AbortController();
     for (const kind of READER_ACTS) {
-      document.addEventListener(kind, acted, { capture: true, passive: true });
+      document.addEventListener(kind, forget, {
+        capture: true,
+        passive: true,
+        signal: acted.signal,
+      });
     }
-    watch.current = () => {
-      for (const kind of READER_ACTS) {
-        document.removeEventListener(kind, acted, { capture: true });
-      }
-    };
+    watch.current = () => acted.abort();
     again();
   };
   const land = (): boolean => {
@@ -307,11 +335,12 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         : markAtPlace(kept, before.current, last, list.control, landing, head);
     const mark = id === null ? null : list.control(id);
     if (id !== null && mark !== null) {
+      const spent = takeScrollOf(mark);
       landMark(mark, landing.moves.get(id), head);
       // The landing is finished once this press's rows and the bar have gone (above), and the
       // reader's own next action takes that reading back: a press, a key or a wheel of theirs
       // means they have moved on, and where they are is theirs.
-      owe(id, mark, last);
+      owe(id, viewScrollOf(mark), last, spent);
       return true;
     }
     if (listed) return false;
@@ -320,18 +349,19 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   };
   return {
     land,
-    own: (id: string) => {
+    own: (id: string, spent: ScrollPlaces) => {
       const mark = list.control(id);
-      if (mark !== null) owe(id, mark, list.lastMarked());
+      owe(id, mark === null ? null : viewScrollOf(mark), list.lastMarked(), spent);
     },
   };
 }
 
-/** How many readings one landing of the bar's hand-off is given (`useLastMarkedPlace`): the rows
- *  and the bar of a press go within a second of each other - the project List's box took its foot
- *  back more than two frames after its marks cleared (builds Job
- *  `infra-3135-infra-3135-r29r-probe-c6gtz`) - and an engine drops the focus in the frame it draws
- *  the row again, so a landing nothing settles is let be after these. */
+/** How many readings one landing of the bar's hand-off is given once the press's rows have gone
+ *  (`useLastMarkedPlace`), each after a commit or in the frame a reading paints. What the readings
+ *  wait for lands within these: the project List's box took the room its foot had back more than
+ *  two frames after its marks cleared (builds Job `infra-3135-infra-3135-r29r-probe-c6gtz`), and
+ *  an engine drops the focus in the frame it draws the row again. A landing nothing settles is let
+ *  be after them, so it costs these frames and no more. */
 const READINGS = 60;
 
 /** The bar's hand-off, as the hook answers it (`useLastMarkedPlace`). */
@@ -340,10 +370,12 @@ export interface MarkedPlace {
    *  false where the list holds that row and its window has not drawn it, which the page answers
    *  by drawing the row and landing on it itself (`own`). */
   readonly land: () => boolean;
-  /** The page's own landing on the mark of row `id`, which is read again as `land`'s landings are:
+  /** The page's own landing on the mark of row `id`, which is read again as `land`'s landings are,
+   *  with `spent`, where the view stood before the page scrolled to draw that row
+   *  (`takeScrollOf`). The row's own mark is read for until the page's commit draws it:
    *  the rows and the bar of the press that made it go in commits after it, and what they leave
    *  can put that mark out of the reader's sight. */
-  readonly own: (id: string) => void;
+  readonly own: (id: string, spent: ScrollPlaces) => void;
 }
 
 /** What the reader does that ends a landing's owed reading (`useLastMarkedPlace`): a press, a key

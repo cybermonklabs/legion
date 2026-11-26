@@ -1,5 +1,5 @@
 import { queryOptions, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { api, isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
@@ -173,6 +173,11 @@ export interface AgentRegistry {
  * try the dashboard's retry rule allows, where the poller's own interval already asks it again
  * every 15 s.
  */
+/** The failure the agent list last gave, for every reader of it: the query clears its own error
+ *  while a later read is out, and a view mounted in that window must name the same reason as the
+ *  views around it (`useAgentRegistry`). */
+let lastFailure: Error | null = null;
+
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
   const { data, error, errorUpdateCount, status } = useQuery({
@@ -195,10 +200,10 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
   const isError = !known && errorUpdateCount > 0;
   // Why that failure came, which the query clears while its next read is out although the failure
   // still stands: a view that says what it could not check names the same reason throughout, and
-  // never Envoy as unreachable while it is the agent list refilling.
-  const reason = useRef<Error | null>(null);
-  if (error !== null) reason.current = error;
-  const refilling = isError && isAgentListRefilling(reason.current);
+  // never Envoy as unreachable while it is the agent list refilling. It is kept for every reader of
+  // the one list, so a view mounted while a read is out names the reason the others name.
+  if (error !== null) lastFailure = error;
+  const refilling = isError && isAgentListRefilling(lastFailure);
   return useMemo(
     () => ({
       isError,

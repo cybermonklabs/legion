@@ -9,7 +9,7 @@ import {
   useDataTable,
 } from "../../components/DataTable";
 import type { FilterChip } from "../../components/filter-chips";
-import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
+import { ARM_ON_PRESS, takeScrollOf, useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
 import { focusListStop, useLastMarkedPlace } from "../../components/SelectionBar";
@@ -359,10 +359,15 @@ export function IssuesTable({
     // `landAtPlace` moved nothing, so the issue marked last is listed and its row is not drawn.
     const key = lastMarked.current;
     if (key === null) return focusListStop(tableStop());
+    const stop = tableStop();
+    // Where the view stands before the scroll that draws the row: a landing this scroll shows and
+    // the reading then passes over gives it back, so the landing kept costs its own least scroll.
+    const spent = stop === null ? [] : takeScrollOf(stop);
     model.focusRow(key, ROW_CHECKBOX, "nearest");
     // The bar's going takes the room its foot had back from the box, which can leave this landing
-    // below the box's own edge: the hand-off reads it again once the bar has gone.
-    landAtPlace.own(key);
+    // below the box's own edge: the hand-off reads it again once the bar has gone, and reads for
+    // the row's own mark until this scroll's commit draws it.
+    landAtPlace.own(key, spent);
     return null;
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
