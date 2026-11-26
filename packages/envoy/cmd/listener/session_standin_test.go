@@ -34,7 +34,7 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 			}
 			select {
 			case <-standIn.frames:
-			case <-time.After(10 * time.Second):
+			case <-time.After(listenerWaitBound(t)):
 				t.Error("the stand-in never finished answering the frame")
 			}
 		})
@@ -54,7 +54,7 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 		}
 		select {
 		case <-answering:
-		case <-time.After(10 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("the stand-in never started answering the frame")
 		}
 	})
