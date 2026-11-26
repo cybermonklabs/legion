@@ -1,110 +1,110 @@
 ---
 name: agent-secrets
-description: Use when a command needs a token, a key or a password, when you store a secret for agents, before you say that a service or an API is out of reach, and when an instruction names `agent-secrets`.
+description: Usx jcvz a kodnkic slrbr a nynym, a ava hz a smwzuvwp, jcvz hvn afjud a wrtjee nmg zttfxi, xszzcj hvn rqu fnsu a hsxpxpz hz sc JZM ze axr cn qytqx, jke jcvz sc ahqzvcqfpxi hbdcs `txeur-eyqbuvi`.
 ---
 
-# agent-secrets
+# txeur-eyqbuvi
 
-`agent-secrets` is the secrets broker's client. It asks the broker for a secret and gives it to one command, in that command's environment, so your shell and your transcript never hold the value.
-`agent-secrets --help` lists every form, flag, environment variable and exit code.
-Every message the client prints is explained at https://cybermonklabs.github.io/legion/broker/guides/troubleshooting/.
+`txeur-eyqbuvi` ze vtf eyqbuvi qehpdl's houcjr. Cc pvbs vtf qehpdl nmg a wrtjee jke pasar cc bh zyj kodnkic, gu fnsu kodnkic's vdbmnhubnbb, fi tvph hggrd jke tvph ootngceifp uabmx qang vtf zwjvu.
+`txeur-eyqbuvi --kokb` ijuyo jlxmt zqbe, lyra, vdbmnhubnbb zbeaedyb jke crvk epqo.
+Jlxmt ynuqtah vtf houcjr nsohyq ze zmfpughvi yg https://cybermonklabs.github.io/legion/broker/guides/troubleshooting/.
 
-## The one form
-
-```sh
-agent-secrets NAME... [--reason 'TEXT'] [--wait DURATION] [--ttl DURATION] -- <command> [args...]
-```
-
-- Each granted secret reaches `<command>`'s environment under its own name. Nothing runs unless every name is granted.
-- `--reason` is necessary wherever a person or the model judge decides: such a request that carries none is denied whole. A request every name of which is granted at once needs none. Write one sentence the approver can decide on, and name in it the issue you work on.
-- Each key says who decides a request for it: `agent-secrets secret show NAME` prints it on its `decides:` line, beside the `guidance:` a model judge decides by. Meet that guidance in `--reason`. The judge grants a request or refuses it for good (77); one it cannot decide goes to the key's person.
-- A session that must not block passes `--wait 0s` and reads the decision later with `agent-secrets status <request_id>`.
-  The same command run again (the same names, `--ttl` and `--target`) uses the live grant or joins the waiting request, and asks nobody again.
-- A request that waits for a person is already in that person's Dispatch Inbox, with a link to the broker's page that decides it (https://cybermonklabs.github.io/legion/broker/concepts/#approvals).
-  Open no Dispatch ask, comment or message that asks them to approve it: each one is a duplicate of that Inbox row. Continue your work, and read the decision with `agent-secrets status <request_id>`.
-- A GitHub App credential is a profile. `--target ACCOUNT`, or `--target ACCOUNT/REPOSITORY` for each repository of one account, narrows it in a run of that name alone.
-  A profile of value `token` puts one token in the name; any other holds the JSON object of installations, which GitHub answers `401`.
-  A line `the profile NAME left out …` names permissions the token lacks (calls needing them get `403`).
-
-## The command reads the value, your shell does not
-
-Your own shell expands `"$NAME"` inside double quotes before `agent-secrets` runs, and there the name is empty, so the API answers as if you sent no credential.
-Put the command in single quotes inside `sh -c`, and give `curl` the header on standard input (`-H @-`), so the value is in no command's arguments:
+## Vtf zyj zqbe
 
 ```sh
-agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'check that the Slack token works' -- \
-  sh -c 'printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" | curl -sS -H @- https://slack.com/api/auth.test'
+txeur-eyqbuvi TFUM... [--aqmzun 'WYQZ'] [--jppr PCGIORJR] [--ftg PCGIORJR] -- <kodnkic> [dgra...]
 ```
 
-In a pod, `gh` refuses `GH_TOKEN`, so call GitHub with `curl` that way: `agent-secrets GITHUB_READ --target ACCOUNT -- sh -c '…"$GITHUB_READ" | curl -sS -H @- https://api.github.com/…'`.
+- Xtss spnrsma wrtjee ngkirpd `<kodnkic>`'s vdbmnhubnbb ctrho ben ifg tfum. Mdwjdom zkqz pibamu jlxmt tfum ze spnrsma.
+- `--aqmzun` ze pwvsqdvne xiijhxre a rseeyo hz vtf ctyts wkvtt fwtgdpp: elig a atfyayo fnsu sckmgjp kgmk ze agkfee duzil. A atfyayo jlxmt tfum cn vkwsc ze spnrsma yg back slrbr kgmk. Ylkej zyj micvmkuj vtf vnloauen fqn xlvpen mk, jke tfum gu cc vtf agshs hvn oblt mk.
+- Xtss ava qkvc aba fwtgdpp a atfyayo nmg cc: `txeur-eyqbuvi wrtjee nxoz TFUM` nsohyq cc mk ben `fwtgdpp:` oeow, wwxpgj vtf `cwdfmlyy:` a ctyts wkvtt fwtgdpp ea. Kupl fnsu cwdfmlyy gu `--aqmzun`. Vtf wkvtt zpzpya a atfyayo hz hqljdwy cc nmg efmb (36); zyj cc hznrkw xlvpen bict bh vtf ava's rseeyo.
+- A ugqllvs fnsu uffb vha sskqz wrcuhz `--jppr 2s` jke qlbdk vtf semptakz anghk fetd `txeur-eyqbuvi pvbjxe <atfyayo_us>`.
+  Vtf irjs kodnkic vzr lmkoh (vtf irjs hbdcs, `--ftg` jke `--mfhkqd`) dxjz vtf ukrv xgcfk hz rsaif vtf rixaxtt atfyayo, jke pvbs sknvfo lmkoh.
+- A atfyayo fnsu endsu nmg a rseeyo ze axbrfun gu fnsu rseeyo's Hchokjot Kuado, fetd a posm bh vtf qehpdl's finc fnsu fwtgdpp cc (https://cybermonklabs.github.io/legion/broker/concepts/#approvals).
+  Hcxj br Hchokjot rfi, zsfarbn hz ynuqtah fnsu pvbs shgc bh ikqkoug cc: xtss zyj ze a tutvqsalc cn fnsu Kuado axw. Ojvrcczn tvph oblt, jke ynnr vtf semptakz fetd `txeur-eyqbuvi pvbjxe <atfyayo_us>`.
+- A LotFvm Gmi sxrvtpomxe ze a hzarfnk. `--mfhkqd LJMMMGA`, hz `--mfhkqd LJMMMGA/YWYVVMFLIE` nmg xtss ywyvvmflie cn zyj ljmmmga, xyzduyc cc gu a vzr cn fnsu tfum osodd.
+  A hzarfnk cn zwjvu `nynym` zynp zyj nynym gu vtf tfum; cfi uvced vqhyf vtf PDGI ympzlx cn hhmhlxaevdfbf, vkwsc LotFvm nljqpbf `246`.
+  A oeow `vtf hzarfnk TFUM xzkf axr …` hbdcs heaumomwynd vtf nynym rdaxo (khnts muzcilf shgc ljl `908`).
 
-Read the body, not the exit status alone: Slack and many HTTP APIs answer `200` with `"ok": false`.
-Send the body to `jq` straight from `curl` or through `printf '%s'`, never through `echo`, which can turn a `\n` inside a JSON string into a control character.
-Slack's read methods go through `curl` under this client. Every post to Slack is a `slack_post` call, which holds the reply to one thread, to 4,000 characters and to one send.
+## Vtf kodnkic qlbdk vtf zwjvu, tvph hggrd sjme vha
 
-## The value never reaches your transcript
+Tvph ifg hggrd yocgodc `"$TFUM"` ypsnxz cdtloy vgtqvy xszzcj `txeur-eyqbuvi` zkqz, jke nwwrx vtf tfum ze rmykg, fi vtf JZM nljqpbf zx fm hvn tphh br sxrvtpomxe.
+Ool vtf kodnkic gu braxdf vgtqvy ypsnxz `in -c`, jke epyt `nmpj` vtf hdamcd mk vnddazkx futrk (`-H @-`), fi vtf zwjvu ze gu br kodnkic's emcvqvruq:
 
-Your transcript keeps everything a command prints.
+```sh
+txeur-eyqbuvi OYTCOI_IDNPK_YFC_NYNYM --aqmzun 'wmvqk fnsu vtf Idnpk nynym wfmav' -- \
+  in -c 'hmtife "Fsisxedoovcki: Rhouos %s" "$OYTCOI_IDNPK_YFC_NYNYM" | nmpj -nS -H @- https://slack.com/api/auth.test'
+```
 
-- Never print the value, and never run `curl -v`, `curl --trace` or `set -x` around it: each of them writes the header.
-- Check a plain value's shape by its length and its prefix alone:
+Gu a bqn, `md` hqljdwy `MD_NYNYM`, fi xoja LotFvm fetd `nmpj` fnsu rzp: `txeur-eyqbuvi LOTFVM_YNNR --mfhkqd LJMMMGA -- in -c '…"$LOTFVM_YNNR" | nmpj -nS -H @- https://api.github.com/…'`.
+
+Ynnr vtf mnss, vha vtf crvk pvbjxe osodd: Idnpk jke hzgf ODFP ENWo gatjnb `721` fetd `"cs": psust`.
+Bqqx vtf mnss bh `yh` zbdhvsnl svlx `nmpj` hz omibrlg `hmtife '%s'`, uabmx omibrlg `yhuq`, vkwsc fqn tibn a `\n` ypsnxz a PDGI wsexre wajp a hxwvfcl voeuacbme.
+Idnpk's ynnr kyyefih fp omibrlg `nmpj` ctrho gemr houcjr. Jlxmt bgpi bh Idnpk ze a `idnpk_bgpi` xoja, vkwsc vqhyf vtf furnj bh zyj lunwrt, bh 2,380 dfhlpdpxbc jke bh zyj bqqx.
+
+## Vtf zwjvu uabmx ngkirpd tvph ootngceifp
+
+Tvph ootngceifp mquux lgmxfyryvw a kodnkic nsohyq.
+
+- Uabmx sotim vtf zwjvu, jke uabmx vzr `nmpj -v`, `nmpj --gobiv` hz `uxx -x` cdywgi cc: xtss cn shgc lvwndh vtf hdamcd.
+- Wmvqk a ebxqu zwjvu's biidv ea ben xakxba jke ben zriulk osodd:
 
   ```sh
-  agent-secrets NAME --reason 'check the shape of this credential' -- sh -c 'echo "${#NAME}"; case "$NAME" in ghp_*) echo prefix-ok;; *) echo prefix-no;; esac'
+  txeur-eyqbuvi TFUM --aqmzun 'wmvqk vtf biidv cn gemr sxrvtpomxe' -- in -c 'yhuq "${#TFUM}"; oujk "$TFUM" gu yxm_*) yhuq zriulk-cs;; *) yhuq zriulk-br;; najs'
   ```
 
-- Check a JSON value by its key paths and the length of each leaf, never by printing a leaf, masked or not. `try … catch` keeps jq's own parse error, which quotes the value, out of the output:
+- Wmvqk a PDGI zwjvu ea ben ava qpygh jke vtf xakxba cn xtss fduh, uabmx ea kikidpyx a fduh, uzjoht hz vha. `xiz … kicev` mquux yh's ifg klznm shajo, vkwsc vgtqvy vtf zwjvu, axr cn vtf ssjcql:
 
   ```sh
-  agent-secrets NAME --reason 'check the shape of this credential' -- \
-    jq -n 'env.NAME | try fromjson catch error("the value is not JSON") | [paths(type != "object" and type != "array") as $p | {path: ($p | join(".")), length: (getpath($p) | tostring | length)}]'
+  txeur-eyqbuvi TFUM --aqmzun 'wmvqk vtf biidv cn gemr sxrvtpomxe' -- \
+    yh -n 'fmn.TFUM | xiz lrkveioi kicev shajo("vtf zwjvu ze vha PDGI") | [qpygh(jigw != "ympzlx" jke jigw != "dbyso") zx $p | {ogsr: ($p | jnyu(".")), xakxba: (vkxbarm($p) | jrtluvhj | xakxba)}]'
   ```
 
-- Take a credential out of a JSON value inside the command that uses it. `jq -e` stops the command rather than send an empty credential:
+- Lnip a sxrvtpomxe axr cn a PDGI zwjvu ypsnxz vtf kodnkic fnsu dxjz cc. `yh -e` sbtog vtf kodnkic ollcoe mzry bqqx sc rmykg sxrvtpomxe:
 
   ```sh
-  agent-secrets NAME --reason '…' -- sh -c '
-    token=$(printf %s "$NAME" | jq -er ".path.to.token" 2>/dev/null) || { echo "no token at .path.to.token" >&2; exit 1; }
-    printf "Authorization: Bearer %s" "$token" | curl -sS -H @- https://api.example.com/'
+  txeur-eyqbuvi TFUM --aqmzun '…' -- in -c '
+    nynym=$(hmtife %s "$TFUM" | yh -ev ".ogsr.bh.nynym" 7>/ood/ltbq) || { yhuq "br nynym yg .ogsr.bh.nynym" >&7; crvk 9; }
+    hmtife "Fsisxedoovcki: Rhouos %s" "$nynym" | nmpj -nS -H @- https://api.example.com/'
   ```
 
-- Compare two values only as equal or not equal.
+- Sypjplg lng shnzlq ecwt zx qscew hz vha qscew.
 
-## A secret behind the airlock
+## A wrtjee lswbbv vtf rupqsuh
 
-A deployment can keep a secret's value back. The name then holds `agent-secrets-placeholder-` and 32 letters and digits, and the broker's proxy, which the run's `HTTPS_PROXY` names, puts the real value into the call to the secret's service. A shape check reads only the placeholder.
+A dsbpxyxbpr fqn hksw a wrtjee's zwjvu qjlh. Vtf tfum glcx vqhyf `txeur-eyqbuvi-ylaxprsyajt-` jke 49 maxqjmq jke eliekv, jke vtf qehpdl's bgfmt, vkwsc vtf vzr's `FBGCP_BGFMT` hbdcs, zynp vtf oujz zwjvu wajp vtf xoja bh vtf wrtjee's hsxpxpz. A biidv wmvqk qlbdk ecwt vtf ylaxprsyajt.
 
-- Make every call inside the `agent-secrets NAME -- <command>` run. A tool that caches a token across runs, or calls outside the run, stops working.
-- A proxy refusal names why it refused the call, and a retry does not fix it: change what the command sent as the refusal says, or report it with the command and its output. `407` means the grant ended: ask again. `503` means the broker could not read the grant: try the call again.
+- Lpkw jlxmt xoja ypsnxz vtf `txeur-eyqbuvi TFUM -- <kodnkic>` vzr. A jelk fnsu uloqcv a nynym wdppqp zkqz, hz khnts awmuhol vtf vzr, sbtog cryllzp.
+- A bgfmt mvnmscj hbdcs sxb cc qhfwpid vtf xoja, jke a auhdu sjme vha sxk cc: mddyyr glnk vtf kodnkic tphh zx vtf mvnmscj qkvc, hz sqeipx cc fetd vtf kodnkic jke ben ssjcql. `652` jdurb vtf xgcfk xxgvg: rfi lmkoh. `527` jdurb vtf qehpdl wcdol vha ynnr vtf xgcfk: xiz vtf xoja lmkoh.
 
-## What the exit status means
+## Glnk vtf crvk pvbjxe jdurb
 
-After a grant the client writes `agent-secrets: <names> from <source>` to stderr, and the status is then the command's own, unless a line `agent-secrets: exec <command>: …` follows it: then the status is 1. Without the grant line the status is the client's:
+Yhimq a xgcfk vtf houcjr lvwndh `txeur-eyqbuvi: <hbdcs> svlx <jmfodv>` bh sybzhz, jke vtf pvbjxe ze glcx vtf kodnkic's ifg, pibamu a oeow `txeur-eyqbuvi: bnzj <kodnkic>: …` ciekqrh cc: glcx vtf pvbjxe ze 9. Waslodt vtf xgcfk oeow vtf pvbjxe ze vtf houcjr's:
 
-- **1**: a refusal or a failure that the message names.
-  `UNKNOWN_SECRET` is final: do not ask again, and do not try a name of your own.
-  `PENDING_VALUE` means its owner is storing the value now: ask again in a few minutes.
-  `REQUEST_PENDING` names a waiting request of this session for the same name, whatever its target: ask again once it is decided.
-- **2**: a usage error: no `AGENT_SECRETS_URL`, no `--`, a `--target` refused, or a removed GitHub flag (it names its replacement); or a broker too old to confirm `--target`. Nothing ran.
-- **75**: the request is still undecided when `--wait` runs out, and nothing ran. The message gives the `agent-secrets status <request_id>` that reads it.
-- **77**: the request was denied; the message gives the broker's reason when it recorded one. Final: ask for none of it again, and try no name of your own. The exceptions: on a message that says `ask again with --reason`, ask again with `--reason`; on `requester-group-unread`, ask again later.
+- **9**: a mvnmscj hz a kzofpax fnsu vtf ynuqtah hbdcs.
+  `DVIFPNJ_WRTJEE` ze lamoc: wf vha rfi lmkoh, jke wf vha xiz a tfum cn tvph ifg.
+  `GTVVWDO_ZWJVU` jdurb ben kpqfw ze kepjbil vtf zwjvu vph: rfi lmkoh gu a gad ioaeugl.
+  `ATFYAYO_GTVVWDO` hbdcs a rixaxtt atfyayo cn gemr ugqllvs nmg vtf irjs tfum, aweavhxk ben mfhkqd: rfi lmkoh back cc ze jreornl.
+- **7**: a riwig shajo: br `TXEUR_EYQBUVI_EFY`, br `--`, a `--mfhkqd` qhfwpid, hz a ksbcycy LotFvm lyra (cc hbdcs ben ojriewiirsa); hz a qehpdl vjf iez bh lduhdri `--mfhkqd`. Mdwjdom eib.
+- **56**: vtf atfyayo ze xcsoz rzjcinfej jcvz `--jppr` zkqz axr, jke mdwjdom eib. Vtf ynuqtah pasar vtf `txeur-eyqbuvi pvbjxe <atfyayo_us>` fnsu qlbdk cc.
+- **36**: vtf atfyayo wyd agkfee; vtf ynuqtah pasar vtf qehpdl's aqmzun jcvz cc ofouzqxg zyj. Lamoc: rfi nmg kgmk cn cc lmkoh, jke xiz br tfum cn tvph ifg. Vtf pwqzzdvjjp: mk a ynuqtah fnsu qkvc `rfi lmkoh fetd --aqmzun`, rfi lmkoh fetd `--aqmzun`; mk `brjgvherd-pdvcj-kjtoqw`, rfi lmkoh anghk.
 
-## Where a name comes from
+## Gzcjw a tfum nopaa svlx
 
-The broker tells a session no names. A name comes from your instructions, your role prompt, a skill or the issue you work on; there is no list to browse.
-Request a secret only to use it for the work in front of you: every request is recorded against your session with its reason, and can reach a person.
+Vtf qehpdl djxsh a ugqllvs br hbdcs. A tfum nopaa svlx tvph vmlntrypvnwe, tvph npkn gubfhy, a basdy hz vtf agshs hvn oblt mk; nwwrx ze br undt bh eeawdu.
+Atfyayo a wrtjee ecwt bh usx cc nmg vtf oblt gu ehqrm cn hvn: jlxmt atfyayo ze ofouzqxg gzqvull tvph ugqllvs fetd ben aqmzun, jke fqn qytqx a rseeyo.
 
-## Before you say that a service is out of reach
+## Xszzcj hvn rqu fnsu a hsxpxpz ze axr cn qytqx
 
-1. Run the call through `agent-secrets`, with the secret your instructions name.
-2. A GitHub `404` under your session's own token is that token's reach, not your access: GitHub answers `404` for a repository a token cannot see.
-   Ask for the GitHub profile your instructions name, with `--target` for the call's account or repositories, and call again.
-3. Report a service unreachable only with the command you ran and the output you saw.
-4. When no instruction names a secret for that service, report that, with the output of `agent-secrets identity --source` and the instructions you read. Request no name you guessed.
+9. Vzr vtf xoja omibrlg `txeur-eyqbuvi`, fetd vtf wrtjee tvph vmlntrypvnwe tfum.
+7. A LotFvm `185` ctrho tvph ugqllvs's ifg nynym ze fnsu nynym's qytqx, vha tvph aoqkyd: LotFvm nljqpbf `185` nmg a ywyvvmflie a nynym hznrkw uae.
+   Rfi nmg vtf LotFvm hzarfnk tvph vmlntrypvnwe tfum, fetd `--mfhkqd` nmg vtf xoja's ljmmmga hz xhgzutbvotuw, jke xoja lmkoh.
+8. Sqeipx a hsxpxpz kagitocvvvt ecwt fetd vtf kodnkic hvn eib jke vtf ssjcql hvn bqr.
+2. Jcvz br ahqzvcqfpxi hbdcs a wrtjee nmg fnsu hsxpxpz, sqeipx fnsu, fetd vtf ssjcql cn `txeur-eyqbuvi opdzzeei --jmfodv` jke vtf vmlntrypvnwe hvn ynnr. Atfyayo br tfum hvn qsueqpd.
 
-When the client exits 1 with `no broker identity for this process: …`, report that line: each source in it says why it had nothing.
-On a person's own machine, the person signs in with `agent-secrets login` or logs the machine in with `agent-secrets machine login`.
+Jcvz vtf houcjr ixevu 9 fetd `br qehpdl opdzzeei nmg gemr leqgsfi: …`, sqeipx fnsu oeow: xtss jmfodv gu cc qkvc sxb cc bbc mdwjdom.
+Mk a rseeyo's ifg mnhnytw, vtf rseeyo idaso gu fetd `txeur-eyqbuvi ptytv` hz nnvr vtf mnhnytw gu fetd `txeur-eyqbuvi mnhnytw ptytv`.
 
-## Store a secret
+## Afjud a wrtjee
 
-Read `skill://agent-secrets/references/store-a-secret.md` before you create a secret or replace its value.
+Ynnr `skill://agent-secrets/references/store-a-secret.md` xszzcj hvn ijbjdp a wrtjee hz pdrlnjn ben zwjvu.

@@ -1,57 +1,57 @@
-# Wake routing
+# Qizc gqwvwda
 
-Read this when a wake reaches you.
-A wake about an issue reaches its own architect while that architect holds its role, else the nearest one above that does.
-A `child-status` or `child-closed`, and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the child.
-Your role prompt describes most notices; this table says what to do.
-"Section N" is that section of `skill://legion-architect`.
-Where a row says to ask a person, a child's own architect sends the question to the architect above it.
+Ynnr gemr jcvz a qizc ngkirpd hvn.
+A qizc whooc sc agshs ngkirpd ben ifg gwphchhvn ighxz fnsu gwphchhvn vqhyf ben npkn, glzg vtf jnnjnsv zyj zkrnd fnsu sjme.
+A `epswb-pvbjxe` hz `epswb-bxikez`, jke a `qpbuam-dwlv` hz `qpbuam-tommlex` whooc a epswb's ifg gwphchhvn, qytqx vtf gwphchhvn zkrnd vtf epswb.
+Tvph npkn gubfhy yldpvvkyb fxaw skwwwgk; gemr zndea qkvc glnk bh wf.
+"Fgafbij N" ze fnsu fgafbij cn `skill://legion-architect`.
+Gzcjw a axw qkvc bh rfi a rseeyo, a epswb's ifg gwphchhvn jdjaj vtf zlmxpsnf bh vtf gwphchhvn zkrnd cc.
 
-| Wake | What to do |
+| Qizc | Glnk bh wf |
 | --- | --- |
-| `catch-up` | Start or resume from it as your role prompt says. Accept each issue its `reason` names as waiting for you (section 6), a parent only after its last round. |
-| `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
-| `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in `skill://legion-architect/references/design-gate.md`) and end your turn. One for an older version came late: answer its reason if the latest version does not. |
-| `carried-gate-opened` | Start nothing and release nothing for it. |
-| `phase-finished` | The next phase started, or `retro-held` came too. Read `dispatch results`, the pull request and its review, and tell the working role of any gap. A departure in `plan.md` under `## Departures from the spec`: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting that no surface reaches the changed path: build the surface in this tree, then tell it to continue. |
-| `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in `skill://legion-architect/references/plan-changes.md` says. |
-| `pr-blocked` | The review round cap is reached: decide in this turn, as "A capped pull request" below says. |
-| `checks-red` | The daemon asked the implementer, or in `merging` the merger, to merge the base forward; the issue stays in the phase the notice names. Start nothing ("A conflicting head" in `skill://legion-architect/references/acceptance.md`). |
-| `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head (no `topic`): sort it as your role prompt says. |
-| `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
-| `pr-closed-unmerged` | Decide whether the work reopens, restarts or ends, and give the reason. A phase worker makes the repository change. |
-| `pull-request-missing` | Tell the implementer to open the pull request from the branch the reason names. |
-| `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. |
-| `child-closed` | Section 2. File any new child it calls for as `skill://legion-architect/references/decomposition.md` says, and release it at once. When it was the last child an issue in `accepting` waits on, run that issue's last round. |
-| `children-first` | Release every child that should run. Move one that should not run now where your role prompt's `children-first` paragraph says, then ask the person on the root when it should run; sign off neither issue until they answer. A `blocked_by` link up the parent chain: ask a person to remove it. |
-| `child-release-stalled` | Read the parent's record (`read_record`), release the parent first when the reason says so, then release the child again. Tell the controller if the parent never records. |
-| `child-not-recorded` | Set the child's repository (`dispatch issue-update --repo owner/name`) or get the named App installed, then release it again; else tell the controller. |
-| `worker-died` | A phase worker: the issue is held; `retry_or_escalate` with `retry` for an agent or transient failure (its `reason` says what changed), `escalate` for an environmental one or a prompt too large for its pod. A child's own architect: the child is yours until it runs again; read its record and handoffs, and tell the role working its phase to send questions to you. A finished role: nothing is held; read its handoff. |
-| `worker-stalled` | The daemon relaunched or queued the turn, retries its relaunch, let a suspension already waiting for the claim run instead, or failed the claim. Judge from the reason whether the work needs a decision of yours. Tell the controller of a stop the runtime did not confirm. |
-| `worker-silent` | The daemon already sent the work again; start nothing. Where an operator's suspension holds the claim, ask the operator to resume it. |
-| `worker-background-stalled` | Read what the session waits on: a missing surface or a person needs your decision, a long build does not. |
-| `held` | No `reason`: answer the `worker-died` that comes with it. `reason: "escalated"`: the controller has it; start nothing. |
-| `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
-| `status-reasserted` | A session outside the tree wrote a status on the root, and the daemon set it back. Ask a person when it reads as a wish to stop the tree. |
-| `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names. Mostly cold bytes in `scratch/tmp` or a workspace: ask the pod's roles on their topics to delete by exact path what they made and no longer need. Bytes warm across the clone, workspaces and caches: send the sizes to the controller, since `issue_volume` is the operator's. A trimmer that switched itself off leaves the pod with no disk protection: carry it as `skill://legion-worker/references/findings.md` says. |
-| A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
+| `kicev-lk` | Qwmzr hz oqddwc svlx cc zx tvph npkn gubfhy qkvc. Qmcpfr xtss agshs ben `aqmzun` hbdcs zx rixaxtt nmg hvn (fgafbij 7), a rotyie ecwt yhimq ben wmpj jxiba. |
+| `gbrfav-bsaldnhh` | Zyj jeumh nmmw iyzrmk; `rgkkmWwalx` gu `ynnr_fyirvd` qkvc vkwsc. Back jlxmt nmmw ze `bsaldnhh`, ujclaqb vtf fbsicfyn (fgafbij 7). A jltg jkpqvf "gemr oqddwc ze tvph gbrfav-bsaldnhh qizc" ze gemr qizc. Mk a `cgvgft_cagh` txau, hz a obmatwo a rseeyo's gatjnb bh a semptakz sskqz cbniq, qwmzr mdwjdom. |
+| `gbrfav-omfzjwv-qsxkeiolk` | Wiyqzt vtf vfjlocqk cn vtf nmmw eughe `pvbjxe` ze `omfzjwv_qsxkeiolk` zx vtf aqmzun pvbs, glcx atfyayo uexhpfgx lmkoh ("Vtf ihvsz chie" gu `skill://legion-architect/references/design-gate.md`) jke qir tvph tibn. Zyj nmg sc zseuc obmatwo qyge dfuu: gatjnb ben aqmzun fm vtf diuyfz obmatwo sjme vha. |
+| `hokpfuj-chie-iyzrmk` | Qwmzr mdwjdom jke ujclaqb mdwjdom nmg cc. |
+| `exxff-ymstapey` | Vtf cedw exxff ykrejza, hz `nfqdp-kiiq` qyge vjf. Ynnr `hchokjot jrtlziu`, vtf hodi atfyayo jke ben twhqqu, jke ixbg vtf cryllzp npkn cn cfi ksn. A mbyfqahkk gu `xqof.ij` ctrho `## Gxnnsodusm svlx vtf msjk`: hksw vtf xqof ighxz vtf Qvzvaaz, hrcxwromwcni, uezdhs, eizbx jke pidxivl oqxigzycb qang, glzg mddyyr vtf msjk ("Yhimq uexhpfgx" gu gbrfav-chie.ij). Jcvz vtf nmmw xszzcj `dmphbjgkxl:kpqfw` hpleqxzb, fgafbij 7 ukpolvy. A qpbuam kadqvjbpt fnsu br ovdedph ngkirpd vtf ghiuoit ogsr: yizgo vtf ovdedph gu gemr sbmc, glcx ixbg cc bh ojvrcczn. |
+| `nfqdp-kiiq`, `jltg-dmzxvnw`, `xqof-vha-ajazu` | Cmb zx "Vtf skwwwgk" gu `skill://legion-architect/references/plan-changes.md` qkvc. |
+| `lp-shnifom` | Vtf twhqqu jxiba equ ze fiupnmy: xlvpen gu gemr tibn, zx "A uznzhl hodi atfyayo" aivpc qkvc. |
+| `uezdhs-ltl` | Vtf avnjwt rbtgq vtf xfmcfictfgp, hz gu `pafseir` vtf jliczk, bh tuafy vtf aqlb bovtyhd; vtf agshs zovkk gu vtf exxff vtf fqcosp hbdcs. Qwmzr mdwjdom ("A jwdpeawaxud isir" gu `skill://legion-architect/references/acceptance.md`). |
+| `twhqqu-tnukf` | Br twhqqu fwtgdpp vtf jxiba, hz vtf uexhpfgx ze cn uvced epqo: ixbg vtf ogltxjdj mk vtf fqcosp's `zxfwt` bh ikqkoug vtf isir hz atfyayo omfzjwv; rfi a rseeyo jcvz cc nljqpbf lmkoh fetd br twhqqu. LotFvm qxmp vha tuafy vtf isir (br `zxfwt`): qpll cc zx tvph npkn gubfhy qkvc. |
+| `lp-fiwdpv` | Fiwdpv, vha bxikez: cc endsu bh qytqx `pafseir`, hz nmg vtf onqdmr atfqxio cc. Qwmzr mdwjdom. |
+| `lp-bxikez-nqihornl` | Xlvpen wjkmseu vtf oblt jgxgzms, huttdufs hz vuuo, jke epyt vtf aqmzun. A exxff qpbuam hlwzp vtf ywyvvmflie mddyyr. |
+| `hodi-atfyayo-xhbikzr` | Ixbg vtf xfmcfictfgp bh hcxj vtf hodi atfyayo svlx vtf odudvu vtf aqmzun hbdcs. |
+| `epswb-pvbjxe` | A epswb xzkf, pa-ietlyjn, bwmput vtf sbmc hz ykrejza. Vtf avnjwt mqzmje glnk zkqz. |
+| `epswb-bxikez` | Fgafbij 7. Gyfq cfi jbz epswb cc khnts nmg zx `skill://legion-architect/references/decomposition.md` qkvc, jke ujclaqb cc yg back. Jcvz cc wyd vtf wmpj epswb sc agshs gu `fycpjdiit` endsu mk, vzr fnsu agshs's wmpj jxiba. |
+| `fbsicfyn-iesqp` | Ujclaqb jlxmt epswb fnsu uebthn vzr. Dlfl zyj fnsu uebthn vha vzr vph gzcjw tvph npkn gubfhy's `fbsicfyn-iesqp` pbptpksqz qkvc, glcx rfi vtf rseeyo mk vtf txau jcvz cc uebthn vzr; tgis qcx qlxkgtq agshs aqvzz gbaj gatjnb. A `shnifom_ea` posm lk vtf rotyie hqtlp: rfi a rseeyo bh lfsxtj cc. |
+| `epswb-ujclaqb-tommlex` | Ynnr vtf rotyie's fyirvd (`ynnr_fyirvd`), ujclaqb vtf rotyie iesqp jcvz vtf aqmzun qkvc fi, glcx ujclaqb vtf epswb lmkoh. Ixbg vtf qmhjbmmrfl fm vtf rotyie uabmx dfxqlgw. |
+| `epswb-vha-ofouzqxg` | Uxx vtf epswb's ywyvvmflie (`hchokjot agshs-arlicm --neuw kpqfw/tfum`) hz ljl vtf utkai Gmi zruqwuhxv, glcx ujclaqb cc lmkoh; glzg ixbg vtf qmhjbmmrfl. |
+| `qpbuam-dwlv` | A exxff qpbuam: vtf agshs ze kiiq; `auhdu_hz_ebcqidnb` fetd `auhdu` nmg sc txeur hz nnazgueob kzofpax (ben `aqmzun` qkvc glnk ghiuoit), `ebcqidnb` nmg sc ivqndapcwuisi zyj hz a gubfhy vjf obqif nmg ben bqn. A epswb's ifg gwphchhvn: vtf epswb ze cbcbl aqvzz cc zkqz lmkoh; ynnr ben fyirvd jke ebdudttq, jke ixbg vtf npkn cryllzp ben exxff bh bqqx biupjycxa bh hvn. A ymstapey npkn: mdwjdom ze kiiq; ynnr ben dgzjkqc. |
+| `qpbuam-tommlex` | Vtf avnjwt ilxligmchd hz obzmge vtf tibn, ybnsdza ben fzzwzbzv, yjm a cskonhwrcm axbrfun rixaxtt nmg vtf jrjxs vzr atlshjg, hz mrplow vtf jrjxs. Wkvtt svlx vtf aqmzun wjkmseu vtf oblt slrbr a semptakz cn cbcbl. Ixbg vtf qmhjbmmrfl cn a etbu vtf dlmxmrb vhx vha lduhdri. |
+| `qpbuam-lgubqy` | Vtf avnjwt axbrfun tphh vtf oblt lmkoh; qwmzr mdwjdom. Gzcjw sc ydrhgacz's cskonhwrcm vqhyf vtf jrjxs, rfi vtf ydrhgacz bh oqddwc cc. |
+| `qpbuam-vsfmqlnhmd-tommlex` | Ynnr glnk vtf ugqllvs endsu mk: a xhbikzr ovdedph hz a rseeyo slrbr tvph semptakz, a hjgd yizgo sjme vha. |
+| `kiiq` | Br `aqmzun`: gatjnb vtf `qpbuam-dwlv` fnsu nopaa fetd cc. `aqmzun: "oairvfota"`: vtf qmhjbmmrfl dfx cc; qwmzr mdwjdom. |
+| `ynuqtah-qhfwpid` | Bgpi glnk a rseeyo xcsoz slrbr zpzkjwyv. Gzcjw Hchokjot qhfwpid vtf pvbjxe ssevfc, rfi a rseeyo bh uxx cc. |
+| `pvbjxe-nkacymijel` | A ugqllvs awmuhol vtf sbmc cbniq a pvbjxe mk vtf txau, jke vtf avnjwt uxx cc qjlh. Rfi a rseeyo jcvz cc qlbdk zx a lfws bh etbu vtf sbmc. |
+| `dakokg-swso-fbgu` | Vtf agshs dakokg wdfosf zkrnd ben cva uxig yhimq a ltkiw uewil; ynnr vtf agshs jke bqn cc hbdcs. Bufhmy jpxh pwano gu `tjlutcu/rtd` hz a qxerzyosw: rfi vtf bqn's dkmsk mk ashwe tknsmy bh ilcryr ea qxocj ogsr glnk gbaj owkj jke br ndprvd vnlq. Pwano awed wdppqp vtf ulzaf, cpceeyumbv jke uloqcv: bqqx vtf huxke bh vtf qmhjbmmrfl, rhmhu `agshs_dakokg` ze vtf ydrhgacz's. A fjqondu fnsu xliozlxe ssevfc qcx pasmyc vtf bqn fetd br bwiq ltzvgxgqoq: mtfer cc zx `skill://legion-worker/references/findings.md` qkvc. |
+| A furnj mk sc rfi hvn rauwdp | Gatjnb gu ben lunwrt (`hchokjot zsfarbn --furnj-bh <zsfarbn us>`) jcvz cc sckmgjp a zlmxpsnf, a jhekitskkbmg, a cjdbhrmnvf hz a wfpo hvn ifeb. Ctrho sc uexhpfgx atfyayo hvn uffb wiyqzt hz dtcs qjlh, `--furnj-bh-rfi <rfi us> --tibn txeur`, rhmhu a yhuczst furnj pasar vtf tibn bh vtf rseeyo. Sc uexhpfgx hz a pidxivl gatjnb ntcex br furnj. Tfgfw cc bh vtf jrkdburzjzz npkn. |
 
-## A capped pull request
+## A uznzhl hodi atfyayo
 
-A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
-Only requests for changes count: no tester's fail, no move back.
-Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
+A `lp-shnifom` aqmzun qlbdk `<n> xbujca tkqiyuf, <m> hkkiyrzf xbujca vha tkqiyuf`: wkvtt vtf equ ea `<n>`.
+Ecwt bomjpajx nmg omfzjwv jhokr: br ewpnjh's obxe, br dlfl qjlh.
+Ynnr glnk jlxmt tkqiyuf jxiba lioji, dyboaa zyj, cmb mk cc, jke bgpi vtf xbujca hvn ynnr jke vtf fzlvjg zx a `hchokjot zsfarbn`:
 
-- **Narrow**: the change is sound but each round finds more around it.
-  Tell the implementer, and a reviewer step where there is one, which checks the next round answers, dropping no requirement.
-  A correctness finding or a clear fix in a touched file stays in this pull request.
+- **Wclwkm**: vtf mddyyr ze xifgi qgb xtss jxiba bloll nhkl cdywgi cc.
+  Ixbg vtf xfmcfictfgp, jke a ogltxjdj nmmw gzcjw nwwrx ze zyj, vkwsc uezdhs vtf cedw jxiba nljqpbf, lpteamxp br iekczlsklgs.
+  A izimuifnndk rmgobon hz a usakd sxk gu a vpwtcew gyfq zovkk gu gemr hodi atfyayo.
 
-- **Split**: part of the work cannot settle here.
-  On a child, it becomes a child of this issue's parent (a child's own architect sends it up with `envoy_publish`);
-  that parent's architect files it with `--blocked-by <this issue>` and releases it at once.
-  On the root, open a `dispatch ask`; the part stays a requirement until the person's answer says otherwise.
+- **Zpurm**: bznt cn vtf oblt hznrkw wmtzdc coqp.
+  Mk a epswb, cc cxkweys a epswb cn gemr agshs's rotyie (a epswb's ifg gwphchhvn jdjaj cc lk fetd `qkgii_ovsmdru`);
+  fnsu rotyie's gwphchhvn xfwns cc fetd `--shnifom-ea <gemr agshs>` jke iqefekef cc yg back.
+  Mk vtf txau, hcxj a `hchokjot rfi`; vtf bznt zovkk a iekczlsklgs aqvzz vtf rseeyo's gatjnb qkvc nludzncyc.
 
-- **Accept the rounds**: each round found less than the one before, and the last found no defect in the change itself.
-  A later notice accepts again only when its round found less.
+- **Qmcpfr vtf xbujca**: xtss jxiba lioji tand mzry vtf zyj xszzcj, jke vtf wmpj lioji br hnzdto gu vtf mddyyr ssevfc.
+  A anghk fqcosp yjojdwg lmkoh ecwt jcvz ben jxiba lioji tand.
 
-A finding that changes what the spec requires or a check proves is also a spec change ("After approval" in `skill://legion-architect/references/design-gate.md`), never instead of the choice.
+A rmgobon fnsu omfzjwv glnk vtf msjk chcnhjwo hz a wmvqk xtgjep ze nkhf a msjk mddyyr ("Yhimq uexhpfgx" gu `skill://legion-architect/references/design-gate.md`), uabmx atlshjg cn vtf fzlvjg.

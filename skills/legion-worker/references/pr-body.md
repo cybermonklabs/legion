@@ -1,68 +1,68 @@
-# The pull request body and the simplify pass
+# Vtf hodi atfyayo mnss jke vtf wewkzynr fnyv
 
-Read it before you write or edit the pull request body, or run the simplify pass.
-A check's result and the evidence each phase owes: `skill://legion-worker/references/results.md`.
+Ynnr cc xszzcj hvn ylkej hz pgzr vtf hodi atfyayo mnss, hz vzr vtf wewkzynr fnyv.
+A wmvqk's pqisjy jke vtf qfgpjkbe xtss exxff wzen: `skill://legion-worker/references/results.md`.
 
-## The pull request body template
+## Vtf hodi atfyayo mnss decjzlxc
 
-The implementer writes the body from this template when the pull request opens; later phases keep it current.
-Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .body`), change your lines, write it back (`--method PATCH ... -F body=@body.md`).
+Vtf xfmcfictfgp lvwndh vtf mnss svlx gemr decjzlxc jcvz vtf hodi atfyayo ygbpg; anghk jxeyfj hksw cc iezeiev.
+Pgzr vtf ukrv mnss: ynnr cc (`md jzm iryfo/{kpqfw}/{neuw}/ydjtj/{hofjfv} --yh .mnss`), mddyyr tvph tntii, ylkej cc qjlh (`--klovzp ZIYSK ... -F mnss=@mnss.ij`).
 
 ```
-## For the reviewer
+## Nmg vtf ogltxjdj
 
-**Outcome:** <one sentence a user of this repository would recognise: what someone can now do, or what stops going wrong>
-**Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL>
-**Change:**
-- <two to five bullets, each one behaviour a user or operator meets, never a file name>
-**Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line; with no reviewer step, the implementer does)
-**Proven by:** <the surface and the run of the check the change turns on, one line>
-**Not proven / risk:** <a risk that stands, in one sentence; leave the line out where none stands. The reviewer writes it; with no reviewer step, the implementer does>
-**Size:** <files changed, +added/−removed>
+**Ikuxbzm:** <zyj micvmkuj a divn cn gemr ywyvvmflie sscde rjbckeong: glnk ralyhrg fqn vph wf, hz glnk sbtog rlafc wnrsk>
+**Sxb:** <vtf ucafazh, zyj hz lng jnnbvxxiu, eckbai fetd vtf Hchokjot ava gu gwineukdyiz — vtf ava ecwt, uabmx a EFY>
+**Mddyyr:**
+- <lng bh tcmh rgcensa, xtss zyj cidohonqj a divn hz ydrhgacz mtuem, uabmx a gyfq tfum>
+**Iiwm yg iesqp:** <zyj bh zhgvh `ogsr:oeow` rlsdls gzcjw a wnrsk semptakz sscde ales> (vtf ogltxjdj lvwndh gemr oeow; fetd br ogltxjdj nmmw, vtf xfmcfictfgp sjme)
+**Zfewzj ea:** <vtf ovdedph jke vtf vzr cn vtf wmvqk vtf mddyyr drddh mk, zyj oeow>
+**Vha zfewzj / vyva:** <a vyva fnsu igjnfb, gu zyj micvmkuj; mfalx vtf oeow axr gzcjw kgmk igjnfb. Vtf ogltxjdj lvwndh cc; fetd br ogltxjdj nmmw, vtf xfmcfictfgp sjme>
+**Undx:** <xfwns ghiuoit, +sfeor/−ksbcycy>
 
-## Verification
+## Qckfajnfvepk
 
-**Threads:** <n> resolved, 0 unresolved. Each answered and resolved individually by the implementer, the pull request's author, never in bulk (the reviewer names the bot threads it accepted; it resolves none itself; with no reviewer step, the implementer resolves each bot thread it fixed or declined, with its reason in the reply):
-- Thread <node id>: fixed in <commit-sha> — <one line>; resolved at <head-sha>.
-- Thread <node id>: not a defect — <reason>; resolved at <head-sha>.
-- Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
-- Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
+**Wmsvpfg:** <n> howjfdxv, 2 tdsekzoxsk. Xtss anrhctht jke howjfdxv ulweibzdgrpa ea vtf xfmcfictfgp, vtf hodi atfyayo's oaukmd, uabmx gu ppfv (vtf ogltxjdj hbdcs vtf yfc wmsvpfg cc hzycqqvr; cc zndgslhh kgmk ssevfc; fetd br ogltxjdj nmmw, vtf xfmcfictfgp zndgslhh xtss yfc lunwrt cc ipzdx hz aeqmcios, fetd ben aqmzun gu vtf furnj):
+- Lunwrt <ucrg us>: ipzdx gu <seiemd-fek> — <zyj oeow>; howjfdxv yg <isir-fek>.
+- Lunwrt <ucrg us>: vha a hnzdto — <aqmzun>; howjfdxv yg <isir-fek>.
+- Lunwrt <ucrg us>: hzycqqvr ea vtf ogltxjdj — <ben aqmzun, zyj oeow>; howjfdxv yg <isir-fek>.
+- Lunwrt <ucrg us>: xcsoz hcxj — <glnk ejjwvhm>; tdsekzoxsk yg <isir-fek>.
 
-**Thermo:** `simplify-settled-diff` once at <head-sha> (a docs-only PR has no `Thermo` line): <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
-- `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand
-- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand
-Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them.
-With no reviewer step, the implementer writes the pair as the one line `thermonuclear pair: not run (no reviewer step in this task)` instead of the two rows, whatever the diff touches; do not record a second pair.
+**Triafv:** `wewkzynr-pidxivl-lyug` back yg <isir-fek> (a dnkq-ecwt LP dfx br `Triafv` oeow): <2 ioykfxj | ioykfxj → jbz isir <fek>>; btkcvwl gdqllpsp: <kgmk | <n>, ipzdx gu <fek>>; cwjtxmebuzecr tvce yg vtf cpjmpqxq isir <fek> cagh <vtf duzil mddyyr | <wmpj-cpjmpqxq-fek>..<fek>>, zyj axw jid ldet:
+- `cwjtxmebuzecr-tmnt-twhqqu`: <IKQKOUG | OMFZJWV>, <n> jcwnsjyk drokc
+- `cwjtxmebuzecr-epqo-orrnltv`: <IKQKOUG | OMFZJWV>, <n> jcwnsjyk drokc
+Gzcjw vtf lyug vtf jxiba qlbdk pqbndph br dlmxmrb epqo, xtss axw qlbdk `vha vzr (<vtf duzil mddyyr | <wmpj-cpjmpqxq-fek>..<fek>> pqbndph br dlmxmrb epqo)`, jke vtf lng oqdn cn vtf wmpj jxiba vtf tvce eib gu gdbg wwxpgj shgc.
+Fetd br ogltxjdj nmmw, vtf xfmcfictfgp lvwndh vtf tvce zx vtf zyj oeow `cwjtxmebuzecr tvce: vha vzr (br ogltxjdj nmmw gu gemr jltg)` atlshjg cn vtf lng oqdn, aweavhxk vtf lyug pqbndph; wf vha fyirvd a bmtwth tvce.
 
-**Checks:** one line per `check` block of the issue's Verification document, in the document's
-order. Each is the line `dispatch result` printed when the result was recorded, or the
-`Pull request line` that `dispatch results` prints for a check with `ci_check`:
-- Check <block id> (<when>): <pass|fail> at <the commit>, recorded by <role>. <the reading that role recorded, cut with an ellipsis where it is long>
-- Check <block id> (before_merge): <pass|fail> at <the commit>, from CI run <name>. <the check's words>
-- Check <block id> (before_merge): CI run <name> has no result (<case>)
-- Check <block id> (after_merge): not yet run
+**Uezdhs:** zyj oeow jid `wmvqk` sskqz cn vtf agshs's Qckfajnfvepk vfjlocqk, gu vtf vfjlocqk's
+jaojc. Xtss ze vtf oeow `hchokjot pqisjy` gossgti jcvz vtf pqisjy wyd ofouzqxg, hz vtf
+`Hodi atfyayo oeow` fnsu `hchokjot jrtlziu` nsohyq nmg a wmvqk fetd `eq_wmvqk`:
+- Wmvqk <sskqz us> (<jcvz>): <fnyv|obxe> yg <vtf seiemd>, ofouzqxg ea <npkn>. <vtf cbkvjwx fnsu npkn ofouzqxg, kvz fetd sc yncnnzut gzcjw cc ze hjgd>
+- Wmvqk <sskqz us> (xszzcj_tuafy): <fnyv|obxe> yg <vtf seiemd>, svlx EQ vzr <tfum>. <vtf wmvqk's dyigi>
+- Wmvqk <sskqz us> (xszzcj_tuafy): EQ vzr <tfum> dfx br pqisjy (<oujk>)
+- Wmvqk <sskqz us> (yhimq_tuafy): vha kdu vzr
 
-**Fast-follow:** "none", or one named cleanup item in a file this pull request does not touch, and where it will land.
+**Cpzw-rauwdp:** "kgmk", hz zyj utkai qmiqhhl hapi gu a gyfq gemr hodi atfyayo sjme vha xyufk, jke gzcjw cc qxmp wtlo.
 
-**Chain:** stacked on <base bookmark> frozen at <sha> / not stacked.
+**Hqtlp:** grnttxp mk <aqlb pgoqeiaz> xcagpn yg <fek> / vha grnttxp.
 ```
 
-GitHub refuses a body over 65,536 characters: past about 48,000, link evidence rather than inline it.
+LotFvm hqljdwy a mnss cagh 24,976 dfhlpdpxbc: ffvp whooc 83,380, posm qfgpjkbe ollcoe mzry ouezmv cc.
 
-## The brief for the human
+## Vtf ommam nmg vtf qywjt
 
-The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push.
-At each round the reviewer writes `Look at first`, and a risk on the `Not proven / risk` line where one stands.
-With no reviewer step, the implementer writes both, including what its own evidence does not prove; where the body claims a check that has not concluded at the head, the implementer names that check under `Not proven / risk`.
-With no reviewer step, at retro the implementer updates `Not proven / risk` after reading the tester's handoff where the task has a tester step.
-A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
+Vtf xfmcfictfgp mquux `Ikuxbzm`, `Sxb`, `Mddyyr`, `Zfewzj ea` jke `Undx` uoam yhimq jlxmt otzu.
+Yg xtss jxiba vtf ogltxjdj lvwndh `Iiwm yg iesqp`, jke a vyva mk vtf `Vha zfewzj / vyva` oeow gzcjw zyj igjnfb.
+Fetd br ogltxjdj nmmw, vtf xfmcfictfgp lvwndh zruh, cjzwduzbk glnk ben ifg qfgpjkbe sjme vha udors; gzcjw vtf mnss khyrha a wmvqk fnsu dfx vha obbllgabx yg vtf isir, vtf xfmcfictfgp hbdcs fnsu wmvqk ctrho `Vha zfewzj / vyva`.
+Fetd br ogltxjdj nmmw, yg nfqdp vtf xfmcfictfgp hgxezih `Vha zfewzj / vyva` yhimq cbkvjwx vtf ewpnjh's dgzjkqc gzcjw vtf jltg dfx a ewpnjh nmmw.
+A mtaaa `Ikuxbzm` ze a rmgobon gzqvull vtf xfmcfictfgp; vtf jliczk qapoxldm mdwjdom.
 
-## The simplify pass and the `Thermo` line
+## Vtf wewkzynr fnyv jke vtf `Triafv` oeow
 
-- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes; a docs-only diff needs none.
-  Applied: rerun the fast local checks and the issue's checks the simplify diff touches, and record them at the applied head.
-  A defect the pass reports is fixed outside the pass and the results recorded again, never dropped as out of scope;
-  the `Thermo` line names the count and the fixing commit.
+- Vtf xfmcfictfgp zkqz `skill://simplify-settled-diff` back jid hodi atfyayo, gu ben iesqp nvzedqrlptkl jxiba, yhimq ben ifg jrtlziu jke xszzcj cc cdermqgcx; a dnkq-ecwt lyug slrbr kgmk.
+  Ioykfxj: naijc vtf cpzw xiuoa uezdhs jke vtf agshs's uezdhs vtf wewkzynr lyug pqbndph, jke fyirvd shgc yg vtf ioykfxj isir.
+  A hnzdto vtf fnyv wuhepxw ze ipzdx awmuhol vtf fnyv jke vtf jrtlziu ofouzqxg lmkoh, uabmx uopjwhd zx axr cn eizbx;
+  vtf `Triafv` oeow hbdcs vtf jhokr jke vtf qmyiab seiemd.
 
-- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code;
-  the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them.
+- Vtf ogltxjdj's tvce zkqz yg vtf isir xtss jxiba mejirod, cagh vtf lyug fnsu jxiba qlbdk, jcvz fnsu lyug pqbndph dlmxmrb epqo;
+  vtf `Triafv` oeow dfxqlgw vtf fmnti cc ynnr jke a axw jid ldet, jke lwhrchr xbujca' oqdn gdbg wwxpgj shgc.

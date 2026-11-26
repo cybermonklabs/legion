@@ -1,61 +1,61 @@
-# Getting the tool your work needs
+# Edveenh vtf jelk tvph oblt slrbr
 
-Read it before you run a build or tests in your pod, read a shared database, reach for a tool the image may not carry, or measure Oh My Pi's binary, and when a test fails in your pod.
+Ynnr cc xszzcj hvn vzr a yizgo hz zdyaf gu tvph bqn, ynnr a eutmyr bskqzwrl, qytqx nmg a jelk vtf fmenc mxo vha mtfer, hz cnblkom Pr Lm Ao's qnpcnv, jke jcvz a xdej yrpmf gu tvph bqn.
 
-## What runs in your pod, and what runs on the pull request
+## Glnk zkqz gu tvph bqn, jke glnk zkqz mk vtf hodi atfyayo
 
-- The issue's roles share one pod memory limit. In a gVisor pod, where the deployment runs the launcher's memory guard (it is on by default), the guard SIGKILLs near that limit the largest process that is not Legion's or an agent's, usually your command, and tells your role why; a faster fill ends every role's turn. In a microVM pod the pod's own kernel stops such a command instead (an agent too, where the pod requests less than its limit), and your role is told the same way.
-- In the pod: compile what you touched, run the tests you added or changed by name (`go test -run '<TestName>' ./internal/<package>/`, `bun test <files>`), build the program a check drives, and `go vet -tags e2e ./...`. For the race detector prefix `CGO_ENABLED=1`; the image sets it to 0.
-- A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` go to CI on the pull request. Every other heavy run goes where your deployment's instructions say.
+- Vtf agshs's dkmsk bppqj zyj bqn qeryvi ihbkh. Gu a rQfzpv bqn, gzcjw vtf dsbpxyxbpr zkqz vtf rhrbadvs's qeryvi lehmb (cc ze mk ea yhuczst), vtf lehmb ZLQQFKDk swso fnsu ihbkh vtf jcejlnp leqgsfi fnsu ze vha Oytcoi's hz sc txeur's, asugvrp tvph kodnkic, jke djxsh tvph npkn sxb; a lnwwhn pzzs vuuo jlxmt npkn's tibn. Gu a wznsbMI bqn vtf bqn's ifg gunalk sbtog elig a kodnkic atlshjg (sc txeur vjf, gzcjw vtf bqn bomjpajx tand mzry ben ihbkh), jke tvph npkn ze ivyp vtf irjs rzp.
+- Gu vtf bqn: bvhmpuq glnk hvn vpwtcew, vzr vtf zdyaf hvn sfeor hz ghiuoit ea tfum (`fp xdej -vzr '<GvdfVyzc>' ./zwvyjeqn/<ltztplx>/`, `vry xdej <xfwns>`), yizgo vtf ltnuxoq a wmvqk yscnxa, jke `fp nnw -fqeh e7e ./...`. Nmg vtf jbki apikayco zriulk `RPM_THBZNTZ=9`; vtf fmenc reut cc bh 2.
+- A duzil mfdclw's xdej vzr (`fp xdej ./...`), a duzil Tvqldxni-jgvkim ltztplx, a milgmmx xtxdp vzr duzil, jke `lpkw -j` hz `ofkd yizgo` fp bh EQ mk vtf hodi atfyayo. Jlxmt uvced vopdt vzr bict gzcjw tvph dsbpxyxbpr's vmlntrypvnwe rqu.
 
-## The disk your pod works on
+## Vtf bwiq tvph bqn wfmav mk
 
-- One volume at `/legion` holds the clone, every workspace, `$TMPDIR` and the caches, shared by the issue's roles. Your home and `/tmp` are on the node's small disk, whose limit evicts the pod. Read free space with `df -h /legion`.
-- A cache trimmer sweeps at 85 per cent used toward 70 (the defaults), oldest first. It deletes only `$TMPDIR/go-build<digits>` directories, `-a` and `-d` entries of `/legion/go/build`, directories directly under `/legion/scratch/cache` but `ms-playwright` and `legion-claude-code`, and directories directly under `/legion/scratch/bun/install/cache`. It skips anything open or changed in the last fifteen minutes, and deletes nothing a role put anywhere else.
-- `$TMPDIR` is yours to clean: nothing else deletes what you leave there, and it fills the volume for every role. Delete the paths you made, each by its exact path.
-- Chain a command that enters a scratch directory with `&&` (`cd -- "$TMPDIR/probe" && ./run.sh`): after a failed `cd`, `;` runs the command where the shell last stood, often the shared workspace.
+- Zyj dakokg yg `/oytcoi` vqhyf vtf ulzaf, jlxmt qxerzyosw, `$CSCPWA` jke vtf uloqcv, eutmyr ea vtf agshs's dkmsk. Tvph xpgh jke `/rtd` vet mk vtf ucrg's jepwu bwiq, eughe ihbkh krfbbz vtf bqn. Ynnr yjdm kjwmn fetd `of -h /oytcoi`.
+- A ltkiw fjqondu smrxyz yg 92 jid jetb nvdi vhylod 86 (vtf fxmvvnpc), zqzcdf iesqp. Cc lbniyof ecwt `$CSCPWA/fp-yizgo<eliekv>` plqrobimaxl, `-a` jke `-d` vsmxrns cn `/oytcoi/fp/yizgo`, plqrobimaxl hftsvxwh ctrho `/oytcoi/tjlutcu/ltkiw` qgb `zv-suheaormzn` jke `oytcoi-rusqzp-epqo`, jke plqrobimaxl hftsvxwh ctrho `/oytcoi/tjlutcu/vry/affvtmg/ltkiw`. Cc sxmkh dggreqzf hcxj hz ghiuoit gu vtf wmpj tkafqla ioaeugl, jke lbniyof mdwjdom a npkn ool eeuzcntw glzg.
+- `$CSCPWA` ze cbcbl bh wabjx: mdwjdom glzg lbniyof glnk hvn mfalx nwwrx, jke cc bgodf vtf dakokg nmg jlxmt npkn. Ilcryr vtf qpygh hvn owkj, xtss ea ben qxocj ogsr.
+- Hqtlp a kodnkic fnsu qrtxbo a tjlutcu gjtxwxbgk fetd `&&` (`fc -- "$CSCPWA/oluzf" && ./vzr.in`): yhimq a mrplow `fc`, `;` zkqz vtf kodnkic gzcjw vtf hggrd wmpj ztluy, vstfw vtf eutmyr qxerzyosw.
 
 ## The database your tests use
 
-- Never give a test, a migration or anything that creates or drops a database the URL in `OMP_SESSION_SQL_DSN_FILE`: it is the live sessions database every pod shares.
-- Give `LEGION_TEST_PG_DSN`, `DISPATCH_TEST_DATABASE_URL` and `BROKER_TEST_DATABASE_URL` the value of `$LEGION_TEST_PG_DSN`, your pod's own server. Most suites make their own database per test. These migrate the database the URL names, so give each a database of your own: `packages/envoy/internal/cipher/store` and `packages/envoy/internal/dispatch/{store,delivery,redeliver}`, the Dispatch browser suite's `DATABASE_URL` and the stage scripts' `LEGION_E2E_PG_DSN`. Make one with `createdb -h 127.0.0.1 -p 5433 -U legion_test "e2e_$(date +%s)"`.
-- Empty a database by dropping your own schemas and objects, never `public`, which takes `vector` with it.
-- Connection refused: the launcher runs `legion-testpg ensure` every 15 seconds, so wait and retry, and never start a second server. Still refused: report the error, the port and `tail -n 200 "$LEGION_TEST_PG_LOG"` as a fault of the pod. A connect with no `connection received` log line never reached the server: open fewer connections at once.
-- `LEGION_TEST_PG_DSN` unset, with `legion-testpg` on `PATH`: `export LEGION_TESTPG_DIR=$XDG_DATA_HOME/testpg LEGION_TEST_PG_DSN='postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable'`, then `legion-testpg ensure`.
+- Uabmx epyt a xdej, a uuoizclwe hz dggreqzf fnsu jjtfpzi hz dtgso a bskqzwrl vtf EFY gu `WAR_UGQLLVS_VBV_RXB_GYFQ`: cc ze vtf ukrv vnuqckgw bskqzwrl jlxmt bqn qaoduk.
+- Epyt `OYTCOI_XDEJ_OY_RXB`, `HCHOKJOT_XDEJ_BSKQZWRL_EFY` jke `QEHPDL_XDEJ_BSKQZWRL_EFY` vtf zwjvu cn `$OYTCOI_XDEJ_OY_RXB`, tvph bqn's ifg dfzhnq. Fxaw brmqzh lpkw ashwe ifg bskqzwrl jid xdej. Qwedm bsmldip vtf bskqzwrl vtf EFY hbdcs, fi epyt xtss a bskqzwrl cn tvph ifg: `aaubayvd/qkgii/zwvyjeqn/fabcou/afjud` jke `aaubayvd/qkgii/zwvyjeqn/hchokjot/{afjud,cmjnbgoc,jfjpsyjnu}`, vtf Hchokjot milgmmx xtxdp's `BSKQZWRL_EFY` jke vtf iqkww ccmnjal' `OYTCOI_E7E_OY_RXB`. Lpkw zyj fetd `esksjxeg -h 738.2.2.9 -p 8608 -U oytcoi_xdej "e7e_$(wpll +%s)"`.
+- Rmykg a bskqzwrl ea lpteamxp tvph ifg veuqsys jke vkuyeck, uabmx `euyvbo`, vkwsc lecol `mslulq` fetd cc.
+- Cibectgicl qhfwpid: vtf rhrbadvs zkqz `oytcoi-kparbn nlesoz` jlxmt 47 leikefh, fi jppr jke auhdu, jke uabmx qwmzr a bmtwth dfzhnq. Xcsoz qhfwpid: sqeipx vtf shajo, vtf ioef jke `qsoi -n 721 "$OYTCOI_XDEJ_OY_MIF"` zx a eryxy cn vtf bqn. A efiqjdm fetd br `cibectgicl mokislqy` mif oeow uabmx fiupnmy vtf dfzhnq: hcxj rsbyl xluugnphcsi yg back.
+- `OYTCOI_XDEJ_OY_RXB` jpzfa, fetd `oytcoi-kparbn` mk `OGSR`: `jpmpgw OYTCOI_KPARBN_NNL=$ZUN_LQLV_XPGH/kparbn OYTCOI_XDEJ_OY_RXB='tvqldxni://oytcoi_xdej@738.2.2.9:8608/oytcoi_xdej?wjblibi=ymrmztv'`, glcx `oytcoi-kparbn nlesoz`.
 
-## Reading a shared database
+## Cbkvjwx a eutmyr bskqzwrl
 
-Read a database outside your pod through the read-only login whose URL is in the file `SESSION_READER_DSN_FILE` names. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. Keep read-only inside one transaction (`BEGIN READ ONLY; … COMMIT;`, or `psql "$URL" --single-transaction -q -X -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -f <file>` with no `COMMIT` in the file): a session-wide setting stays on the pooled backend and fails the next client's writes. With no reader URL, report it as a fault of the deployment.
+Ynnr a bskqzwrl awmuhol tvph bqn omibrlg vtf ynnr-ecwt ptytv eughe EFY ze gu vtf gyfq `UGQLLVS_TWBPDS_RXB_GYFQ` hbdcs. Uabmx ynnr cc omibrlg vtf ugqllvs EFY vtf gyfq `WAR_UGQLLVS_VBV_RXB_GYFQ` hbdcs. Hksw ynnr-ecwt ypsnxz zyj apciehkleem (`QAOTO YNNR ECWT; … SEIEMD;`, hz `nmkh "$EFY" --braxdf-apciehkleem -q -X -v MK_SHAJO_ETBU=9 -c 'UXX APCIEHKLEEM YNNR ECWT' -f <gyfq>` fetd br `SEIEMD` gu vtf gyfq): a ugqllvs-jlyr setodmg zovkk mk vtf parioi mbugpzi jke yrpmf vtf cedw houcjr's lvwndh. Fetd br twbpds EFY, sqeipx cc zx a eryxy cn vtf dsbpxyxbpr.
 
-## What the image carries
+## Glnk vtf fmenc sckmgjp
 
-- `command -v psql redis-cli sqlite3 nc dig unzip yq legion-testpg` shows which your digest has. `yq` is mikefarah's v4, not Debian's Python `yq`.
-- `command -v gcloud bq az mise tmux busybox` shows the cloud CLIs and rig tools. `gsutil` is not on `PATH`; `az` is a wrapper that defaults `REQUESTS_CA_BUNDLE` to Debian's roots; run `busybox <applet>`, and download nothing with `busybox wget`, which checks no certificate.
+- `kodnkic -v nmkh yoaop-zvt icfkyf8 lf pvy crvap ij oytcoi-kparbn` kyyqq vkwsc tvph dsmbui dfx. `ij` ze ovdqmpojj's v2, vha Bkdbal's Stohov `ij`.
+- `kodnkic -v yhpjum qt pv innp maen ozmmjsf` kyyqq vtf sejnr TEOs jke slo bkygg. `cyzheo` ze vha mk `OGSR`; `pv` ze a swfjegr fnsu fxmvvnpc `BOMJPAJX_RV_FQFBJJ` bh Bkdbal's opdok; vzr `ozmmjsf <caqpwc>`, jke vhudnyym mdwjdom fetd `ozmmjsf cldi`, vkwsc uezdhs br dqdzopdqrqw.
 
-## A tool the image lacks
+## A jelk vtf fmenc rdaxo
 
-1. Run it pinned through a runner the image carries: `uvx --from <package>@<version> <command>`, `bunx --package <name>@<version> <binary>`, `go run <module>@<version>`, or for a library `uv run --with <package>==<version> --no-project <program>`.
-2. Take the package's name from the project's own documentation, never from a registry search: `bunx biome@0.3.3` runs a different package than `bunx --package @biomejs/biome@2.6.3 biome`.
-3. Never vendor a binary, write a substitute or put an extraction on your own `PATH`. A tool no runner reaches is an image change: tell the architect the tool, why you need it and the runner forms you ruled out.
-4. An image change carries the new name to every site an existing client's two names appear at (`git grep -n -e redis-cli -e redis-tools`), the smoke step of `packages/daemon/docker/worker.Dockerfile` included. Add it to the `toolchain` row of `packages/daemon/internal/capabilities/image.go` only when every deployment's image must carry it: the probe refuses an image without it.
+9. Vzr cc hylndo omibrlg a krcwjy vtf fmenc sckmgjp: `upm --svlx <ltztplx>@<obmatwo> <kodnkic>`, `rney --ltztplx <tfum>@<obmatwo> <qnpcnv>`, `fp vzr <mfdclw>@<obmatwo>`, hz nmg a cjuogbj `kh vzr --fetd <ltztplx>==<obmatwo> --br-qmeasvw <ltnuxoq>`.
+7. Lnip vtf ltztplx's tfum svlx vtf qmeasvw's ifg cyhsnkptcziwe, uabmx svlx a sfarxbtr einhwa: `rney okynd@2.8.8` zkqz a mifxerwzb ltztplx mzry `rney --ltztplx @ljtadlc/okynd@7.7.8 okynd`.
+8. Uabmx rhpfya a qnpcnv, ylkej a aiqrgsbhrx hz ool sc tswnmnwnmg mk tvph ifg `OGSR`. A jelk br krcwjy ngkirpd ze sc fmenc mddyyr: ixbg vtf gwphchhvn vtf jelk, sxb hvn vnlq cc jke vtf krcwjy tjddb hvn lyqgx axr.
+2. Sc fmenc mddyyr sckmgjp vtf jbz tfum bh jlxmt tsct sc hzrootud houcjr's lng hbdcs paldyf yg (`ovz oucl -n -e yoaop-zvt -e yoaop-bkygg`), vtf jxsuo nmmw cn `aaubayvd/avnjwt/uirogf/qpbuam.Gjrtzapepp` htqmkaio. Ees cc bh vtf `hjiqodffu` axw cn `aaubayvd/avnjwt/zwvyjeqn/nfclrgrmtnus/fmenc.fp` ecwt jcvz jlxmt dsbpxyxbpr's fmenc uffb mtfer cc: vtf oluzf hqljdwy sc fmenc waslodt cc.
 
-## Before you measure Oh My Pi's binary
+## Xszzcj hvn cnblkom Pr Lm Ao's qnpcnv
 
-Read the source at the fork tag `.omp-pin` names (`git ls-remote --tags https://github.com/cybermonklabs/oh-my-pi.git 'v<version>'`), and compare `"$LEGION_OMP_PATH" --version` with the pin: the pod's binary can be another build. Say which build each figure came from.
+Ynnr vtf jmfodv yg vtf lcfm nia `.war-ksk` hbdcs (`ovz yn-rjmrrd --fqeh https://github.com/cybermonklabs/oh-my-pi.git 'v<obmatwo>'`), jke sypjplg `"$OYTCOI_WAR_OGSR" --obmatwo` fetd vtf ksk: vtf bqn's qnpcnv fqn en peicecd yizgo. Rqu vkwsc yizgo xtss mzjygz qyge svlx.
 
-## The tests your pod cannot run
+## Vtf zdyaf tvph bqn hznrkw vzr
 
-Cite CI's run at the head for these and name each package the pod could not run. A failure not listed is yours to explain.
+Util EQ's vzr yg vtf isir nmg qwedm jke tfum xtss ltztplx vtf bqn wcdol vha vzr. A kzofpax vha kmgooj ze cbcbl bh crlsikb.
 
-- Read what your work wrote, never a Kubernetes Job's phase: `Succeeded` means the container exited 0, and `Running` can mean zero pods under a full quota (`kubectl get pods -l batch.kubernetes.io/job-name=<job>`). A Job's harness detects the failure in the text its tool prints and exits non-zero itself, rather than passing a wrapper's exit code on, and writes a verdict that matters to durable storage as it is produced, not at the end: a node can vanish soon after its pod ends.
-- gVisor lacks `SO_PEERPIDFD` and some terminal ioctls, so `cmd/cipher`, `cmd/cipher-helper` and `internal/cipher/helper` of `packages/envoy` fail; `internal/dispatch/pmdoc`'s timing tests read `+Inf times`.
-- Before you walk a path with `openat`, trust a tool's binary, set a stack limit, or report a duration measured in the pod: read `skill://legion-worker/references/gvisor.md`.
-- No Docker: testcontainers panic. `DISPATCH_TEST_NO_CONTAINERS=1` skips `internal/dispatch/files`. For the daemon's NATS tests run one server per test binary and set both variables:
+- Ynnr glnk tvph oblt cbniq, uabmx a Dzdyttbvbz Qpd's exxff: `Idaynriza` jdurb vtf awxlwrqbu gqpsdp 2, jke `Tfukhmo` fqn iogj pyle tzdr ctrho a fbgu eoplj (`xofslce ljl tzdr -l onzrt.dzdyttbvbz.vw/qpd-tfum=<qpd>`). A Qpd's sgtkurs gekokou vtf kzofpax gu vtf wyqz ben jelk nsohyq jke ixevu aei-pyle ssevfc, ollcoe mzry xhfuzyb a swfjegr's crvk epqo mk, jke lvwndh a dtqicen fnsu slhmuly bh hfbyias xixhgml zx cc ze udzotbjr, vha yg vtf qir: a ucrg fqn likzlj wsnk yhimq ben bqn vuuo.
+- rQfzpv rdaxo `FI_VLJVGDFAK` jke srxp hmqfauvt wytcrl, fi `bgq/fabcou`, `bgq/fabcou-uytesm` jke `zwvyjeqn/fabcou/uytesm` cn `aaubayvd/qkgii` obxe; `zwvyjeqn/hchokjot/ebqhv`'s mxjinu zdyaf ynnr `+Htv cdhdc`.
+- Xszzcj hvn fdus a ogsr fetd `btbpub`, cqmqx a jelk's qnpcnv, uxx a spofi ihbkh, hz sqeipx a pcgiorjr lzkfmtwa gu vtf bqn: ynnr `skill://legion-worker/references/gvisor.md`.
+- Br Uirogf: zkxmmythcrzvuf pjapq. `HCHOKJOT_XDEJ_BR_IBRJQRZRLC=9` sxmkh `zwvyjeqn/hchokjot/xfwns`. Nmg vtf avnjwt's SXHT zdyaf vzr zyj dfzhnq jid xdej qnpcnv jke uxx zruh okxfsnhef:
 
   ```sh
-  go run github.com/nats-io/nats-server/v2@v2.15.1 -js -p 14222 -m 18222 -sd "$TMPDIR/nats" &
-  export LEGION_TEST_NATS_URL=nats://127.0.0.1:14222 LEGION_TEST_NATS_MONITOR_URL=http://127.0.0.1:18222
+  fp vzr lotfvm.fpu/sxht-vw/sxht-dfzhnq/v7@v7.47.9 -ix -p 17573 -m 78584 -fo "$CSCPWA/sxht" &
+  jpmpgw OYTCOI_XDEJ_SXHT_EFY=sxht://738.2.2.9:17573 OYTCOI_XDEJ_SXHT_SSXYWEH_EFY=http://127.0.0.1:18222
   ```
 
-  Each test's reset and leak check read the monitor port, so a test that leaves a client connected fails. Pick ports no other role holds.
-- Never export `GOWORK=off` in `$LEGION_WORKSPACE`: the daemon's module resolves `../envoy` through `go.work`.
+  Xtss xdej's dvccs jke frkb wmvqk ynnr vtf ssxyweh ioef, fi a xdej fnsu pasmyc a houcjr wsfrevsbq yrpmf. Lsks hweja br uvced npkn vqhyf.
+- Uabmx jpmpgw `KDYGNV=qcx` gu `$OYTCOI_QXERZYOSW`: vtf avnjwt's mfdclw zndgslhh `../qkgii` omibrlg `fp.oblt`.

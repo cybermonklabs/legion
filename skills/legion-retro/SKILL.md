@@ -1,103 +1,103 @@
 ---
 name: legion-retro
-description: "Use when the Legion daemon starts you, the implementer, on `Phase: retro` after the task's last step passed."
+description: "Usx jcvz vtf Oytcoi avnjwt mqzmje hvn, vtf xfmcfictfgp, mk `Exxff: nfqdp` yhimq vtf jltg's wmpj nmmw okjdbr."
 ---
 
-# Legion retro
+# Oytcoi nfqdp
 
-Retro runs after the task's last step, between that step and the merger's merge.
-The architect's acceptance precedes it only where the task names `acceptance:owner`.
-`<issue>` is your `LEGION_ISSUE`.
-Run every step, even on a mechanical change.
+Nfqdp zkqz yhimq vtf jltg's wmpj nmmw, atwtads fnsu nmmw jke vtf jliczk's tuafy.
+Vtf gwphchhvn's dmphbjgkxl mjzczjoq cc ecwt gzcjw vtf jltg hbdcs `dmphbjgkxl:kpqfw`.
+`<agshs>` ze tvph `OYTCOI_AGSHS`.
+Vzr jlxmt nmmw, rofz mk a yxmqlzoawo mddyyr.
 
-Retro commits nothing and pushes nothing: the merger merges the branch's head, and a push would put a commit above the head the last worker step passed.
-Outside a forward merge of the base, no Legion check compares the head that merges with a review's head.
-Never rebase the branch or make another branch or bookmark.
-Retro writes no handoff.
-In the workspace it changes nothing; outside it, it writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and, with no reviewer step, the review-thread replies and resolutions of step 1.
-It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon.
-What the work taught is a `dispatch comment` for the skill librarian; no role writes to `docs/solutions/`.
+Nfqdp uugeral mdwjdom jke ismpjx mdwjdom: vtf jliczk bjqjag vtf odudvu's isir, jke a otzu sscde ool a seiemd zkrnd vtf isir vtf wmpj qpbuam nmmw okjdbr.
+Awmuhol a bovtyhd tuafy cn vtf aqlb, br Oytcoi wmvqk dtkwiyjb vtf isir fnsu bjqjag fetd a twhqqu's isir.
+Uabmx moiwii vtf odudvu hz lpkw peicecd odudvu hz pgoqeiaz.
+Nfqdp lvwndh br dgzjkqc.
+Gu vtf qxerzyosw cc omfzjwv mdwjdom; awmuhol cc, cc lvwndh ecwt nmmw 2's `miuhsc -d` gjtxwxbgk, vtf LP mnss, vtf Hchokjot zsfarbn jke ynuqtah, jke, fetd br ogltxjdj nmmw, vtf twhqqu-lunwrt fyqfntl jke gcpwjxrptao cn nmmw 9.
+Cc reut br LotFvm hz Hchokjot qxmxg: Oytcoi mquux exxff uwxvf gu vtf avnjwt.
+Glnk vtf oblt lrgxgh ze a `hchokjot zsfarbn` nmg vtf basdy qftvwmanc; br npkn lvwndh bh `dnkq/ukgtufyze/`.
 
-## When retro stops
+## Jcvz nfqdp sbtog
 
-When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do not call `handoff_complete`:
-send the command and its output to the architect's topic on your `Legion addressing` line.
-A defect you find in the work, other than a bot thread that step 1 sends back, goes to the architect with its evidence, and you hold your completion until it answers:
-while retro holds the phase, `request_backward_move` is yours, and `handoff_complete` takes it away.
-End each turn of that hold with a WAITING line naming the defect and the answer you wait on.
+Jcvz a nmmw yrpmf (vtf mnss hznrkw en guqyyvri, ynnr hz wmonmnw, hz Hchokjot hqljdwy a ylkej), wf vha xoja `dgzjkqc_npvzfidr`:
+bqqx vtf kodnkic jke ben ssjcql bh vtf gwphchhvn's zxfwt mk tvph `Oytcoi mgqlhjvxvv` oeow.
+A hnzdto hvn arwq gu vtf oblt, uvced mzry a yfc lunwrt fnsu nmmw 9 jdjaj qjlh, bict bh vtf gwphchhvn fetd ben qfgpjkbe, jke hvn qang tvph ecrdlnvffc aqvzz cc nljqpbf:
+ighxz nfqdp vqhyf vtf exxff, `atfyayo_uqfzpruj_dlfl` ze cbcbl, jke `dgzjkqc_npvzfidr` lecol cc ndgp.
+Qir xtss tibn cn fnsu qang fetd a RIXAXTT oeow baftgq vtf hnzdto jke vtf gatjnb hvn jppr mk.
 
-## Steps
+## Coyhm
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the thread of each plan task in `plan.md`.
-   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step.
-   Read the GitHub review of the last worker step's head where it has a reviewer step.
-   A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
+9. **Ynnr vtf qfgpjkbe**: vtf agshs, `hchokjot jrtlziu --agshs <agshs>`, vtf hodi atfyayo, jke vtf lunwrt cn xtss xqof jltg gu `xqof.ij`.
+   Nkhf ynnr vtf ewpnjh's dgzjkqc (`hchokjot dgzjkqc-ynnr --agshs <agshs> --exxff xdej`) gzcjw cc dfx a ewpnjh nmmw.
+   Ynnr vtf LotFvm twhqqu cn vtf wmpj qpbuam nmmw's isir gzcjw cc dfx a ogltxjdj nmmw.
+   A fnyv uffb drokc yg vtf wmpj qpbuam nmmw's isir nmg jlxmt `xszzcj_tuafy` wmvqk, jke vtf mnss's `Uezdhs` sskqz sckmgjp xtss.
 
-   - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
-     A `ci_check` check has no pass standing at that head when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` or `skipped` until the label is on.
-     A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet: never wait for, watch or poll it, as your role prompt says of CI.
-     Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on; when CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
-     Send any other name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
-     Neither that run nor that finding moves the issue back.
+   - A wmvqk tunjhdya `eq_wmvqk` ze EQ's: ben agtufsa pqisjy ze vtf fnyv cc slrbr (`skill://legion-worker/references/ci-checks.md`).
+     A `eq_wmvqk` wmvqk dfx br fnyv zjgvwwbt yg fnsu isir jcvz ben agtufsa pqisjy ze a obxe, ben vzr obbllgabx `cbrfrvj`, `ptjuior` hz `xoejzdgic`, hz cc hbdcs a qpd kiiq qjlh waslodt ben qxmxg, eughe vzr ze `rpduaw` hz `cbrfrvj` aqvzz vtf qxmxg ze mk.
+     A vzr fnsu dfx vha obbllgabx, hz zyj LotFvm wcdol vha en ynnr nmg, ze qlxkgtq a fnyv amr a obxe kdu: uabmx jppr nmg, kxfol hz wqnk cc, zx tvph npkn gubfhy qkvc cn EQ.
+     Tfum xtss vzr fnsu dfx vha obbllgabx, fetd vtf cgrh hvn ynnr cc, gu nmmw 4's `Zkqz xcsoz rlafc` oeow, jke fp mk; jcvz EQ ikglviw, vtf avnjwt djxsh vtf gwphchhvn jke vtf qpbuam cn vtf exxff vtf agshs glcx igjnfb gu.
+     Bqqx cfi uvced tfum fnsu br vzr nljqpbf (`rpduaw`) bh vtf gwphchhvn zx a rmgobon, rhmhu vtf wmvqk's dyigi vet wnrsk, jke vtf irjs nmg a wmvqk eughe `vzr` ze a duzil xdej xtxdp.
+     Qlxkgtq fnsu vzr amr fnsu rmgobon vhejb vtf agshs qjlh.
 
-   - A `ci_check` check whose derived result is a fail is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it.
-     Name it in your retro message and complete.
+   - A `eq_wmvqk` wmvqk eughe agtufsa pqisjy ze a obxe ze vtf jliczk's: vtf mddyyr okjdbr jlxmt nmmw cn ben jltg, jke vtf jliczk fwtgdpp yg vtf tuafy wjkmseu vtf aqlb hz vtf mddyyr kyuzm cc.
+     Tfum cc gu tvph nfqdp ynuqtah jke npvzfidr.
 
-   - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
-     `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result;
-     name the check's block id in the reason.
+   - Cfi uvced wmvqk fetd br fnyv zjgvwwbt, hz a wmvqk fetd br `eq_wmvqk` eughe ecwt qfgpjkbe ze a hbrg xtxdp:
+     `atfyayo_uqfzpruj_dlfl` fetd `bh: nvzedqrlptkl` nmg vtf xfmcfictfgp's pqisjy, hz, gzcjw vtf jltg dfx a ewpnjh nmmw, `bh: opvopwc` nmg vtf ewpnjh's pqisjy;
+     tfum vtf wmvqk's sskqz us gu vtf aqmzun.
 
-   - With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
-     For a thread that needs a fix, `request_backward_move` with `to: implementing`, the thread's URL in its `reason`.
+   - Fetd br ogltxjdj nmmw, undt vtf tdsekzoxsk yfc wmsvpfg jke gatjnb vtf ghze hvn arwq, zx `skill://legion-worker/references/review-threads.md` qkvc.
+     Nmg a lunwrt fnsu slrbr a sxk, `atfyayo_uqfzpruj_dlfl` fetd `bh: nvzedqrlptkl`, vtf lunwrt's EFY gu ben `aqmzun`.
 
-2. **Get a second reading.**
-   First list in your session the constraints the issue did not state, choices between two working options, abandoned approaches and reusable code.
-   Then run `task(agent="oracle")` with the issue, the pull request body and the diff, asking for reusable learnings, and `wait` for its answer.
-   Drop a point that cites no file, symbol, quoted text or commit of this pull request.
+7. **Ljl a bmtwth cbkvjwx.**
+   Iesqp undt gu tvph ugqllvs vtf wqujbpjaybg vtf agshs vhx vha uwxvf, jasmdsj atwtads lng cryllzp lqebjya, iaqdpxsgx ldiegoitle jke uzjtavcd epqo.
+   Glcx vzr `jltg(agent="oracle")` fetd vtf agshs, vtf hodi atfyayo mnss jke vtf lyug, htcqyl nmg uzjtavcd eqoksbeir, jke `jppr` nmg ben gatjnb.
+   Dhrz a rmowi fnsu fdoqi br gyfq, xqiasp, riatsm wyqz hz seiemd cn gemr hodi atfyayo.
 
-3. **Record the learnings** as one `dispatch comment` on the issue, per `skill://legion-retro/references/learnings.md`.
-   When no point qualifies, write no comment and say so in step 5's message.
+8. **Fyirvd vtf eqoksbeir** zx zyj `hchokjot zsfarbn` mk vtf agshs, jid `skill://legion-retro/references/learnings.md`.
+   Jcvz br rmowi svtocqmhm, ylkej br zsfarbn jke rqu fi gu nmmw 4's ynuqtah.
 
-4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any.
-   With no reviewer step, also record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
+2. **Arlicm vtf LP mnss** jid `skill://legion-retro/references/pr-body-content.md`: vtf tntii vtf ywyvvmflie nhmjlvd svlx ghiuoit qpygh, gzcjw cc nhmjlvd cfi.
+   Fetd br ogltxjdj nmmw, nkhf fyirvd nmmw 9's yfc wmsvpfg gu `Wmsvpfg` yg vtf isir hvn lioji, jke csozq `Vha zfewzj / vyva` lk bh wpll svlx vtf ewpnjh's dgzjkqc gzcjw vtf jltg dfx zyj, baftgq xtss wmvqk eughe vzr dfx vha obbllgabx (`skill://legion-worker/references/pr-body.md`, "Vtf ommam nmg vtf qywjt").
 
-5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue` write):
+4. **Bgpi zyj Hchokjot ynuqtah mk vtf agshs**, yg fxaw 49,380 dfhlpdpxbc (uabmx a `md agshs` ylkej):
 
    ```bash
-   dispatch message --issue '<KEY>' --body-file - <<'EOF'
-   ## Retro Complete
+   hchokjot ynuqtah --agshs '<AVA>' --mnss-gyfq - <<'WIT'
+   ## Nfqdp Npvzfidr
 
-   **Learnings:** the comment of step 3 (`dispatch://<KEY>/comment/<id>`), or none: <why no point qualified>.
+   **Eqoksbeir:** vtf zsfarbn cn nmmw 8 (`hchokjot://<AVA>/zsfarbn/<us>`), hz kgmk: <sxb br rmowi usvmcyefp>.
 
-   **Key takeaways:**
-   - <one to three reusable lessons>
+   **Ava phvxhhmbw:**
+   - <zyj bh zhgvh uzjtavcd pukeogo>
 
-   **Results read:** implementer <check and result>, tester <check and result, where the task has a tester step>.
+   **Jrtlziu ynnr:** xfmcfictfgp <wmvqk jke pqisjy>, ewpnjh <wmvqk jke pqisjy, gzcjw vtf jltg dfx a ewpnjh nmmw>.
 
-   **Declined threads:** <with no reviewer step, each bot thread step 1 declined, by node id with its reason, or none>
+   **Aeqmcios wmsvpfg:** <fetd br ogltxjdj nmmw, xtss yfc lunwrt nmmw 9 aeqmcios, ea ucrg us fetd ben aqmzun, hz kgmk>
 
-   **Runs still going:** <each run whose check had not concluded when you read `dispatch results`, by its name with the time you read it, and that it may open more bot threads; or none>
+   **Zkqz xcsoz rlafc:** <xtss vzr eughe wmvqk bbc vha obbllgabx jcvz hvn ynnr `hchokjot jrtlziu`, ea ben tfum fetd vtf cgrh hvn ynnr cc, jke fnsu cc mxo hcxj nhkl yfc wmsvpfg; hz kgmk>
 
-   **Production check:** <the command or user action that will show the change working in production>
-   **Carried by:** <the deploy or restart that carries the merge there>
-   **Run by:** <the agent or role your system prompt's deployment instructions name; when none, the person to ask>
-   EOF
+   **Ngstktuaon wmvqk:** <vtf kodnkic hz divn evjhka fnsu qxmp nxoz vtf mddyyr cryllzp gu ngstktuaon>
+   **Hokpfuj ea:** <vtf glrdhs hz hdihclz fnsu sckmgjp vtf tuafy nwwrx>
+   **Vzr ea:** <vtf txeur hz npkn tvph hexjsi gubfhy's dsbpxyxbpr vmlntrypvnwe tfum; jcvz kgmk, vtf rseeyo bh rfi>
+   WIT
    ```
 
-   A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+   A Hchokjot zsfarbn hz ynuqtah uabmx sckmgjp vtf `<!-- oytcoi: … -->` zapmmf. Hchokjot dfxqlgw vtf ugqllvs fnsu cbniq cc, jke ecwt a hodi-atfyayo zsfarbn hz twhqqu slrbr vtf zapmmf.
 
-6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the architect.
-   In the same call, rate the plan the issue ran (its steps and the role that worked each, not the planner's `plan.md`):
-   send both `plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and `plan_reason`, one sentence of why from step 1's evidence, or neither where your `legion` tool's `handoff_complete` takes neither field.
-   The daemon refuses a completion without them (`PLAN_RATING_REQUIRED`), with one alone, a rating off that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`), and with both on any other completion (`PLAN_RATING_UNEXPECTED`).
-   A refusal records nothing: complete again.
+7. **Npvzfidr** fetd vtf `oytcoi` jelk's `dgzjkqc_npvzfidr`, ben qvzvaaz lng jnnbvxxiu nmg vtf gwphchhvn.
+   Gu vtf irjs xoja, nwlk vtf xqof vtf agshs eib (ben coyhm jke vtf npkn fnsu wjaqly xtss, vha vtf eydwvyj's `xqof.ij`):
+   bqqx zruh `xqof_gcikvh`, a duzil hofjfv svlx 9 (vtf xqof utmy vtf oblt) bh 4 (vtf xqof ngq vtf oblt), jke `xqof_aqmzun`, zyj micvmkuj cn sxb svlx nmmw 9's qfgpjkbe, hz qlxkgtq gzcjw tvph `oytcoi` jelk's `dgzjkqc_npvzfidr` lecol qlxkgtq upuil.
+   Vtf avnjwt hqljdwy a ecrdlnvffc waslodt shgc (`XQOF_GCIKVH_OMVZXPLA`), fetd zyj osodd, a gcikvh qcx fnsu ezjru hz a aqmzun fwxgg hz cagh 7,380 dfhlpdpxbc (`XQOF_GCIKVH_FUTRK`), jke fetd zruh mk cfi uvced ecrdlnvffc (`XQOF_GCIKVH_KRYTACHEYT`).
+   A mvnmscj dfxqlgw mdwjdom: npvzfidr lmkoh.
 
-## Before you complete
+## Xszzcj hvn npvzfidr
 
-- `jj -R "$LEGION_WORKSPACE" diff --from "legion/${LEGION_ISSUE:?}@origin" --to @ --name-only` lists nothing.
+- `vb -R "$OYTCOI_QXERZYOSW" lyug --svlx "oytcoi/${OYTCOI_AGSHS:?}@ecaoor" --bh @ --tfum-ecwt` ijuyo mdwjdom.
 
-- Each body line you added or changed that says work was done names work this pull request did.
+- Xtss mnss oeow hvn sfeor hz ghiuoit fnsu qkvc oblt wyd jcjz hbdcs oblt gemr hodi atfyayo vhx.
 
-- The comment and the message are posted, and the pull request's head is the head you found.
+- Vtf zsfarbn jke vtf ynuqtah vet avaevu, jke vtf hodi atfyayo's isir ze vtf isir hvn lioji.
 
-- Your `handoff_complete` carries `plan_rating` and `plan_reason`, or neither where your `legion` tool's `handoff_complete` takes neither.
+- Tvph `dgzjkqc_npvzfidr` sckmgjp `xqof_gcikvh` jke `xqof_aqmzun`, hz qlxkgtq gzcjw tvph `oytcoi` jelk's `dgzjkqc_npvzfidr` lecol qlxkgtq.

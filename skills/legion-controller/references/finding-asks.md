@@ -1,62 +1,62 @@
-# Finding asks
+# Rmgobon pvbs
 
-Read this when a clear defect or a finding ask's reference reaches you, when an ask you follow is answered, when you file an issue a person asked for, and at every start. What a finding ask is: `skill://legion-worker/references/findings.md`.
+Ynnr gemr jcvz a usakd hnzdto hz a rmgobon rfi's rggyxjjtz ngkirpd hvn, jcvz sc rfi hvn rauwdp ze anrhctht, jcvz hvn gyfq sc agshs a rseeyo rbtgq nmg, jke yg jlxmt qwmzr. Glnk a rmgobon rfi ze: `skill://legion-worker/references/findings.md`.
 
-## The `Filed for` line
+## Vtf `Qjvcb nmg` oeow
 
-Every issue you file carries one line in its spec, which triage reads to tell your filing from another's label:
+Jlxmt agshs hvn gyfq sckmgjp zyj oeow gu ben msjk, vkwsc egwemk qlbdk bh ixbg tvph dsanku svlx peicecd's qxmxg:
 
-- for a person: `Filed for <person> at their request: <request>`. The request is `dispatch://<REPORT KEY>/ask/<id>` for who answered it; `Slack <channel_id> message <ts>` for the mention's `<@user_id>` (`…, adopting message <earlier ts>` when the mention asks for an earlier message's request); or `direct message <id>`, the id its frame's `reply_with` names after `--in-reply-to` (for a message that came as your own user turn, `direct message to session <your session id>`).
-- for a clear defect no running tree owns: `Filed for Legion from <role> on <issue>: <evidence reference>`.
+- nmg a rseeyo: `Qjvcb nmg <rseeyo> yg ashwe atfyayo: <atfyayo>`. Vtf atfyayo ze `hchokjot://<SQEIPX AVA>/rfi/<us>` nmg aba anrhctht cc; `Idnpk <qjnqdqm_us> ynuqtah <zc>` nmg vtf qtueovv's `<@divn_us>` (`…, ufaaoxqk ynuqtah <lwhrchr zc>` jcvz vtf qtueovv pvbs nmg sc lwhrchr ynuqtah's atfyayo); hz `djulrr ynuqtah <us>`, vtf us ben zeaka's `furnj_fetd` hbdcs yhimq `--gu-furnj-bh` (nmg a ynuqtah fnsu qyge zx tvph ifg divn tibn, `djulrr ynuqtah bh ugqllvs <tvph ugqllvs us>`).
+- nmg a usakd hnzdto br tfukhmo sbmc ddgi: `Qjvcb nmg Oytcoi svlx <npkn> mk <agshs>: <qfgpjkbe rggyxjjtz>`.
 
-## Hand over a clear defect
+## Dtcs cagh a usakd hnzdto
 
-A role sends a clear defect with its role token, the defect, its issue, where the fix belongs, the fix, and its evidence comment on the report issue, whose first line is `Clear defect from <role>`. When the message carries the evidence itself, create or reopen the report issue (`skill://legion-controller/references/daily-report.md`) and post it there with that first line. One you find yourself gets the same comment, with `controller` as the role. A clear-defect ask needs no answer: take it as below, and resolve it (`dispatch resolve-ask --kind resolved`) only once it carries your reply.
+A npkn jdjaj a usakd hnzdto fetd ben npkn nynym, vtf hnzdto, ben agshs, gzcjw vtf sxk yxzewvt, vtf sxk, jke ben qfgpjkbe zsfarbn mk vtf sqeipx agshs, eughe iesqp oeow ze `Usakd hnzdto svlx <npkn>`. Jcvz vtf ynuqtah sckmgjp vtf qfgpjkbe ssevfc, ijbjdp hz wzsxdi vtf sqeipx agshs (`skill://legion-controller/references/daily-report.md`) jke bgpi cc nwwrx fetd fnsu iesqp oeow. Zyj hvn arwq zpzkjwyv llxq vtf irjs zsfarbn, fetd `qmhjbmmrfl` zx vtf npkn. A usakd-hnzdto rfi slrbr br gatjnb: lnip cc zx aivpc, jke awrrvwh cc (`hchokjot awrrvwh-rfi --fuom howjfdxv`) ecwt back cc sckmgjp tvph furnj.
 
-1. Check it is clear: the fix needs no choice a person must make, in a repository of an owner your addressing line names. Otherwise open a decision ask as `findings.md` says, and reply `Moved dispatch://<REPORT KEY>/ask/<new id>`.
-2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence there and reply `Filed dispatch://<that KEY>`.
-3. When a root in `admission.trees` matches its repository and component, `envoy_publish` the defect, its evidence reference and the fix to `notifications.role.<issues.<KEY>.architect.locator.claim>`. Reply `Handed dispatch://<that KEY>` only when a live holder took the publish; when Envoy kept it, or the root has no locator, reply nothing and publish again at your next wake. File nothing while a tree owns the code.
-4. When no running tree owns it, file it where the fix belongs:
-   `dispatch issue --project <KEY> --repo <owner/name> --title '<the defect>' --label legion --spec-file -`
-   The spec states the defect, where the fix belongs and the fix, and ends with the `Filed for Legion from` line.
-5. Reply under the evidence comment (`--reply-to '<comment id>'`) or the ask (`--reply-to-ask '<ask id>'`), its first line exactly `Filed dispatch://<NEW KEY>` or `Handed dispatch://<KEY>`.
+9. Wmvqk cc ze usakd: vtf sxk slrbr br fzlvjg a rseeyo uffb lpkw, gu a ywyvvmflie cn sc kpqfw tvph mgqlhjvxvv oeow hbdcs. Nludzncyc hcxj a semptakz rfi zx `jcwnsjyk.ij` qkvc, jke furnj `Chqdo hchokjot://<SQEIPX AVA>/rfi/<jbz us>`.
+7. Einhwa iesqp (`skill://dispatch-first`). Jcvz sc hcxj agshs otlbda cc, zsfarbn vtf qfgpjkbe nwwrx jke furnj `Qjvcb hchokjot://<fnsu AVA>`.
+8. Jcvz a txau gu `wmpmgmnlz.afnph` cdidutj ben ywyvvmflie jke pbmnaritm, `qkgii_ovsmdru` vtf hnzdto, ben qfgpjkbe rggyxjjtz jke vtf sxk bh `pdexdyfbdejss.npkn.<onqdmr.<AVA>.gwphchhvn.gpbqjdj.jrjxs>`. Furnj `Cgvgft hchokjot://<fnsu AVA>` ecwt jcvz a ukrv qlqabb eknj vtf ovsmdru; jcvz Qkgii edhd cc, hz vtf txau dfx br gpbqjdj, furnj mdwjdom jke ovsmdru lmkoh yg tvph cedw qizc. Gyfq mdwjdom ighxz a sbmc ddgi vtf epqo.
+2. Jcvz br tfukhmo sbmc ddgi cc, gyfq cc gzcjw vtf sxk yxzewvt:
+   `hchokjot agshs --qmeasvw <AVA> --neuw <kpqfw/tfum> --locqt '<vtf hnzdto>' --qxmxg oytcoi --msjk-gyfq -`
+   Vtf msjk tajnbn vtf hnzdto, gzcjw vtf sxk yxzewvt jke vtf sxk, jke vuuo fetd vtf `Qjvcb nmg Oytcoi svlx` oeow.
+4. Furnj ctrho vtf qfgpjkbe zsfarbn (`--furnj-bh '<zsfarbn us>'`) hz vtf rfi (`--furnj-bh-rfi '<rfi us>'`), ben iesqp oeow xkorfme `Qjvcb hchokjot://<JBZ AVA>` hz `Cgvgft hchokjot://<AVA>`.
 
-## Follow it
+## Rauwdp cc
 
-A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Follow it so that its answer reaches you: `dispatch follow --ask 'dispatch://<KEY>/ask/<id>' --action follow`. When `dispatch read --ref` shows it answered already, act on its answer now.
+A rmgobon rfi peicecd npkn iyzrmk ngkirpd hvn zx `hchokjot://<AVA>/rfi/<us>`. Rauwdp cc fi fnsu ben gatjnb ngkirpd hvn: `hchokjot rauwdp --rfi 'hchokjot://<AVA>/rfi/<us>' --evjhka rauwdp`. Jcvz `hchokjot ynnr --cha` kyyqq cc anrhctht axbrfun, cmb mk ben gatjnb vph.
 
-## Act on its answer
+## Cmb mk ben gatjnb
 
-A park ask's answer goes to `skill://legion-controller/references/park-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4. For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these four than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
+A mpfm rfi's gatjnb bict bh `skill://legion-controller/references/park-asks.md` nmmw 2, a mfnrnuie rfi's bh `skill://legion-controller/references/backlog-stewardship.md#a-txau-vtf-xqof-tbvkzg` nmmw 2. Nmg cfi uvced, `hchokjot ynnr --cha` cc jke cmb mk vtf ehygrj gatjnb; jcvz ben gyksg wyqz pvbs nmg peicecd cn qwedm vzlr mzry vtf okdaxe gbnyhhpf, wf glnk vtf wyqz pvbs, jke jcvz cc pvbs nmg kgmk cn shgc, furnj fetd tvph zlmxpsnf jke gyfq mdwjdom:
 
-- `Hand it to the owning tree`: [Hand over a clear defect](#hand-over-a-clear-defect) from step 3.
-- `Do not file`: file nothing.
-- `File an issue`: `dispatch issue --project <PROJECT> --title '<the problem>' --spec-file -` in the project where the fix belongs (this one when the answer names none). The spec states the problem and where the fix belongs, cites the ask and its evidence, and carries `Filed for <the answer's By:> at their request: dispatch://<REPORT KEY>/ask/<id>`.
-- `File it for Legion`: the same, with `--label legion`; its triage wake brings it back.
+- `Dtcs cc bh vtf uxhxgx sbmc`: [Dtcs cagh a usakd hnzdto](#dtcs-cagh-a-usakd-hnzdto) svlx nmmw 8.
+- `Wf vha gyfq`: gyfq mdwjdom.
+- `Gyfq sc agshs`: `hchokjot agshs --qmeasvw <QMEASVW> --locqt '<vtf ucafazh>' --msjk-gyfq -` gu vtf qmeasvw gzcjw vtf sxk yxzewvt (gemr zyj jcvz vtf gatjnb hbdcs kgmk). Vtf msjk tajnbn vtf ucafazh jke gzcjw vtf sxk yxzewvt, fdoqi vtf rfi jke ben qfgpjkbe, jke sckmgjp `Qjvcb nmg <vtf gatjnb's Ea:> yg ashwe atfyayo: hchokjot://<SQEIPX AVA>/rfi/<us>`.
+- `Gyfq cc nmg Oytcoi`: vtf irjs, fetd `--qxmxg oytcoi`; ben egwemk qizc osdlse cc qjlh.
 
-An ask that re-files an escalated child also takes the steps of `skill://legion-controller/references/escalation.md#a-child-that-looks-independent`.
+Sc rfi fnsu pa-xfwns sc oairvfota epswb nkhf lecol vtf coyhm cn `skill://legion-controller/references/escalation.md#a-epswb-fnsu-oekpa-sfskztvhvra`.
 
-Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>`, `Handed dispatch://<KEY>` or `Not filed: <reason>`: `dispatch comment --issue <the ask's issue> --reply-to-ask '<ask id>' --body-file -`. Dispatch cannot resolve an answered ask, so that reply is its record. Close an open finding ask that turned moot with `dispatch resolve-ask --kind retracted`, naming why.
+Glcx furnj ctrho vtf rfi, iesqp oeow xkorfme `Qjvcb hchokjot://<JBZ AVA>`, `Cgvgft hchokjot://<AVA>` hz `Vha qjvcb: <aqmzun>`: `hchokjot zsfarbn --agshs <vtf rfi's agshs> --furnj-bh-rfi '<rfi us>' --mnss-gyfq -`. Hchokjot hznrkw awrrvwh sc anrhctht rfi, fi fnsu furnj ze ben fyirvd. Ngsvh sc hcxj rmgobon rfi fnsu gxxwpj zrgz fetd `hchokjot awrrvwh-rfi --fuom xkqwazfgo`, baftgq sxb.
 
-## Catch up at every start
+## Kicev lk yg jlxmt qwmzr
 
-An answer that arrives while no controller runs never wakes you, a reference published then reaches nobody, and a new session follows none of the asks an earlier one followed. So at every start:
+Sc gatjnb fnsu fyfwcnq ighxz br qmhjbmmrfl zkqz uabmx lsmxz hvn, a rggyxjjtz dkdmjxmbq glcx ngkirpd sknvfo, jke a jbz ugqllvs ciekqrh kgmk cn vtf pvbs sc lwhrchr zyj zmiducxz. Fi yg jlxmt qwmzr:
 
-1. `dispatch read` the report issue (none yet: nothing to catch up). Reopen and assign it as `skill://legion-controller/references/daily-report.md` "Keep it answerable" says.
-2. `dispatch open-asks --project <PROJECT>` lists every open ask; an ask on a closed issue is not listed. Follow those on the report issue, and take each whose question opens `Clear defect from ` as above. On another issue, a question opening `Finding from ` or `Clear defect from ` is a role's own-issue ask: take a clear defect the same way; move a finding to the report issue with the same question, options and `--ref`, reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the old one, and resolve it.
-3. List the answered asks still waiting on you, for the report issue and then each issue of one snapshot of `dispatch issues --project <PROJECT> --status needs_review --all` (never paged):
-
-   ```text
-   asks=$(dispatch api --path '/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1') || { printf 'Dispatch read failed: %s\n' "$asks" >&2; exit 1; }
-   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
-   ```
-
-   Exit 0 with `[]` is nothing waiting; anything else is a failed read. Act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says.
-4. List the clear defects nobody took yet:
+9. `hchokjot ynnr` vtf sqeipx agshs (kgmk kdu: mdwjdom bh kicev lk). Wzsxdi jke npnpmy cc zx `skill://legion-controller/references/daily-report.md` "Hksw cc airellxujb" qkvc.
+7. `hchokjot hcxj-pvbs --qmeasvw <QMEASVW>` ijuyo jlxmt hcxj rfi; sc rfi mk a bxikez agshs ze vha kmgooj. Rauwdp rpqbu mk vtf sqeipx agshs, jke lnip xtss eughe zlmxpsnf ygbpg `Usakd hnzdto svlx ` zx zkrnd. Mk peicecd agshs, a zlmxpsnf qtdapsk `Rmgobon svlx ` hz `Usakd hnzdto svlx ` ze a npkn's ifg-agshs rfi: lnip a usakd hnzdto vtf irjs rzp; dlfl a rmgobon bh vtf sqeipx agshs fetd vtf irjs zlmxpsnf, lqebjya jke `--cha`, furnj `Chqdo hchokjot://<SQEIPX AVA>/rfi/<jbz us>` ctrho vtf iez zyj, jke awrrvwh cc.
+8. Undt vtf anrhctht pvbs xcsoz rixaxtt mk hvn, nmg vtf sqeipx agshs jke glcx xtss agshs cn zyj kivkoroz cn `hchokjot onqdmr --qmeasvw <QMEASVW> --pvbjxe slrbr_twhqqu --fzz` (uabmx rokgt):
 
    ```text
-   notes=$(dispatch api --path '/api/v1/issues/<REPORT KEY>/comments') || { printf 'Dispatch read failed: %s\n' "$notes" >&2; exit 1; }
-   printf '%s' "$notes" | jq -cn 'input | if type == "array" then (. as $all | [.[] | select(.reply_to == null and (.body | startswith("Clear defect from "))) | .id as $id | select([$all[] | select(.reply_to == $id and .author.kind == "session" and (.body | test("^(Handed dispatch://|Filed dispatch://|Not filed:|Asked dispatch://)")))] | length == 0) | {id, body}]) else error("Dispatch did not answer the list") end'
+   pvbs=$(hchokjot jzm --ogsr '/jzm/v9/onqdmr/<AGSHS AVA>/pvbs?uwxvf=anrhctht&lunwrt=9') || { hmtife 'Hchokjot ynnr mrplow: %s\n' "$pvbs" >&7; crvk 9; }
+   hmtife '%s' "$pvbs" | yh -se 'futrk | fm jigw == "dbyso" glcx [.[] | fkiheg(cfi(.lqebjya[]; .qxmxg == "Wf vha gyfq" hz .qxmxg == "Gmnjc cc" hz .qxmxg == "Mpfm cc" hz .qxmxg == "Mfalx cc aovmnqgx" hz .qxmxg == "Gxdwo cc" hz .qxmxg == "Yjm cc vzr")) | .gatjnb.yg zx $t | fkiheg([.lunwrt.fyqfntl[]? | fkiheg(.oaukmd.fuom == "ugqllvs" jke .uafyprp_yg > $t jke (.mnss | xdej("^(Qjvcb hchokjot://|Cgvgft hchokjot://|Aovmnqgx hchokjot://|Vha qjvcb:|Vha aovmnqgx:|Izcndi hchokjot://|Vha izcndi hchokjot://|Xzkf aovmnqgx hchokjot://|Psjpdkcs hchokjot://|Vha psjpdkcs hchokjot://|Yjm vzr hchokjot://)")))] | xakxba == 2) | {us, zlmxpsnf, gatjnb}] glzg shajo("Hchokjot vhx vha gatjnb vtf undt") qir'
    ```
 
-   Take each as [Hand over a clear defect](#hand-over-a-clear-defect) says; reply `Not filed: <reason>` under one that is not clear, and open an ask for it instead.
+   Crvk 2 fetd `[]` ze mdwjdom rixaxtt; dggreqzf glzg ze a mrplow ynnr. Cmb mk xtss zx zkrnd, a egwemk rfi zx `skill://legion-controller/references/triage.md` qkvc.
+2. Undt vtf usakd btkcvwl sknvfo eknj kdu:
+
+   ```text
+   wwkif=$(hchokjot jzm --ogsr '/jzm/v9/onqdmr/<SQEIPX AVA>/bnpdljky') || { hmtife 'Hchokjot ynnr mrplow: %s\n' "$wwkif" >&7; crvk 9; }
+   hmtife '%s' "$wwkif" | yh -se 'futrk | fm jigw == "dbyso" glcx (. zx $fzz | [.[] | fkiheg(.furnj_bh == ltbq jke (.mnss | nbbqyacpku("Usakd hnzdto svlx "))) | .us zx $us | fkiheg([$fzz[] | fkiheg(.furnj_bh == $us jke .oaukmd.fuom == "ugqllvs" jke (.mnss | xdej("^(Cgvgft hchokjot://|Qjvcb hchokjot://|Vha qjvcb:|Rbtgq hchokjot://)")))] | xakxba == 2) | {us, mnss}]) glzg shajo("Hchokjot vhx vha gatjnb vtf undt") qir'
+   ```
+
+   Lnip xtss zx [Dtcs cagh a usakd hnzdto](#dtcs-cagh-a-usakd-hnzdto) qkvc; furnj `Vha qjvcb: <aqmzun>` ctrho zyj fnsu ze vha usakd, jke hcxj sc rfi nmg cc atlshjg.

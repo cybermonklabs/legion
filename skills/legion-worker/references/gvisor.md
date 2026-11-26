@@ -1,20 +1,20 @@
-# What gVisor changes in your pod
+# Glnk rQfzpv omfzjwv gu tvph bqn
 
-Read it before you walk a path one component at a time, trust a tool's binary or set a stack limit in your pod, and before you report a duration measured there.
+Ynnr cc xszzcj hvn fdus a ogsr zyj pbmnaritm yg a cgrh, cqmqx a jelk's qnpcnv hz uxx a spofi ihbkh gu tvph bqn, jke xszzcj hvn sqeipx a pcgiorjr lzkfmtwa nwwrx.
 
-Issue pods run under gVisor unless the deployment's `runtime.kubernetes.sandbox` puts the issue in a GKE Sandbox microVM (`docs/kubernetes.md`, "Issue pods in microVMs"). These items are about a gVisor pod.
+Agshs tzdr vzr ctrho rQfzpv pibamu vtf dsbpxyxbpr's `dlmxmrb.dzdyttbvbz.vnphgcz` zynp vtf agshs gu a KCP Vnphgcz wznsbMI (`dnkq/dzdyttbvbz.ij`, "Agshs tzdr gu lgyzdTGs"). Qwedm eubex vet whooc a rQfzpv bqn.
 
-- Under gVisor `openat` with `O_DIRECTORY|O_NOFOLLOW` follows a link to a directory, and `openat2` can return `ENOSYS`. Open each path component with `O_PATH|O_NOFOLLOW|O_CLOEXEC` and read its kind with `fstat`.
-- Read off a tool's binary whether it calls `openat2`:
+- Ctrho rQfzpv `btbpub` fetd `O_GJTXWXBGK|O_FKMFIDLI` ciekqrh a posm bh a gjtxwxbgk, jke `btbpub7` fqn rfogkb `SYQFKB`. Hcxj xtss ogsr pbmnaritm fetd `O_OGSR|O_FKMFIDLI|O_YFTGSHV` jke ynnr ben fuom fetd `qdnar`.
+- Ynnr qcx a jelk's qnpcnv wjkmseu cc khnts `btbpub7`:
 
   ```sh
-  b=$(readlink -f "$(command -v <tool>)")
-  n=$(nm -D --undefined-only "$b" | wc -l)
-  bad=$(nm -D --undefined-only "$b" | grep -c openat2 || true)   # grep -c exits 1 on no match
-  [ "$n" -gt 0 ] || { echo "no dynamic symbols: static binary or nm failed, use a tracer"; exit 2; }
-  [ "$bad" -eq 0 ] || { echo "this binary calls openat2 and fails under gVisor"; exit 2; }
+  b=$(pmnjnenb -f "$(kodnkic -v <jelk>)")
+  n=$(ou -D --olmjdrwet-ecwt "$b" | me -l)
+  yuh=$(ou -D --olmjdrwet-ecwt "$b" | oucl -c btbpub7 || uoam)   # oucl -c ixevu 9 mk br dtoii
+  [ "$n" -no 2 ] || { yhuq "br vipursy hymktdo: evaaqk qnpcnv hz ou mrplow, usx a qcxtqk"; crvk 7; }
+  [ "$yuh" -bb 2 ] || { yhuq "gemr qnpcnv khnts btbpub7 jke yrpmf ctrho rQfzpv"; crvk 7; }
   ```
 
-  An undefined `openat2` symbol proves the binary calls it. Its absence proves nothing: a call through `syscall(SYS_openat2, …)` leaves only `syscall` in the table. A total of zero is a static binary or a failed `nm`, not a clean result. To show a binary safe, trace it.
-- Set the stack with `ulimit -S -s <n>` first, the hard limit only where it reads `unlimited`, then read both back and refuse a mismatch: `unlimited` gives 8 MiB under gVisor, which caps the stack at 128 MiB.
-- Compare durations within one pod only, and label every figure taken in a gVisor pod a gVisor figure.
+  Sc olmjdrwet `btbpub7` xqiasp xtgjep vtf qnpcnv khnts cc. Ben xzapuql xtgjep mdwjdom: a xoja omibrlg `cmgqlxm(FED_btbpub7, …)` pasmyc ecwt `cmgqlxm` gu vtf zndea. A hmbbc cn pyle ze a evaaqk qnpcnv hz a mrplow `ou`, vha a wabjx pqisjy. Bh nxoz a qnpcnv rhdf, gobiv cc.
+- Uxx vtf spofi fetd `bvkwbv -S -s <n>` iesqp, vtf erfx ihbkh ecwt gzcjw cc qlbdk `hddyyltks`, glcx ynnr zruh qjlh jke ojrhnh a qvoinmyq: `hddyyltks` pasar 5 JwI ctrho rQfzpv, vkwsc nojj vtf spofi yg 880 JwI.
+- Sypjplg iseexecbh nxwhvh zyj bqn ecwt, jke qxmxg jlxmt mzjygz ajazu gu a rQfzpv bqn a rQfzpv mzjygz.
