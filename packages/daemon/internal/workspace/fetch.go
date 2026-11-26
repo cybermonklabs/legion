@@ -200,12 +200,15 @@ func (e outsideVolume) Unwrap() []error { return []error{e.err, ErrOutsideVolume
 // A cache clone that already holds the repository has the delta fetched into it from GitHub, once
 // the locks and partial packs a killed fetch left are gone (RemoveStaleCacheLocks). A cache clone
 // in a shape Fetch does not write is removed and filled afresh. An absent cache clone is filled in a
-// temporary sibling, its garbage collection turned off (cacheConfiguration), and renamed into place
-// once everything that fills it succeeded, so the repository is whole and current, or absent. Both
-// fetch GitHub's default branch alone, as GitHub's HEAD names it, with --no-tags: the first fill is
-// that fetch into an empty bare repository, never a `git clone`, which asks GitHub for every
-// annotated tag that points into the branch it brings (include-tag) even with --no-tags, so the
-// cache would hold, and stream to every pod, tag objects no ref names.
+// temporary sibling, its own configuration written first (cacheConfiguration: no garbage collection,
+// and the fetch's objects kept as the pack they arrive in, which a fetch of fewer objects than git's
+// default unpack limit would otherwise explode into loose objects the cache's pack-only stream
+// leaves out), and renamed into place once everything that fills it succeeded, so the repository is
+// whole and current, or absent. Both fetch GitHub's default branch alone, as GitHub's HEAD names
+// it, with --no-tags: the first fill is that fetch into an empty bare repository, never a
+// `git clone`, which asks GitHub for every annotated tag that points into the branch it brings
+// (include-tag) even with --no-tags, so the cache would hold, and stream to every pod, tag objects
+// no ref names.
 //
 // Each GitHub transfer gets FetchTimeout unless the request sets Bound (the repository cache's own
 // first fill), and none starts past the one it is in. The repository cache's first fill may take
@@ -285,6 +288,9 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) error {
 	if _, err := RunChecked(ctx, run, slices.Concat(isolatedGit, []string{"init", "--bare", "--quiet", staging}), isolatedGitConfig, filepath.Dir(staging)); err != nil {
 		return err
 	}
+	if err := cacheConfiguration(ctx, run, staging); err != nil {
+		return err
+	}
 	target, err := fetchDefaultBranch(ctx, run, request, staging, held, request.Clock.Now().Add(request.bound()), true)
 	if err != nil {
 		return err
@@ -292,8 +298,8 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) error {
 	if _, err := CacheGit(ctx, run, staging, "symbolic-ref", "HEAD", target); err != nil {
 		return err
 	}
-	if err := settleCache(ctx, run, staging, cache); err != nil {
-		return err
+	if err := os.Rename(staging, cache); err != nil {
+		return fmt.Errorf("move the fetched repository into the cache at %s: %w", cache, err)
 	}
 	return credential.remove()
 }
@@ -335,18 +341,6 @@ func cacheFetchInto(gitDir string, repo ghrepo.Repository, target string) gitHub
 		}),
 		dir: gitDir,
 	}
-}
-
-// settleCache writes the cache repository's own configuration into staging and moves it to cache,
-// once what fills it has succeeded, so the cache repository is whole and current, or absent.
-func settleCache(ctx context.Context, run Runner, staging, cache string) error {
-	if err := cacheConfiguration(ctx, run, staging); err != nil {
-		return err
-	}
-	if err := os.Rename(staging, cache); err != nil {
-		return fmt.Errorf("move the fetched repository into the cache at %s: %w", cache, err)
-	}
-	return nil
 }
 
 // remoteHead is the ref GitHub's HEAD names, read as remoteRefs reads it; "" when GitHub names
