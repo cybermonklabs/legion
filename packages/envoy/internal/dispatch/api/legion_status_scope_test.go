@@ -95,14 +95,16 @@ func newLegionStatusRig(t *testing.T, on bool) *legionStatusRig {
 //
 //   - R26 refuses: the shared token; the shared token whose body's actor names the daemon's
 //     session, since a bearer's body can name any session and proves none; a personal token
-//     that holds no scope; a project's broker token, named and acting for a person; a pod's own
+//     that holds no scope; a project's broker token, named and acting for a person; a job's
+//     broker token, named (of the rig's project) and public, each naming a service and no person
+//     and holding no scope, which the sign-in check lets write as its service; a pod's own
 //     Kubernetes token.
 //   - R26 lets through: a browser sign-in; a personal token that holds person; a broker token
 //     scoped to a person; the daemon's broker token, named, of the daemon's session, whose scope
 //     is legion-status.
 //   - A check in front of the handler refuses, each with its own code: a read-only broker token
-//     (403 READ_ONLY_TOKEN), and a broker token that names a service and no person (403
-//     SIGN_IN_REQUIRED).
+//     (403 READ_ONLY_TOKEN), and the broker token of a machine nobody signed in on, which names a
+//     service and no person under the project scope person (403 SIGN_IN_REQUIRED).
 func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatusRig {
 	t.Helper()
 	issuer := newServiceTokenIssuer(t)
@@ -144,6 +146,10 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 			send: bearer(personalTokenHolding(t, rig.database), sessionActor())},
 		{name: legionProjectBrokerToken, verdict: legionRefused,
 			send: broker("a-project-token", liveNamedToken(caller.jkt))},
+		{name: "a job's named broker token", verdict: legionRefused,
+			send: broker("a-job-named-token", liveJobNamedToken(caller.jkt))},
+		{name: "a job's public broker token", verdict: legionRefused,
+			send: broker("a-job-public-token", liveJobPublicToken(caller.jkt))},
 		{name: "a pod's Kubernetes token", verdict: legionRefused,
 			send: bearer(issuer.mint(t, serviceTokenAudience), sessionActor())},
 		{name: legionBrowserSignIn, verdict: legionTaken,
@@ -157,7 +163,7 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 		{name: legionDaemonToken, verdict: legionTaken, send: broker("the-daemon-token", liveDaemonToken(caller.jkt))},
 		{name: "a read-only broker token", verdict: legionRefusedFirst, code: contracts.DispatchReadOnlyToken,
 			send: broker("a-read-only-token", readOnlyToken(caller.jkt))},
-		{name: "a broker token naming a service and no person", verdict: legionRefusedFirst, code: contracts.DispatchSignInRequired,
+		{name: "the broker token of a machine nobody signed in on", verdict: legionRefusedFirst, code: contracts.DispatchSignInRequired,
 			send: broker("a-service-token", serviceOnlyToken(caller.jkt))},
 	}
 	return rig

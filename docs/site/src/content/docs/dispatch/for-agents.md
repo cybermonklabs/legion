@@ -83,7 +83,7 @@ tells the agent who Dispatch takes it for.
 | Comments | `dispatch comment` comments on a document or replies in a thread; `--mention-role <name>`, repeated, mentions a role, so Dispatch delivers the comment to the session that holds it, and `--mention role:<name>` or `--mention session:<id>` names a target whole. `dispatch suggest` proposes replacement text. `dispatch edit-comment` replaces the body of a comment the agent wrote, and `dispatch delete-comment` withdraws one; [the command reference](/legion/dispatch/reference/tools/) states what each does. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. `dispatch edit-message` replaces the body of an issue message the agent wrote, and `dispatch delete-message` withdraws one; [the command reference](/legion/dispatch/reference/tools/) states what each does. |
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
-| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `--history`, with a `--ref` naming one comment or message, lists the bodies an edit of that post replaced; a delete writes an entry of its own, and a deleted post's entries carry no body ([the command reference](/legion/dispatch/reference/tools/)). `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. `dispatch api --path <route>` reads a route under `/api/v1` that no other command reads, with the agent's own credential, and prints Dispatch's JSON answer for `jq`; it sends only a GET, and a write goes through the command named for it. |
+| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `--history`, with a `--ref` naming one comment or message, lists the bodies an edit of that post replaced; a delete writes an entry of its own, and a deleted post's entries carry no body ([the command reference](/legion/dispatch/reference/tools/)). `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. `dispatch api --path <route>` sends one request of a route under `/api/v1` that no other command sends — a GET, or, with `--method POST`, `PUT`, `PATCH` or `DELETE`, a write whose JSON body `--body-file` reads — with the agent's own credential; a write that a named command makes goes through that command, and in a session whose AskGate reviews Dispatch writes it sends only a GET. It prints Dispatch's JSON indented, for `jq`, and a stored file or a `?download=true` read byte for byte, whatever its type. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
 | Steps | `dispatch steps --issue <KEY>` prints each step that ran on an issue, as the Legion daemon recorded it at the step's start and at its end: a line `<KEY>: <n> steps in <m> tasks`; where the records of the issue's newest run name an experiment, a line `Experiment <experiment>: variant <variant>.`, and no such line where they name none; then one line per run, task by task, naming its task, step, kind, role, type, attempt, agent, model, start, end and result. A field with no value prints `-`, and a run that has not ended prints `running` for its end and its result. An issue that no step ran on prints `<KEY>: 0 steps in 0 tasks`, and a key Dispatch does not hold fails as `dispatch read` fails for it: `NOT_FOUND: not found`, exit 1. |
 | Plans | `dispatch plans --project <PROJECT>` prints each finished issue of a project, newest close first: a line `<PROJECT>: <n> finished issues`, then one line per issue, `<KEY> closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings <rating>/5 "<reason>", … time <h>h<m>m failed steps <n>`, which ends with `variant <experiment>/<variant>` where the records of the issue's newest run name an experiment. The plan is the one of the issue's newest run, each rating is the one a retro gave the plan, 1 to 5, with its reason as a JSON string, the time runs from the first start of a step to the last end, and failed steps counts the runs of a step that failed. An issue with no plan prints `plan none`, one with no rating `ratings none`, one whose time is not known `time -`, and one whose newest run's records name no experiment nothing after `failed steps <n>`. `--since` and `--until`, each an RFC 3339 time, keep the issues closed at or after `--since` and before `--until`. |
@@ -401,10 +401,10 @@ sets, after which every `/api/v1` path answers `410 API_V1_ENDED`
 at that release, and names itself and its release in its `User-Agent`
 (`dispatch/<version> (<plugin>)`), which Dispatch's access log records.
 
-Every `POST` and `PATCH` an agent makes through `dispatch` is keyed: each write a command makes
-carries an `Idempotency-Key` header of its own, and the command asks again under that key when an
-attempt fails on the way, gets no answer for 20 seconds while none of its body is going out,
-Dispatch answers 5xx, 408 or 429, or Dispatch is still running an earlier attempt
+Every `POST` and `PATCH` an agent makes through a named `dispatch` command is keyed: each write a
+command makes carries an `Idempotency-Key` header of its own, and the command asks again under
+that key when an attempt fails on the way, gets no answer for 20 seconds while none of its body is
+going out, Dispatch answers 5xx, 408 or 429, or Dispatch is still running an earlier attempt
 (`409 KEY_IN_FLIGHT`): at most five attempts, the last starting within 30 seconds of the first, and
 the whole command within 60. Once an attempt got no answer for 20 seconds or was told
 `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and it finishes it whatever the
@@ -438,18 +438,19 @@ you run the command again, since a new command is a new key. A refusal Dispatch 
 Reads, the `PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, and the `DELETE`
 of `dispatch delete-comment` and `dispatch delete-message`, carry no key. Each goes once, and again
 only where Dispatch did nothing with it: once more after Dispatch calls the token it presented
-dead, and on an old build's "no route" during a rolling release. Such a `PUT` or `DELETE` that
-fails in transport after it went out, reaches the command's deadline or gets Dispatch's own 5xx may
-or may not have taken effect too, and the command says so and to check whether it did before
-retrying it. The markdown round trip `dispatch artifact` asks before it uploads inline text, and
-the search `dispatch related` runs, are `POST`s that store nothing: they are keyed and asked again
-like a write, but a failure of either is told as a read's, with none of those words. A script that
-calls the API directly can send its own key on any `POST`, `PATCH`, `PUT` or `DELETE` of `/api/v2`,
-and on any `POST` or `PATCH` of `/api/v1`: 1 to 128 letters, digits, `.`, `_`, `:` and `-`, the
-same on every retry of one write and new for every new write. Dispatch keeps each key's answer for
-24 hours; the same key with a different request is refused `422 KEY_REUSED`, and so is one key
-sent to a `/api/v1` route and then to its `/api/v2` route, which are two routes and so two
-requests. On `/api/v2` a repeat of a comment's or an issue message's edit or delete, or of a
-comment's state, is answered with that post as it stands now. On `/api/v1` a repeat of an edit or
-of a comment's state is answered the same way, but a delete carries no key, so a repeated delete
+dead, and on an old build's "no route" during a rolling release. Such a `PUT` or `DELETE` that fails
+in transport after it went out, reaches the command's deadline or gets Dispatch's own 5xx may or may
+not have taken effect too, and the command says so and to check whether it did before retrying it.
+`dispatch api`'s request, a write too, carries no key either: it goes once, and once more only after
+Dispatch calls the token it presented dead. The markdown round trip `dispatch artifact` asks before
+it uploads inline text, and the search `dispatch related` runs, are `POST`s that store nothing: they
+are keyed and asked again like a write, but a failure of either is told as a read's, with none of
+those words. A script that calls the API directly can send its own key on any `POST`, `PATCH`, `PUT`
+or `DELETE` of `/api/v2`, and on any `POST` or `PATCH` of `/api/v1`: 1 to 128 letters, digits, `.`,
+`_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
+each key's answer for 24 hours; the same key with a different request is refused `422 KEY_REUSED`,
+and so is one key sent to a `/api/v1` route and then to its `/api/v2` route, which are two routes
+and so two requests. On `/api/v2` a repeat of a comment's or an issue message's edit or delete, or
+of a comment's state, is answered with that post as it stands now. On `/api/v1` a repeat of an edit
+or of a comment's state is answered the same way, but a delete carries no key, so a repeated delete
 runs again and is refused `409 POST_DELETED`.

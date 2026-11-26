@@ -484,8 +484,11 @@ func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
 // scoped to one project. A credential holding none is answered an empty array and
 // never null, so a reader need not tell "this credential holds no scope" from "this build does
 // not say". A personal token holding the person scope is still kind `agent`, since the kind
-// names the credential and the owner names the person it acts for. The server reads broker
-// tokens through a stub broker (newBrokerTokenRigOn), so one server answers every row.
+// names the credential and the owner names the person it acts for. Only an access token the
+// secrets broker issued is answered a project_scope, its own: the two broker rows answer named,
+// and every other row answers none, which the dispatch command reads as the credential carrying
+// none. The server reads broker tokens through a stub broker (newBrokerTokenRigOn), so one server
+// answers every row.
 func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
@@ -496,6 +499,8 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 		call   func() *httptest.ResponseRecorder
 		kind   string
 		scopes []string
+		// projectScope is the project_scope the answer carries, empty for none.
+		projectScope string
 	}{
 		{
 			name: "a person signed in at a browser",
@@ -546,8 +551,9 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 				rig.broker.Says("the-daemon-token", liveDaemonToken(caller.jkt))
 				return rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", "the-daemon-token", nil))
 			},
-			kind:   "agent",
-			scopes: []string{"legion-status"},
+			kind:         "agent",
+			scopes:       []string{"legion-status"},
+			projectScope: ciphertoken.ProjectScopeNamed,
 		},
 		{
 			name: "a named broker token whose answer holds legion-status and names a person and no project",
@@ -558,8 +564,9 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 				rig.broker.Says("the-projectless-token", token)
 				return rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", "the-projectless-token", nil))
 			},
-			kind:   "agent",
-			scopes: []string{},
+			kind:         "agent",
+			scopes:       []string{},
+			projectScope: ciphertoken.ProjectScopeNamed,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -571,7 +578,8 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 				Kind string `json:"kind"`
 				// A pointer, so a null reads differently from the empty array the answer owes a
 				// credential that holds no scope.
-				Scopes *[]string `json:"scopes"`
+				Scopes       *[]string `json:"scopes"`
+				ProjectScope *string   `json:"project_scope"`
 			}](t, response)
 			if got.Kind != test.kind {
 				t.Fatalf("whoami as %s = kind %q, want %q: %s", test.name, got.Kind, test.kind, response.Body.String())
@@ -581,6 +589,12 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			}
 			if !slices.Equal(*got.Scopes, test.scopes) {
 				t.Fatalf("whoami as %s = scopes %v, want %v", test.name, *got.Scopes, test.scopes)
+			}
+			switch {
+			case test.projectScope == "" && got.ProjectScope != nil:
+				t.Fatalf("whoami as %s = project_scope %q, want none: only a broker-issued token carries one: %s", test.name, *got.ProjectScope, response.Body.String())
+			case test.projectScope != "" && (got.ProjectScope == nil || *got.ProjectScope != test.projectScope):
+				t.Fatalf("whoami as %s = project_scope %v, want %q: %s", test.name, got.ProjectScope, test.projectScope, response.Body.String())
 			}
 		})
 	}

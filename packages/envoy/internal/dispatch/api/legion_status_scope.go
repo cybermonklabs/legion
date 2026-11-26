@@ -14,8 +14,8 @@ package api
 //
 // The Legion daemon owns a Legion issue's status. Its own broker token holds legion-status, and a
 // person's own credential holds person. Every other credential holds neither: the shared token, a
-// personal token without person, a project's broker token and a pod's Kubernetes token. R26
-// refuses each of them, but for one exception.
+// personal token without person, a project's broker token, a job's broker token and a pod's
+// Kubernetes token. R26 refuses each of them, but for one exception.
 //
 // The exception is the owning architect's write (writtenByOwningArchitect). For a credential that
 // holds neither scope, it lifts the refusal of a step's status write, rule (a), and nothing else,
