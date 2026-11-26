@@ -137,6 +137,22 @@ func TestEachEventJudgesTheCloseAgain(t *testing.T) {
 		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "done"}}, passing("c-after", waitRootMerge)))
 		closedOnChecks(t, rig, waitRoot)
 	})
+
+	// The production check's close: a pass at its look closes it recorded, and that close queues
+	// the read that closes the issue.
+	t.Run("the production check closes", func(t *testing.T) {
+		rig := newWaitRig(t, claim.RoleTester)
+		rig.seedRoot(phase.Merging, "retro")
+		rig.mergeRoot()
+		rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+		rig.stands(waitRoot, phase.Verifying, "testing")
+		rig.ranOut(waitRoot, "close_read")
+		rig.report(waitRoot, 1, "pass", "the check passed in production", nil)
+		readsQueued(t, rig, 1)
+		rig.stands(waitRoot, phase.Verifying, "testing")
+		rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+		closedOnChecks(t, rig, waitRoot)
+	})
 }
 
 // readsQueued fails the test unless the root holds want close_read rows.

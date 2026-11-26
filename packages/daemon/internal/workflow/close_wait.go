@@ -406,18 +406,128 @@ func (e *Engine) closeChecksRead(ctx context.Context, tx pgx.Tx, fact intake.Clo
 	if issue.Phase != phase.Verifying {
 		return intake.Result{}, nil
 	}
+	if err := e.openCheckAtRead(ctx, tx, *issue); err != nil {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, e.judgeClose(ctx, tx, *issue)
+}
+
+// openCheckAtRead opens the production check of issue, which waits in verifying, at a fresh read
+// (D6): a read that counts, made after the issue's newest entry into verifying, with nothing beneath
+// it in the workflow, no reason of a next change waiting and no change open, where no check of the
+// issue's generation and merge stands (openCheck). A merged root whose children still run opens its
+// check at the read its last child's leave queues, so its bound counts from that open. A project
+// that runs no production check opens nothing.
+func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if e.checkRole() == "" {
+		return nil
+	}
+	view, err := e.closeWait(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	read := view.facts.Read
+	if read == nil || read.Failure != "" || !read.ReadAt.After(view.facts.Entered) {
+		return nil
+	}
+	if len(view.wait.Beneath) > 0 || len(view.facts.Defects) > 0 || view.facts.OpenChange {
+		return nil
+	}
+	if check := view.facts.Production; check != nil && check.Generation == issue.Generation && check.MergeSHA == issue.Merge.SHA {
+		return nil
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+	if err != nil {
+		return err
+	}
+	return e.openCheck(ctx, tx, issue, issue.Merge, lingers)
 }
 
 // resultChanged is a change of what Dispatch computes for an issue's checks
 // (intake.DispatchResultChanged): a result recorded or retracted, a pull request's move, or a
-// deploy. None decides a check, so an issue in verifying has its checks read again.
+// deploy. None decides a check, so an issue in verifying has its checks read again. A result
+// recorded after the production check closed as not run opens one more look (lookAfterNotRun).
 func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.DispatchResultChanged) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Key)
 	if err != nil || issue == nil || issue.Phase != phase.Verifying {
 		return intake.Result{}, err
 	}
+	if err := e.lookAfterNotRun(ctx, tx, *issue, fact); err != nil {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, e.askCloseRead(ctx, tx, *issue)
+}
+
+// lookAfterNotRun opens one more look of issue's production check where a result is recorded
+// (fact.Verdict, result.recorded) for a check that has no pass in the newest read, the check of the
+// issue's generation and newest merge closed not_run, and no look is open (D6). No timer and no
+// deploy opens such a look. The record opens again in place: its close cleared, Last set, and the
+// look number counted on, so each row and report of an earlier look stays fenced by its look
+// number and OpenedAt. relook_seq holds the Dispatch sequence of the event that opened it, so a
+// redelivered event opens nothing.
+func (e *Engine) lookAfterNotRun(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchResultChanged) error {
+	if fact.Verdict == "" || fact.Check == "" {
+		return nil
+	}
+	check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+	if err != nil || check == nil {
+		return err
+	}
+	if check.Open() || check.Outcome != record.CheckNotRun || check.Generation != issue.Generation || check.MergeSHA != issue.Merge.SHA ||
+		fact.Seq <= check.RelookSeq {
+		return nil
+	}
+	read, err := e.store.NewestCheckRead(ctx, tx, issue.Key)
+	if err != nil || read == nil || len(read.Answer) == 0 {
+		return err
+	}
+	var answer record.CheckReadAnswer
+	if err := json.Unmarshal(read.Answer, &answer); err != nil {
+		return nil
+	}
+	withoutPass := false
+	for _, block := range answer.Results.Checks {
+		if block.BlockID == fact.Check && block.PassStands.Answer != dispatch.PassStandsYes {
+			withoutPass = true
+		}
+	}
+	if !withoutPass {
+		return nil
+	}
+	check.ClosedAt, check.Outcome, check.RelookSeq = nil, "", fact.Seq
+	e.logOnCommit(ctx, "workflow: a result after the production check closed as not run opens one more look", "issue", issue.Key,
+		"check", fact.Check, "result", fact.ResultID, "seq", fact.Seq)
+	return e.startLook(ctx, tx, issue, check, wakeResult, fmt.Sprintf("%s, recorded after the check closed as not run", fact.Check), true)
+}
+
+// closeWaitNoResult tells the owning architect once, at the close of the production check of issue,
+// which waits in verifying, where the check closed as not run or a check still has no pass in the
+// newest read: each such check with its answer and reason, and the check's outcome (D5, D6).
+func (e *Engine) closeWaitNoResult(ctx context.Context, tx pgx.Tx, issue record.Issue, check record.ProductionCheck) error {
+	var without []string
+	read, err := e.store.NewestCheckRead(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	if read != nil && read.Failure == "" && len(read.Answer) > 0 {
+		var answer record.CheckReadAnswer
+		if err := json.Unmarshal(read.Answer, &answer); err == nil {
+			for _, block := range answer.Results.Checks {
+				if block.PassStands.Answer != dispatch.PassStandsYes {
+					without = append(without, fmt.Sprintf("%s (%s)", block.BlockID, strings.Trim(block.PassStands.Answer+", "+block.PassStands.Reason, ", ")))
+				}
+			}
+		}
+	}
+	if check.Outcome != record.CheckNotRun && len(without) == 0 {
+		return nil
+	}
+	reason := fmt.Sprintf("The production check of %s closed as %s, at generation %d and merge commit %s.", issue.Key, check.Outcome, check.Generation, check.MergeSHA)
+	if len(without) > 0 {
+		reason += " These checks have no pass: " + strings.Join(without, ", ") + "."
+	}
+	reason += fmt.Sprintf(" %s stays open in verifying. Read what its close waits for in close-wait.md.", issue.Key)
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-wait-no-result", Role: claim.RoleArchitect, Reason: reason})
 }
 
 // askAncestorsRead queues a read of the checks of each issue above issue that stands in
@@ -599,11 +709,11 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 }
 
 // suspendCheckedChild is the one suspension of a merged child's pod at its close on its checks,
-// where its project runs a production check: the check closed while the child stood in verifying
-// and suspended nothing then, and the child's leave spares the checking role's claim for it, so the
-// close closes that claim and queues the IssueSuspend the check's close would have queued for a
-// closed issue. A project that runs no production check has its child's leave queue the one
-// suspension, so nothing is queued here for it.
+// where its project runs a production check: the check closed while the child stood in verifying,
+// closing the checking role's claim and deleting nothing of the pod (closeCheck, D6), and the
+// child's leave spares the checking role's claim for it, so the close queues the IssueSuspend the
+// check's close did not. A project that runs no production check has its child's leave queue the
+// one suspension, so nothing is queued here for it.
 func (e *Engine) suspendCheckedChild(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView) error {
 	if claim.IsTreeRoot(issue.Key, issue.Tree) || !view.facts.ProductionOn {
 		return nil
@@ -611,10 +721,6 @@ func (e *Engine) suspendCheckedChild(ctx context.Context, tx pgx.Tx, issue recor
 	check := view.facts.Production
 	if check == nil || check.Open() {
 		return nil
-	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: check.Role, Generation: issue.Generation,
-		Reason: fmt.Sprintf("%s closed on the checks of its goal", issue.Key)}); err != nil {
-		return err
 	}
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil {
@@ -678,6 +784,105 @@ func (e *Engine) judgeEachVerifying(ctx context.Context, tx pgx.Tx, issues []rec
 		}
 	}
 	return nil
+}
+
+// tellEachStanding tells the owning architect of each live issue of the project in verifying, once
+// each UTC day at the first controller tick of the day, each term that still holds its close
+// (D11, close-wait-standing): the turn's own read is queued by judgeEachVerifying, and its answer
+// opens a production check of the issue's generation where none stands (openCheckAtRead). An
+// issue that waits for nothing is not told, and a term that stands no more is not named.
+func (e *Engine) tellEachStanding(ctx context.Context, tx pgx.Tx, issues []record.Issue) error {
+	now := e.now()
+	for _, listed := range issues {
+		if listed.Phase != phase.Verifying {
+			continue
+		}
+		issue, err := e.store.Issue(ctx, tx, listed.Key)
+		if err != nil {
+			return err
+		}
+		if issue == nil || issue.Phase != phase.Verifying {
+			continue
+		}
+		if told := issue.StandingToldAt; told != nil && told.UTC().Format(time.DateOnly) == now.UTC().Format(time.DateOnly) {
+			continue
+		}
+		view, err := e.closeWait(ctx, tx, *issue)
+		if err != nil {
+			return err
+		}
+		if view.wait.Done() {
+			continue
+		}
+		stored, err := storedWaitOf(*issue)
+		if err != nil {
+			return err
+		}
+		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+		if err != nil {
+			return err
+		}
+		terms := standingTerms(*issue, stored, lingers)
+		if len(terms) == 0 {
+			continue
+		}
+		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-wait-standing", Role: claim.RoleArchitect,
+			Reason: fmt.Sprintf("%s still waits in verifying for its close. ", issue.Key) + strings.Join(terms, " ") + " Read the whole wait in close-wait.md."}); err != nil {
+			return err
+		}
+		toldAt := now
+		issue.StandingToldAt = &toldAt
+		if err := e.WriteIssue(ctx, tx, *issue); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// standingTerms is one sentence for each term of stored, the issue's stored wait, that holds its
+// close, with its cause and since when it stands (D11): the read that does not count, the checks
+// changed without approval, each issue beneath and each open child, each check without a pass,
+// the production check where it holds the close with its way out, each reported reason, and a
+// reason that waits in a tree that does not run.
+func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) []string {
+	since := func(at time.Time) string { return at.UTC().Format(time.RFC3339) }
+	var terms []string
+	if unread := stored.Unread; unread != nil {
+		terms = append(terms, fmt.Sprintf("Its checks are unread since %s: %s.", since(unread.Since), unread.Cause))
+	}
+	if unapproved := stored.Unapproved; unapproved != nil {
+		terms = append(terms, fmt.Sprintf("Since %s these checks changed without a person's approval: %s.", since(unapproved.Since), strings.Join(unapproved.Checks, ", ")))
+	}
+	for _, beneath := range stored.Beneath {
+		terms = append(terms, fmt.Sprintf("%s beneath it is in the workflow at %s since %s.", beneath.Key, beneath.Status, since(beneath.Since)))
+	}
+	for _, child := range stored.OpenChildren {
+		terms = append(terms, fmt.Sprintf("Its child %s is open in Dispatch at %s since %s.", child.Key, child.Status, since(child.Since)))
+	}
+	for _, check := range stored.Checks {
+		terms = append(terms, fmt.Sprintf("Check %s has no pass since %s: %s.", check.ID, since(check.Since), strings.Trim(check.Answer+", "+check.Reason, ", ")))
+	}
+	if production := stored.Production; production != nil {
+		state := production.State
+		switch {
+		case production.Outcome != "":
+			state = "closed as " + production.Outcome
+		case production.NextLookAt != nil:
+			state = "open, its next look at " + since(*production.NextLookAt)
+		}
+		terms = append(terms, fmt.Sprintf("Its production check of generation %d at merge commit %s is %s since %s.", production.Generation, production.Merge, state, since(production.Since)),
+			"Its way out is a pass at its look, one more look after a late result, or the next change of a fail.")
+	}
+	for _, defect := range stored.Defects {
+		terms = append(terms, fmt.Sprintf("Reason %d waits since %s: %s.", defect.ID, since(defect.Since), defect.Text))
+	}
+	if change := stored.NextChange; change != nil {
+		terms = append(terms, fmt.Sprintf("Its next change %d is open since %s.", change.Generation, since(change.Since)))
+	}
+	if lingers && (len(stored.Defects) > 0 || stored.NextChange != nil) {
+		terms = append(terms, fmt.Sprintf("The tree of %s does not run while its root lingers, so no next change starts.", issue.Key))
+	}
+	return terms
 }
 
 // waitedFor is what a person's done on an issue in verifying closed past: each item of its stored

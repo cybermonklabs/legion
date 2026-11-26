@@ -125,6 +125,16 @@ func InWorkflow(issue Issue) bool {
 	return issue.Standing().InWorkflow(OutOfWorkflow)
 }
 
+// RunsAgain says whether an issue's work runs again: it is in the workflow (InWorkflow) and not
+// waiting in verifying for the checks of its goal. It is the production check's "runs again": an
+// issue in verifying has merged its work and no role works the wait, so its looks run there, and
+// a look is deferred only while its issue's next change, or a rerun, holds the issue's claims and
+// its pod. The production check's readers (workflow's check.go, the outbox's checkLookHolds) and
+// a claim's failure (workflow's claimFailed) read it.
+func RunsAgain(issue Issue) bool {
+	return InWorkflow(issue) && issue.Phase != phase.Verifying
+}
+
 // Stopped is whether the issue's own record says its work has stopped: it is out of the
 // workflow, or its tree lingers. It is the one statement of that rule, and the readers that
 // must agree — the boot's claim release pass and the row it queues — both call it.

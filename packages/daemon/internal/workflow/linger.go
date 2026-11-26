@@ -187,7 +187,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err != nil {
 		return err
 	}
-	return e.openCheck(ctx, tx, issue, *pr, lingers)
+	return e.openCheck(ctx, tx, issue, mergeOf(issue, *pr), lingers)
 }
 
 // leaveState is the state the task of w is in once its issue leaves the workflow at status: done
@@ -301,7 +301,7 @@ func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
-	return e.openCheck(ctx, tx, issue, *pr, wake)
+	return e.openCheck(ctx, tx, issue, mergeOf(issue, *pr), wake)
 }
 
 // awaitsMerge says whether issue awaits its merge: in merging, or held from merging (a failed

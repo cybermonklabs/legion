@@ -585,8 +585,9 @@ func TestAMemberOfALingeringTreeClosesOnItsChecks(t *testing.T) {
 }
 
 // A child whose production check closed recorded while it stood in verifying has its pod suspended
-// once at its close on its checks. Where its project runs no production check, its leave queues the
-// one suspension, and the judge queues none.
+// once at its close on its checks: the check's close closed the tester's claim and deleted nothing
+// of the pod, and the close queues the one IssueSuspend. Where its project runs no production
+// check, its leave queues the one suspension, and the judge queues none.
 func TestAChildThatClosesOnItsChecksIsSuspendedOnce(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -606,7 +607,11 @@ func TestAChildThatClosesOnItsChecksIsSuspendedOnce(t *testing.T) {
 				t.Fatalf("suspensions at the merge = %+v, want none", got)
 			}
 			if tc.role != "" {
-				rig.seedCheck(waitChild, waitGeneration, waitChildMerge, record.CheckRecorded)
+				rig.read(waitChild, answerOf(waitChild, nil, passing("c-after", waitChildMerge)))
+				rig.report(waitChild, 1, "pass", "the check passed in production", nil)
+				if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 0 {
+					t.Fatalf("suspensions at the check's close in verifying = %+v, want none", got)
+				}
 			}
 			rig.read(waitChild, answerOf(waitChild, nil, passing("c-after", waitChildMerge)))
 			closedOnChecks(t, rig, waitChild)
@@ -702,13 +707,15 @@ func TestAReadThatNamesAnEarlierMergeDecidesNothing(t *testing.T) {
 }
 
 // After a second merge, the production check recorded for the earlier merge decides nothing: the
-// production term reads earlier_merge, and the close waits.
+// production term reads earlier_merge, and the close waits. A reason waits too, so the read opens
+// no check of the newest merge, which would stand in the term's place.
 func TestAProductionCheckOfAnEarlierMergeDecidesNothing(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
 	rig.seedCheck(waitRoot, waitGeneration, waitRootMerge, record.CheckRecorded)
+	rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
 	rig.laterMerge()
 	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitLaterMerge)))
 	rig.stands(waitRoot, phase.Verifying, "testing")

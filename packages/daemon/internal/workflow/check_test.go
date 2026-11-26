@@ -701,7 +701,7 @@ func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}
 	check := record.ProductionCheck{Issue: issue.Key, Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43", OpenedAt: checkOpened, Looks: 1}
 	for _, last := range []bool{false, true} {
-		task := checkTask(issue, check, wakeMerge, "", last)
+		task := checkTask(issue, check, wakeMerge, "", last, nil)
 		for _, retired := range []string{"Production: line", "pending deploy of", "proof array"} {
 			if strings.Contains(task, retired) {
 				t.Errorf("the check task (last %t) still says %q", last, retired)
