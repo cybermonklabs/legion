@@ -37,13 +37,11 @@ import (
 )
 
 const (
-	promptInputsScript      = "scripts/e2e/prompt-inputs.sh"
-	promptInputsFixtureRev  = "ecd967b17a4e"
-	promptInputsTask        = "Prompt inputs proof: gather the public context required before work. Read the role's entry skill, any other mandatory file reads, and README.md. Do not change files or send messages. Then report the repository's name in one line."
-	promptInputsReadsTask   = promptInputsTask + " After the reads, run `pwd` with the shell tool before you answer."
-	promptInputsControlRead = "CONTRIBUTING.md"
-	// The key Claude Code sends the recording provider, which checks none: a placeholder, never a
-	// credential. claudeAgent joins the variable and its value.
+	promptInputsScript          = "scripts/e2e/prompt-inputs.sh"
+	promptInputsFixtureRev      = "ecd967b17a4e"
+	promptInputsTask            = "Prompt inputs proof: gather the public context required before work. Read the role's entry skill, any other mandatory file reads, and README.md. Do not change files or send messages. Then report the repository's name in one line."
+	promptInputsReadsTask       = promptInputsTask + " After the reads, run `pwd` with the shell tool before you answer."
+	promptInputsControlRead     = "CONTRIBUTING.md"
 	promptInputsStandinKeyName  = "ANTHROPIC_API_KEY"
 	promptInputsStandinKeyValue = "prompt-inputs-local-provider"
 )
@@ -71,6 +69,7 @@ type promptInputsRun struct {
 	rows                                         map[string]promptInputsRow
 	isBase                                       bool
 	spend                                        *promptInputsSpend
+	gatewayAuth                                  string
 	socketDir                                    string
 }
 
@@ -98,7 +97,16 @@ func TestPromptInputsLive(t *testing.T) {
 		if auth == "" {
 			t.Fatal("--reads requires a gateway identity in ANTHROPIC_AUTH_TOKEN")
 		}
-		r.spend = &promptInputsSpend{auth: auth}
+		cap := promptInputsDefaultTokenCap
+		if value := os.Getenv("LEGION_PROMPT_INPUTS_TOKEN_CAP"); value != "" {
+			n, err := strconv.Atoi(value)
+			if err != nil || n <= 0 || n > promptInputsMaxTokenCap {
+				t.Fatalf("LEGION_PROMPT_INPUTS_TOKEN_CAP must be in 1..%d", promptInputsMaxTokenCap)
+			}
+			cap = n
+		}
+		r.gatewayAuth = auth
+		r.spend = &promptInputsSpend{cap: cap}
 		t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	}
 	r.checkInventory()
@@ -112,11 +120,15 @@ func TestPromptInputsLive(t *testing.T) {
 		}
 		defer r.writeSpend()
 		r.runWave(t, "reads-omp", runtime.BackendOmp, false, true, false)
-		r.runWave(t, "reads-interactive", runtime.BackendOmp, true, true, false)
+		if os.Getenv("LEGION_PROMPT_INPUTS_READS_SUPERVISED_ONLY") != "1" {
+			r.runWave(t, "reads-interactive", runtime.BackendOmp, true, true, false)
+		}
 		r.runWave(t, "reads-extra", runtime.BackendOmp, false, true, true)
-		// Nine OMP launches and the extra-read control consume ten sessions. Probe Claude
-		// Code with the planner under the twelve-session limit; label all unmeasured rows.
-		r.runWave(t, "reads-claude", runtime.BackendClaude, false, true, false)
+		// The supervised-only continuation excludes already-measured interactive OMP
+		// and the optional Claude probe. Their stand-in measurements still run.
+		if os.Getenv("LEGION_PROMPT_INPUTS_READS_SUPERVISED_ONLY") != "1" {
+			r.runWave(t, "reads-claude", runtime.BackendClaude, false, true, false)
+		}
 		r.finishReads()
 	} else {
 		r.writeJSON("control-extra-read.json", map[string]string{"status": "not observed", "reason": "requires --reads"})
@@ -270,6 +282,8 @@ func (r *promptInputsRun) setup() {
 	promptInputsCommand(t, r.subject, "git", "worktree", "add", "--quiet", "--detach", r.fixture, promptInputsFixtureRev)
 	t.Cleanup(func() {
 		if out, err := exec.Command("git", "-C", r.subject, "worktree", "remove", r.fixture).CombinedOutput(); err != nil {
+			status, _ := exec.Command("git", "-C", r.fixture, "status", "--porcelain=v1", "--untracked-files=all").Output()
+			r.writeEvidence("fixture-status.txt", status)
 			t.Errorf("remove fixture worktree: %v: %s", err, out)
 		}
 	})
@@ -537,7 +551,9 @@ func (r *promptInputsRun) runWave(t *testing.T, name string, backend runtime.Bac
 		a.rt.daemonURL, a.rt.envoyURL, a.rt.natsURLs = a.cfg.DaemonURL, newPaneListener(t), a.cfg.NatsURLs
 		a.rt.dispatchURL, a.rt.dispatchTokenFile = r.dispatch.base, r.dispatchFile
 		a.rt.overlays = func(token claim.Token) []string { return overlays[token] }
-		a.rt.environment = []string{"BUN_RUNTIME_TRANSPILER_CACHE_PATH=0", "OMP_SESSION_STORAGE=file"}
+		// Oh My Pi writes shell snapshots under TMPDIR. Keep them in the run's scratch
+		// directory, not in the pinned worktree the agents read.
+		a.rt.environment = []string{"BUN_RUNTIME_TRANSPILER_CACHE_PATH=0", "OMP_SESSION_STORAGE=file", "TMPDIR=" + r.socketDir}
 		a.rt.agent = func(spec runtime.SpawnSpec, promptFile string) ([]string, []string, error) {
 			pane := panes[spec.Claim]
 			if pane == nil {
@@ -568,29 +584,33 @@ func (r *promptInputsRun) runWave(t *testing.T, name string, backend runtime.Bac
 			a.await("the daemon controller launch", paneReady, func() bool { return len(a.rt.LaunchesOf(claim.ControllerToken(a.project))) != 0 })
 		}
 		for _, pane := range ordered {
-			p.step("capture-"+promptInputsSlug(pane.name), func() {
-				if interactive {
-					r.captureInteractive(&a, rt, pane, overlays[pane.token])
-					return
-				}
-				a.awaitReady(pane.token)
-				held := a.claim(pane.token)
-				if held.Locator == nil {
-					t.Fatalf("%s has no locator", pane.name)
-				}
-				pid, _, err := parseLocalIncarnation(held.Locator.Incarnation)
-				if err != nil {
-					t.Fatal(err)
-				}
-				binary, flag := r.omp, promptWord
-				if backend == runtime.BackendClaude {
-					binary, flag = r.claude, "--append-system-prompt-file"
-				}
-				specs := a.rt.LaunchesOf(pane.token)
-				if len(specs) != 1 {
-					t.Fatalf("%s launched %d times", pane.name, len(specs))
-				}
-				r.capture(&a, pane, pid, binary, flag, specs[0].Prompt, held.SessionFile)
+			t.Run(promptInputsSlug(pane.name), func(t *testing.T) {
+				a := a
+				a.t = t
+				a.step("capture-"+promptInputsSlug(pane.name), func() {
+					if interactive {
+						r.captureInteractive(&a, rt, pane, overlays[pane.token])
+						return
+					}
+					a.awaitReady(pane.token)
+					held := a.claim(pane.token)
+					if held.Locator == nil {
+						t.Fatalf("%s has no locator", pane.name)
+					}
+					pid, _, err := parseLocalIncarnation(held.Locator.Incarnation)
+					if err != nil {
+						t.Fatal(err)
+					}
+					binary, flag := r.omp, promptWord
+					if backend == runtime.BackendClaude {
+						binary, flag = r.claude, "--append-system-prompt-file"
+					}
+					specs := a.rt.LaunchesOf(pane.token)
+					if len(specs) != 1 {
+						t.Fatalf("%s launched %d times", pane.name, len(specs))
+					}
+					r.capture(&a, pane, pid, binary, flag, specs[0].Prompt, held.SessionFile)
+				})
 			})
 		}
 	})
@@ -1016,7 +1036,8 @@ func (r *promptInputsRun) startModel(t *testing.T, p *promptInputsPane, name str
 	t.Helper()
 	m := &promptInputsModel{modelStandin: &modelStandin{name: name}, task: p.task, done: make(chan promptInputsCapture, 1)}
 	if p.reads {
-		m.gateway = promptInputsNewGateway(t, r.spend)
+		m.gateway = promptInputsNewGateway(t, r.spend, r.gatewayAuth)
+		t.Cleanup(func() { r.writePaneSpend(p) })
 	} else {
 		refs := r.refs.Launches[p.launch.Name]
 		for i, ref := range []string{refs.Retained, refs.Removed} {

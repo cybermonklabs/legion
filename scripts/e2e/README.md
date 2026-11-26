@@ -5047,7 +5047,10 @@ Without `--reads`, the proof makes no real model calls and reports required read
 Run `--reads` only after the model spend is approved for the Job.
 It measures the Oh My Pi launches at `xhigh` on `claude-opus-5-5` using `ANTHROPIC_BASE_URL`.
 The proxy authenticates with `ANTHROPIC_AUTH_TOKEN` and does not pass it to the panes.
-It limits the run to 1,850,000 tokens, including cached input, and writes the usage to `usage/total.json`.
+The default cap is 1,850,000 tokens, including cached input.
+`LEGION_PROMPT_INPUTS_TOKEN_CAP` sets the approved cap, up to 6,000,000.
+The proxy writes reported and accounted usage to `usage/total.json` and one usage file per real-model launch.
+Set `LEGION_PROMPT_INPUTS_READS_SUPERVISED_ONLY=1` to measure the eight supervised Oh My Pi launches and the extra-read control without repeating a measured interactive controller.
 It records each session's read results up to the first non-read call or the end of the turn.
 The extra-read control repeats the planner launch with a mandatory read added to a copy of a subject prompt part.
 It checks that the new read appears and that the total increases.
