@@ -2911,7 +2911,7 @@ describe("the dispatch CLI", () => {
       ["doc-edit", "--issue", "DSP-2", "--ops-json", JSON.stringify([op])],
       omp,
       "",
-      fetchImpl
+      { fetchImpl }
     );
     expect(code, stdout).toBe(0);
     expect(stdout).toContain("Applied 1 ops (version 4)");

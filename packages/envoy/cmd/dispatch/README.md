@@ -6200,7 +6200,6 @@ Each item below names a path with its method and identity, then its purpose.
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
   A person's answer, resolve, decline, close or reopen of an ask writes one version, which changes only its block's `state`, `answered_by` and `answered_at` when that is the version's whole change:
   a standing approval carries to it and the row keeps its turn, but a close withdraws the row and its version carries no approval, until the reopen's carries it.
-  The version carries an approval only when the person's answer, resolve or decline is its whole change.
   If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
   A second call does one of two things, by what the row waits on:
 

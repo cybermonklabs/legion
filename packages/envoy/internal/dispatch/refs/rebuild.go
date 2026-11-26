@@ -209,29 +209,50 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("delete orphan references: %w", err)
 	}
-	// The forms queue and the two decisions queues, in that order, each by the one predicate.
-	for _, owed := range []struct {
-		queue OwedQueue
-		what  string
-	}{
-		{RefsFormsOwed, "the index owed"},
-		{RefsDecisionsFormsOwed, "the decisions index owed"},
-		{RefsDecisionsFormsSeedOwed, "the bootstrap decisions index owed"},
-	} {
-		if _, err := tx.Exec(ctx, `
-			delete from `+owed.queue.table+` o
-			where not exists (
-				select 1 from artifacts a where o.kind = 'artifact' and a.id = o.id
-				union all
-				select 1 from asks k where o.kind = 'ask' and k.id = o.id
-				union all
-				select 1 from comments c where o.kind = 'comment' and c.id = o.id
-				union all
-				select 1 from messages m where o.kind = 'message' and m.issue_key is not null and m.id = o.id
-			)
-		`); err != nil {
-			return 0, fmt.Errorf("settle %s by the sources the orphan sweep found gone: %w", owed.what, err)
-		}
+	// Each queue's delete names its table: the census of item-row writers and the projection
+	// scan read the table a statement writes from its text, and a name built at runtime is one
+	// they cannot read.
+	if _, err := tx.Exec(ctx, `
+		delete from refs_forms_owed o
+		where not exists (
+			select 1 from artifacts a where o.kind = 'artifact' and a.id = o.id
+			union all
+			select 1 from asks k where o.kind = 'ask' and k.id = o.id
+			union all
+			select 1 from comments c where o.kind = 'comment' and c.id = o.id
+			union all
+			select 1 from messages m where o.kind = 'message' and m.issue_key is not null and m.id = o.id
+		)
+	`); err != nil {
+		return 0, fmt.Errorf("settle the index owed by the sources the orphan sweep found gone: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		delete from refs_decisions_forms_owed o
+		where not exists (
+			select 1 from artifacts a where o.kind = 'artifact' and a.id = o.id
+			union all
+			select 1 from asks k where o.kind = 'ask' and k.id = o.id
+			union all
+			select 1 from comments c where o.kind = 'comment' and c.id = o.id
+			union all
+			select 1 from messages m where o.kind = 'message' and m.issue_key is not null and m.id = o.id
+		)
+	`); err != nil {
+		return 0, fmt.Errorf("settle the decisions index owed by the sources the orphan sweep found gone: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		delete from refs_decisions_forms_seed_owed o
+		where not exists (
+			select 1 from artifacts a where o.kind = 'artifact' and a.id = o.id
+			union all
+			select 1 from asks k where o.kind = 'ask' and k.id = o.id
+			union all
+			select 1 from comments c where o.kind = 'comment' and c.id = o.id
+			union all
+			select 1 from messages m where o.kind = 'message' and m.issue_key is not null and m.id = o.id
+		)
+	`); err != nil {
+		return 0, fmt.Errorf("settle the bootstrap decisions index owed by the sources the orphan sweep found gone: %w", err)
 	}
 	return int(orphans.RowsAffected()), tx.Commit(ctx)
 }
