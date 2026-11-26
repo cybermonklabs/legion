@@ -51,6 +51,13 @@ export interface DispatchProxyRun {
   /** Dispatch under `DISPATCH_TOKEN_BROKER=1`: its URL and the session's broker credential. */
   readonly config: ActiveDispatchConfig;
   readonly sessionId: string;
+  /**
+   * The `User-Agent` the proxy sends a request that carries none, the `dispatch` command's own
+   * (`dispatchCommandUserAgent`), so Dispatch's access log names the program for a tool that does
+   * not name itself, as it names every other call of the command. A request that carries one is
+   * sent on with the tool's.
+   */
+  readonly userAgent?: string | undefined;
   /** Where each line of the proxy's own goes: its causes, and its exit line. */
   readonly stderr: (text: string) => void;
 }
@@ -587,7 +594,13 @@ async function serve(
     tally.tokens.add(token);
     const answer = await fetch(url, {
       method,
-      headers: { ...headers, ...presented },
+      headers: {
+        ...(run.userAgent === undefined || "user-agent" in headers
+          ? {}
+          : { "user-agent": run.userAgent }),
+        ...headers,
+        ...presented,
+      },
       ...(body === undefined ? {} : { body }),
       redirect: "manual",
       decompress: false,

@@ -390,6 +390,7 @@ async function runProxyCommand(
     cwd: io.cwd,
     config,
     sessionId,
+    userAgent: io.userAgent,
     stderr: (text) => io.stderr(text),
   });
 }

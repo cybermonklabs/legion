@@ -127,8 +127,9 @@ func (s *server) v2MeRows() []routeRow {
 				"service-account token's Kubernetes subject, or the service a broker-issued token naming no person " +
 				"names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account " +
 				"an exchange entry lists, or a job's identity as its job entry lists it, null for every other; project " +
-				"is the one project key the credential lets the caller write, null where it names none, a job's token " +
-				"whose entry names public among them. project_scope is the project scope of an access token the secrets " +
+				"is the project key the credential's token names, null where it names none, a job's token " +
+				"whose entry names public among them; a token that names a project writes other projects' objects as a " +
+				"credential that names none does, a private project it does not name excepted. project_scope is the project scope of an access token the secrets " +
 				"broker issued, null for every other credential: named for a token an operator's or a job's entry mapped " +
 				"to its project, and for an exchange entry's token naming its account and no project, public for a job's " +
 				"token that names no one project, person for a person's own token and for a machine's token that names " +

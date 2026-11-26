@@ -7,4 +7,6 @@ body: |-
   caller passes, else `dispatch-client/<version>`. The `dispatch` command names itself
   `dispatch/<version> (<package>)` of the host plugin whose bundle runs it, or
   `dispatch/0.0.0-dev (source)` from a checkout, so Dispatch's access log tells each client apart.
-  Every call still goes to `/api/v1`, which Dispatch now marks deprecated.
+  `dispatch proxy` sends a tool's request with the tool's own `User-Agent`, and names the command
+  where the tool names none. Every call still goes to `/api/v1`, which Dispatch now marks
+  deprecated.

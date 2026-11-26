@@ -144,8 +144,11 @@ func (s *server) v2ProjectRows() []routeRow {
 				"PROJECT_SCOPE_DEPLOYMENT), the project this path names included. proven_sessions turns the project's " +
 				"proven-sessions setting on (true) or off (false): with it on, an architect's write of an issue's spec or " +
 				"Verification document passes only on a credential that proves the architect's session, and a role-holder " +
-				"publication only on one that proves legion-daemon:<project>. Turning it on makes a check stronger, so any " +
-				"credential that may write the project's issues turns it on and it needs no scope; turning it off weakens " +
+				"publication only on one that proves legion-daemon:<project>, or legion-daemon:<P> of another project's daemon " +
+				"on a broker token that names P. Turning it on makes a check stronger, so any credential that may write " +
+				"the project's issues turns it on and it needs no scope, a token scoped to another project included; a " +
+				"token scoped to one project gets 403 PROJECT_SCOPE for a project that does not exist and for a private " +
+				"project that it does not name. Turning it off weakens " +
 				"the check, so proven_sessions false needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and its " +
 				"event names the person. A list, a default repository or a setting the project already holds changes " +
 				"nothing and appends no event; another appends project.updated. A body that names none of the four " +
@@ -669,7 +672,7 @@ func (s *server) patchProjectV2(w http.ResponseWriter, r *http.Request) {
 	body := v2Body[patchProjectV2Input](r)
 	if covers, scoped := s.callerProject(r); scoped && len(body.DefaultRepository) > 0 {
 		writeError(w, r, apicode.ProjectScopeDeployment, fmt.Sprintf(
-			"this request's credential may write project %s and nothing else; a project's default_repository belongs to the deployment rather than to a project",
+			"this request's credential names project %s, and a project's default_repository belongs to the deployment rather than to a project",
 			covers))
 		return
 	}

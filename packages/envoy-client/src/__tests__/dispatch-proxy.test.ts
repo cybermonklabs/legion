@@ -158,9 +158,16 @@ function socketPath(): string {
 }
 
 /** Runs `dispatch <argv>` in this process as the entry would, and keeps it for the cleanup. */
-function launch(argv: readonly string[], env: Environment, socket = "", done = ""): ProxyRun {
+function launch(
+  argv: readonly string[],
+  env: Environment,
+  socket = "",
+  done = "",
+  userAgent?: string
+): ProxyRun {
   const printed = { stdout: "", stderr: "" };
   const exited = runDispatchCli(argv, env, {
+    ...(userAgent === undefined ? {} : { userAgent }),
     stdout: (text) => {
       printed.stdout += text;
     },
@@ -230,14 +237,15 @@ async function untilAccepting(run: ProxyRun, ms = 5_000): Promise<void> {
 }
 
 /** A proxy whose command waits for its done file, once its socket accepts. */
-async function startedProxy(env: Environment): Promise<ProxyRun> {
+async function startedProxy(env: Environment, userAgent?: string): Promise<ProxyRun> {
   const socket = socketPath();
   const done = join(makeDirectory(), "done");
   const run = launch(
     ["proxy", "--socket", socket, "--", "bash", "-c", DONE_LOOP, done],
     env,
     socket,
-    done
+    done,
+    userAgent
   );
   await untilAccepting(run);
   return run;
@@ -1044,6 +1052,42 @@ test("sends a GET under /api/ with its method, path, query and end-to-end header
   for (const secret of [toolBearer, toolProof, proxyBasic]) expect(sent).not.toContain(secret);
   expect(broker.trades[0]?.form.get("session")).toBe(SESSION);
 
+  expect((await finish(run)).code).toBe(0);
+}, 15_000);
+
+test("names the command in the User-Agent of a request whose tool names none, and sends a tool's own on", async () => {
+  const broker = standInBroker({ kind: "token", seconds: 3600 });
+  const dispatch = standInDispatch();
+  const run = await startedProxy(
+    podProxyEnvironment(broker.url, dispatch.url),
+    "dispatch/1.2.3 (omp)"
+  );
+
+  // Written by hand, since `fetch` sets a User-Agent of its own.
+  const unnamed = await rawRequest(
+    run.socket,
+    ["GET /api/v1/issues HTTP/1.1", "Host: dispatch.example", "Connection: close", "", ""].join(
+      "\r\n"
+    )
+  );
+  const named = await rawRequest(
+    run.socket,
+    [
+      "GET /api/v1/issues HTTP/1.1",
+      "Host: dispatch.example",
+      "Connection: close",
+      "User-Agent: work-cost/1",
+      "",
+      "",
+    ].join("\r\n")
+  );
+
+  expect(unnamed.status).toBe(200);
+  expect(named.status).toBe(200);
+  expect(dispatch.received.map((request) => request.headers["user-agent"])).toEqual([
+    "dispatch/1.2.3 (omp)",
+    "work-cost/1",
+  ]);
   expect((await finish(run)).code).toBe(0);
 }, 15_000);
 

@@ -706,9 +706,10 @@ func (s *server) v2IssueRows() []routeRow {
 				"left, but returned_to, which only the write that sets the result sets, so a start and an end land in " +
 				"either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 " +
 				"names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. " +
-				"The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before " +
-				"the airlock a bearer caller names its own session, so any caller whose credential proves no session can " +
-				"name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 the " +
+				"The actor must be session legion-daemon:<PROJECT> of the issue's project, or session legion-daemon:<P> of " +
+				"another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). " +
+				"Before the airlock a bearer caller names its own session, so any caller whose credential proves no session " +
+				"can name the session of the issue's project's daemon. A closed issue takes a write too, and no write appends an issue event. Answers 200 the " +
 				"record as it stands after the write, " + stepRecordText + "; a body every field of which the record " +
 				"holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming " +
 				"the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no " +
@@ -732,9 +733,10 @@ func (s *server) v2IssueRows() []routeRow {
 				"the retro's start and end have not landed yet; each field the record does not hold yet is set and "+
 				"every field it holds is left, but returned_to, which only the write that sets the result sets, so the "+
 				"rating is written once and lands before or after the retro's end. The actor must be session "+
-				"legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer "+
-				"caller names its own session, so any caller whose credential proves no session can name that one. A "+
-				"closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands "+
+				"legion-daemon:<PROJECT> of the issue's project, or session legion-daemon:<P> of another project's daemon "+
+				"whose broker token names P and proves that session (403 STEP_WRITER otherwise). Before the airlock a "+
+				"bearer caller names its own session, so any caller whose credential proves no session can name the "+
+				"session of the issue's project's daemon. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands "+
 				"after the write, "+stepRecordText+"; a body every field of which the record holds as sent answers the "+
 				"record and writes nothing. A rating or reason outside its form, and a record that is not a retro's, "+
 				"are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 "+
@@ -759,9 +761,10 @@ func (s *server) v2IssueRows() []routeRow {
 				"/api/v2/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not " +
 				"landed yet; each field the record does not hold yet is set and every field it holds is left, but " +
 				"returned_to, which only the write that sets the result sets, so the experiment and the variant are " +
-				"written once. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 " +
-				"STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential " +
-				"proves no session can name that one. A closed issue takes it too, and no write appends an issue event. " +
+				"written once. The actor must be session legion-daemon:<PROJECT> of the issue's project, or session " +
+				"legion-daemon:<P> of another project's daemon whose broker token names P and proves that session (403 " +
+				"STEP_WRITER otherwise). Before the airlock a bearer caller names its own session, so any caller whose " +
+				"credential proves no session can name the session of the issue's project's daemon. A closed issue takes it too, and no write appends an issue event. " +
 				"Answers 200 the record as it stands after the write, " + stepRecordText + "; a body every field of " +
 				"which the record holds as sent answers the record and writes nothing. A body naming neither, one naming " +
 				"one alone, and a name outside its form are 400 STEP_INPUT naming the field, an id whose record is a run " +
@@ -790,9 +793,10 @@ func (s *server) v2IssueRows() []routeRow {
 				"nothing; the generation is the first write's. A body every member of which the plan holds as sent " +
 				"answers the plan and writes nothing. The write makes the plan whatever id it names, so no plan is " +
 				"missing to it. The actor " +
-				"must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the " +
-				"airlock a bearer caller names its own session, so any caller whose credential proves no session can " +
-				"name that one. A closed issue takes it too, and no write appends an issue event. Answers 200 the plan " +
+				"must be session legion-daemon:<PROJECT> of the issue's project, or session legion-daemon:<P> of another " +
+				"project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). Before " +
+				"the airlock a bearer caller names its own session, so any caller whose credential proves no session can " +
+				"name the session of the issue's project's daemon. A closed issue takes it too, and no write appends an issue event. Answers 200 the plan " +
 				"as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}, artifact_id " +
 				"and version null for a default plan. A value outside its form is 400 PLAN_INPUT naming the field, a " +
 				"step whose role a step record refuses naming the step and its role, and an id whose plan is another " +
