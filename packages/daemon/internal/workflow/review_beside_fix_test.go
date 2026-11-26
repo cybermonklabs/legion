@@ -187,10 +187,17 @@ func TestAReviewOfAnotherHeadStillWaits(t *testing.T) {
 // check run concluded there, so an approval standing on fixHead is judged on that state alone.
 func (r *fixRig) mergeStateAtX(state record.MergeState) {
 	r.t.Helper()
+	r.mergeStateAt(fixHead, state)
+}
+
+// mergeStateAt records GitHub's merge state for LEGION-208's pull request at head, where it
+// stands, with one check run concluded there: the answer an approval of that head is judged on.
+func (r *fixRig) mergeStateAt(head string, state record.MergeState) {
+	r.t.Helper()
 	seedPR(r.t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: statesRepo, Number: 42,
-		Branch: "legion/LEGION-208", HeadSHA: fixHead, Failing: []string{}, Cancelled: []string{},
+		Branch: "legion/LEGION-208", HeadSHA: head, Failing: []string{}, Cancelled: []string{},
 		Mergeability: record.MergeabilityMergeable, MergeState: state,
-		CheckedHead: fixHead, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: fixHead, Conclusion: record.RunSucceeded}}})
+		CheckedHead: head, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: head, Conclusion: record.RunSucceeded}}})
 }
 
 // While a fix runs beside the review, the reviewer's approval of X, the head GitHub reports
@@ -376,6 +383,9 @@ func TestTheWayAfterAFixCountsTheTasksCommits(t *testing.T) {
 	r.reviewerCompletes()
 
 	r.personPushes(fixHead, headThree)
+	// The approval of a head GitHub answers for decides its round; without that answer the round
+	// waits on GitHub, whatever the fix did (TestAnApprovalOfABlockedHeadBesideARunningFixEndsItsRound).
+	r.mergeStateAt(headThree, record.MergeStateClean)
 	r.reviewOf(1, "approved", headThree)
 
 	if decision := reviewerDecision(t, r.pool); decision == nil || decision.State != "approved" || decision.Head != headThree {
