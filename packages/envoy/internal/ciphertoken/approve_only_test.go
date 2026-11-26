@@ -73,6 +73,7 @@ func TestAnApproveOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) 
 		{name: "approve naming a project", answer: withProject},
 		{name: "approve with a cut", answer: withCut},
 		{name: "approve under the project scope none", answer: underWord(ciphertoken.ProjectScopeNone)},
+		{name: "approve under the project scope public", answer: underWord(ciphertoken.ProjectScopePublic)},
 		{name: "approve under read-named", answer: underWord(oauthwire.ProjectScopeReadNamed)},
 		{name: "approve under read-person", answer: underWord(oauthwire.ProjectScopeReadPerson)},
 		{name: "approve under read-none", answer: underWord(oauthwire.ProjectScopeReadNone)},

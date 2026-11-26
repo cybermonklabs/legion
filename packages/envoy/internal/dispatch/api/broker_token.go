@@ -152,11 +152,14 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 //   - 401 BROKER_TOKEN_KEY_MISMATCH — a sound proof signed by a key that is not the token's
 //     'jkt', which is what makes a stolen token useless.
 //   - 401 BROKER_TOKEN_NOT_A_SESSION — the broker holds the token live, but it is not a
-//     session's credential: it names no session, it names neither a person nor a service, it
-//     was issued to a client other than the exchange a session's token comes from, or its
-//     project scope and its scope are a shape no broker mints (the scope read or a cut beside a
-//     project scope that writes, or the project scope none or a narrowed one in any shape but a
-//     read-only token's). A machine login's own access token is one of these, and Dispatch
+//     session's credential this verifier serves: every case ciphertoken.ErrNotASession lists,
+//     the one list of them. Among them: it names no session, it names neither a person nor a
+//     service, it was issued to a client other than the exchange a session's token comes from,
+//     or its project scope and its scope are a shape no broker mints - the scope read or a cut
+//     beside a project scope that writes, the project scope none or a narrowed one in any shape
+//     but a read-only token's, a job's shapes broken (public beside a person or a scope, named
+//     beside no person and a scope), or the scope approve in any shape but an approve-only
+//     token's. A machine login's own access token is one of these, and Dispatch
 //     records every write under the session its credential proved, so it acts on none of them
 //     rather than letting a request body name a session for a credential that names none.
 //   - 429 BROKER_TOKEN_RATE_LIMITED — this source address has no introspection left in its

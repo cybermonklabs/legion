@@ -69,9 +69,12 @@ var (
 	// scope, the scope read beside the project scope named or person, a narrowed project scope
 	// (read-named, read-person, read-none) whose scope is anything but read, or read person on a
 	// read-person token that names its person, a cut (as_of) on a token that is not narrowed to
-	// reading or a cut that is not an RFC 3339 time, or a read-only token presented to a verifier
-	// built without Options.ServesReadOnly; or its list of projects is one no exchange mints: a
-	// named list of two or more, a named list of none that names no person and no account, a list
+	// reading or a cut that is not an RFC 3339 time, a read-only token presented to a verifier
+	// built without Options.ServesReadOnly, the scope approve in any shape but an approve-only
+	// token's (approveShapeOf: beside another scope word, under any project scope but person, with
+	// no person, beside a service, a project or a cut), or an approve-only token presented to a
+	// verifier built without Options.ServesApproveOnly; or its list of projects is one no exchange
+	// mints: a named list of two or more, a named list of none that names no person and no account, a list
 	// of one or more beside a service under any scope but the two a job's token carries (named and
 	// public), or a list that is not at most oauthwire.MaxProjects project keys, sorted, each once.
 	// A machine login's own access token is exactly that — the credential a dev box holds to ask
