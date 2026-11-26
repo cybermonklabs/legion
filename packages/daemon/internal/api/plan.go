@@ -259,7 +259,7 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 		s.writeFailure(w, r, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
 		return plan.Plan{}, false
 	case err != nil:
-		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s at version %d failed; retry %s", artifactID, version, registerPlanRoute))
+		s.refuseDispatchRead(w, r, fmt.Sprintf("%s at version %d", artifactID, version), registerPlanRoute)
 		return plan.Plan{}, false
 	}
 	blocks := make([]plan.Block, len(document.Blocks))

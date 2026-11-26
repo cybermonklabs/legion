@@ -355,10 +355,13 @@ func TestAnInjectedSidecarLeavesAPodOfTheEarlierLayout(t *testing.T) {
 // replaces it where it stands, an installing launch included, where a launch into a pod that has
 // merely drifted keeps it; the replacement is a fresh pod on the configured image, so that launch
 // installs nothing; the pod it makes runs one container, the siblings' old processes read as the
-// daemon's replacement (Displaced), and a sibling resumes into the same new pod.
+// daemon's replacement (Displaced), and a sibling resumes into the same new pod. Each launch here
+// must succeed, so its waits end on the rig's controller ending and making a pod, under a boot
+// timeout as long as the test binary's deadline allows (withWaitsToTheDeadline), not one a loaded
+// machine outruns.
 func TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaunch(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil)
+	g := newRig(t, nil, withWaitsToTheDeadline())
 	tester, reviewer := workerSpec(t), testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	testerLoc, reviewerLoc := g.spawn(tester), g.spawn(reviewer)
 	name := testerLoc.Sandbox.Name

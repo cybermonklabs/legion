@@ -328,12 +328,12 @@ export const PHASE_OP_SENTENCES = {
     "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
     "A held issue names in `heldFrom` the phase the hold took it out of, and in `holdReason` why it is held when its hold has a reason: " +
     "`escalated` (its architect sent it to the controller), `task-stopped` (its owner stopped its task with stop_task) or `children` (it " +
-    "waits, before its retro, for the issues beneath it). A failed claim carries `failure`: the " +
+    "waits, before its retro, for the issues beneath it, the roots that rest on its approval or its open Dispatch children). A failed claim carries `failure`: the " +
     "`cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and " +
     "`attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts " +
     "that phase again, as the architect's retry_or_escalate with retry does, but a root held `task-stopped` starts its task again at its " +
     "first step (a task that never started waits for its gate and its line, as any task does before its first step), and a root held " +
-    "`children` stays held until the issues beneath it close. ",
+    "`children` stays held until none of those holds it any longer. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +

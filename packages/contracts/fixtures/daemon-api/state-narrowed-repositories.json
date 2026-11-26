@@ -95,15 +95,6 @@
         "state": "merged",
         "reviewDecision": "approved"
       },
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
-          "currentVersion": 4,
-          "approvedVersion": 4,
-          "status": "approved"
-        }
-      ],
       "check": {
         "repo": "acme/widgets",
         "pullRequest": 1239,

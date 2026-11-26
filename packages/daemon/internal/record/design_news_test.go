@@ -191,6 +191,14 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldAwaitingPerson, child: UntoldAdmitted, sibling: UntoldHeld, third: UntoldDone}},
 		},
 		{
+			name: "a parent in awaiting_children owes nothing, for a reason of its own beside held's",
+			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
+				Members: []Issue{newsMember(newsRoot, phase.AwaitingChildren), heldImplementing},
+				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 5}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4}),
+					holderTook(sibling, map[DesignStep]int{DesignStepSpec: 4})}},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldAwaitingChildren, sibling: UntoldHeld}},
+		},
+		{
 			name: "a member whose status a person moved out of the workflow owes nothing",
 			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
 				Members: []Issue{newsMember(newsRoot, phase.Implementing), backlogged},

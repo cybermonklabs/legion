@@ -352,17 +352,17 @@ func PacedLaunch(deps *Deps, c *Claim) bool {
 //
 // What that claim does not keep is the four timers that watch the process this wake replaces: its
 // boot interval and its registration deadline (armBoot, armRegistration), the probe interval an
-// uncertain answer armed (judge), and the wait for the turn an acknowledged prompt began (acked).
-// The process is kept until the turn, so every one of those timers would otherwise fire into the
-// wait — the boot interval of a process that died while it booted charging a launch failure of
-// its own at each one, which is a claim failing before launch_failure_limit real failures
-// (judge's own guard answers what they report, and this keeps them from reporting, as probe's
-// own guard keeps the probe interval from being armed again inside the wait). The turn replaces
-// the process and arms the new one's timers (launchTries, armBoot), a turn whose own lifecycle
-// recheck refuses keeps the process and arms these again for it (runWake, watchAgain),
-// and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
-// held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
-// the wake's turn does not run.
+// uncertain answer armed (judge), and the wait for the turn of an outstanding prompt (acked,
+// keepHeldPrompt). The process is kept until the turn, so every one of those timers would
+// otherwise fire into the wait — the boot interval of a process that died while it booted
+// charging a launch failure of its own at each one, which is a claim failing before
+// launch_failure_limit real failures (judge's own guard answers what they report, and this keeps
+// them from reporting, as probe's own guard keeps the probe interval from being armed again inside
+// the wait). The turn replaces the process and arms the new one's timers (launchTries, armBoot), a
+// turn whose own lifecycle recheck refuses keeps the process and arms these again for it (runWake,
+// watchAgain), and the runtime's sweep observes the process throughout. TimerSuspend is kept: a
+// suspension held over this claim is still bounded by the deadline its arrival set
+// (holdSuspension), which the wake's turn does not run.
 //
 // A launch this wake replaces that waits at its issue pod's gate leaves the gate at the end of the
 // decision, as a failed launch: its start never ran (endPodPark).

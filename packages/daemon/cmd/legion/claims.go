@@ -409,17 +409,18 @@ func printReleasedNames(w io.Writer, answer []byte) error {
 	return err
 }
 
-// claimsCompact compacts --claim's Oh My Pi session and has the daemon send the claim whatever
-// task it owes again: what a claim whose provider keeps refusing its session reaches for before a
-// fresh session, since the session, its workspace and everything the worker knows of its issue
-// stay where they are (api's compact).
+// claimsCompact compacts --claim's Oh My Pi session with a handoff and has the daemon send the
+// claim whatever task it owes again: what a claim whose provider keeps refusing its session
+// reaches for before a fresh session, since the session, its workspace and everything the worker
+// knows of its issue stay where they are (api's compact).
 //
 // The request waits as long as `--wait` says, one minute by default, as every `legion claims`
-// request does, and the daemon goes on with a compaction that outlasts it: a compaction is a model
+// request does, and the daemon goes on with a handoff that outlasts it: the handoff is a model
 // call over the whole transcript, and the daemon bounds it at ten minutes
 // (runtime.CompactTimeout). The daemon's answer is printed whether or not the session was
-// compacted — a session too small to compact, or one already compacted, is reported with Oh My
-// Pi's own words for it, and whatever task the claim owed has gone again in either case.
+// shortened — a handoff Oh My Pi refused is reported with Oh My Pi's own words for it, and one
+// that made no document with the daemon's — and whatever task the claim owed has gone again in
+// either case.
 func claimsCompact(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	return func(ctx context.Context, _ []string) int {
