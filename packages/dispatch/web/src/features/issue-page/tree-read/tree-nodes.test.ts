@@ -2033,11 +2033,15 @@ test("a prose node of the tree read is drafted and named in Graph", () => {
 // no filter draws a block its view read marks as context.
 test("a plain block of the room's fragment is drafted and named as prose in Graph", () => {
   const lens = "c3000000-0000-4000-8000-000000000003";
+  const orphanLens = "c3000000-0000-4000-8000-000000000004";
   const shared = [
     block("r1", "requirement", KEY, SPEC, 0),
     block("c1", "check", "r1", VERIFICATION, 0),
     node(lens, "lens", KEY),
     { ...node("f1", "block", lens), id: `lens/${lens}#f1` },
+    node("doc-1", "document", KEY),
+    node(orphanLens, "lens", "doc-1"),
+    node("f2", "block", orphanLens),
     node("p1", "block", KEY),
     block("d1", "block", KEY, SPEC, 1),
     node("c-1", "comment", KEY),
@@ -2058,7 +2062,8 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
     "the word and the shape its row draws"
   ).toEqual(["paragraph", "prose"]);
   expect(typeOf(blockNodeId("spec", "r1")), "the typed block keeps its step").toBe("requirement");
-  expect(typeOf("f1"), "a finding is drafted as prose").toBeUndefined();
+  expect(typeOf("f1"), "a finding keeps its own step and is not drafted as prose").toBe("finding");
+  expect(typeOf("f2"), "a finding under an undrafted lens is not drafted as prose").toBeUndefined();
   expect(typeOf("cb1"), "a comment's own block is drafted as prose").toBeUndefined();
   expect(typeOf("c-1")).toBe("comment");
   expect(typeOf("q1"), "another issue's plain block is drafted as prose").toBeUndefined();

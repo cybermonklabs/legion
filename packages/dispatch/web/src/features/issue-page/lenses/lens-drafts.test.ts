@@ -311,6 +311,7 @@ test("a finding is a block whose parent is a lens", () => {
         finding(`${lensId}#first`, lensId, "A second region doubles the cost."),
         finding("second", lensId, "Failover takes minutes.", "lens_block", { state: "proposed" }),
         finding("stray", KEY, "A block of no lens."),
+        finding("stray-lens-block", KEY, "A lens block of no lens.", "lens_block"),
         TRADE_OFF,
       ],
       [tuple("has_kind", lensId, TRADE_OFF.id)]
@@ -350,8 +351,10 @@ test("a finding is a block whose parent is a lens", () => {
       NO_FACTS,
     ],
   ]);
-  expect(drafts.has("stray")).toBe(false);
-  expect(idsOf(root)).not.toContain("stray");
+  expect(drafts.get("stray")?.type).toBe("prose");
+  expect(parentsOf(root, "stray")).toEqual([KEY]);
+  expect(drafts.has("stray-lens-block")).toBe(false);
+  expect(idsOf(root)).not.toContain("stray-lens-block");
 });
 
 /** A store address or its uuid, which no row's words draw. */
