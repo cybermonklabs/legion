@@ -516,7 +516,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   "issue-page-composer": {
     drive: async (page, world) => {
       await withIssuePage(page.context(), "alice");
-      await page.goto(`/issues/${world.host}`);
+      await page.goto(`/issues/${world.host}/conversation`);
       await expectIssuePageDrawn(page);
       const box = page.getByTestId("issue-composer");
       const field = box.locator("[data-issue-composer] textarea");

@@ -7,7 +7,6 @@ import { type BoxPlace, IssueComposer, useComposerShown } from "../IssueComposer
 import { IssueReadMark } from "../IssueReadMark";
 import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
-import { isFilter } from "../presets";
 import type { SlotProps } from "../slot-props";
 
 /**
@@ -47,7 +46,7 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const place: BoxPlace = {
     documentOpen: address.document !== undefined,
-    viewOn: isFilter(address.preset),
+    viewOn: address.preset !== "conversation",
   };
   // The issue's one tree, read as the outline reads it (`useOutlineReads`, as the view row does),
   // so it costs no request: the box reads off it which entries and statements a draft it keeps
