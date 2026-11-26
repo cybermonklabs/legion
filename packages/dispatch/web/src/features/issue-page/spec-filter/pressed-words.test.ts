@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
 import type { CaretAt } from "../node-caret";
 import { pressInWords } from "./pressed-words";
@@ -192,5 +192,89 @@ test("a press inside an atom that ends the words goes before it", () => {
     );
     expect(at, atom).toEqual(AT_NOTE_END);
     expect(at.next, atom).toBeUndefined();
+  }
+});
+
+// The browser can answer a point past the end of an atom's line with a place inside the atom:
+// Chromium answers a press 1 to 100 px past inline HTML that ends a line with the end of the
+// HTML's text. Such a place inside an atom the editor holds no text of is read by the atom's last
+// line: a point past its end, on that line, goes after the atom, as a press past the end of the
+// words does, or at the start of the text after it where text follows on the next line. A point on
+// that line's end, inside the line or on a line before it stays inside the atom, at its start. The
+// end is the line's right edge where the atom runs left to right, and its left edge where it runs
+// right to left. A reference is text the editor holds, so a place inside one stays there, and
+// neither that place nor one in the text after an atom reads a line of the atom. happy-dom lays
+// nothing out, so each case gives the atom's last line, placed from the press at (1, 2).
+test("a press the browser answers inside an atom, past the end of its last line, says the caret goes after it", () => {
+  const html = '<span data-type="html">&lt;name&gt;</span>';
+  const after: CaretAt = { ...AT_NOTE_END, next: true };
+  // A press the browser answers at the end of the text of the last atom `paragraph` draws, as
+  // Chromium answers a point past inline HTML that ends a line.
+  const pressPast = (paragraph: string) =>
+    pressAt(paragraph, (words) => {
+      const atom = words.firstElementChild?.lastElementChild ?? words;
+      return [atom.firstChild ?? atom, "<name>".length];
+    });
+  let line = new DOMRect();
+  const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(
+    () => [line] as unknown as DOMRectList
+  );
+  try {
+    for (const past of [1, 10, 40, 100]) {
+      line = new DOMRect(1 - past - 60, -8, 60, 20);
+      for (const [atom, inside] of ATOMS) {
+        const at = pressAt(`<p>${NOTE}${atom}</p>`, (words) =>
+          inside(words.firstElementChild?.lastElementChild ?? words)
+        );
+        expect(at, `${past} px past ${atom}`).toEqual(after);
+      }
+      expect(pressPast(`<p>${NOTE}${html}</p>`), `${past} px past the end`).toEqual(after);
+      expect(pressPast(KEPT), `${past} px past, before text`).toEqual({
+        x: 1,
+        y: 2,
+        offset: "Kept by ".length,
+        next: true,
+      });
+      line = new DOMRect(1 + past, -8, 60, 20);
+      const rtl = `<p style="direction: rtl">${NOTE}${html}</p>`;
+      expect(pressPast(rtl), `${past} px past, right to left`).toEqual(after);
+    }
+    // On the end of the atom's last line, inside the line, on a line before it, and past the right
+    // edge of a line that runs right to left, whose end is its left edge.
+    const stays = [
+      [new DOMRect(-59, -8, 60, 20), "ltr"],
+      [new DOMRect(-30, -8, 60, 20), "ltr"],
+      [new DOMRect(-99, 20, 60, 20), "ltr"],
+      [new DOMRect(-60, -8, 60, 20), "rtl"],
+    ] as const;
+    for (const [box, direction] of stays) {
+      line = box;
+      const at = pressPast(`<p style="direction: ${direction}">${NOTE}${html}</p>`);
+      const name = `${direction} line ${box.left} to ${box.right}, ${box.top} to ${box.bottom}`;
+      expect(at, name).toEqual(AT_NOTE_END);
+      expect(at.next, name).toBeUndefined();
+    }
+    // A point past the end of the line, which a place in a reference or in the text after an atom
+    // reads nothing of.
+    line = new DOMRect(-60, -8, 60, 20);
+    lines.mockClear();
+    const cited = "dispatch://CORE-2";
+    const title = " The other issue";
+    const reference = `<a data-row-reference="${cited}" data-row-written="${cited}" href="/CORE-2"><span>CORE-2</span>${title}</a>`;
+    expect(pressIn(`<p>Read ${reference}</p>`, title, title.length)).toEqual({
+      x: 1,
+      y: 2,
+      offset: "Read ".length,
+      word: ["Read ", cited, "", 0],
+    });
+    expect(pressIn(KEPT, AFTER, 3)).toEqual({
+      x: 1,
+      y: 2,
+      offset: "Kept by ".length + 3,
+      word: ["by  ", "first,", " then", 2],
+    });
+    expect(lines, "a press off an uncounted atom laid the atom out").not.toHaveBeenCalled();
+  } finally {
+    lines.mockRestore();
   }
 });

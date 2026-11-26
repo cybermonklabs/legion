@@ -68,9 +68,12 @@ const HELD_OTHERWISE = [
  * says so (`CaretAt`'s `next`), and the editor puts the caret in that text, where the press was:
  * on the line after the break, or after the atom. A press past an atom that no text follows says
  * so too, and the editor puts the caret after that atom, where its block ends; a press inside the
- * atom still counts as at its start. An atom drawn with no text - a picture once it has loaded -
- * counts as one too, so the walk reads each element drawn in place of the editor's text before
- * its own texts.
+ * atom still counts as at its start. The browser can answer a point past the end of an atom's
+ * line with a place inside the atom - Chromium answers the end of its text - so a place inside
+ * an atom the editor holds no text of reads as right after it where the point stands past the end
+ * of the atom's last line (`pastAtomEnd`). An atom drawn with no text - a picture once it has
+ * loaded - counts as one too, so the walk reads each element drawn in place of the editor's text
+ * before its own texts.
  */
 export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
   const doc = words.ownerDocument;
@@ -80,6 +83,10 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   if (node === undefined || !words.contains(node)) return { x, y, offset: 0 };
   const end = doc.createRange();
   end.setStart(node, position?.offset ?? range?.startOffset ?? 0);
+  const atom = (node instanceof Element ? node : node.parentElement)?.closest(HELD_OTHERWISE);
+  if (atom != null && !atom.hasAttribute(REFERENCE_WRITTEN) && pastAtomEnd(atom, x, y)) {
+    end.setStartAfter(atom);
+  }
   const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
   // The words as the editor holds them, and the press's place in them once it is passed.
   let held = "";
@@ -90,19 +97,18 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   // texts count nothing more.
   let counted: Element | null = null;
   for (let drawn = walker.nextNode(); drawn !== null; drawn = walker.nextNode()) {
-    // An element counts only where it is drawn in place of the editor's text (below), which is
-    // where it is one of `HELD_OTHERWISE` itself, so every other element is passed unread.
+    // An element counts only where it is drawn in place of the editor's text, which is where it
+    // is one of `HELD_OTHERWISE` itself, so every other element is passed unread.
     if (drawn instanceof Element && !drawn.matches(HELD_OTHERWISE)) continue;
     const element = drawn instanceof Element ? drawn : drawn.parentElement;
     if (element?.closest("[data-node-trail]") != null) continue;
     const other = element?.closest(HELD_OTHERWISE) ?? null;
-    // An element counts only where it is drawn in place of the editor's text, and only once.
-    if (drawn instanceof Element ? drawn !== other : other !== null && other === counted) continue;
+    if (other !== null && other === counted) continue;
     if (offset === undefined) {
-      if (other?.contains(node) === true || end.comparePoint(drawn, 0) >= 0) {
+      if (other?.contains(end.startContainer) === true || end.comparePoint(drawn, 0) >= 0) {
         offset = held.length;
         next = other === null && held !== "";
-      } else if (drawn === node) offset = held.length + end.startOffset;
+      } else if (drawn === end.startContainer) offset = held.length + end.startOffset;
     }
     counted = other;
     held += (other === null ? drawn.textContent : other.getAttribute(REFERENCE_WRITTEN)) ?? "";
@@ -112,6 +118,18 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   if (offset === undefined && counted?.hasAttribute(REFERENCE_WRITTEN) === false) next = true;
   const at = offset ?? held.length;
   return { x, y, offset: at, word: pressedWord(held, at), next: next || undefined };
+}
+
+/** Whether the point (`x`, `y`) stands past the end of `atom`'s last line, on that line: right of
+ *  it where the atom runs left to right, and left of it where it runs right to left. Where the
+ *  browser names the atom neither direction, the point is past no end of it. Read only for a place
+ *  the browser answered inside an atom, so no other press lays the words out. */
+function pastAtomEnd(atom: Element, x: number, y: number): boolean {
+  const lines = atom.getClientRects();
+  const last = lines[lines.length - 1];
+  if (last === undefined || y < last.top || y > last.bottom) return false;
+  const direction = atom.ownerDocument.defaultView?.getComputedStyle(atom).direction;
+  return direction === "rtl" ? x < last.left : direction === "ltr" && x > last.right;
 }
 
 /** The word at `offset` in `text` - the run of characters that are no space around it - with

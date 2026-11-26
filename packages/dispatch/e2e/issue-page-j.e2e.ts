@@ -2633,11 +2633,10 @@ test("a press on a Spec statement's words after every inline kind the editor hol
 // the editor's box stands the caret's line where the press was. The caret after an atom that ends
 // the words stands between two elements, where the browser draws a collapsed range no box; at
 // e18d2df4 the box was then scrolled to put the middle of the whole paragraph at the press, which
-// stood the caret's line lines under the pointer. The place a browser answers for a point past the
-// end of a line is its own choice - the end of that line's last text, inside the atom, is one,
-// which reads as a press inside it (`pressInWords`) - so for this one press the place is given as
-// the end of the drawn paragraph, as `pressed-words.test.ts`'s `paragraphEnd` gives it. Where the
-// press is, the editor's layout, the caret's boxes and the scroll are the browser's own.
+// stood the caret's line lines under the pointer. Chromium answers a point past the end of the
+// atom's line with the end of the atom's text, inside it, and `pressInWords` reads that place by
+// the atom's last line as a press after it. The press, the place the browser answers for it, the
+// editor's layout, the caret's boxes and the scroll are the browser's own.
 // SLOW(>=2s): a seeded issue of sixty statements, a load of the Spec view and a press, each read
 // once the page has stopped moving.
 test("a press past inline HTML that ends a Spec statement of several lines keeps the caret's line at the press", async ({
@@ -2676,20 +2675,6 @@ test("a press past inline HTML that ends a Spec statement of several lines keeps
       ),
       `the point (${at.x}, ${at.y}) is not on the statement's words past its inline HTML`
     ).toBe(true);
-    await long.evaluate(
-      (row, { point, selector }) => {
-        const paragraph = row.querySelector(`[data-node-words] ${selector}`)?.closest("p");
-        const own = document.caretPositionFromPoint.bind(document);
-        document.caretPositionFromPoint = (x, y) =>
-          paragraph != null && Math.abs(x - point.x) <= 1 && Math.abs(y - point.y) <= 1
-            ? ({
-                offset: paragraph.childNodes.length,
-                offsetNode: paragraph,
-              } as unknown as CaretPosition)
-            : own(x, y);
-      },
-      { point: at, selector: atom }
-    );
     const pressedAt = await settledScrollTop(page);
     await page.mouse.click(at.x, at.y);
     await expect
@@ -2697,7 +2682,6 @@ test("a press past inline HTML that ends a Spec statement of several lines keeps
         message: "a press past the statement's inline HTML does not put the caret in its words",
       })
       .toBe(true);
-    await page.evaluate(() => Reflect.deleteProperty(document, "caretPositionFromPoint"));
     const moved = (await settledScrollTop(page)) - pressedAt;
     expect(
       await long.evaluate((row, selector) => {
