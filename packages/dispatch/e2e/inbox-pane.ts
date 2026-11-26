@@ -40,6 +40,11 @@ export function readingView(page: Page): Locator {
   return page.getByTestId("inbox-reading-view");
 }
 
+/** The reading view while it reads the row `id`. */
+export function readingViewOf(page: Page, id: string): Locator {
+  return readingView(page).and(page.locator(`[data-inbox-reading-row="${id}"]`));
+}
+
 /** The pane's one scroller, inside it: every flow draws what it shows in this box, and it is the
  *  focus stop the keyboard reaches - `l` hands it the focus, and Escape gives it back to the
  *  row. It is there wherever the pane is, and nowhere else. */
@@ -71,7 +76,7 @@ export async function selectRow(page: Page, askId: string): Promise<void> {
     await expect(row).toHaveAttribute("data-inbox-selected", "true");
     return;
   }
-  const open = readingView(page).and(page.locator(`[data-inbox-reading-row="${askId}"]`));
+  const open = readingViewOf(page, askId);
   const state = await settledState(`the Inbox before ${askId} is opened`, [
     ["open", open],
     ["another open", readingView(page)],

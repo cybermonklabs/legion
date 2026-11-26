@@ -187,6 +187,12 @@ const SURFACE_PRIORITY = { title: "Keep the books whole" } as const;
  *  own page is narrowed by. */
 const SURFACE_PRIORITY_WORK = { title: "Audit the books", word: "audit" } as const;
 
+/** The issue in flight under no priority, and a word of its title its fault tab is narrowed by. */
+const SURFACE_LOOSE_WORK = { title: "Ledger cleanup", word: "Ledger" } as const;
+
+/** The priority's work parked in backlog, and a word of its title its fault tab is narrowed by. */
+const SURFACE_PARKED_WORK = { title: "File the audit notes", word: "audit" } as const;
+
 /**
  * One project of six issues, every one of them holding an open ask and a label, and three
  * artifacts on the first: enough for each of the stubbable surfaces to have a list with a first
@@ -248,9 +254,9 @@ export async function seedSurfaces(): Promise<SurfaceScene> {
   const work = await createIssue({ project: "BOOKS", title: SURFACE_PRIORITY_WORK.title });
   await patchIssue(work.key, { advances: [priority.id], status: "in_progress" });
   // And one in flight under no priority, so the priorities page's issues table has a row to mark.
-  const loose = await createIssue({ project: "BOOKS", title: "Ledger cleanup" });
+  const loose = await createIssue({ project: "BOOKS", title: SURFACE_LOOSE_WORK.title });
   await patchIssue(loose.key, { status: "in_progress" });
-  const parked = await createIssue({ project: "BOOKS", title: "File the audit notes" });
+  const parked = await createIssue({ project: "BOOKS", title: SURFACE_PARKED_WORK.title });
   await patchIssue(parked.key, { advances: [priority.id], status: "backlog" });
   return { issue, priority: priority.id, project: "CORE" };
 }
@@ -845,7 +851,7 @@ const PRIORITY_FAULTS = [
     status: "in_progress",
     word: "In progress",
     key: "n",
-    title: "Ledger",
+    title: SURFACE_LOOSE_WORK.word,
   },
   {
     tab: "backlog",
@@ -853,7 +859,7 @@ const PRIORITY_FAULTS = [
     status: "backlog",
     word: "Backlog",
     key: "k",
-    title: "audit",
+    title: SURFACE_PARKED_WORK.word,
   },
 ] as const;
 
@@ -1143,12 +1149,14 @@ async function narrowBar(
       for (const pick of SEARCH_BAR_PICKS.slice(0, picked)) await pick(page, panel, scene);
       await closeControlPanel(surface.root);
     }
-    await settledBar(page, name, surface.row, picked, `${where}, ${picked} narrowings on`);
-    return `${picked} narrowings on`;
+    const on = `${picked} narrowings on`;
+    await settledBar(page, name, surface.row, picked, `${where}, ${on}`);
+    return on;
   }
   await page.goto(narrowedAddress(name, scene, count));
-  await settledBar(page, name, surface.row, count, `${where}, ${count} narrowings on`);
-  return `${count} narrowings on`;
+  const on = `${count} narrowings on`;
+  await settledBar(page, name, surface.row, count, `${where}, ${on}`);
+  return on;
 }
 
 /** One control of a bar as a row reads it: what it is (its `data-control`, or `clear` for Clear
@@ -1298,7 +1306,6 @@ async function chipsOfBar(
   where: string
 ): Promise<{ line: string[]; listed: string[] }> {
   const { line, more } = barChips(bar);
-  // `N` as the poll's passing reading saw it, once the line and `N` add up to `count`.
   const n = await expectChipsStandFor(bar, count, where);
   const names = (chips: Locator) =>
     chips.evaluateAll((all) => all.map((chip) => chip.getAttribute("aria-label") ?? ""));
@@ -1867,10 +1874,7 @@ export async function expectBarDesign(
   // panel lists them all.
   const wanted = phone ? 3 : 6;
   const count = name === "search bar" ? Math.min(wanted, SEARCH_BAR_PICKS.length) : wanted;
-  await narrowBar(page, name, scene, surface, count, phone, where);
-  // `narrowBar` waited until the trigger counted these narrowings, and two frames more for the
-  // chips line (`settledBar`), so the bar read here stands for them.
-  const at = `${where}, ${count} narrowings on`;
+  const at = `${where}, ${await narrowBar(page, name, scene, surface, count, phone, where)}`;
   await expectNarrowingsListed(page, bar, surface.root, count, at);
 }
 

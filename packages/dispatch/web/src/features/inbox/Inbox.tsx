@@ -1243,11 +1243,10 @@ function InboxBody({
   // the room between and the others keeping their width. Each part takes the line's height, so
   // every part's box starts at the line's top. It stands 8 px over the control bar, and every
   // return below draws it first in one fragment, while the list loads and where it failed too.
-  // A reading view below 1280 px keeps the title and what ends the line above it, as main's page
-  // keeps its heading above that view, and hides the search box there (`reading`), as main hides
-  // its search with the list and the bar, mounted so the reader comes back to the box as they
-  // left it: the line then stands under the selection bar, which a phone draws under the
-  // header, rather than the view's own head with its way back to the list.
+  // A reading view below 1280 px keeps the title and what ends the line above it, and hides the
+  // search box there (`reading`), mounted so the reader comes back to the box as they left it:
+  // the line then stands under the selection bar, which a phone draws under the header, rather
+  // than the view's own head with its way back to the list.
   const headerLineOf = (reading: boolean): ReactNode => (
     <div className="mb-2 flex flex-nowrap justify-between gap-3" data-inbox-header-line="">
       {header.kind === "page" ? (
@@ -1422,10 +1421,9 @@ function InboxBody({
   // What this list holds, and computed here rather than after the early returns so the bindings
   // below speak for exactly the rows on the page.
   const agent = filter.agent;
-  // The agent narrowing's chip names the agent by its registry title (`agentText.part` below),
-  // which reads the agent list only where a view asks for it: main's chip asked by drawing the
-  // agent's name (`AgentName`), and this bar's chip is text, so the list asks while the
-  // narrowing is on.
+  // The agent narrowing's chip names the agent by its registry title, in text (`agentText.part`
+  // below), and `useAgentText` reads only what the cache holds, so the Inbox asks for the agent
+  // list while the narrowing is on.
   useAgentRegistry(agent !== undefined);
   // An agent filter and `?section=needs-you` both narrow the list to asks, so neither lists a
   // thread: one is about what an agent asked, the other about what waits on the reader now. The

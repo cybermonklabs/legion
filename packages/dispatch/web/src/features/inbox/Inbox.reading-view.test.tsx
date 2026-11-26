@@ -73,7 +73,8 @@ test("below 1280 px the page lists short rows, and a row the reader opens is rea
     const view = await screen.findByTestId("inbox-reading-view");
     expect(address()).toBe("/?item=ask-b");
     expect(within(view).getByTestId("ask-ask-b")).toBeTruthy();
-    // In place of the list and the header above it, which stay mounted, hidden.
+    // In place of the list and the header line's search box, which stay mounted, hidden; the
+    // title and Answered by you stay drawn.
     expect(list.closest("[hidden]")).not.toBeNull();
     expect(
       screen.getByRole("searchbox", { hidden: true, name: "Search asks" }).closest("[hidden]")

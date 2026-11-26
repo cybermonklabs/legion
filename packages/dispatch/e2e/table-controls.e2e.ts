@@ -102,6 +102,7 @@ import {
   inboxRow,
   paneScroller,
   readingView,
+  readingViewOf,
   selectedRow,
   selectRow,
 } from "./inbox-pane";
@@ -2563,10 +2564,10 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
 
   // The keys the Inbox's list answers (`Inbox.tsx`'s keymap), below the reading column's width,
   // where the keys move the focus over short rows and a row's answer box, Snooze and options are
-  // its reading view's (main's #5223): Enter, `h`, a digit and `y` open the focused row's view
-  // and act there, and Escape from outside a text field is the way back to the list, at the row;
-  // `l`, which takes the focus into the reading column where one is drawn; and `g i`, the global
-  // binding that opens the Inbox.
+  // its reading view's (main's #5223): Enter opens the focused row's view, and Enter there puts
+  // the reader in its answer box; `h`, a digit and `y` open the view and act there; Escape from
+  // outside a text field is the way back to the list, at the row; `l`, which takes the focus into
+  // the reading column where one is drawn; and `g i`, the global binding that opens the Inbox.
   const copied = await recordClipboard(page);
   await page.setViewportSize({ height: 900, width: 1024 });
   await page.goto("/?assignee=everyone&group=none");
@@ -2596,11 +2597,15 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
   const ledger = seeded((row) => row.type === "question" && row.priority === "P0");
   const ask = rowOf(ledger.id);
   const view = readingView(page);
-  /** The reading view while it reads the row `id`. */
-  const viewOf = (id: string) => view.and(page.locator(`[data-inbox-reading-row="${id}"]`));
+  /** From the reading view's own focus stop, Escape back to the list, at `row`. */
+  const escapeToRow = async (row: Locator, message?: string) => {
+    await paneScroller(page).focus();
+    await page.keyboard.press("Escape");
+    await expect(row, message).toBeFocused();
+  };
   await ask.focus();
   await page.keyboard.press("Enter");
-  await expect(viewOf(ledger.id), "the Enter key, which opens the row").toBeVisible();
+  await expect(readingViewOf(page, ledger.id), "the Enter key, which opens the row").toBeVisible();
   await expect(
     paneScroller(page),
     "the Enter key, which leaves the focus on the view"
@@ -2610,32 +2615,29 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
     view.locator("[data-ask-answer]"),
     "the Enter key, into the answer box"
   ).toBeFocused();
-  await paneScroller(page).focus();
-  await page.keyboard.press("Escape");
-  await expect(ask, "the Escape key, back to the row").toBeFocused();
+  await escapeToRow(ask, "the Escape key, back to the row");
   await page.keyboard.press("h");
-  await expect(viewOf(ledger.id).locator("[data-inbox-snooze]"), "the h key").toBeFocused();
+  await expect(
+    readingViewOf(page, ledger.id).locator("[data-inbox-snooze]"),
+    "the h key"
+  ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(ask).toBeFocused();
   await page.keyboard.press("y");
   await expect
     .poll(async () => (await copied()).join(" "), { message: "the y key" })
     .toContain(ledger.issueKey ?? "");
-  await expect(viewOf(ledger.id), "the y key opens the row").toBeVisible();
-  await paneScroller(page).focus();
-  await page.keyboard.press("Escape");
-  await expect(ask).toBeFocused();
+  await expect(readingViewOf(page, ledger.id), "the y key opens the row").toBeVisible();
+  await escapeToRow(ask);
   const decisionRow = seeded((row) => row.type === "decision");
   const decision = rowOf(decisionRow.id);
   await decision.focus();
   await page.keyboard.press("1");
   await expect(
-    viewOf(decisionRow.id).locator("[data-ask-option]").first(),
+    readingViewOf(page, decisionRow.id).locator("[data-ask-option]").first(),
     "the 1 key"
   ).toBeChecked();
-  await paneScroller(page).focus();
-  await page.keyboard.press("Escape");
-  await expect(decision).toBeFocused();
+  await escapeToRow(decision);
   await walkRowRange(page, rowOf, order, control(page, CONTROL.selectionBar));
   const thread = rowOf(seeded((row) => row.type === "reply").id);
   await thread.focus();
@@ -8261,9 +8263,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
   };
   // Written oldest first and listed newest first, so the seven threads stand between the late
   // asks above them and the early asks below them: rows 20 to 26 of 39. The four cases take six
-  // of them, so each case's landing is a thread's card, which a 664 px window shows whole at
-  // 390 px: an ask's card there, with its answer box and that box's hint, stands taller than the
-  // window (682 px at 85f13ed5), and no scroll shows it whole.
+  // of them, so each case's landing is a thread's row.
   for (let index = 0; index < 12; index++) await seedQuestion(`Early ask ${index}`);
   for (let index = 0; index < 7; index++) {
     const issue = await createIssue({ project: "CORE", title: `Thread issue ${index}` });
@@ -8337,15 +8337,14 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         frame !== null &&
         (overflowY === "auto" || overflowY === "scroll") &&
         frame.scrollHeight > frame.clientHeight;
-      const [from, to] =
-        listScrolls && box !== undefined ? [box.top, box.bottom] : [0, window.innerHeight];
+      const rect = row?.getBoundingClientRect();
       return {
         listScrolls,
         listTop: (box?.top ?? 0) + window.scrollY,
-        rowHeight: row?.getBoundingClientRect().height ?? 0,
-        rowTop: row?.getBoundingClientRect().top ?? null,
-        viewBottom: Math.min(to, box?.bottom ?? window.innerHeight, window.innerHeight),
-        viewTop: Math.max(from, box?.top ?? 0, 0),
+        rowHeight: rect?.height ?? 0,
+        rowTop: rect?.top ?? null,
+        viewBottom: Math.min(box?.bottom ?? window.innerHeight, window.innerHeight),
+        viewTop: Math.max(box?.top ?? 0, 0),
       };
     }, id);
   const wrong: string[] = [];
