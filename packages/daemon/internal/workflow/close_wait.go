@@ -890,9 +890,6 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
 	for _, beneath := range stored.Beneath {
 		terms = append(terms, fmt.Sprintf("%s beneath it is in the workflow at %s since %s.", beneath.Key, beneath.Status, since(beneath.Since)))
 	}
-	for _, child := range stored.OpenChildren {
-		terms = append(terms, fmt.Sprintf("Its child %s is open in Dispatch at %s since %s.", child.Key, child.Status, since(child.Since)))
-	}
 	for _, check := range stored.Checks {
 		terms = append(terms, fmt.Sprintf("Check %s has no pass since %s: %s.", check.ID, since(check.Since), strings.Trim(check.Answer+", "+check.Reason, ", ")))
 	}
