@@ -2703,6 +2703,28 @@ describe("rig.sh cell", () => {
       "cell owner-walk head-two root-B-claude: 3 runs, 3 scored, 0 rig errors, count 3; each clause: read 2 of 3, choices 3 of 3, earlier-and-fresh 3 of 3; runs passed 2 of 3; verdict fail"
     );
   });
+
+  // Catches: a case form's cell that tallies each clause by the sentence its row holds, so a
+  // sentence reworded after the runs were scored splits each clause into a name no stage has.
+  test("rig.sh cell tallies a case form's clauses by id, whatever sentence each row holds", () => {
+    const work = freshDir("cell-ids");
+    const b = { kind: "root", form: "B", family: "claude" } as const;
+    for (let n = 1; n <= 3; n += 1)
+      plantScored(work, "head", b, n, {
+        read: n !== 2,
+        choices: true,
+        "earlier-and-fresh": n === 1,
+      });
+    for (const name of readdirSync(path.join(work, "runs"))) {
+      const file = path.join(work, "runs", name, "row.json");
+      const row = JSON.parse(readFileSync(file, "utf8"));
+      for (const each of row.clauses) each.clause = `an older sentence of ${each.id}`;
+      writeFileSync(file, `${JSON.stringify(row)}\n`);
+    }
+    expect(line(work, "head", "root-B-claude", 3)).toBe(
+      "cell owner-walk head root-B-claude: 3 runs, 3 scored, 0 rig errors, count 3; each clause: read 2 of 3, choices 3 of 3, earlier-and-fresh 1 of 3; runs passed 1 of 3; verdict fail"
+    );
+  });
 });
 
 describe("rig.sh batch", () => {
