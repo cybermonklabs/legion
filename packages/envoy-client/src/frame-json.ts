@@ -26,7 +26,7 @@ export function parseFrameJSON(text: string): unknown {
   const containers: object[] = typeof value === "object" && value !== null ? [value] : [];
   for (let next = containers.pop(); next !== undefined; next = containers.pop()) {
     const members = next as Record<string, unknown>;
-    delete members["__proto__"];
+    delete members.__proto__;
     let names = Object.keys(members);
     if (names.some((name) => name.search(LONE_SURROGATE) !== -1)) {
       // Each member is set again in order, so of two keys the rule makes one the later wins, as

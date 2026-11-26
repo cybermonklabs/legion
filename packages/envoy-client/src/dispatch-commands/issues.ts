@@ -599,7 +599,7 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
  *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
  *  object is no JSON object, and prints its own notes on standard error. */
 export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_issues" && args["json"] === true;
+  return tool === "dispatch_issues" && args.json === true;
 }
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
@@ -701,9 +701,11 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
  *  `dispatch result` record, whose dry run prints the pull-request body line the record would
  *  print, since that line is Dispatch's to write and a copy written here would be a second
- *  grammar. Every other dry run, a retraction's included, prints the arguments and sends nothing. */
+ *  grammar. Every other dry run, a retraction's included, prints the arguments and writes nothing;
+ *  one whose call asks Dispatch something before it writes asks that too, through its step in the
+ *  command table (`DispatchCommand.dryRun`): `dispatch artifact`, how Dispatch would store its text. */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_result" && args["retract"] === undefined;
+  return tool === "dispatch_result" && args.retract === undefined;
 }
 
 /** `dispatch result`: record one result of one check of an issue's Verification document, or, as

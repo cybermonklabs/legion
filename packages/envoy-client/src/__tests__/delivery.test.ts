@@ -637,20 +637,36 @@ describe("renderInbound dispatch events", () => {
       })
     );
 
+    type Card = {
+      envoy: { to?: string; dispatch: { owner?: string; payload: { target?: string } } };
+    };
     const intended = decode(
       renderInbound(raw, reader, `notifications.agent.${reader}`).content
-    ) as { envoy: { to?: string; dispatch: { payload: { target: string } } } };
+    ) as Card;
     const other = decode(
       renderInbound(raw, otherSession, `notifications.agent.${reader}`).content
-    ) as { envoy: { to?: string; dispatch: { payload: { target: string } } } };
+    ) as Card;
+    // The same frame, read by this session on a topic that is not its inbox, prints no `to:`.
+    const elsewhere = decode(
+      renderInbound(
+        JSON.stringify({ ...JSON.parse(raw), topic: `notifications.agent.${otherSession}` }),
+        reader,
+        `notifications.agent.${otherSession}`
+      ).content
+    ) as Card;
 
+    // `to:` names this session, so neither a `target` naming it nor an owner the message has not
+    // repeats it.
     expect(intended.envoy.to).toBe("you (01a01111-2222-7333-4444-555555555555)");
-    expect(intended.envoy.dispatch.payload.target).toBe(
-      "you (session:01a01111-2222-7333-4444-555555555555)"
-    );
+    expect(intended.envoy.dispatch.payload.target).toBeUndefined();
+    expect(intended.envoy.dispatch.owner).toBeUndefined();
     expect(other.envoy.to).toBeUndefined();
     expect(other.envoy.dispatch.payload.target).toBe(
       "session:01a01111-2222-7333-4444-555555555555"
+    );
+    expect(elsewhere.envoy.to).toBeUndefined();
+    expect(elsewhere.envoy.dispatch.payload.target).toBe(
+      "you (session:01a01111-2222-7333-4444-555555555555)"
     );
   });
 
@@ -1771,7 +1787,7 @@ describe("renderInbound dispatch events", () => {
       };
 
       expect(decoded.envoy.at).toBe("unknown");
-      expect(decoded.envoy.dispatch.payload["created_at"]).toBe("not-a-time");
+      expect(decoded.envoy.dispatch.payload.created_at).toBe("not-a-time");
     });
 
     test("a created_at less than a second from the card's time repeats it across a second's edge", () => {
@@ -1785,8 +1801,8 @@ describe("renderInbound dispatch events", () => {
           ) as { envoy: { dispatch: { payload: Record<string, unknown> } } }
         ).envoy.dispatch.payload;
 
-      expect(payloadOf(Date.parse("2026-11-25T17:06:10.995Z"))["created_at"]).toBeUndefined();
-      expect(payloadOf(Date.parse("2026-11-25T17:06:10.005Z"))["created_at"]).toBe(
+      expect(payloadOf(Date.parse("2026-11-25T17:06:10.995Z")).created_at).toBeUndefined();
+      expect(payloadOf(Date.parse("2026-11-25T17:06:10.005Z")).created_at).toBe(
         "2026-11-25T17:06:11.005Z"
       );
     });
@@ -1834,21 +1850,24 @@ describe("renderInbound dispatch events", () => {
       }
     });
 
-    // A payload no schema reads keeps every field of its author; a schema that reads a comment's
-    // author keeps only its kind and id.
-    test("an author that says more than the actor stays", () => {
-      const payloadOf = (author: object) =>
-        (
-          decode(
-            renderInbound(dispatchEvent("widget.noted", { id: "widget-1", author }), reader).content
-          ) as { envoy: { dispatch: { payload: Record<string, unknown> } } }
-        ).envoy.dispatch.payload;
+    // A payload no schema reads keeps every field of its author, or of an actor it names (as a
+    // review event does); a schema that reads a comment's author keeps only its kind and id.
+    test("an author or actor that says more than the card's actor stays", () => {
+      for (const field of ["author", "actor"]) {
+        const payloadOf = (who: object) =>
+          (
+            decode(
+              renderInbound(dispatchEvent("widget.noted", { id: "widget-1", [field]: who }), reader)
+                .content
+            ) as { envoy: { dispatch: { payload: Record<string, unknown> } } }
+          ).envoy.dispatch.payload;
 
-      expect(payloadOf(actor)["author"]).toBeUndefined();
-      const proven = { ...actor, proven: true };
-      expect(payloadOf(proven)["author"]).toEqual(proven);
-      const acting = { ...actor, act: { kind: "delegated", by: "session:01a07777" } };
-      expect(payloadOf(acting)["author"]).toEqual(acting);
+        expect(payloadOf(actor)[field]).toBeUndefined();
+        const proven = { ...actor, proven: true };
+        expect(payloadOf(proven)[field]).toEqual(proven);
+        const acting = { ...actor, act: { kind: "delegated", by: "session:01a07777" } };
+        expect(payloadOf(acting)[field]).toEqual(acting);
+      }
     });
 
     test("an object left with nothing goes at any depth, and a list keeps its items' places", () => {
@@ -1885,19 +1904,19 @@ describe("renderInbound dispatch events", () => {
         rank,
       });
       expect(cleared).toMatchObject({ changed: ["route", "labels"], route: null, labels: [] });
-      expect(cleared["priority"]).toBeUndefined();
+      expect(cleared.priority).toBeUndefined();
       // The board's sort key is bookkeeping, until an update moves it.
-      expect(cleared["rank"]).toBeUndefined();
-      expect(payloadOf("issue.updated", { ...issue, changed: ["rank"], rank })["rank"]).toBe(rank);
+      expect(cleared.rank).toBeUndefined();
+      expect(payloadOf("issue.updated", { ...issue, changed: ["rank"], rank }).rank).toBe(rank);
       // A create's `changed` names every field it set, so its empty fields still go.
       const created = payloadOf("issue.created", { ...issue, changed: ["route"], route: null });
-      expect(created["route"]).toBeUndefined();
+      expect(created.route).toBeUndefined();
       // `past: []` says the near-copy check did not answer; no `forced` says the create was not
       // forced.
-      expect(payloadOf("issue.created", { ...issue, forced: { past: [] } })["forced"]).toEqual({
+      expect(payloadOf("issue.created", { ...issue, forced: { past: [] } }).forced).toEqual({
         past: [],
       });
-      expect(payloadOf("issue.created", { ...issue, forced: null })["forced"]).toBeUndefined();
+      expect(payloadOf("issue.created", { ...issue, forced: null }).forced).toBeUndefined();
     });
 
     test("a payload left with no field prints no payload", () => {
@@ -2252,6 +2271,8 @@ describe("renderInbound non-dispatch envelopes", () => {
         suggestion: null,
         turn: null,
         issue_key: "PRIV-1",
+        actor: session,
+        target: `session:${reader}`,
         deliveries: [{ comment_id: "comment-1", state: "sent" }],
         thread_logins: ["alice@example.com"],
         deep: JSON.parse(nested),
@@ -2261,6 +2282,7 @@ describe("renderInbound non-dispatch envelopes", () => {
           envelope({
             event_id: "dispatch-deep-fields",
             source: "dispatch",
+            topic: `notifications.agent.${reader}`,
             payload: `{"issue_key":"PRIV-1","type":"widget.noted","actor":${JSON.stringify(session)},"payload":${JSON.stringify(payload)}}`,
           })
         ),
@@ -2269,7 +2291,9 @@ describe("renderInbound non-dispatch envelopes", () => {
 
       const card = decode(rendered.content) as { envoy: Record<string, unknown> };
       expect(rendered.payloadShownAsText).toBe(BOUND);
-      expect(card.envoy["dispatch"]).toBe(
+      // `to:` names this session, and the card names its actor, so neither repeated payload field
+      // appears in the text form.
+      expect(card.envoy.dispatch).toBe(
         JSON.stringify({
           owner: "PRIV-1",
           type: "widget.noted",
@@ -2546,9 +2570,37 @@ describe("renderInbound non-dispatch envelopes", () => {
       const card = decode(rendered.content) as { envoy: Record<string, unknown> };
       expect(rendered.payloadShownAsText).toBe("Maximum call stack size exceeded.");
       expect(card.envoy).toMatchObject({ id: "dispatch-deeper" });
-      expect(card.envoy["dispatch"]).toEqual({
+      expect(card.envoy.dispatch).toEqual({
         owner: "DSP-1",
         type: "comment.edited",
+        actor: { kind: "user", id: "alice" },
+        payload: "not shown: Maximum call stack size exceeded.",
+      });
+    });
+
+    // A card that names no issue, document, or artifact has no owner. Its text fallback's first
+    // header rung must therefore omit `owner`, rather than rendering an undefined or invented one.
+    test("an ownerless Dispatch event whose text falls back to a header keeps no owner", () => {
+      const event = `{"id":1,"issue_key":null,"seq":7,"type":"widget.noted","actor":{"kind":"user","id":"alice"},"notify":true,"payload":${deeper}}`;
+      const topic = `notifications.agent.${reader}`;
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-deeper-direct",
+            source: "dispatch",
+            topic,
+            payload: event,
+          })
+        ),
+        reader,
+        topic
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBe("Maximum call stack size exceeded.");
+      expect(card.envoy).toMatchObject({ id: "dispatch-deeper-direct", to: `you (${reader})` });
+      expect(card.envoy.dispatch).toEqual({
+        type: "widget.noted",
         actor: { kind: "user", id: "alice" },
         payload: "not shown: Maximum call stack size exceeded.",
       });

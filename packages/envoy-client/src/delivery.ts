@@ -499,7 +499,7 @@ export function carriedItem(
         ? ("message" as const)
         : undefined;
   if (resource === undefined || !isObject(event.payload)) return undefined;
-  const id = event.payload["id"];
+  const id = event.payload.id;
   if (typeof id !== "string" || id === "") return undefined;
   return { resource, id, issueKey: event.issue_key };
 }
@@ -508,7 +508,7 @@ export function carriedItem(
  *  with its long fields dropped, except the few it keeps whole (`payload_omitted`, whose doc in
  *  `@legion/contracts` names them). */
 function payloadWasOmitted(payload: unknown): boolean {
-  return isObject(payload) && payload["payload_omitted"] === true;
+  return isObject(payload) && payload.payload_omitted === true;
 }
 
 /** Whether an event payload says the body on it is not the item's body whole: the first part of
@@ -516,7 +516,7 @@ function payloadWasOmitted(payload: unknown): boolean {
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (isObject(payload) && payload["body_truncated"] === true) || payloadWasOmitted(payload);
+  return (isObject(payload) && payload.body_truncated === true) || payloadWasOmitted(payload);
 }
 
 /** The Dispatch route that answers the whole item an event names. */
@@ -924,22 +924,25 @@ const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
  * change is the news.
  *
  * A field repeats the card when the card already says it: `issue_key` is the card's `owner`,
- * `author` the card's `actor` when each of its fields is the actor's, and `created_at` the card's
- * `at` when it is less than a second from `issuedAt`: the two differ by milliseconds, often across
- * a second's edge. On a comment, `thread_root_id` always names the comment `reply_to` names, and
- * `answers` names it on a reply to a thread's root.
+ * `author` or `actor` the card's `actor` when each of its fields is the event's actor's (whole,
+ * before the card cuts a session actor's `origin` to its title), `created_at` the card's `at`
+ * when it is less than a second from `issuedAt` (the two differ by milliseconds, often across a
+ * second's edge), and a `target` that names this session the card's `to:`, which
+ * `toReader` says the card prints. On a comment, `thread_root_id` always names the comment
+ * `reply_to` names, and `answers` names it on a reply to a thread's root.
  *
- * A `target` that names this session reads `you (<target>)`.
+ * A `target` that names this session on a card with no `to:` reads `you (<target>)`.
  */
 function dispatchPayloadForReader(
   event: DispatchEvent,
   sessionID: string,
-  issuedAt: number | undefined
+  issuedAt: number | undefined,
+  toReader: boolean
 ): unknown {
   const whole = dispatchPayload(event);
   const changed =
-    event.type !== "issue.created" && isObject(whole) && Array.isArray(whole["changed"])
-      ? whole["changed"]
+    event.type !== "issue.created" && isObject(whole) && Array.isArray(whole.changed)
+      ? whole.changed
       : [];
   const payload = withoutEmptyFields(
     whole,
@@ -955,6 +958,7 @@ function dispatchPayloadForReader(
       case "issue_key":
         return value === event.issue_key;
       case "author":
+      case "actor":
         return (
           isObject(value) &&
           Object.entries(value).every(([field, held]) => isDeepStrictEqual(held, actor[field]))
@@ -967,6 +971,8 @@ function dispatchPayloadForReader(
       case "thread_root_id":
       case "answers":
         return typeof replyTo === "string" && value === replyTo;
+      case "target":
+        return toReader && value === `session:${sessionID}`;
       default:
         return DISPATCH_BOOKKEEPING.has(key);
     }
@@ -1129,8 +1135,8 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
       // are read from the event as the payload carried it.
       return {
         event: withWholeBody(reading.event, wholeBody),
-        notify: reading.wireEvent["notify"],
-        quiet: reading.wireEvent["quiet"],
+        notify: reading.wireEvent.notify,
+        quiet: reading.wireEvent.quiet,
         delivery: reading.delivery,
       };
     case "recovered": {
@@ -1185,13 +1191,14 @@ function encodeWithin(value: unknown, maxBytes: number): string | undefined {
   return lines.join("\n");
 }
 
-/** The `dispatch` block of a card, all of which a card shown as text writes: where the event is
- *  (`owner`), what it is, who did it, why it reached this session (`relation`), and what a host
- *  lays out from it - the payload, or in its place a compact record (`dispatchCompact`'s: an
- *  ask's `question`, `reply`, `state` and the rest, a human edit's `edit`), with `ask` beside it
- *  when the envelope is uncorrelated. */
+/** The `dispatch` block of a card, all of which a card shown as text writes: an `owner` when the
+ * event names one, what it is, who did it, why it reached this session (`relation`), and what a
+ * host lays out from it - the payload, or in its place a compact record (`dispatchCompact`'s: an
+ * ask's `question`, `reply`, `state` and the rest, a human edit's `edit`), with `ask` beside it
+ * when the envelope is uncorrelated. A direct message with no issue, document, or artifact topic
+ * has no `owner`. */
 type DispatchCardEvent = {
-  readonly owner: string;
+  readonly owner?: string;
   readonly type: string;
   readonly actor: DispatchEvent["actor"];
   readonly relation?: string;
@@ -1209,8 +1216,8 @@ type DispatchCardEvent = {
  *  keys through, and one of them may be as deep as the payload, so the header writes none of them. */
 function headerActor(actor: DispatchEvent["actor"]): Readonly<Record<string, unknown>> {
   const { kind, id } = actor;
-  const act = actor["act"];
-  const service = actor["service"];
+  const act = actor.act;
+  const service = actor.service;
   return {
     kind,
     ...(id === undefined ? {} : { id }),
@@ -1222,19 +1229,19 @@ function headerActor(actor: DispatchEvent["actor"]): Readonly<Record<string, unk
 }
 
 /** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`, held to `bound` at
- *  every step: the card's `dispatch` block (DispatchCardEvent) as JSON text - its owner, type,
- *  actor, relation and payload or compact record, with a body read whole in place of the part the
- *  frame carried - and never the frame's payload, so a key readDispatchPayload dropped reaches no
- *  card. A block JSON.stringify cannot write (it recurses as the encoder
- *  does: an object chain 100,000 deep overflows it in Bun 1.4.4), or whose text would still pass
- *  `bound`, is shown by its owner, its type, its actor (`headerActor`) and the reason. A card that
- *  cannot hold that either drops the card's other fields (they repeat the issue key, and its reply
- *  command quotes the key for a shell) and keeps the owner, the type, the actor and the reason.
- *  One that cannot hold even those drops the owner (a document's owner is read from a topic: the
- *  one the host names, or the frame's own) and keeps the type, the actor and the reason: the type
- *  and the actor are bytes of the frame, the reason is short (the bound's sentence or an encoder
- *  error's message), and `bound` is at least twice the frame. The reason alone is the last
- *  answer. */
+ * every step: the card's `dispatch` block (DispatchCardEvent) as JSON text - its owner when the
+ * event has one, type, actor, relation and payload or compact record, with a body read whole in
+ * place of the part the frame carried - and never the frame's payload, so a key readDispatchPayload
+ * dropped reaches no card. A block JSON.stringify cannot write (it recurses as the encoder
+ * does: an object chain 100,000 deep overflows it in Bun 1.4.4), or whose text would still pass
+ * `bound`, is shown by its owner when present, its type, its actor (`headerActor`) and the reason.
+ * A card that cannot hold that either drops the card's other fields (they repeat the issue key,
+ * and its reply command quotes the key for a shell) and keeps the owner when present, the type,
+ * the actor and the reason. One that cannot hold even those drops an existing owner (a document's
+ * owner is read from a topic: the one the host names, or the frame's own) and keeps the type, the
+ * actor and the reason: the type and the actor are bytes of the frame, the reason is short (the
+ * bound's sentence or an encoder error's message), and `bound` is at least twice the frame. The
+ * reason alone is the last answer. */
 function dispatchCardAsText(
   rendered: Readonly<Record<string, unknown>>,
   event: DispatchCardEvent,
@@ -1253,10 +1260,11 @@ function dispatchCardAsText(
       : encodeWithin({ envoy: { ...rendered, dispatch: text } }, bound);
   if (asText !== undefined) return asText;
   const notShown = `not shown: ${reason}`;
+  const owner = event.owner === undefined ? {} : { owner: event.owner };
   const header = { type: event.type, actor: headerActor(event.actor), payload: notShown };
   return (
-    encodeWithin({ envoy: { ...rendered, dispatch: { owner: event.owner, ...header } } }, bound) ??
-    encodeWithin({ envoy: { dispatch: { owner: event.owner, ...header } } }, bound) ??
+    encodeWithin({ envoy: { ...rendered, dispatch: { ...owner, ...header } } }, bound) ??
+    encodeWithin({ envoy: { dispatch: { ...owner, ...header } } }, bound) ??
     encodeWithin({ envoy: { dispatch: header } }, bound) ??
     encode({ envoy: { dispatch: { payload: notShown } } })
   );
@@ -1330,6 +1338,11 @@ export function renderInbound(
   // Text that follows the card's TOON block: a person's edit's diff as a fenced `diff` block.
   let trailer = "";
   const at = inboundTimestamp(envelope.issued_at);
+  // The session's inbox in either form, the session alone or under a project, names it the
+  // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
+  const toReader =
+    envelope.topic !== undefined &&
+    topicForms(envelope.topic).includes(legacyAgentSubject(sessionID));
   const dispatchRendered = envelope.source === "dispatch" && envelope.payload !== undefined;
   if (envelope.source === "dispatch") {
     const topic = subject ?? envelope.topic;
@@ -1489,7 +1502,7 @@ export function renderInbound(
                 };
         const payload =
           compactRecord === undefined
-            ? dispatchPayloadForReader(frame.event, sessionID, envelope.issued_at)
+            ? dispatchPayloadForReader(frame.event, sessionID, envelope.issued_at, toReader)
             : undefined;
         // A session's `origin` says where it runs (its host, machine, directory and tmux pane),
         // which a person finding the session reads and an agent does not: the card keeps the
@@ -1497,14 +1510,17 @@ export function renderInbound(
         let actor: DispatchEvent["actor"] = frame.event.actor;
         if ("origin" in frame.event.actor) {
           const { origin, ...rest } = frame.event.actor;
-          const title = isObject(origin) ? origin["session_title"] : undefined;
+          const title = isObject(origin) ? origin.session_title : undefined;
           actor =
             typeof title === "string" && title !== ""
               ? { ...rest, origin: { session_title: title } }
               : rest;
         }
+        // An event on no issue and no document, as a direct message to this session is, has no
+        // owner to name (`dispatchOwner` answers `unknown`), so the card names none.
+        const owner = dispatchOwner(frame.event, topic);
         dispatchEvent = {
-          owner: dispatchOwner(frame.event, topic),
+          ...(owner === "unknown" ? {} : { owner }),
           type: frame.event.type,
           actor,
           ...(relation === undefined ? {} : { relation }),
@@ -1596,12 +1612,7 @@ export function renderInbound(
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
   const rendered = {
-    // The session's inbox in either form, the session alone or under a project, names it the
-    // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
-    ...(envelope.topic !== undefined &&
-    topicForms(envelope.topic).includes(legacyAgentSubject(sessionID))
-      ? { to: `you (${sessionID})` }
-      : {}),
+    ...(toReader ? { to: `you (${sessionID})` } : {}),
     from: senderLabel(envelope),
     at,
     id: envelope.event_id ?? "unknown",

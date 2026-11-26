@@ -680,7 +680,7 @@ describe("replies", () => {
       type: "comment.created",
       actor: { kind: "user", id: "alice" },
     });
-    expect(card.envoy.dispatch["actor"]).not.toHaveProperty("x");
+    expect(card.envoy.dispatch.actor).not.toHaveProperty("x");
   });
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {

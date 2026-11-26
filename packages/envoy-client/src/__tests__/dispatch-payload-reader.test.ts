@@ -43,7 +43,7 @@ describe("renderInbound shows a Dispatch payload as readDispatchPayload reads it
       const card = rendered.skip
         ? undefined
         : (decode(rendered.content) as { envoy?: Record<string, unknown> } | null);
-      const unrecognised = card?.envoy?.["unrecognised"] === "payload";
+      const unrecognised = card?.envoy?.unrecognised === "payload";
       if (unrecognised === (kind === "event")) disagreements.push(`${name} (${kind})`);
       if (kind === "event") events += 1;
     }
