@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
@@ -19,16 +20,27 @@ type launchSecret struct {
 }
 
 // launchSecrets are the secrets every launch's spec carries, in name order: the Envoy bearer, when
-// the daemon has one, and the pane NATS nkey seed, when the configuration or the daemon's
-// environment (lookup) names one (natsauth.Seed). The daemon's own NATS connection authenticates
-// with that seed only when the daemon has no seed of its own (natsauth.DaemonSeed,
-// chooseNATSConnection), which no launch carries. Which of them there are is known from the
-// configuration and the environment alone, so checkOperatorConfig names them without reading a file.
+// the daemon has one; the deployment's private-name rule file (leakguard.RulesSecret), when the
+// configuration or the daemon's environment names one (config.Config.PrivateNameRulesFile), as
+// its bytes verbatim, which every role's leak guard runs behind the secret's `_FILE` pointer,
+// leakguard.RulesFileVar; and the pane NATS nkey seed, when the configuration or the daemon's
+// environment (lookup) names one (natsauth.Seed). The rule file is read here and nowhere else:
+// readBoot compiles these same bytes, so the rules a role runs are the rules boot accepted, and a
+// file named or changed later reaches no launch before the daemon restarts. The daemon's own NATS
+// connection authenticates with the pane seed only when the daemon has no seed of its own
+// (natsauth.DaemonSeed, chooseNATSConnection), which no launch carries. Which of them there are is
+// known from the configuration and the environment alone, so checkOperatorConfig names them
+// without reading a file.
 func launchSecrets(cfg config.Config, lookup func(string) (string, bool)) []launchSecret {
 	var secrets []launchSecret
 	if cfg.EnvoyTokenFile != "" {
 		secrets = append(secrets, launchSecret{"ENVOY_TOKEN", func() (string, error) {
 			return config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile)
+		}})
+	}
+	if cfg.PrivateNameRulesFile != "" {
+		secrets = append(secrets, launchSecret{leakguard.RulesSecret, func() (string, error) {
+			return readPrivateNameRulesFile(cfg.PrivateNameRulesNamedBy, cfg.PrivateNameRulesFile)
 		}})
 	}
 	if natsauth.Configured(cfg.NatsNkeySeedFile, lookup) {

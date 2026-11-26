@@ -637,14 +637,14 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // It recovers from any panic in its own work, which is a deliberate departure from this daemon's
 // practice: a process that cannot keep its invariants should die and be restarted, so no
 // production path of it outside this trimmer recovers a panic it did not expect, but in two cases.
-// One is leakguard's compile, which turns the panic regexp.MustCompile raises on a pattern of the
-// embedded rule file into an error. The other is the memory guard, which recovers its loop
-// (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers its loop
-// (Guest.step) and its wake's reader (readModified), for this trimmer's reason: that code runs in
-// PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles container, so
-// its panic takes the container down and costs the pod's live roles their round, over a cache
-// sweep that nothing depends on. The fault is logged with its stack and carried into the next
-// report, and three in a row of one kind of work stop the trimmer until the launcher process
+// One is leakguard's compileRules, which turns the panic regexp.MustCompile raises on a pattern of
+// the deployment's private-name rule file into an error. The other is the memory guard, which
+// recovers its loop (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers
+// its loop (Guest.step) and its wake's reader (readModified), for this trimmer's reason: that code
+// runs in PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles
+// container, so its panic takes the container down and costs the pod's live roles their round,
+// over a cache sweep that nothing depends on. The fault is logged with its stack and carried into
+// the next report, and three in a row of one kind of work stop the trimmer until the launcher process
 // restarts (fault, run), which no other ending of the four does.
 //
 // Each kind keeps a row of its own (faultRow). The reading's is the interval's reading of the
