@@ -26,9 +26,11 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
  * `readDecisions`), and where it does, its members are read there; where it answers none, they
  * are the ones today's decisions read gives a person's decision (`api/decisions.go`'s
  * `readDecisions`). A node of supertag `decision` whose `from_ask` names an ask a person answered
- * is no decision (`restatesAnswer`, INFRA-1196's decision 513): it is the old decisions
- * document's section that restates the person's answer, and the person's decision is the answered
- * ask itself, in their own words (INFRA-1150), so no reader of a decision draws it or counts it.
+ * and that shaped nothing the ask did not shape is no decision (`restatesAnswer`, INFRA-1196's
+ * decisions 513 and 521): it is the old decisions document's section that restates the person's
+ * answer, and the person's decision is the answered ask itself, in their own words (INFRA-1150),
+ * so no reader of a decision draws it or counts it. One that shaped any node that ask did not is
+ * an agent's decision, drawn under the question, and waits for review on that shaping (root R35).
  * A node of supertag `decision` whose `decided_by` names a person is that person's decision
  * (`decidedByPerson`, INFRA-1196's decision 516), as an answered ask is, and never waits for
  * review, whatever the read's `waiting_review` says; one whose `decided_by` names a session, or
@@ -275,42 +277,64 @@ export function decidedByPerson(decision: Pick<DecisionNode, "decidedBy">): bool
 }
 
 /**
- * Whether decision node `node` restates a person's answer (INFRA-1196's decision 513): an agent's
- * decision whose `from_ask` names an ask a person answered (`restatedAsks`). Such a block is the
- * old decisions document's section that restates the answer, and the person's decision is the
- * answered ask itself, in their own words (INFRA-1150: no restatement of a person's answer appears
- * anywhere in the view), so it is no decision of `decisionNodes`, and the outline and Graph draw
- * no row for it (`tree-read/tree-nodes.ts`' `firstDraft`): an address that names it lands on the
- * question it restates (`issue-address.ts`' `pathToTarget`). The test is the tie alone, never the
- * node's place: an agent's decision the read stands under an answered ask that names no such tie
- * is drawn as an agent's decision, and waits for review where a `shaped` tie names a statement.
+ * Whether decision node `node` restates a person's answer (INFRA-1196's decisions 513 and 521):
+ * an agent's decision whose `from_ask` names an ask a person answered and every node it shaped is
+ * a node that ask shaped (`restatedAsks`). Such a block is the old decisions document's section
+ * that restates the answer, and the person's decision is the answered ask itself, in their own
+ * words (INFRA-1150: no restatement of a person's answer appears anywhere in the view), so it is
+ * no decision of `decisionNodes`, and the outline and Graph draw no row for it
+ * (`tree-read/tree-nodes.ts`' `firstDraft`): an address that names it lands on the question it
+ * restates (`issue-address.ts`' `pathToTarget`). A decision that shaped any node that ask did not
+ * is an agent's decision, drawn under the question, and waits for review on that shaping (root
+ * R35). The test is the ties alone, never the node's place: an agent's decision the read stands
+ * under an answered ask that names no `from_ask` is drawn as an agent's decision too.
  */
 export function restatesAnswer(
   node: TreeAnswerNode,
-  lookup: Pick<Lookup, "askOf" | "nodeOf">
+  lookup: Pick<Lookup, "askOf" | "nodeOf" | "tuplesFrom">
 ): boolean {
   return restatedAsks(node, lookup).length > 0;
 }
 
 /**
  * The asks a person answered whose answer decision node `node` restates (`restatesAnswer`): each
- * node of the answer an ask its `from_ask` names is, where a person answered that ask; none for a
- * node of any other supertag. The read answers the asks a decision's `from_ask` names on its
- * `decision` (`asks`, the decisions read's `Asks`), each by its id, which is the read id of the
- * ask's node. The answer holds that node wherever the read stands the decision under it, as it
- * stands a decision under the ask of its own issue it settles, and the Decisions view holds every
- * ask; where the answer holds no node of the ask, nothing says it is answered. The ask is one a
- * person answered by the rule a person's decision is read by (`answeredByPerson`).
+ * node of the answer an ask its `from_ask` names is, where a person answered that ask and every
+ * node the decision shaped is a node that ask shaped (INFRA-1196's decisions 513 and 521); none
+ * for a node of any other supertag. The read answers the asks a decision's `from_ask` names on
+ * its `decision` (`asks`, the decisions read's `Asks`), each by its id, which is the read id of
+ * the ask's node. The answer holds that node wherever the read stands the decision under it, as
+ * it stands a decision under the ask of its own issue it settles, and the Decisions view holds
+ * every ask; where the answer holds no node of the ask, nothing says it is answered. The ask is
+ * one a person answered by the rule a person's decision is read by (`answeredByPerson`).
+ *
+ * Both sides name each shaped node by the store's node id (`shapedNodeIds`): the decision's from
+ * its `decision.links` (`to.id`), and the ask's from the person's decision the read answers on
+ * the ask's node (`decision.links`, `to.id`), else the answer's `shaped` tuples from the ask's
+ * node (`tuple.to.id`), so the verdict is the same in every answer the page reads it from, the
+ * Decisions view included, which holds no statement and so no `shaped` tuple to a statement.
  */
 export function restatedAsks(
   node: TreeAnswerNode,
-  lookup: Pick<Lookup, "askOf" | "nodeOf">
+  lookup: Pick<Lookup, "askOf" | "nodeOf" | "tuplesFrom">
 ): TreeAnswerNode[] {
   if (node.supertag !== "decision") return [];
+  const shaped = (node.decision?.links ?? []).map((link) => link.to.id);
   return (node.decision?.asks ?? []).flatMap((askId) => {
     const ask = lookup.nodeOf(askId);
-    return ask?.supertag === "ask" && answeredByPerson(ask, lookup.askOf(ask)) ? [ask] : [];
+    if (ask?.supertag !== "ask" || !answeredByPerson(ask, lookup.askOf(ask))) return [];
+    const askShaped = new Set(shapedNodeIds(ask, lookup));
+    return shaped.every((id) => askShaped.has(id)) ? [ask] : [];
   });
+}
+
+/** The store node ids of the nodes ask node `node` shaped: from the person's decision the read
+ *  answers on the node (`decision.links`, `to.id`), else the answer's `shaped` tuples from it
+ *  (`tuple.to.id`), both naming a target by `graph_tuples.to_id`. */
+function shapedNodeIds(node: TreeAnswerNode, lookup: Pick<Lookup, "tuplesFrom">): string[] {
+  if (node.decision !== undefined) return (node.decision.links ?? []).map((link) => link.to.id);
+  return lookup
+    .tuplesFrom(node.id)
+    .flatMap((tuple) => (tuple.kind === "shaped" ? [tuple.to.id] : []));
 }
 
 /** Whether ask node `node`, the row of the issue's asks `ask` is (`askOfNode`), is one a person
@@ -341,10 +365,7 @@ function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | u
   const ask = lookup.askOf(node);
   const ref = nodeReference(node, lookup.key, ask);
   if (ref === undefined || !answeredByPerson(node, ask)) return undefined;
-  const shaped =
-    node.decision === undefined
-      ? lookup.tuplesFrom(node.id).some((tuple) => tuple.kind === "shaped")
-      : (node.decision.links ?? []).length > 0;
+  const shaped = shapedNodeIds(node, lookup).length > 0;
   if (!shaped) return undefined;
   const members: ModelMembers =
     node.decision === undefined

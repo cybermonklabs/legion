@@ -737,7 +737,7 @@ function draftResult(
  *
  * A decision whose `decided_by` names a person is that person's decision (`decision-nodes.ts`'
  * `decidedByPerson`, INFRA-1196's decision 516), so its author is that person, and it is not an
- * agent's to keep or change: it waits on nobody, whatever the read's `waiting_review` says, a
+ * agent's to keep or change: it waits for no review, whatever the read's `waiting_review` says, a
  * comment under it asks no change of it, and the one state it stands in is replaced, where it
  * was.
  */
