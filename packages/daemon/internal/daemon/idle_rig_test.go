@@ -118,6 +118,9 @@ type idleWakeRig struct {
 	baseline map[string]int
 	// toolsPath holds the rig's `legion` and `omp` stand-ins, made once.
 	toolsPath string
+	// streamSocket is the listening socket the rig holds on the worker stream's port
+	// (cfg.WorkerStreamPort) for the whole test, which every boot serves on (heldSocketListen).
+	streamSocket *os.File
 
 	// stop ends the running daemon, and done answers when it has.
 	stopMu sync.Mutex
@@ -161,6 +164,15 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
 	// daemon has not admitted is one its boot lingers closed.
 	cfg.AdmissionCap = len(issues) + 4
+	// The worker stream listens on a port of the rig's own, held from here until the test ends,
+	// rather than one the kernel picks at each bind (workflowConfig's 0), as controllerSandboxRig's
+	// does and for its reason: a pod's launcher dials the stream its command names for the pod's
+	// life, so a daemon the rig boots again (restart) must listen where the pods it kept dial, as a
+	// deployment's fixed worker_stream_port does. A kept pod's launcher that redialled a port no
+	// daemon serves could make no read for the daemon, and a pod no role runs in is deleted only
+	// once its launcher reads its disk clean (#5285's unowned release).
+	streamSocket, streamPort := heldSocket(t)
+	cfg.WorkerStreamPort = streamPort
 	// Every launcher of the rig reaches that database through its generation's proxy, which
 	// carries the launcher's own startup packet to it unchanged, so the password the rig's DSN
 	// names has to be in the environment before the first launcher starts
@@ -184,7 +196,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	cfg.DispatchURL = board.url
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
-		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
+		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}, streamSocket: streamSocket}
 	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
 		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
@@ -440,7 +452,8 @@ func (r *idleWakeRig) boot() {
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
-			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
+			listen: heldListen, streamListen: heldSocketListen(r.streamSocket, r.cfg.WorkerStreamPort),
+			runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
 		})
 	}()
