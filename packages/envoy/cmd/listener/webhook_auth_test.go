@@ -303,11 +303,11 @@ func TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget(t *testing.T) {
 
 	_ = holder.Close()
 	var served webhookAnswer
-	if !testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 50*time.Millisecond, func() bool {
 		served = postWebhook(t, addr, "/webhook/slack", slackHeaders(webhookTestSecret, time.Now(), event), event)
 		return served.status == http.StatusOK
 	}) {
-		t.Fatalf("slack status = %d %q 10 s after the GitHub sender went away, want 200: its delivery kept its room", served.status, strings.TrimSpace(served.body))
+		t.Fatalf("slack status = %d %q the time this package gives a wait after the GitHub sender went away, want 200: its delivery kept its room", served.status, strings.TrimSpace(served.body))
 	}
 	publisher.mu.Lock()
 	defer publisher.mu.Unlock()

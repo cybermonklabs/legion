@@ -94,7 +94,7 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 			}
 		}
 		last := registrations[len(registrations)-1]
-		waitFor(t, 10*time.Second, "the interest cache to hold "+sessionID+"'s record through "+last.MachineID, func() bool {
+		waitFor(t, "the interest cache to hold "+sessionID+"'s record through "+last.MachineID, func() bool {
 			row, held := registry.Cached(sessionID)
 			return held && row.MachineID == last.MachineID && row.Dir == last.Dir
 		})

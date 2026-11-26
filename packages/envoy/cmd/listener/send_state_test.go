@@ -280,7 +280,7 @@ func awaitNoRelaySubscriber(t *testing.T, uri, sessionID string) {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	defer conn.Close()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		msg := natsgo.NewMsg(bus.DeliverSubject(sessionID))
 		msg.Header.Set(bus.ConnectionProbeHeader, "1")
@@ -616,7 +616,7 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 // other report, and fails the test when none arrives within the bound.
 func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		msg, err := wakes.NextMsg(time.Until(deadline))
 		if err != nil {
