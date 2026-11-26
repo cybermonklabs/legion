@@ -478,7 +478,7 @@ func (c *HTTPClient) ArtifactToken(ctx context.Context, key, slug string) (Docum
 // (current.document): that refusal is a *StaleDocument carrying it, so the caller can write again
 // over what stands now. Every other refusal is Dispatch's *Error, as every route's is.
 func (c *HTTPClient) UploadArtifactOver(ctx context.Context, key, name, content, token string) (string, error) {
-	upload := artifactUpload{Name: name, Content: content, Actor: daemonActor(key)}
+	upload := artifactUpload{Name: name, Content: content, Actor: c.actor(key)}
 	if token != "" {
 		upload.Precondition = &uploadPrecondition{Document: token}
 	}
