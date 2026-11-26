@@ -13,13 +13,15 @@ import (
 )
 
 // The log lines of the deletion of a branch beside a fix: a deletion, an absence GitHub answered
-// 404 to the delete, an absence the exact read confirmed after a 422, and a deletion that failed;
-// and the outbox's line of a row whose run failed and that it keeps for its retry.
+// 404 to the delete, an absence the exact read confirmed after a 422, a deletion that failed, and
+// a ref GitHub listed outside the prefix asked, which is refused; and the outbox's line of a row
+// whose run failed and that it keeps for its retry.
 const (
 	besideDeletedLine = "outbox deleted a branch beside a fix"
 	beside404Line     = "outbox found a branch beside a fix already absent: GitHub answered its delete 404"
 	beside422Line     = "outbox found a branch beside a fix already absent: GitHub answered its delete 422 and its ref 404"
 	besideFailedLine  = "outbox could not delete a branch beside a fix; the row keeps it for its retry"
+	besideRefusedLine = "outbox refused a ref GitHub listed outside the branches beside a fix; it deletes nothing for it, and the row keeps it for its retry"
 	rowFailedLine     = "outbox row failed"
 )
 
@@ -126,7 +128,10 @@ func requestsOf(refs *githubtest.Refs, method, branch string) []int {
 // issue's. A delete GitHub answers 422 is read again by the branch's exact ref: where the ref still
 // stands, the row fails and is kept for its retry, logging a failure and no deletion of it, and its
 // replay deletes it; where the ref reads 404, the branch finishes as absent, not as deleted. A 500
-// keeps the row for its retry too. Each runs on a whole daemon (besideDaemon), the row on its
+// keeps the row for its retry too. A ref the list answers outside the prefix it was asked for, the
+// issue's own branch or a tag, is refused before either request: it is logged at WARN by its ref,
+// GitHub is asked no delete of it, and the row fails and is kept for its retry, while the list's
+// branches of fix 1 are deleted. Each runs on a whole daemon (besideDaemon), the row on its
 // role-message lane.
 //
 // The controls, kept subtests: the row of fix 2 leaves fix 1's three branches, and with a 422 taken
@@ -243,6 +248,54 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 				t.Fatalf("GitHub answered the deletes of %s %v, want the one of fix 2's row and none of the row through fix 1", b.fix2, deletes)
 			}
 		})
+	})
+	t.Run("a listed ref outside the prefix is refused, and nothing is deleted for it", func(t *testing.T) {
+		t.Parallel()
+		d, refs, b := besideDaemon(t, nil)
+		prefix, err := claim.BesideFixPrefix(d.key, 1, "default", 1)
+		if err != nil {
+			t.Fatalf("fix 1's prefix: %v", err)
+		}
+		issueRef, tagRef := "refs/heads/"+b.issue, "refs/tags/"+b.fix1[1]
+		refs.ListAlso(liveRepo, prefix, issueRef, "f000000000000000000000000000000000000000")
+		refs.ListAlso(liveRepo, prefix, tagRef, "f100000000000000000000000000000000000000")
+		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Fix: 1})
+		d.until("", "the row's first run to end", func() bool { return !d.rowLeft(id) || len(d.ciLines(rowFailedLine, id)) > 0 })
+		if held := standing(refs, b.issue); len(held) != 1 {
+			t.Fatalf("after the row the issue's own branch %s stands %v, want it standing: GitHub listed it outside fix 1's prefix", b.issue, held)
+		}
+		var deletes []string
+		for _, request := range refs.Requests() {
+			if request.Method == http.MethodDelete {
+				deletes = append(deletes, request.Path)
+			}
+		}
+		var want []string
+		for _, branch := range b.fix1 {
+			want = append(want, "/git/refs/heads/"+branch)
+		}
+		slices.Sort(deletes)
+		slices.Sort(want)
+		if !slices.Equal(deletes, want) {
+			t.Fatalf("GitHub was asked the deletes %v, want fix 1's three alone, %v", deletes, want)
+		}
+		for _, outside := range []string{issueRef, tagRef} {
+			var refused []map[string]any
+			for _, line := range d.ciLines(besideRefusedLine, id) {
+				if line["ref"] == outside {
+					refused = append(refused, line)
+				}
+			}
+			if len(refused) == 0 || refused[0]["level"] != "WARN" {
+				t.Fatalf("the refusal lines of %s = %v, want one at WARN naming the ref", outside, refused)
+			}
+		}
+		if held := standing(refs, b.fix1...); len(held) != 0 {
+			t.Fatalf("after the row %v of fix 1 stand, want none: the refusal leaves the list's own branches to their deletes", held)
+		}
+		if !d.rowLeft(id) || len(d.ciLines(rowFailedLine, id)) == 0 {
+			t.Fatalf("after the refusal the row left %t with %d failures, want it failed and kept for its retry", d.rowLeft(id), len(d.ciLines(rowFailedLine, id)))
+		}
 	})
 	t.Run("control: delete422AsGone finishes a branch that still stands as deleted", func(t *testing.T) {
 		t.Parallel()
