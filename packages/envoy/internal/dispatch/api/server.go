@@ -474,8 +474,8 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
-	// specReads keeps the check runs and the spec files the results route reads of GitHub for the
-	// life of the process (spec_results.go).
+	// specReads keeps the check runs, the spec files and the jobs of the workflow files the
+	// results route reads of GitHub for the life of the process (spec_results.go).
 	specReads specResultReads
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
