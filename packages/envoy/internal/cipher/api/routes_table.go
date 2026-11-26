@@ -570,9 +570,10 @@ func routes() []apiRoute {
 		// word: a revoke only takes power away.
 		{http.MethodPost, "/v1/person-signins/{id}/revoke", accountAuth(relaysDecisions, (*server).revokePersonSignIn)},
 		// End everything one Google account holds under an address another account now holds,
-		// whenever it was issued, and refuse it anything new there: Dispatch's server calls it
-		// when another account takes an address it holds for a person, naming the address,
-		// the identity provider, the replaced account's `sub` and the holder's. Every sign-in on
+		// whenever it was issued, and refuse it anything new there: a Dispatch that records
+		// accounts is to call it when another account takes an address it holds for a person
+		// (Dispatch in this tree does not call it yet), naming the address, the identity
+		// provider, the replaced account's `sub` and the holder's. Every sign-in on
 		// a machine that account's person token made, every login of the address's own machines
 		// it approved and every session on the broker's own approval page it signed in ends, with
 		// the tokens and sessions each holds, and so does every row that records no account; the
