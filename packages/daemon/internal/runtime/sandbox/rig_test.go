@@ -48,10 +48,11 @@ import (
 )
 
 const (
-	testNamespace = "legion"
-	testProject   = "legion"
-	testImage     = "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef"
-	testTree      = "LEGION-208"
+	testNamespace      = "legion"
+	testProject        = "legion"
+	testImage          = "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef"
+	testTree           = "LEGION-208"
+	testRigBootTimeout = 2 * time.Second
 	// testSessionDSNKey is the providers Secret's key holding the session database's URL under the
 	// postgres store (Options.SessionStore), which every runtime a test configures carries as a
 	// postgres deployment's does.
@@ -72,11 +73,11 @@ var (
 // deployment that runs one has it done.
 var testLeakCheck = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), ManifestSHA256: strings.Repeat("5e", 32)}
 
-// testOptions are the options every test starts from: production's shape — a store that keeps
-// sessions in a database included, which configure requires, here the postgres one with its URL key
-// — both pods' reservations at the daemon's defaults (reservations), the deployment's shared leak
-// check (testLeakCheck), with budgets short enough that a wait the test expects to end never slows
-// the suite.
+// testOptions are direct runtime-test options: production's shape — a store that keeps sessions in
+// a database included, which configure requires, here the postgres one with its URL key — both
+// pods' reservations at the daemon's defaults (reservations), the deployment's shared leak check
+// (testLeakCheck), and the named two-second test boot timeout. newRig replaces that timeout with
+// the test deadline unless a timeout-verdict row asks for withTestBootTimeout.
 func testOptions() Options {
 	return Options{
 		Namespace:    testNamespace,
@@ -95,7 +96,7 @@ func testOptions() Options {
 			GH: "/usr/local/bin/gh", Git: "/usr/bin/git", JJ: "/usr/local/bin/jj", Legion: "/opt/legion/bin/legion",
 			AgentSecrets: "/opt/legion/bin/agent-secrets",
 		},
-		BootTimeout:           2 * time.Second,
+		BootTimeout:           testRigBootTimeout,
 		RegistrationIntervals: 3,
 		BusyBackoff:           time.Millisecond,
 		TerminationGrace:      200 * time.Millisecond,
@@ -564,6 +565,12 @@ type rigOption func(*rig, *Options)
 
 func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options) { edit(o) } }
 
+// withTestBootTimeout keeps the named two-second rig bound for a test whose assertion is that a
+// launch gives up at its boot timeout. Other newRig calls take withWaitsToTheDeadline by default.
+func withTestBootTimeout() rigOption {
+	return withOptions(func(o *Options) { o.BootTimeout = testRigBootTimeout })
+}
+
 // withWaitsToTheDeadline sets the runtime's boot timeout to what is left of the test binary's
 // deadline when the rig is made (testwait.Remaining), in place of testOptions' 2 s. That timeout
 // bounds each wait of a launch on the wall clock — for its old pod to end, for its new pod, for its
@@ -804,6 +811,9 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 	opts := testOptions()
 	opts.Conns = g.conns
 	opts.Now = func() time.Time { return *g.now.Load() }
+	// A rig's event waits end at the test binary's deadline. Timeout-verdict tests override this
+	// default with withTestBootTimeout after it is applied.
+	withWaitsToTheDeadline()(g, &opts)
 	for _, option := range options {
 		option(g, &opts)
 	}

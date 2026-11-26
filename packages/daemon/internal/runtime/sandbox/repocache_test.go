@@ -1749,7 +1749,7 @@ func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T
 			service := cacheService(cache, "uid-cache")
 			tc.edit(service)
 			logs := &logBuffer{}
-			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs))
+			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs), withTestBootTimeout())
 
 			_, err := g.r.Spawn(g.ctx, spec)
 			if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache) || !strings.Contains(err.Error(), tc.says) {
@@ -1784,7 +1784,7 @@ func TestNoServiceIsTrustedWhileTheServiceWatchFails(t *testing.T) {
 	spec := rootSpec(t)
 	cache := CacheSandboxName(testProject, spec.Repository)
 	logs := &logBuffer{}
-	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs))
+	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs), withTestBootTimeout())
 	g.r.serviceFeed.record(errors.New(`services is forbidden: User "legion-daemon" cannot watch resource "services"`), time.Now())
 	says := "cannot be checked: the Service store may be stale"
 

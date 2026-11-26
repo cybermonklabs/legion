@@ -1608,7 +1608,7 @@ func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
 				o.Log = slogTo(logged)
 				o.Pod.Volumes = []corev1.Volume{team}
 				o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
-			}))
+			}), withTestBootTimeout())
 			g.finishes(unplaced(testCase.message, testCase.age))
 			p := rowProbe(t, testCase.refused)
 
@@ -1807,7 +1807,7 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 	// they run out, and other tests' load could delay that read past them.
 	t.Run("unschedulable past the boot timeout, then placed", func(t *testing.T) {
 		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withTestBootTimeout())
 		g.with(func() { g.log = okLine(3) + "\n" })
 		var pods atomic.Int32
 		g.finishes(func(p *corev1.Pod) {
@@ -1849,7 +1849,7 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 
 	t.Run("unschedulable within the boot timeout waits to the budget", func(t *testing.T) {
 		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withTestBootTimeout())
 		g.finishes(unschedulable(testOptions().BootTimeout / 2))
 		p := probeOptions(t)
 		p.Budget = unfinishedBudget

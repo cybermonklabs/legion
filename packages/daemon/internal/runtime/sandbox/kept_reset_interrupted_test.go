@@ -23,7 +23,7 @@ import (
 func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 	t.Parallel()
 	name := SandboxName(workerToken)
-	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withTestBootTimeout())
 	old := g.spawn(workerSpec(t))
 	if err := g.r.Suspend(g.ctx, old); err != nil {
 		t.Fatal(err)
@@ -123,13 +123,16 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 	// Sandbox, so the launch stops there. The next launch, which reads no pod, resets the volume on
 	// the mark. A launch that writes no mark of its own for such a Sandbox fails this case.
 	t.Run("the launch into a Sandbox already Suspended stopped at its delete", func(t *testing.T) {
-		first := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+		first := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withTestBootTimeout())
 		old := first.spawn(workerSpec(t))
 		if err := first.r.Suspend(first.ctx, old); err != nil {
 			t.Fatal(err)
 		}
 		first.editPod(name, "the pod store to see the failed workspace-init", edit)
-		g, copied := first.suspendedCopy(name, keptVolumes(SandboxMicroVM))
+		g, copied := first.suspendedCopy(name, func(o *Options) {
+			keptVolumes(SandboxMicroVM)(o)
+			o.BootTimeout = testRigBootTimeout
+		})
 		g.eventually("the pod store to hold the failed pod", func() bool { return g.r.storedPod(name) != nil })
 		var deletes atomic.Int32
 		g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
