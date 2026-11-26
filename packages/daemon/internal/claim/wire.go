@@ -202,11 +202,12 @@ type TurnOutcomeRequest struct {
 // Caller is the identity the body named, and false when it named both or neither: each says who
 // is calling, and a caller that cannot say is not answered.
 func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
-	return callerOf(r.AgentCaller, r.BootCaller)
+	return CallerOf(r.AgentCaller, r.BootCaller)
 }
 
-// callerOf is the one of agent and boot a body named, and false where it named both or neither.
-func callerOf(agent AgentCaller, boot BootCaller) (TurnOutcomeCaller, bool) {
+// CallerOf is the one of agent and boot a body named, and false where it named both or neither:
+// the caller of each body that embeds the two (TurnOutcomeRequest, ModelRequestsRequest).
+func CallerOf(agent AgentCaller, boot BootCaller) (TurnOutcomeCaller, bool) {
 	if agent.named() == boot.named() {
 		return nil, false
 	}
@@ -267,7 +268,7 @@ type ModelRequestsRequest struct {
 
 // Caller is the identity the body named, and false when it named both or neither.
 func (r ModelRequestsRequest) Caller() (TurnOutcomeCaller, bool) {
-	return callerOf(r.AgentCaller, r.BootCaller)
+	return CallerOf(r.AgentCaller, r.BootCaller)
 }
 
 // ModelRequest is one model request a host made for a session of the project, and nothing else of

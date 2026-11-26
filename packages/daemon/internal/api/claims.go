@@ -333,7 +333,7 @@ const (
 // refusal itself when the body names neither identity, both, or one the daemon does not
 // recognise.
 func (s *server) reportCaller(w http.ResponseWriter, r *http.Request, report claimReport, agent claim.AgentCaller, boot claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, bool) {
-	if caller, named := (claim.TurnOutcomeRequest{AgentCaller: agent, BootCaller: boot}).Caller(); named {
+	if caller, named := claim.CallerOf(agent, boot); named {
 		switch caller := caller.(type) {
 		case claim.BootCaller:
 			return s.reportByBootToken(w, r, report, caller, generation)

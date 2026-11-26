@@ -1952,16 +1952,27 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // QueueTimelineRead reads a pull request's GitHub timeline (GET /repos/<owner>/<name>/issues/<n>/timeline)
 // after an enqueued, dequeued or merged notification, and applies intake.QueueTimeline with
 // GitHub's own timestamps. Repo and Number name the pull request, Move names the notification
-// ("enqueued", "dequeued" or "merged") and MinCount is the minimum count of events in that move's
-// direction the timeline must hold before the notified move is considered visible on GitHub.
+// (QueueMove) and MinCount is the minimum count of events in that move's direction the timeline
+// must hold before the notified move is considered visible on GitHub.
 type QueueTimelineRead struct {
-	Repo     string `json:"repo"`
-	Number   int    `json:"number"`
-	Move     string `json:"move"`
-	MinCount int    `json:"minCount"`
+	Repo     string    `json:"repo"`
+	Number   int       `json:"number"`
+	Move     QueueMove `json:"move"`
+	MinCount int       `json:"minCount"`
 }
 
 func (QueueTimelineRead) OutboxKind() OutboxKind { return OutboxKindQueueTimelineRead }
+
+// QueueMove is a pull request's move in the merge queue that GitHub notified, as its pull_request
+// action names it: an entry (QueueEnqueued), or an exit, a removal (QueueDequeued) or a merge
+// (QueueMerged).
+type QueueMove string
+
+const (
+	QueueEnqueued QueueMove = "enqueued"
+	QueueDequeued QueueMove = "dequeued"
+	QueueMerged   QueueMove = "merged"
+)
 
 // MergeQueueRemoval tells the issue's merger, on the merger's own role topic, that the pull request
 // left the merge queue at Head. The fact the merge-queue read applies writes it when GitHub did not
@@ -2793,7 +2804,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-queue read names the pull request it reads and the head that left the queue; it names #%d at %q", value.Number, value.Head)
 		}
 	case QueueTimelineRead:
-		if value.Repo == "" || value.Number < 1 || (value.Move != "enqueued" && value.Move != "dequeued" && value.Move != "merged") || value.MinCount < 1 {
+		if value.Repo == "" || value.Number < 1 || (value.Move != QueueEnqueued && value.Move != QueueDequeued && value.Move != QueueMerged) || value.MinCount < 1 {
 			return fmt.Errorf("a queue timeline read names the repository, pull request, move and minimum count; it names %q #%d %q (%d)",
 				value.Repo, value.Number, value.Move, value.MinCount)
 		}

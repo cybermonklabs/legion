@@ -532,11 +532,12 @@ type StartFailure struct {
 // line of the memory guard's kill, whose role is told why, and the line of a kill of any cause
 // that names an issue the daemon does not record, which tells nobody. guardKillNoRoleLine is the
 // line of a kill of a process of no role, which the launcher reports on the connection of one
-// role of its pod and which tells no role.
+// role of its pod and which tells no role (workflow.MemoryKillNoRoleLine, the constant its writer
+// logs it under).
 const (
 	guardKillToldLine       = "workflow: the role whose process the memory guard ended is told why"
 	guardKillUnrecordedLine = "workflow: a memory guard kill names an issue the daemon does not record, so no role is told"
-	guardKillNoRoleLine     = "workflow: a memory kill of a process of no role is told to no role"
+	guardKillNoRoleLine     = workflow.MemoryKillNoRoleLine
 )
 
 // GuardKillLine is one of the daemon's lines of a kill an issue pod's launcher reported

@@ -135,23 +135,6 @@ func (d *liveDaemon) apply(at time.Time, fact intake.Fact) {
 	}
 }
 
-// inTx runs fn in a transaction of the daemon's pool, which it commits.
-func (d *liveDaemon) inTx(fn func(context.Context, pgx.Tx) error) {
-	d.t.Helper()
-	ctx := context.Background()
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
-		d.t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := fn(ctx, tx); err != nil {
-		d.t.Fatalf("in a transaction: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		d.t.Fatalf("commit: %v", err)
-	}
-}
-
 // holder records key as a root holding a slot it took at admitted, its tree opened under the
 // workflow and its architect's claim in a turn begun then: the root the replay's promotion of it
 // makes (promotedRoot), which a pass keeps its slot, where a root of no open tree gives it back.
@@ -161,7 +144,7 @@ func (d *liveDaemon) holder(key string, admitted time.Time) {
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	d.inTx(func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Repo: builtRepository, DefaultBranch: "main", GitHubRepo: builtRepository,
 			Project: builtProject, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "a1", HandedOver: true}); err != nil {
@@ -171,7 +154,9 @@ func (d *liveDaemon) holder(key string, admitted time.Time) {
 			return err
 		}
 		return records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: 0, AdmittedAt: admitted})
-	})
+	}); err != nil {
+		d.t.Fatalf("record the root %s: %v", key, err)
+	}
 	d.claim(key, supervise.StateWorking, admitted, time.Time{})
 }
 
@@ -182,25 +167,11 @@ func (d *liveDaemon) claim(key string, state supervise.ClaimState, start, end ti
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	if err := d.claims.PutClaim(context.Background(), supervise.Claim{Token: architectToken(d.t, key), Project: project, Tree: key, Issue: key,
+	if err := d.claims.PutClaim(context.Background(), supervise.Claim{Token: builtToken(d.t, key, claim.RoleArchitect), Project: project, Tree: key, Issue: key,
 		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: state, Session: "ses_architect_" + key, LastTurnStart: start,
 		LastTurnEnd: end}); err != nil {
 		d.t.Fatalf("record the architect's claim of %s: %v", key, err)
 	}
-}
-
-// architectToken is the claim token of key's architect.
-func architectToken(t *testing.T, key string) claim.Token {
-	t.Helper()
-	project, err := claim.ProjectToken(builtProject)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := claim.NewToken(project, key, claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return token
 }
 
 // reading is the daemon's live reading at at.
@@ -208,11 +179,13 @@ func (d *liveDaemon) reading(at time.Time) admit.LiveReading {
 	d.t.Helper()
 	var reading admit.LiveReading
 	d.now = at
-	d.inTx(func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		reading, err = d.live.Reading(ctx, tx, at)
 		return err
-	})
+	}); err != nil {
+		d.t.Fatalf("read the live signals at %s: %v", at.Format(time.RFC3339), err)
+	}
 	return reading
 }
 
@@ -249,7 +222,7 @@ func liveReplayRecord(requests *[]requestAt) []liveReplayFact {
 				b.window.Launcher = append(b.window.Launcher, LauncherLine{Time: at, Pod: "legion-acme-acme-1", Text: guardKillText(pid, "architect")})
 			},
 			live: func(d *liveDaemon) {
-				d.apply(at, intake.MemoryGuardKill{Issue: "ACME-1", Token: architectToken(d.t, "ACME-1"), PodUID: "pod-1",
+				d.apply(at, intake.MemoryGuardKill{Issue: "ACME-1", Token: builtToken(d.t, "ACME-1", claim.RoleArchitect), PodUID: "pod-1",
 					Report: shimwire.LauncherMemoryKill{Guard: "guard-1", Sequence: sequence, PID: pid, Executable: "python3", LimitBytes: 8 << 30, At: at}})
 			}}
 	}
@@ -263,7 +236,7 @@ func liveReplayRecord(requests *[]requestAt) []liveReplayFact {
 			},
 			live: func(d *liveDaemon) {
 				d.apply(at, intake.QueueTimeline{Repo: builtRepository, Number: n, Events: []signals.QueueEvent{
-					{ID: int64(id), Repo: builtRepository, PullRequest: n, At: at, Enters: kind == queueAdded}}})
+					{ID: int64(id), Repo: builtRepository, PullRequest: n, At: at, Enters: kind == intake.QueueAdded}}})
 			}}
 	}
 	// The record's host reports every refusal, the 429s its transport retried among them, so the
@@ -273,7 +246,7 @@ func liveReplayRecord(requests *[]requestAt) []liveReplayFact {
 			window: func(*windowBuilder) { *requests = append(*requests, r) },
 			live: func(d *liveDaemon) {
 				tokens := r.tokens
-				d.apply(r.at, intake.ModelRequests{Claim: architectToken(d.t, "ACME-1"), Generation: 1, Requests: []claim.ModelRequest{
+				d.apply(r.at, intake.ModelRequests{Claim: builtToken(d.t, "ACME-1", claim.RoleArchitect), Generation: 1, Requests: []claim.ModelRequest{
 					{ID: id, Session: "ses_1", Model: "acme-model", EndedAt: r.at, UncachedInputTokens: &tokens, Refusal: r.refusal}},
 					RetriedRefusalsReported: true})
 			}}
@@ -294,18 +267,18 @@ func liveReplayRecord(requests *[]requestAt) []liveReplayFact {
 			live: func(d *liveDaemon) { d.holder("ACME-1", clock(7, 0)) }},
 		kill(clock(7, 10), 100, 1),
 		kill(clock(7, 20), 101, 2),
-		queue(clock(7, 30), 1, 1, queueAdded),
+		queue(clock(7, 30), 1, 1, intake.QueueAdded),
 		{at: clock(7, 40), what: "ACME-1's architect ends its turn", window: func(b *windowBuilder) { b.turnEnds(clock(7, 40), "ACME-1", claim.RoleArchitect) },
 			live: func(d *liveDaemon) { d.claim("ACME-1", supervise.StateIdle, clock(7, 0), clock(7, 40)) }},
 		ask(clock(8, 0), "ACME-2", "A1", "ask.opened", nil),
 		request("r1", requestAt{at: clock(8, 10).Add(30 * time.Second), tokens: 4000}),
-		queue(clock(8, 15), 2, 1, queueMerged),
+		queue(clock(8, 15), 2, 1, intake.QueueMerged),
 		request("r2", requestAt{at: clock(8, 20).Add(10 * time.Second), refusal: claim.RefusalOwn}),
 		request("r3", requestAt{at: clock(8, 20).Add(20 * time.Second), refusal: claim.RefusalUnknown}),
 		request("r4", requestAt{at: clock(8, 25), refusal: claim.RefusalProvider}),
 		ask(clock(8, 30), "ACME-3", "A2", "ask.opened", nil),
 		ask(clock(8, 40), "ACME-3", "A2", "ask.asked_of", map[string]any{"asked_of": acmeOther, "asked_of_by": acmeOwner}),
-		queue(clock(9, 0), 3, 2, queueAdded),
+		queue(clock(9, 0), 3, 2, intake.QueueAdded),
 	}
 }
 

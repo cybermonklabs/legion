@@ -30,7 +30,7 @@ func TestDecodeSignalInputs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode pr-enqueued: %v", err)
 		}
-		want := PullRequestEnqueued{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-captured"}
+		want := PullRequestEnqueued{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208"}
 		if !reflect.DeepEqual(got.Fact, want) {
 			t.Fatalf("fact = %#v, want %#v", got.Fact, want)
 		}

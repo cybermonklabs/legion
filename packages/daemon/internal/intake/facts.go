@@ -1098,14 +1098,13 @@ type PullRequestDequeued struct {
 func (PullRequestDequeued) namedIssue() (string, bool) { return "", false }
 
 // PullRequestEnqueued is GitHub's pull_request action `enqueued` on an issue branch of the daemon's
-// project: the pull request entered the merge queue at HeadSHA. It carries no queue time; admission
-// queues a timeline read (record.QueueTimelineRead) so GitHub's own timeline gives the event's
-// id, canonical repository and created_at.
+// project: the pull request entered the merge queue. It carries no queue time; admission queues a
+// timeline read (record.QueueTimelineRead) so GitHub's own timeline gives the event's id,
+// canonical repository and created_at.
 type PullRequestEnqueued struct {
-	Repo    string
-	Number  int
-	Branch  string
-	HeadSHA string
+	Repo   string
+	Number int
+	Branch string
 }
 
 func (PullRequestEnqueued) namedIssue() (string, bool) { return "", false }

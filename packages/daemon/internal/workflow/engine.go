@@ -252,6 +252,12 @@ func (e *Engine) SlotRule() record.SlotRule { return e.cfg.SlotRule }
 // hold at this line (internal/replay's PhaseHeld).
 const PhaseHeldLine = "workflow: a phase is held"
 
+// MemoryKillNoRoleLine is the line the engine writes once its fact commits for each memory kill of
+// a process of no role that an issue pod's launcher reported (memoryGuardKill), naming the issue,
+// the role's connection the launcher reported it on, the pod and the kill. A replay of a recorded
+// window reads a kill of no role from this line (internal/replay's readNoRoleKill).
+const MemoryKillNoRoleLine = "workflow: a memory kill of a process of no role is told to no role"
+
 // ExperimentSource is the random source every `random` experiment is drawn with
 // (Config.ExperimentSource): this engine's draw of each child it records, and admission's of each
 // tree and issue it records, which reads it here rather than holding a second one.
@@ -1967,7 +1973,7 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.MemoryGuardKill) (intake.Result, error) {
 	report := fact.Report
 	if report.NoRole {
-		e.logOnCommit(ctx, "workflow: a memory kill of a process of no role is told to no role",
+		e.logOnCommit(ctx, MemoryKillNoRoleLine,
 			"issue", fact.Issue, "connection", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
 			"cause", report.Cause, "sizeBytes", report.SizeBytes, "limitBytes", report.LimitBytes)
 		return intake.Result{}, nil

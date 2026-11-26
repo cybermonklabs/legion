@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 )
 
 // The readers of R11's signals' inputs: each reads one line of a window's input, or of the
@@ -203,41 +204,25 @@ func (l MemoryGuardLine) PID() (int, bool) {
 // Role is the role l names ("none" for a process outside every role), "" where it names none.
 func (l MemoryGuardLine) Role() string { return l.Fields["role"] }
 
-// The kinds of a pull request's timeline event a window's queue file keeps.
-const (
-	queueAdded   = "added_to_merge_queue"
-	queueRemoved = "removed_from_merge_queue"
-	queueMerged  = "merged"
-)
-
-// QueueEvent is one line of a window's queue file, read: the pull request, the kind of its
-// timeline event (added_to_merge_queue, removed_from_merge_queue or merged), the event's id, the
-// repository its url names (owner/name, as GitHub names it), when GitHub recorded it, the login
-// of its actor ("" where GitHub names none) and, for a merge, its commit. The repository is the
-// url's and never the file's: GitHub answers a renamed repository's former name with the
+// QueueEvent is one line of a window's queue file, read: its merge-queue event as the daemon reads
+// one (intake.QueueTimelineEvent: the pull request, the kind of its timeline event, the event's
+// id, the repository its url names, owner/name as GitHub names it, and when GitHub recorded it),
+// the login of its actor ("" where GitHub names none) and, for a merge, its commit. The repository
+// is the url's and never the file's: GitHub answers a renamed repository's former name with the
 // repository's own events, so a file collected under the former name holds events whose url names
 // the current one.
 type QueueEvent struct {
-	PullRequest int
-	Event       string
-	ID          int64
-	Repo        string
-	At          time.Time
-	Actor       string
-	Commit      string
+	intake.QueueTimelineEvent
+	Actor  string
+	Commit string
 }
-
-// queueEventURL is the url GitHub's REST API gives a timeline event,
-// <API>/repos/<owner>/<name>/issues/events/<id>, its owner and name: the API at any host and path,
-// DefaultGitHubAPI or another a collect-queue reads (QueueConfig.API).
-var queueEventURL = regexp.MustCompile(`^https?://[^/?#]+(?:/[^?#]*)?/repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/events/[0-9]+$`)
 
 // ParseQueueTimeline is the queue lines of pages, the pages of pull request pullRequest's
 // timeline as GitHub's REST API serves them (GET /repos/<owner>/<name>/issues/<n>/timeline): each
-// event of the kinds a queue file keeps, in the timeline's order, exactly as GitHub serves it,
-// with the pull request's number beside it: {"pullRequest": <n>, "item": <the event>}. It
-// refuses a page that is not a JSON array of timeline events, an event with no kind, and a kept
-// event ParseQueueLine refuses.
+// event of the kinds a queue file keeps (intake.IsQueueMove), in the timeline's order, exactly as
+// GitHub serves it, with the pull request's number beside it: {"pullRequest": <n>, "item": <the
+// event>}. It refuses a page that is not a JSON array of timeline events, an event with no kind,
+// and a kept event ParseQueueLine refuses.
 func ParseQueueTimeline(pullRequest int, pages ...[]byte) ([]json.RawMessage, error) {
 	if pullRequest <= 0 {
 		return nil, fmt.Errorf("replay: %d is no pull request's number", pullRequest)
@@ -255,7 +240,7 @@ func ParseQueueTimeline(pullRequest int, pages ...[]byte) ([]json.RawMessage, er
 			if err := json.Unmarshal(item, &head); err != nil || head.Event == nil {
 				return nil, fmt.Errorf("replay: event %d of page %d of the timeline of #%d names no kind", j+1, i+1, pullRequest)
 			}
-			if *head.Event != queueAdded && *head.Event != queueRemoved && *head.Event != queueMerged {
+			if !intake.IsQueueMove(*head.Event) {
 				continue
 			}
 			var line bytes.Buffer
@@ -274,9 +259,9 @@ func ParseQueueTimeline(pullRequest int, pages ...[]byte) ([]json.RawMessage, er
 }
 
 // ParseQueueLine reads one line of a window's queue file. It refuses a line that is not
-// {pullRequest, item} with a pull request's number, an item that is no merge queue event of the
-// kinds the file keeps or that has no created_at, an item with no event id, and one whose url names
-// no repository (queueEventURL), each refusal saying which.
+// {pullRequest, item} with a pull request's number, an item that intake.ParseQueueTimelineEvent
+// refuses (no merge queue event, or one with no created_at, no event id or a url that names no
+// repository, each refusal saying which), and one whose actor or commit is not GitHub's form of it.
 func ParseQueueLine(line []byte) (QueueEvent, error) {
 	var wrapped struct {
 		PullRequest *int            `json:"pullRequest"`
@@ -285,45 +270,28 @@ func ParseQueueLine(line []byte) (QueueEvent, error) {
 	if err := decodeStrict(line, &wrapped); err != nil || wrapped.PullRequest == nil || *wrapped.PullRequest <= 0 || len(wrapped.Item) == 0 {
 		return QueueEvent{}, fmt.Errorf("replay: the queue line %s is no {pullRequest, item} of a pull request's number and its event", line)
 	}
-	var item struct {
-		ID        *int64     `json:"id"`
-		URL       *string    `json:"url"`
-		Event     *string    `json:"event"`
-		CreatedAt *time.Time `json:"created_at"`
-		Actor     *struct {
+	parsed, err := intake.ParseQueueTimelineEvent(*wrapped.PullRequest, wrapped.Item)
+	if err != nil {
+		return QueueEvent{}, fmt.Errorf("replay: %w", err)
+	}
+	var by struct {
+		Actor *struct {
 			Login string `json:"login"`
 		} `json:"actor"`
 		CommitID *string `json:"commit_id"`
 	}
-	if err := json.Unmarshal(wrapped.Item, &item); err != nil {
+	if err := json.Unmarshal(wrapped.Item, &by); err != nil {
 		return QueueEvent{}, fmt.Errorf("replay: the queue line of #%d holds no timeline event: %w", *wrapped.PullRequest, err)
 	}
-	if item.Event == nil || (*item.Event != queueAdded && *item.Event != queueRemoved && *item.Event != queueMerged) || item.CreatedAt == nil {
-		return QueueEvent{}, fmt.Errorf("replay: the queue line of #%d holds no merge queue event with its created_at", *wrapped.PullRequest)
+	event := QueueEvent{QueueTimelineEvent: parsed}
+	if by.Actor != nil {
+		event.Actor = by.Actor.Login
 	}
-	if item.ID == nil || *item.ID <= 0 {
-		return QueueEvent{}, fmt.Errorf("replay: the queue line of #%d holds no event id", *wrapped.PullRequest)
-	}
-	if item.URL == nil {
-		return QueueEvent{}, fmt.Errorf("replay: the queue line of #%d holds no url, so it names no repository", *wrapped.PullRequest)
-	}
-	named := queueEventURL.FindStringSubmatch(*item.URL)
-	if named == nil {
-		return QueueEvent{}, fmt.Errorf("replay: the url %q of the queue line of #%d names no repository, as <API>/repos/<owner>/<name>/issues/events/<id> does",
-			*item.URL, *wrapped.PullRequest)
-	}
-	event := QueueEvent{PullRequest: *wrapped.PullRequest, Event: *item.Event, ID: *item.ID, Repo: named[1] + "/" + named[2], At: item.CreatedAt.UTC()}
-	if item.Actor != nil {
-		event.Actor = item.Actor.Login
-	}
-	if item.CommitID != nil {
-		event.Commit = *item.CommitID
+	if by.CommitID != nil {
+		event.Commit = *by.CommitID
 	}
 	return event, nil
 }
-
-// defaultAssigneeEvent is the settings event that moves a project's default assignee.
-const defaultAssigneeEvent = "settings.project_default_assignee.updated"
 
 // SettingsEvent is one of a project's settings events of Dispatch's event log, read: its id, its
 // place in the project's own log (Seq), its project and type (settings.<what>.updated), who made
@@ -367,7 +335,7 @@ func ParseSettingsEvent(event []byte) (SettingsEvent, error) {
 	}
 	parsed := SettingsEvent{ID: *e.ID, Seq: *e.Seq, Project: *e.Project, Type: *e.Type, Actor: dispatch.Actor{Kind: *e.Actor.Kind, ID: *e.Actor.ID},
 		At: e.CreatedAt.UTC()}
-	if parsed.Type == defaultAssigneeEvent {
+	if parsed.Type == intake.DefaultAssigneeEvent {
 		if e.Payload.Assignee == nil || *e.Payload.Assignee == "" {
 			return SettingsEvent{}, fmt.Errorf("replay: the event %d moves the project's default assignee and names no assignee", parsed.ID)
 		}

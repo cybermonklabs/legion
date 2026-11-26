@@ -197,7 +197,7 @@ func (d *driver) setupSignals() error {
 			if err != nil {
 				return fmt.Errorf("replay: line %d of %s: %w", i+1, settingsFile, err)
 			}
-			if event.Type == defaultAssigneeEvent && event.Project == w.Project {
+			if event.Type == intake.DefaultAssigneeEvent && event.Project == w.Project {
 				s.defaults = append(s.defaults, personAt{at: event.At, person: event.DefaultAssignee})
 			}
 		}

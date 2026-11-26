@@ -258,7 +258,8 @@ func testIssueAssignee(t *testing.T) {
 // An ask's asked_of is the person a person handed it to: named by an event (null clears it) or left
 // out of it. The real events of the capture carry it as null, an ask opened and an ask answered,
 // and the hand-on's envelope carries a person. It is a missing member, not an empty one, that
-// leaves the person as it stood.
+// leaves the person as it stood, and a member that is no person is taken as missing and reported,
+// never poison.
 func testAskAskedOf(t *testing.T) {
 	t.Helper()
 	const subject = "notifications.dispatch.issue.CAPTURE-4.ask.asked_of"
@@ -266,9 +267,10 @@ func testAskAskedOf(t *testing.T) {
 	const askID = "b1d3a9c2-5f70-4f0a-9c6e-1d2b3a4c5d6e"
 	mark := record.EventMark{Seq: 13, At: time.Date(2026, 9, 23, 0, 46, 38, 0, time.UTC)}
 	for _, tc := range []struct {
-		name string
-		edit func(map[string]any)
-		want signals.AskEvent
+		name   string
+		edit   func(map[string]any)
+		want   signals.AskEvent
+		unread string
 	}{
 		{name: "a hand-on to a person", edit: func(map[string]any) {},
 			want: signals.AskEvent{Kind: signals.AskAskedOf, Ask: askID, Issue: "CAPTURE-4", State: signals.ReportsOpen, AskedOfSet: true, AskedOf: "smoke"}},
@@ -276,6 +278,8 @@ func testAskAskedOf(t *testing.T) {
 			want: signals.AskEvent{Kind: signals.AskAskedOf, Ask: askID, Issue: "CAPTURE-4", State: signals.ReportsOpen, AskedOfSet: true}},
 		{name: "an event that names no asked_of", edit: func(e map[string]any) { delete(payloadOf(e), "asked_of") },
 			want: signals.AskEvent{Kind: signals.AskAskedOf, Ask: askID, Issue: "CAPTURE-4", State: signals.ReportsOpen}},
+		{name: "an asked_of that is no person", edit: func(e map[string]any) { payloadOf(e)["asked_of"] = 7 },
+			want: signals.AskEvent{Kind: signals.AskAskedOf, Ask: askID, Issue: "CAPTURE-4", State: signals.ReportsOpen}, unread: "asked_of 7 is no person"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decoded, err := decodeMessage(subject, "CAPTURE", capturedRepositories, editEnvelope(t, original, tc.edit))
@@ -285,6 +289,9 @@ func testAskAskedOf(t *testing.T) {
 			want := DispatchAskTurn{Key: "CAPTURE-4", Turn: tc.want, Mark: mark}
 			if !reflect.DeepEqual(decoded.Fact, want) {
 				t.Fatalf("decoded %#v, want %#v", decoded.Fact, want)
+			}
+			if unread := strings.Join(decoded.Unread, "; "); (tc.unread == "") != (unread == "") || !strings.Contains(unread, tc.unread) {
+				t.Fatalf("the decode took %q as unread, want %q", unread, tc.unread)
 			}
 		})
 	}

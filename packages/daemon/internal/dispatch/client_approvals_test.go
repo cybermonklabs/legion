@@ -68,7 +68,8 @@ func TestListAndDetailCarryTheAssignee(t *testing.T) {
 // (Dispatch's openAsksResponse). The daemon keeps the asks of issues alone: an ask of a project
 // document is the owner's `document` and is dropped. A Dispatch before the member, and a project it
 // stores no default of (null), both answer no default assignee, which is never guessed from the
-// person an ask waits on.
+// person an ask waits on. An answer with no time, or one in no form of a time, reads as of no time
+// rather than failing: no reading of the approvals signal reads it.
 func TestOpenAsksReadsTheIssuesWithAnAskOpenAndTheProjectsDefaultAssignee(t *testing.T) {
 	rows := []map[string]any{
 		{"id": "ask-1", "owner": map[string]any{"issue": map[string]any{"key": "LEGION-1", "title": "t", "assignee": nil}}, "waiting_on": "human", "waiting_on_person": "dana"},
@@ -107,7 +108,17 @@ func TestOpenAsksReadsTheIssuesWithAnAskOpenAndTheProjectsDefaultAssignee(t *tes
 		})
 	}
 	for name, body := range map[string]map[string]any{
-		"an answer with no time":         {"asks": []any{}},
+		"an answer with no time":           {"asks": []any{}},
+		"an answer with a time in no form": {"as_of": "yesterday", "asks": []any{}},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeJSON(t, w, body) }))
+		if open, err := New(server.URL, BearerTransport(dispatchToken, nil)).OpenAsks(context.Background(), "LEGION"); err != nil ||
+			!reflect.DeepEqual(open, OpenAsks{Asks: []OpenAsk{}}) {
+			t.Errorf("%s read as %+v (%v), want a read of no ask as of no time", name, open, err)
+		}
+		server.Close()
+	}
+	for name, body := range map[string]map[string]any{
 		"an ask of an issue with no key": {"as_of": "2026-11-26T09:00:00Z", "asks": []any{map[string]any{"id": "ask-1", "owner": map[string]any{"issue": map[string]any{"key": ""}}}}},
 		"an ask of an issue with no id":  {"as_of": "2026-11-26T09:00:00Z", "asks": []any{map[string]any{"id": "", "owner": map[string]any{"issue": map[string]any{"key": "LEGION-1"}}}}},
 	} {

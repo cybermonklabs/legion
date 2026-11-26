@@ -184,8 +184,8 @@ func TestSignalQueueTimeline(t *testing.T) {
 		at := mustTime("2026-11-23T19:00:00Z")
 		rig := newQueueTimelineRig(t, api.URL, at, ghrepo.Renames{})
 		rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
-		rig.apply("github.enq-1", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150", HeadSHA: "h1"})
-		rig.apply("github.enq-1", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150", HeadSHA: "h1"})
+		rig.apply("github.enq-1", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"})
+		rig.apply("github.enq-1", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"})
 		rig.apply("github.merged-1", intake.PullRequestMerged{Repo: "cybermonklabs/legion", Number: 5150, MergeSHA: "m1", HeadSHA: "h1"})
 		rig.drainTimelineRows()
 		if calls.Load() == 0 {
@@ -228,7 +228,7 @@ func TestSignalQueueTimeline(t *testing.T) {
 		at := mustTime("2026-11-23T03:00:00Z")
 		rig := newQueueTimelineRig(t, api.URL, at, ghrepo.Renames{})
 		rig.seedIssuePR("LEGION-4910", queueProject, "cybermonklabs/legion", 4910, "legion/LEGION-4910")
-		rig.apply("github.enq-4910", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 4910, Branch: "legion/LEGION-4910", HeadSHA: "h1"})
+		rig.apply("github.enq-4910", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 4910, Branch: "legion/LEGION-4910"})
 		rig.drainTimelineRows()
 		want := []signals.Wait{
 			{Added: mustTime("2026-11-22T19:51:26Z"), Left: mustTime("2026-11-23T01:39:21Z")},
@@ -256,7 +256,7 @@ func TestSignalQueueTimeline(t *testing.T) {
 		// Merged arrives before enqueued.
 		rig.apply("github.merged-ooo", intake.PullRequestMerged{Repo: "cybermonklabs/legion", Number: 5150, MergeSHA: "m1", HeadSHA: "h1"})
 		rig.drainTimelineRows()
-		rig.apply("github.enq-ooo", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150", HeadSHA: "h1"})
+		rig.apply("github.enq-ooo", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"})
 		rig.drainTimelineRows()
 		want := []signals.Wait{{Added: mustTime("2026-11-23T02:27:46Z"), Left: mustTime("2026-11-23T18:25:55Z")}}
 		if got := rig.waitsAt(at); !reflect.DeepEqual(got, want) {
@@ -282,7 +282,7 @@ func TestSignalQueueTimeline(t *testing.T) {
 		at := mustTime("2026-11-23T19:00:00Z")
 		rig := newQueueTimelineRig(t, api.URL, at, renames)
 		rig.seedIssuePR("LEGION-5150", queueProject, "sjawhar/legion", 5150, "legion/LEGION-5150")
-		rig.apply("github.enq-oldname", intake.PullRequestEnqueued{Repo: "sjawhar/legion", Number: 5150, Branch: "legion/LEGION-5150", HeadSHA: "h1"})
+		rig.apply("github.enq-oldname", intake.PullRequestEnqueued{Repo: "sjawhar/legion", Number: 5150, Branch: "legion/LEGION-5150"})
 		rig.drainTimelineRows()
 		events := rig.keptEvents()
 		if len(events) != 3 {
@@ -333,7 +333,7 @@ func TestSignalQueueTimeline(t *testing.T) {
 		at := mustTime("2026-11-23T19:00:00Z")
 		rig := newQueueTimelineRig(t, api.URL, at, ghrepo.Renames{})
 		rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
-		rig.apply("github.enq-before-rename", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150", HeadSHA: "h1"})
+		rig.apply("github.enq-before-rename", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"})
 		rig.drainTimelineRows()
 		rig.apply("github.merged-after-rename", intake.PullRequestMerged{Repo: "cybermonklabs/legion", Number: 5150, MergeSHA: "m1", HeadSHA: "h1"})
 		rig.drainTimelineRows()
@@ -359,7 +359,7 @@ func TestSignalQueueTimeline(t *testing.T) {
 		at := mustTime("2026-11-23T19:00:00Z")
 		rig := newQueueTimelineRig(t, api.URL, at, ghrepo.Renames{})
 		rig.seedIssuePR("OTHER-5150", "OTHER", "cybermonklabs/legion", 5150, "legion/OTHER-5150")
-		rig.apply("github.other-enq", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/OTHER-5150", HeadSHA: "h1"})
+		rig.apply("github.other-enq", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/OTHER-5150"})
 		rig.apply("github.other-deq", intake.PullRequestDequeued{Repo: "cybermonklabs/legion", Number: 5150, HeadSHA: "h1"})
 		rig.apply("github.other-merged", intake.PullRequestMerged{Repo: "cybermonklabs/legion", Number: 5150, MergeSHA: "m1", HeadSHA: "h1"})
 		rig.drainTimelineRows()
@@ -383,7 +383,7 @@ func TestSignalQueueTimeline(t *testing.T) {
 		rig := newQueueTimelineRig(t, api.URL, at, ghrepo.Renames{})
 		// Seed a recorded PR whose branch is NOT a legion/<KEY> issue branch.
 		rig.seedIssuePR("LEGION-77", queueProject, "cybermonklabs/legion", 5150, "feature/custom-branch")
-		rig.apply("github.noissue-enq", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "feature/custom-branch", HeadSHA: "h1"})
+		rig.apply("github.noissue-enq", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "feature/custom-branch"})
 		rig.apply("github.noissue-deq", intake.PullRequestDequeued{Repo: "cybermonklabs/legion", Number: 5150, HeadSHA: "h1"})
 		rig.apply("github.noissue-merged", intake.PullRequestMerged{Repo: "cybermonklabs/legion", Number: 5150, MergeSHA: "m1", HeadSHA: "h1"})
 		rig.drainTimelineRows()
@@ -416,7 +416,7 @@ func TestSignalQueueTimeline(t *testing.T) {
 		at := mustTime("2026-11-23T03:00:00Z")
 		rig := newQueueTimelineRig(t, api.URL, at, ghrepo.Renames{})
 		rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
-		rig.apply("github.enq-retry", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150", HeadSHA: "h1"})
+		rig.apply("github.enq-retry", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"})
 		// First run sees missing move and schedules a retry instead of finishing.
 		if ran := rig.drainTimelineRows(); ran != 1 {
 			t.Fatalf("first drain ran %d rows, want 1", ran)
@@ -467,7 +467,7 @@ func TestSignalQueueTimeline(t *testing.T) {
 		at := mustTime("2026-11-23T19:00:00Z")
 		rig := newQueueTimelineRig(t, api.URL, at, ghrepo.Renames{})
 		rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
-		rig.apply("github.enq-refused", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150", HeadSHA: "h1"})
+		rig.apply("github.enq-refused", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"})
 		for attempt := 1; attempt <= refused+1; attempt++ {
 			if ran := rig.drainTimelineRows(); ran != 1 {
 				t.Fatalf("attempt %d ran %d rows, want the one row still owed", attempt, ran)

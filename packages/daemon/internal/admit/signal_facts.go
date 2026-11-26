@@ -83,11 +83,11 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 	case intake.MemoryGuardKill:
 		return a.store.KeepMemoryKill(ctx, tx, a.project, fact.Report, a.now())
 	case intake.PullRequestEnqueued:
-		return a.queueTimelineRead(ctx, tx, fact.Repo, fact.Number, fact.Branch, "enqueued")
+		return a.queueTimelineRead(ctx, tx, fact.Repo, fact.Number, fact.Branch, record.QueueEnqueued)
 	case intake.PullRequestDequeued:
-		return a.queueTimelineOf(ctx, tx, fact.Repo, fact.Number, "dequeued")
+		return a.queueTimelineOf(ctx, tx, fact.Repo, fact.Number, record.QueueDequeued)
 	case intake.PullRequestMerged:
-		return a.queueTimelineOf(ctx, tx, fact.Repo, fact.Number, "merged")
+		return a.queueTimelineOf(ctx, tx, fact.Repo, fact.Number, record.QueueMerged)
 	case intake.QueueTimeline:
 		return a.store.KeepQueueEvents(ctx, tx, a.project, fact.Events, a.now())
 	case intake.QueueBootStatus:
@@ -172,7 +172,7 @@ func (a *Admission) beginApprovals(ctx context.Context, tx pgx.Tx) error {
 // with it (ghrepo.Under): the record knows the pull request's branch, and the read is queued only
 // where that branch is an issue's of this project. A pull request the record does not hold is
 // none of this project's to keep, since the project's own is recorded when it opens.
-func (a *Admission) queueTimelineOf(ctx context.Context, tx pgx.Tx, repo string, number int, move string) error {
+func (a *Admission) queueTimelineOf(ctx context.Context, tx pgx.Tx, repo string, number int, move record.QueueMove) error {
 	pr, err := ghrepo.Under(a.renames(), repo, func(name string) (*record.PullRequest, error) {
 		return a.store.PullRequestRowByNumber(ctx, tx, name, number)
 	})
@@ -183,12 +183,12 @@ func (a *Admission) queueTimelineOf(ctx context.Context, tx pgx.Tx, repo string,
 }
 
 // queueTimelineRead queues a record.QueueTimelineRead of pull request number of repo for the move
-// notified, one of "enqueued", "dequeued" and "merged", when branch names an issue of this
-// project (intake.ProjectBranchIssue), keyed by that issue so the project's daemon alone runs it.
-// MinCount is how many events of the move's direction GitHub's timeline must hold before the read
-// accepts that it shows the move (record.QueueProgress.Needs), which is what makes a read made
-// before GitHub's timeline caught up a read made again.
-func (a *Admission) queueTimelineRead(ctx context.Context, tx pgx.Tx, repo string, number int, branch, move string) error {
+// notified when branch names an issue of this project (intake.ProjectBranchIssue), keyed by that
+// issue so the project's daemon alone runs it. MinCount is how many events of the move's direction
+// GitHub's timeline must hold before the read accepts that it shows the move
+// (record.QueueProgress.Needs), which is what makes a read made before GitHub's timeline caught up
+// a read made again.
+func (a *Admission) queueTimelineRead(ctx context.Context, tx pgx.Tx, repo string, number int, branch string, move record.QueueMove) error {
 	issue, ok := intake.ProjectBranchIssue(branch, a.project)
 	if !ok || repo == "" || number < 1 {
 		return nil
@@ -202,7 +202,7 @@ func (a *Admission) queueTimelineRead(ctx context.Context, tx pgx.Tx, repo strin
 		return err
 	}
 	row, err := record.NewOutboxRow(issue, record.QueueTimelineRead{
-		Repo: repo, Number: number, Move: move, MinCount: progress.Needs(move == "enqueued"),
+		Repo: repo, Number: number, Move: move, MinCount: progress.Needs(move == record.QueueEnqueued),
 	}, a.now())
 	if err != nil {
 		return err

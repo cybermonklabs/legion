@@ -297,10 +297,10 @@ type Issue struct {
 }
 
 // OpenAsks is Dispatch's read of a project's open asks (GET /api/v1/asks/open?project=): the time
-// Dispatch read them (AsOf), each open ask of an issue of the project, and the project's default
-// assignee read in the same statement, a login. DefaultAssignee is "" where the read answered none:
-// a Dispatch before the member, or a project it stores no default of. It is never taken for
-// nobody's, nor guessed from the person an ask waits on.
+// Dispatch read them (AsOf, zero where its answer gave no time the daemon reads), each open ask of
+// an issue of the project, and the project's default assignee read in the same statement, a login.
+// DefaultAssignee is "" where the read answered none: a Dispatch before the member, or a project it
+// stores no default of. It is never taken for nobody's, nor guessed from the person an ask waits on.
 type OpenAsks struct {
 	AsOf            time.Time
 	Asks            []OpenAsk

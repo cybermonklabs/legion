@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -22,20 +21,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
-
-// The kinds of a pull request's timeline event that move it in the merge queue: GitHub's own
-// names, as its REST timeline API spells them.
-const (
-	queueTimelineAdded   = "added_to_merge_queue"
-	queueTimelineRemoved = "removed_from_merge_queue"
-	queueTimelineMerged  = "merged"
-)
-
-// queueTimelineEventURL matches the url GitHub's REST timeline API gives each issue event,
-// <API>/repos/<owner>/<name>/issues/events/<id>, and captures GitHub's own owner and repository
-// name: the repository the event is of as GitHub names it now, whichever name the read was made
-// under, which differs from the name the record keeps after a transfer.
-var queueTimelineEventURL = regexp.MustCompile(`^https?://[^/?#]+(?:/[^?#]*)?/repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/events/[0-9]+$`)
 
 // readQueueTimeline reads pull request number of the repository repoName (as the record spells it)
 // from GitHub's REST timeline API, every page (GET /repos/<owner>/<name>/issues/<n>/timeline), as
@@ -60,10 +45,11 @@ func (w *workflowRuntime) readQueueTimeline(ctx context.Context, repoName string
 
 // parseQueueTimeline is the merge-queue events of pull request number among items, the events of
 // its timeline as GitHub serves them: each added_to_merge_queue, removed_from_merge_queue and
-// merged event, in the order of the timeline, which is the order of events of one second. Each is
-// kept with GitHub's own id and created_at and the repository its url names. An event of another
-// kind is left out whatever it holds; a queue event with no id, no time or no repository is an
-// error rather than an event with a time the daemon made up.
+// merged event (intake.IsQueueMove), in the order of the timeline, which is the order of events
+// of one second, each read as intake.ParseQueueTimelineEvent reads it: with GitHub's own id and
+// created_at and the repository its url names. An event of another kind, or of no kind, is left
+// out whatever it holds; a queue event with no id, no time (or the zero time) or no repository is
+// an error rather than an event with a time the daemon made up.
 func parseQueueTimeline(number int, items []json.RawMessage) ([]signals.QueueEvent, error) {
 	events := []signals.QueueEvent{}
 	for _, raw := range items {
@@ -73,24 +59,17 @@ func parseQueueTimeline(number int, items []json.RawMessage) ([]signals.QueueEve
 		if err := json.Unmarshal(raw, &head); err != nil {
 			return nil, fmt.Errorf("read an event of the timeline of #%d: %w", number, err)
 		}
-		if head.Event != queueTimelineAdded && head.Event != queueTimelineRemoved && head.Event != queueTimelineMerged {
+		if !intake.IsQueueMove(head.Event) {
 			continue
 		}
-		var item struct {
-			ID        int64     `json:"id"`
-			URL       string    `json:"url"`
-			CreatedAt time.Time `json:"created_at"`
+		event, err := intake.ParseQueueTimelineEvent(number, raw)
+		if err != nil {
+			return nil, err
 		}
-		if err := json.Unmarshal(raw, &item); err != nil {
-			return nil, fmt.Errorf("read the %s event of the timeline of #%d: %w", head.Event, number, err)
+		if event.At.IsZero() {
+			return nil, fmt.Errorf("the %s event %d of the timeline of #%d names the zero time", event.Event, event.ID, number)
 		}
-		named := queueTimelineEventURL.FindStringSubmatch(item.URL)
-		if item.ID <= 0 || item.CreatedAt.IsZero() || named == nil {
-			return nil, fmt.Errorf("the %s event of the timeline of #%d (id %d, created %s, url %q) names no id, no time or no repository",
-				head.Event, number, item.ID, item.CreatedAt, item.URL)
-		}
-		events = append(events, signals.QueueEvent{ID: item.ID, Repo: named[1] + "/" + named[2], PullRequest: number,
-			At: item.CreatedAt.UTC(), Enters: head.Event == queueTimelineAdded})
+		events = append(events, event.Signal())
 	}
 	return events, nil
 }
@@ -142,7 +121,7 @@ func (r *outbox) queueTimelineRead(ctx context.Context, row record.OutboxRow, pa
 	}
 	shown := 0
 	for _, e := range events {
-		if e.Enters == (payload.Move == "enqueued") {
+		if e.Enters == (payload.Move == record.QueueEnqueued) {
 			shown++
 		}
 	}

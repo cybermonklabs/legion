@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
 )
@@ -196,19 +197,19 @@ func queueWindow(t *testing.T) Window {
 	b.reaches(8 * time.Hour)
 	b.boot(clock(1, 0))
 	b.window.Queue = map[string][]json.RawMessage{builtRepository: {
-		queueLine(1, 1, queueAdded, clock(2, 0)),
-		queueLine(2, 1, queueMerged, clock(3, 0)),
-		queueLine(3, 1, queueRemoved, clock(3, 0)),
-		queueLine(4, 2, queueAdded, clock(2, 30)),
-		queueLine(5, 2, queueRemoved, clock(4, 30)),
-		queueLine(6, 2, queueAdded, clock(5, 0)),
-		queueLine(7, 2, queueMerged, clock(5, 30)),
-		queueLine(8, 3, queueAdded, clock(6, 0)),
-		queueLine(9, 3, queueMerged, clock(10, 0)),
-		queueLine(10, 4, queueAdded, clock(9, 0)),
-		queueLine(11, 4, queueRemoved, clock(11, 0)),
-		queueLine(12, 5, queueAdded, clock(12, 0)),
-		queueLine(13, 5, queueMerged, clock(15, 0)),
+		queueLine(1, 1, intake.QueueAdded, clock(2, 0)),
+		queueLine(2, 1, intake.QueueMerged, clock(3, 0)),
+		queueLine(3, 1, intake.QueueRemoved, clock(3, 0)),
+		queueLine(4, 2, intake.QueueAdded, clock(2, 30)),
+		queueLine(5, 2, intake.QueueRemoved, clock(4, 30)),
+		queueLine(6, 2, intake.QueueAdded, clock(5, 0)),
+		queueLine(7, 2, intake.QueueMerged, clock(5, 30)),
+		queueLine(8, 3, intake.QueueAdded, clock(6, 0)),
+		queueLine(9, 3, intake.QueueMerged, clock(10, 0)),
+		queueLine(10, 4, intake.QueueAdded, clock(9, 0)),
+		queueLine(11, 4, intake.QueueRemoved, clock(11, 0)),
+		queueLine(12, 5, intake.QueueAdded, clock(12, 0)),
+		queueLine(13, 5, intake.QueueMerged, clock(15, 0)),
 	}}
 	b.window.Signals = map[string][]Span{SignalQueue: {{From: clock(1, 0), To: clock(18, 0)}}}
 	return b.build()
@@ -229,10 +230,10 @@ func TestQueueWaitsCountEachEventOnceAcrossARenamedRepository(t *testing.T) {
 	event := func(id, n int, kind string, at time.Time) json.RawMessage {
 		return queueLineOf(current, id, n, kind, at)
 	}
-	added1, merged1 := event(11, 1, queueAdded, clock(2, 0)), event(12, 1, queueMerged, clock(3, 0))
-	added2, merged2 := event(21, 2, queueAdded, clock(4, 0)), event(22, 2, queueMerged, clock(6, 0))
-	added3, removed3 := event(31, 3, queueAdded, clock(7, 0)), event(32, 3, queueRemoved, clock(8, 0))
-	added4, merged4 := event(41, 4, queueAdded, clock(9, 0)), event(42, 4, queueMerged, clock(10, 0))
+	added1, merged1 := event(11, 1, intake.QueueAdded, clock(2, 0)), event(12, 1, intake.QueueMerged, clock(3, 0))
+	added2, merged2 := event(21, 2, intake.QueueAdded, clock(4, 0)), event(22, 2, intake.QueueMerged, clock(6, 0))
+	added3, removed3 := event(31, 3, intake.QueueAdded, clock(7, 0)), event(32, 3, intake.QueueRemoved, clock(8, 0))
+	added4, merged4 := event(41, 4, intake.QueueAdded, clock(9, 0)), event(42, 4, intake.QueueMerged, clock(10, 0))
 	want := []signals.Wait{{Added: clock(2, 0), Left: clock(3, 0)}, {Added: clock(4, 0), Left: clock(6, 0)},
 		{Added: clock(7, 0), Left: clock(8, 0)}, {Added: clock(9, 0), Left: clock(10, 0)}}
 	describe := func(waits []signals.Wait) string {
@@ -399,10 +400,26 @@ func approvalsWindow(t *testing.T) Window {
 	ask(clock(12, 30), "ask.resolved", "ACME-5", "A5", map[string]any{"state": "resolved",
 		"resolution": map[string]any{"kind": "declined", "reason": "Not mine to answer", "actor": builtPerson, "at": clock(12, 30)}})
 	b.window.Settings = []json.RawMessage{json.RawMessage(fmt.Sprintf(`{"id":9001,"seq":1,"project":%q,"type":%q,"actor":{"kind":"user","id":%q},`+
-		`"created_at":%q,"payload":{"project":%q,"assignee":%q}}`, builtProject, defaultAssigneeEvent, acmeOwner, clock(11, 0).Format(time.RFC3339),
+		`"created_at":%q,"payload":{"project":%q,"assignee":%q}}`, builtProject, intake.DefaultAssigneeEvent, acmeOwner, clock(11, 0).Format(time.RFC3339),
 		builtProject, acmeLead))}
 	b.window.Signals = map[string][]Span{SignalApprovals: {{From: clock(8, 0), To: clock(13, 0)}}}
 	return b.build()
+}
+
+// An ask's event of a window turns its ask as the daemon's decode of the same event does
+// (intake.AskTurnPayload.AskTurn), and its asked_of names the person it is handed to. Where the
+// daemon takes an asked_of that is no person as missing and reports it, a window is a record the
+// replay reads whole, so such an event is refused rather than read as one that names nobody.
+func TestAnAskEventIsReadAsTheDaemonReadsItsTurnAndOneWhoseAskedOfIsNoPersonIsRefused(t *testing.T) {
+	t.Parallel()
+	read, err := approvalEventOf("ask.asked_of", "ACME-1", json.RawMessage(`{"id":"A1","kind":"question","state":"open","asked_of":"dana"}`))
+	want := signals.AskEvent{Kind: signals.AskAskedOf, Ask: "A1", Issue: "ACME-1", State: signals.ReportsOpen, AskedOf: "dana", AskedOfSet: true}
+	if err != nil || !read.asks || !reflect.DeepEqual(read.ask, want) {
+		t.Fatalf("the hand-on reads as %+v (asks %t, %v), want %+v", read.ask, read.asks, err, want)
+	}
+	if read, err := approvalEventOf("ask.asked_of", "ACME-1", json.RawMessage(`{"id":"A1","kind":"question","state":"open","asked_of":7}`)); err == nil {
+		t.Fatalf("a hand-on whose asked_of is no person reads as %+v, want a refusal", read.ask)
+	}
 }
 
 // Each signal of R11 is read at moments of a window worked out by hand, one of them on an edge of

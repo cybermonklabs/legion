@@ -260,16 +260,17 @@ func decodeListenerWake(eventID, payload string) (Fact, error) {
 	return ListenerWake{Kind: report.Kind, Role: report.Role, Session: report.Session, At: at, Report: eventID}, nil
 }
 
-// defaultAssigneeEvent is the type of Dispatch's settings event that moves a project's default
-// assignee (Dispatch's putProjectDefaultAssignee).
-const defaultAssigneeEvent = "settings.project_default_assignee.updated"
+// DefaultAssigneeEvent is the type of Dispatch's settings event that moves a project's default
+// assignee (Dispatch's putProjectDefaultAssignee): the one name the daemon's decode of it and the
+// replay's read of a window's settings events (replay.ParseSettingsEvent) both read.
+const DefaultAssigneeEvent = "settings.project_default_assignee.updated"
 
-// defaultAssigneeSubject is the subject Dispatch publishes project's defaultAssigneeEvent on (its
+// defaultAssigneeSubject is the subject Dispatch publishes project's DefaultAssigneeEvent on (its
 // outbox's notifications.dispatch.project.<project>.<type>): the one settings subject the
 // Dispatch durable's filter takes beside the issue events (OpenConsumers), since the approvals
 // signal reads the project's default assignee and no other setting.
 func defaultAssigneeSubject(project string) string {
-	return "notifications.dispatch.project." + project + "." + defaultAssigneeEvent
+	return "notifications.dispatch.project." + project + "." + DefaultAssigneeEvent
 }
 
 // decodeDefaultAssignee decodes Dispatch's move of project's default assignee, as its event log
@@ -295,7 +296,7 @@ func decodeDefaultAssignee(project, payload string) (Fact, error) {
 	switch {
 	case event.ID <= 0 || event.Seq <= 0 || event.CreatedAt.IsZero():
 		return nil, fmt.Errorf("Dispatch's default assignee event lacks its id, seq or created_at")
-	case event.Type != defaultAssigneeEvent:
+	case event.Type != DefaultAssigneeEvent:
 		return nil, fmt.Errorf("Dispatch's default assignee subject carries an event of type %q", event.Type)
 	case event.Project != project:
 		return nil, fmt.Errorf("Dispatch's default assignee event of %s names the project %q", project, event.Project)
@@ -707,62 +708,98 @@ func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
 }
 
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself
-// (Dispatch's model.AskEventPayload and AskEditEventPayload): its id, its kind, the author of an
-// opening, settlement's restored mark, an approval request's document with the version it now
-// names and the version its agent last handed to the person, a close's resolution (Dispatch's
-// model.AskResolution), which says why a resolved ask needs no human answer and carries the
-// person's note and Dispatch's own words apart, and the ask's state and asked_of person as its
-// row holds them, which the approvals signal reads (askTurn).
+// (Dispatch's model.AskEventPayload and AskEditEventPayload): what the approvals signal reads of
+// it (AskTurnPayload), the author of an opening, settlement's restored mark, an approval request's
+// document with the version it now names and the version its agent last handed to the person, and
+// a close's resolution (Dispatch's model.AskResolution), which says why a resolved ask needs no
+// human answer and carries the person's note and Dispatch's own words apart.
 type askPayload struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"`
+	AskTurnPayload
 	Author struct {
 		Kind string `json:"kind"`
 		ID   string `json:"id"`
 	} `json:"author"`
 	Restored bool `json:"restored"`
 	Approval *struct {
-		ArtifactID       string `json:"artifact_id"`
-		Version          *int   `json:"version"`
-		RequestedVersion *int   `json:"requested_version"`
+		ArtifactID string `json:"artifact_id"`
+		AskVersions
 	} `json:"approval"`
 	Resolution *struct {
 		Kind          string `json:"kind"`
 		Reason        string `json:"reason"`
 		DispatchWords string `json:"dispatch_words"`
 	} `json:"resolution"`
-	// State is the ask's state after the event, nil where the payload carries none.
-	State *string `json:"state"`
-	// AskedOf is the person the ask is handed to, JSON null for nobody, and absent from an event
-	// recorded before Dispatch had it, which says nothing of it.
-	AskedOf json.RawMessage `json:"asked_of"`
-	kind    string
+	kind string
 }
 
-// askTurn is event, of ask, as the approvals signal reads it (signals.AskEvent), as the replay
-// reads the same event (replay's readAskEvent): its kind by the part of its type after `ask.`, its
-// ask and issue, its state (open, or any other state as closed, nothing where the payload carries
-// none), an approval request's versions, and its asked_of person where the payload names one, null
-// included. An asked_of that is no person is taken as absent and named in unread.
-func askTurn(event dispatchEvent, ask askPayload, unread *[]string) signals.AskEvent {
-	turn := signals.AskEvent{Kind: signals.AskEventKind(strings.TrimPrefix(event.Type, "ask.")), Ask: ask.ID, Issue: event.IssueKey}
-	if ask.State != nil {
+// AskTurnPayload is what the approvals signal reads of an ask event's payload, the ask as its row
+// holds it after the event: its id, its kind, its state (nil where the payload carries none), and
+// the person it is handed to (AskedOf), JSON null for nobody and absent from an event recorded
+// before Dispatch had it, which says nothing of it. An approval request's versions sit in the
+// payload's approval beside its document (AskVersions). The daemon's decode of an ask event
+// (askPayload) and the replay's read of a window's events both read it, and AskTurn turns it into
+// the event the signal reads.
+type AskTurnPayload struct {
+	ID      string          `json:"id"`
+	Kind    string          `json:"kind"`
+	State   *string         `json:"state"`
+	AskedOf json.RawMessage `json:"asked_of"`
+}
+
+// AskVersions is an approval request's versions as its ask event's payload names them: the
+// version of the document the request now names, and the version its agent last handed to the
+// person.
+type AskVersions struct {
+	Version          *int `json:"version"`
+	RequestedVersion *int `json:"requested_version"`
+}
+
+// AskTurn is the ask event of type typ on issue, of p, as the approvals signal reads it
+// (signals.AskEvent): its kind by the part of typ after `ask.`, its ask and issue, its state
+// (open, or any other state as closed, nothing where the payload carries none), an approval
+// request's versions (approval, nil where the payload names none), and its asked_of person where
+// the payload names one, null included. It is the one reading of an ask event's turn, the daemon's
+// and the replay's. An asked_of that is no person is its error, beside the turn read without it:
+// the daemon takes it as absent and names it in unread (askTurn), and the replay refuses the event.
+func (p AskTurnPayload) AskTurn(typ, issue string, approval *AskVersions) (signals.AskEvent, error) {
+	turn := signals.AskEvent{Kind: signals.AskEventKind(strings.TrimPrefix(typ, "ask.")), Ask: p.ID, Issue: issue}
+	if p.State != nil {
 		turn.State = signals.ReportsClosed
-		if *ask.State == "open" {
+		if *p.State == "open" {
 			turn.State = signals.ReportsOpen
 		}
 	}
-	if ask.kind == record.AskApproval && ask.Approval != nil {
-		turn.Approval = &signals.AskApproval{Version: ask.Approval.Version, RequestedVersion: ask.Approval.RequestedVersion}
+	if p.Kind == record.AskApproval && approval != nil {
+		turn.Approval = &signals.AskApproval{Version: approval.Version, RequestedVersion: approval.RequestedVersion}
 	}
-	turn.AskedOf, turn.AskedOfSet = eventPerson(ask.AskedOf, "asked_of", unread)
+	if p.AskedOf != nil {
+		var person *string
+		if err := json.Unmarshal(p.AskedOf, &person); err != nil {
+			return turn, err
+		}
+		turn.AskedOf, turn.AskedOfSet = deref(person), true
+	}
+	return turn, nil
+}
+
+// askTurn is event, of ask, as the approvals signal reads it (AskTurnPayload.AskTurn), an asked_of
+// that is no person taken as absent and named in unread, as eventPerson names a member that is
+// no person.
+func askTurn(event dispatchEvent, ask askPayload, unread *[]string) signals.AskEvent {
+	var versions *AskVersions
+	if ask.Approval != nil {
+		versions = &ask.Approval.AskVersions
+	}
+	turn, err := ask.AskTurn(event.Type, event.IssueKey, versions)
+	if err != nil {
+		*unread = append(*unread, fmt.Sprintf("asked_of %s is no person: %v", ask.AskedOf, err))
+	}
 	return turn
 }
 
-// eventPerson reads a person member of an event (an issue's assignee, an ask's asked_of): the
-// login, "" for null, and whether the event carried the member at all. A member that is no login
-// is taken as absent and named in unread, never poison: the event can carry what the workflow
-// acts on.
+// eventPerson reads a person member of an event (an issue's assignee): the login, "" for null, and
+// whether the event carried the member at all. A member that is no login is taken as absent and
+// named in unread, never poison: the event can carry what the workflow acts on.
 func eventPerson(raw json.RawMessage, field string, unread *[]string) (string, bool) {
 	if raw == nil {
 		return "", false
@@ -872,7 +909,7 @@ func decodeGitHubFact(subject, project string, repositories []ghrepo.Repository,
 // them changing nothing. Every action carries head_ref.
 func decodePullRequest(project string, repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
-	issue, isIssueBranch := claim.BranchIssue(branch)
+	_, isIssueBranch := claim.BranchIssue(branch)
 	if !isIssueBranch {
 		return nil, nil
 	}
@@ -920,11 +957,12 @@ func decodePullRequest(project string, repository ghrepo.Repository, raw map[str
 		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, nil
 	case "enqueued":
 		// Only pull requests whose branch names an issue of this daemon's project feed its merge
-		// queue signal: another project's pull request in a shared repository keeps nothing.
-		if !projectIssueKey(issue, project) || sha == "" {
+		// queue signal: another project's pull request in a shared repository keeps nothing. One the
+		// listener sends with no head is no fact, as a removal with none is no fact.
+		if _, ours := ProjectBranchIssue(branch, project); !ours || sha == "" {
 			return nil, nil
 		}
-		return PullRequestEnqueued{Repo: repo, Number: number, Branch: branch, HeadSHA: sha}, nil
+		return PullRequestEnqueued{Repo: repo, Number: number, Branch: branch}, nil
 	case "review_requested", "review_request_removed":
 		// A review request opened or withdrawn moves what a `blocked` head's round waits on, and
 		// the read it asks for counts the requests; one with no head names none to read for.
@@ -935,6 +973,78 @@ func decodePullRequest(project string, repository ghrepo.Repository, raw map[str
 	default:
 		return nil, nil
 	}
+}
+
+// The kinds of a pull request's timeline event that move it in the merge queue: GitHub's own
+// names, as its REST timeline API spells them.
+const (
+	QueueAdded   = "added_to_merge_queue"
+	QueueRemoved = "removed_from_merge_queue"
+	QueueMerged  = "merged"
+)
+
+// IsQueueMove says whether kind, the kind of a pull request's timeline event, moves it in the
+// merge queue (QueueAdded, QueueRemoved or QueueMerged).
+func IsQueueMove(kind string) bool {
+	return kind == QueueAdded || kind == QueueRemoved || kind == QueueMerged
+}
+
+// queueEventURL matches the url GitHub's REST timeline API gives each issue event,
+// <API>/repos/<owner>/<name>/issues/events/<id>, the API at any host and path, and captures
+// GitHub's own owner and repository name: the repository the event is of as GitHub names it now,
+// whichever name the read was made under, which differs from the name the record keeps after a
+// transfer.
+var queueEventURL = regexp.MustCompile(`^https?://[^/?#]+(?:/[^?#]*)?/repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/events/[0-9]+$`)
+
+// QueueTimelineEvent is a merge-queue event of a pull request's timeline, read
+// (ParseQueueTimelineEvent): the pull request, the event's kind (GitHub's `event`: QueueAdded,
+// QueueRemoved or QueueMerged), GitHub's id of it, the repository its url names (owner/name, as
+// GitHub names it now) and when GitHub recorded it.
+type QueueTimelineEvent struct {
+	PullRequest int
+	Event       string
+	ID          int64
+	Repo        string
+	At          time.Time
+}
+
+// Signal is e as the queue signal keeps it: an entry for an added_to_merge_queue event, and an
+// exit for a removal or a merge.
+func (e QueueTimelineEvent) Signal() signals.QueueEvent {
+	return signals.QueueEvent{ID: e.ID, Repo: e.Repo, PullRequest: e.PullRequest, At: e.At, Enters: e.Event == QueueAdded}
+}
+
+// ParseQueueTimelineEvent reads item, an event of pull request number's timeline as GitHub's REST
+// timeline API serves it (GET /repos/<owner>/<name>/issues/<n>/timeline): the one reading of a
+// merge-queue event, the daemon's read of a timeline and the replay's read of a window's queue
+// file alike. It refuses an item that is no merge-queue event or that has no created_at, one with
+// no event id, and one whose url names no repository (queueEventURL), each refusal saying which,
+// rather than an event with a time or a repository made up.
+func ParseQueueTimelineEvent(number int, item []byte) (QueueTimelineEvent, error) {
+	var event struct {
+		ID        *int64     `json:"id"`
+		URL       *string    `json:"url"`
+		Event     *string    `json:"event"`
+		CreatedAt *time.Time `json:"created_at"`
+	}
+	if err := json.Unmarshal(item, &event); err != nil {
+		return QueueTimelineEvent{}, fmt.Errorf("the timeline event of #%d is no timeline event: %w", number, err)
+	}
+	if event.Event == nil || !IsQueueMove(*event.Event) || event.CreatedAt == nil {
+		return QueueTimelineEvent{}, fmt.Errorf("the timeline event of #%d is no merge queue event with its created_at", number)
+	}
+	if event.ID == nil || *event.ID <= 0 {
+		return QueueTimelineEvent{}, fmt.Errorf("the %s event of #%d holds no event id", *event.Event, number)
+	}
+	if event.URL == nil {
+		return QueueTimelineEvent{}, fmt.Errorf("the %s event of #%d holds no url, so it names no repository", *event.Event, number)
+	}
+	named := queueEventURL.FindStringSubmatch(*event.URL)
+	if named == nil {
+		return QueueTimelineEvent{}, fmt.Errorf("the url %q of the %s event of #%d names no repository, as <API>/repos/<owner>/<name>/issues/events/<id> does",
+			*event.URL, *event.Event, number)
+	}
+	return QueueTimelineEvent{PullRequest: number, Event: *event.Event, ID: *event.ID, Repo: named[1] + "/" + named[2], At: event.CreatedAt.UTC()}, nil
 }
 
 func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, []string, error) {

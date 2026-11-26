@@ -133,8 +133,10 @@ func (c *HTTPClient) GetIssue(ctx context.Context, key string) (Issue, error) {
 // the approvals signal counts the asks of issues, as the replay does. A Dispatch before
 // default_assignee answers none, and so does one that stores no default of the project (JSON null):
 // OpenAsks.DefaultAssignee is then "", never a person guessed from the one an ask waits on
-// (waiting_on_person). An answer whose as_of is no time, or that lists an ask of an issue with no id
-// or no key, is an error rather than a read with a hole.
+// (waiting_on_person). An answer that lists an ask of an issue with no id or no key is an error
+// rather than a read with a hole. One whose as_of is no time reads as of no time (OpenAsks.AsOf
+// zero): the store keeps the time beside the default assignee and no reading of the signal reads
+// it, so it fails no read.
 func (c *HTTPClient) OpenAsks(ctx context.Context, project string) (OpenAsks, error) {
 	query := url.Values{}
 	query.Set("project", project)
@@ -153,11 +155,10 @@ func (c *HTTPClient) OpenAsks(ctx context.Context, project string) (OpenAsks, er
 	if err := c.request(ctx, http.MethodGet, "/api/v1/asks/open?"+query.Encode(), nil, &response); err != nil {
 		return OpenAsks{}, err
 	}
-	asOf, err := time.Parse(time.RFC3339Nano, response.AsOf)
-	if err != nil {
-		return OpenAsks{}, fmt.Errorf("read the open asks of %s: as_of %q is no time: %w", project, response.AsOf, err)
+	open := OpenAsks{Asks: []OpenAsk{}, DefaultAssignee: response.DefaultAssignee.login}
+	if asOf, err := time.Parse(time.RFC3339Nano, response.AsOf); err == nil {
+		open.AsOf = asOf.UTC()
 	}
-	open := OpenAsks{AsOf: asOf.UTC(), Asks: []OpenAsk{}, DefaultAssignee: response.DefaultAssignee.login}
 	for _, ask := range response.Asks {
 		if ask.Owner.Issue == nil {
 			continue

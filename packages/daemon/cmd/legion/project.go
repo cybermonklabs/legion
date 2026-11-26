@@ -276,7 +276,7 @@ func endedPauseWords(p api.PauseView) string {
 // operator.
 func pauseActorWords(by api.PauseActorView) string {
 	if by.Session != "" {
-		return "the " + by.Kind + " (session " + by.Session + ")"
+		return "the " + string(by.Kind) + " (session " + by.Session + ")"
 	}
-	return "the " + by.Kind
+	return "the " + string(by.Kind)
 }

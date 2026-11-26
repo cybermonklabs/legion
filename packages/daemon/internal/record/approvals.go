@@ -96,16 +96,16 @@ func (s *Postgres) KeepAskEvent(ctx context.Context, tx pgx.Tx, project string, 
 	if !changed {
 		return nil
 	}
-	return s.putApprovalAsks(ctx, tx, project, []ApprovalAsk{{Ask: next, Seq: seq}}, "<")
+	return s.putApprovalAsks(ctx, tx, project, []ApprovalAsk{{Ask: next, Seq: seq}}, false)
 }
 
-// putApprovalAsks writes asks over the kept rows of their ids where a kept row's sequence stands in
-// relation to the ask's as guard says: "<" for an event, which must be newer than what the row
-// holds, "<=" for the boot's read, which may restate the event its sequence is. A row that holds
-// the ask as given is left alone, so a read that restates what the store holds writes nothing. One
-// statement writes them all, so no id may repeat among them. An ask it writes is a write admission
-// reads (RecordsWritten), so the fact's pass counts it.
-func (s *Postgres) putApprovalAsks(ctx context.Context, tx pgx.Tx, project string, asks []ApprovalAsk, guard string) error {
+// putApprovalAsks writes asks over the kept rows of their ids where a kept row's sequence is below
+// the ask's, or, where inclusive, at or below it: an event must be newer than what the row holds,
+// and the boot's read may restate the event its sequence is. A row that holds the ask as given is
+// left alone, so a read that restates what the store holds writes nothing. One statement writes
+// them all, so no id may repeat among them. An ask it writes is a write admission reads
+// (RecordsWritten), so the fact's pass counts it.
+func (s *Postgres) putApprovalAsks(ctx context.Context, tx pgx.Tx, project string, asks []ApprovalAsk, inclusive bool) error {
 	if len(asks) == 0 {
 		return nil
 	}
@@ -118,10 +118,10 @@ func (s *Postgres) putApprovalAsks(ctx context.Context, tx pgx.Tx, project strin
 		select $1, * from unnest($2::text[], $3::text[], $4::boolean[], $5::boolean[], $6::text[], $7::bigint[])
 		on conflict (project, ask) do update set issue = excluded.issue, open = excluded.open, human = excluded.human,
 			asked_of = excluded.asked_of, seq = excluded.seq
-		where approval_asks.seq `+guard+` excluded.seq
+		where (approval_asks.seq < excluded.seq or ($8::boolean and approval_asks.seq = excluded.seq))
 			and (approval_asks.issue, approval_asks.open, approval_asks.human, approval_asks.asked_of, approval_asks.seq)
 				is distinct from (excluded.issue, excluded.open, excluded.human, excluded.asked_of, excluded.seq)`,
-		project, ids, issues, open, human, askedOf, seqs)
+		project, ids, issues, open, human, askedOf, seqs, inclusive)
 	if err != nil {
 		return fmt.Errorf("keep %d asks of %s: %w", len(asks), project, err)
 	}
@@ -132,15 +132,16 @@ func (s *Postgres) putApprovalAsks(ctx context.Context, tx pgx.Tx, project strin
 // KeepIssueAssignee keeps the assignee of issue of project, "" for none, as its issue event at seq
 // named it, where no newer event of the issue named one.
 func (s *Postgres) KeepIssueAssignee(ctx context.Context, tx pgx.Tx, project string, assignee IssueAssignee) error {
-	return s.putIssueAssignees(ctx, tx, project, []IssueAssignee{assignee}, "<")
+	return s.putIssueAssignees(ctx, tx, project, []IssueAssignee{assignee}, false)
 }
 
-// putIssueAssignees writes assignees over the kept rows of their issues under guard, as
-// putApprovalAsks. A row that holds the same assignee at the same sequence is left alone, so the
-// boot's read of every issue the project lists writes the rows that moved and no other. One
-// statement writes them all, so no issue may repeat among them. An assignee it writes is a write
-// admission reads (RecordsWritten).
-func (s *Postgres) putIssueAssignees(ctx context.Context, tx pgx.Tx, project string, assignees []IssueAssignee, guard string) error {
+// putIssueAssignees writes assignees over the kept rows of their issues where a kept row's
+// sequence is below the assignee's, or, where inclusive, at or below it, as putApprovalAsks writes
+// asks. A row that holds the same assignee at the same sequence is left alone, so the boot's read
+// of every issue the project lists writes the rows that moved and no other. One statement writes
+// them all, so no issue may repeat among them. An assignee it writes is a write admission reads
+// (RecordsWritten).
+func (s *Postgres) putIssueAssignees(ctx context.Context, tx pgx.Tx, project string, assignees []IssueAssignee, inclusive bool) error {
 	if len(assignees) == 0 {
 		return nil
 	}
@@ -154,9 +155,9 @@ func (s *Postgres) putIssueAssignees(ctx context.Context, tx pgx.Tx, project str
 	tag, err := tx.Exec(ctx, `insert into approval_assignees (project, issue, assignee, seq)
 		select $1, * from unnest($2::text[], $3::text[], $4::bigint[])
 		on conflict (project, issue) do update set assignee = excluded.assignee, seq = excluded.seq
-		where approval_assignees.seq `+guard+` excluded.seq
+		where (approval_assignees.seq < excluded.seq or ($5::boolean and approval_assignees.seq = excluded.seq))
 			and (approval_assignees.assignee, approval_assignees.seq) is distinct from (excluded.assignee, excluded.seq)`,
-		project, issues, people, seqs)
+		project, issues, people, seqs, inclusive)
 	if err != nil {
 		return fmt.Errorf("keep the assignees of %d issues of %s: %w", len(assignees), project, err)
 	}
@@ -201,11 +202,11 @@ func (s *Postgres) KeepApprovalsRead(ctx context.Context, tx pgx.Tx, project str
 			return fmt.Errorf("keep the ask %+v of %s the boot read: it needs an id, an issue and a positive sequence", ask, project)
 		}
 	}
-	if err := s.putApprovalAsks(ctx, tx, project, asks, "<="); err != nil {
+	if err := s.putApprovalAsks(ctx, tx, project, asks, true); err != nil {
 		return err
 	}
 	assignees := newestEach(read.Assignees, func(a IssueAssignee) (string, int64) { return a.Issue, a.Seq })
-	if err := s.putIssueAssignees(ctx, tx, project, assignees, "<="); err != nil {
+	if err := s.putIssueAssignees(ctx, tx, project, assignees, true); err != nil {
 		return err
 	}
 	if read.DefaultAssignee == "" {
