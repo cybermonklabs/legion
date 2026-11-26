@@ -216,8 +216,10 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 // would be reported by nobody. The fan-out takes no ledger attempt for it: it hands the message
 // to nobody, so a record would have the relay's own copy of the next event under that key
 // skipped as one already on its way (INFRA-594).
+// It must not run in parallel: its read of the delivery ledger (ledgerAttempted) is one JetStream
+// request under nats.go's 5 s default, which the -race run of the whole package outlasted beside
+// its other rows.
 func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// payload is what the publisher sends.

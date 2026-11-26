@@ -1429,8 +1429,9 @@ func TestAnEdgePruneLogsARunOfFailedListsOnceAndItsEnd(t *testing.T) {
 // when the read's own context ends, so the read takes all the time it is given, and the renewal is
 // told from no write by the entry's revision, with no clock read. Control: with the read given the
 // whole budget, the renewal runs on a context that has ended and the entry is not renewed.
+// It must not run in parallel: the renewal has edgeRegistrationReserve (1 s) after the read for a
+// bucket read and a write, which the -race run of the whole package outlasted beside its other rows.
 func TestAHungRepositoryReadStillRenewsTheEdgeSession(t *testing.T) {
-	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID, pub = "ses_edge_hung_broker", "notifications.github.acme.pub.>"
 	token := rig.personToken(sessionID, "PRIV")
