@@ -1203,6 +1203,66 @@ test("a waiting decision whose tied statement only the coverage read holds stand
   ).toEqual([{ line: "The page draws s-late.", reading: undefined }]);
 });
 
+// R35, R2: whether a tie names a statement and the words its "informs" line draws are one lookup.
+// Here the tree holds a node at the tied address that is no requirement - a criterion of the spec
+// - and the coverage read names a statement there: the tie names that statement, so the decision
+// stands in the review list, and its line draws the coverage read's words for it, at that row's
+// own address and named by the reading of those words, never the criterion's words.
+test("a tie whose address the tree holds a node of another kind at, and the coverage read a statement, draws the coverage statement and stands in the review list", () => {
+  const made = [decision("waits", { decision: { links: [shaped(specRef("s-late"))] } })];
+  const tree = displayTree("The read's words for s-late. And more.");
+  if (tree === undefined) throw new Error("the markdown engine has not loaded");
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [
+      {
+        block_id: "s-late",
+        checks: 0,
+        gaps: [],
+        plan_tasks: 0,
+        ref: specRef("s-late"),
+        text: "The page draws s-late.",
+        text_tree: tree,
+      },
+    ],
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  };
+  const criterion = node({
+    id: statement("s-late").id,
+    reference: specRef("s-late"),
+    text: "A criterion's own words at s-late.",
+    type: "criterion",
+  });
+  const parts = decisionsParts({
+    asks: [],
+    coverageStatement: coverageStatementOf(issueDetails(), coverage),
+    decisions: decisionsOf(made),
+    issueKey: KEY,
+    nodeIdOf,
+    reader: READER,
+    root: issueTree([criterion, decisionNode("waits")]),
+  });
+  expect(idsOf(parts)).toMatchObject({ agents: [], review: [D("waits")] });
+  expect(
+    parts.review[0]?.shapes.map(({ node: words, reading }) => ({
+      line: parentLinkWords(words),
+      reading,
+      reference: words.reference,
+      type: words.type,
+    })),
+    "the informs line draws the words of the node the tree holds at the address, not the statement"
+  ).toEqual([
+    {
+      line: "The read's words for s-late.",
+      reading: { fallback: NODE_TYPE_NAMES.requirement, tree },
+      reference: specRef("s-late"),
+      type: "requirement",
+    },
+  ]);
+});
+
 // The tree draws from the reads that have answered: before the decisions view and the asks
 // read are in, the model answers with what the tree holds and throws on nothing.
 test("the parts are read before every read has answered", () => {

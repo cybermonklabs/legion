@@ -555,6 +555,50 @@ test("the Decisions control's to-review flag carries + while the decisions view 
   }
 });
 
+// R2, R15: Conversation's pages held so far hold two waiting decisions; the Decisions view read's
+// answer, a first page that names a next one, holds the first alone. The later decision stands
+// in the tree that read builds as Conversation's context alone (`useIssueTree.ts`'
+// `viewWithContext`), so the Decisions control counts the read's page, one decision and its
+// flag one to review, each with "+", never the later decision Conversation's pages hold.
+test("the Decisions control counts no decision Conversation's pages hold and the decisions view read's page does not", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const client = newClient();
+  const { reads, waiting } = reviewReads();
+  reads.tree.mockResolvedValue(
+    treeAnswer([
+      treeNode(KEY, "issue", null),
+      specBlock("r1", "requirement", 0),
+      waiting("d1", 1),
+      waiting("d2", 2),
+    ])
+  );
+  const view = renderViewRow(client, presetPath(KEY, "decisions"));
+  try {
+    await waitFor(() =>
+      expect(decisionsSignal(view.container), "the count over Conversation's pages").toEqual({
+        count: "2",
+        flag: ` · 2 ${FILTER_SIGNAL_WORDS.to_review}`,
+      })
+    );
+    await act(async () => {
+      client.setQueryData(
+        viewKey(KEY, "decisions"),
+        treeAnswer([treeNode(KEY, "issue", null), waiting("d1", 1)], [], { cursor: "next" })
+      );
+    });
+    await waitFor(() =>
+      expect(
+        decisionsSignal(view.container),
+        "the count over the decisions view read's page reads a decision only Conversation's pages hold"
+      ).toEqual({ count: "1+", flag: ` · 1+ ${FILTER_SIGNAL_WORDS.to_review}` })
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
 // R3 (dispatch://INFRA-4097/spec#b-r-change), R35: the to-review flag counts the review list
 // alone, and a decision a person asked to change waits on its agent, not on the reader.
 // Conversation's read is paged, and its first page here ends before `d2`, which the decisions

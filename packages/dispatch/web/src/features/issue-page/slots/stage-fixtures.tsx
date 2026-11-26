@@ -249,14 +249,26 @@ export function treeOf(
   return treeAnswer(nodes.length === 0 ? [] : [treeNode(KEY, "issue", null), ...nodes], tuples);
 }
 
-/** Answers the tree read with `nodes` and `tuples` (`treeOf`): the whole tree at once, and each
- *  view of it never (`wholeTreeOnly`). The spy is the one `stubReads` set, which `spyOn` hands
- *  back, so the `afterEach` that restores those restores it. */
+/** The tree read's stub for the stage's cases: the whole tree answers `answer`, and so does the
+ *  decisions view read, as the server answers it whenever Decisions is on, so the Decisions view
+ *  says what it draws of the node an address names once that read has answered
+ *  (`decisions-entries.ts`' `viewSettled`); every other view never answers (`wholeTreeOnly`). */
+function treeAndDecisions(
+  answer: TreeAnswer
+): (key: string, query?: { readonly view?: string }) => Promise<TreeAnswer> {
+  const whole = wholeTreeOnly(answer);
+  return (key, query = {}) =>
+    query.view === "decisions" ? Promise.resolve(answer) : whole(key, query);
+}
+
+/** Answers the tree read with `nodes` and `tuples` (`treeOf`): the whole tree and the decisions
+ *  view at once, and each other view never (`treeAndDecisions`). The spy is the one `stubReads`
+ *  set, which `spyOn` hands back, so the `afterEach` that restores those restores it. */
 export function answerTree(
   nodes: readonly TreeAnswerNode[],
   tuples: readonly TreeTuple[] = []
 ): void {
-  spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf(nodes, tuples)));
+  spyOn(api, "getIssueTree").mockImplementation(treeAndDecisions(treeOf(nodes, tuples)));
 }
 
 /** Each of `comments` as the tree read answers it (`commentNode`). */
@@ -290,7 +302,7 @@ export function stubReads(): { mockRestore(): void }[] {
     spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf([]))),
+    spyOn(api, "getIssueTree").mockImplementation(treeAndDecisions(treeOf([]))),
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];

@@ -1,7 +1,8 @@
 import type { Actor, CheckBlock, DecisionLink, DisplayTree } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import type { TextSource } from "../../refs/text-references";
-import { type DecisionNode, decidedByPerson } from "../decision-nodes/decision-nodes";
+import type { DecisionNode } from "../decision-nodes/decision-nodes";
+import { decidedByPerson } from "../decision-review";
 import { askIdOf } from "../decisions-filter/decisions-parts";
 import { drawnLine, firstLineOf, firstSentenceLength } from "../first-line";
 import { firstBlockWordsRaw, isStatement, lineWordsRaw, type TreeNode } from "../issue-tree";
@@ -33,7 +34,7 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    one is named at the end of the statement's own line, which draws "the decisions that
  *    informed it", and a statement may rest on several. A replaced decision draws no line at
  *    all. A decision node whose `decided_by` names a person is that person's decision too
- *    (`decision-nodes.ts`' `decidedByPerson`, INFRA-1196's decision 516).
+ *    (`decision-review.ts`' `decidedByPerson`, INFRA-1196's decision 516).
  * 3. **Nothing.** A statement no decision shaped is drawn as such, which is what makes a
  *    missing tie visible (R35).
  *

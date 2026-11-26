@@ -72,6 +72,7 @@ import {
 } from "../tree-read/tree-read";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
+import { useDecisionsTree } from "./decisions-entries";
 import {
   AGENT,
   answeredAsk,
@@ -305,18 +306,31 @@ afterEach(() => {
  * made again - a Keep's (`DecisionActions.tsx`), or the one the page's subscription makes after a
  * write of the issue's comments, as a Change's send is (`subscribeTreeFreshness`) - answers what
  * the server holds then (`treeReads`).
+ *
+ * The body is handed the page's tree with the decisions view on its root. Where Conversation's
+ * read and the decisions view answer the same nodes, as every case drawn over it has them
+ * answer, the tree the view's slot hands its body (`useDecisionsTree`) is Conversation's own
+ * tree: the view's answer adds nothing to Conversation's (`useIssueTree.ts`' `viewWithContext`),
+ * and the case's tree stands for that one. A case that reads a decision past Conversation's
+ * first page, which only the decisions view read holds, is handed the tree that read builds from
+ * the reads the cache holds, as the slot hands it (`slot`, `SlotTree`).
  */
 function HeldReads({
   children,
   readsAsks = false,
   root,
+  slot = false,
 }: {
-  children: (root: TreeNode) => ReactNode;
+  /** Draws the body over the tree it is handed, with the view the slot leaves of it where that
+   *  is the slot's tree (`SlotTree`). */
+  children: (root: TreeNode, view?: TreeNode) => ReactNode;
   /** Whether the page's own read of the asks is held here too (`useIssueTree.ts`), which asks
    *  the server where the cache holds no answer of it; the view watches that read and sends
    *  none of its own. */
   readsAsks?: boolean;
   root: TreeNode;
+  /** Whether the body is handed the tree the view's slot hands it (`SlotTree`). */
+  slot?: boolean;
 }): ReactNode {
   const client = useQueryClient();
   useEffect(() => subscribeTreeFreshness(client, KEY), [client]);
@@ -332,7 +346,26 @@ function HeldReads({
     () => (held === undefined ? root : { ...root, views: { decisions: held } }),
     [held, root]
   );
-  return children(rooted);
+  return slot ? <SlotTree root={rooted}>{children}</SlotTree> : children(rooted);
+}
+
+/** The issue every case's tree is of. */
+const ISSUE = issueDetails();
+
+/** The tree the view's slot hands its body (`slots/view-decisions.tsx`): the one the decisions
+ *  view read builds once the page holds it and Conversation's read has answered, from the reads
+ *  the cache holds, and the page's tree `root` until then (`useDecisionsTree`), with the view the
+ *  slot leaves of it where no address names a node and no words are typed (`presetView`). */
+function SlotTree({
+  children,
+  root,
+}: {
+  children: (root: TreeNode, view: TreeNode) => ReactNode;
+  root: TreeNode;
+}): ReactNode {
+  const tree = useDecisionsTree(ISSUE, root, READER);
+  const view = useMemo(() => presetView(tree, "decisions", "", new Set()).root, [tree]);
+  return children(tree, view);
 }
 
 /** What the page publishes of its one batched read for every statement `root` holds
@@ -365,6 +398,7 @@ function renderBody(
     children,
     comments = [],
     made = [],
+    outline = [],
   }: {
     /** The issue's asks, or null for a read left out of the cache, which the page's own read
      *  then asks the server for. */
@@ -377,12 +411,17 @@ function renderBody(
     /** The decisions the tree read and its decisions view hold, or null for both reads left
      *  out of the cache, which the page's own reads then ask the server for (`treeReads`). */
     made?: TreeAnswerNode[] | null;
+    /** What the tree read holds beside the decisions and their Changes, which the decisions
+     *  view leaves to it - the statements a tie names - for a case drawn over the tree the view's
+     *  slot hands its body (`slot`). */
+    outline?: TreeAnswerNode[];
   },
   props: BodyProps = {},
   {
     answeredAgo,
     main = false,
     requests = false,
+    slot = false,
     stage = false,
   }: {
     /** How many milliseconds ago the cached reads answered, under the app's own `staleTime` of
@@ -395,6 +434,10 @@ function renderBody(
     /** Whether the page's outline requests are held above the body, as the issue page holds
      *  them (`slots/providers.tsx`), with a control beside the body to take the focus to. */
     requests?: boolean;
+    /** Whether the body is drawn over the tree the view's slot hands it (`SlotTree`), with the
+     *  view the slot leaves of it where the case gives none: for a case that reads a decision
+     *  past Conversation's first page. */
+    slot?: boolean;
     /** Whether the body is drawn in the stage the page draws a view in (`slots/stage.tsx`),
      *  which gives the focus to the tab-stop row or a refused read's Retry where nothing holds
      *  it or the tree holds it with no row, and keeps it in the view as a refused read's line
@@ -414,17 +457,20 @@ function renderBody(
   let served: Served = { changes, made: made ?? [] };
   // The tree read and its decisions view answer the same nodes here: the decisions, and each
   // Change under its decision, which the view carries as a comment on the text of a node it
-  // returns, as the server's view does.
-  const readTree = () => treeAnswer([...served.made, ...served.changes]);
+  // returns, as the server's view does; the tree read holds `outline` beside them.
+  const readView = () => treeAnswer([...served.made, ...served.changes]);
+  const readTree = () => treeAnswer([...outline, ...served.made, ...served.changes]);
   treeReads ??= spyOn(api, "getIssueTree");
   // The reads the page's tree is built from, under the keys it reads them by, and the
   // decisions view the page holds. A read given as null is left out of the cache, as before it
   // answers: the page's own read of it then asks the server, which the case answers - for the
   // tree read and its views through `treeReads`, which the case sets before the body is drawn.
   if (made !== null) {
-    treeReads.mockImplementation(async () => readTree());
+    treeReads.mockImplementation(async (_key, query) =>
+      query?.view === "decisions" ? readView() : readTree()
+    );
     client.setQueryData(conversationTreeKey(KEY), readTree(), answered);
-    client.setQueryData(viewKey(KEY, "decisions"), readTree(), answered);
+    client.setQueryData(viewKey(KEY, "decisions"), readView(), answered);
   }
   if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
   client.setQueryData(["comments", KEY], comments, answered);
@@ -459,8 +505,8 @@ function renderBody(
       view ??
       (grown === undefined ? decisionsView : presetView(tree, "decisions", "", new Set()).root);
     const list = drawn ? (
-      <HeldReads readsAsks root={tree}>
-        {(held) => (
+      <HeldReads readsAsks root={tree} slot={slot}>
+        {(held, slotView) => (
           <DecisionsFilterBody
             artifacts={artifactsBySlug(issue)}
             emptyLine={EMPTY_LINE}
@@ -473,7 +519,7 @@ function renderBody(
             {...(request === undefined ? {} : { request })}
             {...(reveal === undefined ? {} : { reveal })}
             root={held}
-            view={shown}
+            view={view ?? slotView ?? shown}
             {...(waitingPress === undefined ? {} : { waitingPress })}
           />
         )}
@@ -1427,13 +1473,23 @@ test("every state of the tree read, the decisions view read and the asks read dr
 // Here the tree read and the page's tree hold the first decision, and the decisions view read,
 // as the page holds it once the filter is on, holds a later one too, tied to the same statement:
 // the later one is a row of the review list with its state, newest first, the outline's keys
-// reach it, and the node an address names lands on its row.
+// reach it, and the node an address names lands on its row. The body is drawn over the tree the
+// view's slot hands it (`slot`), the one the decisions view read builds, which Conversation's read
+// gives the statement the ties name.
 test("a decision past Conversation's first page is a row of its part, which the keys and an address reach", async () => {
   const user = userEvent.setup();
   const made = (block: string, at: string) =>
     decision(block, { decision: { changed_at: at, links: [shaped(specRef("s1"))] } });
   const first = made("first", "2026-11-10T12:00:00Z");
-  const view = renderBody({ children: [statement("s1"), decisionNode("first")], made: [first] });
+  const view = renderBody(
+    {
+      children: [statement("s1"), decisionNode("first")],
+      made: [first],
+      outline: [treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0))],
+    },
+    {},
+    { slot: true }
+  );
   try {
     expect(rowsOfPart(view, "review")).toEqual([D("first")]);
     await act(async () => {
@@ -1465,12 +1521,14 @@ test("a decision past Conversation's first page is a row of its part, which the 
  * `again` draws the body over the tree built from other nodes, as the page does once the tree
  * read answers. `stage` draws it in the stage the page draws a view in (`slots/stage.tsx`), which
  * gives a refused read's Retry the focus the tree holds or nothing holds, and keeps the focus in
- * the view as a line leaves with it.
+ * the view as a line leaves with it. `slot` draws it over the tree the view's slot hands it
+ * (`SlotTree`), with the view the slot leaves of it, for a case whose decisions only the reads
+ * hold, not the page's tree.
  */
 function renderOver(
   client: QueryClient,
   children: TreeNode[],
-  { stage = false }: { stage?: boolean } = {}
+  { slot = false, stage = false }: { slot?: boolean; stage?: boolean } = {}
 ): RenderResult & { readonly again: (children: TreeNode[]) => void } {
   const issue = issueDetails();
   const body = (nodes: TreeNode[]) => {
@@ -1483,8 +1541,8 @@ function renderOver(
             <MarginProvider>
               <IssueScope />
               <NoTooltips>
-                <HeldReads root={root}>
-                  {(held) => {
+                <HeldReads root={root} slot={slot}>
+                  {(held, slotView) => {
                     const list = (
                       <DecisionsFilterBody
                         artifacts={artifactsBySlug(issue)}
@@ -1496,7 +1554,7 @@ function renderOver(
                         published={NOTHING_PUBLISHED}
                         reader={READER}
                         root={held}
-                        view={view}
+                        view={slotView ?? view}
                       />
                     );
                     return stage ? <ViewStage>{list}</ViewStage> : list;
@@ -1538,7 +1596,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
   });
   client.setQueryData(["asks", KEY, "thread"], []);
   client.setQueryData(["comments", KEY], []);
-  const failed = renderOver(client, [], { stage: true });
+  const failed = renderOver(client, [], { slot: true, stage: true });
   try {
     await waitFor(() => expect(failedLine(failed, "decisions")).not.toBeNull(), { timeout: 3000 });
     expect(words(retryOf(failed, "decisions"))).toBe("Retry");

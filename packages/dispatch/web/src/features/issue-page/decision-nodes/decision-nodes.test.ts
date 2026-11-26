@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { Ask, Decision, DecisionKeep, DecisionLink, DisplayTree } from "../../../api/types";
-import { firstOfEachId, inReviewList } from "../decision-review";
+import { decidedByPerson, firstOfEachId, inReviewList, reviewState } from "../decision-review";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree } from "../issue-tree";
 import { blockNodeId } from "../tree-drafts";
@@ -16,7 +16,6 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
 import {
   type DecisionNode,
   type DecisionReads,
-  decidedByPerson,
   decisionNodes,
   lookupOf,
   restatesAnswer,
@@ -680,6 +679,67 @@ test("a decision whose decided_by names a person is that person's, and one namin
     ["d-person", true, true],
     ["d-session", true, false],
     ["d-nobody", true, false],
+  ]);
+});
+
+// INFRA-1196's decision 516, R35: the rule that a person's decision never waits for review is
+// the review rules' own (`decision-review.ts`), so no reader of them can draw a person's decision
+// as one: tied to a statement, waiting for review as the read answers it, kept as it reads now,
+// or with a comment under it, it is no entry of the review list and stands in no state of an
+// agent's decision's review; replaced, it stands replaced. The same decision decided by a session
+// is an agent's, and every one of those rules holds for it.
+test("reviewState and inReviewList give a person's decision no review, whatever its waiting_review says", () => {
+  const planner = node("session-planner", "session", null, { role: "context", text: "planner" });
+  const tied = { links: [linkTo(blockRef("spec", "r1"))] };
+  const tree = answer(
+    [
+      decision("d-person", { decision: tied }),
+      decision("d-kept", {
+        decision: {
+          ...tied,
+          kept: { kept_at: "2026-11-12T00:00:00Z", kept_by: "alice" } as DecisionKeep,
+          waiting_review: false,
+        },
+      }),
+      decision("d-replaced", { decision: { ...tied, replaced: true, waiting_review: false } }),
+      decision("d-session", { decision: tied }),
+      ALICE,
+      planner,
+    ],
+    [
+      tuple("decided_by", "d-person", "alice"),
+      tuple("decided_by", "d-kept", "alice"),
+      tuple("decided_by", "d-replaced", "alice"),
+      tuple("decided_by", "d-session", "session-planner"),
+    ]
+  );
+  const isStatement = (reference: string) => reference === blockRef("spec", "r1");
+
+  expect(
+    decisionNodes(tree, READS).map((one) => ({
+      block: one.block_id,
+      changed: reviewState(one, true),
+      listed: inReviewList(one, isStatement),
+      state: reviewState(one, false),
+      waiting: one.waiting_review,
+    }))
+  ).toEqual([
+    { block: "d-person", changed: undefined, listed: false, state: undefined, waiting: true },
+    { block: "d-kept", changed: undefined, listed: false, state: undefined, waiting: false },
+    {
+      block: "d-replaced",
+      changed: "replaced",
+      listed: false,
+      state: "replaced",
+      waiting: false,
+    },
+    {
+      block: "d-session",
+      changed: "change_requested",
+      listed: true,
+      state: "waiting_review",
+      waiting: true,
+    },
   ]);
 });
 
