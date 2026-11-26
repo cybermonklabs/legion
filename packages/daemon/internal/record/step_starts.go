@@ -101,7 +101,7 @@ func (s *Postgres) keepStart(ctx context.Context, tx pgx.Tx, issue string, place
 		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	if _, err := tx.Exec(ctx, `update step_starts set agent = $5, started_at = $6, record = $7, start_commit = $8, fix_check = $9,
-			end_commit = '', beside_fix = 0, push_branch = ''
+			end_commit = '', beside_fix = 0
 		where issue = $1 and task = $2 and kind = $3 and place = $4`,
 		issue, place.Task, place.Kind, place.Place, write.Agent, write.StartedAt, identity,
 		textOf(write.StartCommit), textOf(write.FixCheck)); err != nil {
