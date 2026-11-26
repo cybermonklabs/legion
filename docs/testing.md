@@ -642,8 +642,9 @@ could push past, or to a product latency carried by a context's deadline, as the
 The comment names that call or that bound by what it is (`logtest.SetDefault`, `` `took >=
 time.Second` ``), never by a file and line, which the next edit above it would make false.
 `internal/textcheck`'s `TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers` fails on a top-level
-test of the three packages with neither first line, and on a `// Not parallel:` comment that names
-a line.
+test of the three packages with neither first line or with both, and on a `// Not parallel:`
+comment that names a line on any of its lines: a file's (`logtest.go:36`), a bare one (`:85`) or
+one in words (`line 85`).
 
 ## A daemon test writes a file it then executes with `internal/execfile`
 
