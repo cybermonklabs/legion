@@ -610,6 +610,9 @@ func (e *Engine) startFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if facts, bound, err := e.boundFacts(ctx, tx, issue, w, place.Position); err != nil || bound {
 			return facts, err
 		}
+		if facts, kept, err := e.keptFacts(ctx, tx, issue, w, place.Position); err != nil || kept {
+			return facts, err
+		}
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
@@ -665,6 +668,34 @@ func (e *Engine) besideFacts(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		facts.Branch, facts.Pushed = branch, open.Pushed[string(role)]
 	}
 	return facts, nil
+}
+
+// keptFacts is the start facts of a step at place of w's task of issue that a way 2 runs again
+// after the task's latest fix ended (startFacts, while no fix of the task is open): where the
+// daemon holds a push of the step's own branch beside that fix (record.TaskFix.Pushed), the way kept
+// that branch (deletesAtWay), and the start, made after the fix ended, takes its commits from it
+// (Kept). The role is the role of the step's phase, a phase of a step of the plan, which admitted
+// never is; the implementer's branch beside the fix is the fix's own, which its end push took
+// whole. false for every other start.
+func (e *Engine) keptFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (startFacts, bool, error) {
+	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil || fix.Way != wayAfterFix || fix.EndedAt == nil || place <= fix.Place {
+		return startFacts{}, false, err
+	}
+	role := RoleFor(w.steps()[place-1])
+	pushed := fix.Pushed[string(role)]
+	if role == claim.RoleImplementer || pushed == "" {
+		return startFacts{}, false, nil
+	}
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place})
+	if err != nil || start.StartedAt.Before(*fix.EndedAt) {
+		return startFacts{}, false, err
+	}
+	branch, ok := e.besideBranchOf(issue, w.Task, fix.Fix, role)
+	if !ok {
+		return startFacts{}, false, nil
+	}
+	return startFacts{Fix: fix.Fix, Check: fix.Check, Head: fix.EndHead, Branch: branch, Pushed: pushed, Kept: true}, true, nil
 }
 
 // boundFacts is the start facts of a step at place of w's task of issue whose open start is bound
@@ -751,6 +782,8 @@ func (e *Engine) fixLines(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	switch {
 	case err != nil || facts.Own:
 		return "", err
+	case facts.Kept:
+		return keptSentence(facts), nil
 	case facts.Fix > 0:
 		return besideStepSentence(facts), nil
 	case len(facts.Failed) == 0:
@@ -1405,23 +1438,20 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 }
 
 // deletesAtWay says whether the way after fix, way, deletes the branches beside it
-// (queueBesideDelete): at ways 2 and 3 after the fix's own completion with commits of its own
-// (EndHead not Head), once each step beside it has ended, so the fix's one end push can hold every
-// commit it took. Way 1 keeps them, since the step the task returns to gets a report that names
-// them. A completion with no commit took nothing, and a fix whose claim failed made no completion,
-// so no end push is known to hold a take: neither deletes, and the pushed red tests stay where the
-// next step can take them. The seams: deleteAfterEveryCompletion deletes after the fix's own
-// completion with no commit too, and besideDeleteAsBefore after every way 2 or 3.
+// (queueBesideDelete): never. A step beside the fix can push to its branch after the fix's end
+// push, and nothing records what that push took, so each branch stays until no step of the task
+// can run again (queueTaskEnd, a leave, a new generation, a version that removes the task), and the
+// step a way 2 runs again takes its commits from its own (keptFacts). The seams:
+// besideDeleteAsBefore deletes after every way 2 or 3, and deleteAfterEveryCompletion after every
+// way 2 or 3 of the fix's own completion.
 func (e *Engine) deletesAtWay(fix record.TaskFix, way int) bool {
 	switch {
 	case way != wayAfterFix && way != wayOn:
 		return false
 	case e.besideDeleteAsBefore:
 		return true
-	case fix.ClaimFailed != "" || fix.Result != string(ResultPassed):
-		return false
 	}
-	return e.deleteAfterEveryCompletion || fix.EndHead != fix.Head
+	return e.deleteAfterEveryCompletion && fix.ClaimFailed == "" && fix.Result == string(ResultPassed)
 }
 
 // moveFromHold is the one move that returns a held task, and the move of the way after a fix

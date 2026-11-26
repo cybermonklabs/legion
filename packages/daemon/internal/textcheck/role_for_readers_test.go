@@ -49,12 +49,12 @@ type roleForReader struct {
 // (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore,
 // and Engine.restartTask, which reads its task's first step: a planner's or an implementer's, as
 // plan.Supported holds every task to an implementer step with each tester, reviewer and
-// acceptance step after it; and a fix's four: Engine.startFix reads the step at the fix's
+// acceptance step after it; and a fix's five: Engine.startFix reads the step at the fix's
 // place, Engine.tellStepsOfFix each step of the fix's task, telling the architect only as the
 // owner of the acceptance it stands in, Engine.besideFacts the step a start beside the fix
-// stands at, and Engine.moveFromHold the step of the task its way returns to; and
-// Engine.UpdatePushes, which names each bound step of the task by the role of its phase, the
-// owner's acceptance under the architect),
+// stands at, Engine.keptFacts the step a way 2 runs again, and Engine.moveFromHold the step of
+// the task its way returns to; and Engine.UpdatePushes, which names each bound step of the task by
+// the role of its phase, the owner's acceptance under the architect),
 // or reads the retro's own phase and the phase of the last step of a task, neither of which is
 // admitted (retroHeldFor, the notice of every hold before a retro, Engine.startHeldRetro, which
 // runs only for an issue held before its retro, and Engine.retroReport, which reads the last step
@@ -92,6 +92,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/fix.go", fn: "Engine.tellStepsOfFix"}:               {calls: 1, test: "TestTheReviewerIsToldOfTheFix"},
 	{file: "internal/workflow/fix.go", fn: "Engine.moveFromHold"}:                 {calls: 1, test: "TestRows3And4ForAnImplementerReviewerTask"},
 	{file: "internal/workflow/fix.go", fn: "Engine.besideFacts"}:                  {calls: 1, test: "TestEachStartBesideAFixHoldsItsFixAndItsBranch"},
+	{file: "internal/workflow/fix.go", fn: "Engine.keptFacts"}:                    {calls: 1, test: "TestAWay2KeepsTheBranchesAndTheRerunTakesItsOwn"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}:               {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
