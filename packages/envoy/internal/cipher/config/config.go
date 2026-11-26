@@ -823,7 +823,7 @@ type Config struct {
 	// <service account email>=<project>=<person>[=<session>] entries, the grammar
 	// BROKER_EXCHANGE_ACCOUNTS uses for a pod, such as
 	// example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
-	// exchange mints for a machine of that account may write that one project, acts for that
+	// exchange mints for a machine of that account names that one project, acts for that
 	// person, and writes under the session the entry fixes; an entry that fixes none requires the
 	// machine to name its own session. The session is everything after the third "=", so it alone
 	// may carry one. The person an entry names is also the one whose Dispatch Inbox lists a request
@@ -874,7 +874,7 @@ type Config struct {
 	// projected token, whitespace-separated
 	// <service account>=<project>=<person>[=<session>] entries, such as
 	// system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com. The token minted
-	// for a pod of the account may write that one project, a project key that exchange.NewSet
+	// for a pod of the account names that one project, a project key that exchange.NewSet
 	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>): the shared
@@ -882,7 +882,7 @@ type Config struct {
 	// may name neither a project nor a person (<service account>==): an account whose
 	// tokens name no person and no project and act as the account itself, which Dispatch records
 	// their writes under. An entry naming a project and no person is refused: an entry that names
-	// a project names its person, so no account entry's token held to a project is personless. An
+	// a project names its person, so no account entry's token that names a project is personless. An
 	// entry whose fixed session is legion-daemon:<its own project> is a Legion daemon's own: the
 	// token minted for its pods holds the OAuth scope legion-status too. Dispatch reads that scope
 	// (DISPATCH_LEGION_STATUS_SCOPE): where the setting is on, a write of a Legion issue's status
@@ -1963,7 +1963,7 @@ func exchangeListingRefusal(cfg *Config) error {
 // person may be empty with it (<service account>==), an account whose tokens act as the
 // account itself. It refuses, naming the entry: one not of that form, with a blank account, or
 // naming a project and no person, since an entry that names a project names its person, so no
-// account entry's token held to a project is personless; an account that is not
+// account entry's token that names a project is personless; an account that is not
 // system:serviceaccount:<namespace>:<name>, or a namespace's default account (podAccountRefusal);
 // and an account listed twice, since one account writes as one identity. exchange.NewSet is the
 // second gate, and the session name's own form is its to refuse.
@@ -1976,7 +1976,7 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none, the person empty only beside it, and the session everything after the third =, got %q", setting, text)
 		}
 		if fields[1] != "" && fields[2] == "" {
-			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no account entry's token held to a project is personless", setting, text)
+			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no account entry's token that names a project is personless", setting, text)
 		}
 		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
 			return nil, err

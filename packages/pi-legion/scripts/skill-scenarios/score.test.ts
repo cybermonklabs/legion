@@ -1152,12 +1152,13 @@ interface Logged {
   tool: string;
   error?: string;
 }
-/** What the CLI logs for a call when the fixture says nothing else: each `dispatch` command the
+/** What the CLI logs for a call when the fixture says nothing else: each spec command the
  * call ran, as a success, when the call exited 0 and its output shows no refusal line, and no
- * `--help` or `--dry-run` call. A refused call logs nothing by default. The CLI logs a refusal too
- * when the call knows its session (dispatch-cli.ts runDispatchCli): under the command's tool, or
- * under `dispatch` for a command it cannot name. A fixture that models such a call names its lines,
- * and one that leaves them out models a call that knew no session. */
+ * `--help` or `--dry-run` call. A refused call logs nothing by default. The CLI logs a refusal too,
+ * but not one of `dispatch proxy` or `dispatch login`, when the call knows its session
+ * (dispatch-cli.ts runDispatchCli): under the command's tool, or under `dispatch` for a command it
+ * cannot name. A fixture that models such a call names its lines, and one that leaves them out
+ * models a call that knew no session. */
 const loggedRun = (command: string, exit: number, text: string): Logged[] =>
   exit !== 0 || cliRefusals(text).length > 0
     ? []
@@ -3794,7 +3795,7 @@ test("checked: a spec write made from Python as a list-literal dispatch call is 
   );
 });
 
-test("refusals: the CLI's ledger holds each refusal, the ones a call's output hides included", () => {
+test("refusals: the CLI's ledger holds each spec command's refusal, the ones a call's output hides included", () => {
   // Hidden by `| tail -5`, and never fixed.
   expect(scoresOf("spec-writing-head-41")).toEqual({ ...allPass, refusals: "false" });
   const hidden = rowOf("spec-writing-head-41");
