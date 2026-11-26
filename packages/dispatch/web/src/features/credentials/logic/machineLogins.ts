@@ -1,6 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 
-import { api } from "../../api/client";
+import { api } from "../../../api/client";
 
 /** The machine logins the viewer may revoke that can still reach a secret (their own machines',
  *  their own pods' and every service's), as `MachineLoginsSection`

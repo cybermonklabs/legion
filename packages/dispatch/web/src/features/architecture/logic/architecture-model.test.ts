@@ -4,7 +4,7 @@ import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
   ArchitectureTreeIssue,
-} from "../../api/types";
+} from "../../../api/types";
 import {
   componentPath,
   componentTone,
