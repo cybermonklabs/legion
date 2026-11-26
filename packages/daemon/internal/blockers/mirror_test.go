@@ -88,7 +88,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 			{Key: "LEGION-904", Project: testProject, Status: "in_progress", Seq: 7}}}, rows: []string{"LEGION-904"}},
 	}
 	for _, fact := range []intake.Fact{
-		intake.DispatchArtifact{}, intake.GateAboveDispatch{},
+		intake.DispatchArtifact{}, intake.MergeHoldsChanged{}, intake.GateAboveDispatch{},
 		intake.DispatchAskOpened{}, intake.DispatchAskRestored{}, intake.DispatchAskClosed{}, intake.DispatchAskReply{},
 		intake.DispatchApprovalMoved{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{},
 		intake.PullRequestOpened{}, intake.PullRequestSynchronized{}, intake.PullRequestReview{}, intake.PullRequestChecks{},

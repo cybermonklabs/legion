@@ -59,7 +59,7 @@ func TestARootClaimsExitSuspendsIt(t *testing.T) {
 				t.Errorf("stored %+v, want the suspension persisted", stored)
 			}
 
-			h.must(RequestResume{Claim: rootToken})
+			h.must(RequestResume{Claim: rootToken, By: SuspendedByOperator})
 			if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != loc || resume.Spec.ResumeSessionFile != sessionFile {
 				t.Errorf("resumed %+v waiting out %+v, want the session after the suspended incarnation", resume.Spec, resume.Previous)
 			}
@@ -86,7 +86,7 @@ func TestARootExitWhoseSuspendFailsStillSuspendsIt(t *testing.T) {
 		t.Errorf("logged %v, want the failed suspension named once", lines)
 	}
 	h.rt.FailSuspend(nil)
-	h.must(RequestResume{Claim: rootToken})
+	h.must(RequestResume{Claim: rootToken, By: SuspendedByOperator})
 	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != loc {
 		t.Errorf("resumed waiting out %+v, want the exited process %+v", resume.Previous, loc)
 	}
@@ -141,7 +141,7 @@ func TestARetryAfterAFailedRootExitAndRefusedResumesWaitsOutTheExitedProcess(t *
 	h.wantState(StateSuspended)
 	still := errors.New("previous incarnation still running")
 	h.rt.ScriptResume(fake.SpawnResult{Err: still}, fake.SpawnResult{Err: still}, fake.SpawnResult{Err: still})
-	if err := h.handle(RequestResume{Claim: rootToken}); !errors.Is(err, still) {
+	if err := h.handle(RequestResume{Claim: rootToken, By: SuspendedByOperator}); !errors.Is(err, still) {
 		t.Fatalf("resume returned %v, want the runtime's refusal", err)
 	}
 	h.wantState(StateFailed)
@@ -208,7 +208,7 @@ func TestAStopThatIsNotTheTreesCloseNeverRetiresItsRoot(t *testing.T) {
 	wantRefused := func(t *testing.T, h *harness, state ClaimState, want string) {
 		t.Helper()
 		before := h.claim()
-		err := h.handle(RequestStop{Claim: rootToken})
+		err := h.handle(RequestStop{Claim: rootToken, By: SuspendedByOperator})
 		if !errors.Is(err, ErrRootStop) || err.Error() != want {
 			t.Fatalf("stop of a root in %s returned %v, want ErrRootStop saying %q", state, err, want)
 		}
@@ -271,7 +271,7 @@ func TestAStopThatIsNotTheTreesCloseNeverRetiresItsRoot(t *testing.T) {
 		}
 		h.start(root)
 		h.reach(StateReady)
-		if err := h.handle(RequestStop{Claim: rootToken}); err == nil || err.Error() != "stop "+string(rootToken)+": store down" {
+		if err := h.handle(RequestStop{Claim: rootToken, By: SuspendedByOperator}); err == nil || err.Error() != "stop "+string(rootToken)+": store down" {
 			t.Fatalf("stop with the tree unreadable returned %v, want the stop's own failure", err)
 		}
 		h.wantCalls("Release", 0)
@@ -324,7 +324,7 @@ func TestARegisteredRootCanBeSuspendedAndResumed(t *testing.T) {
 		t.Errorf("stored %+v, want it suspended with its capability revoked and its session kept", stored)
 	}
 
-	h.must(RequestResume{Claim: rootToken})
+	h.must(RequestResume{Claim: rootToken, By: SuspendedByOperator})
 	if resume := h.wantCalls("Resume", 1)[0]; resume.Spec.ResumeSessionFile != sessionFile || resume.Previous == nil || *resume.Previous != loc {
 		t.Errorf("resumed %+v, want the recorded session after the suspended process", resume)
 	}
@@ -345,7 +345,7 @@ func TestTheGateHoldersArchitectIsReadByItsMarkNotItsTree(t *testing.T) {
 		h.must(RequestExit{Claim: rootToken, Generation: h.generation(), Session: session, Reason: "waiting"})
 		h.wantState(StateSuspended)
 		h.wantCalls("Release", 0)
-		if err := h.handle(RequestStop{Claim: rootToken}); !errors.Is(err, ErrRootStop) {
+		if err := h.handle(RequestStop{Claim: rootToken, By: SuspendedByOperator}); !errors.Is(err, ErrRootStop) {
 			t.Fatalf("stop of a gate holder's architect stored in another tree = %v, want ErrRootStop", err)
 		}
 	})
@@ -354,7 +354,7 @@ func TestTheGateHoldersArchitectIsReadByItsMarkNotItsTree(t *testing.T) {
 	t.Run("an architect stored as its own tree's, its issue holding no gate of its own", func(t *testing.T) {
 		h := newHarnessOf(t, member)
 		h.reach(StateReady)
-		if err := h.handle(RequestStop{Claim: rootToken}); err != nil {
+		if err := h.handle(RequestStop{Claim: rootToken, By: SuspendedByOperator}); err != nil {
 			t.Fatalf("stop of an architect whose issue holds no gate of its own = %v, want it stopped", err)
 		}
 		if h.claim().State == StateSuspended {
@@ -373,7 +373,7 @@ func TestTheGateHoldersArchitectIsReadByItsMarkNotItsTree(t *testing.T) {
 			t.Fatalf("stored %+v, want the mark and the gate root persisted", stored)
 		}
 		h.reach(StateReady)
-		if err := h.handle(RequestStop{Claim: rootToken}); !errors.Is(err, ErrRootStop) {
+		if err := h.handle(RequestStop{Claim: rootToken, By: SuspendedByOperator}); !errors.Is(err, ErrRootStop) {
 			t.Fatalf("stop of an architect its start marked a gate holder's = %v, want ErrRootStop", err)
 		}
 	})

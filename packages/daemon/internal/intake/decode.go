@@ -115,12 +115,14 @@ type envoyEnvelope struct {
 }
 
 // decodeMessage decodes the Envoy envelope first, then the subject's source-specific payload.
-// project is the daemon's Dispatch project: another project's issue event is a nil Fact, decided
-// from the issue key its subject names before the envelope is read, so a message of another
-// project's that does not decode is no give-up of this daemon's, and no record of it (every daemon
-// hears every project's issue events). A name in neither form goes on to the decode, which refuses
-// it (errIssueNameInNeitherForm). repositories are its configured repositories: a GitHub event
-// whose payload names another repository is a nil Fact, whatever subject carried it.
+// project is the daemon's Dispatch project: another project's issue or document event is a nil
+// Fact. An issue event's project is decided from the issue key its subject names before the
+// envelope is read, so a message of another project's that does not decode is no give-up of this
+// daemon's, and no record of it (every daemon hears every project's issue events). A name in
+// neither form goes on to the decode, which refuses it (errIssueNameInNeitherForm). The document
+// events the Dispatch durable hears are this project's own (mergeHoldsSubject), so one that does
+// not decode is this daemon's give-up. repositories are its configured repositories: a GitHub
+// event whose payload names another repository is a nil Fact, whatever subject carried it.
 func decodeMessage(subject, project string, repositories []ghrepo.Repository, data []byte) (decodedMessage, error) {
 	if key, legacy, ok := subjectforms.IssueEventKey(subject); ok && !projectIssueKey(key, project) {
 		return decodedMessage{LegacyName: legacy}, nil
@@ -150,6 +152,11 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
 		fact, unread, seen, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
+	case strings.HasPrefix(subject, dispatchDocumentPrefix):
+		if envelope.Source != "dispatch" {
+			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
+		}
+		fact, err = decodeDispatchDocumentFact(subject, project, envelope.factID(), envelope.Payload)
 	case strings.HasPrefix(subject, "notifications.github."):
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
@@ -284,7 +291,11 @@ func (e dispatchEvent) mark() record.EventMark {
 // daemonActor says whether the daemon made the event: its actor is the session the daemon writes
 // every Dispatch status and message of the event's issue under (dispatch.DaemonSession). It is the
 // one statement of that rule, which the decoder (DispatchIssue.DaemonActor) and the set-back's
-// check (StatusChange.DaemonActor) both read.
+// check (StatusChange.DaemonActor) both read. Each reads only issues of the daemon's own project:
+// the decoder skips another project's events (decodeDispatchIssueEvent), and the outbox sets back
+// only its own project's issues. So the session of the event's issue is the session of the
+// daemon's own project, the one its writes name with dispatch_token_broker off and the one its
+// broker token proves with it on (dispatch.WritesAs).
 func (e dispatchEvent) daemonActor() bool {
 	return e.Actor.Kind == "session" && e.Actor.ID == dispatch.DaemonSession(e.IssueKey)
 }

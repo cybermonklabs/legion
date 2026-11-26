@@ -233,11 +233,12 @@ func holdsRole(held supervise.ClaimView) bool {
 // supervise it (""), or it failed or retired. A child's own architect that failed does start again,
 // at its child's next phase start (workflow's reviveArchitect), but that launch's ready queues a
 // catch-up of its own, so nothing held for the failed claim waits for it. A suspended claim has
-// not ended: the operator's resume or deliver starts it again (`legion claims resume`), and so
-// does the workflow's next start of its role for a claim the workflow suspended, which for an
-// issue Dispatch moved out of Legion's work is its return (R20 of dispatch://INFRA-3320). So a
-// notice for a suspended or released architect waits for it, and one for a failed or retired
-// architect ends undelivered (R18).
+// not ended: a resume starts its agent again — the operator's resume or deliver whoever suspended
+// it (`legion claims resume`), and the controller's any suspension but the operator's
+// (supervise.Claim.HeldAgainst) — and so does the workflow's next start of its role for a claim
+// the workflow suspended, which for an issue Dispatch moved out of Legion's work is its return (R20
+// of dispatch://INFRA-3320). So a notice for a suspended or released architect waits for it, and
+// one for a failed or retired architect ends undelivered (R18).
 func claimEnded(state supervise.ClaimState) bool {
 	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
 }

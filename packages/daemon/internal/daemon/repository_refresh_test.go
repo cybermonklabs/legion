@@ -974,6 +974,19 @@ func serveAndRecover(t *testing.T, w *workflowRuntime, installs *installations) 
 	})
 }
 
+// listedAgain waits for a project listing of client asked after this call. While a repository
+// is unread the refresher's recovery lists Dispatch on its backoff, so a pass can have listed
+// before the test's last change of what Dispatch shows and be waiting on its read of GitHub:
+// served then, that pass records each issue as its listing showed it, before the change. The
+// passes run one after another (refreshRepositories), so a listing counted after the change is
+// made by a pass that began once that one ended, and a test that lets GitHub answer only after it
+// has every recovery read Dispatch as the test last showed it.
+func listedAgain(t *testing.T, client *repositoryDispatch) {
+	t.Helper()
+	listed := client.listingCount()
+	testwait.Eventually(t, "a recovery listing after the last change", func() bool { return client.listingCount() > listed })
+}
+
 // A repository whose installation read fails at boot is recovered once GitHub answers for it: the
 // boot's listing admits a root on a repository recorded on while it fails, and leaves the
 // repository to the recovery, which once GitHub answers takes the issues on it from Dispatch's
@@ -1081,6 +1094,7 @@ func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 		}
 	}
 
+	listedAgain(t, client)
 	serveAndRecover(t, w, installs)
 	for _, key := range []string{handed, prepared404} {
 		if recordedIssue(t, w, key) == nil {

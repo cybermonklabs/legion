@@ -152,8 +152,8 @@ func (h *harness) wantStartedInANewSession(retry Event) {
 // ErrHeldForCyberPolicy, and the claim stays failed with its record, its session and its task. A
 // retry someone decided launches the agent again: the held phase's retry, which the architect's
 // retry_or_escalate, the operator's `legion claims retry` of a phase worker and a todo on a held
-// issue in Legion's work each start (RequestRetry.Decided), and the operator's own retry
-// (RequestOperatorRetry). Each of those starts the agent in a new session, asked for or not: the
+// issue in Legion's work each start (RequestRetry.Decided), and the retry the operator or the
+// controller asks (RequestAskedRetry). Each of those starts the agent in a new session, asked for or not: the
 // recorded session would send the refused content again. A claim an operator stopped after it
 // failed keeps the record, so a retired one is held the same way.
 func TestOnlyADecidedRetryLaunchesTheAgentOfAHeldClaimAgain(t *testing.T) {
@@ -181,7 +181,7 @@ func TestOnlyADecidedRetryLaunchesTheAgentOfAHeldClaimAgain(t *testing.T) {
 	stopped := func(t *testing.T) *harness {
 		t.Helper()
 		h := failedForCyberPolicy(t)
-		h.must(RequestStop{Claim: h.token})
+		h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 		h.wantState(StateRetired)
 		return h
 	}
@@ -199,9 +199,10 @@ func TestOnlyADecidedRetryLaunchesTheAgentOfAHeldClaimAgain(t *testing.T) {
 	}{
 		{"the held phase's retry", failedForCyberPolicy, RequestRetry{Claim: testToken, Decided: true}},
 		{"the held phase's retry asking for a new session", failedForCyberPolicy, RequestRetry{Claim: testToken, Decided: true, FreshSession: true}},
-		{"the operator's retry", failedForCyberPolicy, RequestOperatorRetry{Claim: testToken}},
-		{"the operator's retry in a new session", failedForCyberPolicy, RequestOperatorRetry{Claim: testToken, FreshSession: true}},
-		{"the operator's retry of a claim it stopped after it failed", stopped, RequestOperatorRetry{Claim: testToken}},
+		{"the operator's retry", failedForCyberPolicy, RequestAskedRetry{Claim: testToken, By: SuspendedByOperator}},
+		{"the operator's retry in a new session", failedForCyberPolicy, RequestAskedRetry{Claim: testToken, FreshSession: true, By: SuspendedByOperator}},
+		{"the controller's retry", failedForCyberPolicy, RequestAskedRetry{Claim: testToken, By: SuspendedByController}},
+		{"the operator's retry of a claim it stopped after it failed", stopped, RequestAskedRetry{Claim: testToken, By: SuspendedByOperator}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.claim(t).wantStartedInANewSession(tc.retry)
@@ -241,7 +242,7 @@ func TestTheOperatorsRetryStartsAHeldControllerInANewSession(t *testing.T) {
 			if err := h.handle(RequestRetry{Claim: h.token}); !errors.Is(err, ErrHeldForCyberPolicy) {
 				t.Fatalf("the keeper's retry of the held controller returned %v, want ErrHeldForCyberPolicy", err)
 			}
-			h.wantStartedInANewSession(RequestOperatorRetry{Claim: h.token, FreshSession: fresh})
+			h.wantStartedInANewSession(RequestAskedRetry{Claim: h.token, FreshSession: fresh, By: SuspendedByOperator})
 			if c := h.claim(); c.Role != claim.RoleController || !c.KeeperRetries() {
 				t.Fatalf("the retried controller is %+v, want it the keeper's again", c)
 			}
@@ -274,9 +275,11 @@ func TestARefusedAdmissionLeavesTheSessionARetryInANewSessionWouldLeaveBehind(t 
 		{"the held phase's retry of a claim held for cyber policy", held(),
 			func(token claim.Token) Event { return RequestRetry{Claim: token, Decided: true} }},
 		{"the operator's retry of a claim held for cyber policy", held(),
-			func(token claim.Token) Event { return RequestOperatorRetry{Claim: token} }},
+			func(token claim.Token) Event { return RequestAskedRetry{Claim: token, By: SuspendedByOperator} }},
 		{"the operator's --fresh-session retry of a stopped claim", stopped,
-			func(token claim.Token) Event { return RequestOperatorRetry{Claim: token, FreshSession: true} }},
+			func(token claim.Token) Event {
+				return RequestAskedRetry{Claim: token, FreshSession: true, By: SuspendedByOperator}
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &epochStore{epoch: 1, reserved: true}

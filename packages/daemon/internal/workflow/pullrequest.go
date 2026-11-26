@@ -667,20 +667,19 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 }
 
 // leftMergingAt says why the workflow no longer works issue's merging phase at head of pull
-// request number, or "" while it does: the issue stands in merging itself, not held from it; it
-// is in the workflow; and the pull request the record holds for it (pr, nil for none) is number,
-// open, at head. In each other state no merger is told of a removal from the merge queue at head:
-// the workflow no longer works that phase at that head, and the merger of an issue out of the
-// workflow is suspended by its stop and would never hold its role to hear it. The facts that write
-// the read and the merger's message (dequeued, mergeQueueReadDone) and the daemon's outbox rows
-// that read the pull request and deliver the message all judge by this one rule, through
-// MergingAt, so no two of them disagree about an issue that left merging.
+// request number, or "" while it does: the issue still works merging (leftPhase), and the pull
+// request the record holds for it (pr, nil for none) is number, open, at head. In each other state
+// no merger is told of a removal from the merge queue at head: the workflow no longer works that
+// phase at that head, and the merger of an issue out of the workflow is suspended by its stop and
+// would never hold its role to hear it. The facts that write the read and the merger's message
+// (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request and
+// deliver the message all judge by this one rule, through MergingAt, so no two of them disagree
+// about an issue that left merging.
 func leftMergingAt(issue record.Issue, pr *record.PullRequest, number int, head string) string {
+	if left := leftPhase(issue, phase.Merging); left != "" {
+		return left
+	}
 	switch {
-	case issue.Phase != phase.Merging:
-		return fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
-	case record.OutOfWorkflow(issue.Status):
-		return fmt.Sprintf("the issue is out of the workflow at status %s", issue.Status)
 	case pr == nil:
 		return "the record holds no pull request for the issue"
 	case pr.Number != number:
@@ -689,6 +688,22 @@ func leftMergingAt(issue record.Issue, pr *record.PullRequest, number int, head 
 		return fmt.Sprintf("the pull request is %s", pr.State)
 	case pr.HeadSHA != head:
 		return fmt.Sprintf("the record holds the pull request at %s", pr.HeadSHA)
+	}
+	return ""
+}
+
+// leftPhase says why the workflow no longer works issue's phase at, or "" while it does: the
+// issue stands in at itself, not held from it, and it is in the workflow. The role of an issue
+// that left the phase is told nothing that only the phase needs: the workflow no longer works that
+// phase, and the role of an issue out of the workflow is suspended by its stop and would never
+// hold its role to hear it. The merge-queue rule (leftMergingAt) and the merge holds' rule
+// (heldPhaseLeft) judge by it.
+func leftPhase(issue record.Issue, at phase.Phase) string {
+	switch {
+	case issue.Phase != at:
+		return fmt.Sprintf("the issue stands in %s, not %s", issue.Phase, at)
+	case record.OutOfWorkflow(issue.Status):
+		return fmt.Sprintf("the issue is out of the workflow at status %s", issue.Status)
 	}
 	return ""
 }

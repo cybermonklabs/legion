@@ -106,6 +106,19 @@
  *   `/proc/<pid>/cwd`, which took 1.3 to 11.5 s alone on that box; the driver since walks its own
  *   tree instead, and its 35 runs on 8 CPUs (`taskset`, under a CPU quota of 8) with 16 busy loops
  *   on them, on that box at a load of about 400 the same day, took 0.28 s to 2.81 s.
+ * - `publicRun`, against 67.59 s: the slowest of 1,008 runs of `e2e/acceptance/outside-agent-public.sh`
+ *   against the stand-ins of `outside-agent-public.test.ts`, each of which ended by itself, in two
+ *   build pods of 10 CPUs under gVisor on 2026-11-26. In each pod the file's two rows, six runs a
+ *   pass, ran one pass after another beside the whole lane looping, for 30 minutes, then 25 more
+ *   with ten fork-exec loops beside them too. At #5655's head, 990aaf97f9e8, which still ran these
+ *   rows under `short` (run 20261126T101920Z-990aaf97f9e8-4fdc), 540 runs read medians, by row and
+ *   stretch, of 20.9 s to 21.6 s and at most 67.59 s. At a tree of this bound with open #5697's
+ *   change, which ends the stand-in's relay socket at the leg's first trade after its refusal (run
+ *   20261126T123513Z-f04c01c78a5f-3aba), 468 runs read medians of 25.6 s to 26.9 s and at most
+ *   65.78 s. A complete run starts the stand-in probe, a Bun process, 26 times and sleeps 10 s
+ *   between two trades. Under `short` one such run was killed at 60.08 s in a whole-suite run at
+ *   62602165bd9e the same day, while five others of the same file took 23.4 s to 33.2 s. Three
+ *   times 67.59 s, rounded up to the minute, is 240 s: 3.55 times the larger maximum.
  * - `stuckOnPurpose`, against 309.8 ms: the slowest of 200 shells that wrote 252 lines to stdout,
  *   one to stderr, then slept, started eight at once under six busy loops on a two-CPU pod on
  *   2026-11-24. The diagnostic control below lets its bound pass after five seconds, which is
@@ -119,7 +132,8 @@
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a public T5 diagnostic child after 30 s, a stop
  * row's driver (`stoppedLeg`) after 90 s, a listing after 6 minutes, the generation after 6.5
- * minutes, a run of the Codex leg after 3 minutes, a run of the edge check after 9 minutes, and
+ * minutes, a run of the Codex leg after 3 minutes, a run of the public leg after 4 minutes, a run
+ * of the edge check after 9 minutes, and
  * the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
@@ -168,6 +182,8 @@ export const bounds = Object.freeze({
   stuckOnPurpose: 5_000,
   /** The public leg's start through its T5 hold, measured under the row's parallel shape. */
   publicT5Diagnostic: 30_000,
+  /** One run of `e2e/acceptance/outside-agent-public.sh` against the stand-ins of its tests. */
+  publicRun: 240_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */

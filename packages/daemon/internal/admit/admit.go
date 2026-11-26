@@ -1946,7 +1946,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// releaseUnslotted takes out of the workflow on this same pass. Its links hold
 				// nothing here: a root waiting on a person keeps its row through a wait
 				// (blockers.waitsOf).
-				reason, err := workflow.Unresumable(ctx, a.store, tx, facts.Chains, issue)
+				reason, err := workflow.Unresumable(ctx, a.store, tx, a.project, facts.Chains, issue)
 				if err != nil {
 					return admitted, released, fmt.Errorf("check whether answered root %s can resume: %w", issue.Key, err)
 				}
@@ -2399,9 +2399,10 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 // its hand-over label or its current Dispatch claim makes a resume unsafe (workflow's
 // Unresumable), so nothing would ever start it again while its record went on saying it waits.
 // Legion starts nothing for it — it is someone else's work now, or a person's move to make — and
-// the controller is told on the controller topic alone (record.UnslottedNotice, one per root, its
-// reason naming why). A key Reconcile holds is left for release to apply first, when respectHolds
-// is set. It reports whether it released any.
+// tells nobody: the controller re-admits nothing for it, and reads it from the state, a root at
+// `phase: done` whose status is one only a running tree has (skill://legion-controller, "What
+// happened before you started"). The log line names why it left. A key Reconcile holds is left for
+// release to apply first, when respectHolds is set. It reports whether it released any.
 //
 // A root here is the gate root of itself on the pass's chains (record.Chains.GateRoot), which is
 // in Legion's work, waiting on a person. It asks nothing of the slots because a row answers none of
@@ -2424,7 +2425,7 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if facts.Chains.GateRoot(issue.Key) != issue.Key || !issue.AwaitingPerson() {
 			continue
 		}
-		why, err := workflow.Unresumable(ctx, a.store, tx, trees, issue)
+		why, err := workflow.Unresumable(ctx, a.store, tx, a.project, trees, issue)
 		if err != nil {
 			return released, fmt.Errorf("check whether awaiting root %s can resume: %w", issue.Key, err)
 		}
@@ -2437,12 +2438,10 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if trees, err = record.ReadChains(ctx, tx, a.store, a.project, nil); err != nil {
 			return released, err
 		}
-		reason := fmt.Sprintf("%s awaits a person, but %s; the daemon set its phase to done and starts nothing for it; todo with the legion label queues it again", issue.Key, why)
-		if err := a.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.UnslottedNotice, Reason: reason}, a.now()); err != nil {
-			return released, err
-		}
+		reason := fmt.Sprintf("%s awaits a person, but %s", issue.Key, why)
 		store.OnCommit(ctx, func() {
-			a.log.Warn("admission: released a root waiting on a person that may not resume", "issue", issue.Key, "status", issue.Status, "phase", issue.Phase, "generation", issue.Generation)
+			a.log.Warn("admission: released a root waiting on a person that may not resume", "issue", issue.Key, "status", issue.Status, "phase", issue.Phase, "generation", issue.Generation,
+				"reason", reason)
 		})
 		released = true
 	}
@@ -2981,12 +2980,13 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// of a released claim is the boot's one-time repair of a merger the `awaiting_merge`
 		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
 
-		// A claim an operator suspended is passed over whatever entry it stands on: `legion
-		// claims suspend` suspended that worker, and an operator's suspension holds against every
-		// rule of the daemon's (supervise's RuleHolds, which no start the daemon queues gets
-		// past). A claim the daemon itself suspended is repaired, which is what the idle rule's
-		// release and the daemon's own suspend both leave behind.
-		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator {
+		// An agent the operator or the project's controller suspended is passed over whatever
+		// entry its claim stands on: `legion claims suspend`, or the controller's own suspend,
+		// suspended that worker, and each such suspension holds against
+		// every rule of the daemon's until a resume lifts it (supervise's RuleHolds, which no
+		// start the daemon queues gets past). A claim the daemon itself suspended is repaired,
+		// which is what the idle rule's release and the daemon's own suspend both leave behind.
+		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy.Holds() {
 			continue
 		}
 		// A retired claim was stopped, and two stops reach this repair: an operator's `legion

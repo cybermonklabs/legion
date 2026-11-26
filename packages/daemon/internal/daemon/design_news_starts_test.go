@@ -52,7 +52,8 @@ func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
 // A news-only start goes only where nothing else will carry the news, and never where the record
 // says nothing may: not to a claim owed its phase start (that start carries the news), not to a
 // retired or failed claim (the phase's own repair revives it with a start that carries the news),
-// not to a claim an operator suspended, and not to an issue out of Legion's work (main's lingering
+// not to an agent a suspension that holds is over (the operator's or the controller's, which no
+// start the daemon queues gets past), and not to an issue out of Legion's work (main's lingering
 // tree, which this branch does not keep: a person's done is a leave that keeps the phase) or not at
 // work, which are owed nothing. The reconcile queues none for such a claim, and a news-only start
 // that meets one when it runs finishes without acting. The live claim is the control: the same
@@ -73,6 +74,7 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 		{name: "a retired claim", state: supervise.StateRetired, given: 1},
 		{name: "a failed claim", state: supervise.StateFailed, given: 1},
 		{name: "an operator-suspended claim", state: supervise.StateSuspended, by: supervise.SuspendedByOperator, given: 1},
+		{name: "an agent the controller suspended", state: supervise.StateSuspended, by: supervise.SuspendedByController, given: 1},
 		{name: "an issue out of Legion's work", state: supervise.StateIdle, given: 1, out: true},
 		{name: "an issue not at work", state: supervise.StateIdle, given: 1, held: true},
 	} {

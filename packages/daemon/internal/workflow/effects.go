@@ -32,10 +32,18 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 		return false, nil
 	}
 	pr, err := store.PullRequestRow(ctx, tx, issue.Key)
-	if err != nil || pr == nil {
+	if err != nil {
 		return false, err
 	}
-	return pr.State == record.PullRequestMerged, nil
+	return finishedBy(issue, pr), nil
+}
+
+// finishedBy is PhaseFinished's rule over the issue's pull request as its caller read it, nil for
+// none, so a caller that read the pull requests of many issues in one query
+// (record.Store.PullRequestsOf, the merge holds' mergeHoldsChanged) judges each by the same rule
+// with no read of its own.
+func finishedBy(issue record.Issue, pr *record.PullRequest) bool {
+	return issue.Phase == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 }
 
 // RoleFor is phase.RoleFor, which is where the role that works a phase is decided
@@ -331,9 +339,10 @@ func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice rec
 
 // noticeWithController tells the architect that owns the issue and, in an outbox row of its own,
 // the project's controller: the two publishes retry apart, so a controller topic that keeps failing never sends
-// the architect the same notice again. Every hold is told this way, since the architect answers one
-// with a retry or an escalation to the controller, and so is the tree architect's own failed
-// claim, since every notice of the tree that no child's own architect takes reaches that architect.
+// the architect the same notice again. Two notices are told this way, each one the controller acts
+// on: the architect's escalation of a hold, which hands the held issue to the controller, and the
+// tree architect's own failed claim while its root is not done, since every notice of the tree
+// that no child's own architect takes reaches that architect (retryOrEscalate, claimFailed).
 func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
 	if err := e.notice(ctx, tx, issue, notice); err != nil {
 		return err

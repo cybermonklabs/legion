@@ -81,9 +81,9 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 	case issue.Claim == nil:
 		return nil
 	// The id a Dispatch claim carries is the session id the claims table holds, which is why the
-	// store reads below take Claim.ID and the daemon's own session is tested against it
-	// (workflow.Unresumable).
-	case issue.Claim.Kind != "session", issue.Claim.ID == dispatch.DaemonSession(row.Issue):
+	// store reads below take Claim.ID and the daemon's own session, the one of its own Dispatch
+	// project, is tested against it (workflow.Unresumable).
+	case issue.Claim.Kind != "session", issue.Claim.ID == dispatch.DaemonSession(r.dispatchProject):
 		return nil
 	}
 	holder := issue.Claim

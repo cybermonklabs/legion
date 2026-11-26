@@ -367,7 +367,7 @@ Each item below names a script, then what it proves.
 
   a turn that ends in a provider error keeps its task, and the operator restarts the claims such turns leave (dispatch://INFRA-956 R2 and R3), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each carrying this checkout's two plugins and answered by a model stand-in of the driver's own:
   a 529 keeps the task on the claim and the daemon sends it to the same session again after 30 s, 60 s and 120 s;
-  the sixth such turn in a row tells the project's controller, once, and holds nothing;
+  the sixth such turn in a row tells the project's controller once and holds nothing (the daemon tells the issue's architect too, and this script reads the controller's copy alone);
   an OpenAI `finish_reason: content_filter` with no fallback model left carries no HTTP status at all, so the task goes again after 30 s, holding the issue for nobody;
   an HTTP 400, a client error that is none of 401, 403, 408 and 429, fails the claim and holds its issue for its architect;
   and `legion claims stop`, `legion claims retry --fresh-session` and `legion claims list`, the built binary against that daemon, drive and read the claims the first and the fourth leave.
@@ -479,13 +479,14 @@ Each item below names a script, then what it proves.
 
 - `dispatch-broker.sh`
 
-  every Dispatch client a Legion deployment runs writes with a token the secrets broker issued, and only inside its own project (dispatch://INFRA-4425's K2, K3 and K4), driven against the broker's own test rig on a PostgreSQL the caller names, the real Dispatch server this checkout builds on a database of its own behind a recording proxy, and the real clients — the daemon's own Dispatch client, the `dispatch` command, and one process holding the client that command builds and the client the pi-envoy plugin builds:
-  the daemon's client posts an issue message on an issue of its project, accepted under `DPoP`, and on an issue of another, refused 403 `PROJECT_SCOPE`;
+  every Dispatch client a Legion deployment runs writes with a token the secrets broker issued (dispatch://INFRA-4425's K2, K3 and K4), and a tool's reads go through `dispatch proxy` with one trade for each renewal of the role's token (dispatch://INFRA-4799's C2), driven against the broker's own test rig on a PostgreSQL the caller names, the real Dispatch server this checkout builds on a database of its own behind a recording proxy, and the real clients — the daemon's own Dispatch client, the `dispatch` command, and one process holding the client that command builds and the client the pi-envoy plugin builds:
+  the daemon's client writes on an issue of its project and on an issue of another, an issue message on each and on the other a status and its step, rating, plan and role holder records, each accepted under `DPoP`;
   a write of it whose proof names an origin outside `DISPATCH_PROOF_ORIGINS` is refused 401 `BROKER_TOKEN_PROOF_INVALID`;
-  `dispatch whoami`, in a role's environment read from the launch golden `pod-with-dispatch-broker.json`, acts for the role's person and writes its project alone, and without the setting both writes carry `Bearer` and whoami runs under the shared token;
-  with a role's token of its project every kind of write a role makes, through the command and through the plugin's client, and with the daemon's token every method of the daemon's client, is answered 2xx, while with a token of another project each write that names an issue or a document of the first is refused 403 `PROJECT_SCOPE`, and an upload into another session's conversation 403 `SESSION_SCOPE`;
+  `dispatch whoami`, in a role's environment read from the launch golden `pod-with-dispatch-broker.json`, acts for the role's person and names the project its token names, and without the setting both messages carry `Bearer` and whoami runs under the shared token;
+  with a role's token of its project every kind of write a role makes, through the command and through the plugin's client, three writes of the command on another project's issue, and with the daemon's token every method of the daemon's client, is answered 2xx, while with a token of another project each write on the first project's objects is accepted too, but for the daemon script's step record, its rating and its plan, refused 403 `STEP_WRITER`, its role holders, refused 403 `ROLE_HOLDER_FORBIDDEN`, since that token's session is no daemon's, and its status writes on the daemon's issue, refused 403 `LEGION_STATUS_SCOPE_REQUIRED`, and an upload into another session's conversation is refused 403 `SESSION_SCOPE`;
   with `DISPATCH_LEGION_STATUS_SCOPE` on and the daemon's issue labelled `legion`, each status write and role-holder publication of the daemon's client carries the daemon's `DPoP` token, while under the shared token each is refused 403 `LEGION_STATUS_SCOPE_REQUIRED` or `ROLE_HOLDER_FORBIDDEN`, and each is taken once Dispatch restarts with the setting off;
-  and with `LEGION_E2E_TOKEN_RENEWAL=1`, in place of those, the three long-lived clients write over three lifetimes of a 420 s token with no restart, and once their pod's token is one the broker refuses for good they stop with the broker's refusal and send Dispatch nothing, which takes about fifteen minutes.
+  with `LEGION_E2E_TOKEN_RENEWAL=1`, in place of those, the three long-lived clients write over three lifetimes of a 420 s token with no restart, and once their pod's token is one the broker refuses for good they stop with the broker's refusal and send Dispatch nothing, which takes about fifteen minutes;
+  and with `LEGION_E2E_PROXY=1`, alone, in place of all of those and of the `LEGION_E2E_TOKEN_RENEWAL=1` run, `TestTheProxyServesAToolRunWithOneTradeForEachRenewal` runs `dispatch proxy` in a role's environment with a Python standard-library client over its unix socket for 480 s, longer than two renewal periods, 420 s, of a 420 s token: a file's version reads back with the bytes uploaded, one comment POST sent twice under one `Idempotency-Key` is answered 201 both times and replayed the second, the client makes at least 2,000 requests and each read is answered 200, and the trades, counted as distinct tokens at the recording proxy, are exactly 3, the second and the third each traded at the half life of the one before, at most 1 + T / (L - 300) and the count the proxy's exit line names, while the same proxy without `DISPATCH_TOKEN_BROKER` exits 2 and runs no command, which takes about nine minutes past the rig's start.
   Each test writes its tables to `TMPDIR` and logs their path.
   The Envoy listener and GitHub are stand-ins that know no session and no installation; no cluster
 
@@ -2720,7 +2721,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The proof human parks child 2 again: within 900 s it has no Sandbox, no pod and no disk, and its planner is suspended by the daemon.
   The control, on the same claim and start path:
   `legion claims suspend` of the parked planner records `suspendedBy: operator`, and child 2 is set `todo` once more;
-  its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the claim), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
+  its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the agent), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
   `legion claims resume` relaunches it and the waiting start gives it the run's planning task, its session's third.
   Child 2 is parked a last time: within 900 s no Sandbox, no pod and no disk, its planner suspended by the daemon
   — what the session keeps is the table's, not the disk's
@@ -4936,7 +4937,7 @@ Each pane's Oh My Pi overlay sets `retry.enabled: false`, so the host walks no c
 | step | driven by | read back as |
 | :--- | :--- | :--- |
 | `step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder` | nothing: the task the planner's claim has held since the daemon booted, whose stand-in answers 529 | the daemon's own first send of it, read off the delivery's read mark, then its five re-sends of that same task to that same session, each at its own armed wait (30 s, 60 s and 120 s of wall clock, then the two driven ones), the claim neither failed nor empty-handed, the issue not held, and the stand-in asked once per send for a request carrying the task itself |
-| `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice is the run's one exit, and no attempt limit holds the issue |
+| `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice ends no run, and no attempt limit holds the issue |
 | `step3-a-content-filter-carries-no-status-and-the-task-goes-again` | one task delivered to the implementer once it has answered the warm-up task its seed left pending, with its stand-in then armed to end every turn with a content filter | the turn reported with no HTTP status at all, the task sent again after 30 s, the claim still holding it, the issue still `implementing` and its architect told nothing |
 | `step4-an-error-that-cannot-clear-fails-the-claim-and-holds-the-issue` | one task delivered to the tester once it has answered its own warm-up task, with its stand-in then armed to answer 400 | the turn reported with status 400, the claim failed and the issue held for its architect |
 | `step5-the-operator-stops-retries-and-reads-the-claims` | `legion claims stop`, then `legion claims retry --fresh-session`, then `legion claims list`, and the same retry of the claim step 4 failed, each the built `legion` against that daemon | the stopped planner retired, its retry running in a session that is not the one it recorded, the task its ladder kept sent to that fresh session, and the failed tester's claim running again |
@@ -5428,7 +5429,7 @@ the run fails at step 2, `timed out waiting for a message on <R>'s implementer's
 LEGION_OMP_PATH=/opt/omp/bin/omp ANTHROPIC_BASE_URL=<model gateway> \
   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [LEGION_E2E_NATS_BIN=<nats-server>] [APPROVED_VERSION_NEWS_MODEL=<model>] \
-  [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce] \
+  [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=<gateway audience>] \
   [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head|base] [APPROVED_VERSION_NEWS_RUNS=<n>] \
   bash scripts/e2e/approved-version-news.sh [--part one|both] [--control | --base-commit <rev>]
 # → "approved version news e2e: PASS in <n>s (assertions: <counted>/<expected>; part two: a4 head 3/3 (head only: the base arm passed 10 of 10 at 578c6abb, main meets R4 since #4203); off head 3/3, base <p>/<n> (…); answers head 3/3 (head only: the base arm passed 10 of 10 at 578c6abb, the daemon's news task states the rule in both arms); model calls: <n>)", exit 0
@@ -5450,8 +5451,8 @@ The server must offer the `pgvector` extension that Dispatch's migrations create
 The `arguments` check refuses a DSN that is unset or whose host is not loopback with exit 2, before anything is built or extracted.
 Part two also needs `LEGION_OMP_PATH` (an executable), `ANTHROPIC_BASE_URL` (the model gateway) and a model key, each refused with exit 2 when it is missing; part one needs none of them.
 The model key is the key in the file `APPROVED_VERSION_NEWS_MODEL_KEY_FILE` names (default `/var/run/model-gateway-key/key`, where a Legion role pod mounts the gateway's key).
-Where that file holds no key, `APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce` runs part two on the pod's own Google identity token for that audience in its place:
-a Kubernetes Job of the cluster's `builds` namespace labelled `builds.theorem.dev/model-gateway: "true"` holds no key, and signs in to the cluster model gateway with that token.
+Where that file holds no key, `APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE` names the audience the cluster model gateway takes a pod's identity token for, and part two runs on the pod's own Google identity token for that audience in its place:
+a Kubernetes Job of the cluster's `builds` namespace that carries the deployment's gateway label (`<deployment domain>/model-gateway: "true"`) holds no key, and signs in to the cluster model gateway with that token.
 The GKE metadata server mints the token, which lasts an hour, and `curl` fetches it.
 The `gateway-token` check mints it into a key file of the run's own scratch, mode 600, before anything is built, and a refresher in the background mints it again whenever the token in that file has 40 minutes left (`gateway_keep_seconds`), until the script ends;
 a mint that fails is said in the transcript and tried again 30 s later.
@@ -6740,7 +6741,7 @@ the caller does, with its work directory, which holds both (the profile holds `p
 
 ### The natives download
 
-OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 124 MiB at the pin;
+OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 125 MiB at the pin;
 builds before 18.11.0 wrote every variant they embed, about twice that) lives in `$HOME/.omp/natives/<omp version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest), and every profile under that `HOME` shares it; a profile has no natives of its own.
 `getNativesDir` (`@oh-my-pi/pi-natives/native/natives-dir.js`) takes the first of `PI_NATIVES_DIR`, `$OMP_DOWNLOAD_ROOT/natives`, `$XDG_CACHE_HOME/omp/natives` when `$XDG_CACHE_HOME/omp` exists, and `natives/` under `OMP_CONFIG_ROOT`, else under `$HOME/$PI_CONFIG_DIR` (`$HOME/.omp` when it is unset); the pinned build reads all of them, and none of `PI_NATIVES_DIR`, `OMP_DOWNLOAD_ROOT` and `OMP_CONFIG_ROOT` is set by any Legion process.
 OMP writes it on its first run under a `HOME` that has not run this OMP version, and in this script that run is `omp plugin install`.

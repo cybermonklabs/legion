@@ -117,7 +117,7 @@ switch (command) {
 /** One run of a copy of the public leg against the stand-ins, as `scenario` says. */
 async function publicStandInRun(
   scenario: PublicScenario,
-  bound: BoundName = "short"
+  bound: BoundName = "publicRun"
 ): Promise<LegRun> {
   const leg = copyLeg(scratch, publicLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
@@ -273,8 +273,8 @@ describe.skipIf(skipWithout("bash", "bun"))(
         }).toMatchObject({ agent: { verdict: "UNKNOWN" } });
         expect(rowsOf(unread.stdout).get("T5-agent")?.got).toContain("got no readable answer");
       },
-      // The five runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+      // The five runs at once, each a bounded child under the public leg's own bound.
+      rowLimit({ atOnce: ["publicRun", "publicRun", "publicRun", "publicRun", "publicRun"] })
     );
 
     test(
@@ -296,8 +296,8 @@ describe.skipIf(skipWithout("bash", "bun"))(
         });
         expect(rowsOf(run.stdout).get("T5-cookie")?.got).toContain("the cookie still answered");
       },
-      // The run, a bounded child under the short bound.
-      rowLimit("short")
+      // The run, a bounded child under the public leg's own bound.
+      rowLimit("publicRun")
     );
 
     // With no close time the real stand-in's hold sleeps for the T5 window (20 minutes). The

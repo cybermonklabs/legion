@@ -58,11 +58,15 @@
 -- retained_until, what the linger's expiry did for a tree (record.RetentionEnd). The check is one
 -- list, so this migration names every kind, as 20261122154643 did: its thirty-two kinds, the design
 -- news's design_changes and the basis seeds' pending_basis_seed and reparent_seed among them, with
--- retention_end added. Migrate applies every unrecorded migration in version order, so the list
--- with the higher version is the last word on any database. 20261122154643 says its list is that
--- word because of its version; this file stands above it and above every other migration of this
--- release, so this list is the last word on a fresh database, on one main migrated and on one an
--- earlier build of this branch migrated. A list here that left out design_changes,
+-- retention_end added, and main's merge_holds_changed (20261126110259), thirty-four in all.
+-- Migrate applies every unrecorded migration in version order, so the list with the higher version
+-- is the last word on any database. 20261122154643 says its list is that word because of its
+-- version; this file stands above it, so this list is the last word on a database an earlier build
+-- of this branch migrated. Main's 20261126110259 stands above this file and names retention_end
+-- too, so its list is the last word on a fresh database. On a database main migrated, which
+-- recorded 20261126110259 and can hold a merge_holds_changed row, this file is applied after it
+-- and is the last word, so it names merge_holds_changed: a list without it would fail the upgrade
+-- over that row and refuse every later one. A list here that left out design_changes,
 -- pending_basis_seed or reparent_seed would refuse every reconcile of a tree's news and every
 -- basis or re-parent seed, and fail the upgrade of a database that holds one pending.
 --
@@ -279,7 +283,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'retention_end'));
+  'retention_end', 'merge_holds_changed'));
 
 -- design_news_counts is the one rule of which news of a delivery's copy still counts: an item or
 -- an opening rendered for told_issue at told_generation, under the gate root told_root standing at
