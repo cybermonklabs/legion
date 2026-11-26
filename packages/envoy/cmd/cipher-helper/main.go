@@ -255,7 +255,7 @@ func serve(cfg config) error {
 		return err
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	identity, err := identityClient(cfg, log)
+	identity, identityKeyMade, err := identityClient(cfg, log)
 	if err != nil {
 		return err
 	}
@@ -270,7 +270,8 @@ func serve(cfg config) error {
 		// renewal an outage black-holes costs, and the floor under the renew cadence.
 		Broker: &helper.Broker{URL: cfg.URL, OperatorFile: cfg.OperatorFile, MachineFile: cfg.MachineFile,
 			Identity: identity, SignIns: signInAuthority(cfg, log), SignInBoxesFile: helper.SignInBoxesPath(cfg.StatePath),
-			HTTP: &http.Client{Timeout: leasetime.RenewClientTimeout}, Log: log},
+			FirstOnMachine: identityKeyMade,
+			HTTP:           &http.Client{Timeout: leasetime.RenewClientTimeout}, Log: log},
 		Hostname: hostname,
 		PeerOf:   helper.PeerOf,
 		Log:      log,
@@ -354,24 +355,27 @@ func migrateRecords(cfg config, log *slog.Logger) {
 // (helper.LoadOrMakeIdentityKey), so a restart trades the same subject and moves the one
 // credential this machine already holds rather than leaving it and its sessions behind. A
 // reboot empties neither that file nor this machine's credential; what a reboot does end is
-// every session, which is enrolled afresh by the processes that come back.
-func identityClient(cfg config, log *slog.Logger) (*cipherclient.Client, error) {
+// every session, which is enrolled afresh by the processes that come back. made reports that
+// the key was made at this start: no helper ran here before with it, and since a sign-in needs
+// this machine's identity, none enrolled anything under a sign-in (helper.Broker.FirstOnMachine).
+func identityClient(cfg config, log *slog.Logger) (client *cipherclient.Client, made bool, err error) {
 	if cfg.Identity == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	key, made, err := helper.LoadOrMakeIdentityKey(cfg.IdentityKeyFile)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	thumbprint, err := proof.Thumbprint(&key.PublicKey)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	log.Info("this machine's identity key", "file", helper.IdentityKeyNamed, "thumbprint", thumbprint, "made", made)
-	return cipherclient.New(cipherclient.Config{
+	client, err = cipherclient.New(cipherclient.Config{
 		BrokerURL: cfg.URL, Key: key, Subject: cfg.Identity, Session: cfg.Session,
 		HTTP: cipherclient.HTTPClient(), Log: log,
 	})
+	return client, made, err
 }
 
 // signInAuthority is the people signed in on this box as this helper's own user, which the

@@ -169,7 +169,12 @@ type Broker struct {
 	// read holds the sign-in on the box until it leaves (loadSignInHolds). Empty keeps the boxes
 	// for this process's life alone, and holds no sign-in.
 	SignInBoxesFile string
-	HTTP            *http.Client
+	// FirstOnMachine reports that no helper ran on this machine before this one: the identity key
+	// was made at this start (LoadOrMakeIdentityKey). A sign-in needs this machine's identity, so
+	// no earlier helper enrolled a box under one, and a record of the boxes that is not there holds
+	// no sign-in (loadSignInHolds).
+	FirstOnMachine bool
+	HTTP           *http.Client
 	// Log records every change of the launcher credential: a machine login or a trade installing
 	// one, a restart resuming one, a refresh moving its expiry, the warning a day before it
 	// lapses, and the helper dropping it, when the broker refuses it or its refresh or it

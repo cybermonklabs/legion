@@ -133,7 +133,7 @@ func TestTheIdentityKeyLogLineNamesNoPath(t *testing.T) {
 	var out bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&out, nil))
 	cfg := identityHelperConfig(t, home)
-	if _, err := identityClient(cfg, log); err != nil {
+	if _, _, err := identityClient(cfg, log); err != nil {
 		t.Fatal(err)
 	}
 	wantNamedNotPrinted(t, "the identity key line", out.String(), []string{"identity key", "thumbprint=", "made=true"}, secret)
@@ -141,7 +141,7 @@ func TestTheIdentityKeyLogLineNamesNoPath(t *testing.T) {
 	if err := os.Chmod(cfg.IdentityKeyFile, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := identityClient(cfg, log)
+	_, _, err := identityClient(cfg, log)
 	if err == nil {
 		t.Fatal("a world-readable identity key = nil")
 	}

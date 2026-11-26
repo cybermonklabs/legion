@@ -604,9 +604,9 @@ func TestAnIdentityHelperKeepsItsKeyAcrossARestart(t *testing.T) {
 		t.Fatalf("identity key file %q, want %q", cfg.IdentityKeyFile, want)
 	}
 
-	first, err := identityClient(cfg, log)
-	if err != nil || first == nil {
-		t.Fatalf("the first helper's token client: %+v %v", first, err)
+	first, made, err := identityClient(cfg, log)
+	if err != nil || first == nil || !made {
+		t.Fatalf("the first helper's token client: %+v %v, made %v; want a key made at this first start", first, err, made)
 	}
 	info, err := os.Stat(cfg.IdentityKeyFile)
 	if err != nil {
@@ -617,9 +617,9 @@ func TestAnIdentityHelperKeepsItsKeyAcrossARestart(t *testing.T) {
 	}
 
 	// The restart: a second process, with nothing of the first's memory, reading the same HOME.
-	second, err := identityClient(identityHelperConfig(t, home), log)
-	if err != nil || second == nil {
-		t.Fatalf("the restarted helper's token client: %+v %v", second, err)
+	second, made, err := identityClient(identityHelperConfig(t, home), log)
+	if err != nil || second == nil || made {
+		t.Fatalf("the restarted helper's token client: %+v %v, made %v; want the key the first kept, not one made", second, err, made)
 	}
 	before, err := proof.Thumbprint(&first.Key().PublicKey)
 	if err != nil {
@@ -642,13 +642,13 @@ func TestAnIdentityHelperRefusesAKeyOthersCanRead(t *testing.T) {
 	home := t.TempDir()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := identityHelperConfig(t, home)
-	if _, err := identityClient(cfg, log); err != nil {
+	if _, _, err := identityClient(cfg, log); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(cfg.IdentityKeyFile, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := identityClient(cfg, log)
+	_, _, err := identityClient(cfg, log)
 	if err == nil || !strings.Contains(err.Error(), helper.IdentityKeyNamed) || strings.Contains(err.Error(), cfg.IdentityKeyFile) || !strings.Contains(err.Error(), "chmod 600") {
 		t.Fatalf("a world-readable identity key: %v; want a refusal naming %s, not %s, and the fix", err, helper.IdentityKeyNamed, cfg.IdentityKeyFile)
 	}

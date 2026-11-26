@@ -256,7 +256,7 @@ func TestSignInHoldsCountWhatMayStandUnderTheSignIn(t *testing.T) {
 		t.Fatal("a box unenrolled is still needed")
 	}
 
-	if err := holds.holdUnrecorded(ada); err != nil {
+	if err := holds.decide(ada); err != nil {
 		t.Fatal(err)
 	}
 	if err := holds.box("another-signin-box", ada); err != nil {
@@ -277,4 +277,54 @@ func TestSignInHoldsCountWhatMayStandUnderTheSignIn(t *testing.T) {
 	if holds.namesSignIns() || holds.needed(later, ada) {
 		t.Fatal("a box or a hold is still recorded after another sign-in took the place of the one it names")
 	}
+}
+
+// TestAHelperDecidesWhatAMissingRecordHoldsOnlyOnceItCanTell: a missing record on a machine where
+// no helper ran before (FirstOnMachine: the identity key was made at this start) holds nothing,
+// though a person signed in before the helper's first start, and starts an empty record; and a
+// helper that cannot tell which sign-in is on the box at its start (two people signed in and none
+// named) writes no record, so a restart cannot read a record that holds nothing, and holds the
+// sign-in on the box at the first tick that can tell.
+func TestAHelperDecidesWhatAMissingRecordHoldsOnlyOnceItCanTell(t *testing.T) {
+	t.Run("the first start on a new machine", func(t *testing.T) {
+		f := newEnrolBroker(t)
+		file := SignInBoxesPath(filepath.Join(t.TempDir(), "sessions.json"))
+		b, _, _ := machineIdentityBroker(t, f)
+		b.SignInBoxesFile, b.FirstOnMachine = file, true
+		asks, _ := startKeeping(t, b, &stubSignIns{authority: signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")})
+		asksStop(t, asks, "on a new machine with nothing enrolled")
+		if n := asks(); n != 0 {
+			t.Fatalf("a first helper on a new machine asked for the sign-in %d times with nothing enrolled; want none", n)
+		}
+		if boxes, held := recordedHolds(t, file); len(boxes) != 0 || len(held) != 0 {
+			t.Fatalf("the record a first helper started holds boxes %q and sign-ins %q; want an empty record", boxes, held)
+		}
+	})
+	t.Run("a sign-in it cannot tell at its start", func(t *testing.T) {
+		f := newEnrolBroker(t)
+		file := SignInBoxesPath(filepath.Join(t.TempDir(), "sessions.json"))
+		b, _, _ := machineIdentityBroker(t, f)
+		b.SignInBoxesFile = file
+		signIns := &stubSignIns{onBoxErr: errors.New("2 people are signed in on this machine")}
+		asks, _ := startKeeping(t, b, signIns)
+		// A box enrolled under the sign-in while the helper cannot tell it: its save must write no
+		// record, or a helper started again would read one that holds nothing.
+		signIns.mu.Lock()
+		signIns.authority = signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
+		signIns.mu.Unlock()
+		if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint-of-the-box-key", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		asksStop(t, asks, "while it cannot tell which sign-in is on the box")
+		if _, err := os.Stat(file); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the record while the helper cannot tell which sign-in is on the box: %v; want none written", err)
+		}
+		signIns.mu.Lock()
+		signIns.onBoxErr = nil
+		signIns.mu.Unlock()
+		testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "three asks once the helper can tell the sign-in on the box", func() bool { return asks() >= 3 })
+		if boxes, held := recordedHolds(t, file); len(held) != 1 || len(boxes) != 1 {
+			t.Fatalf("the record once the helper could tell holds boxes %q and sign-ins %q; want the box and the sign-in on the box", boxes, held)
+		}
+	})
 }

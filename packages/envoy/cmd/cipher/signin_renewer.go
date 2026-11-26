@@ -510,8 +510,7 @@ func startDetachedRenewer(stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets renew --sign-in: find this program: %v\n", redact.File(err))
 		return 1
 	}
-	dir, _ := os.Getwd()
-	cmd := renewerCommand(self, os.Environ(), os.Getenv(cipherclient.PersonVar), dir)
+	cmd := detachedRenewerCommand(self)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
@@ -520,6 +519,13 @@ func startDetachedRenewer(stderr io.Writer) int {
 	}
 	_ = cmd.Process.Release()
 	return 0
+}
+
+// detachedRenewerCommand is the renewer this first stage starts (renewerCommand), from this
+// process's own environment and working directory, which are the command's.
+func detachedRenewerCommand(self string) *exec.Cmd {
+	dir, _ := os.Getwd()
+	return renewerCommand(self, os.Environ(), os.Getenv(cipherclient.PersonVar), dir)
 }
 
 // signInRenewer is one renewer of one sign-in's enrollment, holding its lock (release lets it go).

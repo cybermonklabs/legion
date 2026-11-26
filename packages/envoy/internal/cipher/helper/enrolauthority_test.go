@@ -187,9 +187,11 @@ type stubSignIns struct {
 	authority *cipherclient.Authority
 	err       error
 	// onBox, when set, is the sign-in the store holds, which SignedIn names whatever Current
-	// answers, as for a broker that is not serving; nil names authority's.
-	onBox   *cipherclient.Authority
-	refused []string
+	// answers, as for a broker that is not serving; nil names authority's. onBoxErr, when set,
+	// is SignedIn's answer, as for a store with two people signed in and none named.
+	onBox    *cipherclient.Authority
+	onBoxErr error
+	refused  []string
 	// onRefused, when set, runs inside Refused, so a test makes the box's answer change
 	// exactly when the broker rejects the credential.
 	onRefused func()
@@ -219,6 +221,9 @@ func (s *stubSignIns) Refused(_ context.Context, credentialID string) error {
 func (s *stubSignIns) SignedIn() (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.onBoxErr != nil {
+		return "", "", s.onBoxErr
+	}
 	record := s.onBox
 	if record == nil {
 		record = s.authority

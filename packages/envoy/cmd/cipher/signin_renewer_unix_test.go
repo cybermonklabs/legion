@@ -847,8 +847,8 @@ func TestARenewersPathsAreTheCommandsPaths(t *testing.T) {
 
 // TestTheProcessThatMovesTheRenewerToRootMakesItsPathsAbsolute: a command starts the first stage
 // in its own directory, with the paths as the command has them and the stage marker; the first
-// stage starts the renewer in /, with each path made absolute against the directory it runs in,
-// and no stage marker.
+// stage, run here from a directory of the test's own with that environment, starts the renewer in
+// /, with each path made absolute against the directory it runs in, and no stage marker.
 func TestTheProcessThatMovesTheRenewerToRootMakesItsPathsAbsolute(t *testing.T) {
 	environ := []string{"GOOGLE_APPLICATION_CREDENTIALS=credentials.json", "AGENT_SECRETS_URL=https://broker.example"}
 	first := firstStageCommand(context.Background(), "/usr/bin/agent-secrets", environ, "ada@example.com")
@@ -858,11 +858,24 @@ func TestTheProcessThatMovesTheRenewerToRootMakesItsPathsAbsolute(t *testing.T) 
 	}) {
 		t.Fatalf("the first stage runs in %q with %q; want the command's own directory and its paths as they came, beside the stage marker", first.Dir, first.Env)
 	}
-	renewer := renewerCommand("/usr/bin/agent-secrets", first.Env, "ada@example.com", "/home/ada/work")
-	if renewer.Dir != "/" || !slices.Equal(renewer.Env, []string{
-		"GOOGLE_APPLICATION_CREDENTIALS=/home/ada/work/credentials.json", "AGENT_SECRETS_URL=https://broker.example",
-		cipherclient.PersonVar + "=ada@example.com",
-	}) {
-		t.Fatalf("the renewer runs in %q with %q; want / and the paths made absolute against the first stage's directory", renewer.Dir, renewer.Env)
+
+	t.Chdir(t.TempDir())
+	work, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variable := range first.Env {
+		name, value, _ := strings.Cut(variable, "=")
+		t.Setenv(name, value)
+	}
+	renewer := detachedRenewerCommand("/usr/bin/agent-secrets")
+	want := []string{"GOOGLE_APPLICATION_CREDENTIALS=" + filepath.Join(work, "credentials.json"), cipherclient.PersonVar + "=ada@example.com"}
+	for _, entry := range want {
+		if !slices.Contains(renewer.Env, entry) {
+			t.Errorf("the renewer's environment holds no %q: %q", entry, renewer.Env)
+		}
+	}
+	if renewer.Dir != "/" || slices.ContainsFunc(renewer.Env, func(entry string) bool { return strings.HasPrefix(entry, renewerStageVar+"=") }) {
+		t.Fatalf("the renewer runs in %q with %q; want / and no stage marker", renewer.Dir, renewer.Env)
 	}
 }
