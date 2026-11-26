@@ -260,7 +260,7 @@ test("Settings gives p0 only where its box is ticked, and the command sets P0 on
     ["Without P0", withoutP0],
     ["shared token", e2eAgentToken],
   ] as const) {
-    const help = await runDispatch(["issue-update", "--help"], home, token);
+    const help = await runDispatch(["issue-update", "--help"], home, { token });
     expect(help.code, `issue-update --help under ${label}: ${help.stdout}${help.stderr}`).toBe(0);
     expect(priorityRow(help.stdout), `the --priority row under ${label}`).toMatch(/\bp0\b/);
   }
@@ -273,7 +273,7 @@ test("Settings gives p0 only where its box is ticked, and the command sets P0 on
     const refused = await runDispatch(
       ["issue-update", "--issue", issue.key, "--priority", "0"],
       home,
-      token
+      { token }
     );
     expect(refused.code, `P0 under ${label}: ${refused.stdout}${refused.stderr}`).toBe(1);
     const lines = `${refused.stdout}\n${refused.stderr}`.split("\n");
@@ -290,7 +290,7 @@ test("Settings gives p0 only where its box is ticked, and the command sets P0 on
   const allowed = await runDispatch(
     ["issue-update", "--issue", third.key, "--priority", "0"],
     home,
-    withP0
+    { token: withP0 }
   );
   expect(allowed.code, `P0 under With P0: ${allowed.stdout}${allowed.stderr}`).toBe(0);
   expect((await getIssue(third.key)).priority).toBe(0);
@@ -318,7 +318,7 @@ test("Settings gives p0 only where its box is ticked, and the command sets P0 on
   const afterWiden = await runDispatch(
     ["issue-update", "--issue", fourth.key, "--priority", "0"],
     home,
-    withoutP0
+    { token: withoutP0 }
   );
   expect(
     afterWiden.code,
