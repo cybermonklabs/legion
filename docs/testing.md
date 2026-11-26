@@ -84,6 +84,21 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   The package documentation is the whole list and the rule each check holds.
   It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
 
+## A test database's teardown waits for its binary
+
+`packages/daemon/internal/testpg/testdb.Drop` retries PostgreSQL's 42501
+(`insufficient_privilege`) and 55006 (`object_in_use`) refusals until its context ends. A test
+that creates one database (`testdb.PlainDatabase` and `internal/store`'s `emptyStore`) takes
+`testwait.TeardownContext(t)` in its cleanup, bounded to stay before go test's alarm and finite
+under `-timeout 0`. A clone teardown after `testpg.Main` takes `testwait.TeardownDeadline`: the
+binary's parsed `-timeout` plus its post-test grace, because Go stops its own alarm when `m.Run`
+returns.
+
+Never give `Drop` `context.Background()`. A correct backend can take longer than an arbitrary
+retry span to exit under load. When the binary's bound does end, the error names the database and
+the backends still attached from `pg_stat_activity`; clear those backends rather than retrying the
+test.
+
 
 ## Bun tests
 
