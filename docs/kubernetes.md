@@ -6260,13 +6260,16 @@ The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one th
 Both are optional, and they are set together: both absent is off, and the loader refuses one without the other.
 `bucket` names the Cloud Storage bucket, and `service_account` names the Kubernetes ServiceAccount that the cache pods alone run as.
 With both set, every cache pod runs as `service_account`, and its `cache` container alone is told the bucket, as `LEGION_REPOSITORY_CACHE_BUCKET` (`repocache.BucketEnv`).
-Its argv, its Secret and its mounts are what they are without the bucket, and it mounts no ServiceAccount token: on GKE its Google identity comes from the node's metadata server through Workload Identity.
+Its argv, its Secret and its mounts are what they are without the bucket, and it mounts no ServiceAccount token: on GKE its Google identity is the Google service account that `service_account` is bound to through Workload Identity (below), whose email and tokens the node's metadata server gives the pod.
 No issue pod and no controller pod runs as that account or is told the bucket.
 They keep `runtime.kubernetes.pod.service_account`, and the loader refuses a `service_account` that is the account they run as (`pod.service_account`, or `default` while that is unset), since the bucket's grant to that account would reach every pod.
 The cache writes each pack and its index to the bucket as its own identity, and answers an issue pod's `GET /packs`, on the bearer token `/tar` takes, with the refs and a signed address for each pack and each index, good for 15 minutes.
 A reader holds no grant on the bucket at all, so the pods that can read a repository's packs are the pods that hold its cache's token, as for `/tar`.
 `/tar` stays as it is.
-A fetch falls back to it whenever `/packs` is not served, its answer cannot be used, or a download or a check fails, so a bucket that is missing or broken makes a fetch as slow as it was before the bucket, and never makes it fail.
+A fetch falls back to it whenever `/packs` is not served, its answer cannot be used, or a download or a check fails, so a bucket that is missing or broken never makes a fetch fail.
+It costs a fetch at most the attempt's 15 minutes (`workspace.BucketFetchTimeout`) more than the fetch took before the bucket:
+a cache with no bucket answers `/packs` 404 at once, a bucket that sends nothing holds the attempt for the 5-minute low-speed bound, and one that sends slowly, or a verification that is slow, holds it for the whole 15 minutes.
+That is why the fetch's budget (`workspace.FetchBudget`) grew by those 15 minutes.
 
 With the bucket on, the cache publishes its packs after each fetch that succeeds, its first clone included, and again after each repack that succeeds; a restarted cache whose first fetch fails publishes the clone it serves as it was.
 Each pack and its index go to `<owner>/<repo>/objects/pack/pack-<id>.pack` and `.idx`, the owner and the repository lower-cased, created only where no object of that name exists: one already there is taken only where its size, CRC32C and SHA-256 are the file's, and never replaced.
@@ -6277,9 +6280,16 @@ A pack in the clone without its index, or an index without its pack, which a kil
 Each publication is bounded by the shorter of `refresh_minutes` and 30 minutes, and a failure, a bucket the cache cannot open included, is logged as `publish the packs to bucket <bucket> failed; …` and tried again at the next refresh, while `/tar` and `/healthz` answer as they do with no bucket.
 An object of the repository's prefix that neither the clone nor the listed set holds is deleted, matching the generation the cache listed, no sooner than 30 minutes after the switch that first left it out, twice an address's life, so a download already under way keeps its object; a restarted cache counts those 30 minutes from its own first switch, never from an object's creation, and a delete that fails is tried again at the next refresh.
 The cache deletes nothing outside its prefix, nor a name under it that is no pack or index, and a cache the daemon retires deletes nothing in the bucket, whose retention the deployment sets.
+Each publication lists the bucket once, before its uploads, and uploads again each object of the set it leaves listed that the list does not hold, whether it switches to a new set or keeps the one listed: a retention rule or another writer deleted that object, and the cache logs `bucket <bucket> no longer held <object>, which the listed set names: uploaded it again`.
+A list that fails is logged and tried again at the next refresh; that publication still switches to a new snapshot, but uploads nothing again and retires nothing.
+One bucket serves the caches of one project's daemon alone: an object's name (`workspace.PackPrefix`) has no part for the project, so two daemons that cache one repository in one bucket delete each other's packs, each 30 minutes after it first finds them outside its own clone and set.
+A retention or lifecycle rule of the bucket must not reach an object a set still lists: until the next refresh puts the object back, every fetch of that repository fails its download of it and falls back to `/tar`.
 `/packs` answers 503 until the first set is listed, and when an address cannot be signed; each answer signs a fresh address for every object, through IAM Credentials' `signBlob` as the cache's own account, a V4 `GET` of that object alone good for 15 minutes, and an answer whose set was switched while it signed is 503 too.
 `/packs` counts in no `/healthz` `streams`, and the cache logs no address, token or ref.
-The cache's Google identity needs, on the bucket, `storage.objects.list`, `storage.objects.get`, `storage.objects.create` and `storage.objects.delete`, and, on its own account, `iam.serviceAccounts.signBlob` (`roles/iam.serviceAccountTokenCreator` granted to the account on itself).
+The cache's ServiceAccount must be bound to a Google service account through Workload Identity: the ServiceAccount carries the annotation `iam.gke.io/gcp-service-account: <email>`, the Google service account's email, and that Google service account grants `roles/iam.workloadIdentityUser` to the member `serviceAccount:<project>.svc.id.goog[<namespace>/<service_account>]`, where `<project>` is the cluster's project, `<namespace>` is `runtime.kubernetes.namespace` and `<service_account>` is `service_account`.
+That Google service account needs, on the bucket, `storage.objects.list`, `storage.objects.get`, `storage.objects.create` and `storage.objects.delete`, and, on itself, `iam.serviceAccounts.signBlob` (`roles/iam.serviceAccountTokenCreator` granted to the account on itself).
+A ServiceAccount bound to no Google service account holds only the pool's federated principal, which has no email address, and GKE's metadata server then names the pool itself as the pod's account ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint) records what it answers).
+The cache signs as the account the metadata server names (`openBucketAt`, `repocache/bucket.go`), so IAM Credentials refuses every `signBlob` it asks, even where the bucket's own grants reach that principal: `/packs` answers 503 for good, every fetch fills its feed from `/tar` (`unavailable manifest: …`), and the cache's one sign of it is the failure it logs, the signing's at each answer (`sign the packs' addresses for <address>: …`), or, where the principal holds no grant on the bucket either, the publication's at each refresh (`publish the packs to bucket <bucket> failed; …`).
 
 An issue pod's `workspace-fetch` asks `/packs` once the cache is ready, presenting the cache's token, and reads the answer within one minute.
 It holds the whole answer to check before it asks for any object:
@@ -6322,8 +6332,9 @@ Turn the pair on in this order:
 1. Deploy a daemon and a worker image that carry it.
    An earlier daemon refuses either key as an unknown key, and the cache of an earlier image ignores `LEGION_REPOSITORY_CACHE_BUCKET` and serves `/tar` alone.
 
-2. Create the bucket, the ServiceAccount that `service_account` names in the daemon's namespace, and the Google identity that ServiceAccount holds through Workload Identity, with that identity's grants on the bucket and on signing its own addresses.
-   Grant them to that identity alone.
+2. Create the bucket, the ServiceAccount that `service_account` names in the daemon's namespace, and the Google service account that ServiceAccount is bound to (above): the `iam.gke.io/gcp-service-account` annotation on the ServiceAccount, and `roles/iam.workloadIdentityUser` on the Google service account for the ServiceAccount's member.
+   Give that Google service account the grants above, on the bucket and on signing its own addresses, and grant them to it alone.
+   A ServiceAccount bound to no Google service account lets the cache pods start, but leaves `/packs` answering 503 and every fetch on `/tar` (above).
    A ServiceAccount that does not exist keeps each replacement cache pod from starting, since the API server refuses a pod that names one: the cache's old pod is already gone, the cache stays `starting` in `legion state`, and every fresh feed of its repository waits on it.
 
 3. Set both keys in `legion.yaml` and restart the daemon.
