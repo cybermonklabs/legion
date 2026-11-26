@@ -1184,8 +1184,9 @@ type plan struct {
 	operatorToken string
 	secrets       map[string]string
 	// privateNameRules is the deployment's private-name rule file as boot compiled it
-	// (bootReads.privateNameRules), which the outbox's branch create runs (ghbranch.Create); nil
-	// when the deployment names none, and the create then runs no private-name rule.
+	// (bootReads.privateNameRules), which the outbox's writes through GitHub's REST API run
+	// (internal/ghbranch: its branch creates, merges, and pull request opens and closes); nil when
+	// the deployment names none, and those writes then run no private-name rule.
 	privateNameRules *leakguard.RuleSet
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.

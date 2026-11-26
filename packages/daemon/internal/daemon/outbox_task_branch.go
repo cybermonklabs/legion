@@ -152,7 +152,7 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 	}
 	body := fmt.Sprintf("No step of task %s of %s implements, so Legion opened this pull request for the work its branch holds.\n\nDispatch: %s",
 		task, issue.Key, issue.Key)
-	_, err = ghbranch.OpenPullRequest(ctx, github, repo, branch, base, fmt.Sprintf("%s: %s", issue.Key, task), body)
+	_, err = ghbranch.OpenPullRequest(ctx, github, repo, branch, base, fmt.Sprintf("%s: %s", issue.Key, task), body, r.privateNameRules)
 	return err
 }
 
@@ -181,7 +181,7 @@ func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow
 		return err
 	}
 	for _, number := range payload.Numbers {
-		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment)
+		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment, r.privateNameRules)
 		if err != nil {
 			return fmt.Errorf("close the pull request #%d of a task of %s: %w", number, issue.Key, err)
 		}
@@ -240,7 +240,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	}
 	for _, need := range needs {
 		head := need.BranchOf(issue.Key)
-		joined, err := ghbranch.Merge(ctx, github, repo, onto, head, fmt.Sprintf("%s: join the work of task %s", issue.Key, need.Task))
+		joined, err := ghbranch.Merge(ctx, github, repo, onto, head, fmt.Sprintf("%s: join the work of task %s", issue.Key, need.Task), r.privateNameRules)
 		if err != nil {
 			if githubAnswered(err, http.StatusNotFound) && !mergeBaseMissing(err) {
 				return nil, false, &needBranchMissing{need: need.Task, branch: head, err: err}
@@ -261,7 +261,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	for _, need := range needs {
 		ids = append(ids, need.Task)
 	}
-	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of tasks %s", issue.Key, strings.Join(ids, ", ")))
+	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of tasks %s", issue.Key, strings.Join(ids, ", ")), r.privateNameRules)
 	if err != nil {
 		return nil, false, err
 	}

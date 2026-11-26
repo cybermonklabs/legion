@@ -20,17 +20,23 @@ import (
 // branches and wrapping GitHub's *githubrest.Answer, GitHub's 422 for a head with no commit base
 // lacks among them.
 //
-// The title and the body are published on GitHub as a created ref's name is, so each passes this
-// repository's own private-name rules first (leakguard.Rules), as Create's ref name does: a text
-// they match, and a rule pass that could not be made to run, are each an error, and nothing is sent.
-func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, head, base, title, body string) (int, error) {
+// The title and the body are published on GitHub as a created ref's name is, so each passes the
+// deployment's private-name rules before anything is sent, as Create's ref name does: rules, the
+// rule set the daemon compiled from the deployment's rule file at boot, run alone
+// (leakguard.RuleSet.Check). A text they match, and a rule pass that could not be made to run, are
+// each an error, and nothing is sent. Nil rules are a deployment that names no rule file, and no
+// private-name rule runs. Either way the open reads no environment: the rules are what its caller
+// hands it, never a rule file its process's environment may point at.
+func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, head, base, title, body string, rules *leakguard.RuleSet) (int, error) {
 	failed := func(err error) error {
 		return fmt.Errorf("open the pull request of %s against %s on %s: %w", head, base, repo, err)
 	}
-	if err := leakguard.New(leakguard.Options{}).Rules(ctx,
-		leakguard.Record{Label: "the pull request's title", Text: title},
-		leakguard.Record{Label: "the pull request's body", Text: body}); err != nil {
-		return 0, failed(err)
+	if rules != nil {
+		if err := rules.Check(ctx, "the write",
+			leakguard.Record{Label: "the pull request's title", Text: title},
+			leakguard.Record{Label: "the pull request's body", Text: body}); err != nil {
+			return 0, failed(err)
+		}
 	}
 	var opened githubrest.PullRequest
 	err := github.Post(ctx, "/pulls", map[string]string{"title": title, "head": head, "base": base, "body": body}, &opened)
@@ -59,15 +65,20 @@ func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.
 // close made again writes nothing. Every answer other than 2xx is an error naming the repository and
 // the pull request and wrapping GitHub's *githubrest.Answer.
 //
-// The comment is published on GitHub as a pull request's body is, so it passes this repository's
-// own private-name rules first (leakguard.Rules): a comment they match, and a rule pass that could
-// not be made to run, are each an error, and nothing is sent.
-func ClosePullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, comment string) (bool, error) {
+// The comment is published on GitHub as a pull request's body is, so it passes the deployment's
+// private-name rules first: rules, the rule set the daemon compiled from the deployment's rule file
+// at boot, run alone (leakguard.RuleSet.Check). A comment they match, and a rule pass that could
+// not be made to run, are each an error, and nothing is sent. Nil rules are a deployment that names
+// no rule file, and no private-name rule runs. Either way the close reads no environment: the rules
+// are what its caller hands it, never a rule file its process's environment may point at.
+func ClosePullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, comment string, rules *leakguard.RuleSet) (bool, error) {
 	failed := func(err error) error {
 		return fmt.Errorf("close pull request #%d on %s: %w", number, repo, err)
 	}
-	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.Record{Label: "the pull request's comment", Text: comment}); err != nil {
-		return false, failed(err)
+	if rules != nil {
+		if err := rules.Check(ctx, "the write", leakguard.Record{Label: "the pull request's comment", Text: comment}); err != nil {
+			return false, failed(err)
+		}
 	}
 	var pull githubrest.PullRequest
 	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", number), &pull); err != nil {
