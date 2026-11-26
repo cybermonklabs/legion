@@ -518,8 +518,8 @@ func approvedCopy(t *testing.T, name string, edit func(n *specgraph.ApprovedNode
 }
 
 // editApproved decodes the approved.json at path as the approved nodes of specgraph, lets edit
-// change, add or take out nodes, and writes back the nodes that edit returns. A test of a file that
-// is not valid edits its bytes instead (replaceIn).
+// change, add or take out nodes, and writes back the nodes that edit returns, each with removed and
+// partly_checked. A test of a file that is not valid edits its bytes instead (replaceIn).
 func editApproved(t *testing.T, path string, edit func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode) {
 	t.Helper()
 	var file struct {

@@ -2,6 +2,8 @@ package specgraph
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -313,6 +315,10 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 		{"removed in capitals", `{"nodes":[{"id":"a-page-shows-it","REMOVED":true,"versions":[` + good + `]}]}`, `member "/nodes/0/REMOVED" is not in the format`},
 		{"removed two times, true then false", `{"nodes":[{"id":"a-page-shows-it","removed":true,"removed":false,"versions":[` + good + `]}]}`,
 			`member "/nodes/0/removed" is in one object two times`},
+		{"a node that sets no removed", `{"nodes":[{"id":"a-page-shows-it","partly_checked":false,"versions":[` + good + `]}]}`,
+			`approved node "a-page-shows-it": it sets no removed; a node that the approved spec keeps sets false`},
+		{"a node that sets no partly_checked", `{"nodes":[{"id":"a-page-shows-it","removed":false,"versions":[` + good + `]}]}`,
+			`approved node "a-page-shows-it": it sets no partly_checked; a statement whose checks decide all of it sets false`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -322,6 +328,304 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An approved document holds each relation by the id of the node that it names, and the derivation
+// reads a relation only to a node of its kind: a parent that names no node, or a check, would read
+// as no parent, and in wait-cycle the statement above it would then read met where the scenario
+// has it not met (R22: "Dispatch refuses the approval of a change request that puts a statement
+// under a parent that the approved spec does not hold"). So the reader and the entry of the
+// derivation (approvedFault), and Current for a caller that builds an Approved itself, refuse a
+// relation that names no node of the approved spec of a kind that its relationRule gives it, the rule
+// that Validate reads in the files, naming the member and the value; a value that is no id, such as
+// " " or "Pages", names no node, and the reader of the document refuses it as no id (versionText). A
+// node that the approved spec removed is one that it holds, so a relation to it is taken where its
+// kind is right, and refused where it is not. A check serves one statement (R6: "narrower than its
+// statement"), so a check whose document leaves out serves names none, while a statement or a
+// component that leaves out its parent is at the top (R1, R15). Each row sets one relation of one
+// node beside an approved spec of each kind, a node of each kind kept and removed: each value of the
+// row with no want is taken (the controls), and each other is refused with its line.
+func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
+	t.Parallel()
+	type node interface{ Print() (string, error) }
+	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	approvedNode := func(t *testing.T, id string, n node, removed bool) ApprovedNode {
+		t.Helper()
+		block, err := n.Print()
+		if err != nil {
+			t.Fatalf("Print of %s: %v", id, err)
+		}
+		return ApprovedNode{ID: id, Removed: removed, PartlyChecked: false, Versions: []ApprovedVersion{{Version: 1, At: at, Document: block}}}
+	}
+	statement := func(id string) Statement {
+		return Statement{ID: id, Text: "The pages show each order.", Kind: KindBehavior}
+	}
+	check := func(id, serves string) Check {
+		return Check{ID: id, Serves: serves, Subject: SubjectProduction, Procedure: ProcedureAgent,
+			Claim: "The page shows each order.", ProcedureText: "An agent reads the page.", FailingExample: "A page that shows no order."}
+	}
+	component := func(id string) Component {
+		return Component{ID: id, Name: "Envoy", Purpose: "It delivers each stored message."}
+	}
+	envoyToDispatch := component("envoy-to-dispatch")
+	envoyToDispatch.Interface, envoyToDispatch.Joins = true, []string{"dispatch", "envoy"}
+	oldEnvoyToDispatch := envoyToDispatch
+	oldEnvoyToDispatch.ID = "old-envoy-to-dispatch"
+	// others is the approved spec beside the row's node: a node of each kind kept, and a node of each
+	// kind that it removed.
+	others := func(t *testing.T) []ApprovedNode {
+		return []ApprovedNode{
+			approvedNode(t, "pages", statement("pages"), false),
+			approvedNode(t, "old-pages", statement("old-pages"), true),
+			approvedNode(t, "pages-load", check("pages-load", "pages"), false),
+			approvedNode(t, "old-pages-load", check("old-pages-load", "pages"), true),
+			approvedNode(t, "dispatch", component("dispatch"), false),
+			approvedNode(t, "envoy", component("envoy"), false),
+			approvedNode(t, "old-envoy", component("old-envoy"), true),
+			approvedNode(t, "envoy-to-dispatch", envoyToDispatch, false),
+			approvedNode(t, "old-envoy-to-dispatch", oldEnvoyToDispatch, true),
+			approvedNode(t, "work-unit", Term{ID: "work-unit", Name: "work unit", Definition: "A work unit is work that makes one or more statements true."}, false),
+			approvedNode(t, "old-work-unit", Term{ID: "old-work-unit", Name: "old work unit", Definition: "An old work unit is work that made a statement true."}, true),
+		}
+	}
+	noNode := func(member, v string) string {
+		return "bad-approved-document: " + member + " " + quoted(v) + " names no node of the approved spec"
+	}
+	wrongKind := func(member, v, names, wanted string) string {
+		return "bad-approved-document: " + member + " " + quoted(v) + " names " + names + ", not " + wanted
+	}
+	noID := func(member, v string) string {
+		return "bad-approved-document: " + member + " " + quoted(v) + " is no id"
+	}
+	type value struct{ v, want string }
+	for _, row := range []struct {
+		name   string
+		node   func(v string) (id string, n node)
+		values []value
+	}{
+		{"a statement's parent", func(v string) (string, node) { s := statement("a-page-shows-it"); s.Parent = v; return s.ID, s }, []value{
+			{"pages", ""}, {"old-pages", ""}, {"", ""},
+			{"no-such-statement", noNode("parent", "no-such-statement")}, {" ", noID("parent", " ")}, {"Pages", noID("parent", "Pages")},
+			{"pages-load", wrongKind("parent", "pages-load", "a check", "a statement")},
+			{"envoy", wrongKind("parent", "envoy", "a component", "a statement")},
+			{"work-unit", wrongKind("parent", "work-unit", "a term", "a statement")},
+			{"old-pages-load", wrongKind("parent", "old-pages-load", "a check", "a statement")},
+			{"old-envoy", wrongKind("parent", "old-envoy", "a component", "a statement")},
+			{"old-envoy-to-dispatch", wrongKind("parent", "old-envoy-to-dispatch", "an interface", "a statement")},
+			{"old-work-unit", wrongKind("parent", "old-work-unit", "a term", "a statement")},
+		}},
+		{"a statement that a statement serves", func(v string) (string, node) {
+			s := statement("a-page-shows-it")
+			s.Serves = []string{v}
+			return s.ID, s
+		}, []value{
+			{"pages", ""}, {"old-pages", ""},
+			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noID("serves", "Pages")},
+			{"pages-load", wrongKind("serves", "pages-load", "a check", "a statement")},
+			{"envoy-to-dispatch", wrongKind("serves", "envoy-to-dispatch", "an interface", "a statement")},
+			{"old-pages-load", wrongKind("serves", "old-pages-load", "a check", "a statement")},
+			{"old-envoy", wrongKind("serves", "old-envoy", "a component", "a statement")},
+		}},
+		{"a component or an interface that a statement is about", func(v string) (string, node) {
+			s := statement("a-page-shows-it")
+			s.About = []string{v}
+			return s.ID, s
+		}, []value{
+			{"envoy", ""}, {"envoy-to-dispatch", ""}, {"old-envoy", ""}, {"old-envoy-to-dispatch", ""},
+			{"no-such-component", noNode("about", "no-such-component")}, {"Envoy", noID("about", "Envoy")},
+			{"pages", wrongKind("about", "pages", "a statement", "a component or an interface")},
+			{"old-pages", wrongKind("about", "old-pages", "a statement", "a component or an interface")},
+			{"old-pages-load", wrongKind("about", "old-pages-load", "a check", "a component or an interface")},
+			{"old-work-unit", wrongKind("about", "old-work-unit", "a term", "a component or an interface")},
+		}},
+		{"the statement that a check serves", func(v string) (string, node) { return "a-page-shows-each-order", check("a-page-shows-each-order", v) }, []value{
+			{"pages", ""}, {"old-pages", ""},
+			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noID("serves", "Pages")},
+			{"old-pages pages", noID("serves", "old-pages pages")}, {"", noNode("serves", "")},
+			{"pages-load", wrongKind("serves", "pages-load", "a check", "a statement")},
+			{"envoy", wrongKind("serves", "envoy", "a component", "a statement")},
+			{"old-pages-load", wrongKind("serves", "old-pages-load", "a check", "a statement")},
+			{"old-envoy", wrongKind("serves", "old-envoy", "a component", "a statement")},
+			{"old-envoy-to-dispatch", wrongKind("serves", "old-envoy-to-dispatch", "an interface", "a statement")},
+		}},
+		{"a component's parent", func(v string) (string, node) { c := component("envoy-delivery"); c.Parent = v; return c.ID, c }, []value{
+			{"envoy", ""}, {"old-envoy", ""}, {"", ""},
+			{"no-such-component", noNode("parent", "no-such-component")}, {" ", noID("parent", " ")},
+			{"envoy-to-dispatch", wrongKind("parent", "envoy-to-dispatch", "an interface", "a component")},
+			{"pages", wrongKind("parent", "pages", "a statement", "a component")},
+			{"old-envoy-to-dispatch", wrongKind("parent", "old-envoy-to-dispatch", "an interface", "a component")},
+			{"old-pages", wrongKind("parent", "old-pages", "a statement", "a component")},
+			{"old-work-unit", wrongKind("parent", "old-work-unit", "a term", "a component")},
+		}},
+		{"a component that an interface joins", func(v string) (string, node) {
+			c := component("envoy-to-legion")
+			c.Interface, c.Joins = true, []string{"envoy", v}
+			return c.ID, c
+		}, []value{
+			{"dispatch", ""}, {"old-envoy", ""},
+			{"legion", noNode("joins", "legion")}, {"Legion", noID("joins", "Legion")},
+			{"envoy-to-dispatch", wrongKind("joins", "envoy-to-dispatch", "an interface", "a component")},
+			{"pages", wrongKind("joins", "pages", "a statement", "a component")},
+			{"old-envoy-to-dispatch", wrongKind("joins", "old-envoy-to-dispatch", "an interface", "a component")},
+			{"old-pages-load", wrongKind("joins", "old-pages-load", "a check", "a component")},
+		}},
+		{"the id of a term", func(v string) (string, node) {
+			return v, Term{ID: v, Name: "work item", Definition: "A work item is one unit of work."}
+		}, []value{{"work-item", ""}, {"Work-Item", `bad-approved-document: id "Work-Item" is no id`}}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			for _, v := range row.values {
+				id, n := row.node(v.v)
+				nodes := append(others(t), approvedNode(t, id, n, false))
+				err := approvedFault(nodes, nil)
+				want := ""
+				if v.want != "" {
+					want = fmt.Sprintf("specgraph: approved node %s version 1: %s (line 1 of its document)", quoted(id), v.want)
+				}
+				if got := fmt.Sprint(err); err == nil && want != "" || err != nil && got != want {
+					t.Errorf("%q: the approved spec gives %v; want %q", v.v, err, want)
+				}
+				a := Approved{Nodes: map[string]ApprovedNode{}}
+				for _, n := range nodes {
+					a.Nodes[n.ID] = n
+				}
+				current, problems := a.Current()
+				held := idsOf(current)[id]
+				switch {
+				case v.want == "" && (len(problems) != 0 || !held):
+					t.Errorf("control %q: Current holds the node %t, problems %v; want it held and no problem", v.v, held, problems)
+				case v.want != "" && (held || len(problems) != 1 || problems[0].Detail != v.want || problems[0].Node != id):
+					t.Errorf("%q: Current holds the node %t, problems %v; want it left out and the one problem %q", v.v, held, problems, v.want)
+				}
+			}
+		})
+	}
+}
+
+// approvedFault judges by the kind of the nodes that it names only the current text of each node
+// that the approved spec keeps, the text that Current, the derivation and Validate read, and by the
+// kind of the newest text of each node that it names, the kind that Current gives that node. R15:
+// "An interface is a component marked as an interface", so a component of one version can be an
+// interface of the next under the same id, and an older text, or the text of a removed node, that
+// named it as a parent then names an interface now. The derivation reads none of the relations of
+// such a text, so it is judged only by whether each of them names a node of the approved spec:
+// Dispatch keeps each text that the approved spec held (R2), so a node that a text once named is in
+// the approved spec still.
+// Each row is an approved spec of pages, a statement, and dispatch and envoy, two components, with
+// the row's nodes, each version approved a day after the one before: approvedFault and ReadApproved
+// read the controls, and Current holds each node of them that the approved spec keeps, with no
+// problem; each other row is refused with its line, by approvedFault and ReadApproved alike.
+func TestOnlyTheCurrentTextOfANodeIsJudgedByTheKindOfTheNodesThatItNames(t *testing.T) {
+	t.Parallel()
+	statement := func(parent string) Statement {
+		return Statement{ID: "a-page-shows-it", Text: "The pages show each order.", Kind: KindBehavior, Parent: parent}
+	}
+	component := func(id, parent string, joins ...string) Component {
+		return Component{ID: id, Name: "Envoy", Purpose: "It delivers each stored message.", Parent: parent, Interface: len(joins) > 0, Joins: joins}
+	}
+	// versions is the approved node of the texts of one node, oldest first.
+	versions := func(t *testing.T, texts ...interface{ Print() (string, error) }) ApprovedNode {
+		t.Helper()
+		n := ApprovedNode{Removed: false, PartlyChecked: false}
+		for i, text := range texts {
+			block, err := text.Print()
+			if err != nil {
+				t.Fatal(err)
+			}
+			n.ID = nodesOf(mustParse(t, block))[0].id
+			n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: time.Date(2026, 11, 10+i, 0, 0, 0, 0, time.UTC), Document: block})
+		}
+		return n
+	}
+	removed := func(n ApprovedNode) ApprovedNode {
+		n.Removed = true
+		return n
+	}
+	interfaceOfTheNewestText := func(t *testing.T) ApprovedNode {
+		return versions(t, component("envoy-to-dispatch", ""), component("envoy-to-dispatch", "", "dispatch", "envoy"))
+	}
+	for _, row := range []struct {
+		name  string
+		nodes func(t *testing.T) []ApprovedNode
+		want  string // the refusal; "" for a control
+	}{
+		{"control: each version names pages", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{versions(t, statement("pages"), statement("pages"))}
+		}, ""},
+		{"version 1 names no node, and version 2 names pages", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{versions(t, statement("no-such-statement"), statement("pages"))}
+		}, `specgraph: approved node "a-page-shows-it" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
+		{"control: the current text of a component is under a component that no version marks as an interface", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{versions(t, component("envoy-delivery", "envoy"))}
+		}, ""},
+		{"the current text of a component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"))}
+		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-document: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its document)`},
+		{"control: version 1 of a component is under a component that the newest text of that one marks as an interface, and version 2 under envoy", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"), component("envoy-delivery", "envoy"))}
+		}, ""},
+		{"version 2 of a component, its current text, is under a component that its newest text marks as an interface, and version 1 under envoy", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy"), component("envoy-delivery", "envoy-to-dispatch"))}
+		}, `specgraph: approved node "envoy-delivery" version 2: bad-approved-document: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its document)`},
+		{"control: a removed component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), removed(versions(t, component("envoy-delivery", "envoy-to-dispatch")))}
+		}, ""},
+		{"a removed component is under no node", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), removed(versions(t, component("envoy-delivery", "no-such-component")))}
+		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-document: parent "no-such-component" names no node of the approved spec (line 1 of its document)`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			nodes := append([]ApprovedNode{versions(t, Statement{ID: "pages", Text: "The pages show each order.", Kind: KindBehavior}),
+				versions(t, component("dispatch", "")), versions(t, component("envoy", ""))}, row.nodes(t)...)
+			if err := approvedFault(nodes, nil); err == nil && row.want != "" || err != nil && err.Error() != row.want {
+				t.Errorf("approvedFault gives %v; want %q", err, row.want)
+			}
+			file, err := json.Marshal(struct {
+				Nodes []ApprovedNode `json:"nodes"`
+			}{nodes})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := ReadApproved(bytes.NewReader(file))
+			if err == nil && row.want != "" || err != nil && err.Error() != row.want {
+				t.Errorf("ReadApproved gives %v; want %q", err, row.want)
+			}
+			if row.want != "" || err != nil {
+				return
+			}
+			current, problems := a.Current()
+			held := idsOf(current)
+			for _, n := range nodes {
+				if !n.Removed && !held[n.ID] || n.Removed && held[n.ID] {
+					t.Errorf("Current holds %s %t; want %t", n.ID, held[n.ID], !n.Removed)
+				}
+			}
+			if len(problems) != 0 {
+				t.Errorf("Current gives the problems %+v; want none", problems)
+			}
+		})
+	}
+}
+
+// mustParse is the tree of the one file text, and fails the test when Parse finds a problem.
+func mustParse(t *testing.T, text string) Tree {
+	t.Helper()
+	tree, problems := Parse(map[string][]byte{"x.yaml": []byte(text)})
+	if len(problems) != 0 {
+		t.Fatalf("Parse: %+v", problems)
+	}
+	return tree
+}
+
+// idsOf is the set of the ids of the nodes of tree.
+func idsOf(tree Tree) map[string]bool {
+	ids := map[string]bool{}
+	for _, n := range nodesOf(tree) {
+		ids[n.id] = true
+	}
+	return ids
 }
 
 // ReadApproved names a value of another type than approved.json's form needs by the form and the
@@ -445,8 +749,10 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 	}
 }
 
-// An approved spec that a caller builds holds Removed as a value: false keeps the node current and
-// true leaves it out.
+// An approved spec that a caller builds holds Removed as a value: a node that leaves it false is
+// one that the approved spec keeps, and Current, Since and Compare read its current text; one that
+// sets it true has none. The reader of approved.json refuses a node that leaves removed out
+// (TestReadApprovedRefusesAMalformedFixture).
 func TestCurrentReadsRemovedAsTheCallerSetsIt(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
@@ -460,7 +766,7 @@ func TestCurrentReadsRemovedAsTheCallerSetsIt(t *testing.T) {
 		removed bool
 		current bool
 	}{
-		{"Removed false", false, true},
+		{"Removed left false", false, true},
 		{"Removed true", true, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -523,10 +829,11 @@ func TestATextThatComesBackIsItsNewestVersion(t *testing.T) {
 	}
 }
 
-// WriteApproved writes approved.json in the one form that ReadApproved reads (ApprovedFile): what it
+// WriteApproved writes approved.json in the one form that ReadApproved reads (approvedFile): what it
 // writes for each fixture reads back as the same approved spec, and it writes the nodes in the
-// order of their ids, so two writes give the same bytes. For an approved spec that ReadApproved
-// would refuse, it writes nothing and names the fault.
+// order of their ids, so two writes give the same bytes. It writes removed and partly_checked of a
+// node that leaves them false, which ReadApproved refuses a file to leave out. For an approved spec
+// that ReadApproved would refuse, it writes nothing and names the fault.
 func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
 	t.Parallel()
 	entries, err := os.ReadDir("testdata/compare")
@@ -572,6 +879,17 @@ func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a node that leaves removed and partly_checked false", func(t *testing.T) {
+		t.Parallel()
+		kept := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Document: document}}}}}
+		var written bytes.Buffer
+		if err := WriteApproved(&written, kept); err != nil || !strings.Contains(written.String(), `"removed":false,"partly_checked":false`) {
+			t.Fatalf("WriteApproved = %v, and wrote %q; want removed and partly_checked false", err, written.String())
+		}
+		if got, err := ReadApproved(&written); err != nil || !reflect.DeepEqual(got, kept) {
+			t.Errorf("ReadApproved(WriteApproved(a)) = %+v, %v; want a, %+v", got, err, kept)
+		}
+	})
 }
 
 // readApproved reads the approved fixture at path and fails the test when ReadApproved refuses it.
