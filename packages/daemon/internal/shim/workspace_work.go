@@ -41,6 +41,9 @@ func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, c
 		return "", false, nil, err
 	}
 	defer done()
+	// CONTROL COMMIT, never for merge: 121 s of the request's budget spent before the read's
+	// own commands run.
+	time.Sleep(121 * time.Second)
 	run := func(args ...string) (string, error) { return opened.run(nil, args...) }
 	return workspace.ReadWork(run, opened.jj, opened.dir)
 }
