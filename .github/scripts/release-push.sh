@@ -1047,12 +1047,19 @@ case "$command" in
     repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
     # shellcheck source=.github/scripts/gh-read.sh
     source "$(dirname -- "${BASH_SOURCE[0]}")/gh-read.sh"
-    is_draft=$(gh_wait_reset --stderr /dev/null gh release view "$tag" --repo "$repo" \
-      --json isDraft -q .isDraft) && viewed=0 || viewed=$?
+    # One GraphQL request, the lookup gh release view makes for a draft: GitHub's REST route for a
+    # tag serves a published release alone (docs.github.com, REST API, "Get a release by tag
+    # name"), and gh release view sends both requests at once, so gh-read.sh can read neither
+    # answer. This one answers a draft, a published release and none alike, with HTTP 200, so a
+    # release not made yet is no failure for gh-read.sh to take for a spent budget.
+    is_draft=$(gh_wait_reset --stderr /dev/null gh api graphql \
+      -f query='query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }' \
+      -f owner="${repo%%/*}" -f name="${repo#*/}" -f tag="$tag" \
+      --jq '.data.repository.release | if . == null then "none" else .isDraft end') && viewed=0 || viewed=$?
     # A spent budget the view could not wait for says nothing of the release, and the create
     # would meet the same budget: gh-read.sh has named it, and nothing is written.
     [ "$viewed" -ne 75 ] || exit 1
-    if [ "$viewed" -ne 0 ]; then
+    if [ "$viewed" -ne 0 ] || [ "$is_draft" = none ]; then
       # What the create publishes: the tag, the assets, the title, and the notes
       # where this lane wrote them itself. Where it passes --generate-notes,
       # GitHub composes that body server-side from the merged pull requests'
@@ -1098,7 +1105,7 @@ case "$command" in
         ;;
       *)
         printf -v shown '%q' "$is_draft"
-        echo "::error::gh release view $tag printed $shown for isDraft, not true or false"
+        echo "::error::GitHub's release lookup for $tag answered $shown for isDraft, not true or false"
         exit 1
         ;;
     esac

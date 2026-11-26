@@ -262,9 +262,10 @@ timed_waits() {
 }
 
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
-# whole argument list of every call it is given, one file per call, whether or not it stands in
-# for that call, so `timeout_calls` and `timeout_args` read the bound and the command that was
-# wrapped in every drive in this file.
+# whole argument list of every call it is given but gh-read.sh's own rate_limit read (the last
+# paragraph here), one file per call, whether or not it stands in for that call, so
+# `timeout_calls` and `timeout_args` read the bound and the command that was wrapped in every
+# drive in this file.
 #
 # Standing in is what is opt-in, and the reason is not the recording: a stand-in every case
 # used would still catch a dropped bound through `timeout_calls`. It is that a call it stands

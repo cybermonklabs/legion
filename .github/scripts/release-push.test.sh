@@ -50,9 +50,9 @@
 # released version wins, a released version that is not X.Y.Z is refused
 # rather than falling through, a package that released nothing takes its
 # newest tag, and a newest tag that is no release prints nothing.
-# The `release` cases run against a stub `gh` first on PATH, which answers `gh
-# release view` for a release that does not exist, is a draft or is published,
-# can fail an upload, an edit or a create, and logs every call it gets. The
+# The `release` cases run against a stub `gh` first on PATH, which answers the
+# GraphQL release lookup for a release that does not exist, is a draft or is
+# published, can fail an upload, an edit or a create, and logs every call it gets. The
 # `release-section` cases drive that stub too: it answers `gh release view
 # --json body` with the body each case leaves it and keeps what an edit's
 # --notes-file held, so each case reads the body release-section would write,
@@ -843,10 +843,11 @@ echo
 echo "Case 11: release creates a missing release, publishes a draft, and reuses a published one"
 # The stub gh, first on PATH. It logs each call to $GH_TEST_DIR/calls as one
 # line, each argument in brackets, so an argument the script splits or joins
-# shows up as a different log line. `gh release view <tag> ... --json isDraft
-# -q .isDraft` answers for $GH_TEST_RELEASE: none (exit 1, as gh does for a
-# missing release), draft or published (true or false), or odd (a value gh
-# never prints); `--json body -q .body` prints $GH_TEST_DIR/body.md, the
+# shows up as a different log line. The GraphQL release lookup (`gh api graphql
+# ... -f tag=<tag> --jq ...`) answers for $GH_TEST_RELEASE what its --jq prints:
+# none (GitHub answers a release that does not exist with null), draft or
+# published (true or false), or odd (a value the lookup never prints);
+# `gh release view --json body -q .body` prints $GH_TEST_DIR/body.md, the
 # release's body as the case left it, for the release-section cases below, and
 # `--json name,body` prints $GH_TEST_DIR/name.md and that same body, the draft
 # the lane reads back before it publishes it. An upload, edit or create fails
@@ -854,29 +855,44 @@ echo "Case 11: release creates a missing release, publishes a draft, and reuses 
 # edit's --notes-file names is copied to $GH_TEST_DIR/edited.md, the body that
 # edit would write. Any other call fails as unexpected, so a call the command
 # should not make shows up as an error. gh-read.sh's own read of the rate_limit
-# route, which it makes after a gh release command exits 1 (an answer it cannot
-# read), is answered apart: no budget spent, and no line in the log.
+# route, which it makes after a command whose answer it cannot read exits 1, is
+# answered apart, as its --jq filter reads a document with both budgets whole,
+# or the graphql budget spent where $GH_TEST_GRAPHQL_SPENT is set, and logged
+# to $GH_TEST_DIR/rate-calls.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
-[ "$1 $2" != "api rate_limit" ] || { echo 0; exit 0; }
+if [ "$1 $2" = "api rate_limit" ]; then
+  printf '%s\n' "$*" >> "$GH_TEST_DIR/rate-calls"
+  graphql=5000
+  [ -z "${GH_TEST_GRAPHQL_SPENT:-}" ] || graphql=0
+  jq -n --argjson graphql "$graphql" --argjson reset "$(($(date +%s) + 3600))" \
+    '{resources: {core: {remaining: 5000, reset: $reset}, graphql: {remaining: $graphql, reset: $reset}}}' |
+    jq -r "$4"
+  exit 0
+fi
 { printf '[%s]' "$@"; printf '\n'; } >> "$GH_TEST_DIR/calls"
 case "$1 $2" in
-  "release view")
-    if [[ " $* " == *" --json name,body "* ]]; then
-      cat "$GH_TEST_DIR/name.md" "$GH_TEST_DIR/body.md"
-    elif [[ " $* " == *" --json body -q .body "* ]]; then
-      cat "$GH_TEST_DIR/body.md"
-    elif [[ " $* " == *" --json isDraft -q .isDraft "* ]]; then
+  "api graphql")
+    if [[ " $* " == *" -f tag="* ]]; then
       case $GH_TEST_RELEASE in
-        none) echo "release not found" >&2; exit 1 ;;
+        none) echo none ;;
         draft) echo true ;;
         published) echo false ;;
         odd) echo null ;;
         *) echo "unknown GH_TEST_RELEASE $GH_TEST_RELEASE" >&2; exit 3 ;;
       esac
     else
-      echo "view without --json isDraft or --json body: $*" >&2
+      echo "a GraphQL call that is no release lookup: $*" >&2
+      exit 3
+    fi ;;
+  "release view")
+    if [[ " $* " == *" --json name,body "* ]]; then
+      cat "$GH_TEST_DIR/name.md" "$GH_TEST_DIR/body.md"
+    elif [[ " $* " == *" --json body -q .body "* ]]; then
+      cat "$GH_TEST_DIR/body.md"
+    else
+      echo "view without --json name,body or --json body: $*" >&2
       exit 3
     fi ;;
   "release upload" | "release edit" | "release create")
@@ -899,16 +915,21 @@ release_run() {
   local state=$1 fail=$2
   shift 2
   : > "$work/calls"
+  : > "$work/rate-calls"
   set +e
   out=$(cd "$work" && GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" GH_TEST_RELEASE="$state" \
-    GH_TEST_FAIL="$fail" LEAK_REFUSE="$leak_refuse" PATH="$work/bin:$PATH" "$release_push" release "$@" 2>&1)
+    GH_TEST_FAIL="$fail" GH_TEST_GRAPHQL_SPENT="${graphql_spent:-}" LEAK_REFUSE="$leak_refuse" \
+    PATH="$work/bin:$PATH" "$release_push" release "$@" 2>&1)
   rc=$?
   set -e
   calls=$(<"$work/calls")
 }
 # argv <arg>...: one call as the stub logs it.
 argv() { printf '[%s]' "$@"; }
-view=$(argv release view pkg-v1.0.1 --repo example/repo --json isDraft -q .isDraft)
+# The GraphQL release lookup release-push.sh makes, as the stub logs it.
+lookup_query='query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }'
+lookup_jq='.data.repository.release | if . == null then "none" else .isDraft end'
+view=$(argv api graphql -f "query=$lookup_query" -f owner=example -f name=repo -f tag=pkg-v1.0.1 --jq "$lookup_jq")
 upload=$(argv release upload pkg-v1.0.1 a.tgz b.tgz --repo example/repo --clobber)
 publish=$(argv release edit pkg-v1.0.1 --repo example/repo --draft=false)
 # The assets these cases name, as the files they are: the leak guard lists an
@@ -926,6 +947,15 @@ release_run none "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none: exits 0" "$(is "$rc" 0)"
 check "none: creates it from the pushed tag, with generated notes" "$(is "$calls" "$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --generate-notes --verify-tag)")"
 check "none: the title reaches gh as one argument" "$(contains "$calls" '\[--title\]\[Pkg v1\.0\.1\]\[')"
+# A release not made yet, while the graphql budget is spent (another job spent it): the lookup
+# answers none at once, and gh-read.sh, which reads no rate_limit route for an answer it has, waits
+# for nothing. With `gh release view` here, whose two requests gh-read.sh cannot read, the view's
+# exit 1 met the spent graphql budget and the release waited for its reset, or failed.
+graphql_spent=yes
+release_run none "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
+graphql_spent=''
+check "none, the graphql budget spent: created after the one lookup, with no rate_limit read" \
+  "$(is "$rc|$calls|$(wc -l < "$work/rate-calls" | tr -d ' ')" "0|$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --generate-notes --verify-tag)|0")"
 release_run none "" --notes "Fixed notes, in a few words." pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none, --notes: creates it with those notes" "$(is "$calls" "$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --notes "Fixed notes, in a few words." --verify-tag)")"
 check "none, --notes: the notes reach gh as one argument" "$(contains "$calls" '\[--notes\]\[Fixed notes, in a few words\.\]\[')"
@@ -956,7 +986,7 @@ check "published, --upload-to-published, upload fails: exits 1" "$(is "$rc" 1)"
 check "published, --upload-to-published, upload fails: says so" "$(contains "$out" "^::error::Uploading this run's assets to the published release pkg-v1\.0\.1 failed\.$")"
 release_run odd "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "a view answer that is neither true nor false: exits 1, uploading and creating nothing" "$(is "$rc|$calls" "1|$view")"
-check "a view answer that is neither true nor false: the error names it" "$(contains "$out" '^::error::gh release view pkg-v1\.0\.1 printed null for isDraft, not true or false$')"
+check "a view answer that is neither true nor false: the error names it" "$(contains "$out" "^::error::GitHub's release lookup for pkg-v1\.0\.1 answered null for isDraft, not true or false$")"
 release_run none "" pkg-v1.0.1 "Pkg v1.0.1"
 check "no asset: exits 2, calling no gh" "$(is "$rc|$calls" "2|")"
 release_run none "" --draft pkg-v1.0.1 "Pkg v1.0.1" a.tgz

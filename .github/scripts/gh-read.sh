@@ -42,22 +42,28 @@
 # Any other answer, a 504 whatever its message says, is the command's own failure.
 #
 # Where the answer comes from. While the command runs, the first gh on PATH is the helper's own, a
-# script in its work directory that runs the real gh (_gh_read_gh). So a command that runs gh by
-# name through any wrapper (bash -c, timeout, or retry_fetch in the form `gh_wait_reset retry_fetch
-# "<what>" <bound> -- gh api ...`) hands the helper the answer of the last gh it ran. gh prints no
-# header of an answer but under GH_DEBUG=api, which logs each request and its answer, body and
-# all, from a `* Request at` line to a `* Request took` line, so the helper's gh runs `gh api`
-# under GH_DEBUG=api, keeps the answer's status and headers, and hands on gh's stderr without the
-# log. Only a `gh api` without --paginate: one request, whose log ends at the last `took` line,
-# which a line of the body cannot move. gh release view, edit and upload send a GraphQL lookup and
-# a REST request together, and a paginated read sends one per page, so a log of theirs holds more
-# than one answer's body (a draft release's name and body, ahead of release-push.sh's leak guard,
-# or a raw page) and no one answer's headers that could be picked out of it; a redirect gh follows
-# puts the next request's log after the redirect's body, likewise. Those, gh's other commands, a
-# gh api whose log holds no answer (a failed connection, or a stand-in gh that logs nothing), and
-# a command that runs gh by a path leave no answer to read: when such a command fails with 1, gh's
-# status for an answer it refuses, the helper asks GET /rate_limit, and a core or graphql budget
-# at 0 there is the hourly budget's refusal. Their secondary limit is the command's own failure.
+# script in its work directory that runs the real gh (_gh_read_gh), with that directory taken off
+# PATH again first: a gh that checks it is the first gh on PATH, as a Legion pane's `legion gh`
+# does, still finds itself. So a command that runs gh by name through any wrapper (bash -c, or a
+# shell function that runs it under timeout) hands the helper the answer of the last gh it ran. gh
+# prints no header of an answer but under GH_DEBUG=api, which logs each request and its answer,
+# body and all, from a `* Request at` line to a `* Request took` line, so the helper's gh runs
+# `gh api` under GH_DEBUG=api, keeps the answer's status and headers, and hands on gh's stderr
+# without the log. Only a `gh api` without --paginate: one request, whose log ends at the last
+# `took` line, which a line of the body cannot move. gh release view, edit and upload send a
+# GraphQL lookup and a REST request together, and a paginated read sends one per page, so a log of
+# theirs holds more than one answer's body (a draft release's name and body, ahead of
+# release-push.sh's leak guard, or a raw page) and no one answer's headers that could be picked out
+# of it; a redirect gh follows puts the next request's log after the redirect's body, likewise.
+# Those, gh's other commands, and a gh api whose log holds no answer (a failed connection, or a
+# stand-in gh that logs nothing) leave an answer unread. When such a command fails with 1, gh's
+# status for an answer it refuses, the helper asks GET /rate_limit about the budget that command
+# spends: graphql for `gh api graphql`, core for any other `gh api` route, and either for gh's
+# other commands, which may send both. That budget at 0 is the hourly budget's refusal; their
+# secondary limit is the command's own failure. One false wait remains: such a command that fails
+# for its own reason (a 404, say) while its budget is at 0, as when its own call spent the last
+# unit, or, for gh's other commands, while the other budget is. A command that ran no gh by name
+# (git, say) spends no budget, and its failure is its own.
 #
 # Where the limit comes from. GitHub enforces a job's timeout-minutes from the job's start, and
 # a step's from the step's, and the runner exposes neither the limit nor the start to a step.
@@ -222,9 +228,9 @@ _gh_read_shim() {
 }
 
 # _gh_read_run <dir> <command>...: one run, its stdout kept in <dir>/out and its stderr in
-# <dir>/err, with <dir>/bin first on PATH, so the answer of the last gh the command ran by name
-# lands in <dir>/answer (_gh_read_gh). The answer is emptied first: a run whose command ran no gh
-# that way leaves it empty, and an empty answer is one the helper has not read.
+# <dir>/err, with <dir>/bin first on PATH, so the last gh the command ran by name writes
+# <dir>/answer (_gh_read_gh). The answer is emptied first, so a run whose command ran no gh that
+# way leaves it empty.
 _gh_read_run() {
   local dir=$1 status=0
   shift
@@ -238,19 +244,11 @@ _gh_read_run() {
 }
 
 # _gh_read_gh <answer file> <gh argument>...: the real gh ($GH_READ_GH) with those arguments, as
-# the gh <dir>/bin/gh runs. `gh api` without --paginate, one request, runs under GH_DEBUG=api.
-# Its log runs from the first `* Request at` line to the last `* Request took` line, and is left
-# out of gh's stderr whole: the answer's body is printed inside it as it came, so a raw body's
-# line can read like any of gh's own markers, and only the last `took` is surely gh's (the body
-# precedes it). The answer file gets the status off the first `< HTTP/` line, the URL off the
-# `* Request to` line before it, then the headers after the status, one `Name: value` a line, to
-# the first line that is no header; the body comes after that line, so nothing in it is read as a
-# header. A 3xx is a redirect gh follows, and the next request's log comes after the redirect's
-# body, so no line of it is surely gh's: the answer file gets `unread`. A request with no answer
-# (a failed connection) writes `none`. Lines before the request and after its end are gh's own and
-# go to stderr as they came (gh closes a request on a failed connection too, then prints its
-# error), and a request gh never closed (gh killed mid-request) ends the log with nothing of gh's
-# own after it.
+# the gh <dir>/bin/gh runs, with <dir>/bin taken off the front of PATH (the header says why). The
+# answer file gets an answer (_gh_read_answer), or `unread <budget>...`, the budgets the command
+# can spend (_gh_read_budgets), where no answer can be read. `gh api` without --paginate, one
+# request, runs under GH_DEBUG=api; every other gh command, a paginated `gh api` among them
+# (several requests, each page's body inside the log), is unread and runs as it is, by exec.
 #
 # gh runs as a child here, so a TERM, INT or HUP sent to this process alone (`timeout
 # --foreground`) is passed on to it, and the log, in the helper's work directory, is removed once
@@ -259,12 +257,12 @@ _gh_read_run() {
 # would start with INT and QUIT ignored and stdin at /dev/null, and gh keeps an ignored INT until
 # it sets a handler, while a subshell's exec starts it with the signals this process started with
 # (measured with bash 5.2.21; gh-read.test.sh holds it). The subshell hands gh this process's
-# stdin (`gh api --input -` reads it), or none where the caller closed it. Every other gh command, a
-# paginated `gh api` among them (several requests, each page's body inside the log), writes
-# `unread` and runs as it is, by exec.
+# stdin (`gh api --input -` reads it), or none where the caller closed it.
 _gh_read_gh() {
-  local answer=$1 status=0 arg traced='' trace pid='' pending='' stdin=''
+  local answer=$1 status=0 arg traced='' trace pid='' pending='' stdin='' budgets
   shift
+  PATH=${PATH#"${answer%/answer}/bin:"}
+  budgets=$(_gh_read_budgets "$@")
   if [ "${1:-}" = api ]; then
     traced=yes
     for arg in "$@"; do
@@ -272,7 +270,7 @@ _gh_read_gh() {
     done
   fi
   if [ -z "$traced" ] || ! trace=$(mktemp "$answer.trace.XXXXXX"); then
-    echo unread > "$answer"
+    echo "unread $budgets" > "$answer"
     exec "$GH_READ_GH" "$@"
   fi
   { exec {stdin}<&0; } 2> /dev/null || stdin=''
@@ -298,7 +296,54 @@ _gh_read_gh() {
     fi
   done
   trap - TERM INT HUP
-  awk -v answer="$answer" '
+  _gh_read_answer "$trace" "$answer" "$budgets" >&2
+  rm -f "$trace"
+  return "$status"
+}
+
+# _gh_read_budgets <gh argument>...: the budgets a gh command can spend, as GET /rate_limit names
+# them: `graphql` for `gh api graphql`, `core` for any other `gh api` route (its first argument
+# that is no flag and no flag's value), and `core graphql` for gh's other commands.
+_gh_read_budgets() {
+  local arg skip='' route=''
+  if [ "${1:-}" != api ]; then
+    echo core graphql
+    return
+  fi
+  shift
+  for arg in "$@"; do
+    if [ -n "$skip" ]; then
+      skip=''
+      continue
+    fi
+    case $arg in
+      -X | --method | -H | --header | -f | --raw-field | -F | --field | --input | -q | --jq | \
+        -t | --template | -p | --preview | --hostname | --cache) skip=yes ;;
+      -*) ;;
+      *)
+        route=$arg
+        break
+        ;;
+    esac
+  done
+  if [ "$route" = graphql ]; then echo graphql; else echo core; fi
+}
+
+# _gh_read_answer <log> <answer file> <budgets>: prints the lines of gh's own in a GH_DEBUG=api log
+# and writes its answer to the answer file. The log of one request runs from the first `* Request
+# at` line to the last `* Request took` line, and is left out whole: the answer's body is printed
+# inside it as it came, so a raw body's line can read like any of gh's own markers, and only the
+# last `took` is surely gh's (the body precedes it). The answer file gets the status off the first
+# `< HTTP/` line, the URL off the `* Request to` line before it, then the headers after the
+# status, one `Name: value` a line, to the first line that is no header; the body comes after that
+# line, so nothing in it is read as a header. A 3xx is a redirect gh follows, and the next
+# request's log comes after the redirect's body, so no line of it is surely gh's; a log with no
+# answer (a failed connection) has none to read: both write `unread <budgets>`. Lines before the
+# request and after its end are gh's own and are printed as they came (gh closes a request on a
+# failed connection too, then prints its error), and a request gh never closed (gh killed
+# mid-request) ends the log with nothing of gh's own after it.
+_gh_read_answer() {
+  awk -v answer="$2" -v budgets="$3" '
     NR == FNR {
       if (!first && /^\* Request at /) first = FNR
       if (/^\* Request took /) last = FNR
@@ -310,12 +355,10 @@ _gh_read_gh() {
     code && !body && /^< / { headers = headers substr($0, 3) "\n"; next }
     code { body = 1 }
     END {
-      if (code ~ /^3/) print "unread" > answer
-      else printf "%s\n%s\n%s", (code == "" ? "none" : code), url, headers > answer
+      if (code == "" || code ~ /^3/) print "unread " budgets > answer
+      else printf "%s\n%s\n%s", code, url, headers > answer
     }
-  ' "$trace" "$trace" >&2
-  rm -f "$trace"
-  return "$status"
+  ' "$1" "$1"
 }
 
 # _gh_read_refusal <status> <dir>: what a failed run's answer (<dir>/answer) says, by its status
@@ -323,13 +366,12 @@ _gh_read_gh() {
 # GraphQL (the path /graphql, or GitHub Enterprise Server's /api/graphql; a REST route such as
 # repos/o/graphql only ends in it), with a retry-after; `budget` for one with
 # x-ratelimit-remaining: 0; nothing for any other answer (a REST 200 that spent the last unit
-# before gh failed on its own, say). With no answer read (`unread`; `none`, a request gh logged no
-# answer for, as a failed connection or a stand-in gh leaves; or empty, no gh run by name),
-# GitHub's rate_limit route decides: `budget <reset>` when it shows the core or the graphql budget
-# at 0, nothing when it shows neither or does not answer. It is asked only when the command
-# exited 1, which is how gh exits on an answer it refuses: a command its caller's timeout ended
-# (124) or a signal killed was answered nothing, and the read would add its 30 s bound to every
-# such attempt of an outage that holds connections open.
+# before gh failed on its own, say), or where no gh ran by name (an empty answer). An unread
+# answer is decided by GitHub's rate_limit route: `budget <reset>` when it shows a budget the
+# command spends at 0, nothing when it shows none or does not answer. It is asked only when the
+# command exited 1, which is how gh exits on an answer it refuses: a command its caller's timeout
+# ended (124) or a signal killed was answered nothing, and the read would add its 30 s bound to
+# every such attempt of an outage that holds connections open.
 _gh_read_refusal() {
   local code url path retry reset
   [ "$1" -ne 0 ] || return 0
@@ -339,8 +381,10 @@ _gh_read_refusal() {
   path=/${path#*/}
   path=${path%%\?*}
   case $code in
-    '' | unread | none)
-      if [ "$1" -eq 1 ] && reset=$(_gh_read_reset 2> /dev/null) && [ "$reset" -gt 0 ]; then
+    unread\ *)
+      # The budgets are words, unquoted on purpose.
+      # shellcheck disable=SC2086
+      if [ "$1" -eq 1 ] && reset=$(_gh_read_reset ${code#unread } 2> /dev/null) && [ "$reset" -gt 0 ]; then
         echo "budget $reset"
       fi
       return 0
@@ -364,13 +408,17 @@ _gh_read_header() {
   echo "${value%$'\r'}"
 }
 
-# _gh_read_reset: prints the latest reset (epoch seconds) of the core and graphql budgets that
-# GET /rate_limit reports at 0, or 0 when neither is. Fails with gh's words on stderr when the
-# route does not answer, bounded like every read the ladder makes.
+# _gh_read_reset [<budget>...]: prints the latest reset (epoch seconds) of the named budgets (core
+# and graphql when none is named) that GET /rate_limit reports at 0, or 0 when none is. Fails with
+# gh's words on stderr when the route does not answer, bounded like every read the ladder makes.
 _gh_read_reset() {
-  local reset
+  local reset budget picks=''
+  [ "$#" -gt 0 ] || set -- core graphql
+  for budget in "$@"; do
+    picks+="${picks:+, }.resources.$budget"
+  done
   reset=$(timeout 30 gh api rate_limit \
-    --jq '[.resources.core, .resources.graphql | select(. != null and .remaining == 0) | .reset] | max // 0') ||
+    --jq "[$picks | select(. != null and .remaining == 0) | .reset] | max // 0") ||
     return 1
   if ! [[ $reset =~ ^[0-9]+$ ]]; then
     echo "it answered '$reset', not an epoch" >&2
