@@ -46,7 +46,7 @@ func TestAProberNeedsNoSupervision(t *testing.T) {
 }
 
 // Every refusal of what the probe itself reads stands for the prober: the namespace, the
-// digest-pinned image, the pool the runtime places every pod on, and each pod's reservation.
+// digest-pinned image, a selector of the retired Legion pool's label, and each pod's reservation.
 func TestAProberRefusesWhatTheFullRuntimeRefusesOfTheProbe(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -56,7 +56,7 @@ func TestAProberRefusesWhatTheFullRuntimeRefusesOfTheProbe(t *testing.T) {
 	}{
 		{"no namespace", func(o *Options) { o.Namespace = "" }, "no namespace"},
 		{"an image by tag", func(o *Options) { o.Image = "ghcr.io/example/legion-worker:latest" }, "is not pinned by digest"},
-		{"the pool selector", func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "other"} }, "is the runtime's"},
+		{"the pool selector", func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "other"} }, "legion.dev/pool"},
 		{"a missing reservation", func(o *Options) { o.Resources.Issue = corev1.ResourceRequirements{} }, "the issue pod reserves no cpu"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

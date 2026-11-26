@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -270,8 +271,8 @@ func TestEnsureRepositoryCacheCreatesSuspendedWritesTheSecretThenSetsRunning(t *
 			t.Errorf("the cache volume is %+v, want the claim %s", v, cacheVolume+"-"+name)
 		}
 	}
-	if spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor || spec.NodeSelector[poolKey] != poolValue || len(spec.Tolerations) == 0 || spec.Tolerations[0].Key != poolKey {
-		t.Errorf("the cache pod is placed %v %v %v, want gVisor on the Legion pool", spec.RuntimeClassName, spec.NodeSelector, spec.Tolerations)
+	if spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor || !maps.Equal(spec.NodeSelector, g.r.scheduling.NodeSelector) || !slices.Equal(spec.Tolerations, g.r.scheduling.Tolerations) {
+		t.Errorf("the cache pod is placed %v %v %v, want gVisor under the operator's scheduling alone %v %v", spec.RuntimeClassName, spec.NodeSelector, spec.Tolerations, g.r.scheduling.NodeSelector, g.r.scheduling.Tolerations)
 	}
 	if spec.RestartPolicy != corev1.RestartPolicyAlways {
 		t.Errorf("the cache pod restarts %s, want Always", spec.RestartPolicy)
@@ -570,7 +571,7 @@ func TestRefreshCacheTokensRewritesALostOrForeignSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
-	g.eventually("the cache pod", func() bool { return g.r.storedPod(name) != nil })
+	cacheStored(g, cacheRepo)
 	s := g.sandbox(name)
 	secretsGVR := corev1.SchemeGroupVersion.WithResource("secrets")
 
@@ -608,6 +609,22 @@ func TestRefreshCacheTokensRewritesALostOrForeignSecret(t *testing.T) {
 	}
 }
 
+// cacheStored waits until the runtime's stores hold the cache Sandbox of repo and its pod. A
+// Sandbox and its pod arrive on informers of their own, and nothing orders the Sandbox store after
+// the pod store, so a test that waits for the pod alone can read a Sandbox store that does not hold
+// the cache yet. RepositoryCache read such a store and found no cache on a loaded runner (#5643), and
+// the sweep (sweepCaches), which judges only the cache Sandboxes the store holds, passed over the
+// cache, wrote nothing and returned nil, so the mark a test then waited for never came (CI run
+// 45783744798, TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes).
+func cacheStored(g *rig, repo ghrepo.Repository) {
+	g.t.Helper()
+	name := CacheSandboxName(testProject, repo)
+	g.eventually("the cache "+name+"'s Sandbox and its pod in the runtime's stores", func() bool {
+		s, _ := g.r.storedSandbox(name)
+		return s != nil && g.r.storedPod(name) != nil
+	})
+}
+
 // A cache is ready, at its Service's http://<sandbox>.<namespace>.svc:8418, when the pod its Sandbox
 // owns has passed its readiness probe, and not before, whatever address the pod holds; a long
 // repository is found by the name it derives, with its whole name; and a cache name another
@@ -622,15 +639,10 @@ func TestRepositoryCacheReadsReadiness(t *testing.T) {
 		}
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
-	// RepositoryCache reads the Sandbox store, which nothing orders after the pod store: a Sandbox
-	// and its pod arrive on informers of their own, and a read made once the pod store held the pod
-	// found no Sandbox on a loaded runner. So the test waits for both caches' Sandboxes and pods.
+	// RepositoryCache reads the Sandbox store, so the test waits for both caches' Sandboxes and
+	// pods in the runtime's stores (cacheStored).
 	for _, repo := range []ghrepo.Repository{cacheRepo, longRepo} {
-		cache := CacheSandboxName(testProject, repo)
-		g.eventually("the cache "+cache+"'s Sandbox and its pod in the runtime's stores", func() bool {
-			s, _ := g.r.storedSandbox(cache)
-			return s != nil && g.r.storedPod(cache) != nil
-		})
+		cacheStored(g, repo)
 	}
 	status, found := g.r.RepositoryCache(cacheRepo)
 	if !found || status.Ready || status.Address != "" || status.Sandbox != name || status.Repo != cacheRepo {
@@ -938,7 +950,7 @@ func TestReconcileOrphansKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testin
 	if writes := g.sandboxWrites(); !slices.Contains(writes, "create sandboxes "+name) {
 		t.Fatalf("the sweep wrote %q, want the cache of the repository a record names made", writes)
 	}
-	g.eventually("the cache pod of "+recorded.String(), func() bool { return g.r.storedPod(name) != nil })
+	cacheStored(g, recorded)
 
 	sweep("of the cache of a repository a live record still names")
 	if writes := g.sandboxWrites(); len(writes) != 0 {
@@ -986,8 +998,7 @@ func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
 		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
 			t.Fatalf("make the cache of %s: %v", repo, err)
 		}
-		name := CacheSandboxName(testProject, repo)
-		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
+		cacheStored(g, repo)
 	}
 	kept, unused := CacheSandboxName(testProject, servingSmoke), CacheSandboxName(testProject, recordedSmoke)
 
@@ -1289,6 +1300,147 @@ func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *t
 	})
 }
 
+// A cache whose Sandbox's pod template places its pod other than cachePodTemplate places it now —
+// on the retired Legion pool, as every cache an earlier release made is, under another
+// RuntimeClass, or under the operator's earlier node selector or tolerations — is made again, as
+// one whose template reserves other than the configuration is (templateMoved beside
+// templateResized): the Sandbox controller makes every later pod of the cache from that template,
+// after a drain deletes the pod, say, so a cache left as it is would keep the old placement
+// through every pod it ever runs. The template the replacement writes places the pod as the
+// runtime does now, and the Sandbox and the volume holding the clone are kept. A cache whose
+// template already places it so is left alone, and one whose pod is still sending or queueing a
+// tar waits for its streams to end.
+func TestEnsureRepositoryCacheReplacesACacheWhoseTemplateIsPlacedElsewhere(t *testing.T) {
+	t.Parallel()
+	name := CacheSandboxName(testProject, cacheRepo)
+	// poolLabel is the retired Legion pool's node label and the key of its taint, written out so
+	// the test holds this key and not whatever the runtime's constant names.
+	const poolLabel = "legion.dev/pool"
+	// placement is where a cache's pod template puts its pod. Each one the test builds is fresh,
+	// sharing no map or slice with the rig's configuration or with another case.
+	type placement struct {
+		runtimeClass string
+		selector     map[string]string
+		tolerations  []corev1.Toleration
+	}
+	// dedicated is the toleration of the operator's dedicated taint.
+	dedicated := func() corev1.Toleration {
+		return corev1.Toleration{Key: "example.com/dedicated", Operator: corev1.TolerationOpEqual, Value: "builds", Effect: corev1.TaintEffectNoSchedule}
+	}
+	// current is where cachePodTemplate places a cache's pod under the rig's scheduling: gVisor,
+	// on the amd64 nodes, tolerating the dedicated taint.
+	current := func() placement {
+		return placement{gvisor, map[string]string{"kubernetes.io/arch": "amd64"}, []corev1.Toleration{dedicated()}}
+	}
+	// cacheOn is a rig whose operator's scheduling selects the amd64 nodes and tolerates the
+	// dedicated taint, holding a Running cache Sandbox whose pod template is placed at template,
+	// and a live pod of it on the runtime's image and account, whose /healthz counts serving
+	// streams when the case gives it any.
+	cacheOn := func(t *testing.T, template placement, serving int) (*rig, *logBuffer) {
+		t.Helper()
+		s, err := decodeSandbox(cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := &s.Spec.PodTemplate.Spec
+		spec.RuntimeClassName, spec.NodeSelector, spec.Tolerations = &template.runtimeClass, template.selector, template.tolerations
+		cache, err := encodeSandbox(*s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live := cachePod(cacheRepo, "uid-pod-old", "uid-cache", testImage, corev1.PodRunning)
+		var routes map[string]string
+		if serving > 0 {
+			served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set(workspace.CacheRepositoryHeader, cacheRepo.String())
+				n := serving
+				_ = json.NewEncoder(w).Encode(repocache.Health{Ready: true, Repo: cacheRepo.String(), Streams: &n})
+			}))
+			t.Cleanup(served.Close)
+			live.Status.PodIP = "10.0.0.5"
+			routes = map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}
+		}
+		logs := &logBuffer{}
+		g := newRig(t, []k8sruntime.Object{cache, live}, withLog(logs), withOptions(func(o *Options) {
+			now := current()
+			o.Scheduling.NodeSelector, o.Scheduling.Tolerations = now.selector, now.tolerations
+		}))
+		if routes != nil {
+			g.r.cacheDial = (&podNetwork{routes: routes}).dial
+		}
+		g.clearActions()
+		return g, logs
+	}
+	// retired is the placement an earlier release wrote: the operator's scheduling with the Legion
+	// pool's label selected and its taint tolerated.
+	retired := func() placement {
+		p := current()
+		p.selector[poolLabel] = "legion"
+		p.tolerations = append([]corev1.Toleration{{Key: poolLabel, Operator: corev1.TolerationOpEqual, Value: "legion", Effect: corev1.TaintEffectNoSchedule}}, p.tolerations...)
+		return p
+	}
+
+	for what, template := range map[string]placement{
+		"a template on the retired Legion pool":          retired(),
+		"a template under another RuntimeClass":          {microVMRuntimeClass, current().selector, current().tolerations},
+		"a template of an earlier operator's selector":   {gvisor, map[string]string{"kubernetes.io/arch": "arm64"}, current().tolerations},
+		"a template of an earlier operator's toleration": {gvisor, current().selector, nil},
+	} {
+		t.Run(what+" is made again", func(t *testing.T) {
+			g, _ := cacheOn(t, template, 0)
+			before := g.sandbox(name)
+			if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+				t.Fatalf("EnsureRepositoryCache: %v", err)
+			}
+			var suspended, running bool
+			for _, w := range g.writes() {
+				if w.resource == "sandboxes" && w.verb == "patch" {
+					suspended = suspended || modePatched(t, w.patch, modeSuspended)
+					running = running || modePatched(t, w.patch, modeRunning)
+				}
+			}
+			if !suspended || !running {
+				t.Errorf("the ensure of a cache placed %+v suspended %t and set Running %t, want both: writes %v", template, suspended, running, g.writes())
+			}
+			after := g.sandbox(name)
+			if after == nil || after.UID != before.UID || !jsonEqual(t, after.Spec.VolumeClaimTemplates, before.Spec.VolumeClaimTemplates) {
+				t.Fatalf("the cache Sandbox is %+v, want %s kept with its volume %+v", after, before.UID, before.Spec.VolumeClaimTemplates)
+			}
+			spec, want := after.Spec.PodTemplate.Spec, current()
+			if spec.RuntimeClassName == nil || *spec.RuntimeClassName != want.runtimeClass || !maps.Equal(spec.NodeSelector, want.selector) || !slices.Equal(spec.Tolerations, want.tolerations) {
+				t.Errorf("the pod template the replacement wrote is placed %s %v %+v, want %s %v %+v", runtimeClassText(spec.RuntimeClassName), spec.NodeSelector, spec.Tolerations, want.runtimeClass, want.selector, want.tolerations)
+			}
+		})
+	}
+
+	t.Run("a template placed as cachePodTemplate places it now is left alone", func(t *testing.T) {
+		g, _ := cacheOn(t, current(), 0)
+		if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+			t.Fatalf("EnsureRepositoryCache: %v", err)
+		}
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" || w.resource == "pods" {
+				t.Errorf("a cache whose template is placed as the runtime places it was written: %s", w)
+			}
+		}
+	})
+
+	t.Run("a template on the retired Legion pool whose pod serves a stream waits", func(t *testing.T) {
+		g, logs := cacheOn(t, retired(), 2)
+		if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+			t.Fatalf("EnsureRepositoryCache: %v", err)
+		}
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" || w.resource == "pods" {
+				t.Errorf("a cache pod on the retired pool sending 2 streams was replaced: %s", w)
+			}
+		}
+		if !strings.Contains(logs.String(), "repository cache pod is replaced once it serves no stream") {
+			t.Errorf("the waiting replacement was not logged:\n%s", logs)
+		}
+	})
+}
+
 // A repository of the cache set whose cache cannot be made — its token cannot be minted — is logged
 // as the sweep's warning naming the cache and tried at the next sweep; ReconcileOrphans answers
 // nil, since its error holds the claims' launches back at boot and each launch ensures its own
@@ -1513,8 +1665,7 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
 			t.Fatal(err)
 		}
-		name := CacheSandboxName(testProject, repo)
-		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
+		cacheStored(g, repo)
 	}
 	g.update(g.pod(CacheSandboxName(testProject, cacheRepo)), func(p *corev1.Pod) {
 		p.Status.PodIP = "10.0.0.5"
@@ -1563,7 +1714,11 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		t.Errorf("the Ready cache's health is %+v, want its room on its volume and its repack's failure for lack of space as /healthz answered them", room)
 	}
 
-	served.Close()
+	// The cache's pod stops answering: its address now refuses every dial, for the rest of the
+	// test (testport.Refused). Closing served instead freed its port for any process on the machine
+	// to take. In CI run 45807890690 the read then got `connection reset by peer`, which no closed
+	// port answers, only a listener that took the port; the refusal is the failure this test causes.
+	network.route("10.0.0.5:8418", testport.Refused(t))
 	g.r.readCacheHealth(g.ctx)
 	if widgets := g.r.RepositoryCaches()[1]; widgets.Health != nil || !strings.Contains(widgets.HealthError, "connection refused") {
 		t.Errorf("a cache whose /healthz cannot be read is %+v, want the read's failure and no health", widgets)
@@ -1572,7 +1727,8 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 
 // podNetwork is a cacheDial for a daemon outside the cluster: it reaches pod addresses, each
 // served by the listener routes names, and resolves no name at all, as a host with no cluster DNS
-// does. It records every address dialed.
+// does. It records every address dialed. route changes where an address leads while dials run, so
+// routes is read and written under mu.
 type podNetwork struct {
 	routes map[string]string
 	mu     sync.Mutex
@@ -1590,11 +1746,20 @@ func (n *podNetwork) dial(ctx context.Context, network, address string) (net.Con
 	if net.ParseIP(host) == nil {
 		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 	}
+	n.mu.Lock()
 	to, routed := n.routes[address]
+	n.mu.Unlock()
 	if !routed {
 		return nil, fmt.Errorf("dial %s: no route to host", address)
 	}
 	return (&net.Dialer{}).DialContext(ctx, network, to)
+}
+
+// route has address lead to the address to from the next dial on.
+func (n *podNetwork) route(address, to string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.routes[address] = to
 }
 
 func (n *podNetwork) addresses() []string {
