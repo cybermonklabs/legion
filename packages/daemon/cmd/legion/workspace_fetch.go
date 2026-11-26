@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
@@ -28,13 +27,6 @@ const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"
 // RecordedDefault); unset or empty, there is none.
 const defaultBranchEnv = "LEGION_DEFAULT_BRANCH"
 
-// fetchClock is the time the fetch's clone retries read and wait on; a test replaces it.
-var fetchClock workspace.Clock = clock.Real()
-
-// fetchBound is the fetch's workspace.FetchRequest.Bound, the time each clocked stage of the fetch
-// gets. Zero is workspace.FetchTimeout. A test makes it short, so an attempt runs out of its time.
-var fetchBound time.Duration
-
 // workspaceFetch fills the feed, the container's own directory on the issue's volume: from the
 // repository cache when one is named, presenting the token LEGION_REPOSITORY_CACHE_TOKEN_FILE
 // holds, then from GitHub the default branch, the issue's recorded default and the Legion issue
@@ -47,8 +39,10 @@ var fetchBound time.Duration
 // volume (workspace.ErrOutsideVolume), and so do the failures workspace.Fetch reads as such. A
 // transfer that fails transiently is run again (workspace.Fetch), each retried failure one line
 // on stdout, and the last line says where the feed came from and the bytes each source brought.
-func workspaceFetch(ctx context.Context, repo, feed, cacheURL string, stdout io.Writer) error {
-	inputs, err := fetchInputs(repo, feed, cacheURL)
+// What it reads of its process — each variable, the PATH, TMPDIR, the clock and the bound — it
+// reads from ws.
+func workspaceFetch(ctx context.Context, ws workspaceProcess, repo, feed, cacheURL string, stdout io.Writer) error {
+	inputs, err := fetchInputs(ws, repo, feed, cacheURL)
 	if err != nil {
 		// Every check before the first write to the volume is fetchInputs', so this one mark
 		// covers each of them, and a check added there later too (issuePodInitExit).
@@ -57,10 +51,10 @@ func workspaceFetch(ctx context.Context, repo, feed, cacheURL string, stdout io.
 	if err := os.MkdirAll(feed, 0o700); err != nil {
 		return fmt.Errorf("create the feed directory %s: %w", feed, err)
 	}
-	report, err := workspace.Fetch(ctx, workspace.NewRunner(programbound.Of(&commandBudget), inputs.tools), workspace.FetchRequest{
-		Repo: inputs.repository, Token: inputs.token, CredentialDir: os.TempDir(), Feed: feed,
-		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init fetch: "+line) }, Clock: fetchClock, Bound: fetchBound, CacheURL: cacheURL, CacheToken: inputs.cacheToken,
-		RecordedDefault: os.Getenv(defaultBranchEnv),
+	report, err := workspace.Fetch(ctx, ws.runner(programbound.Of(&commandBudget), inputs.tools), workspace.FetchRequest{
+		Repo: inputs.repository, Token: inputs.token, CredentialDir: ws.tempDir(), Feed: feed,
+		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init fetch: "+line) }, Clock: ws.clock, Bound: ws.fetchBound, CacheURL: cacheURL, CacheToken: inputs.cacheToken,
+		RecordedDefault: ws.getenv(defaultBranchEnv),
 	})
 	if err != nil {
 		return err
@@ -90,7 +84,7 @@ type fetchInput struct {
 // read: --repo before anything else, then --feed, --cache-url and its token, a readable
 // provisioning token, and git alone on PATH. It writes nothing, so no refusal of it has a cause
 // on the volume.
-func fetchInputs(repo, feed, cacheURL string) (fetchInput, error) {
+func fetchInputs(ws workspaceProcess, repo, feed, cacheURL string) (fetchInput, error) {
 	repository, err := ghrepo.Parse("--repo", repo)
 	if err != nil {
 		return fetchInput{}, err
@@ -103,7 +97,7 @@ func fetchInputs(repo, feed, cacheURL string) (fetchInput, error) {
 		if parsed, err := url.Parse(cacheURL); err != nil || parsed.Scheme != "http" || parsed.Host == "" {
 			return fetchInput{}, fmt.Errorf("--cache-url must be an http:// URL (got %q)", cacheURL)
 		}
-		tokenFile, set := os.LookupEnv(repocache.CacheTokenFileEnv)
+		tokenFile, set := ws.lookup(repocache.CacheTokenFileEnv)
 		if !set {
 			return fetchInput{}, errors.New(repocache.CacheTokenFileEnv + " is not set: a repository cache needs its token")
 		}
@@ -111,12 +105,12 @@ func fetchInputs(repo, feed, cacheURL string) (fetchInput, error) {
 			return fetchInput{}, err
 		}
 	}
-	tokenFile, err := secretFileFromEnv(provisionTokenFileEnv)
+	tokenFile, err := ws.secretFile(provisionTokenFileEnv)
 	if err != nil {
 		return fetchInput{}, err
 	}
 	inputs.token = func() (string, error) { return config.ReadSecretPointer(provisionTokenFileEnv, tokenFile) }
-	if inputs.tools, err = provisioningTools("git"); err != nil {
+	if inputs.tools, err = ws.tools("git"); err != nil {
 		return fetchInput{}, err
 	}
 	return inputs, nil
