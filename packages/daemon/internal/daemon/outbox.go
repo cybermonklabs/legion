@@ -2560,6 +2560,23 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // records the row's round: the round ended, another round replaced it, or this daemon no longer
 // supervises the claim. A role is never asked about a round that is not its own.
 //
+// The ask names where the role pushes (the row's Branch, OwnFix and FixReads, a
+// supervise.UpdatePush), read once when the sweep queued the row (askRound). Until the row runs,
+// the start that push was read from can end and a later start of the same step begin with another
+// binding or none, and a fix can open, start or end. The old text would then send the later
+// start's commits to a branch its own start does not name and no recovery of it reads. So inside
+// the publish, under the claim's lock, the row reads the role's push again through the sweep's own
+// read (updatePushes), and publishes only where it equals the row's. Where it does not, nothing is
+// published and the ask answers undelivered, so nothing is marked: the row ends on one line that
+// names both pushes, and the sweep's next reading of the round finds the claim unasked with no row
+// of it queued and asks it again from its push then. A later start's task reaches the claim
+// through this same machine, and only after that start's transaction commits (the outbox's start
+// row, which delivers under the machine's lock). So the read sees either the binding of the start
+// the agent still works, and the ask reaches the agent before any later task, or the binding of
+// the later start. A read that fails publishes nothing and keeps the ordinary retry. An outbox with
+// no read of the pushes reads the zero push, the only push the sweep of a deployment with no
+// workflow writes.
+//
 // The publish and the claim's ask mark are one step of the claim's machine
 // (supervise.Machine.PublishUpdateAsk), whose comment holds the order and why it neither loses an
 // ask nor gives one twice. In short: the machine's lock is taken without waiting, the claim is
@@ -2599,7 +2616,21 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
+	asked := supervise.UpdatePush{Branch: payload.Branch, OwnFix: payload.OwnFix, FixReads: payload.FixReads}
 	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
+		var current supervise.UpdatePush
+		if r.updatePushes != nil {
+			pushes, err := r.updatePushes(ctx, row.Issue)
+			if err != nil {
+				return false, fmt.Errorf("read where the %s of %s pushes now: %w", payload.Role, row.Issue, err)
+			}
+			current = pushes[payload.Role]
+		}
+		if current != asked {
+			r.log.Info("outbox update ask finished without a publish: the role's push is no longer the one the ask names",
+				append(fields, "asked", asked, "current", current)...)
+			return false, nil
+		}
 		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
 			"outbox update ask finished undelivered: no live session holds the role", fields...)
 	})
