@@ -842,14 +842,25 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		"controller's own door cannot name the role at all", status, strings.TrimSpace(string(body)))
 
 	// A suspended, a stopped and a failed claim: each runs no Oh My Pi session, so each is told
-	// that a fresh session is what reaches it instead.
+	// that a fresh session is what reaches it instead. The suspended one is the operator's own
+	// suspension, which only the operator lifts (cybermonklabs/legion#4065, api's holdSentences):
+	// the operator's door names the fresh session, and the controller's door, which cannot get past
+	// that suspension, names the operator's resume instead, so the two doors differ here.
 	implementer := r.token(r.notice, claim.RoleImplementer)
 	r.note("%s", r.legionClaims("suspend", "--claim", string(implementer)))
 	r.await(string(implementer)+" to be suspended", 2*time.Minute, func() bool {
 		return r.claim(implementer).State == string(supervise.StateSuspended)
 	})
-	r.refusedThroughBothDoors("a suspended worker", compactDoors, implementer, r.notice, claim.RoleImplementer,
-		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateSuspended), compactNamesFreshSession)
+	operatorStatus, operatorBody := compactDoors.operator(r, implementer)
+	r.note("compact at a suspended worker is refused through the operator's door: %q", r.heldRefusal(
+		"compact at a suspended worker, through the operator's door", operatorStatus, operatorBody,
+		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateSuspended), compactNamesFreshSession))
+	controllerStatus, controllerBody := compactDoors.controller(r, r.notice, claim.RoleImplementer)
+	r.note("compact at a suspended worker is refused through the controller's door: %q", r.heldRefusal(
+		"compact at a suspended worker, through the controller's door", controllerStatus, controllerBody,
+		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateSuspended),
+		"held by the operator's own suspension, which only the operator lifts",
+		"`legion claims resume --claim "+string(implementer)+"`"))
 
 	// The ladder's planner is finished with: its kept task is answered first, so step 7 can read
 	// what its issue's phase owes a fresh session rather than the task the ladder held.
