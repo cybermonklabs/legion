@@ -726,8 +726,8 @@ export function putScrollBack(places: ScrollPlaces): void {
  *  view that moved under the reader - a commit's own anchoring moving a box - from one whose
  *  edges changed around rows that stayed where they were. */
 export function viewScrollOf(element: Element): number {
-  let scrolled = window.scrollY;
-  for (const box of clippingBoxes(element)) scrolled += box.scrollTop;
+  let scrolled = 0;
+  for (const { top } of takeScrollOf(element)) scrolled += top;
   return scrolled;
 }
 

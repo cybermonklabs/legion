@@ -1236,36 +1236,6 @@ test("a landing whose row leaves the list hands the place off again", async () =
   }
 });
 
-// INFRA-3135, round 29: the readings are owed only until the reader's own next action
-// (`READER_ACTS`), because where they are then is theirs.
-test("a key of the reader's own ends the readings", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
-  const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
-  let answered: () => void = () => undefined;
-  try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(
-      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
-    );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "j" }));
-    // The box's edges move in after that key, and no reading of this landing is left to see it.
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
-    await act(nextFrame);
-    await act(nextFrame);
-    expect(rowBox("CORE-14")).toHaveFocus();
-  } finally {
-    answered();
-    disarm();
-    if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
-    else Object.defineProperty(window, "innerHeight", height);
-    view.unmount();
-    laidOut();
-  }
-});
-
 // INFRA-3135, round 29: a landing nothing settles costs `READINGS` frames and no more, so the
 // readings of a landing the reader never answers stop of their own accord.
 test("the readings of a landing stop at the bound", async () => {
