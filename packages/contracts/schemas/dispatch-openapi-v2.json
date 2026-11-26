@@ -83,6 +83,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "INTERNAL": 500,
           "INVALID_LIMIT": 400,
@@ -898,6 +899,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -1036,6 +1038,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -1169,6 +1172,7 @@
         },
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -1317,6 +1321,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_INPUT": 400,
           "ARTIFACT_KIND_MISMATCH": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -1457,6 +1462,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -1559,6 +1565,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -1678,6 +1685,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -1765,6 +1773,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "ARTIFACT_NOT_UNTOUCHED": 409,
           "ARTIFACT_PROJECT_DOCUMENT": 400,
@@ -1879,6 +1888,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_KIND_MISMATCH": 400,
           "ARTIFACT_NAME_TAKEN": 409,
           "ARTIFACT_NOT_FOUND": 404,
@@ -2008,6 +2018,7 @@
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "APPROVAL_WAITS_ON_HUMAN": 409,
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -2180,6 +2191,7 @@
         },
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
@@ -2301,6 +2313,7 @@
           "ACTOR_SESSION_MISMATCH": 403,
           "ANCHOR_MISSING": 409,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
@@ -2421,6 +2434,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BLOCK_NOT_FOUND": 404,
@@ -2532,6 +2546,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -2648,6 +2663,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
@@ -2768,6 +2784,7 @@
           "ACTOR_SESSION_MISMATCH": 403,
           "ANCHOR_MISSING": 409,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
@@ -2921,6 +2938,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -3105,6 +3123,7 @@
           "type": "integer"
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
@@ -3210,6 +3229,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -3328,6 +3348,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -3473,6 +3494,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -3586,6 +3608,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -3689,6 +3712,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -3824,6 +3848,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
@@ -3924,6 +3949,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_AGENT_OWNED": 400,
           "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
@@ -4065,6 +4091,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -4165,6 +4192,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -4303,6 +4331,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -4528,6 +4557,7 @@
         },
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "ASSIGNEE_NOT_ALLOWED": 400,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -4648,6 +4678,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "ASK_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -4756,6 +4787,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASK_BLOCK_TEXT": 400,
           "ASK_KIND_FIXED": 409,
           "ASK_NOT_FOUND": 404,
@@ -4890,6 +4922,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -5002,6 +5035,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -5206,6 +5240,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASK_ANSWERED": 409,
           "ASK_ANSWER_CHANGED": 409,
           "ASK_APPROVAL_REVIEW": 409,
@@ -5356,6 +5391,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -5433,6 +5469,7 @@
         },
         "x-auth": "public",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "INTERNAL": 500,
           "INVALID_QUERY": 400,
@@ -5525,6 +5562,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -5618,6 +5656,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROADCAST_EMPTY": 400,
           "BROADCAST_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -5726,6 +5765,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROADCAST_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -5845,6 +5885,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -5949,6 +5990,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6046,6 +6088,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -6163,6 +6206,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -6313,6 +6357,7 @@
           "type": "time,id"
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6416,6 +6461,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -6547,6 +6593,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -6770,6 +6817,7 @@
           "ALREADY_ACTIONED": 409,
           "ANCHOR_ORPHANED": 409,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -6952,6 +7000,7 @@
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "APPROVER_IS_GROUP": 400,
           "APPROVER_REQUIRED": 400,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -7157,6 +7206,7 @@
           "ANSWER_NOT_KEPT": "*",
           "APPROVER_IS_GROUP": 400,
           "APPROVER_REQUIRED": 400,
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -7331,6 +7381,7 @@
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "APPROVER_IS_GROUP": 400,
           "APPROVER_REQUIRED": 400,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -7638,6 +7689,7 @@
           "ANSWER_NOT_KEPT": "*",
           "APPROVER_IS_GROUP": 400,
           "APPROVER_REQUIRED": 400,
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -7772,6 +7824,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8185,6 +8238,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8319,6 +8373,7 @@
           "type": "integer"
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8421,6 +8476,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8511,6 +8567,7 @@
         "x-auth": "any",
         "x-refusal-codes": {
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -8608,6 +8665,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -8694,6 +8752,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8944,6 +9003,7 @@
         },
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -9078,6 +9138,7 @@
           "ADVANCES_INPUT": 400,
           "AMBIGUOUS_ISSUE_REF": 400,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASSIGNEE_NOT_ALLOWED": 400,
           "BLOCKED_BY_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -9215,6 +9276,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -9469,6 +9531,7 @@
           "ADVANCES_INPUT": 400,
           "ADVANCES_REVISION": 409,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASSIGNEE_NOT_ALLOWED": 400,
           "BLOCKED_BY_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -9642,6 +9705,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -9793,6 +9857,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_INPUT": 400,
           "ARTIFACT_KIND_MISMATCH": 400,
           "ARTIFACT_ROLE_NAME": 400,
@@ -9973,6 +10038,7 @@
         },
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -10091,6 +10157,7 @@
           "ACTOR_SESSION_MISMATCH": 403,
           "ANCHOR_MISSING": 409,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASK_KIND_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -10233,6 +10300,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -10355,6 +10423,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -10485,6 +10554,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -10610,6 +10680,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -10732,6 +10803,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -10849,6 +10921,7 @@
           "ACTOR_SESSION_MISMATCH": 403,
           "ANCHOR_MISSING": 409,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASK_ID_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -10965,6 +11038,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11093,6 +11167,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11236,6 +11311,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BLOCK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11412,6 +11488,7 @@
           "type": "integer"
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11561,6 +11638,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11661,6 +11739,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -11786,6 +11865,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11885,6 +11965,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12010,6 +12091,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12151,6 +12233,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -12253,6 +12336,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12377,6 +12461,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12486,6 +12571,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -12583,6 +12669,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12708,6 +12795,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -12817,6 +12905,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12940,6 +13029,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -13063,6 +13153,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -13193,6 +13284,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -13290,6 +13382,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -13422,6 +13515,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -13502,6 +13596,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -13675,6 +13770,7 @@
           "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -13846,6 +13942,7 @@
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "APPROVER_IS_GROUP": 400,
           "APPROVER_REQUIRED": 400,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -14034,6 +14131,7 @@
           "ANSWER_NOT_KEPT": "*",
           "APPROVER_IS_GROUP": 400,
           "APPROVER_REQUIRED": 400,
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -14139,6 +14237,7 @@
         "x-auth": "any",
         "x-refusal-codes": {
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -14241,6 +14340,7 @@
         "x-auth": "any",
         "x-refusal-codes": {
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -14332,6 +14432,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -14436,6 +14537,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -14531,6 +14633,7 @@
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_TOKEN_INPUT": 400,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -14629,6 +14732,7 @@
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_TOKEN_NOT_FOUND": 404,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -14739,6 +14843,7 @@
           "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_TOKEN_NOT_FOUND": 404,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -14857,6 +14962,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -14990,6 +15096,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -15100,6 +15207,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -15219,6 +15327,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "ASK_NOT_FOUND": 404,
           "AS_OF_TOKEN_NOT_SERVED": 403,
@@ -15380,6 +15489,7 @@
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -15553,6 +15663,7 @@
           "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE": 500,
           "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -15730,6 +15841,7 @@
           "AGENT_SECRETS_REFUSAL_UNDECLARED": 502,
           "AGENT_SECRETS_UNAVAILABLE": 503,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -15912,6 +16024,7 @@
         },
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -16015,6 +16128,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -16114,6 +16228,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -16228,6 +16343,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -16375,6 +16491,7 @@
           "type": "time,id"
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -16480,6 +16597,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -16641,6 +16759,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -16778,6 +16897,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -16883,6 +17003,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -17006,6 +17127,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -17135,6 +17257,7 @@
           "min_limit": 0
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -17225,6 +17348,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -17329,6 +17453,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -17438,6 +17563,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -17575,6 +17701,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -17703,6 +17830,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -17794,6 +17922,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASSIGNEE_NOT_ALLOWED": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -17925,6 +18054,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ASSIGNEE_NOT_ALLOWED": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -18027,6 +18157,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -18138,6 +18269,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -18255,6 +18387,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -18374,6 +18507,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -18484,6 +18618,7 @@
         "x-auth": "any",
         "x-refusal-codes": {
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -18645,6 +18780,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -18796,6 +18932,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "ARTIFACT_INPUT": 400,
           "ARTIFACT_KIND_MISMATCH": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -19063,6 +19200,7 @@
         },
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -19398,6 +19536,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -19529,6 +19668,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -19645,6 +19785,7 @@
         "x-auth": "any",
         "x-refusal-codes": {
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -19774,6 +19915,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -19936,6 +20078,7 @@
           "type": "integer"
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -20057,6 +20200,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -20172,6 +20316,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -20267,6 +20412,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -20395,6 +20541,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -20489,6 +20636,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -20669,6 +20817,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -20769,6 +20918,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -20875,6 +21025,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -20984,6 +21135,7 @@
           "ACTOR_KIND": 400,
           "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVE_ONLY_TOKEN": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -21082,6 +21234,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -21254,6 +21407,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -21331,6 +21485,7 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -21436,6 +21591,7 @@
         ],
         "x-refusal-codes": {
           "ACTOR_SESSION_MISMATCH": 403,
+          "APPROVE_ONLY_TOKEN": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -41040,6 +41196,7 @@
       "APPROVER_IS_GROUP": 400,
       "APPROVER_ME_ONLY": 400,
       "APPROVER_REQUIRED": 400,
+      "APPROVE_ONLY_TOKEN": 403,
       "ARTIFACT_AGENT_OWNED": 400,
       "ARTIFACT_INPUT": 400,
       "ARTIFACT_KIND_MISMATCH": 400,

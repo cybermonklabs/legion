@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import {
+  ActorActSchema,
   ArtifactCreatedEventPayloadSchema as ArtifactCreatedPayloadSchema,
   ArtifactHumanEditedEventPayloadSchema as ArtifactHumanEditedPayloadSchema,
   ArtifactVersionEventPayloadSchema as ArtifactVersionPayloadSchema,
@@ -14,21 +15,20 @@ import {
   DISPATCH_DOCUMENT_TOPIC_PREFIX,
   DISPATCH_TOPIC_PREFIX,
   type InboundDispatchEvent as DispatchEvent,
-  DispatchEventSchema,
-  type DispatchTargetedCommentDeliverySchema,
+  type DispatchPayloadReading,
   DispatchTargetedCommentPayloadSchema,
-  DispatchTargetedDeliverySchema,
   DispatchTargetedMessagePayloadSchema,
-  DispatchTargetedResourceIDSchema,
   dedupeKeyNamesItsEvent,
   EnvelopeSchema,
   EXPECTS_REPLY_VALUES,
   type ExpectsReply,
   IssueEventPayloadSchema as IssuePayloadSchema,
+  isCommentTargetedDelivery,
   legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
   type MessageRead,
+  readDispatchPayload,
   type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
   topicForms,
@@ -420,61 +420,6 @@ export function createDeliveryDedupe(now: () => number = Date.now): DeliveryDedu
   };
 }
 
-function isCommentTargetedDelivery(
-  delivery: z.infer<typeof DispatchTargetedDeliverySchema>
-): delivery is z.infer<typeof DispatchTargetedCommentDeliverySchema> {
-  return "comment_id" in delivery;
-}
-
-const DispatchTargetedFrameSchema = z
-  .object({
-    event: DispatchEventSchema,
-    delivery: DispatchTargetedDeliverySchema,
-  })
-  .superRefine(({ event, delivery }, context) => {
-    if (
-      event.type === "message.created" &&
-      !isCommentTargetedDelivery(delivery) &&
-      DispatchTargetedMessagePayloadSchema.safeParse(event.payload).success
-    ) {
-      return;
-    }
-    if (
-      event.type === "comment.created" &&
-      isCommentTargetedDelivery(delivery) &&
-      DispatchTargetedCommentPayloadSchema.safeParse(event.payload).success
-    ) {
-      return;
-    }
-    context.addIssue({
-      code: "custom",
-      message:
-        event.type === "comment.created"
-          ? "targeted delivery requires a complete comment.created event"
-          : "targeted delivery requires a complete message.created event",
-    });
-  });
-
-const RecoverableDispatchDeliveryFailureSchema = z
-  .object({
-    event: z
-      .object({
-        type: z.enum(["message.created", "comment.created"]),
-        issue_key: z.string().nullable(),
-        payload: z.object({ id: z.string(), body: z.string().optional() }).passthrough(),
-      })
-      .passthrough(),
-    delivery: DispatchTargetedDeliverySchema,
-  })
-  .refine(
-    ({ event, delivery }) =>
-      event.type === "comment.created"
-        ? isCommentTargetedDelivery(delivery)
-        : !isCommentTargetedDelivery(delivery) &&
-          DispatchTargetedResourceIDSchema.safeParse(event.payload.id).success,
-    { message: "delivery resource must match its event type" }
-  );
-
 export type DeliveryEnvelope = Pick<
   InboundEnvelope,
   "source" | "source_session" | "payload" | "sender" | "event_id"
@@ -556,7 +501,7 @@ export function carriedItem(
         ? ("message" as const)
         : undefined;
   if (resource === undefined || !isObject(event.payload)) return undefined;
-  const id = event.payload["id"];
+  const { id } = event.payload;
   if (typeof id !== "string" || id === "") return undefined;
   return { resource, id, issueKey: event.issue_key };
 }
@@ -565,7 +510,9 @@ export function carriedItem(
  *  with its long fields dropped, except the few it keeps whole (`payload_omitted`, whose doc in
  *  `@legion/contracts` names them). */
 function payloadWasOmitted(payload: unknown): boolean {
-  return isObject(payload) && payload["payload_omitted"] === true;
+  if (!isObject(payload)) return false;
+  const { payload_omitted } = payload;
+  return payload_omitted === true;
 }
 
 /** Whether an event payload says the body on it is not the item's body whole: the first part of
@@ -573,7 +520,9 @@ function payloadWasOmitted(payload: unknown): boolean {
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (isObject(payload) && payload["body_truncated"] === true) || payloadWasOmitted(payload);
+  if (!isObject(payload)) return false;
+  const { body_truncated } = payload;
+  return body_truncated === true || payloadWasOmitted(payload);
 }
 
 /** The Dispatch route that answers the whole item an event names. */
@@ -997,10 +946,9 @@ function dispatchPayloadForReader(
   toReader: boolean
 ): unknown {
   const whole = dispatchPayload(event);
-  const changed =
-    event.type !== "issue.created" && isObject(whole) && Array.isArray(whole["changed"])
-      ? whole["changed"]
-      : [];
+  let changedField: unknown;
+  if (event.type !== "issue.created" && isObject(whole)) ({ changed: changedField } = whole);
+  const changed = Array.isArray(changedField) ? changedField : [];
   const payload = withoutEmptyFields(
     whole,
     (key, item) =>
@@ -1142,20 +1090,18 @@ function dispatchReplyRef(
   return dispatchChildRef(dispatchDocumentRef(document.project, document.slug), kind, inReplyTo);
 }
 
-// A Dispatch bus frame's JSON payload either matches the wire contract documented
-// above (`event`) or it doesn't — invalid JSON, or a JSON value that disagrees with
-// `DispatchEventSchema` — in which case the raw parsed value (object or string) is
-// kept (`raw`) so no data is dropped and nothing renders as a hand-built text
-// template.
+// A Dispatch bus frame's JSON payload, as readDispatchPayload (packages/contracts) reads it: an
+// event the card shows, or no event - invalid JSON, a JSON value no event schema reads, or a
+// targeted frame refused by name (`rejectedDelivery`) - of which the card shows only that the
+// payload was unrecognised and none of its text.
 type DispatchFrame =
   | {
       readonly event: DispatchEvent;
       readonly notify: unknown;
       readonly quiet: unknown;
-      readonly delivery: unknown;
+      readonly delivery: Extract<DispatchPayloadReading, { readonly kind: "event" }>["delivery"];
     }
   | {
-      readonly raw: unknown;
       readonly rejectedDelivery?: DispatchDelivery;
       readonly malformedDelivery?: true;
     };
@@ -1175,41 +1121,37 @@ function withWholeBody(event: DispatchEvent, body: string | undefined): Dispatch
   return { ...event, payload: { ...carried, body } };
 }
 
-/** The frame one Dispatch envelope's payload carries. `wholeBody` is the body of the item the
- *  event named as cut, read from the server since (`renderInbound`'s `cutItem`); the event then
- *  reads as though it had carried that body whole. */
+/** The frame one Dispatch envelope's payload carries, read by readDispatchPayload, the reader the
+ *  edge listener's verdict is held to. `wholeBody` is the body of the item the event named as
+ *  cut, read from the server since (`renderInbound`'s `cutItem`); the event then reads as though
+ *  it had carried that body whole. */
 function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFrame {
   let value: unknown;
   try {
     value = parseFrameJSON(rawPayload);
   } catch {
-    return { raw: rawPayload };
+    return {};
   }
-
-  // A targeted frame requires `delivery`, so only a frame carrying the key can be one.
-  if (isObject(value) && "delivery" in value) {
-    const targeted = DispatchTargetedFrameSchema.safeParse(value);
-    if (targeted.success) {
-      // `notify` and `quiet` are fields of the event the frame wraps, which is where the
-      // outbox marshals them, and the schema drops both as unknown keys.
-      const wireFrame = value as {
-        readonly event: DispatchEvent & { readonly notify?: unknown; readonly quiet?: unknown };
-      };
+  const reading = readDispatchPayload(value);
+  switch (reading.kind) {
+    case "event": {
+      // `notify` and `quiet` are fields of the event, where the outbox marshals them (a targeted
+      // frame's event, or the payload itself), and the schemas drop both as unknown keys, so they
+      // are read from the event as the payload carried it.
+      const { notify, quiet } = reading.wireEvent;
       return {
-        event: withWholeBody(targeted.data.event, wholeBody),
-        notify: wireFrame.event.notify,
-        quiet: wireFrame.event.quiet,
-        delivery: targeted.data.delivery,
+        event: withWholeBody(reading.event, wholeBody),
+        notify,
+        quiet,
+        delivery: reading.delivery,
       };
     }
-    const recoverable = RecoverableDispatchDeliveryFailureSchema.safeParse(value);
-    if (recoverable.success) {
-      const delivery = recoverable.data.delivery;
+    case "recovered": {
+      const { delivery, event } = reading.failure;
       const commentDelivery = isCommentTargetedDelivery(delivery);
       const resource = commentDelivery ? "comment" : "message";
-      const id = commentDelivery ? delivery.comment_id : recoverable.data.event.payload.id;
+      const id = commentDelivery ? delivery.comment_id : event.payload.id;
       return {
-        raw: value,
         rejectedDelivery: {
           resource,
           id,
@@ -1217,27 +1159,15 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
           mode: delivery.mode,
           replyPath: dispatchReplyPath(resource, id),
           replyFields: commentDelivery ? { target: delivery.target } : {},
-          issueKey: recoverable.data.event.issue_key,
-          body: recoverable.data.event.payload.body ?? "",
+          issueKey: event.issue_key,
+          body: event.payload.body ?? "",
         },
         malformedDelivery: true,
       };
     }
-    return { raw: value, malformedDelivery: true };
+    case "raw":
+      return reading.targeted ? { malformedDelivery: true } : {};
   }
-
-  const parsed = DispatchEventSchema.safeParse(value);
-  if (!parsed.success) return { raw: value };
-  const wireEvent = value as DispatchEvent & {
-    readonly notify?: unknown;
-    readonly quiet?: unknown;
-  };
-  return {
-    event: withWholeBody(parsed.data, wholeBody),
-    notify: wireEvent.notify,
-    quiet: wireEvent.quiet,
-    delivery: undefined,
-  };
 }
 
 /**
@@ -1266,6 +1196,83 @@ function encodeWithin(value: unknown, maxBytes: number): string | undefined {
     lines.push(line);
   }
   return lines.join("\n");
+}
+
+/** The `dispatch` block of a card, all of which a card shown as text writes: an `owner` when the
+ * event names one, what it is, who did it, why it reached this session (`relation`), and what a
+ * host lays out from it - the payload, or in its place a compact record (`dispatchCompact`'s: an
+ * ask's `question`, `reply`, `state` and the rest, a human edit's `edit`), with `ask` beside it
+ * when the envelope is uncorrelated. A direct message with no issue, document, or artifact topic
+ * has no `owner`. */
+type DispatchCardEvent = {
+  readonly owner?: string;
+  readonly type: string;
+  readonly actor: DispatchEvent["actor"];
+  readonly relation?: string;
+  readonly payload?: unknown;
+  readonly [compactRecordField: string]: unknown;
+};
+
+/** The actor a header writes: its `kind` and `id`; the `act` an agent or a personal token made for
+ *  its person (`ActorActSchema`), or `act: "not shown"` where the actor holds an act that schema
+ *  does not read; and a session's `service`, the subject of the verified service token that made
+ *  the write, or `service: "not shown"` where it is no string. So a card never shows an agent's
+ *  act as the person's own, nor a service token's write as the session's own (a reader takes a
+ *  user with no `act` for the person acting alone, `actorActText`, and a session with no `service`
+ *  for the session writing as itself, `actorText`). The event's schema passes the actor's other
+ *  keys through, and one of them may be as deep as the payload, so the header writes none of them. */
+function headerActor(actor: DispatchEvent["actor"]): Readonly<Record<string, unknown>> {
+  const { kind, id, act, service } = actor;
+  return {
+    kind,
+    ...(id === undefined ? {} : { id }),
+    ...(act === undefined ? {} : { act: ActorActSchema.safeParse(act).data ?? "not shown" }),
+    ...(kind !== "session" || service === undefined
+      ? {}
+      : { service: typeof service === "string" ? service : "not shown" }),
+  };
+}
+
+/** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`, held to `bound` at
+ * every step: the card's `dispatch` block (DispatchCardEvent) as JSON text - its owner when the
+ * event has one, type, actor, relation and payload or compact record, with a body read whole in
+ * place of the part the frame carried - and never the frame's payload, so a key readDispatchPayload
+ * dropped reaches no card. A block JSON.stringify cannot write (it recurses as the encoder
+ * does: an object chain 100,000 deep overflows it in Bun 1.4.4), or whose text would still pass
+ * `bound`, is shown by its owner when present, its type, its actor (`headerActor`) and the reason.
+ * A card that cannot hold that either drops the card's other fields (they repeat the issue key,
+ * and its reply command quotes the key for a shell) and keeps the owner when present, the type,
+ * the actor and the reason. One that cannot hold even those drops an existing owner (a document's
+ * owner is read from a topic: the one the host names, or the frame's own) and keeps the type, the
+ * actor and the reason: the type and the actor are bytes of the frame, the reason is short (the
+ * bound's sentence or an encoder error's message), and `bound` is at least twice the frame. The
+ * reason alone is the last answer. */
+function dispatchCardAsText(
+  rendered: Readonly<Record<string, unknown>>,
+  event: DispatchCardEvent,
+  reason: string,
+  bound: number
+): string {
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(event);
+  } catch {
+    // No text to show: the header and the reason below.
+  }
+  const asText =
+    text === undefined
+      ? undefined
+      : encodeWithin({ envoy: { ...rendered, dispatch: text } }, bound);
+  if (asText !== undefined) return asText;
+  const notShown = `not shown: ${reason}`;
+  const owner = event.owner === undefined ? {} : { owner: event.owner };
+  const header = { type: event.type, actor: headerActor(event.actor), payload: notShown };
+  return (
+    encodeWithin({ envoy: { ...rendered, dispatch: { ...owner, ...header } } }, bound) ??
+    encodeWithin({ envoy: { dispatch: { ...owner, ...header } } }, bound) ??
+    encodeWithin({ envoy: { dispatch: header } }, bound) ??
+    encode({ envoy: { dispatch: { payload: notShown } } })
+  );
 }
 
 export function inboundTimestamp(milliseconds: number | undefined): string {
@@ -1315,7 +1322,7 @@ export function renderInbound(
     const data = tolerant.data as Partial<InboundEnvelope>;
     envelope = { ...data, source: data.source ?? "unknown" };
   }
-  let dispatchEvent: unknown;
+  let dispatchEvent: DispatchCardEvent | undefined;
   let dispatchActor: DispatchEvent["actor"] | undefined;
   let dispatchIssue: string | undefined;
   let dispatchReply: ReplyHint | undefined;
@@ -1427,13 +1434,13 @@ export function renderInbound(
         dispatchReply = dispatchCommentReplyWith(frame.event, topic, commentPayload);
         if (frame.event.type === "message.created") {
           const message = DispatchTargetedMessagePayloadSchema.safeParse(frame.event.payload);
-          const requested = DispatchTargetedDeliverySchema.safeParse(frame.delivery);
-          if (message.success && requested.success && !isCommentTargetedDelivery(requested.data)) {
+          const requested = frame.delivery;
+          if (message.success && requested !== undefined && !isCommentTargetedDelivery(requested)) {
             delivery = {
               resource: "message",
               id: message.data.id,
-              attempt: requested.data.attempt,
-              mode: requested.data.mode,
+              attempt: requested.attempt,
+              mode: requested.mode,
               replyPath: dispatchReplyPath("message", message.data.id),
               replyFields: {},
               issueKey: frame.event.issue_key,
@@ -1456,15 +1463,15 @@ export function renderInbound(
           }
         } else if (frame.event.type === "comment.created") {
           const comment = DispatchTargetedCommentPayloadSchema.safeParse(frame.event.payload);
-          const requested = DispatchTargetedDeliverySchema.safeParse(frame.delivery);
-          if (comment.success && requested.success && isCommentTargetedDelivery(requested.data)) {
+          const requested = frame.delivery;
+          if (comment.success && requested !== undefined && isCommentTargetedDelivery(requested)) {
             delivery = {
               resource: "comment",
-              id: requested.data.comment_id,
-              attempt: requested.data.attempt,
-              mode: requested.data.mode,
-              replyPath: dispatchReplyPath("comment", requested.data.comment_id),
-              replyFields: { target: requested.data.target },
+              id: requested.comment_id,
+              attempt: requested.attempt,
+              mode: requested.mode,
+              replyPath: dispatchReplyPath("comment", requested.comment_id),
+              replyFields: { target: requested.target },
               issueKey: frame.event.issue_key,
               body: comment.data.body,
               ...(comment.data.body_truncated === true ? { bodyTruncated: true } : {}),
@@ -1505,10 +1512,11 @@ export function renderInbound(
         // A session's `origin` says where it runs (its host, machine, directory and tmux pane),
         // which a person finding the session reads and an agent does not: the card keeps the
         // session's title alone. `dispatchActor` keeps the actor whole for the host.
-        let actor: unknown = frame.event.actor;
+        let actor: DispatchEvent["actor"] = frame.event.actor;
         if ("origin" in frame.event.actor) {
           const { origin, ...rest } = frame.event.actor;
-          const title = isObject(origin) ? origin["session_title"] : undefined;
+          let title: unknown;
+          if (isObject(origin)) ({ session_title: title } = origin);
           actor =
             typeof title === "string" && title !== ""
               ? { ...rest, origin: { session_title: title } }
@@ -1535,7 +1543,11 @@ export function renderInbound(
           if (edit.success) trailer = humanEditDiffBlock(edit.data.diff, edit.data.diff_truncated);
         }
       } else {
-        dispatchEvent = frame.raw;
+        // A payload readDispatchPayload reads no event of is shown as nothing but the note that
+        // it was unrecognised: the edge listener passes a Dispatch frame only by the event that
+        // same reader shows, so text around an event it cannot read is no event of a project
+        // either judged.
+        dispatchIssue = "payload";
         rejectedDelivery = frame.rejectedDelivery;
         malformedDelivery = frame.malformedDelivery === true;
       }
@@ -1628,7 +1640,9 @@ export function renderInbound(
           },
         }),
     ...(dispatchRendered
-      ? { dispatch: dispatchEvent }
+      ? dispatchEvent === undefined
+        ? {}
+        : { dispatch: dispatchEvent }
       : {
           ...(summaryIsHead ? {} : { summary: payloadSummary }),
           ...(message === undefined ? {} : { message }),
@@ -1650,9 +1664,9 @@ export function renderInbound(
   // lays out in bytes that grow with the square of its depth: a 20 KB array chain made a 100 MB
   // card. Either way the payload is the text its sender sent, so the card shows it as that text,
   // as it shows a payload that is no JSON, and the host takes the frame. That text is bounded as
-  // every message's is: by the frame, at most the hub's 1 MiB. A payload that already is text is
-  // bounded so already, and a throw the payload is not behind is thrown as before.
-  const payloadKey = dispatchRendered ? "dispatch" : "message";
+  // every message's is: by the frame, at most the hub's 1 MiB. A Dispatch card shows its
+  // `dispatch` block as JSON text instead (`dispatchCardAsText`). A payload that already is text
+  // is bounded so already, and a throw the payload is not behind is thrown as before.
   const payloadValue = dispatchRendered ? dispatchEvent : message;
   // A layout holds about as many bytes as the text it lays out, and a body Dispatch's API gave
   // whole (`wholeBody`) is text the frame did not carry, so a card may hold twice that text when
@@ -1678,7 +1692,10 @@ export function renderInbound(
   }
   if (card === undefined) {
     payloadShownAsText ??= `its layout is larger than the ${cardBound} bytes a card holds`;
-    card = encode({ envoy: { ...rendered, [payloadKey]: envelope.payload } });
+    card =
+      dispatchEvent === undefined
+        ? encode({ envoy: { ...rendered, message: envelope.payload } })
+        : dispatchCardAsText(rendered, dispatchEvent, payloadShownAsText, cardBound);
   }
 
   return {

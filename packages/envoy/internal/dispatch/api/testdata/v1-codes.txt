@@ -42,6 +42,7 @@ ANCHOR_ORPHANED 409
 ANSWER_NOT_KEPT *
 APPROVAL_WAITS_ON_HUMAN 409
 APPROVER_ME_ONLY 400
+APPROVE_ONLY_TOKEN 403 # #5239, an approve-only token calls only the routes the approve list names, and answers only an approval request
 ARTIFACT_AGENT_OWNED 400
 ARTIFACT_INPUT 400
 ARTIFACT_KIND_MISMATCH 400

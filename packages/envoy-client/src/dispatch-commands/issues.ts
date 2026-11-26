@@ -605,7 +605,8 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
  *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
  *  object is no JSON object, and prints its own notes on standard error. */
 export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_issues" && args["json"] === true;
+  const { json } = args;
+  return tool === "dispatch_issues" && json === true;
 }
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
@@ -711,7 +712,8 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
  *  one whose call asks Dispatch something before it writes asks that too, through its step in the
  *  command table (`DispatchCommand.dryRun`): `dispatch artifact`, how Dispatch would store its text. */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_result" && args["retract"] === undefined;
+  const { retract } = args;
+  return tool === "dispatch_result" && retract === undefined;
 }
 
 /** `dispatch result`: record one result of one check of an issue's Verification document, or, as

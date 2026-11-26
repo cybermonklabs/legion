@@ -438,7 +438,10 @@ var (
 	LoginChanged   = both(contracts.DispatchLoginChanged, http.StatusConflict)
 	// ReadOnlyToken is a read-only token's call of a route outside the read class
 	// (refuseReadOnlyToken).
-	ReadOnlyToken      = both(contracts.DispatchReadOnlyToken, http.StatusForbidden)
+	ReadOnlyToken = both(contracts.DispatchReadOnlyToken, http.StatusForbidden)
+	// ApproveOnlyToken is an approve-only token's call of a route the approve list does not name
+	// (refuseApproveOnlyToken), or its answer of an ask that is no approval request (answerAsk).
+	ApproveOnlyToken   = both(contracts.DispatchApproveOnlyToken, http.StatusForbidden)
 	AsOfTokenNotServed = both(contracts.DispatchAsOfTokenNotServed, http.StatusForbidden)
 	// The refusals of a write of a step record (steps.go), which the Legion daemon reads to end a
 	// row on.

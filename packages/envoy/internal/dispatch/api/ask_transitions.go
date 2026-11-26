@@ -285,8 +285,19 @@ func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor mode
 	// inside Apply, under the ask's owner lock (requireOpenOwner in transitionAskTx), which every
 	// writer of an ask takes first and which the transaction holds until Commit writes the queued
 	// answer, so the kind checked is the kind answered.
+	//
+	// An approve-only token (model.Credential.ApproveOnly) reaches this route because the approve
+	// list names it for the answer of an approval request, and for nothing else: an answer of any
+	// other ask, a question's free text among them, is no approval, so it is refused here, under
+	// the same lock and for the same reason, with the approve-only gate's own code. No /api/v2
+	// route is on the list, so the gate refuses the token on PUT /api/v2/asks/{id}/state first.
+	approveOnly := approveOnlyRequest(r)
 	applyAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
+		if ask.Kind != "approval" && approveOnly {
+			return model.Ask{}, errorf(apicode.ApproveOnlyToken,
+				"this request's credential is an approve-only token, which answers an approval request and no other ask, and this ask is a %s: nothing was recorded", ask.Kind)
+		}
 		if err := approvalAnswerRefusal(ask, actor); err != nil {
 			return model.Ask{}, err
 		}

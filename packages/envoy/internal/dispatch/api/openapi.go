@@ -1012,6 +1012,9 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 	for _, refusal := range route.Refusals {
 		codes = append(codes, refusal.Code)
 	}
+	if !route.ApproveOnly {
+		codes = append(codes, apicode.ApproveOnlyToken)
+	}
 	if route.Read.Writes != readWritesNothing {
 		codes = append(codes, apicode.ReadOnlyToken)
 	} else if !readAnswersCut(route.Method + " " + route.Pattern) {
