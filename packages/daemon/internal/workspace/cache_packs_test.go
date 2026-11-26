@@ -349,7 +349,7 @@ func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
 		// test clock (slowSteps), and the fetch runs on that clock; otherwise it runs on the local
 		// runner and the wall clock.
 		took map[string]time.Duration
-		// source is where the report says the feed's history came from; reason is how its
+		// source is where the report says the clone's history came from; reason is how its
 		// TarReason begins, and says what else it holds.
 		source, reason, says string
 		// fails is what the fetch's failure holds, "" for none, and outside whether it is outside
@@ -357,7 +357,7 @@ func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
 		fails   string
 		outside bool
 	}{
-		{name: "a bucket whose every part holds fills the feed", source: SourceBucket},
+		{name: "a bucket whose every part holds fills the clone", source: SourceBucket},
 		{name: "a cache of an earlier release answers a bare 404", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) { c.answer(notFound) },
 			source: SourceTar, reason: reasonNotServed},
 		{name: "a cache with no bucket answers the mux's plain 404", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) { c.answer(http.NotFound) },
@@ -387,7 +387,7 @@ func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
 		{name: "a pack and its index listed twice", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
 			c.edit(func(m *PackManifest) { m.Objects = append(m.Objects, m.Objects...) })
 		}, source: SourceTar, reason: reasonInvalid, says: "twice"},
-		{name: "a ref a feed does not take", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
+		{name: "a ref a clone does not take", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
 			c.edit(func(m *PackManifest) {
 				m.Refs = append(m.Refs, PackRef{Path: "config", Bytes: []byte("[core]\n\tfsmonitor = true\n")})
 			})

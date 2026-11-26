@@ -834,7 +834,7 @@ func verifyCache(ctx context.Context, run Runner, clock Clock, staging string, d
 	return nil
 }
 
-// errHistoryNotWhole is verifyCache's refusal of a history whose refs reach an object the feed
+// errHistoryNotWhole is verifyCache's refusal of a history whose refs reach an object the clone
 // does not hold, with git's own words after it.
 var errHistoryNotWhole = errors.New("the repository cache's history is not whole")
 
