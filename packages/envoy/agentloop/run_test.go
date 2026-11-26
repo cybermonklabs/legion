@@ -492,7 +492,7 @@ func TestACutReplyIsMadeAgainWithoutIt(t *testing.T) {
 				if step.Dropped != (i == c.cut) {
 					t.Errorf("step %d dropped %t, want the cut call's step dropped and no other", i+1, step.Dropped)
 				}
-				total = sum(total, step.Usage)
+				total = SumUsage(total, step.Usage)
 			}
 			if cut := result.Steps[c.cut]; cut.Finish != "length" || cut.Usage.Output != 4000 {
 				t.Errorf("the cut step %+v, want its length finish and its 4000 output tokens", cut)
@@ -615,7 +615,7 @@ func TestAReplyOutOfFormOnACallWithToolsIsDroppedAndTheNextCallIsTheLast(t *test
 			if len(result.Steps) != 2 || !result.Steps[0].Dropped || result.Steps[1].Dropped {
 				t.Fatalf("steps %+v, want the reply out of form dropped and the reply after it", result.Steps)
 			}
-			if u := result.Usage; u != sum(result.Steps[0].Usage, result.Steps[1].Usage) || u.Input != 40 || u.Output != 25 || !u.Metered {
+			if u := result.Usage; u != SumUsage(result.Steps[0].Usage, result.Steps[1].Usage) || u.Input != 40 || u.Output != 25 || !u.Metered {
 				t.Errorf("usage %+v, want both calls summed, the dropped one's included", u)
 			}
 			got := s.requests()
@@ -711,7 +711,7 @@ func TestAReplyOutOfFormOnACallThatCarriedTheSchemaIsMalformed(t *testing.T) {
 				if step.Dropped != c.dropped[i] {
 					t.Errorf("step %d dropped %t, want %t", i+1, step.Dropped, c.dropped[i])
 				}
-				total = sum(total, step.Usage)
+				total = SumUsage(total, step.Usage)
 			}
 			if result.Usage != total || !result.Usage.Metered {
 				t.Errorf("usage %+v, want every call summed: %+v", result.Usage, total)
@@ -774,7 +774,7 @@ func TestADroppedReplyOutOfFormLeavesACutAndARefusalAsTheyWere(t *testing.T) {
 				if step.Dropped != c.dropped[i] || (step.AskedAgain == askAgainSentence) != c.asked[i] {
 					t.Errorf("step %d dropped %t and asked again with %q; want dropped %t and asked again %t", i+1, step.Dropped, step.AskedAgain, c.dropped[i], c.asked[i])
 				}
-				total = sum(total, step.Usage)
+				total = SumUsage(total, step.Usage)
 			}
 			if result.Usage != total || !result.Usage.Metered {
 				t.Errorf("usage %+v, want every call summed: %+v", result.Usage, total)
@@ -1004,7 +1004,7 @@ func TestAnOpenAIResponsesReplyTheCheckRefusesIsAskedForAgain(t *testing.T) {
 			t.Errorf("step %d's output items\n%v\nwant them as the API sent them\n%v", i+1, native, want)
 		}
 	}
-	if u, steps := result.Usage, sum(result.Steps[0].Usage, result.Steps[1].Usage); u != steps || u.Output != 50 || u.Reasoning != 20 || !u.Metered {
+	if u, steps := result.Usage, SumUsage(result.Steps[0].Usage, result.Steps[1].Usage); u != steps || u.Output != 50 || u.Reasoning != 20 || !u.Metered {
 		t.Errorf("usage %+v, want both calls summed: %+v", u, steps)
 	}
 	got := s.requests()

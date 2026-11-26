@@ -2379,7 +2379,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				held = edgeScopeOf(r, nil).roles(held)
 				for _, role := range held {
 					if !landed || role != body.Role {
-						go runKeptRoleDrain(*d.delivery, role)
+						startHandover(*d.delivery, role, runKeptRoleDrain)
 					}
 				}
 			}()
@@ -2620,7 +2620,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			landed = true
-			go runTakenRoleDrain(*d.delivery, body.Role)
+			startHandover(*d.delivery, body.Role, runTakenRoleDrain)
 			// A claim that took a controller role from another session narrows that session
 			// before it is answered, within this route's budget (narrowFormerHolder), so a notice
 			// published once this claim is answered reaches the new holder alone.
@@ -3649,7 +3649,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// (registeredSession.returning).
 		if registered.returning {
 			for _, role := range renewal.Set {
-				go runKeptRoleDrain(*d.delivery, role)
+				startHandover(*d.delivery, role, runKeptRoleDrain)
 			}
 		}
 		// The session is known for the next 30 days, with the topics just stored, which are the

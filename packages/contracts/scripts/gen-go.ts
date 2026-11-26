@@ -38,6 +38,8 @@ import {
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
+  MARKDOWN_DOCUMENT_MAX_BYTES,
+  MARKDOWN_DOCUMENT_TOO_LARGE,
   MAX_BROADCAST_RECIPIENTS,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
@@ -55,6 +57,7 @@ import {
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
   STORE_UNCONFIRMED_CAUSE,
+  TEXT_REFUSAL_HEADER,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -597,6 +600,20 @@ ${DISPATCH_EVENT_TYPES.map((type) => `\t${JSON.stringify(type)},`).join("\n")}
 // packages/contracts so the server's 413 and the \`dispatch handoff-write\` command's pre-send
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
+
+// MarkdownDocumentMaxBytes is the most bytes of markdown one document may hold, and
+// MarkdownDocumentTooLarge what the 413 CAP_EXCEEDED of an upload past it says. Generated from
+// MARKDOWN_DOCUMENT_MAX_BYTES and MARKDOWN_DOCUMENT_TOO_LARGE in packages/contracts so the
+// server's refusal and the one \`dispatch artifact\` makes before it sends cannot drift apart.
+const MarkdownDocumentMaxBytes = ${MARKDOWN_DOCUMENT_MAX_BYTES}
+const MarkdownDocumentTooLarge = ${JSON.stringify(MARKDOWN_DOCUMENT_TOO_LARGE)}
+
+// TextRefusalHeader is the response header the markdown round trips put on their refusal of a
+// text for the text alone, whatever the refusal's status: a mark, with one value, that says the
+// answer is the refusal of the text (writeTextRefusal), so a client reads only that it is there.
+// Generated from TEXT_REFUSAL_HEADER in packages/contracts so the routes and \`dispatch artifact\`,
+// which reads an answer carrying it as the call's own refusal, name it once.
+const TextRefusalHeader = ${JSON.stringify(TEXT_REFUSAL_HEADER)}
 
 // PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
 // from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,

@@ -1181,10 +1181,13 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // can seed kinds before the earlier rewrites that refuse them. No deployment takes that order:
 // the binary ships the earlier rewrites and Migrate applies missing versions in order.
 // The list also takes a migration that reads a column a version of the list adds.
-// 20261116144907 reads claims.abandoned_session (20261029121200) and 20261123212127 reads
-// claims.last_start_failure (20261029121000). Applied before those versions, each fails on the missing
-// column. 20261124114223 is the last migration that writes outbox_kind_check: it stands above the
-// design news's 20261119203047 and main's 20261119003157, which write it too, and main's
+// t-e-54's 20261116144907 reads claims.abandoned_session (20261029121200) and
+// dispatch://INFRA-5463's 20261123212127 reads claims.last_start_failure (20261029121000). Applied
+// before those versions, each fails on the missing column. The list also takes one that changes a
+// table a version of the list creates: the givers of a plan version (20261124033010) add a column
+// to 20261117034837's issue_plans, and applied as main's, before that table exists, it fails on
+// the missing table. 20261124114223 is the last migration that writes outbox_kind_check: it stands
+// above the design news's 20261119203047 and main's 20261119003157, which write it too, and main's
 // 20261111090000, 20261111091500 and 20261116144907 write none. The cache trimmer's two,
 // 20261111090000 and 20261111091500, read no column a version of the list adds either, so neither
 // is in the list, and nor are the answer loop's other five, 20261106214000, 20261106214001,
@@ -1200,7 +1203,7 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
-	20261123212127: true, 20261124114223: true,
+	20261123212127: true, 20261124033010: true, 20261124114223: true,
 }
 
 const idleRelease = 20261101222956

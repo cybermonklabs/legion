@@ -292,7 +292,7 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 		{
 			site: siteAWSSignature, name: "a call signed with Signature Version 4a",
 			rig: func(t *testing.T) *rig {
-				r := newRig(t, Options{Rules: awsRules(), Answers: answers})
+				r := newRuledRig(t, awsRules(), Options{Answers: answers})
 				awsGrant(r, false)
 				return r
 			},
