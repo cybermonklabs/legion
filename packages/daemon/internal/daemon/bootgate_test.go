@@ -1092,20 +1092,17 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 // out-of-memory kill), says nothing about the plugin: the gate waits it out and asks again, as it
 // does a probe the budget cut off before it answered (TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime).
 // A pass slower than a second or two passes on the first attempt that answers, as it does on a
-// loaded machine. No budget cuts an attempt here (expire, a context that ends only with the gate's
-// own): each attempt ends at its own exit, so no load can cut the pass and ask once more, and the
-// gate's whole wait ends at the test binary's deadline less testwait's margin (testwait.Remaining).
+// loaded machine. Each attempt runs under gateUnder's budget (answerBudget, 20 s) on the gate's
+// own clock, which no attempt of the fake comes near: an attempt that takes longer is cut off, and
+// the row fails, on the gate's refusal or on an attempt past the three it asks for.
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 	t.Parallel()
 	for _, step := range []string{"yes-then-die", "yes-then-killed"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step, step, "yes-slowly", "yes")
 			gate, logged := gateUnder(t, f, contractCurrent)
-			gate.expire = func(ctx context.Context) (context.Context, context.CancelFunc) { return context.WithCancel(ctx) }
-			ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
-			defer cancel()
 
-			if err := gate.verify(ctx); err != nil {
+			if err := gate.verify(context.Background()); err != nil {
 				t.Fatalf("the gate refused after transient failures: %v", err)
 			}
 			if n := f.attempts(t); n != 3 {
