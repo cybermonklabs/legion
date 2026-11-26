@@ -57,7 +57,6 @@ type Conn struct {
 	enrollments  []string
 	podToken     string
 	tokenReads   int
-	totals       []runtime.LaunchTotals
 	shutdowns    int
 	state        runtime.ConnState
 	unresulted   string
@@ -281,35 +280,11 @@ func (c *Conn) TokenReads() int {
 	return c.tokenReads
 }
 
-// ModelTotals answers the daemon reading what the agent's shim counted: the next read that
-// ScriptModelTotals gave it. With none left it fails, so a test that never expected a read sees
-// the read go unanswered rather than a launch with no calls.
+// ModelTotals answers the daemon reading what the agent's shim counted. The double counts nothing,
+// so every read fails, and a test sees the read go unanswered rather than a launch with no calls.
 func (c *Conn) ModelTotals(_ context.Context) (runtime.LaunchTotals, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.failures["ModelTotals"]; err != nil {
-		return runtime.LaunchTotals{}, err
-	}
-	if len(c.totals) == 0 {
-		return runtime.LaunchTotals{}, errors.New("fake: the shim was asked for its model totals, and the test scripted no read (ScriptModelTotals)")
-	}
-	read := c.totals[0]
-	c.totals = c.totals[1:]
-	read.Totals.Counts = slices.Clone(read.Totals.Counts)
-	return read, nil
+	return runtime.LaunchTotals{}, errors.New("fake: the shim was asked for its model totals, and the double counts none")
 }
-
-// ScriptModelTotals is what the shim answers the next reads of its totals, one read each, in order.
-// It replaces the reads scripted before.
-func (c *Conn) ScriptModelTotals(reads ...runtime.LaunchTotals) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.totals = slices.Clone(reads)
-}
-
-// FailModelTotals makes every later ModelTotals return err: a read that failed or got no answer.
-// FailModelTotals(nil) clears it.
-func (c *Conn) FailModelTotals(err error) { c.fail("ModelTotals", err) }
 
 // Prompts is every prompt frame sent over this connection, in order.
 func (c *Conn) Prompts() []Prompt {
