@@ -1,6 +1,7 @@
 package testexec
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -16,13 +17,16 @@ import (
 )
 
 // Unguarded names, as a root-relative path and line ("dir/file.go:12"), sorted, each place under
-// root that opens a file for writing by package os rather than by WriteFile and gives it an
-// execute bit, where a test may run it while another goroutine of its process forks:
+// root that opens a file for writing by package os rather than by programfile.Write and gives it
+// an execute bit, where the file may run while another goroutine of its process forks:
 //
-//   - in a test file (_test.go) of a package whose tests run beside each other, which is a package
-//     one of whose test files calls Parallel, on a test or a subtest;
-//   - in any file of a test-support package, which is a package whose name begins or ends with
-//     "test" (clitest, testbin, capabilitiestest): tests of any package call it.
+//   - in any file that is no test file (_test.go): the code a deployment runs, whose processes
+//     start commands from many goroutines, and a test-support package, which is a package whose
+//     name begins or ends with "test" (clitest, testbin, capabilitiestest), whose functions tests
+//     of any package call;
+//   - in a test file of a package whose tests run beside each other, which is a package one of
+//     whose test files calls Parallel, on a test or a subtest, and in a test file of a test-support
+//     package.
 //
 // Such a place is a call of os.WriteFile or os.OpenFile whose mode has an execute bit. It is also
 // a call of os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file the same top-level
@@ -34,19 +38,23 @@ import (
 // variable or field that held the file at that point, as g := f does. When the value assigned is
 // a keyed composite literal or its address, so does each field the literal sets to one of those,
 // in a nested literal too: h := &holder{f: f} gives h.f the file. The check reads a variable or
-// field with its parentheses and stars dropped, so (*h).f is h.f. A mode the check cannot evaluate
-// as a constant, in the open or in the Chmod, is named too, since it cannot tell that the mode
-// holds no execute bit. So is a use of os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or
-// os.Chmod as a function value, whose file and mode it cannot follow, and a dot import of os,
-// whose calls it cannot tell from the file's own functions. This package's own WriteFile is the
-// one place left out. A directory below root that holds a go.mod of its own is another module,
-// which that module's check reads, and node_modules, vendor, testdata and dot directories are not
-// Go source of the module.
+// field with its parentheses and stars dropped, so (*h).f is h.f. A mode the check cannot read as
+// holding no execute bit, in the open or in the Chmod, is named too: one that is neither a
+// constant nor masked by one, as perm&^0o111 is (withoutExecuteBit). So is a use of os.WriteFile,
+// os.OpenFile, os.Create, os.CreateTemp or os.Chmod as a function value, whose file and mode it
+// cannot follow, and a dot import of os, whose calls it cannot tell from the file's own functions.
+// The one place left out is programfile.Write itself: the function Write of the package
+// github.com/sjawhar/envoy/programfile, in a file that is no test file; every other function of
+// that package is read, and so is a package of that name at any other import path. A directory
+// below root that holds a go.mod of its own is another module, which that module's check reads,
+// and node_modules, vendor, testdata and dot directories are not Go source of the module.
 //
-// Unguarded fails, naming root, when root holds no go.mod, as the parent of a module's directory
-// or one of its subdirectories does, and when it read no test file under root: a root that holds
-// none, or whose every directory that holds one is another module. A check of such a root would
-// name no write and pass while it read nothing, or read only part of its module.
+// Unguarded fails, naming root, where a check of root would name no write and pass while it read
+// nothing, or read only part of its module: root holds no go.mod, as the parent of a module's
+// directory or one of its subdirectories does; its go.mod cannot be read; its go.mod declares no
+// module; or it read no test file under root, as under a root that holds none or whose every
+// directory that holds one is another module. It also fails with the error of a directory below
+// root it cannot read and of a Go file it cannot parse.
 //
 // The check reads each file's syntax alone, with no types, so it cannot see:
 //
@@ -61,19 +69,20 @@ import (
 //   - a file opened inside a function that returns it, such as a helper that calls os.CreateTemp
 //     and returns the file, which its caller then gives an execute bit;
 //   - a file written by another function of package os (os.CopyFS) or by a function of another
-//     package (io/ioutil.WriteFile, syscall.Open, a helper of a package that is neither of the two
-//     kinds above);
-//   - a test-support package whose name does not begin or end with "test": it is read as any other
-//     package is, its test files when they call Parallel and no other file.
+//     package (io/ioutil.WriteFile, syscall.Open, unix.Openat, a helper of another package);
+//   - a test file of a package whose tests run one at a time, and is not a test-support package:
+//     its test binary runs one test at a time, so only that test's own goroutines can fork beside
+//     its write.
 //
 // A file a command such as cp writes is open in that command's process, not in the test's, so no
 // fork of the test copies its descriptor, and the check has nothing to name there.
 func Unguarded(root string) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		return nil, fmt.Errorf("read no module at %s: it holds no go.mod, so it is not the root of the module whose writes the check reads: %w", root, err)
+	module, err := modulePath(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return nil, fmt.Errorf("read no module at %s: %w", root, err)
 	}
 	dirs, tests := map[string][]string{}, 0
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -105,8 +114,16 @@ func Unguarded(root string) ([]string, error) {
 		return nil, fmt.Errorf("read no Go test file under %s: it holds none, or each directory below it that holds one has a go.mod of its own and is another module, so no write a test makes was read", root)
 	}
 	var offences []string
-	for _, paths := range dirs {
-		found, err := unguardedInPackage(root, paths)
+	for dir, paths := range dirs {
+		relative, err := filepath.Rel(root, dir)
+		if err != nil {
+			return nil, err
+		}
+		importPath := module
+		if relative != "." {
+			importPath += "/" + filepath.ToSlash(relative)
+		}
+		found, err := unguardedInPackage(root, importPath == writerPackage, paths)
 		if err != nil {
 			return nil, err
 		}
@@ -116,11 +133,38 @@ func Unguarded(root string) ([]string, error) {
 	return offences, nil
 }
 
-// unguardedInPackage is Unguarded for the Go files of one directory.
-func unguardedInPackage(root string, paths []string) ([]string, error) {
+// writerPackage is the import path of the one package whose Write Unguarded leaves out: the writer
+// every other place calls.
+const writerPackage = "github.com/sjawhar/envoy/programfile"
+
+// modulePath is the module path the go.mod at path declares. Its error says what is wrong: no
+// go.mod is at path, the go.mod there cannot be read, or it declares no module.
+func modulePath(path string) (string, error) {
+	body, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("it holds no go.mod, so it is not the root of the module whose writes the check reads: %w", err)
+	case err != nil:
+		return "", fmt.Errorf("its go.mod could not be read: %w", err)
+	}
+	for line := range strings.Lines(string(body)) {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+			spelled, _, _ := strings.Cut(rest, "//")
+			if module, err := strconv.Unquote(strings.TrimSpace(spelled)); err == nil {
+				return module, nil
+			}
+			return strings.TrimSpace(spelled), nil
+		}
+	}
+	return "", fmt.Errorf("its go.mod declares no module (it has no module line), so it is not the root of a module whose writes the check reads: %s", path)
+}
+
+// unguardedInPackage is Unguarded for the Go files of one directory. writer says the directory is
+// writerPackage's, whose function Write it leaves out.
+func unguardedInPackage(root string, writer bool, paths []string) ([]string, error) {
 	files := token.NewFileSet()
 	parsed := map[string]*ast.File{}
-	parallel, support, self := false, false, false
+	parallel, support := false, false
 	for _, path := range paths {
 		file, err := parser.ParseFile(files, path, nil, parser.SkipObjectResolution)
 		if err != nil {
@@ -133,12 +177,17 @@ func unguardedInPackage(root string, paths []string) ([]string, error) {
 		}
 		name := file.Name.Name
 		support = support || strings.HasPrefix(name, "test") || strings.HasSuffix(name, "test")
-		self = self || name == "testexec"
+		if writer {
+			file.Decls = slices.DeleteFunc(file.Decls, func(declaration ast.Decl) bool {
+				function, ok := declaration.(*ast.FuncDecl)
+				return ok && function.Recv == nil && function.Name.Name == "Write"
+			})
+		}
 	}
 	var offences []string
 	for _, path := range paths {
 		test := strings.HasSuffix(path, "_test.go")
-		if self && !test || !(test && parallel || support) {
+		if test && !parallel && !support {
 			continue
 		}
 		relative, err := filepath.Rel(root, path)
@@ -375,10 +424,30 @@ func nameOf(path ast.Expr) ast.Expr {
 	return nil
 }
 
-// withoutExecuteBit says whether mode is a constant that holds no execute bit.
+// withoutExecuteBit says whether mode holds no execute bit: a constant that holds none, or any
+// mode masked so that it cannot hold one, by & with a constant that holds none (perm&0o666) or
+// by &^ with a constant that holds all three (perm&^0o111). A writer whose callers choose its
+// mode says so with such a mask.
 func withoutExecuteBit(mode ast.Expr) bool {
-	value, constant := modeOf(mode)
-	return constant && value&0o111 == 0
+	if value, constant := modeOf(mode); constant {
+		return value&0o111 == 0
+	}
+	masked, ok := ast.Unparen(mode).(*ast.BinaryExpr)
+	if !ok {
+		return false
+	}
+	switch masked.Op {
+	case token.AND:
+		for _, side := range []ast.Expr{masked.X, masked.Y} {
+			if value, constant := modeOf(side); constant && value&0o111 == 0 {
+				return true
+			}
+		}
+	case token.AND_NOT:
+		value, constant := modeOf(masked.Y)
+		return constant && value&0o111 == 0o111
+	}
+	return false
 }
 
 // modeOf is the value of a file mode written as a constant: an integer literal, a conversion of

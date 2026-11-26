@@ -811,7 +811,7 @@ func cmdKeygen(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets keygen: make %s: %v\n", outDir, redact.File(err))
 		return 1
 	}
-	if err := writeFileAtomic(filepath.Join(*out, keyFile), pemBytes, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(*out, keyFile), pemBytes); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets keygen: write %s: %v\n", outKeyFile, redact.File(err))
 		return 1
 	}

@@ -224,7 +224,7 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 		if !exists(filepath.Join(out, keyFile)) {
 			return
 		}
-		if err := writeFileAtomic(filepath.Join(out, enrollmentErrorFile), []byte(line+"\n"), 0o600); err != nil {
+		if err := writeFileAtomic(filepath.Join(out, enrollmentErrorFile), []byte(line+"\n")); err != nil {
 			fmt.Fprintf(stderr, "%s --pod: record that refusal in %s in %s: %v\n", prefix, enrollmentErrorFile, outDir, redact.File(err))
 		}
 	}
@@ -281,7 +281,7 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 			return 1
 		}
 	}
-	if err := writeFileAtomic(filepath.Join(out, enrollmentFile), []byte(enrollmentID+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(out, enrollmentFile), []byte(enrollmentID+"\n")); err != nil {
 		refuse(fmt.Sprintf("%s --pod: write %s in %s: %v", prefix, enrollmentFile, outDir, redact.File(err)))
 		return 1
 	}
@@ -399,7 +399,7 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeFileAtomic(path, pemBytes, 0o600); err != nil {
+	if err := writeFileAtomic(path, pemBytes); err != nil {
 		return nil, fmt.Errorf("write %s: %w", outKeyFile, redact.File(err))
 	}
 	return key, nil

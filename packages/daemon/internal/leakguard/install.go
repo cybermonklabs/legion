@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/programfile"
+
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -314,7 +316,9 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if err != nil {
 		return fmt.Errorf("the pod's launcher could not unpack the check the daemon served: %w", err)
 	}
-	if err := writeMember(filepath.Join(staging, tagFile), strings.NewReader(in.Tag+"\n"), 0o644); err != nil {
+	// The tag is read, never run; programfile.Write writes it as each member is, with os.O_EXCL:
+	// a file a role left at its path, a fifo or a symlink, fails the write rather than being opened.
+	if err := programfile.Write(filepath.Join(staging, tagFile), os.O_EXCL, 0o644, strings.NewReader(in.Tag+"\n")); err != nil {
 		return fmt.Errorf("the installed tag could not be recorded: %w", err)
 	}
 	if err := verifyServed(ctx, in.Start, filepath.Join(staging, checkName), parent); err != nil {
@@ -361,7 +365,7 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 // carries the leak-check directory's own paths, so every member is written at its own path under
 // dir. A member whose path does not stay inside dir and one that is neither a directory nor a
 // regular file fail the unpack rather than being skipped, and no file is written over another
-// (writeMember's O_EXCL): a body holding either is not the body PackTarballManifest makes.
+// (os.O_EXCL): a body holding either is not the body PackTarballManifest makes.
 func unpackServed(body []byte, dir string) (int, error) {
 	zipped, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
@@ -390,7 +394,13 @@ func unpackServed(body []byte, dir string) (int, error) {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return files, err
 			}
-			if err := writeMember(target, archive, header.FileInfo().Mode().Perm()); err != nil {
+			// verifyServed runs the launcher member as soon as the unpack ends, so
+			// programfile.Write writes each member. os.O_EXCL: a file already at target, a fifo a
+			// plain open would wait on or a symlink it would write through, fails the write at once
+			// rather than being opened. GitHub's tarball carries git archive's modes, made under its
+			// tar.umask of 002: the member keeps the mode umask 022 gave it, the archive's less
+			// group and other write.
+			if err := programfile.Write(target, os.O_EXCL, header.FileInfo().Mode().Perm()&^0o022, archive); err != nil {
 				return files, err
 			}
 			files++
@@ -398,21 +408,6 @@ func unpackServed(body []byte, dir string) (int, error) {
 			return files, fmt.Errorf("the member %q is neither a directory nor a regular file", header.Name)
 		}
 	}
-}
-
-// writeMember writes content to path as a new file of mode: O_EXCL, so a file already at path,
-// whatever it is — a fifo a plain open would wait on, a symlink a plain open would write through —
-// fails the write at once rather than being opened.
-func writeMember(path string, content io.Reader, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(file, content); err != nil {
-		_ = file.Close()
-		return err
-	}
-	return file.Close()
 }
 
 // verifyServed runs the freshly unpacked check once, before anything may use it, in the one shape

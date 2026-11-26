@@ -4,6 +4,7 @@ package workerbin
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -328,6 +329,52 @@ func TestInstallGitWrapperSkipsItsOwnDirectory(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(bin, "git")); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("with %q first on path, bin/git after Install: %v, want it removed, since the git after bin is the image's", own, err)
 		}
+	}
+}
+
+// installScript replaces a script with a new file renamed over it, never by writing the file in
+// place. An agent runs the script by name off its PATH while the daemon may install it again, and
+// Linux refuses to run a file some process holds open for writing (ETXTBSY), so the name must never
+// stand for a file being written, nor for one half written. The test reads that from the file: a
+// descriptor opened on the old script before the install still reads the old script whole, and the
+// name stands for another file, which holds the new script, mode 0700, with nothing left beside it.
+func TestInstallScriptRenamesANewFileOverTheOldOne(t *testing.T) {
+	const before, after = "#!/bin/sh\necho before\n", "#!/bin/sh\necho after\n"
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := installScript(dir, "tool", before); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "tool")
+	old, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	oldInfo, err := old.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installScript(dir, "tool", after); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(oldInfo, info) {
+		t.Errorf("installScript wrote %s in place; it must write a new file and rename it over the old one", path)
+	}
+	if kept, err := io.ReadAll(old); err != nil || string(kept) != before {
+		t.Errorf("the old script, opened before the install, reads %q (%v); want it whole and unchanged, %q", kept, err, before)
+	}
+	if mode := info.Mode().Perm(); mode != 0o700 {
+		t.Errorf("the new script's mode is %#o, want 0700", mode)
+	}
+	if out, err := exec.Command(path).Output(); err != nil || string(out) != "after\n" {
+		t.Errorf("the new script printed %q (%v), want %q", out, err, "after\n")
+	}
+	if names := entryNames(t, dir); !slices.Equal(names, []string{"tool"}) {
+		t.Errorf("%s holds %q after the install, want only the script", dir, names)
 	}
 }
 

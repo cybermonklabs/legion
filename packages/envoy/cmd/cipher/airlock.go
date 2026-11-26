@@ -302,13 +302,13 @@ func prepareProxyFilesFor(own, command []string, release *AirlockRelease, grantI
 	bundle, wgetrcLines := trustBundle(command, release.CACertificate), commandWgetrcLines(command)
 	dir := filepath.Join(root, proxyTrustDirName(key, grantID, bundle, wgetrcLines))
 	files := airlockFiles{bundle: filepath.Join(dir, "ca-bundle.pem"), wgetrc: filepath.Join(dir, "wgetrc")}
-	if err := writeFileAtomic(filepath.Join(build, "ca-bundle.pem"), bundle, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(build, "ca-bundle.pem"), bundle); err != nil {
 		return airlockFiles{}, fmt.Errorf("write the trust bundle: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(build, "wgetrc"), wgetrcFor(wgetrcLines, files.bundle), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(build, "wgetrc"), wgetrcFor(wgetrcLines, files.bundle)); err != nil {
 		return airlockFiles{}, fmt.Errorf("write the wgetrc: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(build, "expires"), []byte(expiresText(expiresAt)), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(build, "expires"), []byte(expiresText(expiresAt))); err != nil {
 		return airlockFiles{}, fmt.Errorf("write the airlock expiry: %w", err)
 	}
 	if err := os.Rename(build, dir); err != nil {

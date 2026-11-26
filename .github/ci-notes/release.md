@@ -102,10 +102,21 @@ release archives and worker image, so any change to one needs a new tag rather t
 rebuild. The envoy packages of `LEGION_VERSION_ARGS` are every package `go list -deps ./cmd/legion` reaches
 through the module's `replace` on ../envoy, public and internal, so a change to any of them
 changes the binary and must release one, and the envoy module's own go.mod and go.sum decide
-which versions of their dependencies it links. That list is written here by hand; this is the
-command that prints it, to be run from packages/daemon whenever what the binary links moves:
-  go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
+which versions of their dependencies it links. The build runs in the workspace the root go.work
+binds (`go env GOWORK` in packages/daemon names it, and release.yaml sets no GOWORK), so its go,
+godebug, use and replace lines set what the binary builds with: one `godebug` line added to it
+changed the binary's default GODEBUG and its bytes. go.work and go.work.sum are in the list for
+that. The list is written here by hand; this is the
+command that prints it, to be run from packages/daemon for each target `legion` has in
+.github/go-release-targets.json (a file a build constraint keeps to one target links its imports
+into that target's binary alone) whenever what the binary links moves:
+  CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
+ci.yaml's lint job holds the list to what the release builds legion from
+(.github/scripts/check-legion-release-paths.sh) on every change the go_notices filter selects,
+which names release.yaml, the target list, the check and the two scripts it runs, and every Go and
+module file, and runs it after the module cache that filter restores. The check's header says
+which program it asks each question of, and what it fails on.
 
 ## Why GOPROXY falls through to direct
 
@@ -420,10 +431,10 @@ that pair from npm on a stale-plugin relaunch.
 
 legion_build chooses the archives' bytes, and hands over only them and the version. This
 step puts the checkout back on the run's commit, then names the archives itself, from that
-version and that commit's target list; release-push.sh handed refuses a version that is not
-X.Y.Z and an artifact that is not exactly those archives, each a regular file, and prints the
-tag. SHA256SUMS is then written over them, and the tag and the explicit lists go to the
-steps after it, from "legion: Tag release" on.
+version and that commit's target list, which it reads through `release-push.sh legion-targets`;
+release-push.sh handed refuses a version that is not X.Y.Z and an artifact that is not exactly
+those archives, each a regular file, and prints the tag. SHA256SUMS is then written over them,
+and the tag and the explicit lists go to the steps after it, from "legion: Tag release" on.
 
 ## Why the deploy key reaches legion's tag step alone
 

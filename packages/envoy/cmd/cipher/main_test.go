@@ -1370,7 +1370,7 @@ func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string)
 		writePendingMarker(t, keyDir, 0)
 		data, err := os.ReadFile(filepath.Join(fixture, name))
 		if err == nil {
-			err = writeFileAtomic(filepath.Join(keyDir, name), data, 0o600)
+			err = writeFileAtomic(filepath.Join(keyDir, name), data)
 		}
 		if err != nil {
 			t.Fatal(err)

@@ -378,6 +378,40 @@ func TestTheServedInstallLandsTheCheckAndReplacesWhatWasThere(t *testing.T) {
 	}
 }
 
+// GitHub's tarball of a tag carries the modes git archive gives its members under its tar.umask of
+// 002: 0664 for a file and 0775 for a program. The install takes group and other write off each
+// member's mode, so the installed check's files have the modes they had when the umask of 022
+// made them, 0644 and 0755, whatever umask the launcher runs under: under 002 as well. The test
+// sets the process's umask, so it does not run beside another.
+func TestTheInstalledCheckHasNoGroupOrOtherWriteUnderAnyUmask(t *testing.T) {
+	members := theCheck(answersItsHelp)
+	want := map[string]os.FileMode{}
+	for name, archived := range map[string]int64{checkName: 0o775, theNeighbour: 0o664, leakguardtest.ReadmeName: 0o664, theFixture: 0o600, theNested: 0o664} {
+		m := members[name]
+		m.Mode = archived
+		members[name] = m
+		want[name] = os.FileMode(archived) &^ 0o022
+	}
+	body := served(t, leakguardtest.GitHubTarball(t, members))
+	dir := filepath.Join(t.TempDir(), "leak-check")
+	umask := syscall.Umask(0o002)
+	_, err := install(t, dir, theTag, body)
+	syscall.Umask(umask)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	for name, mode := range want {
+		info, err := os.Lstat(filepath.Join(dir, name))
+		if err != nil {
+			t.Errorf("the install is missing %s: %v", name, err)
+			continue
+		}
+		if got := info.Mode(); got != mode {
+			t.Errorf("the install holds %s as %s from the archive's %o, want %s", name, got, members[name].Mode, mode)
+		}
+	}
+}
+
 // A served check that does not answer its --help, a body holding no file and a body that is no
 // tarball each fail the install, name what happened, and leave the directory as it was — an
 // absent one absent, and one holding an install with that install — with nothing beside it.
@@ -800,13 +834,14 @@ func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testin
 	}
 }
 
-// The install writes its tag into a staging directory under the scratch every role writes, while
-// the body unpacks, so a role can plant a file at the tag's path first. The tag is written as
-// every member is (writeMember): a fifo there fails the write rather than holding it until a
-// reader comes, and a symlink there fails it rather than sending the write to the link's target.
-// Through the install, a file already at the staged tag's path refuses the install rather than
-// being opened and written over: a served body that carries the tag file stands in for the file a
-// role planted, since it puts one there every time.
+// The install unpacks the body and writes its tag into a staging directory under the scratch every
+// role writes, so a role can plant a file at a member's path or the tag's first. Each is written
+// with os.O_EXCL: a file already there refuses the install rather than being opened and written
+// over, a fifo refuses it rather than holding the write until a reader comes, and a symlink
+// refuses it rather than sending the write to the link's target. A served body that carries the
+// tag file stands in for a file a role planted at the tag's path, since it puts one there every
+// time; a fifo or a symlink is planted at the tag's path and at the launcher member's once the
+// install has made its staging directory and before it writes (beforeTheFirstWrite).
 func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
 	t.Run("the staged tag, through the install", func(t *testing.T) {
 		members := theCheck(answersItsHelp)
@@ -820,35 +855,42 @@ func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
 			t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
 		}
 	})
+	body := served(t, wholeCheck(t, answersItsHelp))
 	for _, tc := range []struct {
 		name  string
-		plant func(t *testing.T, path string)
+		plant func(path, target string) error
 	}{
-		{"a fifo", func(t *testing.T, path string) {
-			if err := syscall.Mkfifo(path, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"a symlink", func(t *testing.T, path string) {
-			if err := os.Symlink(filepath.Join(filepath.Dir(path), "target"), path); err != nil {
-				t.Fatal(err)
-			}
-		}},
+		{"a symlink", func(path, target string) error { return os.Symlink(target, path) }},
+		{"a fifo", func(path, _ string) error { return syscall.Mkfifo(path, 0o644) }},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), tagFile)
-			tc.plant(t, path)
-			done := make(chan error, 1)
-			go func() { done <- writeMember(path, strings.NewReader(theTag+"\n"), 0o644) }()
-			// A write that opened the fifo waits for a reader, and fails by name before the test
-			// binary's deadline.
-			if err := testwait.Receive(t, "writeMember over "+tc.name, done); !errors.Is(err, fs.ErrExist) {
-				t.Fatalf("writeMember over %s = %v, want it refused as existing", tc.name, err)
-			}
-			if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "target")); !errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("writeMember wrote through the symlink to its target (%v)", err)
-			}
-		})
+		for _, at := range []struct{ name, path, refusal string }{
+			{"the tag's path", tagFile, "the installed tag could not be recorded: "},
+			{"the launcher's path", checkName, "the pod's launcher could not unpack the check the daemon served: "},
+		} {
+			t.Run(tc.name+" at "+at.name, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "leak-check")
+				target := filepath.Join(t.TempDir(), "target")
+				err := beforeTheFirstWrite(t, filepath.Join(filepath.Dir(dir), ".leak-check-install-*"), func(staging string) (string, error) {
+					path := filepath.Join(staging, at.path)
+					return path, tc.plant(path, target)
+				}, "the install beside "+tc.name, func() error {
+					_, err := install(t, dir, theTag, body)
+					return err
+				})
+				if !errors.Is(err, fs.ErrExist) || !strings.HasPrefix(err.Error(), at.refusal) {
+					t.Fatalf("install with %s at %s = %v, want it refused as existing", tc.name, at.name, err)
+				}
+				if _, err := os.Lstat(target); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("the install wrote through the symlink to its target (%v)", err)
+				}
+				if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
+				}
+				if left := leftovers(t, dir); left != nil {
+					t.Errorf("the refused install left %v beside the install path", left)
+				}
+			})
+		}
 	}
 }
 

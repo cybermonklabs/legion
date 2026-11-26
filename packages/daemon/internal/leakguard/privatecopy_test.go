@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -390,42 +389,24 @@ func TestACheckUnderTheDigestRunsFromAPrivateCopyThatIsGoneAfter(t *testing.T) {
 // there until a writer came. os.RemoveAll makes that open whenever it cannot unlink its path
 // outright. In a pod the parent is the role's private directory, a mount point nothing can rename,
 // so this row's parent is a directory of its own, swapped for a fifo once the copy has made its
-// directory and before it writes the first file: that write then fails (ENOTDIR), and the removal
-// meets the fifo. writeCopyFile holds syscall.ForkLock for reading while it writes, so the row
-// holds it for writing until the swap is made, which is only how the row times the swap.
+// directory and before it writes the first file (beforeTheFirstWrite): that write then fails
+// (ENOTDIR), and the removal meets the fifo.
 func TestAFailedPrivateCopyAnswersAParentSwappedForAFifo(t *testing.T) {
 	root := t.TempDir()
 	base, out := filepath.Join(root, "private"), filepath.Join(root, "out")
 	if err := os.Mkdir(base, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	held := heldCheck{files: map[string][]byte{}}
-	for _, name := range ManifestFiles {
-		held.files[name] = []byte("the copy of " + name + "\n")
-	}
-	swapped := make(chan error, 1)
-	syscall.ForkLock.Lock()
-	go func() {
-		defer syscall.ForkLock.Unlock()
-		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-			if made, _ := filepath.Glob(filepath.Join(base, "leak-check-*")); len(made) != 0 {
-				if err := os.Rename(base, out); err != nil {
-					swapped <- err
-					return
-				}
-				swapped <- unix.Mkfifo(base, 0o600)
-				return
-			}
+	held := aHeldCheck()
+	err := beforeTheFirstWrite(t, filepath.Join(base, "leak-check-*"), func(string) (string, error) {
+		if err := os.Rename(base, out); err != nil {
+			return base, err
 		}
-		swapped <- errors.New("the copy made no directory within 10s")
-	}()
-	err := returnsWithoutAWriter(t, base, "the failed private copy", func() error {
+		return base, unix.Mkfifo(base, 0o600)
+	}, "the failed private copy with "+base+" swapped for a fifo", func() error {
 		_, err := held.privateCopy(base, base)
 		return err
 	})
-	if swap := <-swapped; swap != nil {
-		t.Fatalf("the swap: %v", swap)
-	}
 	if !errors.Is(err, unix.ENOTDIR) {
 		t.Errorf("the private copy answered %v, want its first file refused once the parent is no directory (ENOTDIR)", err)
 	}

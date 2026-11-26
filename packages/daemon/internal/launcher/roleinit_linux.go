@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -19,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/programfile"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -435,22 +435,16 @@ func configHomeComplete(own string) (bool, error) {
 	return marker.Mode().IsRegular(), nil
 }
 
-// copyRegular copies the regular file source to target, which it creates with perm.
+// copyRegular copies the regular file source to target, which it creates with perm exactly. A copy
+// keeps an execute bit, so the file may be a program that something in the role runs from its
+// config home, and programfile.Write writes it.
 func copyRegular(source, target string, perm fs.FileMode) error {
 	in, err := os.Open(source)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
+	return programfile.Write(target, os.O_EXCL, perm, in)
 }
 
 // carryOver puts the role's own filesystem at dir (place) while keeping every mount strictly

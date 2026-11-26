@@ -2,11 +2,14 @@ package leakguard
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -36,7 +39,7 @@ func TestInstallServedAnswersAParentSwappedForAFifo(t *testing.T) {
 		if err := os.MkdirAll(scratch, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := returnsWithoutAWriter(t, scratch, "the install", func() error {
+		err := returnsWithoutAWriter(t, func() string { return scratch }, "the install", func() error {
 			_, err := install(t, filepath.Join(scratch, "leak-check"), theTag, body)
 			return err
 		})
@@ -58,7 +61,7 @@ func TestInstallServedAnswersAParentSwappedForAFifo(t *testing.T) {
 			t.Fatal(err)
 		}
 		var swapped error
-		err := returnsWithoutAWriter(t, scratch, "the install", func() error {
+		err := returnsWithoutAWriter(t, func() string { return scratch }, "the install", func() error {
 			return InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: body, Start: procgroup.NoReaper, Log: func(format string, _ ...any) {
 				if strings.Contains(format, "replaced") {
 					swapped = swap(scratch, out)
@@ -125,15 +128,92 @@ func TestInstallServedRemovesNothingALinkInTheOldInstallNames(t *testing.T) {
 	}
 }
 
-// returnsWithoutAWriter runs run, what it is, and answers what it returned, waited for with no
-// span of its own (testwait.Receive): a run that opened the fifo at path plainly would wait there
-// for a writer, and fails the test by name before the test binary's deadline, while a run that a
-// loaded host makes slow, unpacking and running the check, passes.
-func returnsWithoutAWriter(t *testing.T, path, what string, run func() error) error {
+// returnsWithoutAWriter runs run, what it is, and answers what it returned. A run that opened the
+// fifo at fifo() plainly waits there for its other end, and one that waits so inside
+// programfile.Write holds syscall.ForkLock for reading, so every later fork of this test binary,
+// and every later beforeTheFirstWrite, would wait with it until the binary's deadline. So a run
+// that has not returned within two minutes of its own, or one before the binary's deadline, fails
+// the test there, and before it does, the fifo gets both ends (bothEnds), the run ends, and it is
+// joined; each later run gets its own two minutes. A run that a loaded host makes slow, unpacking
+// and running the check, still returns in time.
+func returnsWithoutAWriter(t *testing.T, fifo func() string, what string, run func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- run() }()
-	return testwait.Receive(t, what+" with "+path+" swapped for a fifo", done)
+	limit := testwait.Bounded(t, 2*time.Minute, time.Minute)
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+	}
+	select {
+	case err := <-done:
+		return err
+	default:
+	}
+	path := fifo()
+	// Deferred, so the fifo is closed and its drain ends when the join below gives up too.
+	defer bothEnds(t, path)()
+	err := testwait.Receive(t, what+" once the fifo "+path+" had both ends", done)
+	t.Fatalf("%s did not return within %s while the fifo %s had no other end; given both, it returned %v", what, limit, path, err)
+	return nil
+}
+
+// bothEnds opens the fifo at path for reading and writing, which lets an open of it for either
+// return, and reads all that is written to it until the function it answers closes it.
+func bothEnds(t *testing.T, path string) func() {
+	t.Helper()
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("give %s both ends: it is no fifo (%v, %v)", path, info, err)
+		return func() {}
+	}
+	// For reading and writing rather than for reading alone: an open for reading alone, made
+	// before the blocked open has returned, can read the fifo's end at once and stop reading while
+	// the write is still to come, and it does not release a run that opened the fifo for reading
+	// and waits for a writer.
+	fifo, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Errorf("give the fifo %s both ends: %v", path, err)
+		return func() {}
+	}
+	go func() { _, _ = io.Copy(io.Discard, fifo) }()
+	return func() { _ = fifo.Close() }
+}
+
+// beforeTheFirstWrite calls write, what it is, which makes a directory pattern matches and then
+// writes into it by programfile.Write, and calls plant with that directory before the first of
+// those writes: it holds syscall.ForkLock for writing, which Write takes for reading, from before
+// write starts until the directory is there and plant has returned. plant answers the path it
+// planted at. It answers what write answered, by returnsWithoutAWriter, so a write that waits on a
+// fifo planted there fails the test by name and is ended and joined before any later test runs.
+func beforeTheFirstWrite(t *testing.T, pattern string, plant func(dir string) (string, error), what string, write func() error) error {
+	t.Helper()
+	type planting struct {
+		path string
+		err  error
+	}
+	planted := make(chan planting, 1)
+	syscall.ForkLock.Lock()
+	go func() {
+		defer syscall.ForkLock.Unlock()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			if made, _ := filepath.Glob(pattern); len(made) == 1 {
+				path, err := plant(made[0])
+				planted <- planting{path, err}
+				return
+			}
+		}
+		planted <- planting{err: errors.New("nothing matched " + pattern + " within 10s")}
+	}()
+	// The planter answers within its own 10s poll whatever it finds, so the wait here ends.
+	plantingOnce := sync.OnceValue(func() planting { return <-planted })
+	err := returnsWithoutAWriter(t, func() string { return plantingOnce().path }, what, write)
+	if p := plantingOnce(); p.err != nil {
+		t.Fatalf("the plant: %v", p.err)
+	}
+	return err
 }
 
 // stillFifo fails t unless path is the fifo it was made.

@@ -24,7 +24,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A fifo that the code under test must replace without opening it for writing is planted with the daemon module's `internal/testfifo`.
   `Plant(t, path, perm)` makes the fifo and holds a reader on it until the test ends, so an open of it for writing returns at once rather than waiting for a reader, and `OpenedForWriting` answers what that reader was shown: POLLHUP once a writer opened and closed the fifo, POLLIN for bytes it wrote, a writer that holds it open, and nothing otherwise, with no clock.
   `Plant` first proves, on a scratch fifo of its own, that a held reader sees a writer's open and nothing before it, and fails the test by name on a kernel where it does not.
-  It does not see an open for reading, which shows the reader nothing, and it does not keep a plain open for reading from waiting for a writer: a row whose code must refuse a fifo that it opens keeps the fifo bare and waits for the refusal with `testwait.Receive`.
+  It does not see an open for reading, which shows the reader nothing, and it does not keep a plain open for reading from waiting for a writer: a row whose code must refuse a fifo that it opens keeps the fifo bare and waits for the refusal with `testwait.Receive`, and where the code writes the fifo's path with `programfile.Write`, which holds the fork lock while an open waits, the row's wait is bounded and then gives the fifo both ends, so a regression fails that row and not every later fork (`returnsWithoutAWriter`, `packages/daemon/internal/leakguard/install_scratch_test.go`).
 
 - A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
   `Runner` holds the test and the child's whole environment — `Isolated(t, home)` is the usual one — and runs one command four ways: `Run` trimmed, `Raw` untrimmed, `Out` for standard output alone, and `Try` for a caller that keeps the error.
@@ -668,10 +668,12 @@ stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/interna
 (`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
 exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
-(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
-reading from the open to the close, so no fork lands in between. Code a test runs that writes such
-a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
-`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile.Write` and `execfile.Append`
+are `programfile.Write` and `programfile.Append` (section "A file a test runs"), which hold
+`syscall.ForkLock` for reading from the open to the close, so no fork lands in between; `Write`
+gives the file its mode exactly, not less the umask. Code a test runs that writes such a file
+calls `programfile.Write` itself (`internal/runtime/workerbin`'s scripts, `internal/leakguard`'s
+private copy of the shared check). A file no program executes (a token, a configuration, a
 record) needs neither.
 
 ## A test in `packages/daemon/internal/runtime/sandbox` runs beside the others
@@ -907,17 +909,24 @@ measured, and the check's doc comment the forms it names and misses.
 
 ## A file a test runs
 
-A Go test that writes a file it then runs (a fake command, a stand-in script, a stub on `PATH`)
-can see the run fail with `ETXTBSY`: a fork of the test process holds the write descriptor until
-its exec. `testexec.WriteFile` holds `syscall.ForkLock` while the file is open, so no fork falls
-inside the write. A package whose tests call `Parallel` writes such a file with it in its test
-files, a test-support package (a name that begins or ends with `test`) in every file, and any test
-that starts a command from another goroutine wherever it writes one; in a package whose tests run
-one at a time only the running test can fork, so `os.WriteFile` is safe there. Each module's
-`internal/textcheck` holds the two kinds of package to this with `testexec.Unguarded`, which
-fails on a directory with no `go.mod` or no test file. Its doc comment lists the forms it names and
-misses, and `testexec`'s package documentation gives the failure that was measured. A write in a
-missed form needs `testexec.WriteFile` by hand. A file a command such as `cp` writes needs nothing.
+A file a process writes and then runs (a script, a helper git runs, a fake command, a stub on
+`PATH`) can fail to run with `ETXTBSY`: a fork of the process holds the write descriptor until its
+exec. Code a deployment runs writes such a file with `programfile.Write`
+(`packages/envoy/programfile`), which holds `syscall.ForkLock` while the file is open, so no fork
+falls inside the write, and a test writes one with `testexec.WriteFile`, which calls it. A
+package whose tests call `Parallel` writes such a file with it in its test files, a test-support
+package (a name that begins or ends with `test`) in every file, and any test that starts a command
+from another goroutine wherever it writes one, whether or not its package calls `Parallel`. Only a
+test that starts no command from another goroutine, in a package whose tests run one at a time,
+has no fork beside its write, so `os.WriteFile` is safe there; a file a command such as `cp`
+writes needs nothing. Each module's `internal/textcheck` holds its files to this with
+`testexec.RequireGuarded`, which fails on a directory with no `go.mod` or no test file. It does not
+read the test files of a package whose tests run one at a time, so a test there whose own
+goroutines start a command needs `testexec.WriteFile` by hand, as does a write in a form the guard
+does not see, and such a write in the code a deployment runs needs `programfile.Write`. A test of a
+place that writes such a file runs it with `testexec.RunsBeside`. The package docs say the rest:
+`programfile.Write` the writer's contract, `testexec.Unguarded` the forms the guard names and
+misses and what it leaves out, and `testexec.RunsBeside` when such a test skips.
 
 ## A Go test that opens a NATS client
 

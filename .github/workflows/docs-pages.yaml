@@ -273,6 +273,7 @@ on:
       - 'packages/envoy/natscred/**'
       - 'packages/envoy/natsgrant/*'
       - 'packages/envoy/natsversion/*'
+      - 'packages/envoy/programfile/**'
       - 'packages/envoy/roleholder/**'
       - 'packages/envoy/scripts/lib/pg-url.sh'
       - 'packages/envoy/sessiontiming/**'

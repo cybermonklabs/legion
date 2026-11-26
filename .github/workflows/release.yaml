@@ -118,9 +118,9 @@ env:
     packages/envoy/internal/oauthrefusal/ packages/envoy/internal/redact/
     packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
     packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
+    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/programfile/ packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
-    packages/envoy/go.mod packages/envoy/go.sum
+    packages/envoy/go.mod packages/envoy/go.sum go.work go.work.sum
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json
 
   # why: .github/ci-notes/release.md#why-goproxy-falls-through-to-direct
@@ -1110,9 +1110,9 @@ jobs:
           git clean -ffdx
           dir="$RUNNER_TEMP/legion-assets"
           archives=()
-          targets=$(jq -r '.legion[]' .github/go-release-targets.json)
-          [ -n "$targets" ] || { echo "::error::.github/go-release-targets.json lists no legion target"; exit 1; }
-          for target in $targets; do
+          list=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" legion-targets)
+          mapfile -t targets <<<"$list"
+          for target in "${targets[@]}"; do
             os=${target%/*}
             arch=${target#*/}
             archives+=("legion-$os-$arch.tar.gz")

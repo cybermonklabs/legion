@@ -1,27 +1,16 @@
 package textcheck
 
-//ci:reads packages/daemon/**/*.go TestEveryFileATestRunsBesideAForkIsWrittenUnderTheForkLock calls testexec.Unguarded on ../.., whose walk passes over node_modules, vendor, testdata and dot directories and parses every .go file under packages/daemon it finds, test files included
+//ci:reads packages/daemon/**/*.go TestEveryProgramFileIsWrittenUnderTheForkLock calls testexec.RequireGuarded on ../.., whose Unguarded (packages/envoy/testexec/unguarded.go) walks it, passes over node_modules, vendor, testdata and dot directories, and through unguardedInPackage parses every .go file under packages/daemon it finds, test files included
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/testexec"
 )
 
-// Every file a test of this module writes and then runs is written by testexec.WriteFile, in a
-// package whose tests run beside each other and in every test-support package: a write by package
-// os there can make the run fail with ETXTBSY ("text file busy") whenever a test beside it forks
-// while the file is open (docs/testing.md, "A file a test runs"). The comment on testexec.Unguarded
-// says which writes it names, as file:line, and when it refuses the directory it is given.
-func TestEveryFileATestRunsBesideAForkIsWrittenUnderTheForkLock(t *testing.T) {
-	offences, err := testexec.Unguarded("../..")
-	if err != nil {
-		t.Fatalf("read the module's Go files: %v", err)
-	}
-	if len(offences) > 0 {
-		t.Fatalf("%d writes of a file a test runs can meet a fork beside it:\n\t%s\n"+
-			"write each with testexec.WriteFile (docs/testing.md, \"A file a test runs\")",
-			len(offences), strings.Join(offences, "\n\t"))
-	}
+// Every file this module writes and then runs, or hands to a program that runs it, is written
+// under the fork lock (docs/testing.md, "A file a test runs"). testexec.RequireGuarded says what
+// it reads and how it fails.
+func TestEveryProgramFileIsWrittenUnderTheForkLock(t *testing.T) {
+	testexec.RequireGuarded(t, "../..")
 }

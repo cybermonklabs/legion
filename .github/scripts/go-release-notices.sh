@@ -10,9 +10,10 @@
 # and lint rebuilds it cold on every run with nothing failing, which is what two copies of these
 # loops drift into the moment a target list or a command changes.
 #
-# What it covers, per release target: `legion` (release.yaml's legion_build job), the listener
-# and the agent-secrets pair (release-envoy-listener.yaml), all three over
-# .github/go-release-targets.json; the agent-secrets client, over
+# What it covers, per release target: `legion` (release.yaml's legion_build job), over
+# `release-push.sh legion-targets`; the listener and the agent-secrets pair
+# (release-envoy-listener.yaml), over the envoy list of .github/go-release-targets.json; the
+# agent-secrets client, over
 # .github/agent-secrets-client-targets.json; and every envoy-infra command
 # (release-envoy-infra.yaml), over .github/envoy-infra-targets.json. Each build uses that
 # release build's own GOOS and GOARCH, and its CGO_ENABLED wherever the release sets one, so the
@@ -48,7 +49,9 @@ cd "$(dirname "$0")/../.."
 # in .github/scripts/ci_job_reads.py declares that target's three names instead. The notices
 # script is the one command still run from inside its module: it reads the module of the directory
 # it runs in (`go list -m`, and go-licenses over the packages it is given), and takes no -C.
-for target in $(jq -r '.legion[]' .github/go-release-targets.json); do
+legion=$(.github/scripts/release-push.sh legion-targets)
+mapfile -t legion <<<"$legion"
+for target in "${legion[@]}"; do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
     cd packages/daemon

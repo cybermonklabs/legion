@@ -22,14 +22,14 @@ on:
         required: true
       changes-result:
         description: >-
-          `.github/workflows/ci.yaml#needs.changes.result`: the two notices steps below run when `changes` did
-          not succeed, as they do in ci.yaml.
+          `.github/workflows/ci.yaml#needs.changes.result`: the two notices steps and the
+          release-path check below run when `changes` did not succeed, as they do in ci.yaml.
         type: string
         required: true
       go_notices:
         description: >-
-          `.github/workflows/ci.yaml#needs.changes.outputs.go_notices`: the two notices steps below run when
-          that filter matched.
+          `.github/workflows/ci.yaml#needs.changes.outputs.go_notices`: the two notices steps and
+          the release-path check below run when that filter matched.
         type: string
         required: true
     secrets:
@@ -141,7 +141,8 @@ jobs:
       # No setup-go cache: gofmt needs none, nor does the citation check's go run of its scanner,
       # which compiles only standard-library packages (4 s from an empty build cache, measured on
       # a development machine), and the notices step at the end of this job keeps its own
-      # (go-notices, the restore right after this step), keyed on the Go version this installs.
+      # (go-notices, the restore right after this step), keyed on the Go version this installs,
+      # which the release-path check reads too.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -155,10 +156,11 @@ jobs:
       # again from its newest entry on every push to main. Keyed on the go.sum files it would leave
       # a 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
       # changed modules and rebuilds the changed packages, since Go's build cache is
-      # content-addressed. Restored only when the notices step runs, and here, before every step
-      # that can run go: the NATS floor test below runs `go build`, whose modules are read-only
-      # files tar cannot replace, so a restore after it logged 1,139 `Cannot open: File exists`
-      # lines and `Cache not found` (job 138186405808). That build now reads this entry too.
+      # content-addressed. Restored only when the notices step and the release-path check run, and
+      # here, before every step that can run go: the NATS floor test below runs `go build`, whose
+      # modules are read-only files tar cannot replace, so a restore after it logged 1,139 `Cannot
+      # open: File exists` lines and `Cache not found` (job 138186405808). That build now reads this
+      # entry too.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       #
       # The runner's architecture comes before the OS in this family's key, where the other Go
@@ -257,6 +259,28 @@ jobs:
         env:
           CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
         run: .github/scripts/check-ts-filters.sh
+
+      # After the go-notices restore, which runs right after setup-go: it runs `go list -deps
+      # ./cmd/legion` in packages/daemon for each target .github/go-release-targets.json lists for
+      # legion, and holds release.yaml's LEGION_VERSION_ARGS to every package of this repository
+      # those listings print and to the go.work the build reads, so a package the legion binary
+      # comes to link, or the workspace it builds in, is one a change to which releases a legion. A
+      # run of it before the restore filled the module cache, and tar refused to unpack the entry
+      # over each module file it had downloaded (Go makes them read-only), so the restore failed.
+      # Here, in a job that holds no credential, never in the release workflow.
+      #
+      # It runs when the go_notices filter matches, as the restore does, and whenever `changes` did
+      # not succeed. That filter names every Go and module file and the binary's package
+      # directories, and release.yaml, the check and the two scripts it runs too, so a change to
+      # any of them runs it. With no `if:` it ran on every change, and on one that changes no Go file
+      # the restore is skipped, so its go list fetched 156 modules (1.2 GB unpacked) from the
+      # proxy. Restoring the cache for it whatever the filter said would cost every run 82 s (the
+      # restore, step 26 of job 138280389296), where the fetch took 7 s in the build cluster. The
+      # cost of the shared filter: a change to release.yaml or one of the scripts alone also runs
+      # the notices step.
+      - name: Check the legion release's version paths cover every package the binary links
+        if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
+        run: .github/scripts/check-legion-release-paths.sh
 
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and

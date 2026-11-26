@@ -129,7 +129,7 @@ func (s SignInStore) Write(record SignInRecord) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(s.Path(record.Person), append(raw, '\n'), 0o600); err != nil {
+	if err := writeFileAtomic(s.Path(record.Person), append(raw, '\n')); err != nil {
 		return fmt.Errorf("keep %s's sign-in in %s: %w", record.Person, SignInStoreName, redact.File(err))
 	}
 	return nil
@@ -218,8 +218,8 @@ func namesOf(records []SignInRecord) string {
 
 // writeFileAtomic writes data to path by renaming a finished temporary file into place, so no
 // reader ever sees path half-written: a sign-in record is read back by the next command while
-// this one is still running.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+// this one is still running. The file it writes is 0600.
+func writeFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
@@ -229,7 +229,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		return err
 	}

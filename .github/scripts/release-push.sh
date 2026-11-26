@@ -6,8 +6,8 @@
 # the credentials and runs no dependency code. `version`, `check-built`,
 # `extract-built`, `no-credential` and `fold-notes` are the build job's;
 # `release`, `release-section`, `restart` and `push-tag` the publish job's;
-# `tag`, `tagged`, `pair-version` and `handed` serve both;
-# `fold-orphans` and `fold-check` are a pull request's.
+# `tag`, `tagged`, `pair-version`, `handed` and `legion-targets` serve both;
+# `fold-orphans`, `fold-check` and `version-paths` are a pull request's.
 #
 # version:   the one version step every build job calls: print the release
 #            this checkout gets, as the three lines `version=`, `tag=` and
@@ -32,6 +32,15 @@
 #            outcome exits 3 or 4. Every log line, notice and error goes to
 #            stderr, so stdout holds the three lines on exit 0 and nothing
 #            otherwise.
+# version-paths: print the <paths> of `version`'s own arguments, the words
+#            after its --, each ended by a NUL, and nothing else. It runs
+#            `version`'s one parse of them, so a word `version` reads as an
+#            option or an option's value is not printed, and what `version`
+#            refuses before it reads a tag is refused here, with the same
+#            ::error:: and exit 2. It reads no repository, tag or npm.
+#            .github/scripts/check-legion-release-paths.sh runs it over
+#            release.yaml's LEGION_VERSION_ARGS to learn which words reach git
+#            as the release's paths.
 # restart:   what a publish job runs when `version --expect` exited 4: see to
 #            it that a run of <workflow-file> on this run's branch
 #            ($GITHUB_REF_NAME, which is main for every publish job) releases
@@ -190,6 +199,30 @@
 #            not their names; what the publish job writes into <dir> itself,
 #            such as SHA256SUMS, it writes after this check. Every refusal is an
 #            ::error:: on stderr naming what is wrong, and prints no tag.
+# legion-targets: print the targets .github/go-release-targets.json lists for
+#            legion, one <os>/<arch> a line in the list's order, and nothing
+#            else. Every script and workflow step of this repository that
+#            acts on that list runs it and reads its lines as they are:
+#            release-build-legion.sh, which builds the targets it prints;
+#            check-legion-release-paths.sh, a pull request's release path
+#            check; release.yaml's publish job, which names the archives it
+#            checks after them; and go-release-notices.sh, which writes each
+#            target's notices in lint and in ci-caches.yaml. ci_job_reads.py,
+#            CI's model of the go commands those run, reads the list as data
+#            and holds no rule of it: a list this refuses fails lint's notices
+#            step and its release path check, which a change to the list
+#            runs. Each entry must
+#            be two names of lower-case letters and digits on each side of
+#            one /, as every GOOS and GOARCH go knows is: go builds an empty
+#            GOOS or GOARCH for the host's own and refuses a padded one only
+#            when it builds, and a reader that split the list into words
+#            would read either another way. An empty list, an entry of
+#            another shape, named as JSON, a list jq cannot read and a
+#            legion key that is no list are each an ::error:: and exit 1,
+#            with nothing printed, so no caller keeps a rule of its own for
+#            them. It reads the list beside this script, at
+#            ../go-release-targets.json, so the checkout whose copy runs is
+#            the one whose list it reads.
 # no-credential: the tripwire a build job runs last: fail when a credential is
 #            reachable from the job. It prints presence and names, never a
 #            value: git configuration matching credential, insteadOf,
@@ -282,7 +315,7 @@
 #            and stood in for.
 set -euo pipefail
 
-command=${1:?usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh restart <workflow-file> <lost-races> | release-push.sh tag <version> <tag> | release-push.sh tagged <tag-prefix> | release-push.sh pair-version <tag-prefix> [<released version>] | release-push.sh release [--notes <text>] [--upload-to-published] <tag> <title> <asset>... | release-push.sh release-section <tag> <heading> <content-file> | release-push.sh push-tag <tag> | release-push.sh check-built <tar> | release-push.sh extract-built <tar> | release-push.sh handed <tag-prefix> <version> <dir> <file>... | release-push.sh fold-orphans <package-dir>... | release-push.sh fold-notes <version> <notes-file> <package-dir> <tag-prefix> | release-push.sh fold-check <package-dir>... | release-push.sh no-credential}
+command=${1:?usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh version-paths <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh restart <workflow-file> <lost-races> | release-push.sh tag <version> <tag> | release-push.sh tagged <tag-prefix> | release-push.sh pair-version <tag-prefix> [<released version>] | release-push.sh release [--notes <text>] [--upload-to-published] <tag> <title> <asset>... | release-push.sh release-section <tag> <heading> <content-file> | release-push.sh push-tag <tag> | release-push.sh check-built <tar> | release-push.sh extract-built <tar> | release-push.sh handed <tag-prefix> <version> <dir> <file>... | release-push.sh legion-targets | release-push.sh fold-orphans <package-dir>... | release-push.sh fold-notes <version> <notes-file> <package-dir> <tag-prefix> | release-push.sh fold-check <package-dir>... | release-push.sh no-credential}
 
 # is_plain_version <value>: true when <value> is X.Y.Z, each field a number
 # without leading zeros (release-bump.sh does arithmetic on the fields, where a
@@ -593,6 +626,32 @@ extract_built() {
   tar -xf "$tar_file" -C packages/claude-envoy --no-same-owner || fail_error "extracting $shown_tar into packages/claude-envoy failed"
 }
 
+# legion_targets: the legion-targets command (the header's paragraph).
+legion_targets() {
+  local file listed entry
+  local -a entries targets=()
+  file="$(dirname -- "${BASH_SOURCE[0]}")/../go-release-targets.json"
+  # One line for each entry, as JSON, so an entry that holds a newline or is no string is still
+  # one line, and is refused below.
+  if ! listed=$(jq -r '.legion | if type == "array" then .[] | tojson else error("its legion key is no list") end' "$file" 2>&1); then
+    echo "::error file=.github/go-release-targets.json::release-push.sh legion-targets: could not read the legion targets of $file: $listed" >&2
+    exit 1
+  fi
+  if [ -z "$listed" ]; then
+    echo "::error file=.github/go-release-targets.json::release-push.sh legion-targets: .github/go-release-targets.json lists no legion target; refusing the list" >&2
+    exit 1
+  fi
+  mapfile -t entries <<<"$listed"
+  for entry in "${entries[@]}"; do
+    if ! [[ $entry =~ ^\"([a-z0-9]+/[a-z0-9]+)\"$ ]]; then
+      echo "::error file=.github/go-release-targets.json::release-push.sh legion-targets: the legion target $entry is not <os>/<arch>, two names of lower-case letters and digits on each side of one /; refusing the list" >&2
+      exit 1
+    fi
+    targets+=("${BASH_REMATCH[1]}")
+  done
+  printf '%s\n' "${targets[@]}"
+}
+
 # check_hand_over <dir> <what> <file>...: refuse a <dir> that does not hold
 # exactly the <file>s, each a regular file, and nothing else at any depth (the
 # header's handed paragraph), with an ::error:: on stderr for each fault; an
@@ -804,6 +863,55 @@ render_notes() {
   return "$status"
 }
 
+# version_args <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>]
+# [--patch-path <path>]... -- <paths>...: the one parse of `version`'s
+# arguments, which `version` and `version-paths` both run. It sets prefix,
+# first_npm, expect, bump_args (each --patch-path, as release-bump.sh takes it)
+# and paths, the words after the first -- (none when no -- is given). A
+# missing or refused tag prefix, an option without its value, an --expect
+# that is not X.Y.Z and any other word before the -- is an ::error:: naming
+# the command and exit 2.
+version_args() {
+  local usage="usage: release-push.sh $command <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>..."
+  if [ $# -lt 1 ] || [[ $1 == -* ]]; then
+    echo "::error::release-push.sh $command: a tag prefix is needed; $usage" >&2
+    exit 2
+  fi
+  prefix=$1
+  shift
+  if ! [[ $prefix =~ $tag_prefix_re ]]; then
+    echo "::error::release-push.sh $command: tag prefix $(quote_all "$prefix") holds more than letters, digits, '.', '_' and '-'; refusing it" >&2
+    exit 2
+  fi
+  first_npm='' expect=''
+  bump_args=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --first-npm | --expect | --patch-path)
+        if [ $# -lt 2 ]; then
+          echo "::error::release-push.sh $command: $1 needs a value; $usage" >&2
+          exit 2
+        fi
+        case $1 in
+          --first-npm) first_npm=$2 ;;
+          --expect)
+            if ! is_plain_version "$2"; then
+              echo "::error::release-push.sh $command: --expect $(quote_all "$2") is not X.Y.Z, each field a number without leading zeros; refusing it" >&2
+              exit 2
+            fi
+            expect=$2
+            ;;
+          --patch-path) bump_args+=(--patch-path "$2") ;;
+        esac
+        shift 2
+        ;;
+      --) shift; break ;;
+      *) echo "::error::release-push.sh $command: unknown option $(quote_all "$1"); $usage" >&2; exit 2 ;;
+    esac
+  done
+  paths=("$@")
+}
+
 case "$command" in
   tag)
     version=${2:?version}
@@ -858,44 +966,8 @@ case "$command" in
     ;;
   version)
     shift
-    usage='usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>...'
-    if [ $# -lt 1 ] || [[ $1 == -* ]]; then
-      echo "::error::release-push.sh version: a tag prefix is needed; $usage" >&2
-      exit 2
-    fi
-    prefix=$1
-    shift
-    if ! [[ $prefix =~ $tag_prefix_re ]]; then
-      echo "::error::release-push.sh version: tag prefix $(quote_all "$prefix") holds more than letters, digits, '.', '_' and '-'; refusing it" >&2
-      exit 2
-    fi
-    first_npm='' expect=''
-    bump_args=()
-    while [ $# -gt 0 ]; do
-      case $1 in
-        --first-npm | --expect | --patch-path)
-          if [ $# -lt 2 ]; then
-            echo "::error::release-push.sh version: $1 needs a value; $usage" >&2
-            exit 2
-          fi
-          case $1 in
-            --first-npm) first_npm=$2 ;;
-            --expect)
-              if ! is_plain_version "$2"; then
-                echo "::error::release-push.sh version: --expect $(quote_all "$2") is not X.Y.Z, each field a number without leading zeros; refusing it" >&2
-                exit 2
-              fi
-              expect=$2
-              ;;
-            --patch-path) bump_args+=(--patch-path "$2") ;;
-          esac
-          shift 2
-          ;;
-        --) shift; break ;;
-        *) echo "::error::release-push.sh version: unknown option $(quote_all "$1"); $usage" >&2; exit 2 ;;
-      esac
-    done
-    # The remaining arguments are the paths release-bump.sh reads commits for.
+    version_args "$@"
+    # paths are the paths release-bump.sh reads commits for.
     summary_line='' on_head=false
     tag=$(pushed_tag "$prefix")
     if [ -n "$tag" ]; then
@@ -919,7 +991,7 @@ case "$command" in
       # command's, with nothing on stdout. Its status passes through, except a 3
       # or 4 (a sed it pipes into exits 4 on an I/O error), which --expect's
       # caller would read as another run's tag: that is a 1.
-      next=$("$(dirname "${BASH_SOURCE[0]}")/release-bump.sh" "$prev_version" "$range" "${bump_args[@]}" -- "$@") || {
+      next=$("$(dirname "${BASH_SOURCE[0]}")/release-bump.sh" "$prev_version" "$range" "${bump_args[@]}" -- "${paths[@]}") || {
         status=$?
         case $status in 3 | 4) exit 1 ;; *) exit "$status" ;; esac
       }
@@ -967,6 +1039,15 @@ case "$command" in
       printf '%s\n' "$summary_line" >> "$GITHUB_STEP_SUMMARY"
     fi
     printf 'version=%s\ntag=%s\nskip=%s\n' "$version" "$tag" "$skip"
+    ;;
+  version-paths)
+    shift
+    version_args "$@"
+    # One printf per path list, never one with no path: printf repeats its
+    # format at least once, so an empty list would print a lone NUL.
+    if [ ${#paths[@]} -gt 0 ]; then
+      printf '%s\0' "${paths[@]}"
+    fi
     ;;
   restart)
     usage='usage: release-push.sh restart <workflow-file> <lost-races>'
@@ -1207,6 +1288,13 @@ case "$command" in
     fi
     check_hand_over "$dir" "the release does not ship" "$@"
     printf '%s\n' "$prefix$version"
+    ;;
+  legion-targets)
+    if [ $# -ne 1 ]; then
+      echo "::error::release-push.sh legion-targets takes no argument; usage: release-push.sh legion-targets" >&2
+      exit 1
+    fi
+    legion_targets
     ;;
   fold-orphans)
     shift

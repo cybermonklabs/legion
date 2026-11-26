@@ -513,6 +513,11 @@ workspaces they build in, the target lists, the script holding the loops and the
 notices script it runs per target. Every Go and module file of the repository is in
 it because scripts/go-third-party-notices.sh reads each target's `go list -deps`: a
 new import changes the notices with no module file changed.
+The same filter gates lint's release path check, which runs after that step's module-cache
+restore: it asks `go list -deps` of each legion target as the notices step does, and reads
+release.yaml, release-push.sh and release-build-legion.sh besides, which the filter names for it
+(.github/ci-notes/release.md, "The Go legion's version arguments and the command that prints its
+envoy packages").
 
 ## go_notices: The step loads each release target's packages and writes
 
