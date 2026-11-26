@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -1714,7 +1715,11 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		t.Errorf("the Ready cache's health is %+v, want its room on its volume and its repack's failure for lack of space as /healthz answered them", room)
 	}
 
-	served.Close()
+	// The cache's pod stops answering: its address now refuses every dial, for the rest of the
+	// test (testport.Refused). Closing served instead freed its port for any process on the machine
+	// to take. In CI run 45807890690 the read then got `connection reset by peer`, which no closed
+	// port answers, only a listener that took the port; the refusal is the failure this test causes.
+	network.route("10.0.0.5:8418", testport.Refused(t))
 	g.r.readCacheHealth(g.ctx)
 	if widgets := g.r.RepositoryCaches()[1]; widgets.Health != nil || !strings.Contains(widgets.HealthError, "connection refused") {
 		t.Errorf("a cache whose /healthz cannot be read is %+v, want the read's failure and no health", widgets)
@@ -1723,7 +1728,8 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 
 // podNetwork is a cacheDial for a daemon outside the cluster: it reaches pod addresses, each
 // served by the listener routes names, and resolves no name at all, as a host with no cluster DNS
-// does. It records every address dialed.
+// does. It records every address dialed. route changes where an address leads while dials run, so
+// routes is read and written under mu.
 type podNetwork struct {
 	routes map[string]string
 	mu     sync.Mutex
@@ -1741,11 +1747,20 @@ func (n *podNetwork) dial(ctx context.Context, network, address string) (net.Con
 	if net.ParseIP(host) == nil {
 		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 	}
+	n.mu.Lock()
 	to, routed := n.routes[address]
+	n.mu.Unlock()
 	if !routed {
 		return nil, fmt.Errorf("dial %s: no route to host", address)
 	}
 	return (&net.Dialer{}).DialContext(ctx, network, to)
+}
+
+// route has address lead to the address to from the next dial on.
+func (n *podNetwork) route(address, to string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.routes[address] = to
 }
 
 func (n *podNetwork) addresses() []string {
