@@ -561,8 +561,15 @@ reviews these calls:
 Every other Dispatch command is outside the gate, and its text posts unreviewed: among them
 `dispatch issue-update --reason`, `dispatch resolve-ask --reason` and `dispatch suggest`.
 
-The gate reads the arguments from the command's own `--dry-run`. The dry run sends nothing and
-contacts no Dispatch server, so a slow one most likely means a busy machine. The reads, the dry
+The gate reads the arguments from the command's own `--dry-run`. It runs the dry run with
+`DISPATCH_DRY_RUN_LOCAL=1`, and the CLI then checks the arguments alone. Without that variable,
+`dispatch artifact --dry-run` asks Dispatch to check the text as the call does: how it would store
+text given inline, read from `--content-file` or from stdin, or what it refuses of a Markdown
+`--path` file's bytes. The call itself runs without
+the variable. It asks Dispatch the same questions and refuses a text that Dispatch would store
+under another spelling, or that an upload refuses for the text alone. So the gate's dry run stores
+nothing and contacts no Dispatch server, and
+a slow one most likely means a busy machine. The reads, the dry
 run and the `cd`'s `pwd -P` probe, take at most half the call's deadline: the first run of each
 is cut at 20 s, or sooner when that half ends sooner, and a run cut there is run once more with
 what is left of that half (25 s at the 90 s default), when at least 2 s of it is left. The
