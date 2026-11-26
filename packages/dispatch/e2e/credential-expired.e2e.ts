@@ -327,3 +327,61 @@ test("a Dismiss of a second expired request takes away the line the first Dismis
     )
   ).toHaveCount(0);
 });
+
+// The tester's red row of round 21 (an expired request's Dismiss that holds the focus leaves the
+// page with its row and drops the focus on the body: features/credentials/
+// CredentialRequestsSection.tsx:100-103 holds Dismiss "through the read that takes the row away,
+// so it keeps the focus until the row goes", :218-219 draws each request as its own `<li>`, which
+// goes with its Dismiss once that read drops the row, and the file hands the focus on nowhere - no
+// `useFocusPlace`, no `.focus(`; the architect's ruling of 2026-11-26T05:17Z). Two expired
+// requests are listed; Enter on the first one's Dismiss takes its row away, and the section must
+// then hand the focus to a control of its own, the next request's Dismiss being the natural one.
+// At c3b536cc the focus is on the body once the row is gone, in every sample: Chromium twice and
+// Firefox once, at 1440x900 and at 390x664.
+// SLOW(>=2s): two expired requests seeded, one Inbox page open and one dismissal written.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("after Enter on an expired request's Dismiss takes its row away, the Credential requests section hands the focus on rather than leaving it on the page body @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `Dismiss of an expired credential request by Enter: ${text}`;
+  await setPendingCredentialRequests([expiredSecret, lapsedSecret]);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto("/");
+  const requests = page.getByRole("region", { name: "Credential requests" });
+  const first = requests.getByRole("listitem").filter({ hasText: "RETIRED_API_KEY" });
+  const second = requests.getByRole("listitem").filter({ hasText: "LAPSED_API_KEY" });
+  const dismiss = first.getByRole("button", {
+    name: "Dismiss expired secret request RETIRED_API_KEY",
+  });
+  await expect(
+    requests.getByRole("listitem"),
+    step("the section lists the two expired requests.")
+  ).toHaveCount(2);
+  await expect(
+    second.getByRole("button", { name: "Dismiss expired secret request LAPSED_API_KEY" }),
+    step("the second expired request is listed with its Dismiss.")
+  ).toBeVisible();
+  // The press is the keyboard's: the pointer stays off every row (README, "The rules a row
+  // follows"), and only the focus is on the Dismiss it presses.
+  await page.mouse.move(0, 0);
+  await dismiss.focus();
+  await expect(dismiss, step("the first request's Dismiss holds the focus.")).toBeFocused();
+  const answer = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/credential-requests/record-retired/dismiss"
+  );
+  await page.keyboard.press("Enter");
+  expect((await answer).ok(), step("the dismissal lands at Dispatch.")).toBe(true);
+  await expect(
+    first,
+    step("the dismissed request's row leaves the list, and its Dismiss with it.")
+  ).toHaveCount(0);
+  await expect(second, step("the other expired request stays listed.")).toHaveCount(1);
+  await expect(
+    page.locator("body"),
+    step(
+      "once the row is gone the focus is not on the page body: the Dismiss that held it left the page with its row, so the section hands the focus on, to the next request's Dismiss."
+    )
+  ).not.toBeFocused();
+});

@@ -20,6 +20,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   focusRow,
@@ -1338,5 +1339,46 @@ test("a Change whose document read the bound ended loses that read's line at the
     } finally {
       await held[0]?.abort("internetdisconnected").catch(() => undefined);
     }
+  });
+});
+
+// The tester's red row of round 21 (an inline form a button ends leaves the focus on the page's
+// body: DecisionActions.tsx:567-574, the Change form's Cancel, `onClick={onDone}`, whose `onDone`
+// (:293) is `() => change(false)`, and `change` (:192-197) sets `changing` and the draft and
+// moves no focus, so the form goes with the Cancel that held the focus and nothing gives it back
+// to the decision's Change (:267-277) that opened the form; the architect's ruling of
+// 2026-11-26T05:17Z). The row opens the Change form of the newer decision that waits for review
+// by a click on its Change, types a change and clicks Cancel. At c3b536cc the focus is then on
+// the page's body, at 1440 and at 390 px, in Chromium (4 of 4) and Firefox (2 of 2).
+// SLOW(>=2s): one seeded issue whose Decisions view is loaded once, and one Change form opened,
+// typed in and cancelled; no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("a decision's Change form ended by its Cancel gives the focus back to the Change that opened it @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const step = (text: string) => `the Decisions view's Change form ended by Cancel: ${text}`;
+    const row = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedNewer)).first();
+    const change = row.locator('button[data-row-action="change"]');
+    const field = row.getByLabel(CONTROL_LABELS.your_change);
+    await page.setViewportSize(DESKTOP);
+    await openPreset(page, seeded.key, "decisions");
+    await expectOpeningLanded(page);
+    await expect(
+      change,
+      step("the newer decision waits for review and draws its Change.")
+    ).toBeVisible();
+    await change.click();
+    await expect(field, step("Change opens the form with the caret in Your change.")).toBeFocused();
+    await field.fill("Tie it to the first statement instead.");
+    await row.getByRole("button", { exact: true, name: CONTROL_LABELS.cancel }).click();
+    await expect(field, step("Cancel takes the form away.")).toHaveCount(0);
+    await expect(
+      change,
+      step(
+        "after Cancel the focus is on the decision's Change that opened the form, not on the page's body."
+      )
+    ).toBeFocused();
   });
 });

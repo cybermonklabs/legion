@@ -985,6 +985,44 @@ test("a long title through the New priority form lands under its cut id", async 
   }
 });
 
+// The tester's red row of round 21 (the New priority form a click on Cancel ends drops the focus
+// on the page body: features/priorities/NewPriority.tsx:64-73's Cancel runs `setAdding(false)` and
+// `setTitle("")` alone (:66-69), so the form goes with the Cancel that held the focus, and the file
+// holds no `.focus(` that gives it back to New priority; the architect's ruling of
+// 2026-11-26T05:17Z). New priority opens its form, a click puts the caret in its title, and a click
+// on Cancel takes the form away; the focus must go back to the New priority button that opened
+// it. At c3b536cc it is on the body in every sample: Chromium twice and Firefox once, at 1440x900
+// and at 390x664.
+// SLOW(>=2s): one priority seeded, one Priorities page open, and its form opened and cancelled.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("after a click on Cancel the New priority form gives the focus back to the New priority button that opened it @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `the New priority form, cancelled: ${text}`;
+  const seeded = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  await priorityPage(page);
+  await page.goto(PRIORITIES_PATH);
+  await expect(
+    page.getByRole("row", { exact: true, name: `#1 ${seeded.title}` }),
+    step("the Priorities page draws the seeded priority's row.")
+  ).toBeVisible();
+  const opener = page.getByRole("button", { exact: true, name: "New priority" });
+  const form = page.getByRole("form", { name: "New priority" });
+  const titleBox = form.getByRole("textbox", { name: "Title of the new priority" });
+  await opener.click();
+  await expect(form, step("New priority opens its form.")).toBeVisible();
+  await titleBox.click();
+  await expect(titleBox, step("a click puts the caret in the new priority's title.")).toBeFocused();
+  await form.getByRole("button", { exact: true, name: "Cancel" }).click();
+  await expect(form, step("Cancel takes the form away.")).toHaveCount(0);
+  await expect(
+    opener,
+    step(
+      "after Cancel the focus is on the New priority button that opened the form, not on the page body."
+    )
+  ).toBeFocused();
+});
+
 // SLOW(>=2s): the seed, three writes a person makes on a priority's page and on a row, and a
 // reload that reads them back.
 test("a priority row opens its description, its title its page, and what is written there reads back on the row after a reload", async ({

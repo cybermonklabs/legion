@@ -564,6 +564,18 @@ const parallelProjects = [
   // Agents page's Filter panel, whose own hand-off runs in the same commit; and its Details
   // `k-list-focus` row, whose Escape closes the labels list over its focused search box. (Its
   // header row's single picks focus the list's trigger before the list goes, so they ask nothing.)
+  // Where the engine leaves the focus once the element that held it is removed: a composer, an
+  // editor or a form that a key or a button ends, whose commit takes the focused control off the
+  // page, or a navigation that takes the whole page, so that the page, which must hand the focus
+  // to the control that opened it or to the page's content, is read at the point the engine leaves
+  // it on the body. INFRA-2160's round-21 rows, each of which asserts where the page hands it:
+  // `keyboard-complete`'s five `k-comment-focus` rows of a Conversation composer after Discard, of
+  // a comment's edit composer and the margin's after a second Escape, of a thread's reply box
+  // after Escape and of the docked composer after Cancel reply; `issue-page-q`'s Change form after
+  // Cancel; `issue-page-h`'s Repository box after its clear lands; `issue-page-p`'s Issue actions
+  // menu, closed by one Escape with Details open; `credential-expired`'s row that Enter on a
+  // Dismiss takes away; `priorities`' New priority form after Cancel; and `create-document`'s
+  // document made from the project's Documents list.
   // The order in which the engine fires a text box's blur and lets React commit the save the blur
   // made, which takes the box away: `issue`'s row that Enter in the title's editor, and a click
   // outside it, close it and leave the next key to the page, as above `webkit`.

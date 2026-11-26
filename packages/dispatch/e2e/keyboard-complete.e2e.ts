@@ -10410,6 +10410,265 @@ test("k-comment-focus: on today's issue page an Escape held down in the margin's
   expect(writes, step("nothing is written")).toEqual([]);
 });
 
+/** An issue of CORE whose Conversation holds one comment of alice's, the reader's own. */
+async function plantOwnComment(): Promise<{ commentId: string; key: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger clock" });
+  const comment = await createComment(issue.key, { body: "Alice asks why the clock is shared." });
+  return { commentId: comment.id, key: issue.key };
+}
+
+// The tester's red row of round 21 (an inline editor a key or a button ends leaves the focus on the
+// page body: the Discard of `Discard draft?` runs MentionComposer.tsx:907-915's `discard`, whose
+// `setConfirmingDiscard(false)` (:913) takes the question away with the Discard button that holds
+// the focus (:1084-1092), and whose `onClose()` (:914) is ConversationTab.tsx:1524's
+// `onClose={() => setReplyTo(null)}`, which moves no focus, where the question's Keep gives it back
+// to the field that held it (`focusIntoView(field)`, MentionComposer.tsx:1100-1101); the
+// architect's ruling of 2026-11-26T05:17Z). A typed draft in the Conversation's docked composer,
+// Escape, which asks Discard draft?, and a click on its Discard; the caret must be back in the
+// composer's Comment box, which held it before the question. At c3b536cc the focus is on the body
+// in every sample: Chromium four times and Firefox twice, at 1440x900 and at 390x664.
+// SLOW(>=2s): one issue seeded, one Conversation tab open, and a typed draft in its composer
+// discarded, with no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("composer hand-back: on today's issue page Discard over a typed draft in the Conversation's comment composer puts the caret back in its Comment box @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `composer hand-back: Discard in the Conversation's comment composer: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${issue.key}/conversation`);
+  // The issue holds no comment, so the docked composer is the page's one comment form.
+  const form = page.getByRole("form", { name: "Comment composer" });
+  const field = form.getByRole("textbox", { exact: true, name: "Comment" });
+  await expect(field, step("the Conversation tab draws its comment composer.")).toBeVisible();
+  await field.click();
+  await page.keyboard.type("Half a thought about the clock");
+  await expect(field, step("the typed draft is in the Comment box.")).toHaveValue(
+    "Half a thought about the clock"
+  );
+  await expect(field, step("the Comment box holds the caret.")).toBeFocused();
+  const question = form.getByRole("alert").filter({ hasText: "Discard draft?" });
+  await page.keyboard.press("Escape");
+  await expect(question, step("Escape over the typed draft asks Discard draft?.")).toBeVisible();
+  await question.getByRole("button", { exact: true, name: "Discard" }).click();
+  await expect(question, step("Discard takes the question away.")).toHaveCount(0);
+  await expect(field, step("Discard empties the Comment box.")).toHaveValue("");
+  await expect(
+    field,
+    step(
+      "after Discard the caret is back in the composer's Comment box, which held it before the question, not on the page body."
+    )
+  ).toBeFocused();
+});
+
+// The tester's red row of round 21 (an inline editor a key or a button ends leaves the focus on the
+// page body: a second Escape over `Discard draft?` runs MentionComposer.tsx:585-591's `closeOrAsk`,
+// which with the question up (`confirmingDiscard`, :588) calls `onClose()` (:590); a comment's edit
+// composer's `onClose` is ThreadCard.tsx:462's `() => setEditingId(undefined)`, on the Conversation
+// tab ConversationTab.tsx:1664's `setEditing(item.root.id, id)` (:1177-1185), which unmounts the
+// editor that holds the focus, and the Edit button that opened it (ThreadCard.tsx:476-482) has no
+// ref, and the file no `.focus(` that gives the focus back to it; the architect's ruling of
+// 2026-11-26T05:17Z). On the Conversation tab, Expand thread, Edit on alice's own comment, a change
+// to its text, Escape, which asks Discard draft?, and Escape again end the edit unsaved; the focus
+// must be back on the comment's Edit button. At c3b536cc it is on the body in every sample:
+// Chromium four times and Firefox twice, at 1440x900 and at 390x664.
+// SLOW(>=2s): one comment seeded, one Conversation tab open, its thread opened, and the comment's
+// edit composer opened and ended unsaved, with no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("composer hand-back: on today's issue page a second Escape over Discard draft? in a Conversation comment's edit composer gives the focus back to the comment's Edit button @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `composer hand-back: Escape twice in a Conversation comment's edit composer: ${text}`;
+  const seed = await plantOwnComment();
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${seed.key}/conversation`);
+  const turn = page.locator(`[data-turn="comment:${seed.commentId}"]`);
+  const edit = turn.getByRole("button", { exact: true, name: "Edit" });
+  const field = turn.getByRole("textbox", { name: "Edit comment" });
+  await turn.getByRole("button", { exact: true, name: "Expand thread" }).click();
+  await expect(edit, step("the open thread offers Edit on alice's own comment.")).toBeVisible();
+  await edit.click();
+  await expect(field, step("Edit opens the comment's editor.")).toBeVisible();
+  await field.click();
+  await field.fill("Alice asks why the clock is shared, and since when.");
+  await expect(field, step("the changed text is in the editor.")).toHaveValue(
+    "Alice asks why the clock is shared, and since when."
+  );
+  await expect(field, step("the editor holds the caret.")).toBeFocused();
+  const question = turn.getByRole("alert").filter({ hasText: "Discard draft?" });
+  await page.keyboard.press("Escape");
+  await expect(question, step("Escape over the changed text asks Discard draft?.")).toBeVisible();
+  await expect(field, step("the editor keeps the caret while it asks.")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(field, step("a second Escape ends the edit and takes the editor away.")).toHaveCount(
+    0
+  );
+  await expect(
+    edit,
+    step(
+      "after the second Escape the focus is back on the comment's Edit button, which opened the editor, not on the page body."
+    )
+  ).toBeFocused();
+});
+
+// The tester's red row of round 21 (an inline editor a key or a button ends leaves the focus on the
+// page body: Escape in a thread's reply box runs MentionComposer.tsx:687-689's `cancelReply`
+// (:573-577), whose `onCancelReply` is ThreadCard.tsx:512's `onReplyCancel ?? onToggle`; the
+// Conversation tab hands a card `onReplyCancel` (turn-keys.ts:267-276's `giveBackFromThread`) only
+// for a thread `r` opened (ConversationTab.tsx:1665-1669), so for a thread Expand thread opened it
+// is the turn's `toggleThread` (ConversationTab.tsx:856-865), which closes the thread, takes the
+// reply box that holds the focus away with it (ThreadCard.tsx:501-502) and gives the focus no
+// place; the architect's ruling of 2026-11-26T05:17Z). Expand thread on alice's comment, a click in
+// the thread's Reply box, and Escape close the thread; the focus must be on the turn's Expand
+// thread toggle, which opened it. At c3b536cc it is on the body in every sample at 1440x900:
+// Chromium four times and Firefox twice.
+// SLOW(>=2s): one comment seeded, one Conversation tab open, and its thread opened and closed by
+// Escape in its reply box, with no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("composer hand-back: on today's issue page Escape in the reply box of a thread Expand thread opened closes the thread with the focus on its Expand thread toggle @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `composer hand-back: Escape in the reply box of a thread Expand thread opened: ${text}`;
+  const seed = await plantOwnComment();
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${seed.key}/conversation`);
+  const turn = page.locator(`[data-turn="comment:${seed.commentId}"]`);
+  const toggle = turn.getByRole("button", { name: /^(?:Expand|Collapse) thread$/ });
+  const reply = turn.getByRole("textbox", { exact: true, name: "Reply" });
+  await expect(toggle, step("the turn draws its thread toggle, closed.")).toHaveText(
+    "Expand thread"
+  );
+  await toggle.click();
+  await expect(toggle, step("Expand thread opens the thread.")).toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+  await reply.click();
+  await expect(reply, step("a click puts the caret in the thread's Reply box.")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(reply, step("Escape ends the reply and takes its box away.")).toHaveCount(0);
+  await expect(toggle, step("Escape closes the thread.")).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    toggle,
+    step(
+      "after Escape the focus is on the turn's Expand thread toggle, which opened the thread, not on the page body."
+    )
+  ).toBeFocused();
+});
+
+// The tester's red row of round 21 (an inline editor a key or a button ends leaves the focus on the
+// page body: Cancel reply in the docked composer (MentionComposer.tsx:1033-1041, drawn only while
+// the composer holds a reply, :1012) runs ConversationTab.tsx:1520-1523's `onCancelReply`, whose
+// `setReplyTo(null)` takes that button away with the focus it holds, and whose
+// `giveBackFromDockedReply()` (turn-keys.ts:327-331) focuses only a turn `r` noted
+// (`dockedReplyFrom`, set at turn-keys.ts:258), which a click's `beginReply`
+// (ConversationTab.tsx:1264-1265) clears (`beginDockedReply`, turn-keys.ts:324-326); the
+// architect's ruling of 2026-11-26T05:17Z). The Reply button on the turn of alice's comment starts
+// a reply in the docked composer, and a click on its Cancel reply ends it; the focus must be back
+// on that Reply button. At c3b536cc it is on the body in every sample: Chromium four times and
+// Firefox twice, at 1440x900 and at 390x664.
+// SLOW(>=2s): one comment seeded, one Conversation tab open, and a reply started in its docked
+// composer and cancelled, with no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("composer hand-back: on today's issue page Cancel reply in the Conversation's docked composer gives the focus back to the Reply button that started the reply @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `composer hand-back: Cancel reply in the Conversation's docked composer: ${text}`;
+  const seed = await plantOwnComment();
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${seed.key}/conversation`);
+  const turn = page.locator(`[data-turn="comment:${seed.commentId}"]`);
+  const replyButton = turn.getByRole("button", { exact: true, name: "Reply" });
+  // The docked composer is the `Comment composer` form whose box is named `Comment` exactly: a
+  // thread's reply box is `Reply`, and the thread Reply opens draws one too, hidden while the
+  // docked composer answers its comment.
+  const form = page
+    .getByRole("form", { name: "Comment composer" })
+    .filter({ has: page.getByRole("textbox", { exact: true, name: "Comment" }) });
+  const field = form.getByRole("textbox", { exact: true, name: "Comment" });
+  const cancel = form.getByRole("button", { exact: true, name: "Cancel reply" });
+  await expect(field, step("the Conversation tab draws its docked composer.")).toBeVisible();
+  await expect(cancel, step("the docked composer holds no reply yet.")).toHaveCount(0);
+  await replyButton.click();
+  await expect(
+    cancel,
+    step("Reply starts a reply in the docked composer, with its Cancel reply.")
+  ).toBeVisible();
+  await expect(field, step("Reply puts the caret in the docked composer's box.")).toBeFocused();
+  await cancel.click();
+  await expect(cancel, step("Cancel reply ends the reply and takes itself away.")).toHaveCount(0);
+  await expect(
+    replyButton,
+    step(
+      "after Cancel reply the focus is back on the Reply button that started the reply, not on the page body."
+    )
+  ).toBeFocused();
+});
+
+// The tester's red row of round 21 (an inline editor a key or a button ends leaves the focus on the
+// page body: a second Escape over `Discard draft?` runs MentionComposer.tsx:585-591's `closeOrAsk`,
+// which with the question up (`confirmingDiscard`, :588) calls `onClose()` (:590), ThreadCard.tsx
+// :462's `() => setEditingId(undefined)`, in the spec's margin useMarginSheet.ts:733's
+// `setEditingCommentId`, which unmounts the editor that holds the focus, and the card's Edit button
+// (ThreadCard.tsx:476-482) has no ref, and the file no `.focus(` that gives the focus back to it;
+// the architect's ruling of 2026-11-26T05:17Z). In the spec's margin, alice's comment on "lease"
+// opened, its Edit, a change to its text, Escape, which asks Discard draft?, and Escape again end
+// the edit unsaved; the focus must be back on the card's Edit button. At c3b536cc it is on the
+// body in every sample: Chromium four times and Firefox twice, at 1440x900 and at 390x664.
+// SLOW(>=2s): one comment on the spec seeded, the spec opened and connected, the comment's card
+// opened, and its edit composer opened and ended unsaved, with no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("composer hand-back: on today's issue page a second Escape over Discard draft? in the spec margin's edit composer gives the focus back to the card's Edit button @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `composer hand-back: Escape twice in the spec margin's edit composer: ${text}`;
+  const seed = await seedCommentFocus();
+  const comment = await createComment(seed.key, {
+    anchor: { artifact: "spec", quote: THIRD_WORD },
+    body: "Why does the lease return at noon?",
+  });
+  await page.setViewportSize(WIDE);
+  await openSpec(page, seed.key, FOCUS_PARAGRAPHS[2][0]);
+  const card = page.getByTestId(`margin-comment-${comment.id}`);
+  const edit = card.getByRole("button", { exact: true, name: "Edit" });
+  const field = card.getByRole("textbox", { name: "Edit comment" });
+  await card.getByRole("button", { expanded: false }).first().click();
+  await expect(card, step("a click on the card's preview opens its thread.")).toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+  await expect(edit, step("the open card offers Edit on alice's own comment.")).toBeVisible();
+  await edit.click();
+  await expect(field, step("Edit opens the comment's editor.")).toBeVisible();
+  await field.click();
+  await field.fill("Why does the lease return at midnight?");
+  await expect(field, step("the changed text is in the editor.")).toHaveValue(
+    "Why does the lease return at midnight?"
+  );
+  await expect(field, step("the editor holds the caret.")).toBeFocused();
+  const question = card.getByRole("alert").filter({ hasText: "Discard draft?" });
+  await page.keyboard.press("Escape");
+  await expect(question, step("Escape over the changed text asks Discard draft?.")).toBeVisible();
+  await expect(field, step("the editor keeps the caret while it asks.")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(field, step("a second Escape ends the edit and takes the editor away.")).toHaveCount(
+    0
+  );
+  await expect(
+    edit,
+    step(
+      "after the second Escape the focus is back on the card's Edit button, which opened the editor, not on the page body."
+    )
+  ).toBeFocused();
+});
+
 // The tester's red row of round 19 (R12; the architect's ruling of 2026-11-25T13:35Z): on today's
 // issue page one Escape in the header's title editor ends the edit with the focus back on Edit
 // title, as the new issue page puts it back on its title. At c6dc939c IssueHeader.tsx's Escape

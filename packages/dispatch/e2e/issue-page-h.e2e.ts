@@ -1078,6 +1078,69 @@ test("a repository of a long name is whole in Details at every width @phone", as
   });
 });
 
+// The tester's red row of round 21 (an inline box a button ends leaves the focus on the page's
+// body: RepoControl.tsx:782-793, the Repository box's clear control, whose press puts the focus
+// in the box and says "once the write lands the box hands it to the row's text", and that
+// hand-off, `focusHeld` (:558-569), which gives a focus that fell to the document to whichever of
+// the row's None, its repository's text and the box takes the other's place, and hands nothing on
+// where the row drew text in its last commit and draws text again (:563-566); the architect's
+// ruling of 2026-11-26T05:17Z). The row opens ONE's Repository box by a click on the row's text,
+// types another repository in it and clicks the box's clear control, Clear the repository of
+// ONE. Neither ONE's parent nor its project holds a repository, so once the clear lands the row
+// reads None. At c3b536cc the focus is then on the page's body, at 1440 and at 390 px, in Chromium
+// (4 of 4) and Firefox (2 of 2).
+// SLOW(>=2s): one seeded issue page open with Details, one Repository box opened and typed in,
+// and one write, the clear, waited on until Dispatch holds it and the row reads None.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("Details' Repository box gives the focus to its row's None once the clear of the repository lands @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { one } = seeded.keys;
+    const step = (text: string) => `Details' Repository box of ${one} cleared: ${text}`;
+    await page.setViewportSize(viewportAt(1440));
+    await gotoIssue(page, `/issues/${one}`);
+    await openDetails(page);
+    const row = detailsRow(page, PROPERTY_LABELS.repository);
+    const text = row.getByRole("button", {
+      exact: true,
+      name: repoTextControlName(one, { resolvedRepo: REPOSITORY, words: CONTROL_NAME_WORDS }),
+    });
+    const box = row.getByRole("combobox", { exact: true, name: repoControlName(one) });
+    const none = row.getByRole("button", {
+      exact: true,
+      name: repoTextControlName(one, { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
+    });
+    await expect(text, step(`the Repository row draws ${REPOSITORY} as its text.`)).toHaveText(
+      REPOSITORY
+    );
+    await text.click();
+    await expect(
+      box,
+      step("a click on the row's text opens the box with the focus in it.")
+    ).toBeFocused();
+    await box.fill("acme/review");
+    await row.getByRole("button", { exact: true, name: `Clear the repository of ${one}` }).click();
+    await expect
+      .poll(async () => (await getIssue(one)).repo, {
+        message: step("the clear lands at Dispatch."),
+      })
+      .toBeNull();
+    await expect(
+      none,
+      step("once the clear lands the row reads None, since ONE inherits no repository.")
+    ).toHaveText(CONTROL_LABELS.none);
+    await expect(box, step("once the clear lands the box is gone.")).toHaveCount(0);
+    await expect(
+      row.locator(":focus"),
+      step(
+        "once the clear lands the focus is on the row's None, the row's text the box hands it to (RepoControl.tsx's `focusHeld`, `noneControl`), not on the page's body."
+      )
+    ).toHaveCount(1);
+  });
+});
+
 /** The bottom of Details' head, the element that holds its Close, which stays at the top while
  *  the panel under it scrolls. */
 function detailsHeadBottom(page: Page): Promise<number> {

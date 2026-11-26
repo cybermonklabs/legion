@@ -153,3 +153,55 @@ test("the project document list makes a document the same way, holding nothing",
   expect(document.versions ?? []).toHaveLength(1);
   expect((await getArtifactVersion(document.id, 1)).markdown).toBe("");
 });
+
+// The tester's red row of round 21 (a document made from the project's Documents list opens on its
+// page with the focus on the page body: features/artifacts/CreateDocument.tsx:94 closes the form
+// (`setCreating(false)`) and :100 navigates to the new document in the same answer, so the list
+// leaves the page, the form's own hand-off to New document (TitleForm.tsx:71-74) with it; and
+// app.tsx:841-853 moves the focus to the page's main region only when `pageIdentity` changes, which
+// is the project (`parseProjectPath(...)?.project`) for the list and for its document alike, so
+// this navigation is no page change and nothing gives the focus a place; the architect's ruling of
+// 2026-11-26T05:17Z). New document, a title and Create make the document and open its page; the
+// focus must then be in that page's content, its main region, which holds the title heading and
+// the editor. At c3b536cc it is on the body in every sample: Chromium twice and Firefox once, at
+// 1440x900 and at 390x664 (Enter in the Title box leaves it there too).
+// SLOW(>=2s): one project seeded, the Documents list open, one document written through its form,
+// and its page opened.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("a document made from the project's Documents list opens on its page with the focus in the page's content, not on the page body @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `New document on a project's Documents list: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto("/projects/CORE/documents");
+  await expect(
+    page.getByRole("region", { exact: true, name: "Project documents" }),
+    step("the Documents list is drawn.")
+  ).toBeVisible();
+  const form = newDocumentForm(page);
+  const titleBox = form.getByRole("textbox", { name: "Title" });
+  await page.getByRole("button", { name: "New document" }).click();
+  await expect(
+    titleBox,
+    step("New document opens its form with the caret in the Title box.")
+  ).toBeFocused();
+  await titleBox.fill("Launch notes");
+  await form.getByRole("button", { name: "Create" }).click();
+  await expect(page, step("Create opens the new document's page.")).toHaveURL(
+    "/projects/CORE/documents/launch-notes"
+  );
+  await expect(
+    page.getByRole("heading", { name: "Launch notes" }),
+    step("the document's page draws its title.")
+  ).toBeVisible();
+  await expect(form, step("the New document form is gone with the list.")).toHaveCount(0);
+  // The main region itself counts: the shell focuses it on a page change (app.tsx:852), so the
+  // region or anything inside it holding the focus is the page's content holding it.
+  await expect(
+    page.getByTestId("main-content").and(page.locator(":focus-within")),
+    step(
+      "the focus is on the document page's content - its main region, which holds the title heading and the editor - not on the page body."
+    )
+  ).toHaveCount(1);
+});
