@@ -27,7 +27,8 @@ import (
 // that entry's task (reviewedCommitStays), which reads the row, never the task.
 //
 // It is one of the two places the sentences enter a task, and its two callers are the places every
-// reviewer's task this release composes passes: the queue, for every task it queues (queuedRow),
+// reviewer's task this release composes passes: the queue, for every task it queues (queuedRow,
+// through ReviewerTask, which the daemon's start of a reviewer queued for news alone reads too),
 // and the raise of an entry, which stores its task through it (enter). The other is the claim's
 // send of a task no such queue named (supervise's Delivery.message), which names `none` for both.
 // So the reviewer reads the difference from the commit to the head, or the whole change for

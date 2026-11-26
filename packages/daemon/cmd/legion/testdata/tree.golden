@@ -25,8 +25,12 @@ legion controller start	--config string	--daemon-url string
 legion gh	hidden	words unread
 legion git	hidden	words unread
 legion git-credential	hidden	words unread
+legion intake
+legion intake discard	--config string	--consumer string	--give-up int64	--operator-token-file string	--port int	--reason string	--through-seq uint64
+legion intake replay	--config string	--consumer string	--give-up int64	--operator-token-file string	--port int	--through-seq uint64
 legion issue
 legion issue status	--config string	--operator-token-file string	--port int
+legion jj	hidden	words unread
 legion launcher	hidden	--connect string	--metadata-identity-provider string	--metadata-workload-pool string	--microvm bool	--pod-uid string	--private-dir string	--role stringArray	--roles-dir string	--sandbox string	--session-database string	--session-impersonate-service-account string	--session-instance string	--session-user string	--session-writer-audience string	--stop-grace duration	--test-postgres bool	--token-file string
 legion launcher role-init	hidden	--fixed-root string	--generation uint64	--home string	--home-mounts string	--role string	--roles-dir string	--status-fd int
 legion launcher volume-trim-delete	hidden	--fixed-root string	--home string	--home-mounts string	--roles-dir string
@@ -47,7 +51,7 @@ legion start	--config string
 legion state	--config string	--json bool	--operator-token-file string	--port int
 legion status
 legion stop	--config string
-legion version
+legion version	--contracts bool
 legion worker-shim	hidden	--agent-secrets-bin string	--agent-secrets-key-dir string	--boot-token-file string	--connect string	--pod-safety bool	--pod-token-file string	--provider-env-dir string	--stop-grace duration	--warm-codegraph bool
 legion workspace-init	hidden
 legion workspace-init cache	hidden	--listen string	--refresh duration	--repo string	--root string

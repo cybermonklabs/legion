@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  Each role's composed prompt, the architect's, each phase worker's and the controller's in both
+  launches, holds one sentence that puts the code, a command's output and its `--help` above a
+  skill, and a test of `internal/prompts` holds it there once. No skill holds the sentence any
+  more.

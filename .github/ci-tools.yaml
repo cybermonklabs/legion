@@ -11,12 +11,15 @@
 # for crane, changie, elan and the Pulumi CLI the row is the pin itself, since install-crane,
 # install-changie, install-elan and install-pulumi hold no version of their own and install the
 # version this row names,
-# `ARG MISE_VERSION` of packages/daemon/docker/worker.Dockerfile for mise,
-# `ARG JJ_TOOL` of that same file for jj,
-# `ARG UV_VERSION` of that same file for uv, whose `primary_digest` is that file's
-# `ARG UV_SHA256`, because the image's own toolchain stage builds uv from those two,
-# `const DockerPluginVersion` of packages/envoy/infra/internal/pulumitest/pulumitest.go for the
+# `packages/daemon/docker/worker.Dockerfile#ARG MISE_VERSION` for mise,
+# `packages/daemon/docker/worker.Dockerfile#ARG JJ_TOOL` for jj,
+# `packages/daemon/docker/worker.Dockerfile#ARG UV_VERSION` for uv, whose `primary_digest` is
+# `packages/daemon/docker/worker.Dockerfile#ARG UV_SHA256`, because the image's own toolchain
+# stage builds uv from those two,
+# `packages/envoy/infra/internal/pulumitest/pulumitest.go#const DockerPluginVersion` for the
 # docker provider plugin the envoy-infra live tests install,
+# the `packages/envoy/loadtest/cluster/render-nats.sh#HELM=` line for helm, whose render runs
+# an installed helm only where that helm answers the version the line names,
 # and .bun-version for the three bun rows.
 # A row named `<tool>-aarch64` is the arm64 build of the `<tool>` row beside it, for the jobs that
 # run on ubuntu-24.04-arm: its `version` is that row's, so it answers to the same pin, and the
@@ -24,7 +27,7 @@
 # Bun's own assets do, and answer to .bun-version each.
 # .github/scripts/check-ci-tools.sh is the gate that holds a row to its pin and to this file's
 # shape, and .github/scripts/mirror-ci-tools.sh fills the copy of each ghcr-mirror row from
-# ci.yaml's `ci-images` job, the one copy path this repository has.
+# `.github/workflows/ci.yaml#ci-images` job, the one copy path this repository has.
 #
 # Raising a tool is one commit: the row, its `-aarch64` row where it has one, and the pin they
 # answer to move together.
@@ -35,13 +38,14 @@
 # second one, with .bun-version. That raise takes two because it moves a container image as
 # well as these rows: .github/ci-images.yaml's new `oven/bun` row goes first and alone, since a
 # consumer there names a digest and the new row is inert until a `FROM` moves onto it, and
-# .bun-version, `ARG BUN_VERSION`, every `FROM` and these three rows follow in the second
+# the `ARG BUN_VERSION` defaults, every `FROM`, .bun-version and these three rows follow in the second
 # commit. What a tool row cannot do is go ahead of its pin the way an image row can, because a
 # call site names a row rather than a version: a second row of the same tool for the same machine
 # has no name a call site could use, and this file's gate refuses two rows of one name for that
 # reason.
 #
-# One commit races nothing: ci.yaml's `tool-fallback` and `tool-fallback-arm` jobs each declare
+# One commit races nothing: `.github/workflows/ci.yaml#tool-fallback` and
+# `.github/workflows/ci.yaml#tool-fallback-arm` jobs each declare
 # `needs: [changes, ci-images]`, so the copy of the new row is filled before either reads it, and
 # no other job waits on that copy, because an install reaches the copy only where its primary did
 # not serve the bytes.
@@ -78,6 +82,11 @@
 # holds these exact bytes, which .github/scripts/mirror-ci-tools.sh's read-back after the push
 # and the `tool-fallback` job's blob check (.github/workflows/ci-job-tool-fallback.yaml) are what
 # decide.
+# helm takes a copy for the same reason, and its primary is the vendor's own host and not a
+# GitHub release: get.helm.sh is the one publisher of helm's release tarballs. Helm's GitHub
+# release holds only the .asc signatures of them, read on 2026-11-22: 33 assets at v3.20.2, and
+# the three that name linux-amd64 each end in .asc. So the second source is the copy, filled from
+# get.helm.sh, and `helm-releases` is the word that host is read with.
 #
 # WHY THE BUN AND jj ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
 # `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all,
@@ -93,23 +102,26 @@
 # able to state that rather than force a fiction (dispatch://INFRA-1974).
 # A `tools:` row cannot carry it, and the reason is what a row says rather than any field of it:
 # a row is the statement that two sources serve these bytes, which is the one thing a decline
-# denies. The gate reads that statement as a shape — ci.yaml's `tool-fallback` job fails for a
+# denies. The gate reads that statement as a shape — `.github/workflows/ci.yaml#tool-fallback` job fails for a
 # row no install reads, and .github/scripts/check-ci-tools.sh refuses a `second_source` that is
-# none of the five words .github/scripts/ci-tools.sh reads a source with, before the row is read
+# none of the six words .github/scripts/ci-tools.sh reads a source with, before the row is read
 # at all — so a row of one source is refused whichever way it is written.
 # So a decline is an entry of its own key, invisible to .github/scripts/ci-tools.sh,
 # .github/scripts/mirror-ci-tools.sh, .github/scripts/ci-tools-proof.sh and `tool-fallback`, and
 # read by the gate alone.
 # The gate holds an entry to rules of its own: its `url` is written by some file under .github/,
 # its `digest` occurs in the file its `pinned_in` names, that file is neither this manifest nor a
-# test's fixture, no row already covers its repository, and its `why` is a sentence.
+# test's fixture, an entry a Dockerfile pins names the ARG that holds its digest in `pinned_as`
+# and that ARG's value is its digest, no row already covers its repository, and its `why` is a
+# sentence.
 # WHETHER THAT REASON IS TRUE IS THE REVIEWER'S JUDGEMENT, not the gate's; the rules before it
 # are the whole of what a program can check.
-# THE LIST HOLDS ONE ENTRY TODAY, the release lane's gitleaks. It held elan, uv and the docker
-# provider plugin as well, and dispatch://INFRA-1986 gave each of those three a row with a second
-# source, which is what made each of those entries false and deleted it. The one that is left
-# waits on something else: not a copy of those bytes, but a way for a job holding the release
-# credentials to read one, which its own `why` sets out. The next entry is for the next install
+# THE LIST HOLDS TWO ENTRIES TODAY, the release lane's gitleaks and the Oh My Pi archive
+# .github/actions/install-omp fetches. It held elan, uv and the docker provider plugin as well,
+# and dispatch://INFRA-1986 gave each of those three a row with a second source, which is what
+# made each of those entries false and deleted it. gitleaks waits on something else: not a copy
+# of those bytes, but a way for a job holding the release credentials to read one, which its own
+# `why` sets out; Oh My Pi's `why` says why it has no copy. The next entry is for the next install
 # whose bytes one publisher serves and no other: it is written when that install lands, and it is
 # deleted the day a second address for those bytes is found and can be reached, as the three were.
 
@@ -131,8 +143,9 @@ tools:
     digest_of: the release tarball go-containerregistry_Linux_x86_64.tar.gz, whole
     # The word the row's primary is read with, which every log line and every refusal of it
     # says: `github-release` for a release asset, `pypi` for a wheel, `pulumi-releases` for a
-    # tarball get.pulumi.com serves. A copy this repository fills is no origin of the bytes, so
-    # `ghcr-mirror` and `npm` are second sources and no row's primary.
+    # tarball get.pulumi.com serves, `helm-releases` for a tarball get.helm.sh serves. A copy
+    # this repository fills is no origin of the bytes, so `ghcr-mirror` and `npm` are second
+    # sources and no row's primary.
     primary_source: github-release
     # The URL the primary path fetches, empty where a third party fetches the bytes for us.
     primary: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
@@ -147,8 +160,9 @@ tools:
     # and "" where the primary serves the pinned bytes themselves.
     primary_member: ""
     # Where the bytes come from when the primary does not serve them: `ghcr-mirror` for a copy in
-    # the package `registry:` names, `npm` for the npm registry, and `github-release`, `pypi` or
-    # `pulumi-releases` for a service that serves this row's bytes at an address of its own.
+    # the package `registry:` names, `npm` for the npm registry, and `github-release`, `pypi`,
+    # `pulumi-releases` or `helm-releases` for a service that serves this row's bytes at an
+    # address of its own.
     # It is the one word every log line and every refusal of that source says, so a row that
     # moves to another source moves every sentence about it with one edit.
     second_source: ghcr-mirror
@@ -255,9 +269,9 @@ tools:
   # to one literal; `mirror_from` is the asset mise reads, and `mirror_member` is the binary inside
   # it, which is what the copy holds.
   - name: jj
-    version: 0.46.0-sami.20261120-120102
-    digest: cb07d4a4c9f5c0d1b6cf8e58e0547d05c5c062f06b222cf47ce6696831c970f9
-    digest_of: the jj binary itself, the 24839104-byte `./jj` member of the release tarball
+    version: 0.46.0-sami.20261125-112159
+    digest: 30d788fe079498d55b13812e7a4baa6007c5a099f3009e31b6853120fdf60e70
+    digest_of: the jj binary itself, the 25537536-byte `./jj` member of the release tarball
     primary_source: github-release
     primary: ""
     primary_digest: ""
@@ -265,7 +279,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
-    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-x86_64-unknown-linux-musl.tar.gz
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261125-112159/jj-v0.46.0-sami.20261125-112159-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # jj for an arm64 runner: the same fork release, the aarch64 musl build mise installs there. As
@@ -273,9 +287,9 @@ tools:
   # of the binary mise installs; the release's own asset digest answers for the tarball
   # `mirror_from` names, and this one was read out of it.
   - name: jj-aarch64
-    version: 0.46.0-sami.20261120-120102
-    digest: 03f182b4d287a43f7bbabc4c88c9fc8a32b485a212287950d327fe377ad881d5
-    digest_of: the jj binary itself, the 21257568-byte `./jj` member of the release tarball
+    version: 0.46.0-sami.20261125-112159
+    digest: 139aa8928983c01923513ca5c2a4e18dc63d7a73259c6ebbaa6681ee1ce08005
+    digest_of: the jj binary itself, the 21813088-byte `./jj` member of the release tarball
     primary_source: github-release
     primary: ""
     primary_digest: ""
@@ -283,7 +297,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
-    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-aarch64-unknown-linux-musl.tar.gz
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261125-112159/jj-v0.46.0-sami.20261125-112159-aarch64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # Bun for an x64 runner, the version .bun-version pins. `primary` is empty on every bun row:
@@ -377,7 +391,8 @@ tools:
     mirror_member: ""
 
   # uv, which .github/actions/install-uv installs: the uv the worker image ships, pinned by
-  # `ARG UV_VERSION` and `ARG UV_SHA256` of packages/daemon/docker/worker.Dockerfile, which the
+  # `packages/daemon/docker/worker.Dockerfile#ARG UV_VERSION` and
+  # `packages/daemon/docker/worker.Dockerfile#ARG UV_SHA256`, which the
   # image's own toolchain stage builds uv from.
   # This is the one row whose `digest` is of a member. PyPI's wheel and GitHub's tarball are two
   # archives of one binary, so the binary is the only literal both sources can be held to:
@@ -394,16 +409,16 @@ tools:
     primary_member: uv-x86_64-unknown-linux-gnu/uv
     second_source: pypi
     max_time: 60
-    # github-release, pypi and pulumi-releases second sources only. The whole address that
-    # service serves this row's bytes at, written out, because such a service has no one prefix
-    # every row of it begins with the way a release asset has https://github.com.
+    # github-release, pypi, pulumi-releases and helm-releases second sources only. The whole
+    # address that service serves this row's bytes at, written out, because such a service has
+    # no one prefix every row of it begins with the way a release asset has https://github.com.
     second_url: https://files.pythonhosted.org/packages/py3/u/uv/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
     # The member to take out of what `second_url` served, and "" to keep the whole file. A `.whl`
     # or a `.zip` is read with python3's zipfile and anything else with `tar -xzO`.
     second_member: uv-0.13.5.data/scripts/uv
 
-  # The docker provider plugin ci.yaml's envoy-infra live tests install. Its version is the
-  # `const DockerPluginVersion` of packages/envoy/infra/internal/pulumitest/pulumitest.go the
+  # The docker provider plugin ci.yaml's envoy-infra live tests install. Its version is
+  # `packages/envoy/infra/internal/pulumitest/pulumitest.go#const DockerPluginVersion`, which the
   # live programs pin. get.pulumi.com serves this tarball byte for byte, so the second source is
   # that address and no copy.
   - name: pulumi-docker
@@ -438,6 +453,30 @@ tools:
     second_url: https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-linux-x64.tar.gz
     second_member: ""
 
+  # helm, which .github/actions/install-helm installs for the envoy-go-checks job, whose cluster
+  # suite renders the load test's NATS manifests with
+  # packages/envoy/loadtest/cluster/render-nats.sh. That render runs an installed helm only where
+  # it answers the version the script's `HELM=` line names, and builds helm with `go run`
+  # otherwise, so this row's version is that line's.
+  # get.helm.sh is the one publisher of these bytes, so the second source is a copy, filled from
+  # the primary itself; the digest is the one get.helm.sh publishes in the .sha256sum file beside
+  # this tarball, and the tarball holds the binary at linux-amd64/helm. The envoy-go-checks job
+  # and the `tool-fallback` job, which proves this row's two sources, both run on ubuntu-24.04,
+  # so no job installs an arm64 build and this row has no -aarch64 row beside it.
+  - name: helm
+    version: 3.20.2
+    digest: 258e830a9e613c8a7a302d6059b4bb3b9758f2f3e1bb8ea0d707ce10a9a72fea
+    digest_of: the release tarball helm-v3.20.2-linux-amd64.tar.gz, whole
+    primary_source: helm-releases
+    primary: https://get.helm.sh/helm-v3.20.2-linux-amd64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://get.helm.sh/helm-v3.20.2-linux-amd64.tar.gz
+    mirror_member: ""
+
 # The URLs CI fetches that have no second source anywhere today, one entry per URL. Each is
 # allowed by its entry and by nothing else; the gate refuses any other unnamed release asset.
 no_second_source:
@@ -461,3 +500,22 @@ no_second_source:
       source in this manifest is read. release-push.sh fetches and checks these bytes itself,
       with curl, sha256sum and tar, which are not dependency commands. A second source here is
       therefore a ghcr copy and a way for a credentialed job to read it without the helper.
+
+  # Oh My Pi, the build .omp-pin names, which .github/actions/install-omp installs for the jobs
+  # whose tests run it. The URL is built from the pin (`github:<owner>/<repo>@<version>`, the tag
+  # being `v` and the version), and the digest is `ARG OMP_SHA256` of the worker image's
+  # Dockerfile, which its tools stage checks the same archive against. `pinned_as` names that ARG,
+  # so the gate holds this digest to its value exactly, and a bump of .omp-pin moves the ARG and
+  # this digest in one commit.
+  - url: https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz
+    digest: 359f95dec797f1a507accbd2f3b56b3ef9b5dfc5fb5cd4c8652a326175ad6c85
+    pinned_in: packages/daemon/docker/worker.Dockerfile
+    pinned_as: ARG OMP_SHA256
+    why: >-
+      The fork publishes this archive as a release asset of its own repository and nowhere else,
+      and no copy is kept on purpose: a ghcr copy, as jj has, is one more set of bytes to fill and
+      hold in step with every bump of .omp-pin, and the failure it would have answered on
+      2026-11-21 was not this address at all but the GitHub API budget mise spent resolving the
+      pin, which this fetch, from the release's download address with no token, does not spend.
+      An outage of release assets fails this install by name; the job is then re-run, as any job
+      a GitHub outage failed is.

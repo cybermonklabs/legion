@@ -120,14 +120,14 @@ func TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner(t *testing.T) {
 			// file refuses such a grant at both.
 			m.Airlock = c.rules(m.Airlock)
 
-			release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{})
+			release, err := m.Values(t.Context(), judged, session, ReleaseCall{})
 			switch {
 			case c.live && (err != nil || releasedValue(release, "DEEL_API_KEY") == ""):
 				t.Fatalf("Values(the judge's grant) = %+v, %v; want DEEL_API_KEY released", release, err)
 			case !c.live && !errors.Is(err, ErrGrantNotLive):
 				t.Fatalf("Values(the judge's grant) = %+v, %v; want ErrGrantNotLive", release, err)
 			}
-			if release, err := m.Values(t.Context(), byOwner.GrantID, own, nil, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" {
+			if release, err := m.Values(t.Context(), byOwner.GrantID, own, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" {
 				t.Fatalf("Values(the owner's own grant) = %+v, %v; want DEEL_API_KEY released whatever the rules now say of the judge", release, err)
 			}
 		})
@@ -177,23 +177,23 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 			t.Fatalf("the policy version stood still at %s, so the re-checks this test is about never ran", before)
 		}
 
-		release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{})
+		release, err := m.Values(t.Context(), judged, session, ReleaseCall{})
 		if !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" {
 			t.Fatalf("Values(the judge's grant of what is now an administrator's secret) = %+v, %v; want ErrGrantNotLive and nothing released", release, err)
 		}
 		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
 			t.Fatalf("the judged grant's revoked_by = %q with %d grant.revoked rows by %s; want it ended once for good", by, audits, GrantEndedActor)
 		}
-		if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" {
+		if release, err := m.Values(t.Context(), judged, session, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" {
 			t.Fatalf("a second Values of the judged grant = %+v, %v; want it refused as ended, not merely passed over once", release, err)
 		}
-		if release, err := m.Values(t.Context(), byOwner.GrantID, own, nil, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" {
+		if release, err := m.Values(t.Context(), byOwner.GrantID, own, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" {
 			t.Fatalf("Values(the owner's own grant) = %+v, %v; want DEEL_API_KEY released: a person approved it, which is all the tag asks", release, err)
 		}
 
 		// The tag taken off again does not bring the judged grant back.
 		retag(t, m, policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"))
-		if _, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+		if _, err := m.Values(t.Context(), judged, session, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 			t.Fatalf("Values of the judged grant once the tag is gone = %v; want it still ended", err)
 		}
 		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
@@ -204,13 +204,13 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 	t.Run("the next request ends it rather than handing it back", func(t *testing.T) {
 		m, session, key := newJudgeFixture(t)
 		judged := judgedGrant(t, m, session, key, 600, "DEEL_API_KEY")
-		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it again", 600, "DEEL_API_KEY"), "", nil)
+		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it again", 600, "DEEL_API_KEY"), "")
 		if err != nil || reused.GrantID == nil || *reused.GrantID != judged {
 			t.Fatalf("a request for the same name and lifetime while the secret is an ordinary one = %+v, %v; want the judged grant %s handed back", reused, err, judged)
 		}
 
 		retag(t, m, deelAsAdmin())
-		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "", nil)
+		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "")
 		if err != nil || again.GrantID != nil || again.State != "pending" {
 			t.Fatalf("Create once the secret is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
 		}

@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { delimiter, dirname, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_STREAM_WATCH_INTERVAL_MS,
@@ -77,7 +77,7 @@ import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first";
-import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
+import { DispatchServiceError, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
 import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures";
 import {
@@ -102,6 +102,8 @@ import type { InboundSubscription } from "@legion/envoy-client/inbound-connectio
 import { connectListenerRelay } from "@legion/envoy-client/listener-relay";
 import { machineID } from "@legion/envoy-client/machine";
 import {
+  clientBuild,
+  clientConnectionName,
   connectNats,
   NATS_DIAL_PLAN,
   NATS_DIAL_TOKEN_DROPPED,
@@ -110,11 +112,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  type BrokerNatsCredential,
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
   refusedTopicsNoticeText,
@@ -137,6 +135,8 @@ import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
@@ -157,9 +157,14 @@ import { type AcceptedUserTurnDelivery, acceptUserTurn } from "@legion/pi-shared
 import {
   AgentStreamPublisher,
   type AgentStreamSettingsState,
+  type DispatchMessageCardDetails,
   modelReference,
 } from "@legion/pi-shared/agent-stream";
-import { transcriptPictures, withDeliveredPictures } from "@legion/pi-shared/delivery-pictures";
+import {
+  liveContext,
+  transcriptPictures,
+  withDeliveredPictures,
+} from "@legion/pi-shared/delivery-pictures";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import {
   type AcceptedUserTurn,
@@ -202,7 +207,7 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
@@ -366,6 +371,36 @@ export function setNatsConnectForTests(
 // file's stand-in, with that file's state. Production callers never call this.
 export function resetNatsConnectForTests(): void {
   delete natsConnectStore[NATS_CONNECT];
+}
+
+/** The directory of this module: `dist/` in a packed build (`dist/envoy.js`), `extensions/` when
+ *  it runs from source. */
+const MODULE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * What this plugin's NATS connection names as its build after its name (`clientConnectionName`),
+ * which legacy-subjects-gate.sh reads from the hub's census of connections: the build-commit stamp
+ * the worker image writes beside the packed bundle, else, for a packed build, the release version
+ * its manifest carries, else none (a plugin run from its source). A test replaces it.
+ */
+let buildSource: { readonly stamp: string; readonly packed: boolean } = {
+  stamp: join(MODULE_DIRECTORY, "build-commit"),
+  packed: basename(MODULE_DIRECTORY) === "dist",
+};
+
+export function setBuildSourceForTests(source: {
+  readonly stamp: string;
+  readonly packed: boolean;
+}): void {
+  buildSource = source;
+}
+
+/** This plugin's build as its NATS connection names it, read at each dial. */
+function connectionBuild(): string | undefined {
+  return clientBuild(
+    buildSource.stamp,
+    buildSource.packed ? { name: packageName, version: packageVersion } : undefined
+  );
 }
 
 /**
@@ -745,14 +780,14 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  * for one session hands that session in, since the live read moves to whichever session the host
  * is on by the time the request goes out.
  */
-const timedDispatchClient = (ms: number, session: () => string = currentSessionID) =>
-  sessionDispatchClient(CONFIG_FILE, process.cwd(), { deadlineMs: ms }, session)?.client;
+const timedDispatchClient = async (ms: number, session: () => string = currentSessionID) =>
+  (await sessionDispatchClient(CONFIG_FILE, process.cwd(), { deadlineMs: ms }, session))?.client;
 
 /** The host's logger, every message and field it is handed passing the scrub of the secrets this
  *  process holds (`../src/scrubbed-host`). */
 const logger = scrubbedLogger(hostLogger);
 
-export default function envoyExtension(hostApi: PiApi): void {
+export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // Every notice, tool answer and tool error this extension gives the host passes the scrub of
   // the secrets this process holds, the backstop under the rules that name no peer's text.
   const pi = scrubbedHost(hostApi);
@@ -767,7 +802,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // (`dispatchConfigFor`), so a Dispatch that moved - a new dispatch.serverUrl in envoy.json -
   // takes effect without /reload-plugins, and a file that has since broken fails with its own
   // error instead of quietly using the stale endpoint.
-  const atStart = sessionSettings(CONFIG_FILE, process.env, {
+  const atStart = await sessionSettings(CONFIG_FILE, process.env, {
     cwd: process.cwd(),
     session: currentSessionID,
   });
@@ -778,11 +813,13 @@ export default function envoyExtension(hostApi: PiApi): void {
   // answers 403 to a session presenting another's token. Every reply to a person's message
   // resolves through here for the session that reply names (`postDispatchReply`), so the actor a
   // reply names and the configuration it goes out under are one session and never two.
-  const dispatchConfigFor = (session: BrokerSessionName): ActiveDispatchConfig => {
-    const resolution = sessionDispatchSettings(CONFIG_FILE, process.env, {
-      cwd: process.cwd(),
-      session,
-    }).dispatch;
+  const dispatchConfigFor = async (session: BrokerSessionName): Promise<ActiveDispatchConfig> => {
+    const resolution = (
+      await sessionDispatchSettings(CONFIG_FILE, process.env, {
+        cwd: process.cwd(),
+        session,
+      })
+    ).dispatch;
     const config = activeDispatchSettings(resolution);
     if (config === null) {
       throw new Error(
@@ -819,13 +856,14 @@ export default function envoyExtension(hostApi: PiApi): void {
   // on: the file object the session resolved, not a path rebuilt from it.
   let askgateFile: Extract<SessionConfigFile, { error: null }> | null = null;
   const configFile = CONFIG_FILE.error === null ? CONFIG_FILE : null;
-  const ownDispatch = (file: string): boolean => {
-    const own = readEnvoyConfig(file, process.env, { cwd: process.cwd() });
-    return dispatchSettings(process.env, own.kind === "read" ? { ...own, checkout: null } : own)
-      .enabled;
+  const ownDispatch = async (file: string): Promise<boolean> => {
+    const own = await readEnvoyConfig(file, process.env, { cwd: process.cwd() });
+    return (
+      await dispatchSettings(process.env, own.kind === "read" ? { ...own, checkout: null } : own)
+    ).enabled;
   };
-  if (configFile !== null && (atStart.dispatch.enabled || ownDispatch(configFile.path))) {
-    const setting = askgateSetting(configFile.path);
+  if (configFile !== null && (atStart.dispatch.enabled || (await ownDispatch(configFile.path)))) {
+    const setting = await askgateSetting(configFile.path);
     if (setting.error !== null) askgateNotices.push(setting.error);
     if (setting.enabled) askgateFile = configFile;
   }
@@ -1029,7 +1067,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     requestedSessionID: string,
     since?: string
   ): Promise<OpenAsksResponse | null> => {
-    const dispatch = timedDispatchClient(OPEN_ASKS_TIMEOUT_MS);
+    const dispatch = await timedDispatchClient(OPEN_ASKS_TIMEOUT_MS);
     if (dispatch === undefined) return null;
     const snapshot = await dispatch.openAsks(requestedSessionID, since);
     availabilityWarningSessionIDs.delete(requestedSessionID);
@@ -1045,7 +1083,8 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   // Adds `addresses` to `shown`, a session's set of pictures it was shown (`shownPictures`),
   // which later reads and deliveries name instead of sending again: the pictures a delivery
-  // showed once the host took it, and those the transcript the session moved onto already shows.
+  // showed once the host took it, and those the live context of the transcript the session moved
+  // onto, or compacted, already shows.
   const markPicturesShown = (shown: Set<string>, addresses: readonly string[]): void => {
     for (const address of addresses) shown.add(address);
   };
@@ -1091,13 +1130,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     // restart or a session change cut short, are held again for the first settled heartbeat.
     ledger?.restore(replaySnapshot(entries));
     unwritten.requeueNotices(heldReplayNotices(entries));
-    // The pictures the transcript the session is now on already shows (a fork's, a handoff's, a
-    // resume's, a restart's) are in the history every request sends, so they count as shown. The
-    // id the session left is no longer served: what it was shown is forgotten, and so are the
-    // turns this instance sent into it (every match asks under the live id; another instance in
-    // the process may still serve the id) and its typed turns already handed their pictures
-    // (`TypedPictures.dropOtherSessions` says which survive).
-    markPicturesShown(shownPictures(sessionID), transcriptPictures(branch));
+    // The pictures the live context of the transcript the session is now on already shows (a
+    // fork's, a handoff's, a resume's, a restart's) are in the history every request sends, so
+    // they count as shown; one a compaction or a `/clear` cut off is no longer sent, so it does
+    // not, and no entry before that cut is read (`liveContext`). The id the session left is no
+    // longer served: what it was shown is forgotten, and so are the turns this instance sent into
+    // it (every match asks under the live id; another instance in the process may still serve the
+    // id) and its typed turns already handed their pictures (`TypedPictures.dropOtherSessions`
+    // says which survive).
+    markPicturesShown(shownPictures(sessionID), transcriptPictures(liveContext(branch)));
     if (previousSessionID !== sessionID) {
       forgetShownPictures(previousSessionID);
       if (notedSessionIDs.delete(previousSessionID)) forgetInjectedUserTurns(previousSessionID);
@@ -1285,7 +1326,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       standIn?.connect ?? connect,
       natsConnectionOptions({
         servers: natsUrls,
-        name: `omp-${sessionID || "unknown"}`,
+        name: clientConnectionName(`omp-${sessionID || "unknown"}`, connectionBuild()),
         credential: natsCredential,
       }),
       { ...plan, budgetMs: natsDialBudget(left, PASS_AFTER_DIAL_MS, plan) },
@@ -1379,6 +1420,27 @@ export default function envoyExtension(hostApi: PiApi): void {
     }
   };
 
+  // The sessions a delivery is under way for, each with how many: a delivery's Dispatch calls -
+  // the read of its body whole, the accept, the picture reads, the reply - resolve its session's
+  // broker client and present that client's token, and the work between them (a person's
+  // `!command`, a side turn, the host's run of a typed input) can outlast a move away from the
+  // session. A pass that forgot the client meanwhile (`leftSessions`) would have the next call
+  // trade again under a session this process has left. So the session a delivery is addressed to
+  // is held from the delivery's start (`deliverRelayed`) until the last work it handed off ends
+  // (`offWorker`, the shell and typed-input runners), and the pass leaves a held session in
+  // `leftSessions` for a later pass, which forgets it once nothing holds it.
+  const heldSessions = new Map<string, number>();
+  const underWay = async <T>(session: string, call: () => Promise<T>): Promise<T> => {
+    heldSessions.set(session, (heldSessions.get(session) ?? 0) + 1);
+    try {
+      return await call();
+    } finally {
+      const remaining = (heldSessions.get(session) ?? 1) - 1;
+      if (remaining > 0) heldSessions.set(session, remaining);
+      else heldSessions.delete(session);
+    }
+  };
+
   // Posts one reply to a person's message, as the session `replySessionID` names and under the
   // Dispatch resolved here for that same session: the two halves of a reply - the actor it
   // names and the configuration it goes out under - are read from the one argument, so they
@@ -1392,6 +1454,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
   // for a session this machine no longer runs and the refusal would otherwise read as a plain
   // reply failure.
+  //
+  // A reply Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`: `409
+  // KEY_COMMITTED`, or a replay of an answer it kept none of) is posted: the attempt is answered
+  // with it, so it resolves as any posted reply does, and its line says it landed. Every caller
+  // then goes on as after a post - a BTW's side turn is taken, a person's turn is settled - and
+  // none answers the same attempt again with an error, or says the delivery failed.
   const postDispatchReply = async (
     delivery: DispatchDelivery,
     result: { readonly body?: string; readonly error?: string },
@@ -1403,7 +1471,22 @@ export default function envoyExtension(hostApi: PiApi): void {
         open: sessionID,
       });
     }
-    await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    try {
+      await postDeliveryReply(
+        await dispatchConfigFor(replySessionID),
+        replySessionID,
+        delivery,
+        result
+      );
+    } catch (error) {
+      if (!(error instanceof DispatchWriteLandedError)) throw error;
+      logger.warn("envoy: a reply landed on Dispatch, which gave no copy of its answer", {
+        resource: delivery.resource,
+        id: delivery.id,
+        attempt: delivery.attempt,
+        error: error.message,
+      });
+    }
   };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
@@ -1458,21 +1541,29 @@ export default function envoyExtension(hostApi: PiApi): void {
   });
 
   // A card's message: its `details` name the frame (`ledgerIdentity`), which the host keeps
-  // on the message it writes, beside the wake's card marker. An `inert` card is a steer that starts
-  // no turn on an idle host; a turn streaming when it is handed takes it and runs another model
-  // turn for it, so `UnwrittenFrames` hands an inert card only to a settled host (`hostSettled`).
-  // It carries `details` of its own all the same, the hand-over state `inert`, so a reading of the
-  // stored transcripts says which state held every waiting card; it carries no `envoyCard`, since
-  // the wake tracks no inert card and an id there would name nothing.
+  // on the message it writes, beside the wake's card marker, and the Dispatch message the card
+  // delivers to the session, if it delivers one: the live view draws that message from Dispatch's
+  // store, so the agent stream leaves its card out (`DispatchMessageCardDetails`). An `inert` card
+  // is a steer that starts no turn on an idle host; a turn streaming when it is handed takes it and
+  // runs another model turn for it, so `UnwrittenFrames` hands an inert card only to a settled host
+  // (`hostSettled`). It carries `details` of its own all the same, the hand-over state `inert`, so
+  // a reading of the stored transcripts says which state held every waiting card; it carries no
+  // `envoyCard`, since the wake tracks no inert card and an id there would name nothing.
   // Every other card goes as the wake says (`CardWake.deliveryFor`): an aside with `triggerTurn`,
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
   // records a startup card, which goes as a follow-up, before the host has it.
   const handCard = (
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
-    identity: DedupeIdentity | undefined
+    identity: DedupeIdentity | undefined,
+    dispatchMessageId: string | undefined
   ): void => {
-    const known = identity === undefined ? {} : ledgerIdentity(identity);
+    const known = {
+      ...(identity === undefined ? {} : ledgerIdentity(identity)),
+      ...(dispatchMessageId === undefined
+        ? {}
+        : ({ dispatchMessageId } satisfies DispatchMessageCardDetails)),
+    };
     if (deliverAs === "inert") {
       pi.sendMessage(
         {
@@ -1761,12 +1852,19 @@ export default function envoyExtension(hostApi: PiApi): void {
             turn.messageId
           );
         }
+        // The agent's copy names the person's message it answers: a host busy with a turn writes
+        // it at its next prompt and fires `message_end` for it then, and the live view already
+        // holds the report above, keyed on that message, so the stream leaves the copy out
+        // (`DispatchMessageCardDetails`).
         if (handed) {
           pi.sendMessage(
             {
               content: shellCommandMessage(report),
               customType: "envoy-message",
-              details: LOCAL_ENVOY_NOTICE,
+              details: {
+                ...LOCAL_ENVOY_NOTICE,
+                ...({ dispatchMessageId: turn.messageId } satisfies DispatchMessageCardDetails),
+              },
               display: true,
             },
             { deliverAs: "nextTurn", triggerTurn: false }
@@ -1800,7 +1898,9 @@ export default function envoyExtension(hostApi: PiApi): void {
         await taken();
       }
     };
-    void answer().catch((error: unknown) => {
+    // Held for the addressed session until the reply is posted (`underWay`): the command can
+    // outlast a move away from it.
+    void underWay(session, answer).catch((error: unknown) => {
       logger.warn("envoy: a person's shell command from Dispatch was not recorded as taken", {
         attempt: delivery.attempt,
         error: messageFor(error),
@@ -1849,49 +1949,56 @@ export default function envoyExtension(hostApi: PiApi): void {
     }
     noteTypedUserTurn(noted, turn.messageId);
     notedSessionIDs.add(noted);
-    void Promise.resolve()
-      .then(() =>
-        sendUserInput(turn.body, {
-          ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
-          tag: turn.messageId,
-        })
-      )
-      .then(
-        (result) => {
-          const submitted = result.handled === "prompt" || result.handled === "skill";
-          if (submitted) {
-            // Every input handler has run: pictures never handed over never will be.
-            typedPictures.inputPassed(turn.messageId);
-            // In the host's queue from now on, unless its message was written already.
-            unwritten.turnSubmitted(turn.messageId);
-          } else {
+    // Held for the addressed session until the reply is posted (`underWay`): the host's run of
+    // the input can outlast a move away from it.
+    void underWay(replySessionID, () =>
+      Promise.resolve()
+        .then(() =>
+          sendUserInput(turn.body, {
+            ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
+            tag: turn.messageId,
+            // The person's own turn, from outside the session: like a line typed at the terminal,
+            // it ends a cyber-policy hold the session is under (`PiApi.sendUserInput`'s `origin`).
+            origin: "outside",
+          })
+        )
+        .then(
+          (result) => {
+            const submitted = result.handled === "prompt" || result.handled === "skill";
+            if (submitted) {
+              // Every input handler has run: pictures never handed over never will be.
+              typedPictures.inputPassed(turn.messageId);
+              // In the host's queue from now on, unless its message was written already.
+              unwritten.turnSubmitted(turn.messageId);
+            } else {
+              dropInjectedUserTurn(noted, turn.messageId);
+              typedPictures.withdraw(turn.messageId);
+              void unwritten.turnHandled(turn.messageId);
+            }
+            return typedInputReply(turn.body, result);
+          },
+          (error: unknown) => {
             dropInjectedUserTurn(noted, turn.messageId);
             typedPictures.withdraw(turn.messageId);
             void unwritten.turnHandled(turn.messageId);
+            return typedInputReply(turn.body, { error: messageFor(error) });
           }
-          return typedInputReply(turn.body, result);
-        },
-        (error: unknown) => {
-          dropInjectedUserTurn(noted, turn.messageId);
-          typedPictures.withdraw(turn.messageId);
-          void unwritten.turnHandled(turn.messageId);
-          return typedInputReply(turn.body, { error: messageFor(error) });
-        }
-      )
-      .then(async (reply) => {
-        // A `/model` or `/effort` has run by now: the viewer's header shows its result before the
-        // reply that names it reaches the page.
-        refreshAgentStreamSettings(hostSessionID());
-        if (reply === undefined) return;
-        await postTypedInputReply(delivery, replySessionID, reply);
-      })
-      .catch((error: unknown) => {
-        logger.warn("envoy: the reply to a person's typed input did not reach Dispatch", {
-          attempt: delivery.attempt,
-          error: messageFor(error),
-          messageID: delivery.id,
-        });
-      });
+        )
+        .then(async (reply) => {
+          // A `/model` or `/effort` has run by now: the viewer's header shows its result before
+          // the reply that names it reaches the page.
+          refreshAgentStreamSettings(hostSessionID());
+          if (reply === undefined) return;
+          await postTypedInputReply(delivery, replySessionID, reply);
+        })
+        .catch((error: unknown) => {
+          logger.warn("envoy: the reply to a person's typed input did not reach Dispatch", {
+            attempt: delivery.attempt,
+            error: messageFor(error),
+            messageID: delivery.id,
+          });
+        })
+    );
   };
 
   // A Dispatch actor is a person only when it has no `act`: Dispatch marks a credential that
@@ -1962,6 +2069,13 @@ export default function envoyExtension(hostApi: PiApi): void {
           logger.warn(
             "envoy: Dispatch accepted a direct message without the stored body and mode to inject; it arrives as a card",
             fields
+          );
+          return;
+        }
+        if (refusal.reason === "landed") {
+          logger.warn(
+            "envoy: Dispatch recorded this session's accept of a direct message and gave no copy of its answer, so no turn follows; it arrives as a card",
+            { ...fields, error: refusal.error.message }
           );
           return;
         }
@@ -2047,6 +2161,17 @@ export default function envoyExtension(hostApi: PiApi): void {
       claim.settle();
       return;
     }
+    // A payload the card could not lay out is shown as the text its sender sent: said once, for
+    // the frame this session is shown, and never for a repeat the checks above answered.
+    if (rendered.payloadShownAsText !== undefined) {
+      logger.warn(
+        "envoy: a message's payload is shown as its text; the card could not lay it out",
+        {
+          event_id: rendered.envelope?.event_id ?? "unknown",
+          error: rendered.payloadShownAsText,
+        }
+      );
+    }
     // A body is bounded block by block, so one event can carry its first part alone, and an
     // event the bus refused carries none of it (`cutItem`). The agent is prompted with the
     // whole body the comment or message route answers, read as the session the frame is
@@ -2056,7 +2181,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     // frame nobody sees costs a read. A switch landing in that read must not have this session
     // read one person's message as another conversation, with that conversation's credential.
     if (rendered.cutItem !== undefined) {
-      const dispatch = timedDispatchClient(WHOLE_BODY_TIMEOUT_MS, () => session);
+      const dispatch = await timedDispatchClient(WHOLE_BODY_TIMEOUT_MS, () => session);
       const body =
         dispatch === undefined
           ? undefined
@@ -2064,6 +2189,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       if (body !== undefined) rendered = renderInbound(raw, session, subject, body);
     }
     const envelope = rendered.envelope;
+    // The Dispatch message a card of this frame delivers to the session, which its `details` name
+    // (`handCard`): a targeted message's delivery, which Dispatch stores for the session. A
+    // targeted comment is no message the session's message list holds.
+    const deliveredMessage =
+      rendered.delivery?.resource === "message" ? rendered.delivery.id : undefined;
     if (envelope !== undefined) noteInbox(envelope);
     // The host wrote the frame, or handled it without writing anything: the ledger records it,
     // so no redelivery shows it again, here or after a restart, and the claim is settled, so
@@ -2119,12 +2249,13 @@ export default function envoyExtension(hostApi: PiApi): void {
       relayed.done();
     };
     // Runs a side turn or a Dispatch reply off the caller (the relay's queue), so the next frame
-    // is handed without waiting on it. One that throws is handled as a delivery that throws: its
-    // claim is released and the relay frame is done (a BTW is in the ledger already, so its
-    // redelivery would be dropped).
+    // is handed without waiting on it, held for the addressed session until it ends
+    // (`underWay`). One that throws is handled as a delivery that throws: its claim is released
+    // and the relay frame is done (a BTW is in the ledger already, so its redelivery would be
+    // dropped).
     const offWorker = (work: () => Promise<void>): void => {
       relayed.release();
-      void work().catch((error: unknown) => {
+      void underWay(session, work).catch((error: unknown) => {
         held.release();
         scrubbedConsole.warn(
           `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
@@ -2155,7 +2286,8 @@ export default function envoyExtension(hostApi: PiApi): void {
           `${storedText(rendered.content, relayed.storedAt)}\n${LATE_BTW_NOTE}`,
           "inert",
           identity,
-          claim
+          claim,
+          deliveredMessage
         );
       } else if (rendered.delivery?.mode === "btw") {
         // A BTW is answered on Dispatch or refused there, never shown as a card: a redelivery
@@ -2248,7 +2380,8 @@ export default function envoyExtension(hostApi: PiApi): void {
             card.content,
             rendered.delivery?.mode === "aside" ? "aside" : "card",
             identity,
-            claim
+            claim,
+            deliveredMessage
           );
           if (outcome !== "closed") markPicturesShown(shownPictures(sessionID), card.shown);
         } else {
@@ -2302,10 +2435,11 @@ export default function envoyExtension(hostApi: PiApi): void {
             const injectionSessionID = sessionID;
             noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
             notedSessionIDs.add(injectionSessionID);
-            pi.sendUserMessage(
-              delivery.content,
-              turn.mode === "aside" ? { deliverAs: "aside" } : undefined
-            );
+            pi.sendUserMessage(delivery.content, {
+              ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
+              // The person's own turn, from outside the session, as `runTypedInput` sends it.
+              origin: "outside",
+            });
             markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
             // Done once the host writes the user message its text is found as, or at the run's
             // end, which stops that search (`endInjectedUserTurns`).
@@ -2645,8 +2779,12 @@ export default function envoyExtension(hostApi: PiApi): void {
       return;
     }
     // The relay's own session, proven open on the line above: the frame is this session's and
-    // every answer to it names that session, whatever the host does while it is delivered.
-    await deliver(owner.sessionID, frame.subject, frame.data, frame);
+    // every answer to it names that session, whatever the host does while it is delivered. The
+    // session is held from here, in the same run as that check, until the delivery and the work
+    // it hands off end (`underWay`).
+    await underWay(owner.sessionID, () =>
+      deliver(owner.sessionID, frame.subject, frame.data, frame)
+    );
   };
   // The relay of session `id`, its snapshot restored from `entries` (before any `setFollowed`),
   // and every later change of it appended to the transcript of the session it is for
@@ -3202,9 +3340,20 @@ export default function envoyExtension(hostApi: PiApi): void {
   // The host asks whether any extension handles `session_before_compact`, which turns its
   // background compaction off, but never these two: handling them changes nothing it does. A
   // compaction is the one moment the figures fall rather than climb, so both refresh the ring.
+  // The host fires `session_compact` once the compaction entry is on the branch, and the pictures
+  // the compaction cut off are no longer in any request: the session's shown set becomes what its
+  // new live context shows (`liveContext`), replaced rather than added to, so a later read or
+  // delivery sends such a picture again. It is the set of the session that compacted, the id its
+  // own tool calls carry, which a task subagent's instance knows too.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
     refreshAgentStreamContext(eventSessionID(context));
+    const shown = shownPictures(context.sessionManager.getSessionId());
+    shown.clear();
+    markPicturesShown(
+      shown,
+      transcriptPictures(liveContext(context.sessionManager.getBranch?.() ?? []))
+    );
   });
   pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);
@@ -3977,10 +4126,10 @@ export default function envoyExtension(hostApi: PiApi): void {
   // The sessions this process has left and still holds a broker client for: a key pair and the
   // token last traded for it (`CLIENTS`, @legion/envoy-client/broker-credential). A session goes
   // in when the host leaves it (`noteMove`, and the pass that closes its agent subject) and out
-  // once the pass has run its role move (`settleRole`), the last call that presents that
-  // session's own credential — whether or not that move decided anything — so a process that
-  // moves between sessions all day holds one client rather than one per session it ever bound.
-  // Only a pass fenced before that point leaves its entries here for the next; a later hand-back
+  // once a pass has run its role move (`settleRole`), whether or not that move decided anything,
+  // and no delivery holds it (`underWay`) — so a process that moves between sessions all day holds
+  // one client rather than one per session it ever bound. A pass fenced before that point, or a
+  // session a delivery still holds, leaves its entry here for the next pass; a call that starts
   // for a session already forgotten trades again under that session's name.
   const leftSessions = new Set<string>();
 
@@ -4143,12 +4292,16 @@ export default function envoyExtension(hostApi: PiApi): void {
       )) ?? false;
     handle.check();
     // The role move above was the last call for every session this process has left, so each
-    // one's key pair and token go now (`leftSessions`), whether or not the move decided. The
-    // session running now is never one of them: a rollback to a session this pass left behind
-    // keeps trading under it.
+    // one's key pair and token go now (`leftSessions`), whether or not the move decided, but for
+    // a session a delivery still holds (`underWay`), which stays for the next pass. The session
+    // running now is never one of them: a rollback to a session this pass left behind keeps
+    // trading under it.
     leftSessions.delete(host);
-    for (const other of leftSessions) forgetBrokerSession(other);
-    leftSessions.clear();
+    for (const other of leftSessions) {
+      if (heldSessions.has(other)) continue;
+      forgetBrokerSession(other);
+      leftSessions.delete(other);
+    }
     if (registration !== undefined) {
       // A registration the listener refused while the open failed too names that failure here;
       // the client's own refusal of a session with no relay already names it.
@@ -4679,11 +4832,13 @@ export default function envoyExtension(hostApi: PiApi): void {
     try {
       const read = await readSessionAnswers({
         session,
-        dispatch: sessionDispatchSettings(CONFIG_FILE, process.env, {
-          cwd: process.cwd(),
-          commands: "kept",
-          session: currentSessionID,
-        }).dispatch,
+        dispatch: (
+          await sessionDispatchSettings(CONFIG_FILE, process.env, {
+            cwd: process.cwd(),
+            commands: "kept",
+            session: currentSessionID,
+          })
+        ).dispatch,
         env: process.env,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);
@@ -5397,6 +5552,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_send"), keyTakenDetails(result));
+          }
           return toolSuccess(sendConfirmationText(result), {
             event_id: result.envelope.event_id,
             recipient: result.recipient,
@@ -5416,6 +5574,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             message: stringFor(parameters, "message"),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_publish"), keyTakenDetails(result));
+          }
           // The skip is the listener's own delivery: the role lane skips the holder it resolved
           // when that holder is the message's source, and the fanout skips every interest whose
           // session is that source. The session still gets its own publish from its own

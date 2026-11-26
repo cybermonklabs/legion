@@ -1,4 +1,3 @@
-import type { IssueDrafts } from "../issue/useIssueDrafts";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 
@@ -12,14 +11,16 @@ import { useKeymap } from "../shell/keymap";
  * pushes one of its own.
  */
 export function useIssuePalette({
-  drafts,
   isClosed,
   priorityWrite,
+  requestStatus,
   saving,
 }: {
-  drafts: Pick<IssueDrafts, "requestStatusSubmit">;
   isClosed: boolean;
   priorityWrite: IssuePriorityWrite;
+  /** The header's Close and Reopen (`IssueHeaderWrites.requestStatus`), which ask the rule's
+   *  question where Dispatch would refuse the status. */
+  requestStatus: (status: string) => void;
   /** Whether a write of the issue's own fields (`updateIssue`) is in flight: Close issue and
    *  Reopen issue, offered while one is, would submit a second, so their menu items refuse it. */
   saving: boolean;
@@ -29,14 +30,14 @@ export function useIssuePalette({
       id: "close",
       keys: [],
       label: "Close issue",
-      run: () => drafts.requestStatusSubmit("done"),
+      run: () => requestStatus("done"),
       when: () => !isClosed && !saving,
     },
     {
       id: "reopen",
       keys: [],
       label: "Reopen issue",
-      run: () => drafts.requestStatusSubmit("backlog"),
+      run: () => requestStatus("backlog"),
       when: () => isClosed && !saving,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({

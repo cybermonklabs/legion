@@ -1,9 +1,15 @@
 // Package cmdtest builds a command's binary and runs it as a process a test drives, for the tests
 // of more than one command. It is an ordinary package rather than a _test.go file because every
 // command is package main, and none can import another's test helpers.
+//
+// A package whose tests build a command runs them through Main (or Run), which makes the
+// directory the binaries are written into and removes it once the tests end:
+//
+//	func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 package cmdtest
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -19,8 +25,37 @@ import (
 	"github.com/sjawhar/envoy/testgo"
 )
 
+// builds is the directory Run made for this test process's binaries, empty until Run has made it.
+var builds string
+
+// Main runs the package's tests and then removes every binary they built. A package whose tests
+// call BuildCommand, Build or BuildStamped uses it as its TestMain:
+// func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }.
+func Main(m *testing.M) int { return Run(m.Run) }
+
+// Run is Main for a package whose tests also need another harness's Main, which runs m.Run
+// itself: run runs the package's tests through that Main, and Run makes the directory before it
+// and removes it after, as Main does:
+// func TestMain(m *testing.M) { os.Exit(cmdtest.Run(func() int { return testnats.Main(m) })) }.
+func Run(run func() int) int {
+	dir, err := os.MkdirTemp("", "cmdtest-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cmdtest: make the directory the tests' binaries go into: %v\n", err)
+		return 1
+	}
+	builds = dir
+	code := run()
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "cmdtest: remove the tests' binaries: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	return code
+}
+
 // Build builds the main package in the test's working directory, its own command's, into a binary
-// named name that is removed when the test ends.
+// named name.
 func Build(t testing.TB, name string) string {
 	t.Helper()
 	return BuildCommand(t, Command{Name: name})
@@ -35,10 +70,10 @@ func BuildStamped(t testing.TB, name, commit string) string {
 	return BuildCommand(t, Command{Name: name, Flags: []string{"-ldflags", "-X main.buildCommit=" + commit}})
 }
 
-// Command is a binary to build: Name is what the binary is called under the test's own
-// directory, Dir the directory go build runs in (the test's own when empty), Target what it
-// builds ("." when empty), Flags the flags before the target, and Env the whole environment of
-// the go command (the process's when nil).
+// Command is a binary to build: Name is what the binary is called, Dir the directory go build
+// runs in (the test's working directory when empty), Target what it builds ("." when empty), Flags
+// the flags before the target, and Env the whole environment of the go command (the process's
+// when nil).
 //
 // The go that builds it is the go that runs the test: go test puts its own GOROOT/bin first on
 // the test binary's PATH, so go build selects the toolchain go.work or go.mod asks for exactly as
@@ -53,56 +88,78 @@ type Command struct {
 	Env    []string
 }
 
-// built is the binary each test has already built, by builtKey. go build relinks the whole
-// binary into every -o path it is given - about a second apiece on a warm build cache, minutes on
-// a loaded machine - and a row that starts five processes of one command asked for five of them
-// (INFRA-985), so a test builds each command once and hands every process of that test the same
-// binary. The key holds the test itself, so no binary outlives the TempDir it was written into,
-// and the entry goes when the test ends.
+// built is every binary this test process has built, by the build's key (BuildCommand).
+// go build relinks the whole binary into every -o path it is given, even with nothing to compile:
+// 7 to 9 s for the broker on a loaded dev box, and cmd/cipherd's tests start brokers from 29
+// buildBroker call sites and 66 startBroker calls, so each command is built once per test process
+// and every test that asks for that same build is handed the same binary. Main removes them all
+// once the package's tests end.
 var built sync.Map
 
-// builtKey is one test's build of one command: the test, and everything that decides what go
-// build writes - the command's name, directory, target, flags and environment, and the overlay.
-type builtKey struct {
-	t    testing.TB
-	args string
-}
-
-// builtBinary is one memoised build: once makes it, path is what it wrote, empty where it failed.
+// builtBinary is one memoised build: once makes it, path is what it wrote, empty where it failed,
+// and failure is why.
 type builtBinary struct {
-	once sync.Once
-	path string
+	once    sync.Once
+	path    string
+	failure string
 }
 
-// BuildCommand builds c and returns the binary's path. The binary is removed when the test ends,
-// and ENVOY_TEST_GO_OVERLAY, when set, is passed to go build -overlay, so a probe can build it
-// from changed sources without editing the tree. A test that asks for the same build again is
-// handed the one it already built (built).
+// buildCount numbers the builds, so each is written into a directory of its own: two builds of
+// one name with other flags or environments are two binaries.
+var buildCount struct {
+	sync.Mutex
+	n int
+}
+
+// BuildCommand builds c and returns the binary's path, which every test of this process that
+// asks for the same build shares and none may change. ENVOY_TEST_GO_OVERLAY, when set, is passed
+// to go build -overlay, so a probe can build it from changed sources without editing the tree.
+// The build is the same when the command's name, absolute directory, target, flags, environment
+// and overlay are; the environment is the process's at the call when c.Env is nil.
 func BuildCommand(t testing.TB, c Command) string {
 	t.Helper()
+	if builds == "" {
+		t.Fatalf("build %s: the package's TestMain does not run its tests through cmdtest.Main or cmdtest.Run, "+
+			"which make the directory the binary is written into", c.Name)
+	}
+	dir, err := filepath.Abs(c.Dir)
+	if err != nil {
+		t.Fatalf("build %s: the directory %q: %v", c.Name, c.Dir, err)
+	}
+	c.Dir = dir
+	if c.Env == nil {
+		c.Env = os.Environ()
+	}
 	overlay := os.Getenv("ENVOY_TEST_GO_OVERLAY")
 	// The count of the flags stands between them and the environment, so a value that moves from
 	// one of the two to the other is another key rather than the same one.
 	parts := append([]string{c.Name, c.Dir, c.Target, overlay, strconv.Itoa(len(c.Flags))}, c.Flags...)
-	key := builtKey{t: t, args: strings.Join(append(parts, c.Env...), "\x00")}
-	entry, loaded := built.LoadOrStore(key, &builtBinary{})
-	if !loaded {
-		t.Cleanup(func() { built.Delete(key) })
-	}
+	entry, _ := built.LoadOrStore(strings.Join(append(parts, c.Env...), "\x00"), &builtBinary{})
 	binary := entry.(*builtBinary)
-	binary.once.Do(func() { binary.path = runBuild(t, c, overlay) })
+	binary.once.Do(func() { binary.path, binary.failure = runBuild(c, overlay) })
 	if binary.path == "" {
-		t.Fatalf("build %s: an earlier build of it in this test failed", c.Name)
+		t.Fatalf("build %s: %s", c.Name, binary.failure)
 	}
 	return binary.path
 }
 
-// runBuild is one go build of c, into a binary named c.Name under a directory of this test's
-// own. It returns the empty path where the build failed, having failed the test.
-func runBuild(t testing.TB, c Command, overlay string) string {
-	t.Helper()
-	binary := filepath.Join(t.TempDir(), c.Name)
-	args := []string{"build", "-o", binary}
+// runBuild is one go build of c, into a binary named c.Name under a directory of its own in
+// builds. It returns the binary's path, or the empty path and why the build failed. It builds with
+// -buildvcs=false, so the binary records no commit whether the checkout is clean, as CI's is, or
+// changed, as a developer's often is: internal/buildversion names a connection's build from that
+// record, and a test that reads a connection's name or a log line's name field would otherwise
+// pass on one checkout and fail on the other. A test that needs a stamped build passes its
+// -ldflags in Command.Flags, as BuildStamped does.
+func runBuild(c Command, overlay string) (string, string) {
+	buildCount.Lock()
+	buildCount.n++
+	dir := filepath.Join(builds, strconv.Itoa(buildCount.n))
+	buildCount.Unlock()
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return "", err.Error()
+	}
+	binary := filepath.Join(dir, c.Name)
+	args := []string{"build", "-buildvcs=false", "-o", binary}
 	if overlay != "" {
 		args = append(args, "-overlay", overlay)
 	}
@@ -115,10 +172,9 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 	cmd := exec.Command("go", args...)
 	cmd.Dir, cmd.Env = c.Dir, c.Env
 	if _, err := testgo.Output(cmd); err != nil {
-		t.Errorf("build %s: %v", c.Name, err)
-		return ""
+		return "", err.Error()
 	}
-	return binary
+	return binary, ""
 }
 
 // Process is a binary a test started, with its combined output.

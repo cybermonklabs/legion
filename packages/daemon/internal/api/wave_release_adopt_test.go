@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -66,7 +67,7 @@ func newAdoptionHarness(t *testing.T, cap int) *adoptionHarness {
 	}).Handler
 	approved := 1
 	h.recordIssue(record.Issue{Key: adoptionTree, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: adoptionTree, Project: testProject, Title: adoptionTree, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true, Rank: "A"})
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: adoptionTree, Index: 0, AdmittedAt: time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)}); err != nil {
 			return err
 		}
@@ -160,7 +161,7 @@ func (a *adoptionHarness) slotted(key string) bool {
 func (a *adoptionHarness) waiting() []string {
 	a.t.Helper()
 	var keys []string
-	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), a.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		issues, err := a.records.Issues(context.Background(), tx)
 		if err != nil {
 			return err
@@ -207,7 +208,8 @@ func (a *adoptionHarness) assertJoinedAndWaiting(key string, generation uint64) 
 }
 
 // assertJoinedAndPlanning asserts key runs in adoptionTree, planning at generation under its open
-// gate with its planner's start queued, and holds no slot of its own.
+// gate with its planner's start queued, and holds a slot of its own, out of the waiting line:
+// planning keeps a slot (record.PhaseKeepsSlot).
 func (a *adoptionHarness) assertJoinedAndPlanning(key string, generation uint64) {
 	a.t.Helper()
 	got := a.record(key)
@@ -257,7 +259,7 @@ func TestReleaseAdoptsAQueuedRootThatWaitsOnAnUnfinishedIssueAndAnswersItHeld(t 
 	a := newAdoptionHarness(t, 1)
 	const blocker = "LEGION-400"
 	a.observe(adoptionChild, 1, "todo", "", true)
-	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), a.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, reading := range []record.DispatchReading{
 			{Key: adoptionChild, Project: testProject, Seq: 1,
 				Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry([]string{blocker})},
@@ -418,7 +420,9 @@ func TestReleaseRefusesAChildItCannotAdopt(t *testing.T) {
 	}
 	seed := func(a *adoptionHarness, write func(tx pgx.Tx) error) {
 		a.t.Helper()
-		if err := a.store.Tx(context.Background(), write); err != nil {
+		if err := store.Transact(context.Background(), a.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			return write(tx)
+		}); err != nil {
 			a.t.Fatalf("seed: %v", err)
 		}
 	}
@@ -596,7 +600,7 @@ func TestReleaseHoldsAClosedTreesMemberOnTheBlockersItsOwnReadShowed(t *testing.
 		Tree: closed, Project: testProject, Title: member, Parent: record.ParentOf(closed), Phase: phase.Admitted,
 		Generation: 3, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
 	// The mirror knows the blocker is unfinished and nothing of the link to it.
-	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), a.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return a.records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: blocker, Project: testProject, Seq: 1,
 			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
@@ -658,7 +662,7 @@ func TestReleaseHoldsAnAdoptedRootOnTheBlockersItsOwnReadShowed(t *testing.T) {
 	a.observe(adoptionChild, 1, "todo", "", true)
 	// The mirror knows the blocker is unfinished and nothing of the link to it: the child's own
 	// row is the one its event wrote, under no parent and waiting on nothing.
-	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), a.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return a.records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: blocker, Project: testProject, Seq: 1,
 			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
@@ -709,7 +713,7 @@ func TestReleaseHoldsAnAdoptedRootOnTheBlockersItsOwnReadShowed(t *testing.T) {
 func (a *adoptionHarness) mirroredBlockers(key string) []string {
 	a.t.Helper()
 	var waits []string
-	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), a.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := a.records.DispatchIssuesOf(context.Background(), tx, []string{key})
 		if err != nil {
 			return err

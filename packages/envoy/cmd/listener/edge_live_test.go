@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -60,19 +61,80 @@ func edgeLiveGrant(t *testing.T) natsgrant.Permissions {
 	return grant
 }
 
-// edgeLiveRig is one hub-image server with the users a row names, the client of Dispatch's user
-// that created the stream on it, as Dispatch's server does, and the broker the edge listener asks
-// about its callers' tokens.
-type edgeLiveRig struct {
+// edgeLiveHub is one hub-image server whose only users are nkey users, each held to a grant of
+// natsgrant's as a hub renders its static users, with each user's seed, and the client of
+// Dispatch's user on it, which created the stream as Dispatch's server does.
+type edgeLiveHub struct {
 	server interface {
 		Logs(context.Context) (io.ReadCloser, error)
 	}
 	uri      string
 	seeds    map[string]string
 	dispatch *bus.Client
-	broker   *ciphertokentest.StubBroker
-	caller   *ciphertokentest.Caller
-	token    string
+}
+
+// startEdgeLiveHub starts a server whose users are grants, by name. The user dispatch names
+// creates the stream, as Dispatch's server does, and makes buckets: the edge's grant creates and
+// raises no bucket's stream, so an edge listener finds each bucket the shared listeners made at
+// their start, and Dispatch's user, whose grant holds each one's create, makes them here before
+// any edge starts.
+func startEdgeLiveHub(t *testing.T, grants map[string]natsgrant.Permissions, dispatch string, buckets []string) edgeLiveHub {
+	t.Helper()
+	hub := edgeLiveHub{seeds: map[string]string{}}
+	var static []testnats.StaticUser
+	for _, name := range slices.Sorted(maps.Keys(grants)) {
+		seed, public := testnats.User(t)
+		hub.seeds[name] = seed
+		grant := grants[name]
+		static = append(static, testnats.StaticUser{NKey: public, Publish: grant.Publish, Subscribe: grant.Subscribe})
+	}
+	hub.server, hub.uri = testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(static...), []string{"-js"}, false)
+	dispatchSeed := hub.seeds[dispatch]
+	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(func(name string) (string, bool) {
+		if name == bus.NkeySeedEnvVar {
+			return dispatchSeed, true
+		}
+		return "", false
+	}))
+	if err != nil {
+		t.Fatalf("Dispatch's user creates the stream: %v", err)
+	}
+	t.Cleanup(client.Close)
+	hub.dispatch = client
+	for _, bucket := range buckets {
+		if _, err := client.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
+			t.Fatalf("Dispatch's user makes the %s bucket: %v", bucket, err)
+		}
+	}
+	return hub
+}
+
+// violations is every permissions violation the server has logged, as kind and subject.
+func (h edgeLiveHub) violations(t *testing.T) [][]string {
+	t.Helper()
+	logs, err := h.server.Logs(context.Background())
+	if err != nil {
+		t.Fatalf("read the server's log: %v", err)
+	}
+	defer logs.Close()
+	text, err := io.ReadAll(logs)
+	if err != nil {
+		t.Fatalf("read the server's log: %v", err)
+	}
+	var found [][]string
+	for _, match := range edgeServerViolation.FindAllStringSubmatch(string(text), -1) {
+		found = append(found, match[1:])
+	}
+	return found
+}
+
+// edgeLiveRig is one hub of the users a row names (edgeLiveHub) and the broker the edge listener
+// asks about its callers' tokens.
+type edgeLiveRig struct {
+	edgeLiveHub
+	broker *ciphertokentest.StubBroker
+	caller *ciphertokentest.Caller
+	token  string
 	// otherToken is edgeLiveOtherSession's broker token, as token is edgeLiveSession's.
 	otherToken string
 	binary     string
@@ -92,47 +154,17 @@ func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
 // listener buckets, so a row can leave one for a shared listener's start to make.
 func newEdgeLiveRigWithBuckets(t *testing.T, edge natsgrant.Permissions, buckets []string) *edgeLiveRig {
 	t.Helper()
-	rig := &edgeLiveRig{seeds: map[string]string{}, binary: cmdtest.Build(t, "envoy-listener")}
-	users := map[string]natsgrant.Permissions{
-		"edge":     edge,
-		"dispatch": natsgrant.Dispatch("example-dispatch"),
-		"shared":   natsgrant.ListenerHost("example-shared"),
+	rig := &edgeLiveRig{binary: cmdtest.Build(t, "envoy-listener")}
+	rig.edgeLiveHub = startEdgeLiveHub(t, map[string]natsgrant.Permissions{
+		"edge":             edge,
+		"example-dispatch": natsgrant.Dispatch("example-dispatch"),
+		"shared":           natsgrant.ListenerHost("example-shared"),
 		// The observer stands in for the relay socket's serving replica: it reads the session's
-		// relay subject and answers on whatever reply subject a frame names. At this head the edge's
-		// relay names its receipts under its inbox prefix, so the observer publishes there: reach no
-		// rendered grant holds, since Session publishes _INBOX.> and Edge no inbox. The receipt
-		// family the edge's own grant publishes (natsgrant.EdgeRelayReplyPrefix) is the relay
-		// socket's of #4819.
-		"observer": {Publish: []string{natsgo.InboxPrefix + ">", natsgrant.EdgeInboxPrefix(edgeLiveMachine) + ".>"}, Subscribe: []string{bus.DeliverSubjectPrefix + "*"}},
-	}
-	var static []testnats.StaticUser
-	for _, name := range []string{"edge", "dispatch", "shared", "observer"} {
-		seed, public := testnats.User(t)
-		rig.seeds[name] = seed
-		grant := users[name]
-		static = append(static, testnats.StaticUser{NKey: public, Publish: grant.Publish, Subscribe: grant.Subscribe})
-	}
-	rig.server, rig.uri = testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(static...), []string{"-js"}, false)
-	dispatchSeed := rig.seeds["dispatch"]
-	client, err := bus.ConnectOwningStream([]string{rig.uri}, bus.WithName("example-dispatch"), bus.WithEnvironment(func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return dispatchSeed, true
-		}
-		return "", false
-	}))
-	if err != nil {
-		t.Fatalf("Dispatch's user creates the stream: %v", err)
-	}
-	t.Cleanup(client.Close)
-	rig.dispatch = client
-	// The edge's grant creates and raises no bucket's stream, so it finds each bucket the shared
-	// listeners made at their start; Dispatch's user, whose grant holds each one's create, makes
-	// them here before any edge starts.
-	for _, bucket := range buckets {
-		if _, err := client.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
-			t.Fatalf("Dispatch's user makes the %s bucket: %v", bucket, err)
-		}
-	}
+		// relay subject and answers on whatever reply subject a frame names. An edge listener's
+		// frames name a relay receipt (bus.RelayReplyPrefix), which the serving replica's grant
+		// publishes, and its connection probe names the edge's own inbox.
+		"observer": {Publish: []string{natsgo.InboxPrefix + ">", natsgrant.EdgeInboxPrefix(edgeLiveMachine) + ".>", bus.RelayReplyPrefix + ">"}, Subscribe: []string{bus.DeliverSubjectPrefix + "*"}},
+	}, "example-dispatch", buckets)
 
 	rig.broker = ciphertokentest.NewStubBroker(t)
 	rig.caller = ciphertokentest.NewCaller(t)
@@ -156,7 +188,7 @@ func newEdgeLiveRigWithBuckets(t *testing.T, edge natsgrant.Permissions, buckets
 // startEdge starts the edge listener as its user, an edge listener of edgeProject.
 func (r *edgeLiveRig) startEdge(t *testing.T) *listenerProcess {
 	t.Helper()
-	return startEdgeListenerProcess(t, r.binary, r.uri, edgeLiveMachine, r.broker, bus.NkeySeedEnvVar+"="+r.seeds["edge"])
+	return startEdgeListenerProcess(t, r.binary, r.uri, edgeLiveMachine, edgeProject, r.broker.Server.URL, edgeAccountToken, bus.NkeySeedEnvVar+"="+r.seeds["edge"])
 }
 
 // startShared starts a shared listener as its own user, one no session shares.
@@ -283,25 +315,6 @@ func nextRelayFrame(t *testing.T, sub *natsgo.Subscription, within time.Duration
 	}
 }
 
-// violations is every permissions violation the server has logged, as kind and subject.
-func (r *edgeLiveRig) violations(t *testing.T) [][]string {
-	t.Helper()
-	logs, err := r.server.Logs(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logs.Close()
-	text, err := io.ReadAll(logs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found [][]string
-	for _, match := range edgeServerViolation.FindAllStringSubmatch(string(text), -1) {
-		found = append(found, match[1:])
-	}
-	return found
-}
-
 // The edge listener connects as its user, rendered from natsgrant.Edge, starts, registers a
 // session under a broker token of its project, gives it a consumer and relays a send to it on the
 // session's relay subject, whose frame the observer answers on the reply subject the frame names.
@@ -338,7 +351,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = probe.Flush()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for {
 			logged := rig.violations(t)
 			if slices.ContainsFunc(logged, func(v []string) bool { return v[1] == provoked }) {
@@ -350,7 +363,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("the server logged no violation naming %s within 10s, so its log was not read", provoked)
+				t.Fatalf("the server logged no violation naming %s in time, so its log was not read", provoked)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
@@ -385,14 +398,14 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 	})
 }
 
-// edgeRoleEnvelope is a role message on the role subject of edgeLiveRole, as a publisher sends one.
-func edgeRoleEnvelope(summary string) contracts.Envelope {
+// edgeRoleEnvelope is a role message on topic, as a publisher sends one.
+func edgeRoleEnvelope(topic, summary string) contracts.Envelope {
 	eventID := id.New()
 	return contracts.Envelope{
 		EventID:        eventID,
 		Source:         "envoy",
 		SourceEventID:  eventID,
-		Topic:          contracts.RoleTopicPrefix + edgeLiveRole,
+		Topic:          topic,
 		DedupeKey:      "edge-role-" + eventID,
 		IssuedAt:       contracts.NowMillis(),
 		PayloadSummary: summary,
@@ -446,7 +459,7 @@ func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
 	rig.register(t, edge)
 	rig.mustCall(t, edge, http.MethodPost, "/v1/roles/set", `{"session_id":"`+edgeLiveSession+`","role":"`+edgeLiveRole+`"}`)
 
-	if err := rig.dispatch.Publish(edgeRoleEnvelope("before a shared listener runs")); err != nil {
+	if err := rig.dispatch.Publish(edgeRoleEnvelope(contracts.RoleTopicPrefix+edgeLiveRole, "before a shared listener runs")); err != nil {
 		t.Fatalf("publish the role message: %v", err)
 	}
 
@@ -454,7 +467,7 @@ func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
 	shared.waitHealthy(t)
 	shared.WaitForOutput(t, `"msg":"role lane subscribed"`)
 	const summary = "through the shared listener"
-	if err := rig.dispatch.Publish(edgeRoleEnvelope(summary)); err != nil {
+	if err := rig.dispatch.Publish(edgeRoleEnvelope(contracts.RoleTopicPrefix+edgeLiveRole, summary)); err != nil {
 		t.Fatalf("publish the role message: %v", err)
 	}
 	envelope, ok := nextRelayFrame(t, frames, 20*time.Second)
@@ -516,7 +529,7 @@ func TestAnEdgeSessionIsRelayedARoleMessageWhoseRoleAnotherSessionHolds(t *testi
 	rig.requireRoleHolder(t, edge, edgeLiveOtherSession)
 
 	const summary = "forwarded while the edge session held the role"
-	item := edgeRoleEnvelope(summary)
+	item := edgeRoleEnvelope(contracts.RoleTopicPrefix+edgeLiveRole, summary)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := rig.dispatch.PublishStoredAck(ctx, contracts.LegacyAgentSubject(edgeLiveSession), item, item.DedupeKey); err != nil {

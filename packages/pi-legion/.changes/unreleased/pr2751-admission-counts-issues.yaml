@@ -6,8 +6,8 @@ body: |-
   one to done, or out of the workflow with `park_child`, and try again), and `release_children`
   and `rerun_child` are refused for a child whose ancestor is in `retro`, `merging` or
   `awaiting_merge` (`CHILD_UNDER_ACCEPTED_PARENT`, naming the ancestor; wait for the ancestor to
-  close). `SIGNOFF_CHILD_IN_WORKFLOW` was recorded as removed under INFRA-229 (0.5.0) and returns
+  close). `SIGNOFF_CHILD_IN_WORKFLOW` was recorded as removed in 0.5.0 and returns
   here with a second emitter, `close_root`.
-  The plugin declares daemon API contract 47, whose state lists the issues that hold an admission
+  The plugin declares daemon API contract 51, whose state lists the issues that hold an admission
   slot rather than the roots, names the live trees under `admission.trees`, and gives each issue
   the root of its tree.

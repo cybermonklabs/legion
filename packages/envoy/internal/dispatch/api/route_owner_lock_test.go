@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The lock table (item_row_owner_lock_test.go) holds every writer of an item row behind the owner
@@ -83,6 +84,9 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 	{name: "the role holders route", route: "PUT /api/v1/issues/{key}/role-holders (putIssueRoleHolders)", ready: readyRoleHolders},
 	{name: "the project default assignee route", route: "PUT /api/v1/projects/{key}/default-assignee (putProjectDefaultAssignee)", ready: readyProjectDefaultAssignee},
 	{name: "the project gated steps route", route: "PUT /api/v1/projects/{key}/gated-steps (putProjectGatedSteps)", ready: readyProjectGatedSteps},
+	{name: "the project proven sessions on route", route: "PUT /api/v1/projects/{key}/proven-sessions (putProjectProvenSessions)", ready: readyProjectProvenSessionsOn},
+	{name: "the project proven sessions off route", route: "DELETE /api/v1/projects/{key}/proven-sessions (deleteProjectProvenSessions)", ready: readyProjectProvenSessionsOff},
+	{name: "the project default repository route", route: "PUT /api/v1/projects/{key}/default-repository (putProjectDefaultRepository)", ready: readyProjectDefaultRepository},
 	{name: "the project file upload route", route: "POST /api/v1/projects/{key}/artifacts on a file it has (storeArtifact)", ready: readyProjectFileUpload},
 	{name: "the ask follow route", route: "PUT /api/v1/asks/{id}/followers/{session_id} (changeAskFollower)", ready: readyAskFollow},
 }
@@ -91,6 +95,7 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 // of each route of routeOwnerLockTable and requires the route to wait for it having written
 // nothing, then to finish once the lock is given back (holdWriterBehindOwnerLock).
 func TestEveryRouteOnTheRouteTableWaitsForItsOwnerLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	for _, row := range routeOwnerLockTable {
 		t.Run(row.name, func(t *testing.T) { holdWriterBehindOwnerLock(t, row.route, row.ready(t, routeFixture{})) })
 	}
@@ -303,8 +308,8 @@ func readyDocumentEdit(t *testing.T, base routeFixture) lockedItemWrite {
 
 // readyMentionRetry drives POST /api/v1/comments/{id}/deliveries, a person's Retry of a mention
 // already delivered, which claims an attempt of its own under the comment's owner lock
-// (claimCommentDeliveryAttempt, lockedCommentForDelivery) before it sends. The mention needs a
-// listener to resolve against, so this row stands one up and lets the create's delivery settle.
+// (claimCommentDeliveryAttempt, lockedCommentAllowingClosed) before it sends. The mention needs
+// a listener to resolve against, so this row stands one up and lets the create's delivery settle.
 //
 // The claim is a transaction of its own that appends no event: it commits the attempt it opens
 // and the send's later transactions take the owner's lock again. A claim that took no lock would
@@ -313,11 +318,40 @@ func readyDocumentEdit(t *testing.T, base routeFixture) lockedItemWrite {
 // tells them apart: while the route waits, the mention must still hold its one attempt.
 func readyMentionRetry(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	listener := itemRowSessionListener(t, "steer")
-	base.options.envoyURL = listener.URL
+	return mentionRetryWrite(t, base, itemRowSessionListener(t, "steer").URL,
+		"The session this mention names is sent it twice.",
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated || decodeBody[commentDeliveryRead](t, answer).Attempt != 2 {
+				t.Fatalf("retry the mention once the lock was released: status=%d body=%s, want 201 and attempt 2",
+					answer.Code, answer.Body.String())
+			}
+		},
+		func(t *testing.T, _ pgx.Tx, fixture itemRowFixture, commentID string) {
+			if attempts := fixture.rowCount(t, `select count(*) from comment_deliveries where comment_id = $1`, commentID); attempts != 1 {
+				t.Fatalf("the mention holds %d attempts while this test holds its owner's lock, want its one "+
+					"first attempt: the Retry committed its claim under a writer holding that owner", attempts)
+			}
+		})
+}
+
+// mentionRetryWrite readies a person's Retry of a mention as a row's write, on a server of base's
+// options whose Envoy is the listener at listenerURL, which holds session s1: it files the issue,
+// posts a comment of body mentioning s1 and lets its first delivery settle, and the write is POST
+// /api/v1/comments/{id}/deliveries of that comment, steered. answered checks the Retry's answer
+// once the lock is given back, and meanwhile is the holder's write while the Retry waits, handed
+// the fixture and the comment's id.
+func mentionRetryWrite(
+	t *testing.T,
+	base routeFixture,
+	listenerURL, body string,
+	answered func(t *testing.T, answer *httptest.ResponseRecorder),
+	meanwhile func(t *testing.T, holder pgx.Tx, fixture itemRowFixture, commentID string),
+) lockedItemWrite {
+	t.Helper()
+	base.options.envoyURL = listenerURL
 	fixture := base.issue(t, "Mention retry")
 	comment := decodeMentionedComment(t, postMentionedComment(t, fixture.handler, fixture.issueKey, map[string]any{
-		"body":     "The session this mention names is sent it twice.",
+		"body":     body,
 		"mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	settledCommentDeliveries(t, fixture.database, comment.ID)
@@ -326,18 +360,8 @@ func readyMentionRetry(t *testing.T, base routeFixture) lockedItemWrite {
 			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries",
 				map[string]any{"delivery": "steer"}, "alice")
 		},
-		func(t *testing.T, answer *httptest.ResponseRecorder) {
-			if answer.Code != http.StatusCreated || decodeBody[commentDeliveryRead](t, answer).Attempt != 2 {
-				t.Fatalf("retry the mention once the lock was released: status=%d body=%s, want 201 and attempt 2",
-					answer.Code, answer.Body.String())
-			}
-		})
-	write.meanwhile = func(t *testing.T, _ pgx.Tx) {
-		if attempts := fixture.rowCount(t, `select count(*) from comment_deliveries where comment_id = $1`, comment.ID); attempts != 1 {
-			t.Fatalf("the mention holds %d attempts while this test holds its owner's lock, want its one "+
-				"first attempt: the Retry committed its claim under a writer holding that owner", attempts)
-		}
-	}
+		answered)
+	write.meanwhile = func(t *testing.T, holder pgx.Tx) { meanwhile(t, holder, fixture, comment.ID) }
 	return write
 }
 
@@ -349,11 +373,39 @@ func readyMentionRetry(t *testing.T, base routeFixture) lockedItemWrite {
 // (readyMentionRetry): while the route waits, the message must still hold its one attempt.
 func readyMessageRetry(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	listener := itemRowSessionListener(t, "btw")
-	base.options.envoyURL = listener.URL
+	return messageRetryWrite(t, base, itemRowSessionListener(t, "btw").URL, "Did this ship?",
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated || decodeBody[model.MessageDelivery](t, answer).Attempt != 2 {
+				t.Fatalf("retry the message once the lock was released: status=%d body=%s, want 201 and attempt 2",
+					answer.Code, answer.Body.String())
+			}
+		},
+		func(t *testing.T, _ pgx.Tx, fixture itemRowFixture, messageID string) {
+			if attempts := fixture.rowCount(t, `select count(*) from message_deliveries where message_id = $1`, messageID); attempts != 1 {
+				t.Fatalf("the message holds %d attempts while this test holds its issue's lock, want its one "+
+					"first attempt: the Retry committed its claim under a writer holding that owner", attempts)
+			}
+		})
+}
+
+// messageRetryWrite readies a person's Retry of an issue message as a row's write, on a server of
+// base's options whose Envoy is the listener at listenerURL, which holds session s1: it files the
+// issue and sends s1 a message of body as a btw, which the listener takes, and the write is POST
+// /api/v1/messages/{id}/deliveries of that message, as a btw again. answered checks the Retry's
+// answer once the lock is given back, and meanwhile is the holder's write while the Retry waits,
+// handed the fixture and the message's id.
+func messageRetryWrite(
+	t *testing.T,
+	base routeFixture,
+	listenerURL, body string,
+	answered func(t *testing.T, answer *httptest.ResponseRecorder),
+	meanwhile func(t *testing.T, holder pgx.Tx, fixture itemRowFixture, messageID string),
+) lockedItemWrite {
+	t.Helper()
+	base.options.envoyURL = listenerURL
 	fixture := base.issue(t, "Message retry")
 	message := createIssueMessage(t, fixture.handler, fixture.issueKey, map[string]any{
-		"body": "Did this ship?", "target": "session:s1", "delivery": "btw",
+		"body": body, "target": "session:s1", "delivery": "btw",
 	}, "alice")
 	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "sent" {
 		t.Fatalf("the message this row retries = %#v, want one attempt sent to the listener's session",
@@ -364,18 +416,8 @@ func readyMessageRetry(t *testing.T, base routeFixture) lockedItemWrite {
 			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/deliveries",
 				map[string]any{"delivery": "btw"}, "alice")
 		},
-		func(t *testing.T, answer *httptest.ResponseRecorder) {
-			if answer.Code != http.StatusCreated || decodeBody[model.MessageDelivery](t, answer).Attempt != 2 {
-				t.Fatalf("retry the message once the lock was released: status=%d body=%s, want 201 and attempt 2",
-					answer.Code, answer.Body.String())
-			}
-		})
-	write.meanwhile = func(t *testing.T, _ pgx.Tx) {
-		if attempts := fixture.rowCount(t, `select count(*) from message_deliveries where message_id = $1`, message.ID); attempts != 1 {
-			t.Fatalf("the message holds %d attempts while this test holds its issue's lock, want its one "+
-				"first attempt: the Retry committed its claim under a writer holding that owner", attempts)
-		}
-	}
+		answered)
+	write.meanwhile = func(t *testing.T, holder pgx.Tx) { meanwhile(t, holder, fixture, message.ID) }
 	return write
 }
 
@@ -607,6 +649,81 @@ func readyProjectGatedSteps(t *testing.T, base routeFixture) lockedItemWrite {
 	return write
 }
 
+// readyProjectProvenSessionsOn drives PUT /api/v1/projects/{key}/proven-sessions on the shared
+// token, on a project whose setting is off, which updates the project's row under the project's
+// owner lock it takes before the update (storeProjectProvenSessions).
+func readyProjectProvenSessionsOn(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Proven sessions on")
+	write := fixture.routeWrite(t, "the project's proven-sessions setting",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return agentRequest(t, handler, http.MethodPut, "/api/v1/projects/LOCK/proven-sessions",
+				map[string]any{"actor": sessionActor()}, "agent-token")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("turn the setting on once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if on := fixture.rowCount(t, `select count(*) from projects where key = $1 and proven_sessions`, "LOCK"); on != 1 {
+				t.Fatal("the project's setting is off after the route answered 200")
+			}
+		})
+	write.owner = store.ProjectOwner("LOCK")
+	return write
+}
+
+// readyProjectProvenSessionsOff drives DELETE /api/v1/projects/{key}/proven-sessions by a person,
+// on a project whose setting is on, which updates the project's row under the project's owner
+// lock it takes before the update (storeProjectProvenSessions).
+func readyProjectProvenSessionsOff(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Proven sessions off")
+	if on := dispatchRequest(t, fixture.handler, http.MethodPut, "/api/v1/projects/LOCK/proven-sessions", nil, "alice"); on.Code != http.StatusOK {
+		t.Fatalf("turn the project's setting on: status=%d body=%s", on.Code, on.Body.String())
+	}
+	write := fixture.routeWrite(t, "the project's proven-sessions setting",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/LOCK/proven-sessions", nil, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("turn the setting off once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if on := fixture.rowCount(t, `select count(*) from projects where key = $1 and proven_sessions`, "LOCK"); on != 0 {
+				t.Fatal("the project's setting is on after the route answered 200")
+			}
+		})
+	write.owner = store.ProjectOwner("LOCK")
+	return write
+}
+
+// readyProjectDefaultRepository drives PUT /api/v1/projects/{key}/default-repository with a
+// repository the project does not default to yet, which updates the project's row under the
+// project's owner lock it takes before the update (putProjectDefaultRepository), as every writer
+// of a projects row takes it.
+func readyProjectDefaultRepository(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Default repository")
+	write := fixture.routeWrite(t, "the project's default repository",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/LOCK/default-repository",
+				map[string]any{"repo": "acme/widgets"}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("set the default repository once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if set := fixture.rowCount(t, `select count(*) from projects where key = $1 and default_repo = 'acme/widgets'`, "LOCK"); set != 1 {
+				t.Fatal("the project names no default repository after the route answered 200")
+			}
+		})
+	write.owner = store.ProjectOwner("LOCK")
+	return write
+}
+
 // rowCount answers a count(*) query of one argument, read from the pool.
 func (f itemRowFixture) rowCount(t *testing.T, query string, arg any) int {
 	t.Helper()
@@ -624,6 +741,7 @@ func (f itemRowFixture) rowCount(t *testing.T, query string, arg any) int {
 // lock while it is held, then lets the send answer: the settle must queue behind the lock having
 // updated nothing, and record the attempt sent once the lock is given back.
 func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	entered, release := make(chan struct{}, 1), make(chan struct{})
 	sessions := `[{"session_id":"s1","title":"planner","capabilities":["btw"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -656,13 +774,16 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
 			map[string]any{"body": "Did this ship?", "target": "session:s1", "delivery": "btw"}, "alice")
 	}()
-	select {
-	case <-entered:
-	case response := <-answered:
-		t.Fatalf("the message answered %d %s before its send reached the listener", response.Code, response.Body.String())
-	case <-time.After(30 * time.Second):
-		t.Fatal("the message's send never reached the listener")
-	}
+	testwait.Until(t, "the message's send to reach the listener", func() (bool, bool) {
+		select {
+		case <-entered:
+			return true, true
+		case response := <-answered:
+			t.Fatalf("the message answered %d %s before its send reached the listener", response.Code, response.Body.String())
+		default:
+		}
+		return false, false
+	})
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the holder: %v", err)

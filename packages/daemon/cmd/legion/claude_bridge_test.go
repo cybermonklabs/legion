@@ -15,12 +15,15 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The command's refusals come before anything starts, each naming what is missing, as a usage error.
 func TestClaudeBridgeRefusesWhatItCannotRun(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion claude-bridge` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("LEGION_ROLE", "implementer")
 	t.Setenv("LEGION_ISSUE", "ACME-7")
@@ -41,6 +44,7 @@ func TestClaudeBridgeRefusesWhatItCannotRun(t *testing.T) {
 
 // A claude that cannot be started is the bridge's failure, exit 1, naming it.
 func TestClaudeBridgeNamesAClaudeItCannotStart(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion claude-bridge` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	// The bridge opens its inbox under the process TMPDIR, so a test that runs it in-process
 	// places that directory itself, with room for the inbox's socket.
@@ -56,12 +60,13 @@ func TestClaudeBridgeNamesAClaudeItCannotStart(t *testing.T) {
 // the bridge ends then as it ends on SIGTERM, stopping Claude Code and removing its inbox's
 // directory, so nothing it made stays in TMPDIR.
 func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
+	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stdout.Close()
-	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 300\n", stdout)
+	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 86400\n", stdout)
 	state, left := p.hangUp()
 	// Claude Code's status is the bridge's: the stand-in ended by the bridge's SIGTERM.
 	if code := state.ExitCode(); code != 128+int(syscall.SIGTERM) {
@@ -77,6 +82,7 @@ func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
 // Claude Code's last lines are still read and answered: a frame the bridge writes then fails, is
 // logged, and ends nothing, rather than SIGPIPE ending the bridge before it removes its inbox.
 func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
+	t.Parallel()
 	// The stand-in answers the bridge's SIGTERM with a tool call, which the bridge shows on the pane
 	// with a frame to the shim.
 	toolCall := filepath.Join(t.TempDir(), "tool-call.json")
@@ -84,7 +90,7 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := startClaudeBridge(t, "trap 'kill $!; cat "+toolCall+"; exit 0' TERM\n"+
-		"sleep 300 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
+		"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
 	state, left := p.hangUp()
 	if code := state.ExitCode(); code != 0 || !strings.Contains(p.logged(), "could not write to the shim") {
 		t.Errorf("the bridge given SIGHUP with no shim ended %v, want exit 0, Claude Code's status, after logging the frame it could not write:\n%s", state, p.logged())
@@ -97,6 +103,7 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 // Claude Code ends a turn and exits while the shim reads slowly: the bridge waits for the shim to
 // read every frame, the turn's agent_end among them, whole, and exits as Claude Code did.
 func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
+	t.Parallel()
 	turn := filepath.Join(t.TempDir(), "turn")
 	content := strings.Repeat("x", 256<<10)
 	if err := os.WriteFile(turn, []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"WAITING on CI"},`+
@@ -170,6 +177,7 @@ func goneShim(t *testing.T) *os.File {
 // (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
 // neither the user name nor the query reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
+	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +192,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	// The stand-in starts a turn of its own and ends it, which the bridge reports, and waits.
 	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\n"+
 		`printf '%s\n' '{"type":"system","subtype":"init"}' '{"type":"result","subtype":"success","is_error":false}'`+"\n"+
-		"exec sleep 300\n", stdout,
+		"exec sleep 86400\n", stdout,
 		"LEGION_DAEMON_URL=http://legion-reader@"+daemon+"/daemon?token=planted-query-token-3",
 		"LEGION_BOOT_TOKEN_FILE="+bootToken, "LEGION_GENERATION=4")
 	p.await("the failed report logged", func() bool {
@@ -223,7 +231,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	p := &claudeBridgeProcess{t: t, tmp: testtmp.Dir(t, claudebridge.InboxLongestPath),
 		stderr: filepath.Join(dir, "stderr"), exited: make(chan struct{})}
 	claude := filepath.Join(dir, "claude")
-	if err := os.WriteFile(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := execfile.Write(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	stderr, err := os.Create(p.stderr)
@@ -267,16 +275,18 @@ func (p *claudeBridgeProcess) logged() string {
 	return string(raw)
 }
 
-// await waits, at most 30s and failing the test if the bridge exits first, until ok holds.
+// await waits until ok holds, failing the test if the bridge exits first. Its one bound is the
+// test binary's deadline less 30 s, so a step a loaded machine makes slow passes and an ok that
+// never holds still fails, naming what it waited for, before go test's -timeout panics.
 func (p *claudeBridgeProcess) await(what string, ok func() bool) {
 	p.t.Helper()
-	deadline := time.After(30 * time.Second)
+	deadline := time.After(testwait.Bounded(p.t, 1<<60, 30*time.Second))
 	for !ok() {
 		select {
 		case <-p.exited:
 			p.t.Fatalf("the bridge exited (%v) before %s:\n%s", p.cmd.ProcessState, what, p.logged())
 		case <-deadline:
-			p.t.Fatalf("not %s within 30s:\n%s", what, p.logged())
+			p.t.Fatalf("not %s by 30s before the test binary's deadline:\n%s", what, p.logged())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -303,14 +313,14 @@ func (p *claudeBridgeProcess) hangUp() (*os.ProcessState, []string) {
 	return p.exit("SIGHUP")
 }
 
-// exit waits, at most 30s after what ended the bridge, for it to exit; it answers how the bridge
-// exited and what it left of its inbox in TMPDIR.
+// exit waits for the bridge to exit after what ended it, with the test binary's deadline less 30 s
+// as its one bound; it answers how the bridge exited and what it left of its inbox in TMPDIR.
 func (p *claudeBridgeProcess) exit(after string) (*os.ProcessState, []string) {
 	p.t.Helper()
 	select {
 	case <-p.exited:
-	case <-time.After(30 * time.Second):
-		p.t.Fatalf("the bridge did not exit within 30s of %s:\n%s", after, p.logged())
+	case <-time.After(testwait.Bounded(p.t, 1<<60, 30*time.Second)):
+		p.t.Fatalf("the bridge did not exit after %s by 30s before the test binary's deadline:\n%s", after, p.logged())
 	}
 	left, _ := filepath.Glob(filepath.Join(p.tmp, "legion-claude-*"))
 	return p.cmd.ProcessState, left

@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -78,11 +79,12 @@ func (js *unansweredJetStream) sent() (reads, creates int) {
 // A start whose stream read draws no answer sends it again and goes on, rather than ending the
 // program with the bare deadline of the JetStream context's own wait.
 func TestAStreamReadTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	losing := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	if _, err := ensureStreamWithConfig(countedReads(t.Context()), losing, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(countedReads(t.Context()), slog.Default(), losing, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose first stream read drew no answer = %v, want it to go on", err)
 	}
 
@@ -98,11 +100,12 @@ func TestAStreamReadTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *tes
 // first time, so the second send is the create that makes the stream, with its own configuration
 // and the id it writes.
 func TestACreateTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	losing := &unansweredJetStream{JetStreamContext: js, unansweredCreate: 1}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	if _, err := ensureStreamWithConfig(t.Context(), losing, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), losing, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose first create drew no answer = %v, want it to go on", err)
 	}
 
@@ -124,12 +127,13 @@ func TestACreateTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *testing
 // three-copy create on one server and 2.15.1 lands it), and what this row holds is that any
 // answer ends the sending.
 func TestARefusedCreateIsSentOnce(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	refusal := &nats.APIError{Code: 400, ErrorCode: 10052, Description: "insufficient resources"}
 	refused := &unansweredJetStream{JetStreamContext: js, refuseCreate: refusal}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	_, err := ensureStreamWithConfig(t.Context(), refused, &cfg, capsAnUnsetStream, atStart)
+	_, err := ensureStreamWithConfig(t.Context(), slog.Default(), refused, &cfg, capsAnUnsetStream, atStart)
 	var apiErr *nats.APIError
 	if err == nil || !errors.As(err, &apiErr) || apiErr.ErrorCode != refusal.ErrorCode {
 		t.Fatalf("a start whose create the server refused = %v, want that refusal back", err)
@@ -154,7 +158,7 @@ func TestAStreamReadTheServerNeverAnswersIsGivenUpOn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
-	_, err := ensureStreamWithConfig(ctx, lost, &cfg, capsAnUnsetStream, atStart)
+	_, err := ensureStreamWithConfig(ctx, slog.Default(), lost, &cfg, capsAnUnsetStream, atStart)
 	if !unanswered(err) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose stream read is never answered = %v, want the deadline back: a start that goes on sending writes no fatal line of its own", err)
 	}
@@ -173,6 +177,7 @@ func TestAStreamReadTheServerNeverAnswersIsGivenUpOn(t *testing.T) {
 // the stream the start makes itself (nats.go's lookup reads it through its own request, which
 // this context does not see), on a bucket that already has the deployment's three copies.
 func TestAStartThatFindsItsBucketSendsTheStreamReadAgain(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	config := &nats.KeyValueConfig{Bucket: "envoy_found_read_test", Storage: nats.FileStorage, Replicas: 3}
@@ -192,6 +197,7 @@ func TestAStartThatFindsItsBucketSendsTheStreamReadAgain(t *testing.T) {
 // fails if that call fails, so the call's read of the stream is sent again when the server leaves
 // it unanswered, as every read a start makes is.
 func TestTheMaxAgeReadTheServerLeavesUnansweredIsSentAgain(t *testing.T) {
+	t.Parallel()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,22 +17,39 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // replayHub starts a NATS server with Dispatch's user, which may do anything, and one session user
-// per id in sessions holding that session's own grant: publish its replies (bus.SessionReplies)
-// and its frames, subscribe its relay and control subjects. It returns the server's URL, a
-// connection as Dispatch's user, and each session's seed by id.
+// per id in sessions holding that session's own grant (natsgrant.Session): publish its replies
+// (bus.SessionReplies) and its frames, subscribe its relay and control subjects. It returns the
+// server's URL, a connection as Dispatch's user, and each session's seed by id.
 func replayHub(t *testing.T, sessions ...string) (string, *natsgo.Conn, map[string]string) {
 	t.Helper()
+	quote := func(subjects []string) string {
+		quoted := make([]string, len(subjects))
+		for i, subject := range subjects {
+			quoted[i] = strconv.Quote(subject)
+		}
+		return strings.Join(quoted, ", ")
+	}
+	rules := func(allow, deny []string) string {
+		if len(deny) == 0 {
+			return fmt.Sprintf("{ allow: [%s] }", quote(allow))
+		}
+		return fmt.Sprintf("{ allow: [%s], deny: [%s] }", quote(allow), quote(deny))
+	}
 	seeds := map[string]string{}
 	entries := make([]string, 0, len(sessions))
 	for _, sessionID := range sessions {
 		seed, public := testnats.User(t)
 		seeds[sessionID] = seed
-		entries = append(entries, fmt.Sprintf("{ nkey: %q, permissions: { publish: { allow: [%q, %q] }, subscribe: { allow: [%q, %q] } } }",
-			public, bus.SessionReplies(sessionID), contracts.AgentStreamFramesSubject(sessionID),
-			bus.DeliverSubject(sessionID), contracts.AgentStreamControlSubject(sessionID)))
+		grant, err := natsgrant.Session(sessionID)
+		if err != nil {
+			t.Fatalf("the grant of %s: %v", sessionID, err)
+		}
+		entries = append(entries, fmt.Sprintf("{ nkey: %q, permissions: { publish: %s, subscribe: %s } }",
+			public, rules(grant.Publish, grant.PublishDeny), rules(grant.Subscribe, grant.SubscribeDeny)))
 	}
 	config := fmt.Sprintf(`authorization {
   users = [

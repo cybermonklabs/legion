@@ -42,7 +42,9 @@
 #      the original's `du -s`
 #      come first, and the run stops when the volume cannot hold every copy and one fresh root. A
 #      copy hardlinks the clone's objects/pack/* from the original, since git never writes a pack
-#      in place, and copies every other file with `cp -a`; then its workspace's .git is pointed at
+#      in place, and copies every other file with `cp -a`, objects/info/alternates among them, so a
+#      copy of a clone provisioning made with `git clone --shared` reads the feed's objects through
+#      the same alternates as the original; then its workspace's .git is pointed at
 #      its own clone and `git worktree repair` run in it. Each workspace's `git rev-parse
 #      --git-common-dir` must name its own clone's .git, and jj 0.45.1 must read its copied store
 #      (`op log`, exit 0 and no `Reindexing`); the run stops otherwise. Each R10 copy's jj reads
@@ -88,8 +90,10 @@
 #      edits in two directories, and `jj --ignore-working-copy log -r '::@-' -- <walk file>`. The
 #      five copies' HEADs are one commit before the commits, so each commit is one id on all five,
 #      which a verdict checks, and each released row's stdout can equal its control's.
-#  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a `git
-#      clone --no-checkout` of the feed, its packs hardlinked, then every jj command the measuring
+#  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a plain
+#      `git clone --no-checkout` of the feed, its packs hardlinked into the clone's own object
+#      store, where provisioning's clone is `git clone --shared` and reads them from the feed
+#      through alternates, then every jj command the measuring
 #      jj recorded for the original's provision, in its order and with its argv, run with that jj
 #      and budget. Each path of the original root in an argv is rewritten to the fresh root, and
 #      provisioning's temporary clone (<clone>.clone-<digits>, which it renames into place once
@@ -1157,11 +1161,25 @@ fi
 mkdir -p "$scratch/leak-check"
 cat > "$scratch/leak-check/public-leak-check.sh" << 'SH'
 #!/usr/bin/env bash
-# Clears every call: the push rows measure memory, and the embedded rule file still reads each push.
+# Clears every call: the push rows measure memory, and the rule pass still reads each push.
 exit 0
 SH
 chmod 0755 "$scratch/leak-check/public-leak-check.sh"
 export PUBLIC_LEAK_CHECK=$scratch/leak-check/public-leak-check.sh
+# Nor does the daemon hand it the deployment's private-name rule file, and a guard with no rule file
+# runs no rule pass, so a push would skip work a role's push does. This file of one rule, for a
+# host no push here carries, is what LEGION_PRIVATE_NAME_RULES_FILE names, so the rule pass reads
+# each push and refuses none.
+mkdir -p "$scratch/rules"
+cat > "$scratch/rules/private-name-rules.toml" << 'TOML'
+title = "the pack-memory probe's own rules"
+
+[[rules]]
+id = "pack_memory_probe_rule"
+description = "a host no push of this probe carries"
+regex = '''never-pushed-host[.]pack-memory[.]invalid'''
+TOML
+export LEGION_PRIVATE_NAME_RULES_FILE=$scratch/rules/private-name-rules.toml
 
 # --------------------------------------------------------------------------------------------
 # 4. The four pack settings under the role's block.

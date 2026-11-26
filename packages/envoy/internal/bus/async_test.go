@@ -45,6 +45,7 @@ func sourceEventID(t *testing.T, data []byte) string {
 // answered accepted, and the stream stores a run sent back to back on one window's connection in
 // send order.
 func TestPublishAsyncKeepsSendOrder(t *testing.T) {
+	t.Parallel()
 	const count = 500
 	_, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url})
@@ -101,6 +102,7 @@ func TestPublishAsyncKeepsSendOrder(t *testing.T) {
 // resends with no attempt counted, so the caller backs the envelope off. Nothing reaches a core
 // subscriber of the topic.
 func TestAWindowAnswersATopicTheStreamDoesNotCaptureAsNotCaptured(t *testing.T) {
+	t.Parallel()
 	_, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
@@ -128,8 +130,19 @@ func TestAWindowAnswersATopicTheStreamDoesNotCaptureAsNotCaptured(t *testing.T) 
 	default:
 		t.Fatalf("a publish to %s returned with no answer, as if it had sent something", uncapturedTopic)
 	}
-	if message, err := received.NextMsg(300 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("the uncaptured topic's subscriber received %v, %v; want nothing sent", message, err)
+	// Nothing was sent, which two flushes prove with no span. The server takes a connection's
+	// messages in order, so once the client's flush is answered it has routed anything the client
+	// sent, into the reader's connection ahead of anything later; once the reader's own flush is
+	// answered, that message is in the subscription's queue. A window of 300 ms (before) could pass
+	// with a wrongly sent message still on its way on a loaded machine.
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the client: %v", err)
+	}
+	if err := reader.Flush(); err != nil {
+		t.Fatalf("flush the reader: %v", err)
+	}
+	if queued, _, err := received.Pending(); err != nil || queued != 0 {
+		t.Fatalf("the uncaptured topic's subscriber holds %d message(s) (%v); want nothing sent", queued, err)
 	}
 }
 
@@ -137,6 +150,7 @@ func TestAWindowAnswersATopicTheStreamDoesNotCaptureAsNotCaptured(t *testing.T) 
 // is in the channel at once, ErrUnavailable, which a caller tells apart from a failure of the
 // envelope itself.
 func TestAWindowWhoseConnectionIsLostAnswersUnavailableBeforeSending(t *testing.T) {
+	t.Parallel()
 	server, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
@@ -169,6 +183,7 @@ func TestAWindowWhoseConnectionIsLostAnswersUnavailableBeforeSending(t *testing.
 // next connection with no attempt counted: it is ErrNotAcknowledged, which the caller backs off.
 // Deleting the stream makes the server answer the stream's subject with no responders.
 func TestAWindowAnswersNoRespondersOnACurrentConnectionAsNotAcknowledged(t *testing.T) {
+	t.Parallel()
 	_, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
@@ -196,6 +211,7 @@ func TestAWindowAnswersNoRespondersOnACurrentConnectionAsNotAcknowledged(t *test
 // server that has gone silent leaves it, is ErrNotAcknowledged once the acknowledgement's 5 s run
 // out, not ErrUnavailable: the connection never read as lost.
 func TestAWindowAnswersAnUnacknowledgedPublishOnACurrentConnectionAsNotAcknowledged(t *testing.T) {
+	t.Parallel()
 	server, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {

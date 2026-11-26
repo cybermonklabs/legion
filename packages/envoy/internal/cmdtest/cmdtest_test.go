@@ -29,11 +29,13 @@ const (
 	stalledGoEnv = "CMDTEST_STALLED_GO"
 )
 
+// TestMain runs the tests through Main, which makes the directory BuildCommand writes into, as
+// every package whose tests build does: TestTheStalledGoBuild builds through BuildCommand.
 func TestMain(m *testing.M) {
 	if os.Getenv(heldPortChildEnv) == "1" {
 		os.Exit(heldPortChild())
 	}
-	os.Exit(m.Run())
+	os.Exit(Main(m))
 }
 
 // heldPortChild is the process TestHeldPortStaysHeldUntilItsProcessServes starts. It waits for a

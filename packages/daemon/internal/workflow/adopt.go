@@ -183,7 +183,7 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 		return err
 	}
 	issue.ToldParent = fact.Parent
-	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, *issue); err != nil {
 		return err
 	}
 	told := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and no architect of that tree can release it. It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.",
@@ -200,10 +200,13 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 // that tree with every record of its own tree; each member keeps its own parent but the issue
 // itself, which is recorded under the Dispatch parent and held on the blockers child names
 // (intake.AdoptedChild, the release's own read of Dispatch). Each record is written as every
-// adopted record is (moveIntoTree): it takes its next generation, the fence every row of the old
-// tree checks but its suspend and tree-close rows, with no linger, hold or Dispatch chain
-// (record.Issue.Ancestry: a member waits in no line), no hand-over fence and its generation's facts
-// cleared. A todo record enters the tree's run admitted, as an unrecorded todo child does
+// adopted record is (moveIntoTree): it takes its next generation, with no linger, hold or Dispatch
+// chain (record.Issue.Ancestry: a member waits in no line), no hand-over fence and its generation's
+// facts cleared. That generation fences each row of the old tree that compares the issue's
+// generation, but for the old tree's suspend and tree-close rows, which still stop a claim standing
+// in that tree (the daemon outbox's stopInLeftTree); the old tree's workspace removal is fenced by
+// its tree and linger instead (record.WorkspaceRemove). A todo record enters the tree's run
+// admitted, as an unrecorded todo child does
 // (enterChild), so it starts its first phase at the
 // slot the waiting line gives it, unless it waits on an unfinished Dispatch issue: it is held at
 // phase.Admitted on the mirror's row, which the release's own read wrote before the adoption ran
@@ -237,8 +240,11 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // (Adopt), and the closed tree's member's, for the one issue a release names (AdoptMember). It
 // is written once here, so that the two routes cannot come to record one issue differently.
 //
-// The record takes its next generation, the fence every row of the old tree checks but its suspend
-// and tree-close rows, with its hand-over fence deleted and its generation's facts cleared. Before
+// The record takes its next generation, with its hand-over fence deleted and its generation's facts
+// cleared. That generation fences each row of the old tree that compares the issue's generation,
+// but for the old tree's suspend and tree-close rows, which still stop a claim standing in that tree
+// (the daemon outbox's stopInLeftTree); the old tree's workspace removal is fenced by its tree and
+// linger instead (record.WorkspaceRemove). Before
 // that generation is written, StopLeftTree queues the old tree's suspend for every role. A prior
 // old-tree stop can finish without acting, and the new generation can fence an old issue close.
 // A todo record enters the tree admitted on the repository it was first recorded with (enterChild,
@@ -278,9 +284,13 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	if member.Status == "todo" {
 		return e.enterChild(ctx, tx, root, fact, next, recordedResolution(member))
 	}
+	// The member is parked at done at its next run, and no task moves (moveTask): the write takes it
+	// out of the workflow without ending a task. The run it leaves keeps its task where it stood,
+	// with that run's step ended above, and the run it enters has started none. A todo runs it
+	// again at a run of its own (ReenterChild).
 	member.Tree, member.Project, member.Generation, member.Phase = root.Tree, root.Project, next, phase.Done
 	member.LingerUntil, member.Hold, member.Ancestry = nil, nil, nil
-	return e.store.PutIssue(ctx, tx, member)
+	return e.WriteIssue(ctx, tx, member)
 }
 
 // StopLeftTree queues the old tree's suspend of every role left can hold. Every request names

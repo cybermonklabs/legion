@@ -10,7 +10,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
@@ -18,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // secretsLocalWithoutValue is an agent-tier secret owner holds with no value, which the broker
@@ -39,6 +37,7 @@ func useRigSession(t *testing.T, rig *ciphertest.Rig) {
 // TestSecretCreateIsServedByTheBrokerAtOnce drives a create end to end: the CLI writes to (fake)
 // AWS and the broker serves the secret on its very next read, no reload.
 func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:42); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (awsClients set at secret_e2e_test.go:45).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
@@ -63,6 +62,7 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 // moment the CLI deletes it, and serves it again the moment the CLI restores it, each on the
 // CLI's own reread; a retag the broker would refuse is reported, and exits 1.
 func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:67); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
@@ -96,6 +96,7 @@ func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 // rereads the name after that answer and serves the new secret, with no reload. The line it
 // prints about the unchecked view is TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned's.
 func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:101); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	withNoBrokerIdentity(t)
@@ -105,10 +106,10 @@ func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
 	if code != 0 || !strings.Contains(stdout, "broker: rereading FRESH_KEY from ") || strings.Contains(stdout, "broker: serving") {
 		t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0 and the reread sent with no proof", code, stdout, stderr)
 	}
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+	if !heldBeforeGiveUp(t, func() bool {
 		_, served := rig.Policy.Get().Secrets["FRESH_KEY"]
 		return served
 	}) {
-		t.Fatal("the broker does not serve FRESH_KEY within 5s of the create's reread; want the reread a call with no proof asked for run after its answer")
+		t.Fatalf("the broker did not serve FRESH_KEY after the create's reread, %s before the test binary's deadline; want the reread a call with no proof asked for run after its answer", waitMargin)
 	}
 }

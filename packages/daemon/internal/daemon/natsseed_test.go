@@ -33,7 +33,8 @@ func lookup(values map[string]string) func(string) (string, bool) {
 // nats_nkey_seed_file — the seed every pane receives — so a daemon boots against a server whose one
 // user is that seed's nkey, and without it the same server refuses the daemon's boot.
 func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	seed, public := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, public)
 	user, err := nkeys.FromSeed([]byte(seed))
@@ -57,14 +58,14 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 		cfg := workflowConfig(t, url)
 		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, seed+"\n")
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		if err := bootsOrExits(t, cfg, tokens, 60*time.Second); err != nil {
+		if err := bootsOn(t, cfg, tokens, calls, 60*time.Second, quietLogger()); err != nil {
 			t.Fatalf("boot with the seed = %v, want the daemon serving", err)
 		}
 	})
 	t.Run("without one", func(t *testing.T) {
 		cfg := workflowConfig(t, url)
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		err := bootsOrExits(t, cfg, tokens, 60*time.Second)
+		err := bootsOn(t, cfg, tokens, calls, 60*time.Second, quietLogger())
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "authorization violation") {
 			t.Fatalf("boot without a seed = %v, want the server's authorization violation", err)
 		}
@@ -76,7 +77,8 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 // a server whose one user is the daemon seed's admits a daemon configured with both seeds, and
 // refuses one configured with the pane seed alone, which it then connects as.
 func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	daemonSeed, daemonUser := testnkeys.User(t)
 	paneSeed, paneUser := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, daemonUser)
@@ -103,7 +105,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 		cfg.NatsDaemonNkeySeedFile = testnkeys.SeedFile(t, daemonSeed+"\n")
 		var out syncBuffer
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
+		if err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
 			t.Fatalf("boot with both seeds = %v, want the daemon serving", err)
 		}
 		logged := out.String()
@@ -122,7 +124,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, paneSeed+"\n")
 		var out syncBuffer
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil)))
+		err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil)))
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "authorization violation") {
 			t.Fatalf("boot with the pane seed alone = %v, want the server's authorization violation", err)
 		}
@@ -136,6 +138,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 // chooseNATSConnection picks the daemon seed, else the pane seed, else none, and its one line says
 // which user that is and whether it is the pane user, the daemon seed naming the pane user included.
 func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
+	t.Parallel()
 	daemonSeed, daemonUser := testnkeys.User(t)
 	paneSeed, paneUser := testnkeys.User(t)
 	for _, tc := range []struct {
@@ -168,6 +171,7 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 // launch carry the pane seed as NATS_NKEY_SEED and nothing of the daemon seed, in no secret, no
 // variable, and no other field of the spec.
 func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
+	t.Parallel()
 	daemonSeed, paneSeed := testnkeys.UserSeed(t), testnkeys.UserSeed(t)
 	for _, tc := range []struct {
 		name    string

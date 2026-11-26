@@ -590,7 +590,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
 				Clock:        clock,
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
-				Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Env:          withRules(t, append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir())),
 			})
 			// A ref the push deletes, named for a host the rules refuse: its name is the push's one
 			// record, so a scan refuses the push and no scan passes it, and no git reads a commit.
@@ -598,7 +598,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 				Dir:     t.TempDir(),
 				Remote:  "origin",
 				URL:     theURL,
-				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + theHost, RemoteSHA: noSHA}},
+				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + leakguardtest.RulesHost, RemoteSHA: noSHA}},
 			})
 			tc.check(t, err, sources)
 			if got := countLines(t, reads); got != 1 {
@@ -642,7 +642,7 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 	reset := clock.Now().Add(30 * time.Minute)
 	bin, records := t.TempDir(), t.TempDir()
 	started, record := filepath.Join(records, "started"), filepath.Join(records, "git")
-	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nsleep 30\n")
+	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nexec sleep 86400\n")
 	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
 	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
@@ -651,15 +651,15 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 		<-deadline.Done()
 		close(ctx.done)
 	})
-	began := time.Now()
-	_, err := New(Options{
+	guard := New(Options{
 		Clock: clock,
 		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", &rateLimitError{reset: reset}
 		},
-	}).Visibility(ctx, theRepo)
-	answeredWithin10s(t, began)
+	})
+	var err error
+	answered(t, "the visibility read whose gh never answers", func() { _, err = guard.Visibility(ctx, theRepo) })
 	if err == nil {
 		t.Fatal("the visibility read passed while gh never answered")
 	}

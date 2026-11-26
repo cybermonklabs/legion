@@ -1,0 +1,5 @@
+kind: Added
+body: '`GraphEdgeWithTrees` and `GraphExcerptWithTrees` are the edges `GraphReferences` answers, each excerpt carrying `text_tree` for a caller that sends `Dispatch-Trees: 1`; `IDCandidate` gains `first_line_tree`, the tree of the first line a candidate is told apart by; and `Handoff` gains `field_trees`, the tree of each string its body''s fields hold, keyed by its JSON Pointer into the body (RFC 6901: `/summary`, `/proof/0`).'
+time: 2026-11-16T08:17:17.532507828Z
+custom:
+    Issue: pr3125

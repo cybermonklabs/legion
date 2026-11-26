@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // acceptPhase moves the root of the status harness's tree into at, the phase that makes it an
@@ -25,9 +26,9 @@ func acceptPhase(t *testing.T, h *harness, key string, at phase.Phase) {
 	}
 }
 
-// holdFrom stands key at phase.Held, held from at: where a root whose worker died stands. Its
-// reviewed head is wherever the hold left it, so a root held from retro or merging is accepted
-// still (record.Accepted).
+// holdFrom stands key at phase.Held, held from at: where a root whose worker died stands. The
+// head its task's last step passed is wherever the hold left it, so a root held from retro or
+// merging is accepted still (record.Accepted).
 func holdFrom(t *testing.T, h *harness, key string, at phase.Phase) {
 	t.Helper()
 	if _, err := h.store.Pool().Exec(context.Background(), "update issues set phase = $2, held_from = $3 where key = $1",
@@ -63,7 +64,7 @@ func ownersBacklog(t *testing.T, h *harness, handlers []intake.Handler, statuses
 
 // A6. Both doors refuse a child under a root held from an accepted phase, as they refuse one
 // under a root standing in that phase itself: a worker that dies leaves its issue at held with
-// the phase it left recorded, and the reviewed head the architect signed off is accepted still.
+// the phase it left recorded, and the head the last step of its task passed is accepted still.
 // Read by the phase alone the hold let work in beneath such a head — rerun_child and
 // release_children both took it — and the waiting line offered that work a slot of its own.
 func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
@@ -123,6 +124,25 @@ func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 	}
 }
 
+// The refusal under an accepted ancestor names the ancestor's head as the head the last step of
+// its task passed, which is true of every plan: an issue stands in retro or merging
+// (record.Accepted) only once its task's last step has passed, whatever that step is, while a
+// plan with no reviewer step (`implementer tester`) has no reviewed head at all.
+func TestTheRefusalUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
+	h, handlers, statuses := statusHarness(t)
+	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+	ownersBacklog(t, h, handlers, statuses, architect, statusChild)
+	acceptPhase(t, h, statusRoot, phase.Retro)
+
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil),
+		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
+	want := statusChild + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath " +
+		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed, where " + statusRoot + " is not the tree's root"
+	if message != want {
+		t.Fatalf("the refusal = %q, want %q", message, want)
+	}
+}
+
 // A6. release_children is refused the same way, for a child Dispatch holds in backlog that the
 // daemon has never recorded: the chain is read from the Dispatch parent the release itself read,
 // and it is walked past a parent already done, so a grandchild under a done parent is refused by
@@ -169,7 +189,7 @@ func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 		Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "C", LastDispatchSeq: 7})
 
 	var ancestor string
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		ancestor, err = record.AcceptedAncestorOf(context.Background(), record.NewStore(), tx, statusRoot, "LEGION-300", "")
 		return err

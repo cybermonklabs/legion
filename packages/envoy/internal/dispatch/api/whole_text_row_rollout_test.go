@@ -66,6 +66,7 @@ func reconcileBlockIndexPass(t *testing.T, deps Deps) docs.BlockIndexTick {
 // row's own order. docs/block_index_test.go's TestRetirementWaitsForACurrentWindow is its
 // neighbour at the layer below, which proves the retirement arm's own rule without a search.
 func TestAWindowedItemKeepsItsWholeTextRowUntilItsWindowIsCurrent(t *testing.T) {
+	t.Parallel()
 	const query = "wibbleflorp"
 	const body = "The canary pours the astrolabe over the quiet wharf.\n\nA second paragraph."
 	ctx := context.Background()
@@ -134,7 +135,7 @@ func TestAWindowedItemKeepsItsWholeTextRowUntilItsWindowIsCurrent(t *testing.T) 
 	// The hit the newer build already serves for the same comment, so both builds find it while
 	// the row is there. The query shares no word with the comment, so only the meaning leg can
 	// answer it.
-	requireNoKeywordHit(t, "q="+query)
+	requireNoKeywordHit(t, handler, "q="+query)
 	response := searchResponse(t, handler, "q="+query)
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q while the whole-text row stands, want empty", response.Degraded)

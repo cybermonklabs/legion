@@ -44,6 +44,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_SIGNIN_CLIENT_SECRET": givesNone("a removed setting, refused when set"),
 	"BROKER_ENVOY_TOKEN":          givesNone("a removed setting, refused when set"),
 	"BROKER_ENVOY_TOKEN_FILE":     givesNone("a removed setting, refused when set"),
+	"BROKER_AIRLOCK_RULES_FILE":   givesNone("a removed setting, refused when set"),
 
 	"BROKER_DATABASE_URL": givesNone("the database's URL"),
 	"BROKER_SIGNIN":       givesNone("the person sign-in's switch"),
@@ -58,7 +59,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_SIGNIN_WORKSPACE_DOMAINS":      givesNone("the Workspace's domains"),
 	"BROKER_SECRETS_STORE":                 givesNone("a secret store"),
 	"BROKER_SECRETS_PREFIX":                givesNone("a secret-name prefix"),
-	"BROKER_AIRLOCK_RULES_FILE":            givesNone("a file path"),
+	"BROKER_PROFILES_FILE":                 givesNone("a file path"),
 	"BROKER_AIRLOCK_LISTEN_ADDR":           givesNone("a listen address"),
 	"BROKER_AIRLOCK_PROXY_URL":             givesNone("the airlock proxy's URL"),
 	"BROKER_AIRLOCK_CA_CERT_FILE":          givesNone("a file path"),
@@ -94,6 +95,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
 	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),
 	"BROKER_AIRLOCK_CLUSTER_RANGES": givesNone("address ranges"),
+	"BROKER_PROXY_PRIVATE_UPSTREAM": givesNone("a host and a URL"),
 
 	"BROKER_SERVICES": givesARole(
 		"a BROKER_SERVICES entry names its login service",
@@ -104,14 +106,15 @@ var settingRoles = map[string]settingRole{
 		"a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the first account",
 		"a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the second account",
 	),
-	"BROKER_SERVICE_ACCOUNT_SECRETS": givesNone("a Google account for each secret"),
-	"BROKER_DIRECTORY_URL":           givesNone("the Directory API's URL"),
-	"BROKER_DIRECTORY_ACCOUNT":       givesNone("a Google account the group read mints for"),
-	"BROKER_SIGNIN_DEVICE_AUDIENCE":  givesNone("an audience"),
-	"BROKER_VM_SERVICES":             givesARole("a BROKER_VM_SERVICES entry names its login service"),
-	"BROKER_VM_PROJECTS":             givesNone("a Google account's project"),
-	"BROKER_VM_INSTANCES":            givesNone("a Google account's instance names"),
-	"BROKER_VM_EXCHANGE_ACCOUNTS":    givesNone("a Google account's person and project"),
+	"BROKER_SERVICE_ACCOUNT_SECRETS":  givesNone("a Google account for each secret"),
+	"BROKER_DIRECTORY_URL":            givesNone("the Directory API's URL"),
+	"BROKER_DIRECTORY_ACCOUNT":        givesNone("a Google account the group read mints for"),
+	"BROKER_SIGNIN_DEVICE_AUDIENCE":   givesNone("an audience"),
+	"BROKER_VM_SERVICES":              givesARole("a BROKER_VM_SERVICES entry names its login service"),
+	"BROKER_VM_PROJECTS":              givesNone("a Google account's project"),
+	"BROKER_VM_INSTANCES":             givesNone("a Google account's instance names"),
+	"BROKER_VM_EXCHANGE_ACCOUNTS":     givesNone("a Google account's person and project"),
+	"BROKER_VM_EXCHANGE_JOB_ACCOUNTS": givesNone("a Google account's projects"),
 
 	"BROKER_API_ACCOUNTS":             givesARole("a BROKER_API_ACCOUNTS entry names it"),
 	"BROKER_EXCHANGE_GITHUB_ISSUER":   givesNone("an issuer"),
@@ -119,7 +122,9 @@ var settingRoles = map[string]settingRole{
 	"BROKER_EXCHANGE_K8S_AUDIENCE":    givesNone("an audience"),
 	"BROKER_EXCHANGE_ACCOUNTS":        givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
 	"BROKER_EXCHANGE_READ_ACCOUNTS":   givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_JOB_ACCOUNTS":    givesARole("a BROKER_EXCHANGE_JOB_ACCOUNTS entry names it"),
 	"BROKER_EXCHANGE_WORKFLOWS":       givesNone("a GitHub workflow"),
+	"BROKER_EXCHANGE_JOB_WORKFLOWS":   givesNone("a GitHub workflow"),
 	"BROKER_PRIVATE_PROJECTS":         givesNone("project keys"),
 	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE": givesNone("a file path"),
 
@@ -131,6 +136,13 @@ var settingRoles = map[string]settingRole{
 	"BROKER_NATS_K8S_AUDIENCE":     givesNone("an audience"),
 	"BROKER_NATS_GOOGLE_AUDIENCE":  givesNone("an audience"),
 	"BROKER_NATS_URLS":             givesNone("the NATS hub's URLs"),
+	// loadNATSHold's: the operator BROKER_NATS_HOLD_READ needs is a BROKER_NATS_SERVICES entry, which
+	// that setting's row marks.
+	"BROKER_NATS_HOLD_READ":         givesNone("a switch"),
+	"BROKER_NATS_HOLD_SIGNING_KEYS": givesNone("public keys"),
+	// Load's int.
+	"BROKER_NATS_HOLD_POOL_SIZE": givesNone("a number of connections"),
+	"BROKER_NATS_ACCOUNT":        givesNone("the hub account admitted clients are placed in"),
 
 	"BROKER_POD_REGISTRARS":            givesARole("a BROKER_POD_REGISTRARS entry names it as its registrar"),
 	"BROKER_POD_REGISTRATION_AUDIENCE": givesNone("an audience"),
@@ -146,6 +158,9 @@ var settingRoles = map[string]settingRole{
 	"BROKER_DRAIN_SECONDS":               givesNone("a number of seconds"),
 	"BROKER_AIRLOCK_IDLE_SECONDS":        givesNone("a number of seconds"),
 	"BROKER_SIGNIN_SESSION_SECONDS":      givesNone("a number of seconds"),
+	"BROKER_GITHUB_APP_FIELD":            givesNone("a switch, off or unset"),
+	"BROKER_GITHUB_APP_FIELD_REQUESTERS": givesNone("services and people a github_app field is answered for"),
+	"BROKER_GITHUB_APP_FIELD_SECRETS":    givesNone("the stored secrets a github_app field hands over"),
 
 	// parseSignIn's.
 	"BROKER_SIGNIN_ISSUER":             givesNone("an issuer"),
@@ -210,19 +225,13 @@ func TestEveryBrokerSettingLoadReadsIsMarked(t *testing.T) {
 // name Load asks for, and answers the names recorded: one for each value of the person sign-in's
 // switch, BROKER_SIGNIN unset (parseSignIn reads the sign-in's settings) and off
 // (parseSignInSwitch reads each setting it refuses beside it). Each sets every condition Load
-// puts in front of a read: BROKER_ENVOY_URL, which reads BROKER_ENVOY_ACCOUNT_TOKEN_FILE, and
-// BROKER_AIRLOCK_RULES_FILE with its proxy URL and CA files, which reads KUBERNETES_SERVICE_HOST.
-// Each must load, since a refused configuration stops reading.
+// puts in front of a read: BROKER_ENVOY_URL, which reads BROKER_ENVOY_ACCOUNT_TOKEN_FILE. Each
+// must load, since a refused configuration stops reading.
 func settingsLoadReads(t *testing.T) map[string]bool {
 	t.Helper()
 	withEveryCondition := func(e map[string]string) map[string]string {
 		e["BROKER_ENVOY_URL"] = "https://listener.example"
 		e["BROKER_ENVOY_ACCOUNT_TOKEN_FILE"] = "/var/run/secrets/tokens/envoy"
-		for name, value := range airlockEnv() {
-			if strings.HasPrefix(name, "BROKER_AIRLOCK_") {
-				e[name] = value
-			}
-		}
 		return e
 	}
 	configurations := []struct {

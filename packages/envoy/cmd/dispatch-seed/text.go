@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// mentionKinds is every node kind refs/graph.go's nodeLoaders resolves that text can name, in the
+// mentionKinds is every node kind refs/graph.go's nodeRegistry resolves that text can name, in the
 // order the seed cycles them, so `refs` holds mentions to each. The one kind left out, `session`,
 // has no grammar in text/refs.go - no `dispatch://` reference names a session - so the one
 // mention to a session is written into `refs` directly (writeSessionMention).

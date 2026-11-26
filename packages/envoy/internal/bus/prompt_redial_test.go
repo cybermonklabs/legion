@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"log/slog"
 	"math"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 // doubles each pass up to the 2 s cap, which every later pass keeps, however many there are. Each
 // row reads the wait at the lowest and the highest draw, and the width the draw was asked for.
 func TestPromptRedialWaitsDoubleFromAQuarterSecondToTheCap(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		pass     int
 		low, top time.Duration
@@ -41,12 +43,13 @@ func TestPromptRedialWaitsDoubleFromAQuarterSecondToTheCap(t *testing.T) {
 // ReconnectWait and its jitter), and a connection without it keeps the second every other
 // connection waits.
 func TestPromptReconnectSetsTheConnectionsRedialWaits(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		prompt bool
 	}{{"prompt", true}, {"default", false}} {
 		t.Run(row.name, func(t *testing.T) {
-			opts := options("prompt-redial-test", []string{"nats://127.0.0.1:4222"}, nil, nil, nil, nil, nil)
+			opts := options(slog.Default(), "prompt-redial-test", []string{"nats://127.0.0.1:4222"}, nil, nil, nil, nil, nil)
 			settings := connectOpts{promptReconnect: row.prompt}.connectionSettings(nats.Name("prompt-redial-test"))
 			if err := settings(&opts); err != nil {
 				t.Fatalf("apply the settings: %v", err)
