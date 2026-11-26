@@ -54,6 +54,9 @@ for (const driver of ["claude-backend-sandbox.sh", "claude-backend-tmux.sh"]) {
 }
 
 test("the stall check sees a handoff that moved the issue to testing", () => {
-  const helpers = readFileSync(fileURLToPath(new URL("./claude-transcript.sh", import.meta.url)), "utf8");
+  const helpers = readFileSync(
+    fileURLToPath(new URL("./claude-transcript.sh", import.meta.url)),
+    "utf8"
+  );
   expect(helpers).toContain('role_handoff "$issue" implementer implementing testing');
 });
