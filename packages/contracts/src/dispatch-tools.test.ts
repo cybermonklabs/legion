@@ -1837,12 +1837,14 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch refuses and what a build without its route does", () => {
+  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch and the broker refuse and what a build without its route does", () => {
     const { description } = specFor("dispatch_review");
 
     for (const words of [
       "A review records an approval or a changes request in the person's name at that version, so it works only with a token that names a person who holds approve",
       "403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED",
+      "through Cipher's proxy",
+      "a secrets broker that serves no approve capability refuses that trade 400 invalid_request, with a reason that says so",
       "it must be the version the review would record",
       "409 REVIEW_VERSION_MOVED",
       "A Dispatch build without the versioned review route answers no route and records nothing; the command then says so and names /healthz",

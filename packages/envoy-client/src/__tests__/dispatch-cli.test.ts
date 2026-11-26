@@ -4643,7 +4643,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // (`Cipher-Proxy-Forwarded: unknown`): Dispatch may have stored it, so the write is asked again
   // under its key, which settles it, and ends write_outcome_unknown when nothing settles it within
   // the bound, never "nothing was stored". The same answer said `false`, written before anything
-  // left the proxy, is the control: final at once, nothing stored.
+  // left the proxy, is the control: nothing reached Dispatch, so the 5xx is asked again under the
+  // key as a connection that never opened is, and ends with nothing stored and no
+  // write_outcome_unknown.
   test("the airlock's own answer after the write may have left is asked again under the key, and ends write_outcome_unknown", async () => {
     const broke = airlockAfterSend(
       502,
@@ -4701,7 +4703,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         (out) =>
           out ===
           "UPSTREAM_UNREACHABLE: airlock: dispatch.example: dial tcp: connection refused; nothing was stored\n",
-        false,
+        true,
       ],
     ];
     const seen: unknown[] = [];

@@ -2330,7 +2330,11 @@ export const dispatchToolSpecs = [
       "token names: what the document header's Approve and Request changes record. A review " +
       "records an approval or a changes request in the person's name at that version, so it " +
       "works only with a token that names a person who holds approve; Dispatch refuses it to " +
-      "any other token, with 403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED. --version is the " +
+      "any other token, with 403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED. On a box where " +
+      "the person signed in with agent-secrets login, the review goes through Cipher's proxy " +
+      "instead, with the approve placeholder the session trades that sign-in for; a secrets " +
+      "broker that serves no approve capability refuses that trade 400 invalid_request, with a " +
+      "reason that says so, and nothing is sent to Dispatch. --version is the " +
       "version you read, sent in the review route's path, and it must be the version the review " +
       "would record: the document's latest settled version, or, while an approval request is " +
       "open on it, the version that request names for it. Any other is refused 409 " +
@@ -2450,7 +2454,7 @@ export const dispatchToolSpecs = [
       "second run is safe, because Dispatch keeps each result. A tunnel the airlock proxy refuses " +
       "prints AIRLOCK_TUNNEL_REFUSED with its status, and an answer the proxy gives itself before " +
       "the write left it (Cipher-Proxy-Forwarded: false) prints its code and its words; each " +
-      "says nothing reached Dispatch and exits 1, and only a 503 is asked again. An answer the " +
+      "says nothing reached Dispatch and exits 1, and a 5xx of either is asked again. An answer the " +
       "proxy gives itself after the write may have left it (Cipher-Proxy-Forwarded: unknown) is " +
       "asked again under the same key and, if no answer settles it, prints " +
       '{"write_outcome_unknown":"<code>"} and exits 1. A call that Dispatch\'s check of the ' +

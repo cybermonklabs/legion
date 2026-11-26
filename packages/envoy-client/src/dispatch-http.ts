@@ -112,9 +112,9 @@ import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import type { ZodType } from "zod";
-import { credentialDeadline, type RequestCredential } from "./bearer";
+import { type ApproveRoute, credentialDeadline, type RequestCredential } from "./bearer";
 import { rowStores, WRITE_ROWS } from "./dispatch-write-rows";
-import { reachedNothing } from "./errors";
+import { LoggableError, reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
 import { pathNamesNothingPattern } from "./go-space";
 import { type WriteEvent, type WriteState, writeStep } from "./write-outcome";
@@ -244,6 +244,69 @@ export class DispatchGatewayError extends DispatchServiceError {
   }
 }
 
+/** The two headers Cipher's proxy writes on an answer of its own (`proxy/record.go`, `ownAnswer`):
+ *  its code, and whether the request may have left the proxy (`false`, `unknown`, or `true` on a
+ *  service's answer it carried, which has no code). Every write reads them (`proxyOwnAnswer`): a
+ *  person's review goes through the proxy (`reviewArtifact`), and a CI job's result write goes
+ *  through it as the secrets broker's airlock (`airlockCredential`), named by the job's
+ *  `HTTPS_PROXY`, which this client does not see. */
+const PROXY_CODE_HEADER = "Cipher-Proxy-Code";
+const PROXY_FORWARDED_HEADER = "Cipher-Proxy-Forwarded";
+
+/**
+ * A write Cipher's proxy answered on its own (`Cipher-Proxy-Code`): a person's review sent through
+ * the proxy (`reviewArtifact`) refused or failed there. `code` and `status` are the proxy's. It is
+ * what the write throws only while no attempt may have reached Dispatch: then nothing did, and a
+ * new `dispatch review` trades a new grant. Once an attempt may have reached Dispatch, the write
+ * ends as `DispatchWriteUnsettledError` with this as its `last`, whatever the proxy's last answer
+ * says (`#proxyRefusal`). The advice is never the Dispatch URL's.
+ */
+export class DispatchProxyRefusalError extends DispatchServiceError {
+  override readonly fromDispatch = false;
+}
+
+/** A `Cipher-Proxy-Code` as the proxy writes one (`proxy.go`, `record.go`): an upper-case word of
+ *  at most 64 characters. A CONNECT answer comes over the plain-HTTP hop to the proxy, so a code of
+ *  any other form is not taken into an error's code or text. */
+const PROXY_CODE_FORM = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** An answer Cipher's proxy wrote itself (`proxyOwnAnswer`): its `Cipher-Proxy-Code`, or
+ *  `HTTP_<status>` where it names none, and whether the request may have left the proxy first. */
+interface ProxyOwnAnswer {
+  readonly code: string;
+  readonly left: boolean;
+}
+
+/**
+ * `response` as an answer Cipher's proxy wrote itself inside the tunnel, or undefined where it is
+ * none: one that says `Cipher-Proxy-Forwarded: false` was written before any byte of the request
+ * left the proxy, so the request reached no service (`left: false`); one that says `unknown`, or
+ * names a `Cipher-Proxy-Code` without saying `false`, was written after the request may have
+ * reached Dispatch (`left: true`). A service's answer the proxy carried says `true` and names no
+ * code, and Dispatch writes neither header, so both are read as Dispatch's. The one reading of
+ * these headers, for every write; a CONNECT the proxy refused is `AirlockTunnelRefusedError`.
+ */
+function proxyOwnAnswer(response: Response): ProxyOwnAnswer | undefined {
+  const forwarded = response.headers.get(PROXY_FORWARDED_HEADER)?.trim().toLowerCase();
+  const named = response.headers.get(PROXY_CODE_HEADER)?.trim() ?? "";
+  if (forwarded !== "false" && forwarded !== "unknown" && named === "") return undefined;
+  return { code: named === "" ? `HTTP_${response.status}` : named, left: forwarded !== "false" };
+}
+
+/**
+ * The table's event (write-outcome.ts) for an answer Cipher's proxy wrote itself with `status`,
+ * inside the tunnel (`proxyOwnAnswer`) or to the CONNECT (`AirlockTunnelRefusedError`, always
+ * before anything left it). Once the request may have left the proxy (`left`), the write may have
+ * landed and is asked again under its key (`proxy-unsettled`). Before, nothing reached Dispatch:
+ * a 5xx is the proxy failing (a grant it could not read this moment, a dial to Dispatch that
+ * failed), asked again under the key as a connection that never opened is (`proxy-failed`), and
+ * any other status is its refusal, which the same placeholder meets again (`proxy-refused`).
+ */
+function proxyEvent(status: number, left: boolean): WriteEvent {
+  if (left) return "proxy-unsettled";
+  return status >= 500 ? "proxy-failed" : "proxy-refused";
+}
+
 /** The code of `DispatchCredentialEchoError`, in Dispatch's form: no status of its own, since any
  *  2xx can carry such a body. */
 export const CREDENTIAL_ECHOED = "CREDENTIAL_ECHOED";
@@ -298,10 +361,12 @@ export class DispatchWriteUnsettledError extends Error {
     unanswered?: string
   ) {
     let answer: string;
-    // A 5xx can itself come after Dispatch committed the write; any other refusal says the
-    // landing was an earlier attempt's.
+    // A 5xx can itself come after Dispatch committed the write, and so can a refusal Cipher's
+    // proxy wrote itself (`DispatchProxyRefusalError`), whose own text names the attempt that may
+    // have left the proxy; any other refusal says the landing was an earlier attempt's.
     let why =
-      last instanceof DispatchServiceError && last.status >= 500
+      (last instanceof DispatchServiceError && last.status >= 500) ||
+      last instanceof DispatchProxyRefusalError
         ? "an attempt of the write may have reached Dispatch"
         : "an earlier attempt of the write may have reached Dispatch";
     if (last instanceof DispatchGatewayError) {
@@ -490,14 +555,21 @@ export class DispatchNoRouteError extends DispatchServiceError {
  * says the failure sent nothing to any server (a refused connection, a name that did not resolve):
  * a write attempt that failed so cannot have landed, where one that failed otherwise (a reset after
  * Dispatch read the request) may have, since Dispatch runs a keyed write it received to its end.
+ * `failure` is the failure's class alone (`errorClass`), for a text that names another path to
+ * Dispatch (a write through Cipher's proxy, `#proxyUnreachable`), and `code` is that class where it
+ * is a code alone, such as `ECONNRESET`, which a caller names an unknown outcome by
+ * (`dispatch result --project`'s `write_outcome_unknown`), and undefined where it is not.
  */
 export class DispatchUnreachableError extends Error {
+  readonly code: string | undefined;
+
   constructor(
     message: string,
     readonly reachedNothing: boolean,
-    readonly code?: string
+    readonly failure: string
   ) {
     super(message);
+    this.code = /^[A-Z][A-Z0-9_]*$/.test(failure) ? failure : undefined;
   }
 }
 
@@ -798,6 +870,22 @@ interface WriteCall {
   readonly progress: WriteProgress;
 }
 
+/** How a write goes through Cipher's proxy (`#throughProxy`): the credential every attempt
+ *  presents in the client's own credential's place, which answers `Authorization: DPoP
+ *  <placeholder>` and has no identity and no `stale`, and the transport members of each request —
+ *  the proxy, its user info the placeholder, and the one authority this request trusts. */
+interface ProxyTransport {
+  readonly credential: RequestCredential;
+  readonly init: { readonly proxy: string; readonly tls: { readonly ca: string } };
+}
+
+/** `url`'s scheme and host alone, for a text that names it: never its user info, which for the
+ *  proxy is the placeholder. */
+function originOf(url: string): string {
+  const parsed = new URL(url);
+  return `${parsed.protocol}//${parsed.host}`;
+}
+
 /** One attempt's answer to a write, its body read whole inside the attempt (`writeAnswer`). */
 interface WriteAnswer {
   /** The answer's status and headers: its body is read, and is `text`. */
@@ -822,6 +910,8 @@ interface WriteAnswer {
   /** Whether it names exactly the request's key back (`keyEchoed`), as every answer of Dispatch's
    *  keyed layer to a keyed write does. */
   readonly echoed: boolean;
+  /** What it is as an answer Cipher's proxy wrote itself (`proxyOwnAnswer`), where it is one. */
+  readonly proxy: ProxyOwnAnswer | undefined;
 }
 
 /** A body parsed as JSON, or undefined where it is empty, not typed JSON, or not JSON. */
@@ -898,13 +988,14 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
 
 /**
  * One attempt's answer to a write, `echoed` saying whether it carried back the request's key
- * (`keyEchoed`), its body read whole here, inside the attempt, so a body the deadline, the
- * caller's stop or a broken connection ends is the attempt's own event (write-outcome.ts), never a
- * failure after the write has settled: a 2xx settles only once its body is read. The body is read
- * and parsed once, here, and the payload is read from that (`#payloadOf`), so whoever reads it
- * reads no connection. A status that carries no body (a 204, a 304) is not read; a redirect's body
- * is read as any other's, and its error prints it as one redacted line (`#gatewayError`). A body
- * that fails to read throws the read's failure.
+ * (`keyEchoed`) and `proxy` whether Cipher's proxy wrote it itself (`proxyOwnAnswer`), its body
+ * read whole here, inside the attempt, so a body the deadline, the caller's stop or a broken
+ * connection ends is the attempt's own event (write-outcome.ts), never a failure after the write
+ * has settled: a 2xx settles only once its body is read. The body is read and parsed once, here,
+ * and the payload is read from that (`#writePayload`), so whoever reads it reads no connection. A
+ * status that carries no body (a 204, a 304) is not read; a redirect's body is read as any
+ * other's, and its error prints it as one redacted line (`#gatewayError`). A body that fails to
+ * read throws the read's failure.
  */
 async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAnswer> {
   if (NULL_BODY_STATUSES.has(response.status)) {
@@ -918,6 +1009,7 @@ async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAn
       error: undefined,
       replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
       echoed,
+      proxy: proxyOwnAnswer(response),
     };
   }
   const text = await response.text();
@@ -934,6 +1026,7 @@ async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAn
     error: refusal?.error,
     replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
     echoed,
+    proxy: proxyOwnAnswer(response),
   };
 }
 
@@ -944,6 +1037,11 @@ function isStoredKeyStatus(status: number): boolean {
 
 /**
  * The table's event for an answer (`WriteEvent`, write-outcome.ts).
+ * - An answer Cipher's proxy wrote itself (`answer.proxy`, `proxyOwnAnswer`) is read by its headers
+ *   alone, whatever its status or body (`proxyEvent`): `proxy-refused` for a 4xx and
+ *   `proxy-failed` for a 5xx it wrote before any byte left it (`Cipher-Proxy-Forwarded: false`),
+ *   and `proxy-unsettled` for one it wrote after the write may have reached Dispatch. A service's
+ *   answer it carried names no code, and is read as Dispatch's below.
  * - A 2xx is `applied` once its body was read whole, except where it is no answer of Dispatch's
  *   (`foreign-2xx`): its body is empty or not JSON-typed where its status carries one (`notJson`),
  *   a captive portal's 200 page for one; or it names no key back, or another request's, though
@@ -962,19 +1060,11 @@ function isStoredKeyStatus(status: number): boolean {
  *   landed (`uncommitted-401`).
  * - Dispatch's 503 for a token it could not check yet (`tokenNotCheckedAnswer`) asks again later,
  *   as a 5xx, a 408 or a 429 does (`retriesUnderKey`), and `409 KEY_IN_FLIGHT` says an earlier
- *   attempt still runs.
+ *   attempt still runs. A refusal Dispatch marks as its refusal of a text for the text alone
+ *   (`TEXT_REFUSAL_HEADER`) is its verdict on that text whatever its status, a 5xx among them:
+ *   asking again gets the same answer, so it is never asked again.
  * After those, a non-2xx is final (`judged`) only where it names exactly this request's key back,
  * as every answer of the keyed layer does, and:
- * The table's event for an answer (`WriteEvent`, write-outcome.ts). A 2xx is `applied` once its
- * body was read whole, except where it is no answer of Dispatch's (`foreign-2xx`): its body is
- * empty or not JSON-typed where its status carries one (`notJson`), or it lacks exactly this
- * request's key after an earlier answer of the call carried it (`keyEchoed`), since Dispatch's
- * keyed layer answers every keyed write with the key once it reads it (`keyedWrites`,
- * request_keys.go). A 2xx whose body is not the JSON it says it is was cut short on the way
- * (`body-malformed`). A refusal Dispatch marks as its refusal of a text for the text alone
- * (`TEXT_REFUSAL_HEADER`) is its verdict on that text whatever its status, a 5xx among them:
- * asking again gets the same answer, so it is never asked again. After the retries
- * (`retriesUnderKey`, `409 KEY_IN_FLIGHT` among them), a non-2xx is final (`judged`) when:
  * - it carries `Idempotency-Replayed: ?1`, a stored replay or a recovery replay;
  * - it is `409 KEY_COMMITTED`, a write that landed (`#payloadOf` throws it as landed);
  * - it is `422 KEY_REUSED`: every attempt of a call carries the call's one key (`#writeCall`) and
@@ -989,6 +1079,7 @@ function isStoredKeyStatus(status: number): boolean {
  */
 function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent {
   const { status } = answer.response;
+  if (answer.proxy !== undefined) return proxyEvent(status, answer.proxy.left);
   if (status >= 200 && status < 300) {
     if (answer.notJson) return "foreign-2xx";
     if (answer.malformed) return "body-malformed";
@@ -1193,6 +1284,8 @@ interface WriteOptions {
   readonly query?: object | undefined;
   /** The caller's own `Idempotency-Key`, where it has one intent across calls and processes. */
   readonly key?: string | undefined;
+  /** Cipher's proxy the write goes through (`#throughProxy`), for a person's review alone. */
+  readonly via?: ProxyTransport | undefined;
 }
 
 /**
@@ -1263,42 +1356,21 @@ export class DispatchEmptyPathError extends Error {
   }
 }
 
-/**
- * The header the secrets broker's airlock proxy writes on every answer of its own: `false` on one
- * it wrote before any byte of the request left it, a refusal or a dial that failed, so the request
- * reached no service; `unknown` on one it wrote after the request may have reached Dispatch, a
- * connection that broke after the write was sent or a grant that ended while Dispatch held the
- * call. A CI job's result write goes out through that proxy (`airlockCredential`), and such an
- * answer is not Dispatch's. An answer the proxy carried from Dispatch says `true`.
- */
-const AIRLOCK_FORWARDED_HEADER = "Cipher-Proxy-Forwarded";
-
-/** The header that carries the code of the airlock proxy's own answer, such as `NO_PLACEHOLDER`. */
-const AIRLOCK_CODE_HEADER = "Cipher-Proxy-Code";
-
-/** The airlock proxy's code for a grant it could not read this moment (its 503), which a later
- *  attempt may find readable: the one answer of its own a write asks again after. */
-const AIRLOCK_GRANT_UNREADABLE = "GRANT_UNREADABLE";
-
-/** What the airlock proxy's `Cipher-Proxy-Forwarded` says of `response`: `false`, its own answer,
- *  which reached no service; `unknown`, its own answer after the write may have landed; undefined
- *  for an answer it carried, or one no airlock wrote. */
-function airlockAnswer(response: Response): "false" | "unknown" | undefined {
-  const said = response.headers.get(AIRLOCK_FORWARDED_HEADER)?.trim().toLowerCase();
-  return said === "false" || said === "unknown" ? said : undefined;
-}
-
 /** How Bun words a proxy's refusal of a CONNECT: `Proxy refused to open a tunnel: <status>
  *  <reason>`, the status and the reason phrase the proxy answered with. */
 const PROXY_TUNNEL_REFUSED = /: (\d{3}) ?(.*)$/;
 
 /**
- * The secrets broker's airlock proxy refused to open the write's tunnel, so nothing was sent to
- * Dispatch: Bun's `ERR_PROXY_TUNNEL`, whose message carries the status alone, since a refusal at
- * the CONNECT reaches the caller as its status line and nothing more. `status` is that status, 0
- * where the message names none, and `reason` its reason phrase. A 503 is a connection that never
- * opened and is asked again within the write's bound; every other status ends the write at once,
- * a 407 among them, which names a grant that ended or a proxy password that names none.
+ * The secrets broker's airlock proxy, Cipher's proxy, refused to open the write's tunnel, so
+ * nothing was sent to Dispatch: Bun's `ERR_PROXY_TUNNEL`, whose message carries the status line,
+ * since a refusal at the CONNECT reaches the caller as its status and headers and no body. `status`
+ * is that status, 0 where the message names none, `reason` its reason phrase, and `proxyCode` the
+ * answer's `Cipher-Proxy-Code` where it is of the proxy's form (`PROXY_CODE_FORM`). The write reads
+ * it as every answer the proxy wrote before anything left it (`proxyEvent`): a 5xx, a grant it could
+ * not read among them, is a connection that never opened and is asked again within the write's
+ * bound; every other status ends the write at once, a 407 among them, which names a grant that
+ * ended or a proxy password that names none. A review sent through the proxy (`via`) ends with
+ * `DispatchProxyRefusalError` in its place (`#endWrite`).
  */
 export class AirlockTunnelRefusedError extends Error {
   override readonly name = "AirlockTunnelRefusedError";
@@ -1307,6 +1379,7 @@ export class AirlockTunnelRefusedError extends Error {
   constructor(
     readonly status: number,
     readonly reason: string,
+    readonly proxyCode: string | undefined,
     options?: ErrorOptions
   ) {
     const said = status === 0 ? reason : `${status}${reason === "" ? "" : ` ${reason}`}`;
@@ -1317,26 +1390,34 @@ export class AirlockTunnelRefusedError extends Error {
   }
 }
 
-/** `error` as the airlock's refusal of a tunnel where it is Bun's `ERR_PROXY_TUNNEL`, or undefined. */
+/** `error` as the airlock's refusal of a tunnel where it is Bun's `ERR_PROXY_TUNNEL`, or undefined.
+ *  Bun keeps the CONNECT answer's headers on the error, where the proxy names its code. */
 function tunnelRefusal(error: unknown): AirlockTunnelRefusedError | undefined {
   if (!(error instanceof Error) || Reflect.get(error, "code") !== "ERR_PROXY_TUNNEL") {
     return undefined;
   }
+  const headers: unknown = Reflect.get(error, "headers");
+  const named = headers instanceof Headers ? (headers.get(PROXY_CODE_HEADER)?.trim() ?? "") : "";
+  const proxyCode = PROXY_CODE_FORM.test(named) ? named : undefined;
   const said = PROXY_TUNNEL_REFUSED.exec(error.message);
   return said === null
-    ? new AirlockTunnelRefusedError(0, error.message, { cause: error })
-    : new AirlockTunnelRefusedError(Number(said[1]), said[2]?.trim() ?? "", { cause: error });
+    ? new AirlockTunnelRefusedError(0, error.message, proxyCode, { cause: error })
+    : new AirlockTunnelRefusedError(Number(said[1]), said[2]?.trim() ?? "", proxyCode, {
+        cause: error,
+      });
 }
 
 /**
  * An answer the airlock proxy gave itself inside a connection that was open
- * (`Cipher-Proxy-Forwarded: false`): a refusal of the request, a grant it could not read, or a dial
- * to Dispatch that failed, each before any byte of the request left it, so the request reached no
- * service and stored nothing. `code` is its `Cipher-Proxy-Code`, or `HTTP_<status>` where it names
- * none, and `body` its text, each copy of the credential redacted whole. It is no
- * `DispatchServiceError`, which a caller reads as a refusal Dispatch decided, and no rule reads it
- * as a write whose outcome is unknown (`writeOutcomeUnknown`). The proxy's answer after the write
- * may have left it is `AirlockOutcomeUnknownError`.
+ * (`Cipher-Proxy-Forwarded: false`, `proxyOwnAnswer`) to a write that did not go through it as a
+ * review (`via`): a refusal of the request, a grant it could not read, or a dial to Dispatch that
+ * failed, each before any byte of the request left it, so the request reached no service and
+ * stored nothing. `code` is its `Cipher-Proxy-Code`, or `HTTP_<status>` where it names none, and
+ * `body` its text, each copy of the credential redacted whole. A 5xx is asked again within the
+ * write's bound before the write ends with it (`proxyEvent`). It is no `DispatchServiceError`,
+ * which a caller reads as a refusal Dispatch decided, and no rule reads it as a write whose outcome
+ * is unknown (`writeOutcomeUnknown`). The proxy's answer after the write may have left it is
+ * `AirlockOutcomeUnknownError`.
  */
 export class AirlockRefusedError extends Error {
   override readonly name = "AirlockRefusedError";
@@ -1352,12 +1433,12 @@ export class AirlockRefusedError extends Error {
 
 /**
  * An answer the airlock proxy gave itself after the write may have reached Dispatch
- * (`Cipher-Proxy-Forwarded: unknown`): its connection to Dispatch broke after the write was sent,
- * or the write's grant ended while Dispatch held the call. Dispatch may have stored it, so the
- * write asks again under its key, as after a reset, and ends unsettled
- * (`DispatchWriteUnsettledError`) when nothing settles it. `code` is its `Cipher-Proxy-Code`, or
- * `HTTP_<status>` where it names none, and `body` its text, each copy of the credential redacted
- * whole.
+ * (`Cipher-Proxy-Forwarded: unknown`, `proxyOwnAnswer`): its connection to Dispatch broke after the
+ * write was sent, or the write's grant ended while Dispatch held the call. Dispatch may have stored
+ * it, so the write asks again under its key (`proxy-unsettled`), and ends unsettled
+ * (`DispatchWriteUnsettledError`) with this as its `last` when nothing settles it. `code` is its
+ * `Cipher-Proxy-Code`, or `HTTP_<status>` where it names none, and `body` its text, each copy of
+ * the credential redacted whole.
  */
 class AirlockOutcomeUnknownError extends Error {
   override readonly name = "AirlockOutcomeUnknownError";
@@ -1406,12 +1487,15 @@ export function tokenNotChecked(error: unknown): error is DispatchServiceError {
  * have reached Dispatch; a gateway's answer that may have come after the request reached Dispatch
  * (`mayHaveReachedDispatch`); or Dispatch's own 5xx, which can come after it committed, but for
  * its answer that it judged no token. A refusal Dispatch decided, a gateway's answer that never
- * reached it, and a failure before any request of the write went out (its credential, a refused
- * connection) stored nothing.
+ * reached it, a refusal Cipher's proxy wrote before anything of the write left it
+ * (`DispatchProxyRefusalError`, which a write throws only while no attempt may have reached
+ * Dispatch, its 5xx among them), and a failure before any request of the write went out (its
+ * credential, a refused connection) stored nothing.
  */
 export function writeOutcomeUnknown(error: unknown): boolean {
   if (error instanceof DispatchWriteUnsettledError) return true;
   if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;
+  if (error instanceof DispatchProxyRefusalError) return false;
   if (error instanceof DispatchServiceError) return error.status >= 500 && !tokenNotChecked(error);
   return false;
 }
@@ -1444,10 +1528,12 @@ export interface DispatchClientOptions {
 }
 
 /**
- * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
- * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
- * `writeRetry` paces it, and where a broker token Dispatch says is no longer live is traded
- * afresh and the request sent once more.
+ * JSON HTTP client for Dispatch's native-tool API. Every read, PUT or DELETE goes through `#send`,
+ * where a broker token Dispatch says is no longer live is traded afresh and the request sent once
+ * more. Every write (POST or PATCH) goes through `#sendWrite`, where it carries an
+ * `Idempotency-Key` of its own and asks again under it as `writeRetry` paces it; a person's review
+ * through Cipher's proxy is such a write too, presenting the approve placeholder in the
+ * credential's place on every attempt (`reviewArtifact`, `#throughProxy`).
  *
  * `credential` is what every request presents: a bearer (`bearerCredential`, src/bearer.ts), or
  * what the secrets broker trades this machine's identity for, or the identity of a person signed
@@ -1516,7 +1602,7 @@ export class DispatchClient {
             throw new DispatchUnreachableError(
               `Dispatch at ${shown} is unreachable: ${errorClass(error)}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`,
               reachedNothing(error),
-              /^[A-Z][A-Z0-9_]*$/.test(errorClass(error)) ? errorClass(error) : undefined
+              errorClass(error)
             );
           }
           throw error;
@@ -2163,12 +2249,55 @@ export class DispatchClient {
     // reach the wire; JSON leaves out a reason that is undefined.
     const body = { state: input.state, reason: input.reason };
     try {
-      return await this.#write("POST", path, WRITE_ROWS.reviewArtifact, body);
+      // A person's sign-in on this machine approves only through Cipher's proxy; the review is
+      // the same keyed write either way, its 2xx read into the same row.
+      const route = await this.#credential.approveRoute?.(this.#credentialSignal(this.#signal));
+      const via = route === undefined ? undefined : this.#throughProxy(route, this.#url(path));
+      return await this.#write("POST", path, WRITE_ROWS.reviewArtifact, body, { via });
     } catch (error) {
       throw this.#refusalOfNoRoute(error, path, (route) =>
         reviewNoRouteRefusal(this.#baseUrl, route, version)
       );
     }
+  }
+
+  /**
+   * How a write to `url` goes through Cipher's proxy on `route`, the approve route of a person's
+   * sign-in (`RequestCredential.approveRoute`): the proxy's URL with the placeholder as its
+   * password, the route's authority as the one certificate the proxy is trusted by, and a
+   * credential that presents `Authorization: DPoP <placeholder>` in place of the client's own,
+   * which the proxy swaps for the approve token it holds and signs a proof for with its own key.
+   * No proof of any key of this process goes with it: the token is bound to the broker pod's key,
+   * and the proxy replaces any proof a request carries. That credential has no identity, since
+   * every attempt presents the one placeholder, and no `stale`, since a dead token is the proxy's
+   * to answer. Every attempt of the write (`#sendWrite`) presents the same, under the write's one
+   * `Idempotency-Key`, which the proxy passes on, and notes it among the tokens this client sent,
+   * as it notes every presentation, so an excerpt of any answer redacts it. The proxy reaches the
+   * hosts the route names, on https and port 443 alone, so a Dispatch URL of any other host,
+   * scheme or port is refused here and nothing is sent.
+   */
+  #throughProxy(route: ApproveRoute, url: string): ProxyTransport {
+    const target = new URL(url);
+    if (
+      target.protocol !== "https:" ||
+      target.port !== "" ||
+      !route.hosts.includes(target.hostname)
+    ) {
+      throw new LoggableError(
+        `a person's review goes through Cipher's proxy, which reaches https://${route.hosts.join(" and https://")} alone, and the Dispatch URL is ${urlForText(this.#baseUrl, DISPATCH_URL_SETTING)}, so no review was sent`
+      );
+    }
+    const proxy = new URL(route.proxyUrl);
+    proxy.username = "agent";
+    proxy.password = route.placeholder;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => ({ Authorization: `DPoP ${route.placeholder}` }),
+      secret: () => route.placeholder,
+    };
+    // Bun's fetch takes the proxy and the authority per request (`proxy`, `tls.ca`), so this one
+    // request trusts the proxy's authority and nothing else of this process does.
+    return { credential, init: { proxy: proxy.toString(), tls: { ca: route.caCertificate } } };
   }
 
   /**
@@ -2925,10 +3054,12 @@ export class DispatchClient {
   }
 
   /** `#json` with the status Dispatch answered, for a route whose status says what it did.
-   *  `signal` aborts the call beside the client's own signal. `writes: false` marks a POST that
-   *  writes nothing (a conversion, `markdownRoundTrip` or `fileRoundTrip`, or a dry run,
-   *  `dryRunResult`): it is sent as a POST is, under one key with its retries, but never read as a
-   *  write that may have landed (`WriteCall.writes`). */
+   *  `signal` aborts the call beside the client's own signal. `row` is a keyed write's answer row
+   *  (`#writeCall`, `dispatch-write-rows.ts`): a POST of a row that stores nothing (a conversion,
+   *  `markdownRoundTrip` or `fileRoundTrip`, or a dry run, `dryRunResult`) is sent as a POST is,
+   *  under one key with its retries, but never read as a write that may have landed
+   *  (`WriteCall.writes`). `via` sends a write through Cipher's proxy (`#throughProxy`); a read
+   *  takes none. */
   async #jsonAnswer<T>(
     method: string,
     path: readonly string[],
@@ -2938,15 +3069,24 @@ export class DispatchClient {
       readonly signal?: AbortSignal | undefined;
       readonly key?: string | undefined;
       readonly row?: WriteRow;
+      readonly via?: ProxyTransport | undefined;
     } = {}
   ): Promise<{ readonly status: number; readonly payload: T }> {
-    const { query, signal, key, row } = options;
+    const { query, signal, key, row, via } = options;
     const url = this.#url(path, query);
     const encoded: EncodedBody | undefined =
       body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" };
     const write = this.#writeCall(method, url, key, row);
     if (write !== undefined) {
-      const answer = await this.#sendWrite(method, url, encoded, "application/json", signal, write);
+      const answer = await this.#sendWrite(
+        method,
+        url,
+        encoded,
+        "application/json",
+        signal,
+        write,
+        via
+      );
       return {
         status: answer.response.status,
         payload: this.#writePayload<T>(method, url, answer, write),
@@ -2964,7 +3104,7 @@ export class DispatchClient {
    * rolls out, two builds of Dispatch answer, and the next attempt may reach the build that serves
    * the route. After the last attempt it throws `DispatchNoRouteError`. An abort of the client's
    * signal, or of the call's own `signal`, during a wait rejects at once with the abort's reason
-   * and sends nothing more. A write asks no route again in its own loop (`#write`).
+   * and sends nothing more. A write asks no route again in its own loop (`#sendWrite`).
    *
    * A client built with `retryNoRoute: false` runs `attempt` once instead and throws its answer
    * of no route as it came (the `DispatchServiceError` `isNoRoute` recognises), so a caller with
@@ -3235,10 +3375,18 @@ export class DispatchClient {
    *
    * Every attempt presents the credential afresh (a resource server that keeps a replay store
    * refuses a proof it has already seen) and sends the same encoded body. Once an attempt may have
-   * landed, every later one presents as the same identity, or is not sent. An upload (a body of
-   * `STREAMED_BODY_MIN` or more, sent as a stream) keeps the schedule alone: it never enters the
-   * in-flight asking. No ask starts later than `writeRetry.inFlightWithinMs` after the client was
-   * made.
+   * landed, every later one presents as the same identity, or is not sent. A write through Cipher's
+   * proxy (`via`, `#throughProxy`) presents the placeholder's credential in the client's own
+   * credential's place on every attempt instead, over the proxy's transport: the proxy signs each
+   * request's proof itself, and that credential has no identity, so the write cannot turn into
+   * another identity between attempts, and no `stale`, so no attempt tells a credential its token
+   * is not live. Every write reads an answer Cipher's proxy wrote itself by its headers, and a
+   * CONNECT the proxy refused as one it wrote before anything left it (`proxyEvent`:
+   * `proxy-refused`, `proxy-failed`, `proxy-unsettled`), whether the write names the proxy (`via`)
+   * or a CI job's `HTTPS_PROXY` does; one through `via` ends with the proxy's refusal
+   * (`#proxyRefusal`). An upload (a body of `STREAMED_BODY_MIN` or more, sent as a stream) keeps
+   * the schedule alone: it never enters the in-flight asking. No ask starts later than
+   * `writeRetry.inFlightWithinMs` after the client was made.
    */
   async #sendWrite(
     method: string,
@@ -3246,10 +3394,14 @@ export class DispatchClient {
     body: EncodedBody | undefined,
     accept: string,
     signal: AbortSignal | undefined,
-    write: WriteCall
+    write: WriteCall,
+    via?: ProxyTransport
   ): Promise<WriteAnswer> {
     const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
     const { key, progress } = write;
+    // What every attempt presents: the client's credential, or the placeholder's in its place for
+    // a write through Cipher's proxy (`ProxyTransport.credential`).
+    const credential = via?.credential ?? this.#credential;
     const headers: Record<string, string> = { Accept: accept, [IDEMPOTENCY_KEY_HEADER]: key };
     if (body !== undefined) headers["Content-Type"] = body.type;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
@@ -3290,12 +3442,7 @@ export class DispatchClient {
       try {
         // A call already stopped or out of time sends nothing more.
         limit.throwIfAborted();
-        presented = await this.#credential.headers(
-          method,
-          url,
-          undefined,
-          this.#credentialSignal(limit)
-        );
+        presented = await credential.headers(method, url, undefined, this.#credentialSignal(limit));
         this.#sent.note(presented);
         // A credential that answered after the call's signal ended still sends nothing.
         limit.throwIfAborted();
@@ -3307,7 +3454,7 @@ export class DispatchClient {
           ...(error === limit.reason ? {} : { credentialFailure: error }),
         };
       }
-      const identity = this.#credential.identity?.(presented);
+      const identity = credential.identity?.(presented);
       if (state === "may-have-landed" && identity !== login) {
         return {
           event: "no-credential-final",
@@ -3327,50 +3474,22 @@ export class DispatchClient {
           { ...headers, ...presented },
           body,
           silenceMs,
-          limit
+          limit,
+          via?.init
         );
       } catch (error) {
         return {
           event:
             stoppedEvent(limit, true, error) ??
+            // A CONNECT the proxy refused opened no tunnel: nothing of the write left it.
             (error instanceof AirlockTunnelRefusedError
-              ? error.status === 503
-                ? "unreached"
-                : "no-credential-final"
+              ? proxyEvent(error.status, false)
               : error instanceof WriteAttemptSilent
                 ? "silence"
                 : error instanceof DispatchUnreachableError && error.reachedNothing
                   ? "unreached"
                   : "reset"),
           failure: error,
-          presented,
-          sent,
-        };
-      }
-      const airlock = airlockAnswer(response);
-      if (airlock !== undefined) {
-        const code = response.headers.get(AIRLOCK_CODE_HEADER) ?? `HTTP_${response.status}`;
-        const body = this.#sent
-          .with(this.token)
-          .reduce(
-            (text, token) => (token === "" ? text : text.replaceAll(token, "[redacted]")),
-            await response.text()
-          );
-        if (airlock === "unknown") {
-          return {
-            event: "reset",
-            failure: new AirlockOutcomeUnknownError(response.status, code, body),
-            presented,
-            sent,
-          };
-        }
-        const failure = new AirlockRefusedError(response.status, code, body);
-        return {
-          event:
-            failure.status === 503 && failure.code === AIRLOCK_GRANT_UNREADABLE
-              ? "unreached"
-              : "no-credential-final",
-          failure,
           presented,
           sent,
         };
@@ -3399,7 +3518,7 @@ export class DispatchClient {
         };
       }
       return {
-        event: answerEvent(answer, this.#credential.stale !== undefined && !deadTokenTold),
+        event: answerEvent(answer, credential.stale !== undefined && !deadTokenTold),
         answer,
         presented,
         sent,
@@ -3453,11 +3572,12 @@ export class DispatchClient {
               ? credentialFailure
               : last.failure,
             write,
-            event === "exhausted" && last.event === "no-route" && this.#retryNoRoute
+            event === "exhausted" && last.event === "no-route" && this.#retryNoRoute,
+            via
           );
         case "retry-at-once":
           deadTokenTold = true;
-          this.#credential.stale?.(undefined, last.sent?.with);
+          credential.stale?.(undefined, last.sent?.with);
           last = await next();
           event = last.event;
           continue;
@@ -3533,7 +3653,10 @@ export class DispatchClient {
    * One attempt of a write, under `limit` (the call's signal and the client's) and a silence bound
    * of its own: once `silenceMs` pass before its answer begins with no read of its body in that
    * time, it is cut off and fails as `WriteAttemptSilent`. The bound ends with the answer's
-   * headers; its body is read under `limit` alone.
+   * headers; its body is read under `limit` alone. `transport` is Cipher's proxy and its
+   * authority, for a write sent through it (`ProxyTransport`). A CONNECT the proxy refused reaches
+   * the write as `AirlockTunnelRefusedError` (`#fetch`, `tunnelRefusal`), as it does for a write
+   * whose proxy the environment names.
    */
   async #attempt(
     url: string,
@@ -3541,7 +3664,8 @@ export class DispatchClient {
     headers: Record<string, string>,
     body: EncodedBody | undefined,
     silenceMs: number,
-    limit: AbortSignal
+    limit: AbortSignal,
+    transport?: ProxyTransport["init"]
   ): Promise<Response> {
     const cut = new AbortController();
     const silent = (): void => cut.abort(new WriteAttemptSilent(silenceMs));
@@ -3557,10 +3681,14 @@ export class DispatchClient {
       return await this.#fetch(url, {
         method,
         signal: AbortSignal.any([limit, cut.signal]),
+        ...transport,
         ...(body === undefined ? { headers } : attemptBody(body, headers, progress)),
       });
     } catch (error) {
       if (cut.signal.aborted && !limit.aborted) throw cut.signal.reason;
+      // The proxy checks the grant as the tunnel opens, so its usual refusal - a grant not live, a
+      // store it could not read - answers the CONNECT, and Bun's fetch rejects that answer rather
+      // than returning it: `#fetch` throws it as `AirlockTunnelRefusedError`, which the write reads.
       throw error;
     } finally {
       answered = true;
@@ -3577,10 +3705,18 @@ export class DispatchClient {
    * a route that stores nothing, or a `409 IDEMPOTENCY_KEY_COMMITTED` that names no key back, by
    * the one rule of a landing (`#missingWriteAnswer`: no answer of Dispatch's to this call), and
    * one that names the key back with a body that is empty, not JSON-typed, or not the JSON it says;
-   * or the failure. A write Dispatch made whose answer is gone (`DispatchWriteLandedError`) is
-   * definite in either state. In `nothing-sent` that reading is what the write throws. In
-   * `may-have-landed` the write is `DispatchWriteUnsettledError` carrying its key, with that
-   * reading as `last`, and, for a write that ended with no answer, what ended it.
+   * or the failure. An answer Cipher's proxy wrote itself (`WriteAnswer.proxy`) is the proxy's,
+   * never Dispatch's or a gateway's: for a write that names no proxy (a CI job's, through the
+   * airlock its `HTTPS_PROXY` names) an `AirlockRefusedError` or `AirlockOutcomeUnknownError`
+   * (`#airlockAnswer`), and a CONNECT the proxy refused stays its `AirlockTunnelRefusedError`. A
+   * write Dispatch made whose answer is gone (`DispatchWriteLandedError`) is definite in either
+   * state. In `nothing-sent` that reading is what the write throws. In `may-have-landed` the write
+   * is `DispatchWriteUnsettledError` carrying its key, with that reading as `last`, and, for a
+   * write that ended with no answer of Dispatch's, what ended it. On a write sent through Cipher's
+   * proxy (`via`), every text is made here, from `state` and `event`: an answer the proxy wrote
+   * itself, and its refusal of the CONNECT, is `DispatchProxyRefusalError` (`#proxyRefusal`); a
+   * write that got no answer names the proxy (`#proxyUnreachable`); and only a write no attempt of
+   * which may have reached Dispatch is told it can be sent again.
    */
   async #endWrite(
     method: string,
@@ -3590,7 +3726,8 @@ export class DispatchClient {
     answer: WriteAnswer | undefined,
     failure: unknown,
     write: WriteCall,
-    routeSpent: boolean
+    routeSpent: boolean,
+    via: ProxyTransport | undefined
   ): Promise<unknown> {
     const { request, progress } = write;
     if (
@@ -3601,7 +3738,33 @@ export class DispatchClient {
       return this.#missingWriteAnswer(method, url, answer.response, write, answer.text);
     }
     let own: unknown = failure;
-    if (answer?.response.ok === true) {
+    if (answer?.proxy !== undefined) {
+      own =
+        via === undefined
+          ? this.#airlockAnswer(answer, answer.proxy)
+          : this.#proxyRefusal(
+              request,
+              via,
+              answer.response.status,
+              answer.proxy.code,
+              answer.text,
+              state,
+              event
+            );
+    } else if (via !== undefined && failure instanceof AirlockTunnelRefusedError) {
+      // Bun keeps no body of a CONNECT's answer, so the proxy's code and status are all it said.
+      own = this.#proxyRefusal(
+        request,
+        via,
+        failure.status,
+        failure.proxyCode ?? failure.code,
+        "",
+        state,
+        event
+      );
+    } else if (via !== undefined && failure instanceof DispatchUnreachableError) {
+      own = this.#proxyUnreachable(via, failure, state);
+    } else if (answer?.response.ok === true) {
       if (!answer.echoed || !write.writes) {
         return this.#missingWriteAnswer(method, url, answer.response, write, answer.text);
       }
@@ -3620,7 +3783,8 @@ export class DispatchClient {
     if (own instanceof DispatchWriteLandedError || state === "nothing-sent") return own;
     const last = own instanceof Error ? own : new Error(String(own));
     let unanswered: string | undefined;
-    if (answer === undefined) {
+    // An answer the proxy wrote itself is no answer of Dispatch's: its text names the request too.
+    if (answer === undefined || answer.proxy !== undefined) {
       switch (event) {
         case "silence":
           unanswered = `${request} ${last.message}`;
@@ -3645,6 +3809,82 @@ export class DispatchClient {
       }
     }
     return new DispatchWriteUnsettledError(last, progress.sent, write.key, unanswered);
+  }
+
+  /**
+   * A write through Cipher's proxy on `via` that got no answer, `failure`: it failed at the proxy,
+   * which is the secrets broker's, or past it, so its text names the proxy by its origin, never a
+   * restart of this process, which no setting of this process would mend. In `nothing-sent` no
+   * attempt reached Dispatch, so the review can be sent again; once one may have, this is the
+   * unsettled write's `last`, whose own advice is to read the write back first.
+   */
+  #proxyUnreachable(
+    via: ProxyTransport,
+    failure: DispatchUnreachableError,
+    state: WriteState
+  ): DispatchUnreachableError {
+    const again =
+      state === "nothing-sent" ? " The review can be sent again once the broker answers." : "";
+    return new DispatchUnreachableError(
+      `Dispatch at ${urlForText(this.#baseUrl, DISPATCH_URL_SETTING)}, through Cipher's proxy at ${originOf(via.init.proxy)}, is unreachable: ${failure.failure}. The proxy is the secrets broker's.${again}`,
+      failure.reachedNothing,
+      failure.failure
+    );
+  }
+
+  /**
+   * The refusal Cipher's proxy wrote itself to a write sent through it on `via`, inside the tunnel
+   * or to its CONNECT: its `status` and `code` (its `Cipher-Proxy-Code`), the proxy by its origin
+   * (never the placeholder in its user info), and its `text` redacted as every excerpt is. Its
+   * words follow `state` and `event` (`proxyEvent`'s reading of this answer): while no attempt may
+   * have reached Dispatch (`nothing-sent`), the proxy refused (`proxy-refused`) or failed
+   * (`proxy-failed`) before any byte left it, so nothing reached Dispatch, with the proxy's advice
+   * that a new `dispatch review` trades a new grant (once the broker answers, for a failure). Once
+   * an attempt may have reached Dispatch, the text names the attempt that may have - this one
+   * (`proxy-unsettled`) or an earlier one - and gives no advice: `#endWrite` ends the write
+   * unsettled with this as its `last`, whose own advice is to read the write back first.
+   */
+  #proxyRefusal(
+    request: string,
+    via: ProxyTransport,
+    status: number,
+    code: string,
+    text: string,
+    state: WriteState,
+    event: WriteEvent
+  ): DispatchProxyRefusalError {
+    const said = excerpt(text, this.#sent.with(this.token));
+    const by = `${request} was answered ${status} ${code} by Cipher's proxy at ${originOf(via.init.proxy)}${said === "" ? "" : ` (${JSON.stringify(said)})`}`;
+    const message =
+      state !== "nothing-sent"
+        ? event === "proxy-unsettled"
+          ? `${by}, after this attempt may have reached Dispatch`
+          : `${by} before this attempt left the proxy, after an earlier attempt of the review may have reached Dispatch`
+        : event === "proxy-failed"
+          ? `${by} before any of it left the proxy, so nothing reached Dispatch. The proxy is the secrets broker's, and a new \`dispatch review\` trades a new grant once the broker answers.`
+          : `${by} before any of it left the proxy, so nothing reached Dispatch, and a new \`dispatch review\` trades a new grant.`;
+    return new DispatchProxyRefusalError(code, status, message);
+  }
+
+  /**
+   * The error of an answer Cipher's proxy wrote itself (`proxy`, `proxyOwnAnswer`) to a write that
+   * names no proxy, a CI job's result through the airlock its `HTTPS_PROXY` names: before anything
+   * left the proxy, `AirlockRefusedError`; after the write may have reached Dispatch,
+   * `AirlockOutcomeUnknownError`. Its body is the proxy's words whole, each copy of a token this
+   * client presented redacted whole: the words name the placeholder by that word, which the
+   * placeholder's own prefix spells, so redacting its pieces would cut the proxy's words.
+   */
+  #airlockAnswer(answer: WriteAnswer, proxy: ProxyOwnAnswer): Error {
+    const body = this.#sent
+      .with(this.token)
+      .reduce(
+        (text, token) => (token === "" ? text : text.replaceAll(token, "[redacted]")),
+        answer.text
+      );
+    const { status } = answer.response;
+    return proxy.left
+      ? new AirlockOutcomeUnknownError(status, proxy.code, body)
+      : new AirlockRefusedError(status, proxy.code, body);
   }
 
   #url(path: readonly string[], query?: object): string {

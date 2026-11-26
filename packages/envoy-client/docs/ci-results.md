@@ -50,14 +50,16 @@ with exit 2, and names the flag. An empty variable of the step gives such a valu
 
 The airlock proxy can refuse the write itself, and then nothing reached Dispatch. A tunnel it
 refuses at the CONNECT reaches the command as Bun's `ERR_PROXY_TUNNEL`, whose message carries the
-status line alone: a 407 for a grant that ended, or a proxy password that names none, ends the
-write at once and prints `AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407
-Proxy Authentication Required); nothing was sent to Dispatch`, and a 503 is a connection that
-never opened, asked again within the write's bound as a refused connection is, and then printed
-the same way. An answer the proxy gives itself inside an open connection, before any byte of the
-write left it, carries `Cipher-Proxy-Forwarded: false` and its `Cipher-Proxy-Code`: it prints
-`<code>: <the proxy's words>; nothing was stored`, with each copy of the placeholder in the words
-redacted, and only its `503 GRANT_UNREADABLE` is asked again within the bound. Each exits 1, and
+status line: a 407 for a grant that ended, or a proxy password that names none, ends the write at
+once and prints `AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy
+Authentication Required); nothing was sent to Dispatch`, and a 5xx, such as a 503, is a
+connection that never opened, asked again within the write's bound as a refused connection is,
+and then printed the same way. An answer the proxy gives itself inside an open connection, before
+any byte of the write left it, carries `Cipher-Proxy-Forwarded: false` and its
+`Cipher-Proxy-Code`: it prints `<code>: <the proxy's words>; nothing was stored`, with each copy
+of the placeholder in the words redacted; a 4xx of it ends the write at once, and a 5xx (`503
+GRANT_UNREADABLE`, `502 UPSTREAM_UNREACHABLE` for a dial to Dispatch that failed) is asked again
+within the bound first, since nothing reached Dispatch and the write is keyed. Each exits 1, and
 none is a `write_outcome_unknown`, but where an earlier attempt of the same write may have
 reached Dispatch, which leaves its outcome unknown. An answer the proxy gives itself after the
 write may have reached Dispatch, a connection to Dispatch that broke after the write was sent
@@ -105,7 +107,7 @@ agent-secrets result-grant -- dispatch result --project ACME \
   --observed 'the command or evidence the job actually ran'
 ```
 
-The Go producer reads the job's signed GitHub identity and trades it at the broker's token endpoint for an airlock placeholder (`requested_token_type=urn:envoy:params:oauth:token-type:airlock-placeholder`). The broker answers a result entry's run a placeholder and a result grant, which it keeps in its database, and never an access token: the same run asking for an access token is refused, and no other identity is granted a placeholder. The child receives `DISPATCH_RESULTS_TOKEN`, the placeholder, and the normal proxy and certificate settings. It receives neither a Dispatch access token nor a DPoP private key.
+The Go producer reads the job's signed GitHub identity and trades it at the broker's token endpoint for a proxy placeholder (`requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`, the one placeholder type a person's approve trade asks for too). The broker answers a result entry's run a placeholder and a result grant, which it keeps in its database, and never an access token: the same run asking for an access token is refused, and no other identity is granted a result grant. The child receives `DISPATCH_RESULTS_TOKEN`, the placeholder, and the normal proxy and certificate settings. It receives neither a Dispatch access token nor a DPoP private key.
 
 The airlock proxy carries a write to the configured Dispatch host only when the write's one `Authorization` header is `DPoP <placeholder>` and the rule's allow list names its method and path; it refuses a write with no placeholder, with the placeholder under another scheme or beside a second `Authorization` header (`403 NO_PLACEHOLDER`), and a write that asks to upgrade (`403 PROTOCOL_SWITCH_REFUSED`), before it dials anything. A result grant's placeholder, as every minted grant's, carries that one write and nothing else: as the proxy password it opens no tunnel and no plain-HTTP forward to any other host, or to the bound host on another port (`403 MINTED_GRANT_HOST_ONLY`, before it resolves or dials anything), so a command under `agent-secrets result-grant` reaches Dispatch's host alone through the proxy. For a write it carries, the broker pod that serves it mints the run's results token for the grant, bound to that pod's own DPoP key, which the pod makes at start, holds in memory and logs by thumbprint alone (`broker: the proxy's DPoP key`). The proxy puts the token in place of the placeholder, replaces any `DPoP` header the command sent with a proof of the pod's key for Dispatch's public origin (`https://` and the bound host) and the write's path, whatever address it sends the write to, and drops the `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` and `Via` headers the command sent. An answer the proxy gives itself names its `Cipher-Proxy-Code` and says `Cipher-Proxy-Forwarded: false` when no byte of the write had left it, and `Cipher-Proxy-Forwarded: unknown` when the write may have reached Dispatch first; an answer it carried from Dispatch says `Cipher-Proxy-Forwarded: true` and carries no `Cipher-Proxy-Code`. Its line for the write names the grant and the job's `ci_check_run_id`. A refused, expired or lost grant does not fall back to ordinary secret release or another identity. A grant lives in the broker's database, so any broker pod serves it and a pod's end ends none, and lasts fifteen minutes, or the broker's access-token lifetime when that is shorter; the token ends with it, and a write after its end is refused `407 GRANT_NOT_LIVE` at the proxy.
 

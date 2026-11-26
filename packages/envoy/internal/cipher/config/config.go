@@ -955,7 +955,7 @@ type Config struct {
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
 	// BROKER_EXCHANGE_RESULT_WORKFLOWS: the GitHub workflows whose runs exchange their token for
-	// an airlock placeholder through which they write only the results of their project's spec
+	// a proxy placeholder through which they write only the results of their project's spec
 	// checks, whitespace-separated <repository>=<workflow path>=<ref pattern>=<project>=<person>
 	// entries, such as
 	// example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com.
@@ -963,7 +963,7 @@ type Config struct {
 	// path.Match reads one, a "*" standing for one segment of the ref and never a "/", so
 	// refs/heads/* takes every branch with no "/" in its name and refs/heads/*/* every branch with
 	// one. Its first two segments are literal: refs/ and a kind of ref, such as refs/heads/. Such a
-	// run asks for requested_token_type urn:envoy:params:oauth:token-type:airlock-placeholder and is
+	// run asks for requested_token_type urn:envoy:params:oauth:token-type:proxy-placeholder and is
 	// granted a placeholder and a result grant, never an access token: the grant holds only the
 	// OAuth scope results and the project scope results, acts for that person, writes under the
 	// session ci-results:<repository>/<workflow path>, and carries the run its GitHub token names:

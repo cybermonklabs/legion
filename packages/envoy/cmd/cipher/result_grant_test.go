@@ -75,9 +75,9 @@ func placeholderGrant(t *testing.T, hosts ...string) map[string]any {
 		t.Fatal(err)
 	}
 	return map[string]any{
-		"access_token": resultPlaceholder, "issued_token_type": oauthwire.TokenTypeAirlockPlaceholder, "token_type": "N_A", "expires_in": 900,
+		"access_token": resultPlaceholder, "issued_token_type": oauthwire.TokenTypeProxyPlaceholder, "token_type": "N_A", "expires_in": 900,
 		oauthwire.ExtraGrantID: resultGrantID,
-		oauthwire.ExtraAirlock: oauthwire.AirlockRelease{
+		oauthwire.ExtraProxy: oauthwire.AirlockRelease{
 			ProxyURL: "http://127.0.0.1:13381", CACertificate: string(authority.CertificatePEM()), ProxyPassword: resultPlaceholder,
 			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {Value: resultPlaceholder, Slots: map[string]string{"value": resultPlaceholder}, Hosts: hosts}},
 		},
@@ -153,7 +153,7 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 	broker.mu.Lock()
 	forms, proofs := broker.forms, broker.proofs
 	broker.mu.Unlock()
-	if len(forms) != 1 || forms[0].Get("requested_token_type") != oauthwire.TokenTypeAirlockPlaceholder ||
+	if len(forms) != 1 || forms[0].Get("requested_token_type") != oauthwire.TokenTypeProxyPlaceholder ||
 		forms[0].Get("subject_token") != "the-runs-oidc-token" || forms[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub {
 		t.Fatalf("the broker's token endpoint got %v; want one trade of the run's token for the placeholder type", forms)
 	}

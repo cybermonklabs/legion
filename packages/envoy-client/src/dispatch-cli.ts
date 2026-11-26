@@ -149,7 +149,8 @@ function outcomeCode(error: unknown): string {
  * result may be stored, and a second run is safe, since Dispatch keeps each result. A tunnel the
  * airlock proxy refused prints `AIRLOCK_TUNNEL_REFUSED: …` with its status, and an answer the proxy
  * gave itself before the write left it (`Cipher-Proxy-Forwarded: false`) prints its
- * `Cipher-Proxy-Code` and its words, each saying that nothing reached Dispatch, and exits 1. An
+ * `Cipher-Proxy-Code` and its words, each saying that nothing reached Dispatch, and exits 1; a 5xx
+ * of either is asked again within the bound first, as a connection that never opened is. An
  * answer the proxy gave itself after the write may have left it (`Cipher-Proxy-Forwarded:
  * unknown`) is asked again under the same key, as a reset is, and ends
  * `{"write_outcome_unknown": <code>}` with exit 1 if no answer settles it. A call Dispatch's check

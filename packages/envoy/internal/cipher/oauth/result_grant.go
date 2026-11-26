@@ -3,7 +3,6 @@ package oauth
 import (
 	"context"
 	"maps"
-	"net/http"
 	"net/url"
 	"time"
 
@@ -15,10 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 )
-
-// formRequestedTokenType is the request's requested_token_type (RFC 8693 Section 2.1), which the
-// library reads too: absent, it is the access token.
-const formRequestedTokenType = "requested_token_type"
 
 // resultGrantMaxLifetime is the longest a result grant lasts: a report writes its checks one after
 // another, each bounded at a minute, so a grant shorter than the run's report fails more reports,
@@ -55,27 +50,32 @@ type AirlockSettings struct {
 	GrantLifetime time.Duration
 }
 
-// asksForPlaceholder reports whether form asks for the airlock placeholder.
+// asksForPlaceholder reports whether form asks for the proxy placeholder, the one type a trade
+// for a capability the broker mints and holds asks for: a result entry's run's and a person's
+// approve trade alike (oauthwire.TokenTypeProxyPlaceholder).
 func asksForPlaceholder(form url.Values) bool {
-	return form.Get(formRequestedTokenType) == oauthwire.TokenTypeAirlockPlaceholder
+	return form.Get(formRequestedTokenType) == oauthwire.TokenTypeProxyPlaceholder
 }
 
-// placeholderDecision holds what a request asks for to what decide decided: a result entry's run
-// is granted the airlock placeholder and never an access token, since any process of a CI job
-// can ask GitHub for a fresh run token, and a results token it was answered would be a Dispatch
-// credential in the job; and no other decision is granted the placeholder. Both refusals are
-// invalid_request, the subject token being sound and the request asking for what its identity is
-// not given.
+// placeholderDecision holds a result entry's run to the proxy placeholder: it is granted the
+// placeholder of a result grant and never an access token, since any process of a CI job can ask
+// GitHub for a fresh run token, and a results token it was answered would be a Dispatch
+// credential in the job. The refusal is invalid_request, the subject token being sound and the
+// request asking for what its identity is not given. A placeholder trade of any other decision is
+// the approve capability's, which grantApprove holds to a person's sign-in.
 func placeholderDecision(form url.Values, claims exchange.Claims) error {
-	results := claims.Scope == exchange.ProjectScopeResults
-	switch asked := asksForPlaceholder(form); {
-	case results && !asked:
-		return oauth2.ErrInvalidRequest.WithHintf("A result entry's run gets no access token: it asks for %s=%s, and the broker's airlock holds its capability; run the write under `agent-secrets result-grant`.",
-			formRequestedTokenType, oauthwire.TokenTypeAirlockPlaceholder)
-	case asked && !results:
-		return oauth2.ErrInvalidRequest.WithHint("Only a result entry's run is granted through the airlock.")
+	if claims.Scope == exchange.ProjectScopeResults && !asksForPlaceholder(form) {
+		return oauth2.ErrInvalidRequest.WithHintf("A result entry's run gets no access token: it asks for %s=%s, and the broker's proxy holds its capability; run the write under `agent-secrets result-grant`.",
+			formRequestedTokenType, oauthwire.TokenTypeProxyPlaceholder)
 	}
 	return nil
+}
+
+// resultTrade reports whether session is a result entry's run: the project scope decide wrote for
+// it is results.
+func resultTrade(session *oauthstore.ExchangeSession) bool {
+	word, _ := session.Extra[ClaimProjectScope].(string)
+	return word == oauthwire.ProjectScopeResults
 }
 
 // resultGrantLifetime is how long a result grant lasts: resultGrantMaxLifetime, or the access
@@ -114,43 +114,33 @@ func (p *Provider) writeResultGrant(ctx context.Context, request oauth2.Requeste
 	return held, grant, nil
 }
 
-// grantPlaceholder answers a result entry's run that asked for the airlock placeholder, on the
-// exchange's open transaction txCtx: it writes the grant (writeResultGrant), claims the session
-// name until the grant's end, commits, and answers C8 with no-store: the placeholder as
-// access_token, its type as issued_token_type, the token_type N_A of a token that is no access
-// token (RFC 8693 Section 2.2.1), the seconds the grant lasts, the grant's id and the airlock
-// release a command runs with. The library mints nothing for it, and the broker never calls its
-// own public URL.
-func (p *Provider) grantPlaceholder(ctx, txCtx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, session *oauthstore.ExchangeSession, committed *bool) {
+// grantResult writes the result grant of a result entry's run that asked for the proxy
+// placeholder, in the exchange's open transaction, which ctx carries (writeResultGrant), and
+// answers the body exchangeGrant writes once it has claimed the session name and committed, as
+// grantApprove answers a person's approve trade: the placeholder as access_token, its type as
+// issued_token_type, the token_type N_A of a token that is no access token (RFC 8693 Section
+// 2.2.1), the seconds the grant lasts, the grant's id and the proxy release a command runs with
+// (oauthwire.ExtraProxy). The library mints nothing for it, and the broker never calls its own
+// public URL.
+func (p *Provider) grantResult(ctx context.Context, request oauth2.Requester, session *oauthstore.ExchangeSession) (map[string]any, error) {
 	if p.airlock == nil {
-		p.writeError(ctx, w, request, oauth2.ErrServerError.WithHint("This broker's airlock binds no "+oauthwire.AirlockResultsName+", so it grants no result entry's run a placeholder."))
-		return
+		return nil, oauth2.ErrServerError.WithHint("This broker's proxy binds no " + oauthwire.AirlockResultsName + ", so it grants no result entry's run a placeholder.")
 	}
-	held, grant, err := p.writeResultGrant(txCtx, request, session)
+	held, grant, err := p.writeResultGrant(ctx, request, session)
 	if err != nil {
-		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
-		return
+		return nil, oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
-	if _, _, err := p.claimSession(txCtx, session); err != nil {
-		p.writeError(ctx, w, request, err)
-		return
-	}
-	if err := p.store.Commit(txCtx); err != nil {
-		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
-		return
-	}
-	*committed = true
-	writeOAuthJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"access_token":         held,
-		"issued_token_type":    oauthwire.TokenTypeAirlockPlaceholder,
+		"issued_token_type":    oauthwire.TokenTypeProxyPlaceholder,
 		"token_type":           "N_A",
 		"expires_in":           int64(time.Until(grant.ExpiresAt).Round(time.Second) / time.Second),
 		oauthwire.ExtraGrantID: oauthwire.AirlockResultsWord + ":" + grant.ID,
-		oauthwire.ExtraAirlock: oauthwire.AirlockRelease{
+		oauthwire.ExtraProxy: oauthwire.AirlockRelease{
 			ProxyURL: p.airlock.ProxyURL, CACertificate: p.airlock.CACertificatePEM, ProxyPassword: held,
 			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {
 				Value: held, Slots: map[string]string{resultValueSlot: held}, Hosts: p.airlock.ResultHosts,
 			}},
 		},
-	})
+	}, nil
 }

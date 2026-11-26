@@ -58,25 +58,31 @@ The GitHub Actions identity of the Go broker client follows no redirect of the r
 
 ## An answer of the secrets broker's airlock proxy
 
-A CI job's result write goes out through the secrets broker's airlock proxy, with the airlock's placeholder as its credential (`airlockCredential`).
+A CI job's result write goes out through the secrets broker's airlock proxy, Cipher's proxy, with the airlock's placeholder as its credential (`airlockCredential`) and the proxy named by the job's `HTTPS_PROXY`.
+A person's review from a box goes through the same proxy, which the client names itself (`reviewArtifact`, `via`).
 The proxy can refuse the write itself, and then the write reached no service and stored nothing.
+Every write reads the proxy's own answers by one rule (`proxyOwnAnswer`, `proxyEvent`), whichever names the proxy.
 
-A tunnel that the proxy refuses at the `CONNECT` reaches the client as Bun's `ERR_PROXY_TUNNEL`, whose message carries the proxy's status line and nothing else of its answer.
-The write loop reads it as an `AirlockTunnelRefusedError`, with code `AIRLOCK_TUNNEL_REFUSED`, the `status` and the `reason` phrase.
+A tunnel that the proxy refuses at the `CONNECT` reaches the client as Bun's `ERR_PROXY_TUNNEL`, whose message carries the proxy's status line, with the answer's headers and no body.
+The write loop reads it as an `AirlockTunnelRefusedError`, with code `AIRLOCK_TUNNEL_REFUSED`, the `status`, the `reason` phrase, and the proxy's `Cipher-Proxy-Code` as `proxyCode`.
 Its message says that the proxy refused the connection and that nothing was sent to Dispatch.
-A 503 is a connection that never opened, so the write asks again on its schedule, and ends with that error when the schedule runs out.
+A 5xx, such as a 503, is a connection that never opened, so the write asks again on its schedule, and ends with that error when the schedule runs out.
 Every other status ends the write at once, a 407 for a grant that ended among them.
 
 An answer that the proxy gives itself inside an open connection, before any byte of the request left it, carries `Cipher-Proxy-Forwarded: false` and a `Cipher-Proxy-Code`.
 It is an `AirlockRefusedError`, with the status, that code, or `HTTP_<status>` where it names none, and the proxy's words as `body`, each copy of the credential in them redacted.
 The redaction is of whole copies, because the proxy's words name the placeholder by that word, which the placeholder's own prefix spells.
-The write asks again only after its `503 GRANT_UNREADABLE`, a grant that the proxy could not read at that moment.
+A 4xx of it ends the write at once.
+A 5xx of it, a grant that the proxy could not read at that moment (`503 GRANT_UNREADABLE`) or a dial to Dispatch that failed (`502 UPSTREAM_UNREACHABLE`), is asked again under the key first: nothing reached Dispatch, and the write is keyed.
 
 Neither error is a `DispatchServiceError`, and `writeOutcomeUnknown` is false for both.
 Where an earlier attempt of the same write may have reached Dispatch, the write ends as a `DispatchWriteUnsettledError`, as for any answer that proves nothing of that attempt.
 
 An answer that the proxy gives itself after the request may have reached Dispatch carries `Cipher-Proxy-Forwarded: unknown` and a `Cipher-Proxy-Code`: the proxy's connection to Dispatch broke after the write was sent (`502 UPSTREAM_UNREACHABLE`), or the write's grant ended while Dispatch held the call (`407 GRANT_NOT_LIVE`).
-The write loop reads it as a reset after the write went out (`AirlockOutcomeUnknownError`, with the status, the code and the redacted words): the write may have landed, so it asks again under its key, and ends as a `DispatchWriteUnsettledError` when no answer settles it.
+The write loop reads it as an answer after the write went out (`proxy-unsettled`, `AirlockOutcomeUnknownError`, with the status, the code and the redacted words): the write may have landed, so it asks again under its key, and ends as a `DispatchWriteUnsettledError` when no answer settles it.
+
+A review through the proxy reads the same answers by the same rule, and ends with a `DispatchProxyRefusalError` in place of the two airlock errors: a refusal with the proxy's status and code that names the proxy by its origin, says whether anything may have reached Dispatch, and quotes the proxy's words through the client's bounded excerpt.
+It is thrown only while no attempt may have reached Dispatch, so `writeOutcomeUnknown` is false for it; once one may have, it is the `last` of a `DispatchWriteUnsettledError`.
 
 ## A path value that names nothing
 

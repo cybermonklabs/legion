@@ -44,7 +44,7 @@ func newResultsFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixtur
 
 // askingForThePlaceholder is form asking for the airlock placeholder as its requested type.
 func askingForThePlaceholder(form url.Values) url.Values {
-	form.Set("requested_token_type", oauthwire.TokenTypeAirlockPlaceholder)
+	form.Set("requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
 	return form
 }
 
@@ -116,8 +116,8 @@ func TestAResultEntrysRunIsGrantedAPlaceholderAndNoToken(t *testing.T) {
 	if prefix := placeholder.MintedPrefix(oauthwire.AirlockResultsWord); !strings.HasPrefix(held, prefix) {
 		t.Fatalf("access_token = %q, want a placeholder starting %s", held, prefix)
 	}
-	if body["issued_token_type"] != oauthwire.TokenTypeAirlockPlaceholder || body["token_type"] != "N_A" {
-		t.Errorf("issued_token_type = %v and token_type = %v, want %s and N_A", body["issued_token_type"], body["token_type"], oauthwire.TokenTypeAirlockPlaceholder)
+	if body["issued_token_type"] != oauthwire.TokenTypeProxyPlaceholder || body["token_type"] != "N_A" {
+		t.Errorf("issued_token_type = %v and token_type = %v, want %s and N_A", body["issued_token_type"], body["token_type"], oauthwire.TokenTypeProxyPlaceholder)
 	}
 	if expires, _ := body["expires_in"].(float64); expires < 890 || expires > 900 {
 		t.Errorf("expires_in = %v, want about 900", body["expires_in"])
@@ -126,7 +126,7 @@ func TestAResultEntrysRunIsGrantedAPlaceholderAndNoToken(t *testing.T) {
 	if !strings.HasPrefix(grantID, "result:") {
 		t.Errorf("grant_id = %q, want result:<id>", grantID)
 	}
-	airlock, _ := body[oauthwire.ExtraAirlock].(map[string]any)
+	airlock, _ := body[oauthwire.ExtraProxy].(map[string]any)
 	names, _ := airlock["names"].(map[string]any)
 	entry, _ := names[oauthwire.AirlockResultsName].(map[string]any)
 	slots, _ := entry["slots"].(map[string]any)
@@ -181,7 +181,7 @@ func TestAResultEntrysRunIsMintedNoAccessToken(t *testing.T) {
 	key := newKey(t)
 	before := f.count(t, "oauth_access_tokens")
 	status, body := f.exchange(t, f.resultRunForm(t, "7"), key)
-	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", oauthwire.TokenTypeAirlockPlaceholder)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", oauthwire.TokenTypeProxyPlaceholder)
 	if after := f.count(t, "oauth_access_tokens"); after != before {
 		t.Errorf("access tokens after the refused exchange = %d, want the %d there were", after, before)
 	}
@@ -191,8 +191,10 @@ func TestAResultEntrysRunIsMintedNoAccessToken(t *testing.T) {
 }
 
 // TestOnlyAResultEntryIsGrantedAPlaceholder: a run of an exact workflow entry and a pod of a
-// named entry, each asking for the placeholder, are refused invalid_request, and no grant is
-// written.
+// named entry, each asking for the proxy placeholder, are refused invalid_request, and no result
+// grant is written. The placeholder type is one for every capability the broker mints, so the
+// refusal is the approve capability's (grantApprove): beside a result entry's run, only a person's
+// sign-in is traded for one.
 func TestOnlyAResultEntryIsGrantedAPlaceholder(t *testing.T) {
 	f := newResultsFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
@@ -203,8 +205,8 @@ func TestOnlyAResultEntryIsGrantedAPlaceholder(t *testing.T) {
 	} {
 		status, body := f.exchange(t, askingForThePlaceholder(form), key)
 		if description, _ := body["error_description"].(string); status != http.StatusBadRequest || body["error"] != "invalid_request" ||
-			body["access_token"] != nil || !strings.Contains(description, "Only a result entry's run") {
-			t.Errorf("%s asking for the placeholder = %d %v, want 400 invalid_request saying only a result entry's run is granted one", name, status, body)
+			body["access_token"] != nil || !strings.Contains(description, "Only a person's sign-in is traded for the approve capability's proxy placeholder") {
+			t.Errorf("%s asking for the placeholder = %d %v, want 400 invalid_request saying only a person's sign-in is traded for one beside a result entry's run", name, status, body)
 		}
 	}
 	if grants := f.resultGrants(t); len(grants) != 0 {

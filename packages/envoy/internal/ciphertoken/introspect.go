@@ -69,12 +69,20 @@ const ScopeResults = oauthwire.ScopeResults
 // (Introspection.CI), carried here for the reason the project scopes are.
 type CIRun = oauthwire.CIRun
 
+// ScopeApprove is the one OAuth scope an approve-only token holds: beside ProjectScopePerson, a
+// person, and no service, no projects and no cut (approveShapeOf) it is the token the broker mints
+// for a person's approve grant and spends through its proxy, which a verifier accepts only under
+// Options.ServesApproveOnly, and in any other shape it is no session's credential
+// (ErrNotASession).
+const ScopeApprove = oauthwire.ScopeApprove
+
 // ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
 // answer's space-separated Scope: the broker's own wire name, carried here for the reason
 // ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
-// person, shapeOf reads a token that names a person and holds it as it reads one that does not.
-// A named answer that names no person and holds any scope word, this one included, is no
-// session's credential (shapeOf).
+// person, shapeOf reads a token that names a person and holds it as it reads one that does not,
+// but for one beside ScopeApprove: approveShapeOf reads that token first and answers it no
+// session's token. A named answer that names no person and holds any scope word, this one
+// included, is no session's credential (shapeOf).
 const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
 // LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,
@@ -130,16 +138,15 @@ func cutOf(answer Introspection) (time.Time, error) {
 // needs the scope itself and not only the list, and a narrowed token's projects mean what its
 // base word's do; a results answer names its one project. The service is carried as the broker
 // answered it, which is set exactly where the person is not (sessionCaller refuses an answer
-// naming neither). ReadOnly and ResultsOnly are shapeOf's verdict on the answer, which
-// sessionCaller reached and hands over as shape, and cut is the answer's cut, which sessionCaller
-// read (cutOf): callerOf runs only on an answer sessionCaller accepted, and sessionCaller lets a
-// read-only or a results answer through only with its switch set, which only a verifier that
-// serves one sets, so a Caller marked either way is one such a verifier accepted. The run of a
-// results answer is copied, so a reader of the Caller shares nothing with the answer the cache
-// keeps for the next request.
-// LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
-// shapeOf reads it and with no slice built, since this too runs on every request a verifier
-// decides.
+// naming neither). ReadOnly, ResultsOnly and ApproveOnly are shapeOf's verdict on the answer,
+// which sessionCaller reached and hands over as shape, and cut is the answer's cut, which
+// sessionCaller read (cutOf): callerOf runs only on an answer sessionCaller accepted, and
+// sessionCaller lets a read-only, a results or an approve-only answer through only with its switch
+// set, which only a verifier that serves one sets, so a Caller marked any of those ways is one
+// such a verifier accepted. The run of a results answer is copied, so a reader of the Caller
+// shares nothing with the answer the cache keeps for the next request. LegionStatus is whether
+// Scope holds the word ScopeLegionStatus, read one word at a time as shapeOf reads it and with no
+// slice built, since this too runs on every request a verifier decides.
 func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 	caller := Caller{
 		Session:      answer.Session,
@@ -149,6 +156,7 @@ func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 		ProjectScope: oauthwire.BaseProjectScope(answer.ProjectScope),
 		ReadOnly:     shape == shapeReadOnly,
 		ResultsOnly:  shape == shapeResults,
+		ApproveOnly:  shape == shapeApproveOnly,
 		Cut:          cut,
 	}
 	if shape == shapeResults {

@@ -278,6 +278,12 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `Refused: this pod's registration for session '${SESSION_SLOT}' was released; a pod trades only under a registration its registrar has not released\\.`,
   `The session name '${SESSION_SLOT}' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds\\.`,
   `The session name '${SESSION_SLOT}' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds\\.`,
+  // A trade for the approve capability's proxy placeholder that is no person's sign-in, or that a
+  // broker serving no approve capability was asked (`approve.go`'s grantApprove): which of the two
+  // the person reads off their own box, and neither is a broken sign-in. Beside it, a placeholder
+  // trade a session narrowed to reading made (`exchange.go`): it approves nothing.
+  "Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it\\.",
+  "A trade for the approve capability's proxy placeholder asks for the scope read, and a trade narrowed to reading approves nothing: trade for the placeholder without the scope, a cut or a DPoP-Holder proof\\.",
   // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentence writes it:
   // the same person each time.
   `${PERSON_SLOT}'s credentials are held by Dispatch; they work again when \\k<person> signs in to Dispatch, or when Dispatch can confirm \\k<person> with Google again`,

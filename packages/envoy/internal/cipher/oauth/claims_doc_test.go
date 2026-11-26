@@ -194,7 +194,7 @@ func issuedClaims(t *testing.T) []string {
 	}, {
 		tokenType: oauthwire.SubjectTokenTypeGitHub,
 		session:   exchange.ResultSession(claimsRepository, claimsResultsWorkflow),
-		requested: oauthwire.TokenTypeAirlockPlaceholder,
+		requested: oauthwire.TokenTypeProxyPlaceholder,
 		token: map[string]any{
 			"aud":                claimsGitHubAudience,
 			"repository":         claimsRepository,
