@@ -487,16 +487,15 @@ test("in today's comments margin an agent's decision keeps each word of its head
     title: "Whole words",
   });
   const shaped = specBlockRef(issue.key, "r1");
-  // The decision as the seed writes its own on each main R27 names (`writeDecision` in
-  // `dashboard-seed.ts`): a `decision` block of the spec that shapes r1, where the server refuses
-  // a new `decisions.md` with `409 DECISIONS_ARE_NODES`, and else a new `decisions.md` whose
-  // section ties r1 by the reference in its words, which the block's words do not hold.
+  // The decision written through `writeDecision` in `dashboard-seed.ts`, as the seed writes its own
+  // on each main R27 names: a `decision` block of the spec that shapes r1 where decisions are
+  // nodes, and else a new `decisions.md` whose section ties r1 by `Shapes <address>` in its words.
   const nodes = holds.decisionsAreNodes;
   await writeDecision(
     issue.key,
     { spec: issue.primary_artifact_id ?? "" },
     holds,
-    { heading, id: "d-whole", shaped, words: nodes ? why : `${why} Shapes ${shaped}.` },
+    { heading, id: "d-whole", shaped, words: `${why} Shapes ${shaped}.` },
     WHOLE_WORDS_AGENT
   );
   // The read holds the decision once the document service has indexed its tie: on a bare main
