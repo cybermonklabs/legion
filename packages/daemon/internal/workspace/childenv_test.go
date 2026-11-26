@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // git and jj, which run in a managed repository's checkout, start without either raw NATS seed the
@@ -21,7 +22,7 @@ func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
 	if err := os.WriteFile(git, []byte("#!/bin/sh\nenv\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewRunner(10*time.Second, map[string]string{"git": git}).Run(context.Background(), Command{Argv: []string{"git", "status"}, Dir: t.TempDir(), Timeout: 10 * time.Second})
+	result, err := NewRunner(procgroup.NoReaper, 10*time.Second, map[string]string{"git": git}).Run(context.Background(), Command{Argv: []string{"git", "status"}, Dir: t.TempDir(), Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

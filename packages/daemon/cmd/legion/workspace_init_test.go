@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -588,8 +589,8 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 	// takes no t.Parallel, as no case of this package does.
 	var commands []workspace.Command
 	saved := newProvisionRunner
-	newProvisionRunner = func(_ time.Duration, tools map[string]string) workspace.Runner {
-		return commandLog{Runner: saved(budget, tools), commands: &commands}
+	newProvisionRunner = func(start procgroup.Starter, _ time.Duration, tools map[string]string) workspace.Runner {
+		return commandLog{Runner: saved(start, budget, tools), commands: &commands}
 	}
 	t.Cleanup(func() { newProvisionRunner = saved })
 

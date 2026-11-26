@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // The working copy of a task of an issue's plan is a jj workspace of the clone the issue's own
@@ -323,7 +324,7 @@ func TestHelperProvision(t *testing.T) {
 		lock.Unlock()
 	case "provision":
 		appendLine(t, log, "second asks")
-		if _, err := ProvisionTask(context.Background(), NewRunner(testTimeout, testTools(t)), issue, branch, func(line string) { t.Log(line) }); err != nil {
+		if _, err := ProvisionTask(context.Background(), NewRunner(procgroup.NoReaper, testTimeout, testTools(t)), issue, branch, func(line string) { t.Log(line) }); err != nil {
 			appendLine(t, log, "second failed: "+err.Error())
 			t.Fatalf("ProvisionTask: %v", err)
 		}

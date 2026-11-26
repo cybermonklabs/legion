@@ -37,18 +37,22 @@ var shimHeldStarts = map[string]struct {
 // (Config.ReapOrphans) — reaps every exited child its guard does not hold, so every child that
 // process starts and waits for itself must start through that guard (subreaper.Guard's Start, or
 // its Starter wherever code takes a procgroup.Starter): Oh My Pi, the secrets keygen and renewer,
-// every command the daemon asks for and the warm-up's codegraph. This check walks the call graph
-// from shim.Run, and from workspace.WarmCodegraphIndex, which `legion worker-shim` hands the shim
-// as Config.WarmCodegraph (cmd/legion's TestTheWorkerShimWarmsWithTheWorkspacesWarmUp holds it to
-// that function), since a function stored in a field the walk does not follow from the store; it
-// fails on every start it reaches that shimHeldStarts does not hold, naming the call site and a
-// path to it. A start through procgroup.NoReaper counts as such a start.
+// every command the daemon asks for, the git and jj that make a task's working copy for the
+// adoption (adoptionDir's workspace.NewRunner) and the warm-up's codegraph. This check walks the
+// call graph from shim.Run, and from workspace.WarmCodegraphIndex, which `legion worker-shim` hands
+// the shim as Config.WarmCodegraph (cmd/legion's TestTheWorkerShimWarmsWithTheWorkspacesWarmUp
+// holds it to that function), since a function stored in a field the walk does not follow from
+// the store; it fails on every start it reaches that shimHeldStarts does not hold, naming the call
+// site and a path to it. A start through procgroup.NoReaper counts as such a start.
 //
 // It cannot pass by reading nothing: its control plants a start where each of the shim's children
 // starts, as it would be with the guard left out, and must see each one named: Oh My Pi's spawn,
 // the keygen's run, the renewer's start inside the goroutine that keeps it, procgroup.NoReaper
-// given to the commands the daemon asks for in place of the guard's starter, and the warm-up's
-// codegraph run in the workspace package, which only the second root reaches.
+// given to the commands the daemon asks for in place of the guard's starter, the task copy
+// runner's own run (workspace.execRunner.Run), which the adoption reaches through the
+// workspace.Runner interface, and the warm-up's codegraph run in the workspace package, which only
+// the second root reaches. A second control gives the adoption's runner procgroup.NoReaper and
+// must see it named: the starter reaches the run through a field of the runner, not a parameter.
 func TestEveryChildTheShimWaitsForStartsThroughItsGuard(t *testing.T) {
 	t.Run("this tree", func(t *testing.T) {
 		sites := map[string][]startwalk.Start{}
@@ -79,6 +83,7 @@ func TestEveryChildTheShimWaitsForStartsThroughItsGuard(t *testing.T) {
 		plantShim(t, overlay, "agentsecrets.go", "procgroup.Run(cmd, s.children.Starter())", "cmd.Run()")
 		plantShim(t, overlay, "agentsecrets.go", "pid, err := s.children.Start(cmd)", "pid, err := 0, cmd.Start()")
 		plantShim(t, overlay, "commands.go", "start := s.children.Starter()", "start := procgroup.Starter(procgroup.NoReaper)")
+		plantShim(t, overlay, "../workspace/config.go", "err = procgroup.Run(child, r.start)", "err = child.Run()")
 		plantShim(t, overlay, "../workspace/codegraph.go", "err := procgroup.Run(cmd, start)", "err := cmd.Run()")
 		starts := shimProcessStarts(t, overlay)
 		for _, want := range []struct{ what, caller string }{
@@ -86,11 +91,22 @@ func TestEveryChildTheShimWaitsForStartsThroughItsGuard(t *testing.T) {
 			{"the keygen's run with a bare cmd.Run", "(*" + shimPackage + ".shim).identity"},
 			{"the renewer's start with a bare cmd.Start, in the goroutine that keeps it", "(*" + shimPackage + ".shim).startRenewer$1"},
 			{"procgroup.NoReaper in place of the guard's starter", "github.com/sjawhar/legion/daemon/internal/procgroup.NoReaper"},
+			{"the task copy runner's run with a bare cmd.Run", "(" + workspacePackage + ".execRunner).Run"},
 			{"the warm-up's codegraph run with a bare cmd.Run", workspacePackage + ".runCodegraph"},
 		} {
 			if !slices.ContainsFunc(starts, func(start startwalk.Start) bool { return start.Caller == want.caller }) {
 				t.Errorf("the check did not name %s, so it could pass over a real one; it named: %v", want.what, starts)
 			}
+		}
+	})
+	t.Run("a start the adoption's runner holds is named", func(t *testing.T) {
+		overlay := map[string][]byte{}
+		plantShim(t, overlay, "commands.go", "workspace.NewRunner(s.children.Starter(),", "workspace.NewRunner(procgroup.NoReaper,")
+		starts := shimProcessStarts(t, overlay)
+		if !slices.ContainsFunc(starts, func(start startwalk.Start) bool {
+			return start.Caller == "github.com/sjawhar/legion/daemon/internal/procgroup.NoReaper"
+		}) {
+			t.Errorf("the check did not name procgroup.NoReaper given to the adoption's runner, so it could pass over a real one; it named: %v", starts)
 		}
 	})
 }

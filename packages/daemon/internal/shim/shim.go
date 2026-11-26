@@ -260,7 +260,8 @@ type shim struct {
 
 	// children is the guard every child the shim starts and waits for itself starts through: Oh
 	// My Pi (spawnOnce), the secrets keygen and renewer (identity, startRenewer), every command the
-	// daemon asked for (openWorkspace) and the warm-up's codegraph (warmCodegraph). Under
+	// daemon asked for (openWorkspace, and the git and jj that make a task's working copy,
+	// adoptionDir) and the warm-up's codegraph (warmCodegraph). Under
 	// Config.ReapOrphans its reaper passes each of them over until its own wait has read its exit.
 	children *subreaper.Guard
 

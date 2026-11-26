@@ -261,7 +261,7 @@ func (s *shim) adoptionDir(ctx context.Context, budget time.Duration, jj, issue,
 		if err != nil {
 			return "", fmt.Errorf("worker-shim: git is not on PATH (%s); no git to make the working copy of %s with", os.Getenv("PATH"), branch)
 		}
-		run := workspace.NewRunner(budget, map[string]string{"git": git, "jj": jj})
+		run := workspace.NewRunner(s.children.Starter(), budget, map[string]string{"git": git, "jj": jj})
 		if _, err := workspace.ProvisionTask(ctx, run, issue, branch, func(line string) { s.log.Printf("[worker-shim] %s", line) }); err != nil {
 			return "", fmt.Errorf("worker-shim: make the working copy of %s: %w", branch, err)
 		}
