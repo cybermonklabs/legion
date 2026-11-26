@@ -930,7 +930,11 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	// workflow's leave and what came after it left it. The new run's starts hand each its task;
 	// whether a start brings a stopped claim back is supervise's table to decide, and a start
 	// resumes the recorded session, or a new one once supervise's Machine.forgetSession has dropped
-	// it. These starts ask for no new session themselves.
+	// it. These starts ask for no new session themselves, and decide nothing: none of them
+	// launches again the agent of a claim held for OpenAI's cyber-policy refusal
+	// (supervise.ErrHeldForCyberPolicy), and the outbox's refusal of the start of its phase holds
+	// the issue for the architect above it (the daemon outbox's heldStartRefused), whose retry
+	// starts that agent again in a new session.
 	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
 	if err != nil {
 		return err
@@ -1284,6 +1288,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // as a report of pending would (endFailedLook): a done issue has no phase to hold, and the look's
 // next wake starts the claim again, a backoff out that doubles with each failed look in a row. A
 // failure of that role between looks counts the same (failedBetweenLooks), and either is told.
+//
+// A claim that failed on OpenAI's cyber-policy refusal (supervise.CauseCyberPolicy) is the
+// exception to each "starts it again" above: no start of the daemon's own launches its agent again
+// (supervise.ErrHeldForCyberPolicy), so a notice that would promise one says that the role does
+// not start again by itself instead (noStartOfItsOwn), and nothing of the cause or of who brings it
+// back: agents are told what they do, which is the same for every failure. A held phase is held
+// as for any cause, and its retry, the architect's or a person's decision, starts the agent in a
+// new session. A role outside its issue's phase holds nothing now, and the start of its phase,
+// should the issue come to it, holds the issue then (the daemon outbox's heldStartRefused).
 func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFailed) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1300,8 +1313,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return intake.Result{}, err
 		}
+		again := noStartOfItsOwn(fact)
+		if again == "" {
+			again = fmt.Sprintf("the daemon starts it again at %s's next phase start", issue.Key)
+		}
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
-			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
+			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and %s", issue.Key, again)})
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would, and counts it a failed look, so the next look is named a backoff
@@ -1344,8 +1361,9 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {
+		reason := fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
-			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
+			Reason: joinReason(reason, noStartOfItsOwn(fact))})
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil
@@ -1372,6 +1390,38 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from,
 		Failure: failure, Reason: deathReason(fact, failure != nil)})
+}
+
+// noStartOfItsOwn is the clause a worker-died notice of a claim that failed on OpenAI's
+// cyber-policy refusal (supervise.CauseCyberPolicy) says in place of a start of the daemon's own
+// that will not come, and "" for a fact of any other cause: a child's own architect's and a role's
+// outside its issue's phase (claimFailed), and the checking role's of a production check
+// (checkRoleFailedReason). It is the one place that cause is read for a notice. No start of the
+// daemon's own launches such a claim's agent again (supervise.ErrHeldForCyberPolicy), and the
+// clause says that and no more: it names neither the cause's mechanics nor who brings the agent
+// back, since the notice goes to an agent, which acts on a failure the same way whatever failed
+// it. The operator's command lives in the operator's surfaces (supervise.RetryCommand). Two
+// notices carry no clause, since neither promises a start: the held phase's, whose retry the
+// architect decides and which starts the agent in a new session (supervise's freshSession), and the
+// tree architect's, which the controller answers by restarting the tree, whose promotion starts
+// the architect's agent in a new session (StartPromotedArchitect).
+func noStartOfItsOwn(fact intake.ClaimFailed) string {
+	if fact.Cause != supervise.CauseCyberPolicy {
+		return ""
+	}
+	return "it does not start again by itself"
+}
+
+// joinReason is a worker-died's reason with clause after it (noStartOfItsOwn), joined as
+// deathReason joins its own parts, and either alone where the other is empty.
+func joinReason(reason, clause string) string {
+	switch {
+	case clause == "":
+		return reason
+	case reason == "":
+		return clause
+	}
+	return reason + "; " + clause
 }
 
 // deathReason is what a worker-died notice says of how a claim ended: the whole reason on the two

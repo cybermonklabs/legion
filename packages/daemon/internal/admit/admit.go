@@ -2303,8 +2303,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				//
 				// The architect start is not one of the starts that wait for a slot: this very
 				// transaction grants the tree whatever slot it needs, and an architect starts no
-				// phase worker.
-				if err := a.engine.StartArchitect(ctx, tx, issue); err != nil {
+				// phase worker. It is marked decided (workflow.Engine.StartPromotedArchitect): a root
+				// stands in the line only by a person's or the controller's todo, and the restart of
+				// a tree, a backlog and then a todo on its root, brings back an architect held for
+				// OpenAI's cyber-policy refusal this way, in a new session.
+				if err := a.engine.StartPromotedArchitect(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("start the architect of %s: %w", issue.Key, err)
 				}
 				if err := a.returnOwedMembers(ctx, tx, issue, issues, now); err != nil {
@@ -3508,6 +3511,17 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// issue, and a claim reading retired from an earlier run is passed over for as long as
 		// it reads so.
 		if c := run.Claim; c != nil && c.State == supervise.StateRetired {
+			continue
+		}
+		// A claim failed on OpenAI's cyber-policy refusal is passed over too (a retired one is
+		// above): no start the daemon makes by itself launches its agent again
+		// (supervise.ErrHeldForCyberPolicy), so a start written here would be refused at the outbox
+		// on every pass. The way back is the held phase's retry, which a person or the issue's
+		// architect decides and which starts the agent in a new session (workflow's restart,
+		// record.SuperviseRequest.Decided). The outbox's refusal of a start of the issue's phase is
+		// what holds the issue for that architect (the daemon outbox's heldStartRefused), so
+		// passing over the claim here leaves nobody untold.
+		if c := run.Claim; c != nil && c.HeldForCyberPolicy() {
 			continue
 		}
 		if held.role == claim.RoleArchitect {

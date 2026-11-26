@@ -114,7 +114,7 @@ func TestSuspendWithAStaleLocator(t *testing.T) {
 	t.Run("no pod", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))
-		g.hold.Store(true)
+		g.setHold(true)
 		if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
 			t.Fatal(err)
 		}
@@ -206,7 +206,7 @@ func TestTheOrphanSweepKeepsTheSandboxesOfALiveTreeUnknownClaimsLaunched(t *test
 	g := newRig(t, nil)
 	var known []runtime.Known // read before either launch
 	g.spawn(workerSpec(t))
-	g.hold.Store(true)
+	g.setHold(true)
 	g.launcher(childToken)
 	launching := make(chan error, 1)
 	go func() {
@@ -226,7 +226,7 @@ func TestTheOrphanSweepKeepsTheSandboxesOfALiveTreeUnknownClaimsLaunched(t *test
 	if g.sandbox(SandboxName(childToken)) == nil {
 		t.Fatal("a sandbox still launching was swept as an orphan")
 	}
-	g.hold.Store(false)
+	g.setHold(false)
 	if err := <-launching; err != nil {
 		t.Fatalf("the child issue's launch: %v", err)
 	}
