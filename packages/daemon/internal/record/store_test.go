@@ -1687,6 +1687,62 @@ func TestDueRowsListsOnlyTheRowsALaneMayRunNow(t *testing.T) {
 	})
 }
 
+// A status write waits while an older close_wait_publish row of its issue is unfinished: the close
+// on the checks queues close-wait.md's last version before the done, and Dispatch refuses an upload
+// to a closed issue. So a publish whose first try failed, and which waits for its retry, still runs
+// before the done. A status write older than the publish, the publish itself and another issue's
+// status write run as they come due, and the done runs once the publish finished.
+func TestAStatusWriteWaitsBehindItsIssuesOlderCloseWaitPublish(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
+		row, err := NewOutboxRow(issue, payload, now)
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, row))
+	}
+	due := func(tx pgx.Tx, at time.Time) []OutboxRow {
+		rows, err := records.DueRows(ctx, tx, "LEGION", "", nil, at)
+		must(t, err)
+		return rows
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("testing", "retro", ""))
+		enqueue(tx, "LEGION-208", CloseWaitPublish{Generation: 3})
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("done", "testing", ""))
+		enqueue(tx, "LEGION-209", OrdinaryStatusWrite("done", "testing", ""))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		if got, want := outboxKeys(due(tx, now)), []string{"dispatch_status:LEGION-208:testing", "close_wait_publish:LEGION-208", "dispatch_status:LEGION-209:done"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("due rows = %v, want %v: 208's done behind its older status write and its publish", got, want)
+		}
+		for _, row := range claimEachDue(t, records, tx, "LEGION", now) {
+			switch row.Kind {
+			case OutboxKindCloseWaitPublish:
+				must(t, records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, now.Add(time.Minute), "Dispatch unavailable"))
+			default:
+				must(t, records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken))
+			}
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		if got := outboxKeys(due(tx, now)); len(got) != 0 {
+			t.Fatalf("due rows while the publish waits for its retry = %v, want none: 208's done waits behind it", got)
+		}
+		later := now.Add(time.Minute)
+		if got, want := outboxKeys(due(tx, later)), []string{"close_wait_publish:LEGION-208"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("due rows at the publish's retry = %v, want %v", got, want)
+		}
+		for _, row := range claimEachDue(t, records, tx, "LEGION", later) {
+			must(t, records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken))
+		}
+		if got, want := outboxKeys(due(tx, later)), []string{"dispatch_status:LEGION-208:done"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("due rows once the publish finished = %v, want %v", got, want)
+		}
+	})
+}
+
 // An issue's lifecycle rows run one at a time, and the store says so, not the lane alone: while one
 // lifecycle row of an issue is under a live lease — a lane of this daemon's, or of another's in a
 // rolling restart — a due lifecycle row of the issue is listed by nobody and ClaimRow refuses it,

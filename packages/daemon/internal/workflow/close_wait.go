@@ -307,10 +307,10 @@ func (e *Engine) publishWait(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	return e.enqueue(ctx, tx, issue.Key, record.CloseWaitPublish{Generation: issue.Generation})
 }
 
-// closeReadAgain is when a read that did not count, because a basis of it named no merge commit of
-// the newest merge, is made again: as long after now as the wait has stood unread, between a
-// minute and an hour, so a merge Dispatch orders soon is read soon and one it never orders costs a
-// read an hour.
+// closeReadAgain is when a read that did not decide is made again (readAgainSince): one whose
+// basis named no merge commit of the newest merge, or one with a check Dispatch could not place
+// or read. It is as long after now as the wait has stood so, between a minute and an hour, so a
+// merge Dispatch orders soon is read soon and one it never orders costs a read an hour.
 func closeReadAgain(now time.Time, unreadSince time.Time) time.Time {
 	wait := min(max(now.Sub(unreadSince), time.Minute), time.Hour)
 	return now.Add(wait)
@@ -425,11 +425,14 @@ func (e *Engine) closeChecksRead(ctx context.Context, tx pgx.Tx, fact intake.Clo
 }
 
 // openCheckAtRead opens the production check of issue, which waits in verifying, at a fresh read
-// (D6): a read that counts, made after the issue's newest entry into verifying, with nothing beneath
-// it in the workflow, no reason of a next change waiting and no change open, where no check of the
-// issue's generation and merge stands (openCheck). A merged root whose children still run opens its
-// check at the read its last child's leave queues, so its bound counts from that open. A project
-// that runs no production check opens nothing.
+// (D6): a read that counts, made after the issue's newest entry into verifying with each check's
+// basis at the newest merge (record.CloseWait.Unread), with nothing beneath it in the workflow, no
+// reason of a next change waiting, a reported one or a check Dispatch computes as failed, and no
+// change open, where no check of the issue's generation and merge stands (openCheck). So the
+// bound never counts from a read that names an earlier merge, and a fail's next change opens the
+// check of its own merge. A merged root whose children still run opens its check at the read its
+// last child's leave queues, so its bound counts from that open. A project that runs no
+// production check opens nothing.
 func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if e.checkRole() == "" {
 		return nil
@@ -438,11 +441,11 @@ func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
-	read := view.facts.Read
-	if read == nil || read.Failure != "" || !read.ReadAt.After(view.facts.Entered) {
+	if view.wait.Unread {
 		return nil
 	}
-	if len(view.wait.Beneath) > 0 || len(view.facts.Defects) > 0 || view.facts.OpenChange {
+	failed := slices.ContainsFunc(view.wait.Checks, func(check record.CheckWait) bool { return check.State == record.CheckStateFail })
+	if len(view.wait.Beneath) > 0 || len(view.facts.Defects) > 0 || failed || view.facts.OpenChange {
 		return nil
 	}
 	if check := view.facts.Production; check != nil && check.Generation == issue.Generation && check.MergeSHA == issue.Merge.SHA {
@@ -577,8 +580,8 @@ func (e *Engine) askAncestorsRead(ctx context.Context, tx pgx.Tx, issue record.I
 // for nothing it closes the issue (closeOnChecks). Otherwise it writes the stored wait where an
 // item came, went or changed its state, queues one row for close-wait.md where none stands, tells
 // the owning architect at once of a check newly failed, newly unknown for a pass and a fail at one
-// commit, or newly changed without approval, and reads again later a read that did not count
-// because a basis named no merge commit of the newest merge.
+// commit, or newly changed without approval, and reads again later a read that did not decide: a
+// basis named no merge commit of the newest merge, or Dispatch could not place or read a check.
 func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if issue.Phase != phase.Verifying {
 		return nil
@@ -594,8 +597,8 @@ func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 }
 
 // storeWait writes the stored wait of view where it differs from the one the row holds, with the
-// row that publishes it, the notices of D11 that come at once, and the read again of a read that
-// did not count.
+// row that publishes it, the notices of D11 that come at once, and the read again on the backoff
+// of a read that did not decide (readAgainSince).
 func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView) error {
 	now := e.now()
 	old, err := storedWaitOf(issue)
@@ -606,8 +609,8 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
 	if err := e.tellAtOnce(ctx, tx, issue, old, stored, view.wait); err != nil {
 		return err
 	}
-	if stale := stored.Unread; stale != nil && view.facts.Read != nil && view.facts.Read.Failure == "" && view.facts.Read.ReadAt.After(view.facts.Entered) {
-		if err := e.askCloseReadAt(ctx, tx, issue, closeReadAgain(now, stale.Since)); err != nil {
+	if since, again := readAgainSince(view, stored); again {
+		if err := e.askCloseReadAt(ctx, tx, issue, closeReadAgain(now, since)); err != nil {
 			return err
 		}
 	}
@@ -629,11 +632,37 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
 	return e.publishWait(ctx, tx, issue)
 }
 
+// readAgainSince is since when stored, the stored wait of view, has waited for what only a read
+// again decides, and false where it waits for nothing of the kind (D4). That is a read that
+// counts after the entry with a basis naming no merge commit of the newest merge (Unread), and
+// each check Dispatch answers unknown because it could not place a result or could not make the
+// read (not_placed, read_failed). The earliest of their since sets the backoff (closeReadAgain).
+func readAgainSince(view closeView, stored record.StoredWait) (time.Time, bool) {
+	var since time.Time
+	found := false
+	take := func(at time.Time) {
+		if !found || at.Before(since) {
+			since, found = at, true
+		}
+	}
+	if read := view.facts.Read; stored.Unread != nil && read != nil && read.Failure == "" && read.ReadAt.After(view.facts.Entered) {
+		take(stored.Unread.Since)
+	}
+	for _, check := range stored.Checks {
+		if check.Answer == dispatch.PassStandsUnknown && (check.Reason == dispatch.PassStandsReasonNotPlaced || check.Reason == dispatch.PassStandsReasonReadFailed) {
+			take(check.Since)
+		}
+	}
+	return since, found
+}
+
 // tellAtOnce tells the owning architect at once of each item of stored that old did not hold in
 // that state: a check Dispatch computes as failed, naming its deciding result and its commit; a
 // check unknown for a pass and a fail at one commit; and checks changed since the approved version,
 // which a person must approve. Under `production_check: off` it also tells, at the first read that
-// counts after the entry, each check with no pass, which an eligible agent must run (D5).
+// counts after the entry, each check with no pass, which an eligible agent must run (D5). A read
+// before it that counted only in part, some checks at no merge commit of the newest merge, told
+// nothing, since it left the wait unread.
 func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue, old, stored record.StoredWait, wait record.CloseWait) error {
 	stood := func(check record.WaitCheck) bool {
 		for _, was := range old.Checks {
@@ -660,7 +689,7 @@ func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			}
 		}
 	}
-	if e.checkRole() == "" && old.Unread != nil && len(old.Checks) == 0 && stored.Unread == nil && len(stored.Checks) > 0 {
+	if e.checkRole() == "" && old.Unread != nil && stored.Unread == nil && len(stored.Checks) > 0 {
 		var ids []string
 		for _, check := range stored.Checks {
 			ids = append(ids, fmt.Sprintf("%s (%s)", check.ID, strings.Trim(check.Answer+", "+check.Reason, ", ")))
@@ -696,11 +725,9 @@ func checkFailedReason(issue record.Issue, check string, wait record.CloseWait) 
 // so close-wait.md says it while the issue is still open in Dispatch, which refuses an upload to a
 // closed issue. The issue is marked closed on its checks (issues.closed_on_checks_at). In a tree
 // that does not linger the table's row out of verifying writes done and the issue leaves the
-// workflow (leave). In a lingering tree no transition runs, so the close writes the member's done
-// directly, as a merge in a lingering tree did before the wait. A child whose production check
-// closed while it stood in verifying has its pod suspended here once, since the check's close
-// suspended nothing of a pod its issue still stood in: its leave spares the checking role's claim
-// for a check that is no longer open, and queues no suspension of its own.
+// workflow (leave), which suspends a merged child's pod where its production check closed while
+// it stood in verifying. In a lingering tree no transition runs, so the close writes the member's
+// done directly, as a merge in a lingering tree did before the wait.
 func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView) error {
 	now := e.now()
 	old, err := storedWaitOf(issue)
@@ -736,34 +763,7 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if _, err := e.arrive(ctx, tx, &issue, &w, TriggerChecksPassed, row.To, PhaseStatus(row.To), nil, record.PhaseRow{}, nil, ""); err != nil {
 		return err
 	}
-	if err := e.suspendCheckedChild(ctx, tx, issue, view); err != nil {
-		return err
-	}
 	return e.leave(ctx, tx, issue, "done")
-}
-
-// suspendCheckedChild is the one suspension of a merged child's pod at its close on its checks,
-// where its project runs a production check: the check closed while the child stood in verifying,
-// closing the checking role's claim and deleting nothing of the pod (closeCheck, D6), and the
-// child's leave spares the checking role's claim for it, so the close queues the IssueSuspend the
-// check's close did not. A project that runs no production check has its child's leave queue the
-// one suspension, so nothing is queued here for it.
-func (e *Engine) suspendCheckedChild(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView) error {
-	if claim.IsTreeRoot(issue.Key, issue.Tree) || !view.facts.ProductionOn {
-		return nil
-	}
-	check := view.facts.Production
-	if check == nil || check.Open() {
-		return nil
-	}
-	root, err := e.store.Issue(ctx, tx, issue.Tree)
-	if err != nil {
-		return err
-	}
-	if root == nil {
-		return fmt.Errorf("suspend issue %s: tree root %s is not recorded", issue.Key, issue.Tree)
-	}
-	return e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()})
 }
 
 // closeLingeringMember writes the close of issue, a member of a lingering tree, on row, the table's
@@ -958,7 +958,8 @@ func waitedFor(issue record.Issue) []string {
 // stands, as a person's close does. Its message names what the close waited for, since a closed
 // issue still takes a message and Dispatch refuses close-wait.md's next version. The stored wait
 // says that the issue closed, and each open reason of a next change is marked closed by the
-// person. An open production check goes on as for any closed issue (leave).
+// person. An open production check goes on as for any closed issue (leave). A merged child whose
+// check closed while it waited has its pod suspended by the leave, since no check runs on.
 func (e *Engine) personClosedPast(ctx context.Context, tx pgx.Tx, issue *record.Issue) error {
 	now := e.now()
 	members, err := e.treeMembers(ctx, tx, *issue)

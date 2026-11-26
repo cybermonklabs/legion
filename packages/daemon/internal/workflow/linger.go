@@ -31,7 +31,10 @@ import (
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
 // production check, where the project opens one (Engine.checkRole): five of its claims are
 // closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
-// role's live session; the check's close writes the suspension (closeCheck). A project whose
+// role's live session; the check's close writes the suspension (closeCheck). Where the child's
+// check of its generation and that merge has closed already, as one that closed while the child
+// waited in verifying, no check runs on: that close closed the checking role's claim and deleted
+// nothing of the pod, so the leave writes the one IssueSuspend. A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
@@ -132,8 +135,14 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if status == "done" {
 		op = "issue_close"
 	}
+	podFree := true
 	if merged {
 		except = e.checkRole()
+		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		podFree = except == "" || (check != nil && !check.Open() && check.Generation == issue.Generation && check.MergeSHA == mergeOf(issue, *pr).SHA)
 	}
 	if err := e.everyClaim(ctx, tx, issue, op, fmt.Sprintf("%s is %s", issue.Key, status), except); err != nil {
 		return err
@@ -156,7 +165,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if root == nil {
 		return fmt.Errorf("suspend issue %s: tree root %s is not recorded", issue.Key, issue.Tree)
 	}
-	if except == "" {
+	if podFree {
 		if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{
 			Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun(),
 		}); err != nil {

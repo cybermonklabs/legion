@@ -217,6 +217,52 @@ func TestAPendingCheckIsShownWithTheNextLookAndNotToldLate(t *testing.T) {
 	}
 }
 
+// A look that ends with no report names the check's next look, and the stored wait shows that look
+// at once, before any tick: at the look's bound, at its checking role's claim failing in it, and at
+// that claim failing after the look ended, which moves the next look later.
+func TestALookThatEndsWithNoReportShowsItsNextLook(t *testing.T) {
+	t.Parallel()
+	shows := func(t *testing.T, rig *waitRig) {
+		t.Helper()
+		check := rig.check(waitRoot)
+		stored := rig.stored(waitRoot)
+		if check.WakeAt == nil || stored.Production == nil || stored.Production.NextLookAt == nil || !stored.Production.NextLookAt.Equal(*check.WakeAt) {
+			t.Fatalf("the stored wait's production check = %+v, want its next look at the check's wake %v", stored.Production, check.WakeAt)
+		}
+	}
+	t.Run("the look's bound", func(t *testing.T) {
+		rig := newWaitRig(t, claim.RoleTester)
+		mergedRoot(t, rig)
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+		check := rig.check(waitRoot)
+		rig.now = rig.now.Add(CheckLookBound)
+		rig.fact(intake.CheckLookEnded{Issue: waitRoot, Look: check.Looks, Cause: "look bound", OpenedAt: check.OpenedAt})
+		shows(t, rig)
+	})
+	t.Run("its claim fails in the look", func(t *testing.T) {
+		rig := newWaitRig(t, claim.RoleTester)
+		mergedRoot(t, rig)
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+		rig.fact(intake.ClaimFailed{Issue: waitRoot, Role: claim.RoleTester, Reason: "the pod was evicted"})
+		if check := rig.check(waitRoot); check.LookOpen || check.FailedLooks != 1 {
+			t.Fatalf("the check after its claim failed in the look = %+v, want the look ended as a failed look", check)
+		}
+		shows(t, rig)
+	})
+	t.Run("its claim fails after the look ended", func(t *testing.T) {
+		rig := newWaitRig(t, claim.RoleTester)
+		mergedRoot(t, rig)
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+		wake := rig.now.Add(time.Hour).Truncate(time.Microsecond)
+		rig.report(waitRoot, 1, "pending", "production runs yesterday's build", &wake)
+		rig.fact(intake.ClaimFailed{Issue: waitRoot, Role: claim.RoleTester, Reason: "the pod was evicted"})
+		if check := rig.check(waitRoot); check.WakeAt == nil || !check.WakeAt.After(wake) {
+			t.Fatalf("the check after its claim failed between looks = %+v, want its next look moved past %s", check, wake)
+		}
+		shows(t, rig)
+	})
+}
+
 // The daily notice names each term that holds the close, once each UTC day: two ticks in one day
 // tell once, and a tick the next day tells again. A term that no longer stands is not named.
 func TestTheDailyTurnNamesEachTermThatStands(t *testing.T) {
@@ -360,6 +406,41 @@ func TestAProductionCheckDoesNotOpenWhereAReasonWaits(t *testing.T) {
 	}
 }
 
+// No check opens at a read that does not count, nor where a check Dispatch computes as failed waits
+// as a reason of the next change. A read whose basis names no merge commit of the newest merge is
+// unread, and a check opened on it would count its bound from before Dispatch read the merge. A
+// fail's next change opens the check of its own merge. The first read that counts, with no fail,
+// opens the check.
+func TestAProductionCheckDoesNotOpenAtAnUnreadReadOrAFail(t *testing.T) {
+	t.Parallel()
+	t.Run("a basis names no merge commit of the newest merge", func(t *testing.T) {
+		rig := newWaitRig(t, claim.RoleTester)
+		mergedRoot(t, rig)
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", "")))
+		if stored := rig.stored(waitRoot); stored.Unread == nil {
+			t.Fatalf("the stored wait after a read whose basis names no merge commit = %+v, want it unread", stored)
+		}
+		if check := productionCheck(t, rig.pool, waitRoot); check != nil {
+			t.Fatalf("the check after an unread read = %+v, want none", check)
+		}
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+		if check := rig.check(waitRoot); !check.Open() || check.MergeSHA != waitRootMerge {
+			t.Fatalf("the check after the first read that counts = %+v, want it open on %s", check, waitRootMerge)
+		}
+	})
+	t.Run("a check Dispatch computes as failed", func(t *testing.T) {
+		rig := newWaitRig(t, claim.RoleTester)
+		mergedRoot(t, rig)
+		rig.read(waitRoot, answerOf(waitRoot, nil, check("c-after", waitRootMerge, dispatch.PassStandsNo, dispatch.PassStandsReasonFail)))
+		if stored := rig.stored(waitRoot); stored.Unread != nil || len(stored.Checks) != 1 || stored.Checks[0].Reason != dispatch.PassStandsReasonFail {
+			t.Fatalf("the stored wait after the fail = %+v, want the read counted and c-after failed", stored)
+		}
+		if check := productionCheck(t, rig.pool, waitRoot); check != nil {
+			t.Fatalf("the check where a computed fail waits = %+v, want none", check)
+		}
+	})
+}
+
 // A merged root whose child still runs opens no check at the reads while the child runs. The
 // child's leave queues a read, and that read opens the root's check: its OpenedAt is that read's
 // time, and its bound's row is due the project's bound after it (M3).
@@ -383,6 +464,33 @@ func TestARootsProductionCheckOpensAfterItsLastChildLeft(t *testing.T) {
 	bounds := issueOutboxOf(t, rig.pool, waitRoot, "check_bound")
 	if len(bounds) != 1 || !bounds[0].nextAt.Equal(check.OpenedAt.Add(48*time.Hour)) {
 		t.Fatalf("the root's bound rows = %+v, want one due %s", bounds, check.OpenedAt.Add(48*time.Hour))
+	}
+}
+
+// A tree that lingers past its deadline waits for each open production check of its members
+// (lingerExpired). A member that waits in verifying has its check's close re-arm the tree's close,
+// a LingerClose due now, as any member's check close does, and the close deletes nothing of the
+// member's pod there: its close on its checks does that.
+func TestACheckThatClosesInVerifyingReArmsALingeringTreesClose(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	until := rig.now.Add(time.Hour)
+	seedIssue(t, rig.pool, record.Issue{Key: waitRoot, Repo: waitRepo, DefaultBranch: "main", GitHubRepo: waitRepo, Tree: waitRoot, Project: "LEGION",
+		Title: "root", Phase: phase.Done, Generation: waitGeneration, Status: "done", DispatchStatus: "done", Rank: "U", LingerUntil: &until, LastDispatchSeq: 1})
+	rig.seedChild(waitChild, phase.Merging, "retro")
+	rig.mergeChild()
+	rig.read(waitChild, answerOf(waitChild, nil, noResult("c-after", waitChildMerge)))
+	if check := rig.check(waitChild); !check.Open() {
+		t.Fatalf("the member's check after its first read = %+v, want it open", check)
+	}
+	rig.now = until.Add(time.Minute)
+	rig.report(waitChild, 1, "pass", "the check passed in production", nil)
+	rig.stands(waitChild, phase.Verifying, "testing")
+	if closes := issueOutboxOf(t, rig.pool, waitRoot, "linger_close"); len(closes) != 1 || !closes[0].nextAt.Equal(rig.now) {
+		t.Fatalf("the root's linger_close rows after its member's check closed = %+v, want one due now, %s", closes, rig.now)
+	}
+	if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 0 {
+		t.Fatalf("the member's suspensions at its check's close in verifying = %+v, want none", got)
 	}
 }
 
@@ -505,9 +613,11 @@ func TestProductionOnlyWaitIsVisibleAndReconciled(t *testing.T) {
 }
 
 // Under `production_check: off` no role of the project runs a check after the merge (D5). So at
-// the first read after the entry to verifying the owning architect is told, once, each check that
-// has no pass, and that an eligible agent must run it. A second read with the same checks tells
-// nothing more. A project that runs a production check tells this at the check's close instead.
+// the first read that counts after the entry to verifying the owning architect is told, once, each
+// check that has no pass, and that an eligible agent must run it. A second read with the same
+// checks tells nothing more. A read that counts only in part, some of its checks naming no merge
+// commit of the newest merge, tells nothing, and the read that counts after it tells. A project
+// that runs a production check tells this at the check's close instead.
 func TestAnOffProjectIsToldAtTheEntryWhichChecksNeedAnAgent(t *testing.T) {
 	t.Parallel()
 	t.Run("production check off", func(t *testing.T) {
@@ -530,6 +640,22 @@ func TestAnOffProjectIsToldAtTheEntryWhichChecksNeedAnAgent(t *testing.T) {
 		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
 		if told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result"); len(told) != 0 {
 			t.Fatalf("close-wait-no-result notices at the first read with a production check = %+v, want none before its close", told)
+		}
+	})
+	t.Run("after a read that counts in part", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		mergedRoot(t, rig)
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge), passing("c-done", "")))
+		if stored := rig.stored(waitRoot); stored.Unread == nil || len(stored.Checks) != 1 {
+			t.Fatalf("the stored wait after a read that counts in part = %+v, want it unread with c-after listed", stored)
+		}
+		if told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result"); len(told) != 0 {
+			t.Fatalf("close-wait-no-result notices before a read counts = %+v, want none", told)
+		}
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge), passing("c-done", waitRootMerge)))
+		told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result")
+		if len(told) != 1 || !strings.Contains(told[0].Reason, "- c-after") || strings.Contains(told[0].Reason, "c-done") {
+			t.Fatalf("close-wait-no-result notices at the first read that counts = %+v, want one naming c-after alone", told)
 		}
 	})
 }

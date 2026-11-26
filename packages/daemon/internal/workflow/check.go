@@ -388,7 +388,9 @@ func (e *Engine) nextChangeDue(ctx context.Context, _ pgx.Tx, issue record.Issue
 // suspension of the operator's or the controller's held over its start (checkLookEnded, which
 // names the next look a look bound out, lookRetry), or its checking role's claim failed in it
 // (endFailedLook) — as a report of pending would (endLookPending), and names the next look at at,
-// clamped (clampWake), the retry with cause as its reason. cause is why, for the log too.
+// clamped (clampWake), the retry with cause as its reason. cause is why, for the log too. The close
+// of an issue that waits in verifying is judged again (judgeCheckIssue), as after a pending report,
+// so its stored wait shows that next look at once.
 func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string, at time.Time) error {
 	check.LookOpen = false
 	check.WakeAt = e.clampWake(*check, at)
@@ -397,7 +399,10 @@ func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.Productio
 	}
 	e.logOnCommit(ctx, "workflow: production check look ended without a report", "issue", check.Issue, "mergeCommit", check.MergeSHA,
 		"look", check.Looks, "cause", cause, "failedLooks", check.FailedLooks, "wake", check.WakeAt)
-	return e.endLookPending(ctx, tx, check, "the retry of a look nobody reported: "+cause)
+	if err := e.endLookPending(ctx, tx, check, "the retry of a look nobody reported: "+cause); err != nil {
+		return err
+	}
+	return e.judgeCheckIssue(ctx, tx, check.Issue)
 }
 
 // endFailedLook ends the open look whose checking role's claim failed in it (endLook) and counts
@@ -446,7 +451,9 @@ func (e *Engine) failedLookRetry(check record.ProductionCheck) time.Time {
 // next look at the time the moved wake replaced: it is dropped with the move
 // (record.Store.DropUnfencedCheckWakes). No wake standing stays no
 // wake: the bound's own row starts the last look. The look the wake starts retries the claim with
-// one attempt left (the daemon's outbox), so the next failure is named a longer backoff out.
+// one attempt left (the daemon's outbox), so the next failure is named a longer backoff out. A
+// moved wake has the close of an issue in verifying judged again (judgeCheckIssue), so its stored
+// wait shows the moved look at once.
 func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck) error {
 	check.FailedLooks++
 	moved := false
@@ -464,7 +471,10 @@ func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *recor
 	if err := e.store.DropUnfencedCheckWakes(ctx, tx, check.Issue); err != nil {
 		return err
 	}
-	return e.nameWake(ctx, tx, check, "the retry of a look nobody reported: "+failedLookCause(check.FailedLooks)+" after the look ended")
+	if err := e.nameWake(ctx, tx, check, "the retry of a look nobody reported: "+failedLookCause(check.FailedLooks)+" after the look ended"); err != nil {
+		return err
+	}
+	return e.judgeCheckIssue(ctx, tx, check.Issue)
 }
 
 // checkRoleFailedReason is what a worker-died of the checking role's failed claim says after the
@@ -606,10 +616,11 @@ func (e *Engine) nameWake(ctx context.Context, tx pgx.Tx, check *record.Producti
 // both is harmless. An issue whose work runs again (record.RunsAgain) retires nobody and suspends
 // nothing: the claims and the pod are the run's.
 // An issue that waits in verifying (D6) has only the checking role's claim closed, and nothing of
-// its pod is deleted, since its close on its checks queues that suspension (suspendCheckedChild).
-// The production term of its close changed, so its checks are read again (askCloseRead), and the
-// owning architect is told once of a close as not run, or of checks still without a pass at the
-// close, with each check and its state (closeWaitNoResult, D5).
+// its pod is deleted, since its leave at its close queues that suspension (leave). The production
+// term of its close changed, so its checks are read again (askCloseRead), and the owning architect
+// is told once of a close as not run, or of checks still without a pass at the close, with each
+// check and its state (closeWaitNoResult, D5). Its close still re-arms a lingering tree's close, as
+// any member's does.
 func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, outcome record.CheckOutcome) error {
 	if err := e.markCheckClosed(ctx, tx, check, outcome); err != nil {
 		return err
@@ -631,9 +642,10 @@ func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.Produc
 		if err := e.closeWaitNoResult(ctx, tx, issue, *check); err != nil {
 			return err
 		}
-		return e.askCloseRead(ctx, tx, issue)
-	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()}); err != nil {
+		if err := e.askCloseRead(ctx, tx, issue); err != nil {
+			return err
+		}
+	} else if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()}); err != nil {
 		return err
 	}
 	if root.LingerUntil == nil || e.now().Before(*root.LingerUntil) {

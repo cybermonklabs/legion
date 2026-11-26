@@ -781,8 +781,10 @@ notice, `closed-check-failed`.
 Where your project asks for it, the close also waits for a production check:
 `projects.<KEY>.production_check` in `legion.yaml` takes `off` or `tester` and is `tester` by
 default.
-The check opens at the first read of the issue's checks after its merge where no issue beneath it
-is in the workflow.
+The check opens at the first read of the issue's checks after its merge that counts, where no issue
+beneath it is in the workflow.
+A read counts only where Dispatch read each check at the newest merge.
+It opens at no read where a check fails or a defect waits: the next change's merge opens its own.
 The tester is handed it in its own session or, where the issue's plan had no tester step, a fresh
 one.
 A project that sets `off` opens no check, and its close waits for none.
