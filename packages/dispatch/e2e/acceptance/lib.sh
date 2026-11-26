@@ -413,10 +413,11 @@ another_project() {
 # the same. Each is taken under the first key every loop lease is taken with, the four bytes of
 # "LOOP" (leaseNamespace in packages/envoy/internal/dispatch/duty/exclusive.go), and
 # duty.Exclusive takes a lease before every pass of its loop and skips the pass where another
-# session holds it. index_lease_seconds is how long the session holding a lease sleeps, a hang
-# guard alone, since give_index_lease ends that session as soon as the driver gives the lease
-# back, and index_lease_wait the seconds hold_index_leases waits for a lease and give_index_lease
-# for its grant to go. None is readonly: lib-baseline.sh sources this file again.
+# session holds it. index_lease_seconds is how long the session holding a lease waits for the
+# driver to give it back, a hang guard alone, since give_index_lease ends that wait as soon as
+# the driver gives the lease back, and index_lease_wait the seconds hold_index_leases waits for a
+# lease and give_index_lease for its grant to go. None is readonly: lib-baseline.sh sources this
+# file again.
 index_lease_namespace=1280266064
 index_leases=(block-index refs-forms)
 index_lease_seconds=3600
@@ -436,15 +437,26 @@ index_lease_session() { printf 'e2e-lease-%s-%d' "$1" "$$"; }
 # the driver names one: this is holdBlockIndexLease in shell, and a driver that then reads the
 # block index's own work gives its lease back alone and the drain's once that reading ends, as
 # that helper's giveBackIndex does.
+#
+# The session holds its lease outside any transaction, as the product's own lease is held
+# (duty.Exclusive "opens no transaction"): once the lock is taken it runs no statement, and waits
+# in a shell of its own (psql's \!) for one line on the hold file $work/lease-NAME.hold, a FIFO
+# the driver writes when it gives the lease back. A session that slept in a statement
+# (`select pg_sleep`) would hold a transaction open for as long as it held the lease, and a
+# server that boots meanwhile could not build an index concurrently: its migration waits for
+# every open transaction (20261124060000_issue_tree_issue_changes.up.sql), and gives up.
 hold_index_leases() {
   local section="$1" name deadline=$((SECONDS + index_lease_wait))
+  require_commands mkfifo timeout
   for name in "${index_leases[@]}"; do
     : >"$work/lease-$name"
+    rm -f "$work/lease-$name.hold"
+    mkfifo "$work/lease-$name.hold" || fail "$section" "hold the $name lease" "mkfifo could not make $work/lease-$name.hold"
     PGAPPNAME="$(index_lease_session "$name")" env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE \
       psql "$database_url" -X -Atq -v ON_ERROR_STOP=1 -o /dev/null >/dev/null 2>"$work/lease-$name" <<SQL &
 select pg_advisory_lock($index_lease_namespace, hashtext('$name'));
 \\warn the $name lease is held
-select pg_sleep($index_lease_seconds);
+\\! timeout $index_lease_seconds sh -c 'read -r line <"\$0"' '$work/lease-$name.hold'
 SQL
     index_lease_pids[$name]=$!
     until grep -q "the $name lease is held" "$work/lease-$name"; do
@@ -460,17 +472,26 @@ SQL
 
 # drop_index_leases [NAME…]: ends the session holding each lease NAME names, or every lease this
 # driver holds, and reads nothing, for a driver's cleanup; a lease this driver does not hold is
-# passed over. SIGINT makes the psql holding a lease cancel its sleep, which ON_ERROR_STOP turns
-# into its end, and the session's end frees the lock; a kill of the sleeping psql would instead
-# leave the backend holding the lease until its sleep returned.
+# passed over. A session that holds its lease waits for one line on its hold file: the driver
+# writes it through a descriptor it opens for reading and writing, which never waits for the other
+# end and keeps the line until the session's shell reads it, and psql, at the end of its input,
+# ends the session, which frees the lock. A session still waiting for its lease runs
+# pg_advisory_lock: SIGINT makes psql cancel it, which ON_ERROR_STOP turns into its end.
 drop_index_leases() {
-  local name
+  local name hold
   local -a names=("$@")
   ((${#names[@]} > 0)) || names=("${index_leases[@]}")
   for name in "${names[@]}"; do
     [[ -n "${index_lease_pids[$name]:-}" ]] || continue
-    kill -INT "${index_lease_pids[$name]}" 2>/dev/null || true
-    wait "${index_lease_pids[$name]}" 2>/dev/null || true
+    if grep -q "the $name lease is held" "$work/lease-$name" 2>/dev/null && [[ -p "$work/lease-$name.hold" ]]; then
+      exec {hold}<>"$work/lease-$name.hold"
+      printf '\n' >&"$hold"
+      wait "${index_lease_pids[$name]}" 2>/dev/null || true
+      exec {hold}>&-
+    else
+      kill -INT "${index_lease_pids[$name]}" 2>/dev/null || true
+      wait "${index_lease_pids[$name]}" 2>/dev/null || true
+    fi
     unset 'index_lease_pids[$name]'
   done
 }

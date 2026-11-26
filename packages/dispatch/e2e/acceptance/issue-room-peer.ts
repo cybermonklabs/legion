@@ -5,10 +5,15 @@
  *  framing the browser's provider speaks: each frame starts with the document name the socket
  *  asked for, the token frame carries the schema version, a sync step 1 follows the server's
  *  Authenticated answer, and the server answers each update it is sent with one SyncStatus frame.
+ *  It answers the room's own sync step 1, with what the room lacks of its document, once the
+ *  room's sync step 2 has arrived: a socket that kept a document reads the room before it sends
+ *  that document, so a room that refuses it and closes the socket has been read first.
  *  It waits PEER_ANSWER_MS (60000 where unset) for a socket's answer.
  *    open NAME DOCUMENT       opens NAME on DOCUMENT and syncs it; a closed NAME reconnects keeping
  *                             its document, so its sync step 1 presents the state vector it held:
- *                             `opened NAME <scope> <fragment,...>`, or `refused NAME <why>`
+ *                             `opened NAME <scope> <fragment,...>` once the room's document has
+ *                             arrived, whether or not the room then closed the socket, or
+ *                             `refused NAME <why>`
  *    freeze NAME / thaw NAME  stops taking the room's updates into NAME, or applies those held
  *    sv NAME                  `sv NAME <base64 state vector>`
  *    fragments NAME           `fragments NAME <fragment,...>`, every shared type of NAME's
@@ -58,6 +63,7 @@ type Peer = {
   scope?: string;
   denied?: string;
   synced: boolean;
+  asks: Uint8Array[];
   frozen: boolean;
   held: Uint8Array[];
   sent: number;
@@ -118,13 +124,19 @@ function receive(peer: Peer, data: ArrayBuffer): void {
   const subtype = decoding.readVarUint(decoder);
   const payload = decoding.readVarUint8Array(decoder);
   if (subtype === syncStep1) {
-    sendSync(peer, syncStep2, Y.encodeStateAsUpdate(peer.doc, payload));
+    if (peer.synced) sendSync(peer, syncStep2, Y.encodeStateAsUpdate(peer.doc, payload));
+    else peer.asks.push(payload);
     return;
   }
   if (subtype === syncStep2 || subtype === syncUpdate) {
     if (peer.frozen) peer.held.push(payload);
     else Y.applyUpdate(peer.doc, payload, "server");
-    if (subtype === syncStep2) peer.synced = true;
+    if (subtype === syncStep2) {
+      peer.synced = true;
+      for (const ask of peer.asks.splice(0)) {
+        sendSync(peer, syncStep2, Y.encodeStateAsUpdate(peer.doc, ask));
+      }
+    }
   }
 }
 
@@ -133,7 +145,7 @@ async function open(name: string, asked: string): Promise<string> {
   if (peer !== undefined && peer.closed === undefined) return `refused ${name} it is open already`;
   if (peer === undefined) {
     const doc = new Y.Doc();
-    peer = { doc, asked, synced: false, frozen: false, held: [], sent: 0, statuses: [] };
+    peer = { doc, asked, synced: false, asks: [], frozen: false, held: [], sent: 0, statuses: [] };
     peers.set(name, peer);
     const held = peer;
     doc.on("update", (update: Uint8Array, source: unknown) => {
@@ -146,6 +158,7 @@ async function open(name: string, asked: string): Promise<string> {
     denied: undefined,
     closed: undefined,
     synced: false,
+    asks: [],
     sent: 0,
     statuses: [],
   });
@@ -176,9 +189,11 @@ async function open(name: string, asked: string): Promise<string> {
     () => held.synced || held.denied !== undefined || held.closed !== undefined
   );
   if (held.denied !== undefined) return `refused ${name} denied: ${held.denied}`;
-  if (held.closed !== undefined) return `refused ${name} closed: ${held.closed}`;
-  if (!settled) return `refused ${name} no sync within ${answerWithinMs / 1000} s`;
-  await until(() => held.statuses.length >= held.sent);
+  if (!held.synced) {
+    if (held.closed !== undefined) return `refused ${name} closed: ${held.closed}`;
+    if (!settled) return `refused ${name} no sync within ${answerWithinMs / 1000} s`;
+  }
+  await until(() => held.statuses.length >= held.sent || held.closed !== undefined);
   return `opened ${name} ${held.scope} ${fragments(held)}`;
 }
 

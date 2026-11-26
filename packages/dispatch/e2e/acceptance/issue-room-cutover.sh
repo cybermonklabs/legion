@@ -25,7 +25,10 @@
 # document_rooms rows name A's tree. The run names the trigger for B; once the trigger is dropped
 # no document_rooms row and no doc_updates row of a tree of B stands. R's held socket is closed,
 # a write through it reaches nothing, and its reconnection with the state vector it held is
-# admitted to R's room and reads the converted tree, and no block of its old state lands there.
+# admitted to R's room and reads the converted tree. The reconnection then sends the room what the
+# room lacks of the document it kept, the whole of the old room's, as a browser's provider answers
+# the room's sync step 1: the room refuses it and closes the socket (4205), and no block of its
+# old state lands there.
 # Two sockets on A, through the spec and through the Verification document, each write a block, and
 # each reads the other's: one room.
 #
@@ -518,6 +521,15 @@ tree_peer "$section" "read the converted spec the reconnection draws" blocks hel
 [[ "$(jq 'length' <<<"${reply#blocks held }")" -gt 0 ]] ||
   fail "$section" "the reconnection reads the converted tree" "its spec fragment holds no block"
 pass "$section" "the held socket reconnected with the state vector it held, was admitted to $held_issue's room and reads the converted tree"
+# The reconnection kept the document its old room held, and has now sent the room what the room
+# lacks of it (issue-room-peer.ts answers the room's sync step 1 once it has read the room): every
+# block of the old room, which stand under the fragment the tree's own blocks stand under in the
+# issue's room. The room refuses that update and closes the socket that sent it (docs'
+# oldRoomDocument), so the close is waited for before the room is read for what landed.
+tree_peer "$section" "wait for the room to close the reconnection" wait-close held 60
+[[ "$reply" == "closed held 4205 "* ]] ||
+  fail "$section" "the room refuses the document the reconnection kept of its old room and closes its socket with 4205" "the peer answered: $reply"
+pass "$section" "the room refused the old room's document the reconnection sent it, and closed its socket (${reply#closed held })"
 tree_peer_open "$section" probe-held "$held_tree"
 tree_peer "$section" "read the tree's own fragment of $held_issue's room" blocks probe-held prosemirror
 landed="$(jq -r --slurpfile before "$work/held-before.json" \
