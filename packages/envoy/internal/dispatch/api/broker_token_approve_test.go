@@ -83,28 +83,35 @@ func approveProbeBody(t *testing.T, route apiRoute) json.RawMessage {
 			continue
 		}
 		member := unionMember(route.Body)
-		arm, named := route.Body.Arms[rule.Value]
-		if rule.Where.In != partBody || member == "" || rule.Where.Name != member || !named {
+		if _, named := route.Body.Arms[rule.Value]; rule.Where.In != partBody || member == "" || rule.Where.Name != member || !named {
 			t.Fatalf("%s %s: its rule %s needs %s, and the walk probes only a rule on an arm of a union",
 				route.Method, route.Pattern, rule, model.ScopeApprove)
 		}
-		members := map[string]any{}
-		written, err := json.Marshal(arm)
-		if err == nil {
-			err = json.Unmarshal(written, &members)
-		}
-		if err != nil {
-			t.Fatalf("%s %s: the arm %s writes no JSON object: %v", route.Method, route.Pattern, rule.Value, err)
-		}
-		members[member] = rule.Value
-		encoded, err := json.Marshal(members)
-		if err != nil {
-			t.Fatalf("%s %s: encode the arm %s: %v", route.Method, route.Pattern, rule.Value, err)
-		}
-		return encoded
+		return unionArmBody(t, route, rule.Value)
 	}
 	t.Fatalf("%s %s names %s on no scope and no rule", route.Method, route.Pattern, model.ScopeApprove)
 	return nil
+}
+
+// unionArmBody is the body the decoder of route's union reads as the arm named arm: that arm's type
+// written as its zero value, so every member the arm declares, its required ones among them, is
+// there, with the member the union is picked by naming the arm.
+func unionArmBody(t *testing.T, route apiRoute, arm string) json.RawMessage {
+	t.Helper()
+	members := map[string]any{}
+	written, err := json.Marshal(route.Body.Arms[arm])
+	if err == nil {
+		err = json.Unmarshal(written, &members)
+	}
+	if err != nil {
+		t.Fatalf("%s %s: the arm %s writes no JSON object: %v", route.Method, route.Pattern, arm, err)
+	}
+	members[unionMember(route.Body)] = arm
+	encoded, err := json.Marshal(members)
+	if err != nil {
+		t.Fatalf("%s %s: encode the arm %s: %v", route.Method, route.Pattern, arm, err)
+	}
+	return encoded
 }
 
 // newCredentialRelayRig is newBrokerTokenRig with the credential routes relaying to a fake secrets

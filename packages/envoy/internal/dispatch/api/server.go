@@ -10,12 +10,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -467,8 +465,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 
 type server struct {
 	deps Deps
-	// approveRefusal is the message of every 403 APPROVE_ONLY_TOKEN the approve-only gate answers
-	// (approveOnlyRefusalFor), built from the table by register before any route's handler is.
+	// approveRefusal is the message of every 403 APPROVE_ONLY_TOKEN the approve-only route check
+	// answers (approveOnlyRefusalFor), built by register from the rows' approve stamps before any
+	// route's handler is.
 	approveRefusal string
 	// lifetime bounds every live socket and the loops that serve them: it is the process's own
 	// context, cancelled when the server is shutting down, so a deploy closes each live socket
@@ -931,18 +930,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// decided (readClasses).
 		panic("api.Register: the route table's read class does not class every GET row exactly once: " + strings.Join(refused, "; "))
 	}
-	if refused := routesNotMounted(slices.Values(approveScopeRoutes)); len(refused) > 0 {
-		// An approve list naming a route nothing serves opens nothing while it reads as though it
-		// did - a row renamed or deleted and its entry left behind - so the table is refused
-		// rather than mounted (approveScopeRoutes).
-		panic("api.Register: the route table's approve list names a route the table does not mount: " + strings.Join(refused, "; "))
-	}
-	if _, faults := approveV2Routes(routes); len(faults) > 0 {
-		// An approve list whose route has no /api/v2 route to give the token, or gives one both
-		// whole and by state, opens less or more than it names, so the table is refused rather
-		// than mounted (approveV2Routes).
-		panic("api.Register: the route table's approve list gives the approve-only token no /api/v2 route to call: " + strings.Join(faults, "; "))
-	}
+	// The approve list was compiled into the rows as routes built them (applyApprovePolicy), which
+	// refused a table it does not map onto; the refusal's wording is read from those rows.
 	s.approveRefusal = approveOnlyRefusalFor(routes)
 	for _, version := range []apiVersion{apiV1, apiV2} {
 		going, err := buildGoingCatalogue(routes, version)
@@ -1035,6 +1024,10 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 	}
 	if keyedMethod(route) {
 		handler = s.keyedWrites(route, handler)
+		// Just outside the keyed layer, so an approve-only token's keyed answer of an ask that is no
+		// approval request is refused before the layer looks its key up, claims it or replays what
+		// it holds (approve_policy.go). Every check outside this one has run before it.
+		handler = s.gateApproveOnlyAskAnswer(route, handler)
 	}
 	if route.RefusesClosedOwner {
 		handler = s.refuseUploadToAClosedIssue(handler)
@@ -1044,9 +1037,13 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 		// credential lacks the scope for is refused before the handler runs and claims no
 		// idempotency key (authorities_v2.go).
 		handler = s.gateV2Authorities(route, handler)
-		// After the project, session and login checks and before the authority gate and the
-		// keyed layer: a JSON body is read once, bounded by the route's BodyLimit, decoded, and
-		// put back as the bytes the keyed layer fingerprints (decode_v2.go).
+		// Just outside the authority gate, so an approve-only token's state is judged first, on the
+		// body the decoder read within its bound, as the authority gate always judged it
+		// (approve_policy.go).
+		handler = s.gateApproveOnlyStates(route, handler)
+		// After the project, session and login checks and before the state check, the authority
+		// gate and the keyed layer: a JSON body is read once, bounded by the route's BodyLimit,
+		// decoded, and put back as the bytes the keyed layer fingerprints (decode_v2.go).
 		handler = s.readV2Body(decoder, handler)
 	}
 	if route.Method != http.MethodGet {
@@ -1815,60 +1812,6 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 		}
 		next(w, r)
 	}
-}
-
-// refuseApproveOnlyToken is the one place an approve-only token is held to the approve list:
-// register wraps every row of the table in it, listed being the row's apiRoute.ApproveOnly, and
-// GET /ws/live with listed false. On a route the list does not name (approveScopeRoutes on
-// /api/v1, approveV2Routes on /api/v2), a caller decideBrokerToken resolved to an approve-only
-// credential (model.Credential.ApproveOnly) is answered 403 APPROVE_ONLY_TOKEN and next does not
-// run; every other request runs next as it always did. A row the list names is handed back as it
-// is, and a /api/v2 row the list names by state (apiRoute.ApproveStates) holds the token to those
-// states once the decoder has read its body (gateV2Authorities). It reads the decision
-// decideBrokerToken carried and resolves nothing of its own, for the reason refuseReadOnlyToken
-// gives, and carries no WWW-Authenticate challenge, since no scope makes such a route the token's
-// to call.
-func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
-	if listed {
-		return next
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		if approveOnlyRequest(r) {
-			writeError(w, r, apicode.ApproveOnlyToken, s.approveRefusal)
-			return
-		}
-		next(w, r)
-	}
-}
-
-// approveOnlyRequest reports whether decideBrokerToken resolved r's caller to an approve-only
-// credential (model.Credential.ApproveOnly), read as readOnlyCredential reads a read-only one
-// (resolvedCredential). The person actor a handler acts as (actingPerson) carries no credential,
-// so a handler that holds such a token to less than its route reads it here: answerAsk, which
-// answers an approval request alone for it.
-func approveOnlyRequest(r *http.Request) bool {
-	credential := resolvedCredential(r.Context())
-	return credential != nil && credential.ApproveOnly
-}
-
-// approveOnlyRefusalFor is the message of every 403 APPROVE_ONLY_TOKEN refuseApproveOnlyToken
-// answers: the approve list in words, the /api/v1 routes it names (approveScopeRoutes) and the
-// /api/v2 routes each has as its successor, the states of a route that takes several by state
-// beside it (approveV2Routes). It is built from the table, so it names every route the token may
-// call on the day the table changes, and each of them is a route a running Dispatch serves, since
-// register refuses to mount a table whose list names any other (routesNotMounted,
-// approveV2Routes).
-func approveOnlyRefusalFor(routes []apiRoute) string {
-	admitted, _ := approveV2Routes(routes)
-	var v2 []string
-	for _, name := range slices.Sorted(maps.Keys(admitted)) {
-		if states := admitted[name]; states != nil {
-			name += " (state " + strings.Join(states, " or ") + ")"
-		}
-		v2 = append(v2, name)
-	}
-	return "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (on /api/v1: " +
-		strings.Join(approveScopeRoutes, ", ") + "; on /api/v2: " + strings.Join(v2, ", ") + "): nothing ran"
 }
 
 // readOnlyRefusal is the message of every 403 READ_ONLY_TOKEN refuseReadOnlyToken answers: one

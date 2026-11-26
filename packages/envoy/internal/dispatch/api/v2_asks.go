@@ -214,10 +214,12 @@ func (s *server) v2AskRows() []routeRow {
 				"records the state too. A body equal to the ask's present state and fields, from the caller who set them, " +
 				"answers 200 and writes nothing; any other first answer to an answered ask, and a resolve or a decline of one, " +
 				"is 409 ASK_ANSWERED, and a resolved ask 409 ASK_RESOLVED. An approve-only token (the secrets broker's " +
-				"proxy for a person's approvals) may send state answered of an approval request and no other state: its " +
-				"answer of any other ask, and every other state it sends, is 403 APPROVE_ONLY_TOKEN. " +
+				"proxy for a person's approvals) may send state answered of an approval request and no other declared " +
+				"state: its answer of any other ask, a saved answer under an Idempotency-Key and a repeat of the person's " +
+				"own answer included, and each other state this route declares (resolved, retracted, declined) are 403 " +
+				"APPROVE_ONLY_TOKEN. " +
 				"Answers the ask as GET /api/v2/asks/{id} reads it; " +
-				"400 STATE_INVALID for any other state, 400 INVALID_ANSWER, INVALID_RESOLUTION or CAP_EXCEEDED for a body its " +
+				"400 STATE_INVALID for a state it does not declare, 400 INVALID_ANSWER, INVALID_RESOLUTION or CAP_EXCEEDED for a body its " +
 				"state refuses, 409 ISSUE_CLOSED on a closed issue, 404 ASK_NOT_FOUND. " +
 				specWriterDocumentText("a retraction or a resolution of a block ask whose block, or a copy of it, is in its "+
 					"spec or Verification document,"),
@@ -1045,9 +1047,11 @@ func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 		}
 		if ask.State == "answered" && ask.Answer != nil {
 			// Before the compare, as recordAnswer holds every answer to it: an answer actor may not
-			// make is refused, never answered as it stands, and an approve-only token's answer of an
-			// ask that is no approval request is 403 APPROVE_ONLY_TOKEN.
-			if err := approveOnlyAnswerRefusal(approveOnlyRequest(r), ask); err != nil {
+			// make is refused, never answered as it stands by a no-op, and an approve-only token's
+			// answer of an ask that is no approval request is 403 APPROVE_ONLY_TOKEN. A request that
+			// carries an Idempotency-Key was refused before this, ahead of its key
+			// (gateApproveOnlyAskAnswer); this is the same rule for the request that carries none.
+			if err := approveOnlyAnswerRefusal(approveOnlyRequest(r), ask.Kind); err != nil {
 				s.writeHandlerError(w, r, err)
 				return
 			}

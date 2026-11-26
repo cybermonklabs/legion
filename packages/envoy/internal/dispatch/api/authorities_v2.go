@@ -44,8 +44,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-
-	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // sessionAddressing is a decoded body, or one arm of a union, that names the sessions its write
@@ -89,17 +87,12 @@ func addressesSessions(body requestBody) bool {
 // is 403 OAUTH_SCOPE_REQUIRED naming the scope, under the challenge refuseMissingScope gives it; a
 // session other than the one the credential proved is 403 SESSION_SCOPE naming both; and a caller
 // that does not resolve at all is answered through writeAuthenticationError, as at the route's own
-// gate. A route that declares no rule, names no approving states for an approve-only token
-// (apiRoute.ApproveStates) and whose body names no session is returned unwrapped and pays nothing.
-//
-// A route the approve list names by state (apiRoute.ApproveStates: PUT /api/v2/asks/{id}/state,
-// PUT /api/v2/credential-requests/{id}/state) lets an approve-only token past
-// refuseApproveOnlyToken, and the first thing this gate does with its decoded body is hold the
-// token to the states the list names: any other state is 403 APPROVE_ONLY_TOKEN and nothing runs,
-// before a scope or the handler is read, as on a route the list does not name.
+// gate. A route that declares no rule and whose body names no session is returned unwrapped and
+// pays nothing. The states an approve-only token may send are held outside this gate, just before
+// it runs and in the same place in the chain (gateApproveOnlyStates).
 func (s *server) gateV2Authorities(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	rules, sessions := route.Authorities, addressesSessions(route.Body)
-	if len(rules) == 0 && !sessions && len(route.ApproveStates) == 0 {
+	if len(rules) == 0 && !sessions {
 		return handler
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -110,14 +103,6 @@ func (s *server) gateV2Authorities(route apiRoute, handler http.HandlerFunc) htt
 			// past rules nothing could judge.
 			s.writeHandlerError(w, r, fmt.Errorf("%s %s: the authority gate holds no decoded request", route.Method, route.Pattern))
 			return
-		}
-		if len(route.ApproveStates) > 0 && approveOnlyRequest(r) {
-			if state, outside := decoded.stateOutside(route.ApproveStates); outside {
-				writeError(w, r, apicode.ApproveOnlyToken, fmt.Sprintf(
-					"this request's credential is an approve-only token, which may send %s %s the state %s alone, and this request sends state %q: nothing ran",
-					route.Method, route.Pattern, strings.Join(route.ApproveStates, " or "), state))
-				return
-			}
 		}
 		// The caller is resolved once a request, at the first rule that holds, and carried on the
 		// request as the route's scope gate carries it (gateRouteScopes), so a second rule, every
@@ -189,26 +174,6 @@ func memberValue(raw json.RawMessage) string {
 		return text
 	}
 	return strings.TrimSpace(string(raw))
-}
-
-// stateOutside is the first value of the body's `state` that none of allowed names, and true, or
-// "" and true for a body that sends no `state` at all; false when every `state` it sends is one of
-// allowed. It reads the body as holdsFor reads a rule on a member, every member that matches
-// `state` ignoring case, so no spelling of the member reaches the handler past the approve-only
-// gate's states (apiRoute.ApproveStates). The decoder has refused a state its route has no arm
-// for, and a body with none, before the gate runs.
-func (d *v2Request) stateOutside(allowed []string) (string, bool) {
-	found := false
-	for name, raw := range d.members {
-		if !strings.EqualFold(name, "state") {
-			continue
-		}
-		found = true
-		if state := memberValue(raw); !slices.Contains(allowed, state) {
-			return state, true
-		}
-	}
-	return "", !found
 }
 
 // String names what the rule holds a request to, for its refusal: `state answered`, `the member

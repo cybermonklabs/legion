@@ -9,13 +9,24 @@ body: |-
   `DELETE /api/v2/machine-logins/{id}`, `DELETE /api/v2/me/signins/{id}` and
   `DELETE /api/v2/me/agent-tokens/{id}`, and by state `PUT /api/v2/credential-requests/{id}/state`
   for `approved` and `denied`, `PUT /api/v2/asks/{id}/state` for `answered`, and
-  `PUT /api/v2/issues/{key}/decisions/{block_id}/state` for `kept`. Any other state of those routes,
-  a credential request's dismissal and an ask's resolve, retraction and decline among them, and every
-  other `/api/v2` route, is `403 APPROVE_ONLY_TOKEN`, which the `/api/v2` document lists on every
-  operation the token may not call whole. The token's answer of an ask that is no approval request
-  is refused the same way on both versions, a repeat of the person's own answer included, and the
-  refusal's message names both versions' routes. The list is written once, for `/api/v1`; the
-  `/api/v2` routes are the successors the route table gives it, so the two cannot drift.
+  `PUT /api/v2/issues/{key}/decisions/{block_id}/state` for `kept`. Any other state those routes
+  declare, a credential request's dismissal and an ask's resolve, retraction and decline among them,
+  and every other `/api/v2` route, is `403 APPROVE_ONLY_TOKEN`, which the `/api/v2` document lists on
+  every operation the token may not call whole; a state a route does not declare stays the `400
+  STATE_INVALID` every caller gets. The refusal of a route the token may not call at all names both
+  versions' routes.
+
+  The token's answer of an ask that is no approval request is refused `403 APPROVE_ONLY_TOKEN` on
+  both versions. A keyed answer is refused before its `Idempotency-Key` is looked up, claimed or
+  replayed, so the token is never handed an answer that another request of its person saved under
+  that key, and an ask it may not answer claims no key; an answer with no key is refused inside the
+  answer's transaction. On `/api/v2` that includes a body that repeats the answer the person gave,
+  which would otherwise answer `200` and write nothing. On `/api/v1` an answer with no key and no
+  `expected_answer_at` to an answered ask meets the engine's existing-answer conflict, `409
+  ASK_CLOSED`, before the kind is read. Both refuse the write, but not the same way. The list is
+  written once, an entry for each `/api/v1` route with the `/api/v2` state it takes beside it; the
+  `/api/v2` routes are the successors the route table gives it, and Dispatch refuses to start with a
+  table the list does not map onto, so the two cannot drift.
 
   `PUT /api/v2/credential-requests/{id}/state` declares the two codes the secrets broker answers on
   a credential request's approve and deny since its recorded approver accounts, `400

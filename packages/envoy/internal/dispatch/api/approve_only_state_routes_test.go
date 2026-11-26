@@ -20,17 +20,17 @@ import (
 // /api/v2 route takes a keep alone (its one state), which the list names, so the token needs no
 // other state of it.
 func TestAnApproveOnlyTokenKeepsADecisionOnBothVersions(t *testing.T) {
-	rig := newBrokerTokenRig(t)
-	caller := newBrokerCaller(t)
-	const approveOnly = "an-approve-only-token-keeping-decisions"
-	rig.broker.Says(approveOnly, approveOnlyAnswer(caller.jkt))
+	rig := newApproveOnlyRig(t, testServerOptions{})
 	createReferenceAPIProject(t, rig.handler, "KEP")
 	issue := createSpecIssue(t, rig.handler, "KEP", "A spec to decide about.\n")
 	decisions := uploadIssueDocument(t, rig.handler, issue.Key, "decisions.md",
 		"## Keep the v1 decision\n\nChosen for the first reason.\n\n## Keep the v2 decision\n\nChosen for the second reason.\n")
-	for _, version := range []struct{ prefix, heading string }{
-		{"/api/v1", "Keep the v1 decision"},
-		{"/api/v2", "Keep the v2 decision"},
+	for _, version := range []struct {
+		approveOnlyVersion
+		heading string
+	}{
+		{approveV1, "Keep the v1 decision"},
+		{approveV2, "Keep the v2 decision"},
 	} {
 		t.Run(version.prefix, func(t *testing.T) {
 			decision := decisionNamed(t, readIssueDecisions(t, rig.handler, issue.Key), version.heading)
@@ -38,11 +38,11 @@ func TestAnApproveOnlyTokenKeepsADecisionOnBothVersions(t *testing.T) {
 				t.Fatalf("the decision before the keep = %#v; want it waiting for review and kept by nobody", decision)
 			}
 			var kept *http.Request
-			if version.prefix == "/api/v1" {
-				kept = caller.presenting(t, http.MethodPost, version.prefix+"/artifacts/"+decisions.ID+"/blocks/"+decision.BlockID+"/keep", approveOnly,
+			if version.prefix == approveV1.prefix {
+				kept = rig.caller.presenting(t, http.MethodPost, version.prefix+"/artifacts/"+decisions.ID+"/blocks/"+decision.BlockID+"/keep", rig.approveOnly,
 					map[string]any{"text_sha256": decision.TextSHA256})
 			} else {
-				kept = caller.presenting(t, http.MethodPut, version.prefix+"/issues/"+issue.Key+"/decisions/"+decision.BlockID+"/state", approveOnly,
+				kept = rig.caller.presenting(t, http.MethodPut, version.prefix+"/issues/"+issue.Key+"/decisions/"+decision.BlockID+"/state", rig.approveOnly,
 					map[string]any{"state": "kept", "text_sha256": decision.TextSHA256})
 			}
 			response := rig.serve(kept)
@@ -65,40 +65,38 @@ func TestAnApproveOnlyTokenKeepsADecisionOnBothVersions(t *testing.T) {
 // /api/v1/credential-requests/{id}/approve and /deny and on PUT /api/v2/credential-requests/{id}/state
 // with state approved or denied, and its dismissal, which no list route does, is refused 403
 // APPROVE_ONLY_TOKEN on both versions before the broker is asked anything: on /api/v2 the one route
-// takes the dismissal as a state, which the authority gate holds the token out of.
+// takes the dismissal as a state, which the state check holds the token out of.
 func TestAnApproveOnlyTokenDecidesACredentialRequestAndDismissesNone(t *testing.T) {
 	broker := newFakeBrokerRig(t)
-	rig := newBrokerTokenRigOn(t, testServerOptions{agentSecretsURL: broker.server.URL})
-	caller := newBrokerCaller(t)
-	const approveOnly, record = "an-approve-only-token-deciding-credential-requests", "rec1"
-	rig.broker.Says(approveOnly, approveOnlyAnswer(caller.jkt))
-	for _, prefix := range approveOnlyVersions {
-		t.Run(prefix, func(t *testing.T) {
-			request := func(state string) *http.Request {
-				if prefix == "/api/v1" {
+	rig := newApproveOnlyRig(t, testServerOptions{agentSecretsURL: broker.server.URL})
+	const record = "rec1"
+	for _, version := range approveOnlyVersions {
+		t.Run(version.prefix, func(t *testing.T) {
+			send := func(state string) *http.Request {
+				if version.prefix == approveV1.prefix {
 					action := map[string]string{"approved": "approve", "denied": "deny", "dismissed": "dismiss"}[state]
-					return caller.presenting(t, http.MethodPost, prefix+"/credential-requests/"+record+"/"+action, approveOnly, map[string]any{"code": "123456"})
+					return rig.caller.presenting(t, http.MethodPost, version.prefix+"/credential-requests/"+record+"/"+action, rig.approveOnly, map[string]any{"code": "123456"})
 				}
-				return caller.presenting(t, http.MethodPut, prefix+"/credential-requests/"+record+"/state", approveOnly, map[string]any{"state": state, "code": "123456"})
+				return rig.caller.presenting(t, http.MethodPut, version.prefix+"/credential-requests/"+record+"/state", rig.approveOnly, map[string]any{"state": state, "code": "123456"})
 			}
 			for _, state := range []string{"approved", "denied"} {
 				before := broker.calls
-				response := rig.serve(request(state))
-				if refusal := decodeBody[refusalAnswer](t, response); response.Code == http.StatusForbidden && refusal.Code == contracts.DispatchApproveOnlyToken {
-					t.Errorf("the approve-only token's %s of a credential request = %d %s; want it past the approve-only gate", state, response.Code, response.Body.String())
+				response := rig.serve(send(state))
+				if refusedAsApproveOnly(response) {
+					t.Errorf("the approve-only token's %s of a credential request = %d %s; want it past the approve-only checks", state, response.Code, response.Body.String())
 				}
 				if broker.calls == before {
 					t.Errorf("the approve-only token's %s of a credential request asked the broker nothing: %d %s", state, response.Code, response.Body.String())
 				}
 				// /api/v1 relays the decision alone; /api/v2 reads the record the decision left (a lookup
 				// by the code) after it, so its last request to the broker is that read.
-				if prefix == "/api/v1" && !strings.Contains(broker.lastBody, `"approver":"`+brokerTestPerson+`"`) {
+				if version.prefix == approveV1.prefix && !strings.Contains(broker.lastBody, `"approver":"`+brokerTestPerson+`"`) {
 					t.Errorf("the broker's last request after the %s = %s; want the token's person %s as the approver", state, broker.lastBody, brokerTestPerson)
 				}
 			}
 			before := broker.calls
-			dismissed := rig.serve(request("dismissed"))
-			if refusal := decodeBody[refusalAnswer](t, dismissed); dismissed.Code != http.StatusForbidden || refusal.Code != contracts.DispatchApproveOnlyToken {
+			dismissed := rig.serve(send("dismissed"))
+			if !refusedAsApproveOnly(dismissed) {
 				t.Errorf("the approve-only token's dismissal of a credential request = %d %s; want 403 %s", dismissed.Code, dismissed.Body.String(), contracts.DispatchApproveOnlyToken)
 			}
 			if broker.calls != before {

@@ -272,7 +272,6 @@ func (s *server) v2IssueRows() []routeRow {
 				apicode.Refusal{Condition: apicode.IssueRefAmbiguous, Code: apicode.AmbiguousIssueRef},
 				apicode.Refusal{Condition: apicode.ExternalOfAnotherProject, Code: apicode.ExternalProjectMismatch},
 				apicode.Refusal{Condition: apicode.TitleNearCopy, Code: apicode.PossibleDuplicate},
-				apicode.Refusal{Condition: apicode.ParentOutsideCallerProject, Code: apicode.ProjectScope},
 				apicode.Refusal{Condition: apicode.IssueProjectOutOfReach, Code: apicode.NotFound},
 				specWriterNotArchitectRefusal,
 			)...),

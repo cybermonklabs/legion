@@ -440,7 +440,9 @@ var (
 	// (refuseReadOnlyToken).
 	ReadOnlyToken = both(contracts.DispatchReadOnlyToken, http.StatusForbidden)
 	// ApproveOnlyToken is an approve-only token's call of a route the approve list does not name
-	// (refuseApproveOnlyToken), or its answer of an ask that is no approval request (answerAsk).
+	// (refuseApproveOnlyToken), its send of a state of a route that takes several by state that the
+	// list does not give it (gateApproveOnlyStates), or its answer of an ask that is no approval
+	// request (approveOnlyAnswerRefusal, gateApproveOnlyAskAnswer).
 	ApproveOnlyToken   = both(contracts.DispatchApproveOnlyToken, http.StatusForbidden)
 	AsOfTokenNotServed = both(contracts.DispatchAsOfTokenNotServed, http.StatusForbidden)
 	// The refusals of a write of a step record (steps.go), which the Legion daemon reads to end a

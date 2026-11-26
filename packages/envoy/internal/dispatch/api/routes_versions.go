@@ -537,16 +537,21 @@ type apiRoute struct {
 	// Read is the read class of a mounted GET row, or the zero entry on other methods.
 	Read readEntry
 	// ApproveOnly is true on the /api/v1 routes the approve list names (approveScopeRoutes) and on
-	// the /api/v2 route each of them has as its Successor (approveV2Routes), and on no other: the
-	// approve-only gate reads it (refuseApproveOnlyToken), so an approve-only token is refused on
-	// every other route of both versions before the route does anything.
+	// the /api/v2 route each of them has as its Successor, and on no other: the approve-only route
+	// check reads it (refuseApproveOnlyToken), so an approve-only token is refused on every other
+	// route of both versions before the route does anything. applyApprovePolicy stamps it, with
+	// the two fields below, as the table is built.
 	ApproveOnly bool
 	// ApproveStates is, on an /api/v2 route that takes several operations by the body's `state`,
 	// the states an approve-only token may send it, and nil on every other route: the token gets
 	// past refuseApproveOnlyToken on such a route and is held to these states once the decoder has
-	// read the body (gateV2Authorities), since the list names /api/v1 routes that this route's
-	// other states have no counterpart in (approveStates).
+	// read the body (gateApproveOnlyStates), since the list names /api/v1 routes that this route's
+	// other declared states have no counterpart in.
 	ApproveStates []string
+	// ApproveApprovalAsks is true on the routes that answer an ask of any kind and that the token
+	// may call for an approval request alone, on both versions: an approve-only token's keyed
+	// answer of any other ask is refused before its key is judged (gateApproveOnlyAskAnswer).
+	ApproveApprovalAsks bool
 	// columns marks the mount of a routeRow, whose facts are its own columns. A route of the v1
 	// table - and a route a test builds by hand - carries false, and the mount guards read its
 	// facts where the side maps hold them (sideMapName), so a side-map entry stays held to the

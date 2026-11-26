@@ -370,20 +370,19 @@ var (
 
 // The conditions of an issue's write and of the members of an issue's body.
 var (
-	AdvancesInvalid            = Condition{"advances invalid"}
-	AdvancesRevisionMoved      = Condition{"advances revision moved"}
-	AssigneeNotSignedIn        = Condition{"assignee nobody signed in as"}
-	BlockedByInvalid           = Condition{"blocked_by invalid"}
-	ComponentsInvalid          = Condition{"components invalid"}
-	IssueInputInvalid          = Condition{"issue input invalid"}
-	PriorityInvalid            = Condition{"priority invalid"}
-	LabelsInvalid              = Condition{"labels invalid"}
-	ParentInvalid              = Condition{"parent invalid"}
-	ParentChainTooDeep         = Condition{"parent chain too deep"}
-	IssueRefInvalid            = Condition{"issue reference invalid"}
-	ExternalOfAnotherProject   = Condition{"external reference linked to another project"}
-	TitleNearCopy              = Condition{"title a near copy of another issue's"}
-	ParentOutsideCallerProject = Condition{"parent outside the credential's project"}
+	AdvancesInvalid          = Condition{"advances invalid"}
+	AdvancesRevisionMoved    = Condition{"advances revision moved"}
+	AssigneeNotSignedIn      = Condition{"assignee nobody signed in as"}
+	BlockedByInvalid         = Condition{"blocked_by invalid"}
+	ComponentsInvalid        = Condition{"components invalid"}
+	IssueInputInvalid        = Condition{"issue input invalid"}
+	PriorityInvalid          = Condition{"priority invalid"}
+	LabelsInvalid            = Condition{"labels invalid"}
+	ParentInvalid            = Condition{"parent invalid"}
+	ParentChainTooDeep       = Condition{"parent chain too deep"}
+	IssueRefInvalid          = Condition{"issue reference invalid"}
+	ExternalOfAnotherProject = Condition{"external reference linked to another project"}
+	TitleNearCopy            = Condition{"title a near copy of another issue's"}
 	// IssueProjectOutOfReach is the project a create names (POST /api/v2/issues) when the
 	// request's credential names one project and the named project is another: one that does not
 	// exist, or a private one the credential does not name, which is refused as a project that does
