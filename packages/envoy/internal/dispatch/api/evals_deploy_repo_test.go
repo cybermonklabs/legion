@@ -18,9 +18,10 @@ import (
 )
 
 // The checks of a move of the deploy repository (evals/deploy_repos.go): the evals that read it
-// are kept for every repository a deploy source reads that holds a delivery run, each under its
-// source's rule, so a move deletes the rows of the repository the source leaves, builds those of
-// the one it reads (syncKept) and writes no other row; the read after it answers what a whole walk
+// are kept for every repository that holds a delivery run and a rule, a deploy source's or the one
+// recorded with its rows once no source reads it, each under that rule, so a move builds the rows
+// of a repository a source reads under its first rule (syncKept), leaves those of the repository the
+// source leaves as they stand, and writes no other row; the read after it answers what a whole walk
 // under the new settings answers and reads the new repository's own history from its first day,
 // and on the way back it answers what the old repository answered before the move.
 
@@ -308,8 +309,8 @@ func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T
 
 // TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore (root R11, edge b): the list
 // read of every shape a page asks for, before a move of the deploy repository to a second
-// repository with runs of its own, equals byte for byte the read after the move back, which builds
-// the first repository's rows again, though while the second was the deploy repository the first
+// repository with runs of its own, equals byte for byte the read after the move back, which reads
+// the first repository's rows as they were kept, though while the second was the deploy repository the first
 // commit of a pull request of its own that its deploys ship moved an hour earlier, and the pass that
 // wrote that pull request's day wrote the second's rows of it alone, moving what some shape read
 // under the second (its first-commit-to-production; a first commit moves no eval that reads no
@@ -364,17 +365,20 @@ func TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore(t *testing
 	t.Logf("%d shapes read alike before the move and after the move back; %d read otherwise in between, %d of them moved by the pull request's first commit", len(shapes), differs, changed)
 }
 
-// TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone: moved to a second
-// repository with runs of its own and back, each move's passes delete every row of the repository
-// the source leaves and build rows of the one it reads (day rows, members and stored figures), and
-// write no row of another deploy repository, none of the evals that read no deploy repository and
-// no walk record; and the list read of every shape a page asks for states, under the second
-// repository, each eval's values as a second database answers them whose whole walk ran under it,
-// and after the move back the values it stated before.
+// TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone (dispatch://INFRA-978,
+// plan T19 path 1): the source is moved to a second repository with runs of its own and back once,
+// so the rows of each stand built under its rule, and then again. Each move's passes write and
+// delete no row, of either repository or any other: no day row, member, stored figure or walk
+// record, since each repository keeps its rows and its rule once no source reads it, and the move
+// is a selection the pass records (eval_days_rules); and the list read of every shape a page asks
+// for states, under the second repository, each eval's values as a second database answers them
+// whose whole walk ran under it, and after the move back the values it stated before.
 func TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone(t *testing.T) {
 	t.Parallel()
 	r := newDeployRepoRig(t, true, nil)
 	walked := newDeployRepoRig(t, true, func(w *deployRepoRig) { w.saveSource(t, w.other) })
+	r.moveTo(t, r.other)
+	r.moveTo(t, r.fixture.DeployRepo)
 	shapes := storedEvalShapes(r.today, r.fixture.Repos[0], r.fixture.Repos[1])
 	original := map[string][]string{}
 	for _, shape := range shapes {
@@ -391,25 +395,17 @@ func TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone(
 		held := r.written(t)
 		r.moveTo(t, move.repo)
 		now := r.written(t)
-		if moved := rewritten(held, now, move.from, move.repo); len(moved) > 0 {
-			t.Errorf("the move to %s wrote rows of neither %s nor %s: %v", move.repo, move.from, move.repo, moved)
+		if moved := rewritten(held, now); len(moved) > 0 {
+			t.Errorf("the move to %s wrote or deleted rows: %v", move.repo, moved)
 		}
-		var left []string
-		built := 0
-		for key, row := range now {
-			switch row.deployRepo {
-			case move.from:
-				left = append(left, key)
-			case move.repo:
-				built++
+		kept := map[string]int{}
+		for _, row := range now {
+			kept[row.deployRepo]++
+		}
+		for _, repo := range []string{move.from, move.repo} {
+			if kept[repo] == 0 {
+				t.Errorf("after the move to %s no row of %s stands", move.repo, repo)
 			}
-		}
-		if len(left) > 0 {
-			slices.Sort(left)
-			t.Errorf("the move to %s left %d rows of %s, the first %v", move.repo, len(left), move.from, left[:min(len(left), 10)])
-		}
-		if built == 0 {
-			t.Errorf("the move to %s built no row of it", move.repo)
 		}
 		for _, shape := range shapes {
 			answer, _ := r.read(t, shape)

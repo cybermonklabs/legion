@@ -352,7 +352,8 @@ type pageWork struct {
 	// record is set where commitPage records refresh.builtUnder in eval_days_rules with the cursors
 	// and the rebuild the page begins (syncSettings, syncKept). settingsApplied is set where that
 	// record moves the repositories a read of the evals chooses among (DeployReposIn: a source
-	// repository it gains or loses), or none was recorded and the page read a change of the
+	// repository it gains or loses, or the project whose source reads one, which reads its source
+	// key), or none was recorded and the page read a change of the
 	// settings row: the commit then says that the day rows stand at the settings
 	// (markSettingsApplied), which every evals view is recomputed for, and otherwise says nothing,
 	// since no evals view reads what it moves.
@@ -1166,13 +1167,21 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 
 // keptRepos is the repositories whose rows of the evals that read the deploy repository the pass
 // keeps, read once a page (refresh.deployRepos), in the byte order of their names, each with its
-// rule: of the repositories that hold a delivery run (readDeployRepos), those a deploy source of a
-// delivery-on project reads (refresh.rules), and the events repository of each project whose
-// posted deploys are read that holds one (readPostedRepos). The intake keeps the runs of a source
-// repository alone, but a repository's runs stay when no source reads it any more: it is not kept.
+// rule: of the repositories that hold a delivery run (readDeployRepos), each that a deploy source
+// of a delivery-on project reads (refresh.rules), under that source's rule, and each whose rule
+// stands recorded with the rows (refresh.builtUnder) where no source reads it any more, under that
+// rule and no project, as the base kept every repository that holds runs; and the events
+// repository of each project whose posted deploys are read that holds one (readPostedRepos). The
+// intake keeps the runs of a source repository alone, and a repository's runs stay when no source
+// reads it any more, so its rows and its rule stay with them: a source moved away from it and back,
+// or a later source on it under the same rule, rebuilds none of its days (syncKept), and which
+// repositories a project reads is the selection recorded with the rules (DeployReposIn).
 func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	if r.deployRepos != nil {
 		return r.deployRepos, nil
+	}
+	if err := r.readBuiltOnce(ctx); err != nil {
+		return nil, err
 	}
 	held, err := readDeployRepos(ctx, r.store.database.Pool)
 	if err != nil {
@@ -1186,6 +1195,12 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 		}
 		if rule, read := r.ruleOf(repo.name); read {
 			repo.rule = rule
+			repos = append(repos, repo)
+			continue
+		}
+		if recorded, found := r.builtUnder[ruleKey(repo.name)]; found {
+			repo.rule = recorded.rule
+			repo.rule.DeployRepo, repo.rule.Project = repo.name, ""
 			repos = append(repos, repo)
 		}
 	}

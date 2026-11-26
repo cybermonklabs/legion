@@ -299,7 +299,7 @@ Each delivery and CI eval counts its rows for projects by one rule, and the fail
 
 - A deploy run that ships no pull request counts for the project whose deploy source reads its repository, and for no other project, whatever the default repositories say.
   A run that did not reach production ships nothing, so it counts there too.
-  Where no delivery-on source reads its repository, it counts as a pull request with no issue does.
+  Such runs follow the source: once the refresher's next pass has recorded a source moved to another repository, or a repository's source moved to another project, they count for the project whose source reads their repository then, and while no delivery-on source reads it they count for no project.
 
 - A posted deploy counts for the project of the route it was posted to, and for no other project.
   While that project has delivery on and an `events` source, the deploy adds one to its `deploy-frequency` on the UTC day the deploy finished, and each population pull request it names adds its time from merge to the deploy's finish to `merge-to-production`, where no earlier deploy shipped it.

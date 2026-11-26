@@ -41,7 +41,11 @@ import (
 // carries none (a plain key), for each project whose default is the key's repository. One owner key
 // stands for each distinct set of sharers and lists, so both are part of the rows' key: two deploys
 // of one day with different sharers, or pull requests of one day with different lists, are rows
-// of two keys.
+// of two keys. A deploy run that ships no pull request is a row of its repository's source key
+// (sourceKey, dispatch://INFRA-978 R12), whose one list names no project and which the project whose
+// deploy source reads the repository reads, as the refresher records it with the repository's rule
+// (eval_days_rules): which repositories a project's sources read is a selection made at read time
+// too, so a source move rewrites no day row.
 
 // ownerPrefix begins every owner key, and no project key (projects_key_check,
 // ^[A-Z][A-Z0-9]{1,9}$, migration 0001): an owner key never names a project.
@@ -72,6 +76,25 @@ func OwnerKey(repo string, sharers []string, lists []attributionList) string {
 	return key + "|" + strings.Join(slices.Compact(encoded), ";")
 }
 
+// sourceTerminal is the terminal of a source key's one list (sourceKey): no project's key
+// (projects_key_check, ^[A-Z][A-Z0-9]{1,9}$), and no character a project key or a repository name
+// holds, so the list names no project, and no other list is it.
+const sourceTerminal = "~"
+
+// sourceKey is repo's source key: the owner key (OwnerKey) of the rows of repo's deploy runs that
+// ship no pull request (dispatch://INFRA-978, R12), each with its push run and that run's jobs a
+// deploy card follows, ':' + repo + '||>~', with no sharer and one list of its own, whose terminal
+// is sourceTerminal. Its rows are written once, whichever project's deploy source reads repo, and
+// read by that project alone, the delivery-on project eval_days_rules records for repo
+// (eval_project_owners' arm for a key whose lists are {>~}, migration 20261126090000), through the
+// repository (via true): so a source moved away from repo and back, or repo's source moved to
+// another project, moves the key's reader and rewrites no day row. The release before's
+// eval_project_owners reads a key that carries lists through eval_owner_readers alone, which picks
+// the terminal '~', a project no row of projects holds: under it the key has no reader.
+func sourceKey(repo string) string {
+	return OwnerKey(repo, nil, []attributionList{{terminal: sourceTerminal}})
+}
+
 // isOwner reports whether key is an owner key (OwnerKey) rather than a project's.
 func isOwner(key string) bool {
 	return strings.HasPrefix(key, ownerPrefix)
@@ -96,8 +119,9 @@ func parseOwner(key string) (string, []string, []string, bool) {
 	return repo, sharers, lists, true
 }
 
-// readOwners reads every owner key eval_days has held a row of (eval_day_owners), in key order:
-// the owners the delivery walk writes the days of beside the projects.
+// readOwners reads every owner key eval_days has held a row of (eval_day_owners), in key order,
+// each repository's source key (sourceKey) among them: the owners the delivery walk writes the days
+// of beside the projects.
 func readOwners(ctx context.Context, q delivery.Querier) ([]string, error) {
 	rows, err := q.Query(ctx, `select owner from eval_day_owners order by owner collate "C"`)
 	if err != nil {
@@ -115,8 +139,9 @@ func readOwners(ctx context.Context, q delivery.Querier) ([]string, error) {
 // first time a statement writes a row of it (migration 20261117100014): a rebuild stages its rows
 // aside first (stageRows), and its fold of the stored figures reads the staged rows through
 // eval_project_owners before the flip writes them, so a key whose first rows it stages is read by
-// the projects its readers are. A key whose staged rows the rebuild abandons stands with no row,
-// as one whose rows all went.
+// the projects its readers are. A source key (sourceKey) is recorded with its one list, '{>~}',
+// which eval_project_owners reads it by. A key whose staged rows the rebuild abandons stands with
+// no row, as one whose rows all went.
 func recordOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
 	type owner struct{ key, repo, sharers, lists string }
 	var owners []owner
@@ -149,9 +174,11 @@ func recordOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
 
 // readersOf reads in q the projects whose reads fold the rows of each of owners
 // (eval_project_owners), by owner, each owner's in key order: for a plain key, the projects whose
-// published default is its repository, less its sharers; for a key that carries lists, the
-// projects eval_owner_readers picks. One read for every owner, in statements of at most
-// statementBytes; an owner no project reads has none.
+// published default is its repository, less its sharers; for a source key (sourceKey), the project
+// eval_days_rules records as the one whose deploy source reads its repository, none while no
+// source reads it; for any other key that carries lists, the projects eval_owner_readers picks.
+// One read for every owner, in statements of at most statementBytes; an owner no project reads has
+// none.
 func readersOf(ctx context.Context, q delivery.Querier, owners []string) (map[string][]string, error) {
 	readers := map[string][]string{}
 	for chunk := range statementChunks(owners, paramBytes(1), textBytes) {
@@ -201,14 +228,18 @@ func evalIDAs(key, evalID, of string) string {
 // names, as the project o names reads it: the rows a project reads through an issue of its own
 // count none through a repository (o.via false: its own rows, and an owner key's whose list picks
 // it), and an owner key's rows it reads through the repository count every row (o.via true), as
-// their via_repository does. Every read of a project's day rows through eval_project_owners reads
-// via_repository through it.
+// their via_repository does: a plain key's, a key's no list of which picks the project, and a
+// source key's (sourceKey), whose deploys ship no pull request and reach the project of the source
+// that reads their repository through that repository (dispatch://INFRA-978, R12). Every read of a
+// project's day rows through eval_project_owners reads via_repository through it.
 func viaAsRead(via string) string {
 	return `case when o.via then ` + via + ` else 0 end`
 }
 
 // ownedKeys is the condition that a row of eval_days or eval_day_members (alias) stands under one of
-// the keys the projects read (eval_project_owners), where projects is the condition on
+// the keys the projects read (eval_project_owners: a project's own key, the owner keys its published
+// default picks, and the source keys of the repositories its deploy sources read, as eval_days_rules
+// records them), where projects is the condition on
 // eval_project_owners.project_key that names them (`= $1`, `= any($1::text[])`). A read joins
 // eval_project_owners o on alias.project_key = o.owner, and the planner joins the view by a hash,
 // which carries that equality into no index condition of the table: without this condition a read

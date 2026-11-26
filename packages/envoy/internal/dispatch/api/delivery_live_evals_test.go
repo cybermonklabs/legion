@@ -620,6 +620,102 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	sent("the unowned-p0 row", map[string][]string{"a": {"INFRA/unowned-p0"}, "b": {"INFRA/unowned-p0"}})
 }
 
+// TestTheChangeOfADeployWithNoPullRequestMarksItsSourceProjectsPages (dispatch://INFRA-978, R12 and
+// R14; plan T19 path 1): a deploy run that ships no pull request is a row of its repository's source
+// key (':acme/widgets||>~', evals' sourceKey, whose form TestASourceKeyIsMadeAndReadBackWithItsRepository
+// holds), which names no project, and the eval_days change trigger logs its write under each project
+// that reads the key (eval_days_change_log, through eval_project_owners): INFRA, whose deploy source
+// reads acme/widgets as eval_days_rules records it, and no other, though OTHER publishes
+// acme/widgets as its default repository, by which a plain key of the repository is OTHER's too.
+// So the write recomputes INFRA's two evals views and no view of OTHER's, and sends each of INFRA's
+// the eval it moved. Red where no arm of eval_project_owners gives a source key a reader: the write
+// logs no eval_days change, and no view is recomputed.
+func TestTheChangeOfADeployWithNoPullRequestMarksItsSourceProjectsPages(t *testing.T) {
+	t.Parallel()
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "INFRA")
+	createTestProject(t, rig.handler, "OTHER")
+	rule := deployRule("acme/widgets", "release / release")
+	saveProjectRules(t, rig.database, "INFRA", rule)
+	now := rig.clock.Now()
+	today := measures.Midnight(now)
+	publishDeployRepo(t, rig.database, "INFRA", rule, today.AddDate(0, 0, -27))
+	if _, err := rig.database.Pool.Exec(t.Context(), `insert into eval_days_defaults (project_key, repo) values ('OTHER', 'acme/widgets')`); err != nil {
+		t.Fatalf("publish OTHER's default repository: %v", err)
+	}
+	frames := map[string]DeliveryLiveView{
+		"t": presetView(deliveryLiveTimeline, 7, ""),
+		"a": evalsLiveView("INFRA", DeliveryLiveWindow{Preset: new(28)}, ""),
+		"b": evalsLiveView("INFRA", evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)),
+			url.Values{"compare_from": {today.AddDate(0, 0, -55).Format(time.RFC3339)}, "compare_to": {today.AddDate(0, 0, -27).Format(time.RFC3339)}}.Encode()),
+		"o": evalsLiveView("OTHER", DeliveryLiveWindow{Preset: new(28)}, ""),
+	}
+	conns := map[string]*fakeLiveConn{}
+	subOf := map[string]string{}
+	for _, sub := range []string{"t", "a", "b", "o"} {
+		spec, refusal := parseDeliveryLiveView(frames[sub])
+		if refusal != nil {
+			t.Fatalf("read the view of %s: %+v", sub, refusal)
+		}
+		subOf[spec.key] = sub
+		conns[sub] = newFakeLiveConn()
+		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
+		conns[sub].snapshot(t, sub)
+		if sub != "t" {
+			conns[sub].freshness(t, "the verdict after the snapshot of "+sub)
+		}
+	}
+	rig.settle(t)
+
+	before, mark := latestChange(t, rig.database), rig.mark()
+	if _, err := rig.database.Pool.Exec(t.Context(), `
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, via_repository, counts, built_by)
+		values (':acme/widgets||>~', ':acme/widgets||>~/deploy-frequency', 'acme/widgets', 'deploys', '', $1, true, 1, 1, 1, '{"with_prs": 0}', 'test')
+	`, today.AddDate(0, 0, -1)); err != nil {
+		t.Fatalf("write the source key's day row of deploy-frequency: %v", err)
+	}
+	if _, err := delivery.DrainPending(t.Context(), rig.database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	changes, err := delivery.ChangesSince(t.Context(), rig.database.Pool, before, 100)
+	if err != nil {
+		t.Fatalf("read the changes the write logged: %v", err)
+	}
+	var logged []string
+	for _, change := range changes {
+		logged = append(logged, change.Kind+" "+change.Repo+" "+change.Ref)
+	}
+	if want := []string{delivery.ChangeKindEvalDays + " INFRA INFRA/deploy-frequency"}; !slices.Equal(logged, want) {
+		t.Fatalf("the write of the source key's row logged %v, want %v", logged, want)
+	}
+	rig.hub.catchUpNow()
+	for _, sub := range []string{"a", "b"} {
+		rig.waitFor(t, mark, "the recompute of "+sub, recomputeOfView(t, frames[sub]))
+	}
+	rig.settle(t)
+	recomputed := []string{}
+	rig.mu.Lock()
+	for _, note := range rig.notes[mark:] {
+		if note.what == "recompute begin" && !slices.Contains(recomputed, subOf[note.view]) {
+			recomputed = append(recomputed, subOf[note.view])
+		}
+	}
+	rig.mu.Unlock()
+	slices.Sort(recomputed)
+	if !slices.Equal(recomputed, []string{"a", "b"}) {
+		t.Errorf("the write recomputed the views of %v, want INFRA's a and b alone", recomputed)
+	}
+	for _, sub := range []string{"a", "b"} {
+		if got := liveUpsertIDs(t, conns[sub].delta(t, sub), "items"); !slices.Equal(got, []string{"INFRA/deploy-frequency"}) {
+			t.Errorf("the write sent %s the items %v, want INFRA/deploy-frequency", sub, got)
+		}
+	}
+	rig.settle(t)
+	for _, sub := range []string{"a", "b", "o", "t"} {
+		conns[sub].empty(t, "the write of the source key's row")
+	}
+}
+
 // TestASettingsSaveRecomputesTheEvalsViewsItMoves: over the refreshed history whose second
 // repository holds deploy runs of its own, with four evals views open on a clock that stands still
 // (two of the main project's, a window and the same window with a compare range, and the same two

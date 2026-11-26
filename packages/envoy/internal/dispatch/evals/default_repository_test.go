@@ -1536,3 +1536,437 @@ func TestTheReadersOfAnOwnerKeyAreTheProjectsThePublishedDefaultsPick(t *testing
 		"a sharer and two ways": "ALPHA via=false, GAMMA via=false",
 	})
 }
+
+// sourceReaders is, by repository, the projects that read each of repos' source key (sourceKey) as
+// readersOf answers them, each with whether eval_project_owners reads the key through the
+// repository, `<project> via=<via>` joined by ", ", and "" where none reads it.
+func (r *refresherRig) sourceReaders(t *testing.T, repos ...string) map[string]string {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	keys := make([]string, len(repos))
+	for i, repo := range repos {
+		keys[i] = sourceKey(repo)
+	}
+	readers, err := readersOf(ctx, pool, keys)
+	if err != nil {
+		t.Fatalf("read the readers of %v: %v", keys, err)
+	}
+	answers := map[string]string{}
+	for i, repo := range repos {
+		var read []string
+		for _, project := range readers[keys[i]] {
+			var via bool
+			if err := pool.QueryRow(ctx, `select via from eval_project_owners where owner = $1 and project_key = $2`, keys[i], project).Scan(&via); err != nil {
+				t.Fatalf("read whether %s reads %s through the repository: %v", project, keys[i], err)
+			}
+			read = append(read, fmt.Sprintf("%s via=%t", project, via))
+		}
+		answers[repo] = strings.Join(read, ", ")
+	}
+	return answers
+}
+
+// sourceProjects is, by repository, the project whose deploy source reads each of repos as a pass
+// reads the saved settings (delivery.DeployRules, a repository compared without case), none where
+// no source reads it: the reader the commit of the pass gives the repository's source key.
+func (r *refresherRig) sourceProjects(t *testing.T, repos ...string) map[string]string {
+	t.Helper()
+	projects, err := delivery.ListProjectSettings(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings: %v", err)
+	}
+	rules := delivery.DeployRules(projects)
+	read := map[string]string{}
+	for _, repo := range repos {
+		if at := slices.IndexFunc(rules, func(rule delivery.DeliverySettings) bool { return strings.EqualFold(rule.DeployRepo, repo) }); at >= 0 {
+			read[repo] = rules[at].Project
+		}
+	}
+	return read
+}
+
+// recordSourceKeys records the source key of each of repos (recordOwners), as the first write of a
+// row of one records it, so its readers are read whether or not a row of it is written yet.
+func (r *refresherRig) recordSourceKeys(t *testing.T, repos ...string) {
+	t.Helper()
+	ctx := t.Context()
+	keys := make([]string, len(repos))
+	for i, repo := range repos {
+		keys[i] = sourceKey(repo)
+	}
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := recordOwners(ctx, tx, keys); err != nil {
+		t.Fatalf("record the source keys %v: %v", keys, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The readers of a source key (dispatch://INFRA-978, R12; plan T19 path 1): over the settled
+// three-source history, the reader of each repository's source key (readersOf, through
+// eval_project_owners) is the project the saved settings say a deploy source of reads the
+// repository (delivery.DeployRules), through the repository, and no other: ALPHA's of acme/alpha-app
+// and acme/alpha-ops, OMEGA's of acme/omega-app, none of acme/alpha-next, and a key that spells
+// acme/alpha-ops in capitals is read alike. Once ALPHA's source on acme/alpha-ops is saved on
+// acme/alpha-next, the readers stand as they were until the pass that records the move commits,
+// and then agree with the saved settings again: acme/alpha-next's key is ALPHA's, and acme/alpha-ops'
+// no project's. Red where no arm of eval_project_owners reads a source key: no key has a reader.
+func TestTheReadersOfASourceKeyAreTheProjectWhoseSourceReadsItsRepository(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	upper := strings.ToUpper(alphaOps)
+	repos := []string{alphaApp, alphaOps, upper, omegaApp, alphaNext}
+	r.recordSourceKeys(t, repos...)
+	check := func(what string, want map[string]string) {
+		t.Helper()
+		got := r.sourceReaders(t, repos...)
+		for _, repo := range repos {
+			if got[repo] != want[repo] {
+				t.Errorf("%s: the source key of %s is read by [%s], want [%s]", what, repo, got[repo], want[repo])
+			}
+		}
+	}
+	// agree checks that the view's readers are what the saved settings give each repository.
+	agree := func(what string) {
+		t.Helper()
+		want := map[string]string{}
+		for repo, project := range r.sourceProjects(t, repos...) {
+			want[repo] = project + " via=true"
+		}
+		check(what+", against the saved settings", want)
+	}
+	settled := map[string]string{alphaApp: "ALPHA via=true", alphaOps: "ALPHA via=true", upper: "ALPHA via=true", omegaApp: "OMEGA via=true"}
+	check("the settled history", settled)
+	agree("the settled history")
+	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"},
+		deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaNext)))
+	check("after the save that moves ALPHA's source, before the pass", settled)
+	r.settle(t)
+	check("after the pass", map[string]string{alphaApp: "ALPHA via=true", omegaApp: "OMEGA via=true", alphaNext: "ALPHA via=true"})
+	agree("after the pass")
+}
+
+// releaseBeforesOwners is eval_project_owners as the release before states it (migration
+// 20261117100006): a project's own key, a plain key's readers by the published defaults, and a key
+// that carries lists read through eval_owner_readers alone.
+const releaseBeforesOwners = `
+	select key as project_key, key as owner, false as via from projects
+	union all
+	select r.project_key, o.owner, true
+	from eval_project_repos r join eval_day_owners o on lower(o.repo) = lower(r.repo)
+	where o.lists = '{}' and not (r.project_key = any(o.sharers))
+	union all
+	select reader.project_key, o.owner, reader.via
+	from eval_day_owners o cross join lateral eval_owner_readers(o.repo, o.sharers, o.lists) as reader
+	where o.lists <> '{}'`
+
+// A source key under the release before's rule (plan T19 path 1; cmd/dispatch/README.md, "Two
+// builds at once"): the key carries a list, '{>~}' in eval_day_owners, so the release before, whose
+// view reads such a key through eval_owner_readers alone, reads it by no project, whose terminal '~'
+// is no project's key, and neither does that function. Over the settled three-source history,
+// acme/alpha-app's source key, which this release's view gives ALPHA through the repository, has no
+// reader under the release before's view, where a key of the same repository whose list names ALPHA
+// as a condition (ALPHA's default being acme/alpha-app) is ALPHA's under both. Red where this
+// release's view gives the source key no reader either.
+func TestASourceKeyHasNoReaderUnderTheReleaseBeforesRule(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	r.seedSources(t)
+	r.settle(t)
+	source, condition := sourceKey(alphaApp), OwnerKey(alphaApp, nil, []attributionList{{conditions: []string{"ALPHA"}}})
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := recordOwners(ctx, tx, []string{source, condition}); err != nil {
+		t.Fatalf("record the keys: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var lists []string
+	if err := pool.QueryRow(ctx, `select lists from eval_day_owners where owner = $1`, source).Scan(&lists); err != nil {
+		t.Fatalf("read the lists of %s: %v", source, err)
+	}
+	if !slices.Equal(lists, []string{">~"}) {
+		t.Fatalf("eval_day_owners holds the lists %v of %s, want [>~]: a key with no list is a plain key, which the release before reads by default", lists, source)
+	}
+	readers := func(view, key string) string {
+		t.Helper()
+		var read string
+		if err := pool.QueryRow(ctx, `
+			select coalesce(string_agg(project_key || ' via=' || via, ', ' order by project_key), '') from (`+view+`) as readers where owner = $1
+		`, key).Scan(&read); err != nil {
+			t.Fatalf("read the readers of %s: %v", key, err)
+		}
+		return read
+	}
+	for _, c := range []struct{ name, view, key, want string }{
+		{"the release before's view", releaseBeforesOwners, source, ""},
+		{"the release before's view", releaseBeforesOwners, condition, "ALPHA via=false"},
+		{"this release's view", `select * from eval_project_owners`, source, "ALPHA via=true"},
+		{"this release's view", `select * from eval_project_owners`, condition, "ALPHA via=false"},
+	} {
+		if got := readers(c.view, c.key); got != c.want {
+			t.Errorf("%s gives %s the readers [%s], want [%s]", c.name, c.key, got, c.want)
+		}
+	}
+	if n := r.count(t, `
+		select count(*) from eval_day_owners o cross join lateral eval_owner_readers(o.repo, o.sharers, o.lists) where o.owner = $1
+	`, source); n != 0 {
+		t.Errorf("eval_owner_readers answers %d readers of %s, want none", n, source)
+	}
+}
+
+// foldedReads is, by project, shape and eval id, the fold of each of projects' day rows over each
+// of shapes as the eval list folds them (listValues' fold of DayWindowIn's rows, over the deploy
+// repositories recorded with the rows), with each series' version time left out, which a second
+// database stamps with its own seed's moment: what a second database whose whole walk ran under the
+// same settings answers alike.
+func (r *refresherRig) foldedReads(t *testing.T, projects []string, shapes []readShape) map[string]string {
+	t.Helper()
+	reads := map[string]string{}
+	for _, project := range projects {
+		for _, shape := range shapes {
+			state := r.readListState(t, project, nil, shape.window, shape.compare)
+			for i := range state.entries {
+				for j := range state.entries[i].Series {
+					state.entries[i].Series[j].CreatedAt = time.Time{}
+				}
+			}
+			_, folded, _ := state.values(t, shape.window, &shape.compare)
+			for id, values := range folded {
+				reads[shape.name+" "+id] = values
+			}
+		}
+	}
+	return reads
+}
+
+// ruleRecords is each repository eval_days_rules records, `<project or none> since <kept_since or
+// none>`, by repository.
+func (r *refresherRig) ruleRecords(t *testing.T) map[string]string {
+	t.Helper()
+	return r.xmins(t, `select repo, coalesce(project_key, 'none') || ' since ' || coalesce(kept_since::text, 'none') from eval_days_rules`)
+}
+
+// A source moved away from its repository and back (dispatch://INFRA-978, R12 and R14; plan T19
+// path 1): over the three-source history, ALPHA's source on acme/alpha-ops is saved on
+// acme/alpha-next, which holds runs of its own, and back, once so the rows of each stand built under
+// its rule (eval_days_rules), and then again. Each repository keeps its rows and its rule once no
+// source reads it (the rule with no project, its start kept: refresh.keptRepos keeps every
+// repository that holds a recorded rule and delivery runs), and the source key of each stays
+// recorded (eval_day_owners), where the delivery walk reads its owners (readOwners). So the second
+// move and the move back each write and delete no day row and no member: a pass records the
+// selection alone. ALPHA's and OMEGA's reads, before, between and after, fold to what a second
+// database answers whose whole walk ran under the same settings, and ALPHA's deploy-frequency counts
+// acme/alpha-ops' deploy 2001 before and after, and no deploy of acme/alpha-next, none of whose runs
+// ran the source's production job, between. Red where a source leaving a repository deletes its
+// rows and its rule, and one reaching it builds them again.
+func TestASourceMoveAwayAndBackWritesNoDayRow(t *testing.T) {
+	t.Parallel()
+	onOps := []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
+	onNext := []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaNext))}
+	projects, shapes := []string{"ALPHA", "OMEGA"}, slices.Concat(moveShapes(), pastShapes())
+	// walked is the reads of a second database whose whole walk ran with ALPHA's sources.
+	walked := func(sources []delivery.SourceInput) map[string]string {
+		w := newRefresherRig(t)
+		w.seedSources(t)
+		putSources(t, w.database.Pool, "ALPHA", []string{"dev-ana"}, sources...)
+		w.settle(t)
+		return w.foldedReads(t, projects, shapes)
+	}
+	walks := map[string]map[string]string{"acme/alpha-ops": walked(onOps), "acme/alpha-next": walked(onNext)}
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	for _, sources := range [][]delivery.SourceInput{onNext, onOps} {
+		putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, sources...)
+		r.settle(t)
+	}
+	owners, err := readOwners(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{alphaOps, alphaNext} {
+		if !slices.Contains(owners, sourceKey(repo)) {
+			t.Errorf("the owners the delivery walk reads are %v, want %s's source key among them", owners, repo)
+		}
+	}
+	show := func(xmin string) string { return "written by " + xmin }
+	expect := func(what, reading string, deploys defaultTally, records map[string]string) {
+		t.Helper()
+		if got := r.ruleRecords(t); !maps.Equal(got, records) {
+			t.Errorf("%s: eval_days_rules records %v, want %v", what, got, records)
+		}
+		if got := r.deploysOn(t, "ALPHA", sourcesDay); got != deploys {
+			t.Errorf("%s: ALPHA's deploy-frequency counts %d deploys, %d through a repository; want %d and %d", what, got.n, got.via, deploys.n, deploys.via)
+		}
+		if differ := sameValues(r.foldedReads(t, projects, shapes), walks[reading], func(values string) string { return values }); len(differ) > 0 {
+			t.Errorf("%s: the reads differ from those of a whole walk with ALPHA's source on %s, first ones:\n\t%s", what, reading, strings.Join(differ, "\n\t"))
+		}
+	}
+	since := sourcesDay.Format(time.DateOnly)
+	onOpsRecords := map[string]string{alphaApp: "ALPHA since " + since, alphaOps: "ALPHA since " + since, alphaNext: "none since " + since,
+		omegaApp: "OMEGA since " + since, EventsRepo("OMEGA"): "OMEGA since none"}
+	onNextRecords := maps.Clone(onOpsRecords)
+	onNextRecords[alphaOps], onNextRecords[alphaNext] = "none since "+since, "ALPHA since "+since
+	expect("before the move", alphaOps, defaultTally{n: 2, via: 2}, onOpsRecords)
+	for _, move := range []struct {
+		name, repo string
+		sources    []delivery.SourceInput
+		deploys    defaultTally
+		records    map[string]string
+	}{
+		{"the move to " + alphaNext, alphaNext, onNext, defaultTally{n: 1, via: 1}, onNextRecords},
+		{"the move back to " + alphaOps, alphaOps, onOps, defaultTally{n: 2, via: 2}, onOpsRecords},
+	} {
+		rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
+		putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, move.sources...)
+		r.settle(t)
+		if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
+			t.Errorf("%s wrote or deleted day rows, first ones:\n\t%s", move.name, strings.Join(differ, "\n\t"))
+		}
+		if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
+			t.Errorf("%s wrote or deleted members, first ones:\n\t%s", move.name, strings.Join(differ, "\n\t"))
+		}
+		expect("after "+move.name, move.repo, move.deploys, move.records)
+	}
+}
+
+// The items project's deploy evals count on day (CountedIn, of the delivery family, over the deploy
+// repositories recorded with the rows), by row key.
+func (r *refresherRig) deployItems(t *testing.T, project string, day time.Time) []string {
+	t.Helper()
+	repos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted, err := CountedIn(t.Context(), r.database.Pool, project, KindDelivery, repos.Of(project), nil, Range{From: day, To: day.AddDate(0, 0, 1)})
+	if err != nil {
+		t.Fatalf("read the items %s counts on %s: %v", project, day.Format(time.DateOnly), err)
+	}
+	var keys []string
+	for _, item := range counted {
+		keys = append(keys, item.RowKey)
+	}
+	slices.Sort(keys)
+	return slices.Compact(keys)
+}
+
+// A repository's source moved to another project (dispatch://INFRA-978, R12 and R14; plan T19 path
+// 1): over the three-source history, acme/alpha-ops' source moves from ALPHA to OMEGA under the same
+// rule. Its deploy 2001, which ships no pull request, is a row of the repository's source key, which
+// the pass gives OMEGA as its reader (eval_project_owners, among the keys a read of OMEGA folds) and
+// takes from ALPHA: ALPHA's deploy-frequency counts 2 deploys before and 1 after, OMEGA's 1 and then
+// 2, each through its repository, and the items each counts follow. The move writes and deletes no
+// day row and no member. Red where such a deploy is a row of its source's project, which the move
+// rewrites.
+func TestAnOwnerChangeOfARepositoryWritesNoDayRow(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	deploy, key := RunMember(alphaOps, 2001), sourceKey(alphaOps)
+	check := func(what, reader, other string, deploys map[string]defaultTally) {
+		t.Helper()
+		for _, project := range []string{"ALPHA", "OMEGA"} {
+			if got := r.deploysOn(t, project, sourcesDay); got != deploys[project] {
+				t.Errorf("%s: %s's deploy-frequency counts %d deploys, %d through a repository; want %d and %d",
+					what, project, got.n, got.via, deploys[project].n, deploys[project].via)
+			}
+		}
+		for project, reads := range map[string]bool{reader: true, other: false} {
+			if got := r.count(t, `select count(*) from eval_project_owners where project_key = $1 and owner = $2`, project, key) == 1; got != reads {
+				t.Errorf("%s: %s reads %s %t, want %t", what, project, key, got, reads)
+			}
+			if got := slices.Contains(r.deployItems(t, project, sourcesDay), deploy); got != reads {
+				t.Errorf("%s: %s counts %s among its deploys %t, want %t", what, project, deploy, got, reads)
+			}
+		}
+	}
+	check("before the move", "ALPHA", "OMEGA", map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 1, via: 1}})
+	rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
+	authors := []string{"dev-ana"}
+	putSources(t, r.database.Pool, "ALPHA", authors, deliverytest.SourceOf(ruleOfJob(alphaJob), nil))
+	putSources(t, r.database.Pool, "OMEGA", authors, deliverytest.SourceOf(ruleOfJob(omegaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps)), eventsSource)
+	r.settle(t)
+	show := func(xmin string) string { return "written by " + xmin }
+	if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
+		t.Errorf("the move wrote or deleted day rows, first ones:\n\t%s", strings.Join(differ, "\n\t"))
+	}
+	if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
+		t.Errorf("the move wrote or deleted members, first ones:\n\t%s", strings.Join(differ, "\n\t"))
+	}
+	repos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := repos.Owned("OMEGA"); !slices.Equal(got, []string{alphaOps, omegaApp}) {
+		t.Errorf("after the move OMEGA's sources stand recorded under %v, want %s and %s", got, alphaOps, omegaApp)
+	}
+	check("after the move", "OMEGA", "ALPHA", map[string]defaultTally{"ALPHA": {n: 1, via: 1}, "OMEGA": {n: 2, via: 2}})
+}
+
+// A move of the default repository a source naming no repository reads (dispatch://INFRA-978, R12
+// and R14; plan T19 path 1): over the three-source history, ALPHA's first source names none, so it
+// reads ALPHA's default. That default moves to acme/alpha-next and back once, so the rows of each
+// stand built under its rule, and then again: each move is a selection the pass records, with the
+// published default, and writes and deletes no day row and no member, and ALPHA's deploy-frequency
+// counts acme/alpha-next's 4001 and 4002 with acme/alpha-ops' 2001 while its default is
+// acme/alpha-next, and acme/alpha-app's 1001 with 2001 otherwise, each through its repository. Red
+// where the repository the source leaves loses its rows, and the one it reads builds them again.
+func TestADefaultMoveUnderASourceNamingNoRepositoryWritesNoDayRow(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	move := func(repo string) {
+		t.Helper()
+		r.exec(t, "move ALPHA's default repository", `update projects set default_repo = $1 where key = 'ALPHA'`, repo)
+		r.settle(t)
+		if published, err := PublishedDefaultIn(t.Context(), r.database.Pool, "ALPHA"); err != nil || published != repo {
+			t.Fatalf("ALPHA publishes %q as its default (%v), want %s", published, err, repo)
+		}
+	}
+	move(alphaNext)
+	move(alphaApp)
+	show := func(xmin string) string { return "written by " + xmin }
+	for _, step := range []struct {
+		repo    string
+		deploys defaultTally
+		owned   []string
+	}{
+		{alphaNext, defaultTally{n: 3, via: 3}, []string{alphaNext, alphaOps}},
+		{alphaApp, defaultTally{n: 2, via: 2}, []string{alphaApp, alphaOps}},
+	} {
+		rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
+		move(step.repo)
+		if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
+			t.Errorf("the move to %s wrote or deleted day rows, first ones:\n\t%s", step.repo, strings.Join(differ, "\n\t"))
+		}
+		if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
+			t.Errorf("the move to %s wrote or deleted members, first ones:\n\t%s", step.repo, strings.Join(differ, "\n\t"))
+		}
+		repos, err := DeployReposIn(t.Context(), r.database.Pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := repos.Owned("ALPHA"); !slices.Equal(got, step.owned) {
+			t.Errorf("after the move to %s ALPHA's sources stand recorded under %v, want %v", step.repo, got, step.owned)
+		}
+		if got := r.deploysOn(t, "ALPHA", sourcesDay); got != step.deploys {
+			t.Errorf("after the move to %s ALPHA's deploy-frequency counts %d deploys, %d through a repository; want %d and %d",
+				step.repo, got.n, got.via, step.deploys.n, step.deploys.via)
+		}
+	}
+}

@@ -699,9 +699,10 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // changes call for, begins the rebuild they call for (work.rebuild: of every served family,
 // replaceRebuild), records, where work.record is set, the rules the delivery and CI rows stand
 // built under and the repositories they stand built for (eval_days_rules, refresh.builtUnder:
-// syncSettings, syncKept), in one transaction, which first writes spans: the days of each family
-// whose days the page writes in its commit, with every other day they move (writeSpans: the rows,
-// then the members, then the stored figures, ahead of the cursors, the walks and the rules). The
+// syncSettings, syncKept), in one transaction, which first records those rules, so the rows it
+// writes are logged and folded for the projects they name, and then writes spans: the days of each
+// family whose days the page writes in its commit, with every other day they move (writeSpans: the
+// rows, then the members, then the stored figures, ahead of the cursors and the walks). The
 // days the page named that move no other day are written before it, so a crash between the two
 // reads the same changes again, and a walk or a rebuild the changes begin is recorded with the
 // cursor that passed them, and with the rules it builds under where none were recorded
@@ -740,6 +741,14 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// The rules are recorded before the spans' rows are written: the project a rule names reads the
+	// repository's source key (eval_project_owners), so the change trigger logs the rows' changes,
+	// and the spans' folds fold them, for the project the new rule names.
+	if work.record {
+		if err := recordRules(ctx, tx, r.builtUnder); err != nil {
+			return err
+		}
+	}
 	if err := writeSpans(ctx, tx, spans); err != nil {
 		return err
 	}
@@ -773,11 +782,6 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	}
 	if work.rebuild != "" {
 		if err := replaceRebuild(ctx, tx, work.rebuild, r.build, rebuildWalks); err != nil {
-			return err
-		}
-	}
-	if work.record {
-		if err := recordRules(ctx, tx, r.builtUnder); err != nil {
 			return err
 		}
 	}

@@ -30,10 +30,11 @@ import (
 // that starts before it reads "no data" and names it, whatever rows stand.
 //
 // A failure is a fact about its deploy. The project's deploys of a day are the deploy rows that
-// finished on it that the attribution counts for it (recordProjects, deployProjects' rule): a
-// GitHub deploy for the projects of the pull requests it ships through their issues, and, where it
-// ships one that names no issue, for each project whose default repository is its repository and
-// that is not among those (its owner key, owners.go), or, where it ships none, for the project
+// finished on it that the attribution counts for it (recordProjects, deployProjects' rule for one
+// that ships a pull request): a GitHub deploy for the projects of the pull requests it ships
+// through their issues, and, where it ships one that names no issue, for each project whose
+// default repository is its repository and that is not among those (its owner key, owners.go), or,
+// where it ships none, for the project
 // whose source found it (the row's project, through its repository); a posted deploy for
 // the project of its route alone, where that project holds an events source, whose posted deploys
 // count for it there as they do in deploy-frequency. A deploy the GitHub adapter dropped (status
@@ -267,11 +268,12 @@ func (f *failureRecord) count(failures []prodevents.Event) {
 	}
 }
 
-// recordProjects is what deploy, a deploy row of the record, counts for, by deployProjects' rule:
-// a posted deploy its route's project alone, through no repository; a GitHub deploy the projects
-// of the pull requests it ships through the issue its stored row names (their attribution lists,
-// by row key), and its repository's owner key where one names no issue, or the row's project where
-// it ships none; a dropped deploy nothing.
+// recordProjects is what deploy, a deploy row of the record, counts for: a posted deploy its
+// route's project alone, through no repository; a GitHub deploy that ships pull requests the
+// projects of those it ships through the issue its stored row names (their attribution lists, by
+// row key) and its repository's owner key where one names no issue (deployProjects' rule); one
+// that ships none the row's project, through its repository, or, where the row names none, its
+// repository's source key; a dropped deploy nothing.
 func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 	switch {
 	case deploy.Status == prodevents.StatusDropped:
@@ -285,7 +287,10 @@ func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 			shipped = append(shipped, &delivery.DeliveryPullRequest{Repo: repo, Number: number})
 		}
 	}
-	return a.deployProjects(deploy.Repo, shipped, deploy.ProjectKey)
+	if len(shipped) == 0 && deploy.ProjectKey != "" {
+		return []counted{{project: deploy.ProjectKey, via: true}}
+	}
+	return a.deployProjects(deploy.Repo, shipped)
 }
 
 // readShippedIssues reads, in q, what attributes the pull requests the GitHub deploys of deploys

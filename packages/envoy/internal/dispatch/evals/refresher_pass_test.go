@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -615,15 +616,24 @@ func TestAProjectReadsEachOfItsSourceRepositoriesUnderItsOwnRule(t *testing.T) {
 // TestASourceNamingNoRepositoryMovesWithTheDefaultRepository: ALPHA's first source names no
 // repository, so it reads ALPHA's default repository; once that moves to acme/alpha-next, the pass
 // after it records ALPHA's rows under acme/alpha-next and acme/alpha-ops, builds acme/alpha-next's
-// days, and ALPHA's deploy-frequency reads its two deploys; acme/alpha-app, which no source reads
-// any more, keeps no row. Before the pass the read answers the old selection whole.
+// days under its first rule, and ALPHA's deploy-frequency reads its two deploys and acme/alpha-ops'
+// one, each through its repository; acme/alpha-app, which no source reads any more, keeps its rows
+// as they stood (none written, none deleted) and its rule, recorded with no project, and ALPHA
+// reads none of them (dispatch://INFRA-978, plan T19 path 1: which repositories a project reads is
+// a selection). Before the pass the read answers the old selection whole.
 func TestASourceNamingNoRepositoryMovesWithTheDefaultRepository(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedSources(t)
 	r.settle(t)
+	appRows := `select project_key || ' ' || eval_id || ' ' || series || ' ' || repo || ' ' || day::text, xmin::text
+		from eval_days where deploy_repo = '` + alphaApp + `'`
+	held := r.xmins(t, appRows)
+	if len(held) == 0 {
+		t.Fatalf("%s holds no row before the move, so its keeping them shows nothing", alphaApp)
+	}
 	r.exec(t, "move ALPHA's default repository", `update projects set default_repo = $1 where key = 'ALPHA'`, alphaNext)
-	if got := r.deploysOn(t, "ALPHA", sourcesDay); got.n != 2 {
-		t.Errorf("before the pass ALPHA reads %d deploys, want the old selection's 2", got.n)
+	if got := r.deploysOn(t, "ALPHA", sourcesDay); got != (defaultTally{n: 2, via: 2}) {
+		t.Errorf("before the pass ALPHA reads %d deploys, %d through a repository; want the old selection's 2 and 2", got.n, got.via)
 	}
 	r.settle(t)
 	repos, err := DeployReposIn(t.Context(), r.database.Pool)
@@ -633,11 +643,14 @@ func TestASourceNamingNoRepositoryMovesWithTheDefaultRepository(t *testing.T) {
 	if got := repos.Owned("ALPHA"); !slices.Equal(got, []string{alphaNext, alphaOps}) {
 		t.Errorf("after the move ALPHA's rows stand recorded under %v, want %s and %s", got, alphaNext, alphaOps)
 	}
-	if got := r.deploysOn(t, "ALPHA", sourcesDay); got.n != 3 {
-		t.Errorf("after the move ALPHA reads %d deploys, want acme/alpha-next's 2 and acme/alpha-ops' 1", got.n)
+	if got := r.deploysOn(t, "ALPHA", sourcesDay); got != (defaultTally{n: 3, via: 3}) {
+		t.Errorf("after the move ALPHA reads %d deploys, %d through a repository; want acme/alpha-next's 2 and acme/alpha-ops' 1, each through it", got.n, got.via)
 	}
-	if n := r.count(t, `select count(*) from eval_days where deploy_repo = $1`, alphaApp); n != 0 {
-		t.Errorf("acme/alpha-app, which no source reads any more, keeps %d rows, want none", n)
+	if differ := sameValues(r.xmins(t, appRows), held, func(xmin string) string { return "written by " + xmin }); len(differ) > 0 {
+		t.Errorf("%s, which no source reads any more, did not keep its rows as they stood, first ones:\n\t%s", alphaApp, strings.Join(differ, "\n\t"))
+	}
+	if n := r.count(t, `select count(*) from eval_days_rules where repo = $1 and project_key is null and kept_since is not null`, alphaApp); n != 1 {
+		t.Errorf("%s's rule is recorded with no project and its start %d times, want once", alphaApp, n)
 	}
 }
 

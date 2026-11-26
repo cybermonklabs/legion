@@ -691,12 +691,15 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 	projects := days.projects()
 	if family.walk == walkDelivery {
 		// A deploy counts for the projects of the pull requests it ships and its repository's
-		// owner key, so the delivery days of one owner can move another's: every owner's are
-		// judged together, a repository's own owner key among them though the store holds no row
-		// of it yet (trackKept tracks it with the rest).
+		// owner keys, so the delivery days of one owner can move another's: every owner's are
+		// judged together, a repository's own plain owner key and its source key (sourceKey) among
+		// them though the store holds no row of either yet (trackKept tracks them with the rest).
 		if kept != nil {
 			for _, repo := range kept.is {
 				r.noteOwners([]string{OwnerKey(repo.name, nil, nil)})
+				if !IsEventsRepo(repo.name) {
+					r.noteOwners([]string{sourceKey(repo.name)})
+				}
 			}
 		}
 		projects = r.owners
@@ -843,10 +846,16 @@ func firstOr(values []string, none string) string {
 // are what their input builds, and its first input days move with them. A key the named days
 // already track keeps the earlier start.
 func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered map[string]daySpan, firsts map[string]map[evalKey]time.Time) {
+	rules := make(map[string]delivery.DeliverySettings, len(r.deployRepos))
+	for _, kept := range r.deployRepos {
+		rules[kept.name] = kept.rule
+	}
 	for _, repo := range slices.Sorted(maps.Keys(covered)) {
 		span := covered[repo]
-		rule, _ := r.ruleOf(repo)
-		// Each owner's, a repository's own owner key among them (writeNamed).
+		// The rule the repository's rows are built under (keptRepos): its source's, or the one
+		// recorded with its rows where no source reads it any more.
+		rule := rules[repo]
+		// Each owner's, a repository's own owner keys among them (writeNamed).
 		for _, project := range r.owners {
 			for _, zero := range ZeroDeliveryDay(project, r.today, []delivery.DeliverySettings{rule}).Rows {
 				key := keyOf(zero)

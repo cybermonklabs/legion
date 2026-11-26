@@ -33,8 +33,8 @@ const (
 // the deploy repository, which is no project's default. No project has a default repository, and
 // no pull request's attribution inputs are stored (not read from GitHub yet), so each counts by
 // the one list its row's issue_key gives (evals' attribution): its issue's project, or none, which
-// reaches no project; but a deploy that ships no pull request counts for its source's project
-// (dispatch://INFRA-978, R12).
+// reaches no project; but a deploy that ships no pull request counts under its repository's source
+// key, which its source's project reads (dispatch://INFRA-978, R12).
 //
 //   - acme/alpha#1 names BETA-1, so it counts for BETA;
 //   - acme/alpha#2 names no issue, so it counts for no project;
@@ -46,7 +46,8 @@ const (
 //     them: it counts once for BETA (acme/alpha#1) and once for ALPHA (acme/alpha#3), and so do its
 //     production job's push run's results; acme/alpha#2 adds no project;
 //   - deploy runs 102 (reaches production, ships nothing) and 103 (its production job fails) ship
-//     none, so they count for OWNER alone, the project whose source reads acme/alpha;
+//     none, so they count under acme/alpha's source key alone, which OWNER, whose source reads
+//     acme/alpha, reads;
 //   - PR-checks run 201 of acme/alpha#3 counts for ALPHA, its pull request's project, and so does
 //     its job; PR-checks run 202 of acme/alpha#2 counts for no project.
 //
@@ -185,6 +186,37 @@ func (r rig) members(t *testing.T, project string) []string {
 	return members
 }
 
+// readFacts is project's read of the stored day rows, each as rowFacts states it, sorted: the rows
+// of each key the project reads (eval_project_owners: its own and each owner key's), an owner key's
+// via_repository counted only where the project reads the key through the repository (viaAsRead).
+func (r rig) readFacts(t *testing.T, project string) []string {
+	t.Helper()
+	rows, err := r.database.Pool.Query(t.Context(), `select owner, via from eval_project_owners where project_key = $1 order by owner`, project)
+	if err != nil {
+		t.Fatalf("read the keys %s reads: %v", project, err)
+	}
+	via := map[string]bool{}
+	var owner string
+	var through bool
+	if _, err := pgx.ForEachRow(rows, []any{&owner, &through}, func() error {
+		via[owner] = through
+		return nil
+	}); err != nil {
+		t.Fatalf("read the keys %s reads: %v", project, err)
+	}
+	var facts []string
+	for _, key := range slices.Sorted(maps.Keys(via)) {
+		for _, row := range r.stored(t, key) {
+			if !via[key] {
+				row.ViaRepository = 0
+			}
+			facts = append(facts, rowFacts(row))
+		}
+	}
+	slices.Sort(facts)
+	return facts
+}
+
 // rowFacts is one day row as the attribution cases state it: `<slug> <series> <repo>: n=… via=…`,
 // with the value its fold reads beside them (sum for a count, num/den for a share, the samples
 // for a quantile).
@@ -291,14 +323,15 @@ func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []str
 // issue for its repository's owner key (owners.go, INFRA-2916 R15); the deploy that ships pull
 // requests of two projects counts once in each, its production job's push run too, and, as it
 // ships one with no issue, once for its repository's owner key with those two as its sharers; the
-// deploys that ship none count for OWNER alone, the project whose source reads acme/alpha
-// (INFRA-978 R12), and for no owner key; a PR-checks run counts for its pull request's project,
-// and one of a pull request with no issue for that repository's owner key; every via_repository is
-// 0 in ALPHA's and BETA's rows and n in an owner key's; and GAMMA, with nothing, gets no row. Then
-// the day is written again unchanged (no row rewritten), and once acme/alpha#3 names BETA-1 the
-// day's rewrite moves it, the
-// deploy that shipped it and its PR-checks run out of ALPHA: ALPHA's acme/alpha rows of the
-// pull-request evals, which held it alone, are deleted, as a whole walk over the moved pull
+// deploys that ship none count under acme/alpha's source key alone (sourceKey), and in no project's
+// own rows and no other owner key, and OWNER, the project whose source reads acme/alpha as the
+// rule recorded with its rows says (eval_days_rules), reads them through the repository (INFRA-978
+// R12); a PR-checks run counts for its pull request's project, and one of a pull request with no
+// issue for that repository's owner key; every via_repository is 0 in ALPHA's and BETA's rows and n
+// in an owner key's; and GAMMA and OWNER, with nothing of their own, get no row. Then the day is
+// written again unchanged (no row rewritten), and once acme/alpha#3 names BETA-1 the day's rewrite
+// moves it, the deploy that shipped it and its PR-checks run out of ALPHA: ALPHA's acme/alpha rows
+// of the pull-request evals, which held it alone, are deleted, as a whole walk over the moved pull
 // request holds none, and so is every lead time of ALPHA, whose one day now ships none of its pull
 // requests, and every row of a deploy or a CI run; its items of the day that it no longer holds
 // are deleted; written again, the moved day rewrites nothing.
@@ -313,10 +346,11 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 		t.Fatalf("read the day: %v", err)
 	}
 	read := reads[0]
+	source := sourceKey(alphaRepo)
 	wantOwners := []string{OwnerKey(alphaRepo, nil, nil), OwnerKey(alphaRepo, []string{"ALPHA", "BETA"}, nil), OwnerKey(zetaRepo, nil, nil)}
-	if got := dayProjects(read); !slices.Equal(got, slices.Concat(wantOwners, []string{"ALPHA", "BETA", "OWNER"})) {
-		t.Fatalf("the day's rows count for %v, want ALPHA, BETA, OWNER and the owner keys %v (acme/alpha#2 and acme/zeta#1 through their repositories, runs 102 and 103 for OWNER, GAMMA holds nothing)",
-			got, wantOwners)
+	if got, want := dayProjects(read), slices.Sorted(slices.Values(slices.Concat(wantOwners, []string{source, "ALPHA", "BETA"}))); !slices.Equal(got, want) {
+		t.Fatalf("the day's rows count for %v, want %v: ALPHA, BETA, the owner keys %v (acme/alpha#2 and acme/zeta#1 through their repositories) and acme/alpha's source key (runs 102 and 103); GAMMA and OWNER hold nothing of their own",
+			got, want, wantOwners)
 	}
 	t.Logf("wrote %v", r.refreshDays(t, nil, attributionDay))
 
@@ -371,9 +405,10 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			"production-deploy minutes acme/alpha: n=1 via=0 samples=[17]",
 		},
 		"GAMMA": nil,
-		// Runs 102 and 103, which ship no pull request, through the repository OWNER's source reads
-		// (R12), and 102's and 103's production jobs.
-		"OWNER": {
+		"OWNER": nil,
+		// Runs 102 and 103, which ship no pull request, under the repository's source key, which
+		// OWNER's source reads (R12), and 102's and 103's production jobs.
+		source: {
 			"deploy-frequency deploys all: n=1 via=1 sum=1 with_prs=0",
 			"deploy-frequency deploys acme/alpha: n=1 via=1 sum=1 with_prs=0",
 			"deploy-run-success runs all: n=2 via=2 share=1/2",
@@ -419,6 +454,20 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			t.Errorf("the day rows of %s:\n%s\nwant:\n%s", project, strings.Join(got, "\n"), strings.Join(want[project], "\n"))
 		}
 	}
+	// OWNER reads the source key's rows once the rule of acme/alpha its rows stand recorded under
+	// names it (eval_days_rules, which a pass's commit writes and this walk does not), each through
+	// the repository, and no owner key's else, as it publishes no default repository.
+	if got := r.readFacts(t, "OWNER"); len(got) != 0 {
+		t.Errorf("before the rule is recorded OWNER reads %v, want nothing", got)
+	}
+	if _, err := r.database.Pool.Exec(ctx, `
+		insert into eval_days_rules (repo, project_key, production_job_names, kept_since) values ($1, 'OWNER', $2, $3)
+	`, alphaRepo, settings.ProductionJobNames, attributionDay); err != nil {
+		t.Fatalf("record acme/alpha's rule: %v", err)
+	}
+	if got := r.readFacts(t, "OWNER"); !slices.Equal(got, want[source]) {
+		t.Errorf("OWNER reads:\n%s\nwant the source key's rows:\n%s", strings.Join(got, "\n"), strings.Join(want[source], "\n"))
+	}
 	// acme/alpha's runs make it the one repository whose rows of the evals that read the deploy
 	// repository are kept: those evals' items are counted under it, and the pull requests once more
 	// under none, as pr-open-to-merge and rework-share count them.
@@ -435,8 +484,9 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
 		},
 		"GAMMA": nil,
-		// Runs 102 and 103 ship no pull request: OWNER's, whose source reads acme/alpha (R12).
-		"OWNER": {
+		"OWNER": nil,
+		// Runs 102 and 103 ship no pull request: the source key's, which OWNER reads (R12).
+		source: {
 			"ci run:acme/alpha/102 acme/alpha 2026-11-03 as acme/alpha",
 			"ci run:acme/alpha/103 acme/alpha 2026-11-03 as acme/alpha",
 			"delivery run:acme/alpha/102 acme/alpha 2026-11-03 as acme/alpha",
@@ -466,14 +516,14 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			t.Errorf("%s is counted in %d projects, want none: it reaches no project through an issue", none, n)
 		}
 	}
-	// Runs 102 and 103 ship no pull request: they count for OWNER, whose source reads acme/alpha,
-	// and for no other project and no owner key (R12), as do their push runs.
+	// Runs 102 and 103 ship no pull request: they count under acme/alpha's source key, which OWNER
+	// reads, and for no project and no other owner key (R12), as do their push runs.
 	for _, owned := range []string{"run:acme/alpha/102", "run:acme/alpha/103"} {
-		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and project_key <> 'OWNER'`, owned); n != 0 {
-			t.Errorf("%s is counted in %d projects or owner keys besides OWNER, want none", owned, n)
+		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and project_key <> $2`, owned, source); n != 0 {
+			t.Errorf("%s is counted in %d projects or owner keys besides %s, want none", owned, n, source)
 		}
-		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and project_key = 'OWNER' and family = $2`, owned, KindDelivery); n != 1 {
-			t.Errorf("%s is counted %d times in OWNER's deploys, want once", owned, n)
+		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and project_key = $2 and family = $3`, owned, source, KindDelivery); n != 1 {
+			t.Errorf("%s is counted %d times in %s's deploys, want once", owned, n, source)
 		}
 	}
 	// The same day written again holds the same values: no row is rewritten.
@@ -1017,21 +1067,37 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 
 // TestADeployThatShipsNoPullRequestCountsForItsSourcesProjectAlone (dispatch://INFRA-978, R12 and
 // A8): over the settled three-source history, acme/alpha-ops' deploy 2001, which ships no pull
-// request in a repository that is no project's default, counts for ALPHA, whose source names
-// acme/alpha-ops, and for no other project; acme/alpha-app's 1001, in ALPHA's default repository,
-// counts for ALPHA once, not once for its source and once more for the default repository; each
-// reaches ALPHA through its repository (via_repository). Red under the rule that counts a deploy
-// shipping no pull request for no project: ALPHA counts neither.
+// request in a repository that is no project's default, is a deploy of acme/alpha-ops' source key
+// alone (sourceKey), which ALPHA, whose source names acme/alpha-ops, reads through the repository,
+// and no other project; acme/alpha-app's 1001, in ALPHA's default repository, is a deploy of
+// acme/alpha-app's source key alone, not of its plain owner key too, which ALPHA reads by its
+// default, so ALPHA counts it once, not once for its source and once more for the default
+// repository. ALPHA's read counts each among its deploys once and OMEGA's neither, and each reaches
+// ALPHA through its repository: its via_repository is read through the key (viaAsRead). Red under
+// the rule that counts such a deploy in its source's project's own rows, which a project reads
+// through no repository: ALPHA reads 0 of them through a repository.
 func TestADeployThatShipsNoPullRequestCountsForItsSourcesProjectAlone(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedSources(t)
 	r.settle(t)
-	for _, deploy := range []string{RunMember(alphaOps, 2001), RunMember(alphaApp, 1001)} {
-		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and family = $2 and project_key <> 'ALPHA'`, deploy, KindDelivery); n != 0 {
-			t.Errorf("%s counts for %d other projects' deploys, want none", deploy, n)
+	for _, deploy := range []struct {
+		repo string
+		id   int64
+	}{{alphaOps, 2001}, {alphaApp, 1001}} {
+		member, key := RunMember(deploy.repo, deploy.id), sourceKey(deploy.repo)
+		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and family = $2 and project_key <> $3`, member, KindDelivery, key); n != 0 {
+			t.Errorf("%s is a deploy of %d other projects or keys than %s, want none", member, n, key)
 		}
-		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and family = $2 and project_key = 'ALPHA'`, deploy, KindDelivery); n != 1 {
-			t.Errorf("%s counts %d times among ALPHA's deploys, want once", deploy, n)
+		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and family = $2 and project_key = $3`, member, KindDelivery, key); n != 1 {
+			t.Errorf("%s is a deploy of %s %d times, want once", member, key, n)
+		}
+		if got := r.sourceReaders(t, deploy.repo)[deploy.repo]; got != "ALPHA via=true" {
+			t.Errorf("%s is read by [%s], want [ALPHA via=true]", key, got)
+		}
+		for project, counts := range map[string]bool{"ALPHA": true, "OMEGA": false} {
+			if got := slices.Contains(r.deployItems(t, project, sourcesDay), member); got != counts {
+				t.Errorf("%s counts %s among its deploys %t, want %t", project, member, got, counts)
+			}
 		}
 	}
 	if got := r.deploysOn(t, "ALPHA", sourcesDay); got != (defaultTally{n: 2, via: 2}) {
