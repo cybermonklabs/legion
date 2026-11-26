@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // specgraph is logic over bytes: it reaches no store, no route and no database, so Dispatch's
@@ -14,9 +16,11 @@ import (
 // whole import graph, its tests' imports aside.
 func TestSpecgraphReachesNoStore(t *testing.T) {
 	t.Parallel()
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".").CombinedOutput()
+	// Standard output alone is the list: what go writes on standard error (a module it downloads)
+	// is no package.
+	out, err := testgo.Output(exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "."))
 	if err != nil {
-		t.Fatalf("go list -deps: %v\n%s", err, out)
+		t.Fatalf("go list -deps: %v", err)
 	}
 	deps := strings.Fields(string(out))
 	if !slices.Contains(deps, "github.com/sjawhar/envoy/internal/dispatch/specgraph") {

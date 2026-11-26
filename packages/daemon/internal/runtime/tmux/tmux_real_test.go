@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
@@ -98,8 +99,8 @@ func standins(t *testing.T) (legion, omp string) {
 			if name == "legion" {
 				args = append(args, "-ldflags", leakguardtest.NoCurlLinked)
 			}
-			if out, err := exec.Command("go", append(args, source)...).CombinedOutput(); err != nil {
-				standinErr = fmt.Errorf("build %s: %v\n%s", source, err, out)
+			if _, err := testgo.Output(exec.Command("go", append(args, source)...)); err != nil {
+				standinErr = fmt.Errorf("build %s: %w", source, err)
 				return
 			}
 		}

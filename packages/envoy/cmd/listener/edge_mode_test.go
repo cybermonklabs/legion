@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // The admission: an edge listener admits a broker token alone, and only one whose projects are
@@ -536,7 +537,7 @@ func TestAnEdgeRefusalNamesOnlyTheRefusedTopics(t *testing.T) {
 func TestEdgeListenerLinksNoDispatchStore(t *testing.T) {
 	t.Parallel()
 	const self = "github.com/sjawhar/envoy/cmd/listener"
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".").Output()
+	out, err := testgo.Output(exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "."))
 	if err != nil {
 		t.Fatalf("go list -deps: %v", err)
 	}

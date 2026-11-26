@@ -283,7 +283,6 @@ on:
       - 'packages/pi-legion/package.json'
       - 'packages/pi-shared/package.json'
       - 'packages/proof-editor/package.json'
-      - 'packages/test-fixtures/package.json'
       - 'scripts/third-party-notices.ts'
       - 'scripts/e2e/lib/held-port.py'
       - '!**/*_test.go'

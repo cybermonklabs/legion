@@ -4,7 +4,8 @@
 // field likeness: a struct of the client's own with one field of the wire body is a finding as
 // surely as a copy of the whole body, and so are a map, an anonymous struct and a value held as an
 // interface. It reads only the standard library, and the compiler's export data for every
-// package the clients import (go list -deps -export), so it adds no module to the one it runs in.
+// package the clients import (go list -deps -export), so it adds no module to the one it runs in;
+// that go list runs through testgo, this module's helper for a go command a test starts.
 package wirecheck
 
 import (
@@ -25,6 +26,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // Finding is one value a call to the other party encodes or decodes with a type the wire package
@@ -168,16 +171,15 @@ type listedPackage struct {
 }
 
 // goList is `go list -deps -export -json` of pkgs in dir: every package pkgs reach, each with the
-// export data the compiler wrote for it.
+// export data the compiler wrote for it. go's standard error reaches the test's output as go writes
+// it (testgo.Output), and a failure's error carries both of go's streams.
 func goList(dir string, pkgs []string) ([]listedPackage, error) {
 	args := append([]string{"list", "-deps", "-export", "-json=ImportPath,Dir,Export,GoFiles,CgoFiles,ImportMap,DepOnly,Error"}, pkgs...)
 	command := exec.Command("go", args...)
 	command.Dir = dir
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
-	out, err := command.Output()
+	out, err := testgo.Output(command)
 	if err != nil {
-		return nil, fmt.Errorf("go %s in %s: %v\n%s", strings.Join(args, " "), dir, err, stderr.String())
+		return nil, fmt.Errorf("go %s in %s: %w", strings.Join(args, " "), dir, err)
 	}
 	var listed []listedPackage
 	decoder := json.NewDecoder(bytes.NewReader(out))

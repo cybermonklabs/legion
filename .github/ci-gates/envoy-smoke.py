@@ -6,10 +6,10 @@
 # themselves. check-image-trigger-paths.sh holds the filter to the image's inputs from the
 # other side, proving the list complete; this gate proves no pattern of the filter is idle.
 GATE = gate("envoy_smoke", "envoy-smoke", runs=[
-    step_run("envoy-smoke", "Container smoke test (testcontainers)", "go test -tags smoke -v -timeout 5m ./internal/smoke/",
-             ENVOY, ["./internal/smoke/"], tags="smoke"),
-    step_run("envoy-smoke", "Live tests of envoy-infra's host:Listener", "go test -tags pulumilive -v -timeout 15m ./host/",
-             INFRA, ["./host/"], tags="pulumilive"),
+    step_run("envoy-smoke", "Container smoke test (testcontainers)",
+             "go test -count=1 -tags smoke -v -timeout 5m ./internal/smoke/", ENVOY, ["./internal/smoke/"], tags="smoke"),
+    step_run("envoy-smoke", "Live tests of envoy-infra's host:Listener",
+             "go test -count=1 -tags pulumilive -v -timeout 15m ./host/", INFRA, ["./host/"], tags="pulumilive"),
 ], exact=[
     pinned_step("envoy-smoke", SCHEMA_STEP, INFRA, SCHEMA_SCRIPT, [
         (INFRA, ["./cmd/pulumi-resource-envoy-infra"], "go build ./cmd/pulumi-resource-envoy-infra", {"mode": "build"}),

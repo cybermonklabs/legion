@@ -75,6 +75,7 @@ from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact,
 from ci_filter_coverage import at as at_in, gate as gate_in
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import go_skips_dir, tag_sets
+from workflow_paths import glob_regex
 import go_legs
 
 ENVOY = "packages/envoy"
@@ -134,7 +135,25 @@ def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
     it."""
     if not workflow:
         reads = list(reads) + CI_SELF + job_self(job)
-    return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job))
+    return gate_in(filter, job, runs, with_fixtures_manifest(reads), step, exact, workflow or job_file(job))
+
+
+def with_fixtures_manifest(reads):
+    """reads, and the shared test fixtures' manifest wherever they hold a file of the fixtures'
+    own: a module that imports @legion/test-fixtures/* is resolved through that manifest's
+    `exports`. While the manifest declares no install script it is no read of bun_job (that
+    function says why), so which gates read it is derived here from which gates read the
+    fixtures, never kept by hand."""
+    reads = list(reads)
+    globs = {r.glob for r in reads}
+    # A gate that already reads the manifest needs no second read with this reason: envoy_smoke,
+    # whose one fixtures read is the manifest its image build copies, and test_fixtures, whose
+    # packages/test-fixtures/** takes it in.
+    covered = any(glob_regex(g).fullmatch(TEST_FIXTURES_MANIFEST) for g in globs)
+    if not covered and any(g.startswith(f"{TEST_FIXTURES}/") for g in globs):
+        reads.append(Read(TEST_FIXTURES_MANIFEST, f"a module importing @legion/test-fixtures/* (this gate reads "
+                                                  f"{TEST_FIXTURES}) resolves it through this manifest's exports"))
+    return reads
 
 
 def targets(path: str, key: str) -> list:
@@ -340,9 +359,26 @@ def bun_job(job, workflow=""):
         ("patches/**", f"{install} applies the patches `package.json#patchedDependencies` names"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
+        # Every workspace manifest, but the shared test fixtures' while it declares no script an install
+        # runs. A frozen install installs what bun.lock records and runs no script of that manifest:
+        # it declares none, and the moment it declares one (runs_at_install) every Bun gate reads it
+        # again. A registry dependency the lockfile lacks fails the install of every job that reads
+        # the fixtures, which with_fixtures_manifest selects; a version or `workspace:` change passes
+        # the install and changes nothing it does.
         *[(f"{w}/package.json", f"{install}: `package.json#workspaces` lists {w}; a frozen install reads every workspace manifest")
-          for w in WORKSPACES],
+          for w in WORKSPACES if w != TEST_FIXTURES or runs_at_install(w)],
     )
+
+
+# The scripts of a workspace manifest Bun runs during an install, a frozen one included: Bun 1.4.4
+# runs preinstall, install, postinstall and prepare of a workspace another depends on.
+INSTALL_SCRIPTS = ("preinstall", "install", "postinstall", "prepare")
+
+
+def runs_at_install(workspace):
+    """Whether the workspace's manifest declares a script an install runs (INSTALL_SCRIPTS)."""
+    scripts = json.loads(Path(f"{workspace}/package.json").read_text()).get("scripts", {})
+    return any(name in scripts for name in INSTALL_SCRIPTS)
 
 
 def biome(where):
@@ -429,8 +465,10 @@ def at_browser(step, job=BROWSER_SHARD):
 CONTRACTS_SRC = "packages/contracts/src/**"
 ENVOY_CLIENT_SRC = "packages/envoy-client/src/**"
 BROKER_CLIENT_SRC = "packages/cipher-client/**"
-# The shared test fixtures every other Bun package's tests import.
-TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
+# The shared test fixtures every other Bun package's tests import, and their manifest.
+TEST_FIXTURES = "packages/test-fixtures"
+TEST_FIXTURES_SRC = f"{TEST_FIXTURES}/src/**"
+TEST_FIXTURES_MANIFEST = f"{TEST_FIXTURES}/package.json"
 
 # The test job's run of the live proofs' libraries, cited by its whole run: text: the root
 # package.json's test:e2e-lib (bun test --timeout 200000 scripts/e2e/lib), which every runner uses.
@@ -2295,6 +2333,9 @@ def browser_gate(filter, job):
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, from the new URL TABLE_PATH holds, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         (f"{ENVOY}/internal/dispatch/api/testdata/text-refusals.json", "read at `packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` and `packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile`, from the new URL textRefusalsFile holds, for that spec's rows, which are the list's rows in each combination the spec runs"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
+        ("packages/test-fixtures/src/go-command.ts",
+         "`packages/dispatch/e2e/harness-postgres.ts#goOutput` imports it, which `packages/dispatch/e2e/global-setup.ts#startStacks` "
+         "loads through e2e/harness-pool.ts, and `packages/dispatch/e2e/harness-up.ts#startStacks` too"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/run-broker.sh#$e2e_dir/../../envoy/scripts/lib/pg-url.sh` sources it, and `packages/dispatch/e2e/harness-listeners.ts#realBrokerListeners` "
                                            f"starts that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "
                                            f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}"),

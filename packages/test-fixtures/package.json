@@ -25,6 +25,11 @@
       "types": "./src/fixture-secret.ts",
       "bun": "./src/fixture-secret.ts"
     },
+    "./go-command": {
+      "types": "./src/go-command.ts",
+      "bun": "./src/go-command.ts",
+      "default": "./src/go-command.ts"
+    },
     "./hang-guard": {
       "types": "./src/hang-guard.ts",
       "bun": "./src/hang-guard.ts"

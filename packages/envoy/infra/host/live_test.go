@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // The live tests apply Pulumi YAML programs with the pulumi CLI against this machine's Docker. Each
@@ -339,6 +340,6 @@ func main() {
 	pulumitest.NewCLI(t, dir).Run("package", "add", plugin)
 	build := exec.Command("go", "build", "./...")
 	build.Dir = dir
-	out, err := build.CombinedOutput()
-	require.NoError(t, err, "go build ./... of the SDK consumer:\n%s", out)
+	_, err := testgo.Output(build)
+	require.NoError(t, err, "go build ./... of the SDK consumer")
 }

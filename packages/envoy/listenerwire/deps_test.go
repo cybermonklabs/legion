@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // listenerwire imports the standard library and nothing else, so a client links no package of the
@@ -11,7 +13,7 @@ import (
 // nothing and fails as UNKNOWN.
 func TestListenerwireImportsOnlyTheStandardLibrary(t *testing.T) {
 	const self = "github.com/sjawhar/envoy/listenerwire"
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}} {{.Standard}}", ".").Output()
+	out, err := testgo.Output(exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}} {{.Standard}}", "."))
 	if err != nil {
 		t.Fatalf("go list -deps: %v", err)
 	}

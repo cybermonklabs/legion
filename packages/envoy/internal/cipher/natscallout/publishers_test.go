@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/natsgrant"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // calloutPublishersFile is the list legacy-subjects-gate.sh's fact (a3), the publishers, reads for
@@ -57,10 +58,8 @@ func declaredValues[T ~string](t *testing.T, conversion string) []T {
 	require.NoError(t, err)
 	list := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Dir,GoFiles,Export", path)
 	list.Dir = module
-	var stderr strings.Builder
-	list.Stderr = &stderr
-	output, err := list.Output()
-	require.NoError(t, err, "go list %s's packages: %s", path, stderr.String())
+	output, err := testgo.Output(list)
+	require.NoError(t, err, "go list %s's packages", path)
 	type listedPackage struct {
 		ImportPath, Dir, Export string
 		GoFiles                 []string

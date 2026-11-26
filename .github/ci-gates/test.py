@@ -8,7 +8,7 @@
 # nats-image.test.ts starts is lint's, which runs that file on every run; this job's bun test of
 # scripts/e2e/lib leaves it out (E2E_LIB_TESTS).
 GATE = gate("test", "test", runs=[
-    script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
+    script_run("scripts/e2e/lib/held-port.test.ts", 'await goOutput(["build", "-o", listener, "./cmd/listener"], { cwd: envoy });',
                at("test", E2E_LIB_TESTS), ENVOY, ["./cmd/listener"], mode="build"),
 ], reads=reads(
     # Every harness step but three queues its harness through the pool, and the wait step is the

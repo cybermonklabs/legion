@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // The transaction boundary of the daemon: every transaction, every connection taken from a pool
@@ -106,7 +108,7 @@ func newBoundaryGuard(dir string) *boundaryGuard {
 		expected: func() ([]string, error) {
 			list := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "./cmd/legion")
 			list.Dir = dir
-			out, err := list.Output()
+			out, err := testgo.Output(list)
 			if err != nil {
 				return nil, fmt.Errorf("go list -deps ./cmd/legion: %w", err)
 			}

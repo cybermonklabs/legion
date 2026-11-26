@@ -742,7 +742,10 @@ else
   echo "dev-stack: building ${STACK_BINARIES[*]}..." >&2
   (
     cd "$ENVOY_DIR"
-    GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"
+    # GOTOOLCHAIN=auto: a shell whose GOTOOLCHAIN is local (setup-go sets it, a golang image sets
+    # it) and whose go is older than go.work's go line would refuse the build; auto lets go fetch
+    # the version go.work names instead, so no version is written here.
+    GOTOOLCHAIN=auto go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"
   )
   for stack_entry in "${STACK_ENTRIES[@]}"; do
     built="${stack_entry#*=}"

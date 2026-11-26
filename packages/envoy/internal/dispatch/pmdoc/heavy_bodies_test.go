@@ -17,6 +17,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // The bodies a reader's browser tab froze on (sjawhar/legion#2519) are read here through the
@@ -378,7 +379,7 @@ const countedLeftOut = "github.com/yuin/goldmark/extension"
 // countedLeftOut.
 func countedPackages(t *testing.T) []string {
 	t.Helper()
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", ".").Output()
+	out, err := testgo.Output(exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", "."))
 	if err != nil {
 		t.Fatalf("listing the packages this one imports: %v", err)
 	}
@@ -419,8 +420,8 @@ func newCountedRun(t *testing.T) *countedRun {
 	run := &countedRun{binary: filepath.Join(dir, "counted.test"), dir: dir}
 	build := exec.Command("go", "test", "-c", "-o", run.binary, "-covermode=atomic",
 		"-coverpkg="+strings.Join(countedPackages(t), ","), ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building this package's tests with coverage counters: %v\n%s", err, out)
+	if _, err := testgo.Output(build); err != nil {
+		t.Fatalf("building this package's tests with coverage counters: %v", err)
 	}
 	run.baseline = run.statements(t, heavyOp{mode: "none"}, heavyOutcome{})
 	if run.baseline == 0 {

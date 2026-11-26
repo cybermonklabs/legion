@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/clitest"
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -42,8 +43,8 @@ var legionBuild = sync.OnceValues(func() (string, error) {
 	if deadline, ok := os.LookupEnv(testDeadlineEnv); ok {
 		ldflags += " -X github.com/sjawhar/legion/daemon/internal/programbound.linkedDeadline=" + deadline
 	}
-	if out, err := exec.Command("go", "build", "-ldflags", ldflags, "-o", binary, ".").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go build: %v\n%s", err, out)
+	if _, err := testgo.Output(exec.Command("go", "build", "-ldflags", ldflags, "-o", binary, ".")); err != nil {
+		return "", fmt.Errorf("go build: %w", err)
 	}
 	return binary, nil
 })

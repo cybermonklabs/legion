@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/wirecheck"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // The listener's Go clients encode every request body and decode every answer with a type this
@@ -104,7 +105,7 @@ func TestTheRouteGuardNamesEveryFormOfAListenerRoute(t *testing.T) {
 // from no literal at all, which nothing in the package writes, is outside it. A package whose
 // source this read finds no file of has read nothing and fails as UNKNOWN.
 func TestTheLoadTestCallsTheListenerOnlyThroughItsClient(t *testing.T) {
-	out, err := exec.Command("go", "list", "-f", "{{.Dir}}{{range .GoFiles}} {{.}}{{end}}", "../loadtest").Output()
+	out, err := testgo.Output(exec.Command("go", "list", "-f", "{{.Dir}}{{range .GoFiles}} {{.}}{{end}}", "../loadtest"))
 	if err != nil {
 		t.Fatalf("go list ../loadtest: %v", err)
 	}

@@ -34,6 +34,7 @@ GATE = gate("ci_filters", "ci-filters", runs=[
                  "its directory walk, its constraint-name reader, is_tag, platforms and its go list "
                  "stream decoder"),
     ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
+    (TEST_FIXTURES_MANIFEST, "ci_job_reads.py's runs_at_install reads its scripts to choose bun_job's reads"),
     (GO_TARGETS, "ci_job_reads.py expands the notices and pack runs over it"),
     (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),
     (INFRA_TARGETS, "ci_job_reads.py expands the notices runs over it"),

@@ -217,7 +217,9 @@ func TestAFailedBuildFailsEveryTestThatAsksUnderMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := runBuildChild(t, "main", goFailOnceEnv+"="+failOnce)
-	if run.exit != 1 || !strings.Contains(run.out, "--- FAIL: TestBuildChild/first") || !strings.Contains(run.out, "--- FAIL: TestBuildChild/second") || strings.Count(run.out, "go stand-in: this build fails, once") != 2 {
+	// Three times: once as go writes it, which testgo.Output hands to the test binary's standard
+	// error while the build runs, and once in each failing test's message.
+	if run.exit != 1 || !strings.Contains(run.out, "--- FAIL: TestBuildChild/first") || !strings.Contains(run.out, "--- FAIL: TestBuildChild/second") || strings.Count(run.out, "go stand-in: this build fails, once") != 3 {
 		t.Fatalf("the process exited %d; want 1, both tests failing, each with go's output:\n%s", run.exit, run.out)
 	}
 	if len(run.builds) != 1 || len(run.paths) != 0 {

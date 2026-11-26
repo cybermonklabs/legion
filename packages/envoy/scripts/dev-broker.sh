@@ -438,6 +438,9 @@ DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 # with. Each entry is <binary>=<command directory under cmd/>. ---
 echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
+# GOTOOLCHAIN=auto: a shell whose GOTOOLCHAIN is local (setup-go sets it, a golang image sets it)
+# and whose go is older than go.work's go line would refuse the build; auto lets go fetch the
+# version go.work names instead, so no version is written here.
 for entry in broker=cipherd dev-oidc-issuer=dev-oidc-issuer dev-airlock-stands=dev-proxy-stands \
   agent-secrets=cipher agent-secrets-helper=cipher-helper agent-secrets-devrelay=cipher-devrelay; do
   # DEV_BROKER_BROKER_BIN stands in for the broker's build (the header), so nothing else of the
@@ -446,7 +449,7 @@ for entry in broker=cipherd dev-oidc-issuer=dev-oidc-issuer dev-airlock-stands=d
     cp "$DEV_BROKER_BROKER_BIN" "$BROKER_BIN"
     continue
   fi
-  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/${entry%%=*}" "./cmd/${entry#*=}" )
+  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=auto go build -o "$BIN_DIR/${entry%%=*}" "./cmd/${entry#*=}" )
 done
 # The end of the build, which github-profile-check.sh waits for under a bound of its own: on a
 # cold build cache the six builds take far longer than the start of what they built.

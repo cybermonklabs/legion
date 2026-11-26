@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { goOutputSync } from "@legion/test-fixtures/go-command";
 
 // The listener and the Legion daemon refuse a nats-server below the floor packages/envoy/natsversion
 // holds (every 2.10 among them), so whatever starts a NATS server for them must start one the floor
@@ -96,14 +97,10 @@ const knownDrivers = [
 const floorDir = mkdtempSync(join(tmpdir(), "natsfloor-"));
 afterAll(() => rmSync(floorDir, { recursive: true, force: true }));
 const floor = join(floorDir, "natsfloor");
-const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {
-  cwd: join(root, "packages/envoy"),
-  stdout: "pipe",
-  stderr: "pipe",
-});
-if (build.exitCode !== 0) {
-  throw new Error(`go build ./natsversion/cmd/natsfloor exited ${build.exitCode}: ${build.stderr}`);
-}
+// go's standard error reaches the test's output as go writes it, so a module download that stalls
+// the build is named before the run's timeout ends it; a failure throws with both streams.
+const envoyModule = join(root, "packages/envoy");
+goOutputSync(["build", "-o", floor, "./natsversion/cmd/natsfloor"], { cwd: envoyModule });
 
 /** natsfloor's answer lines for args; any exit but 0 throws. */
 function askFloor(args: string[]): string[] {

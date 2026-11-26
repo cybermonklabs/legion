@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -33,8 +34,8 @@ func TestLookNamesItsCheckLive(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "legion")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/legion")
 	build.Dir = filepath.Join(root, "packages/daemon")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build legion: %v\n%s", err, out)
+	if _, err := testgo.Output(build); err != nil {
+		t.Fatalf("build legion: %v", err)
 	}
 	home := t.TempDir()
 	state := func() api.Issue {

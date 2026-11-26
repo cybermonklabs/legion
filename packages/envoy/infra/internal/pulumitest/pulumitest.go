@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // localRun is how to run the live tests by hand, from the repository root.
@@ -169,8 +171,8 @@ func buildPlugin() (string, error) {
 	}
 	build := exec.Command("go", "build", "-ldflags", "-X main.version=0.0.1", "-o", filepath.Join(dir, PluginName),
 		"github.com/sjawhar/envoy/infra/cmd/pulumi-resource-envoy-infra")
-	if out, err := build.CombinedOutput(); err != nil {
-		return dir, fmt.Errorf("build the plugin: %v\n%s", err, out)
+	if _, err := testgo.Output(build); err != nil {
+		return dir, fmt.Errorf("build the plugin: %w", err)
 	}
 	return dir, nil
 }

@@ -42,10 +42,19 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   Every name in it is an invented word, and its constants (`RulesHost`, `PairName` and `PairWord`, `Word`, and each rule's class) are what a test puts in the write it checks and looks for in the report, so a Go test of the guard assembles no name of any deployment's rules.
   It holds no file the guard refuses: a test of a refused rule file builds that file in its own body, often from `Rules` with one change.
 
+- Every go command a test or a test helper starts, in any of the three Go modules, goes through `packages/envoy/testgo`'s `Output`, so that what go writes on its standard error reaches the test's output as go writes it.
+  A go command whose output a test only buffers shows nothing until it returns, and a module download that stalls into the test's timeout never returns: the timeout's panic loses the buffer, and the log does not name the download.
+  `Output` returns standard output and refuses a command whose `Stdout` is set; a `Stderr` already set gets the stream too.
+  It is a public package, as `testnatsimages` is, so `packages/daemon` imports it through its `replace` of `../envoy`; Go's internal-package rule keeps that module from importing an internal package of this one.
+
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
-  One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure, and it runs the build through `testgo.Output`; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   Each build is made once per test process and shared by every test that asks for the same one, in a directory `cmdtest.Main` makes and removes, so a package that builds a command runs its tests through it: `func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }`, or `cmdtest.Run` around another harness's `Main`.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
+  Both still run go through `testgo.Output`.
+
+- A Bun test or test helper that starts go takes `goOutput` or `goOutputSync` from `@legion/test-fixtures/go-command`, which do for Bun what `testgo.Output` does for Go: go's standard error reaches the test's output as go writes it, and a failure names the command and carries both streams.
+  `goOutput` returns a promise and runs under Node as well as Bun, because Playwright's runner loads the Dispatch e2e harness under Node; `goOutputSync` is for a caller that cannot wait on a promise, takes go's standard input, and needs Bun.
 
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).

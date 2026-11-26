@@ -39,6 +39,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient/repeatprobe"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // TestACredentialThatRepeatsAKeyIsRefused: an X.509 credential that repeats a key, exactly or in
@@ -395,7 +396,7 @@ func TestAnOutOfRangeNumberHidesNothingFromTheCheck(t *testing.T) {
 // the check does not know, each fail it.
 func TestTheMirroredTypesAreGooglesLibrarys(t *testing.T) {
 	list := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "cloud.google.com/go/auth")
-	out, err := list.Output()
+	out, err := testgo.Output(list)
 	if err != nil {
 		t.Fatalf("go list -m cloud.google.com/go/auth: %v", err)
 	}

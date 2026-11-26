@@ -23,7 +23,8 @@ out of that same set, and dispatch-memory and dispatch-multiprocess, whose ceili
 read its modules and objects), go-envoy-race (every leg of envoy-go-race, envoy-go-race-api and
 envoy-go-race-docs, the envoy race lane), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose
 build cache is a directory of its own, the GOCACHE of that step's env) and go-envoy-infra
-(envoy-infra-build and envoy-infra-go, and the build job of release-envoy-infra.yaml).
+(envoy-infra-build, envoy-infra-go, envoy-smoke, whose live tests and plugin build are packages of
+the infra module this family builds, and the build job of release-envoy-infra.yaml).
 
 The key carries `runner.arch` because Go's build cache holds the objects of the architecture that
 compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of its
@@ -32,7 +33,7 @@ leg per runner: go-notices and go-envoy-race on ubuntu-24.04-arm alone, where li
 lane run; go-daemon, go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on
 ubuntu-24.04 both, since each has a reader on each (typecheck and the envoy lanes but one on the
 first; daemon-go, plugin-pack, pi-legion, envoy-go-build, envoy-go-checks, envoy-go-claim-model,
-the browser lane, the two-build jobs and the release builds on the second); and
+envoy-smoke, the browser lane, the two-build jobs and the release builds on the second); and
 go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-go-build runs. A leg builds what that
 runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its arm64 leg
 runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
@@ -242,6 +243,34 @@ go.work.sum), so a hash taken after the build need not be the lookup's. go-envoy
 hashed its files again, and its key drifted: in run 45088325195 the lookup asked for
 ...-85ddfce1... and the save wrote ...-f2bbc22a..., so every push missed the lookup and built for
 seven to ten minutes a leg.
+
+## Why go-envoy-infra's key hashes the module files of both workspaces
+
+go-envoy-infra's key carries, beside the runner's architecture and the Go version, the hash of the
+files that choose the module versions its entry holds. The infra module's own build reads
+packages/envoy/infra/go.work and its go.work.sum, and the go.mod and go.sum of the two modules it
+binds. The x86_64 leg also builds envoy-smoke's container smoke test, which compiles in
+packages/envoy under the root go.work, so the key also hashes that go.work and its go.work.sum,
+and packages/daemon's go.mod and go.sum. The root go.work binds packages/daemon and
+packages/envoy, so a module both require is built at the higher of the two versions.
+
+An entry that held the infra workspace alone gave the smoke step 8 module downloads on an exact
+hit, in job 139764742393 of run 45777169440. They were x/net, x/sys, oauth2, gax-go and the Google
+auth modules at the root workspace's versions, and each was a fetch a stalled proxy could hold.
+
+An entry keyed on the Go version alone was refreshed only by a Go bump, and it went stale as those
+files moved. Restoring the entry of 2026-11-06, eleven days old, the linux vet (envoy-infra-build's
+now) took 175, 229 and 177 s in runs 43990864191, 43996496498 and 44008055050. That is 83 to 85%
+of what its darwin vet took in the same run with nothing cached, because google.golang.org/api,
+gax-go, the AWS SDK and nats had moved under it. With the hash, a push to main that changes those
+files misses the lookup and fills a fresh entry. A pull request that changes none of them restores
+one built from the same module versions, and one that changes them restores the newest entry by
+prefix and builds what moved.
+
+The daemon's module files move the key of the arm64 leg too, whose readers build nothing under
+the root go.work. The readers share one key text, which
+`.github/scripts/ci_workflow_rules.py#check_cache_round_trip` compares as text, so on such a push
+that leg refills for nothing it needs.
 
 ## The architecture-check and spec-check families
 

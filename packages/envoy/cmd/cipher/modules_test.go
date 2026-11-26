@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // agentSecretsModules is every module the agent-secrets binary links, by path without its
@@ -230,13 +231,9 @@ func requireModules(t *testing.T, what, dir string, want []string, env ...string
 	list := exec.Command("go", "list", "-deps", "-f", "{{.Name}} {{with .Module}}{{.Path}}{{else}}std{{end}}", ".")
 	list.Dir = dir
 	list.Env = append(os.Environ(), env...)
-	out, err := list.Output()
+	out, err := testgo.Output(list)
 	if err != nil {
-		stderr := ""
-		if exit, ok := err.(*exec.ExitError); ok {
-			stderr = string(exit.Stderr)
-		}
-		t.Fatalf("go list -deps of %s in %s with %q: %v\n%s", what, dir, env, err, stderr)
+		t.Fatalf("go list -deps of %s in %s with %q: %v", what, dir, env, err)
 	}
 	linked, err := linkedModules(string(out))
 	if err != nil {

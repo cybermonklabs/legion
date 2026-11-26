@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
@@ -451,8 +452,8 @@ func goGitProgram(t *testing.T, source string) string {
 	out := filepath.Join(t.TempDir(), "git")
 	build := exec.Command(goTool, "build", "-o", out, ".")
 	build.Dir = src
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build a compiled git: %v: %s", err, output)
+	if _, err := testgo.Output(build); err != nil {
+		t.Fatalf("build a compiled git: %v", err)
 	}
 	return out
 }

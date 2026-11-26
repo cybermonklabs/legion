@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // natsModule is the import path of nats.go, whose package function NewInbox names an inbox under
@@ -29,12 +30,8 @@ const envoyModule = "github.com/sjawhar/envoy"
 func packageInboxCalls(t *testing.T) []string {
 	t.Helper()
 	list := exec.Command("go", "list", "-deps", "-f", `{{.ImportPath}}{{"\t"}}{{.Dir}}{{"\t"}}{{join .GoFiles " "}}`, ".")
-	out, err := list.Output()
+	out, err := testgo.Output(list)
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("go list -deps .: %v: %s", err, exit.Stderr)
-		}
 		t.Fatalf("go list -deps .: %v", err)
 	}
 	root, err := filepath.Abs("../..")

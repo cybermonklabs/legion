@@ -1307,8 +1307,9 @@ no other family holds; .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
 (envoy-go-build's darwin vet, whose step's env gives it a build cache directory of its own,
 so the standard library and the envoy module's dependencies compiled for darwin ride in
 neither the go-envoy nor the
-go-envoy-test entry, which the other envoy jobs download), go-envoy-infra (envoy-infra-build
-and envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
+go-envoy-test entry, which the other envoy jobs download), go-envoy-infra (envoy-infra-build,
+envoy-infra-go, and envoy-smoke, whose live tests and plugin build are that module's packages)
+and go-notices (lint's notices step). Every family but go-docs is filled by
 .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 go-docs stays with docs-pages.yaml, which saves it on that same push. Each family is kept per
 runner architecture, keyed on the runner's architecture and on the Go version its job's

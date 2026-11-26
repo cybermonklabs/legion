@@ -390,11 +390,7 @@ func renewalsOf(t *testing.T, db *pgx.Conn, enrollmentID string) []leaseWrite {
 // buildBroker builds this command.
 func buildAgentSecrets(t *testing.T) string {
 	t.Helper()
-	return cmdtest.BuildCommand(t, cmdtest.Command{
-		Name: "agent-secrets",
-		Dir:  filepath.Join("..", "cipher"),
-		Env:  append(os.Environ(), "GOTOOLCHAIN=go1.27.3"),
-	})
+	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Dir: filepath.Join("..", "cipher")})
 }
 
 // agentSecretsEnv is the environment an agent-secrets process of a pod runs with: the test's own,

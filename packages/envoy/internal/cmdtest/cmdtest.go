@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // builds is the directory Run made for this test process's binaries, empty until Run has made it.
@@ -85,6 +86,12 @@ func BuildStamped(t testing.TB, name, commit string) string {
 // runs in (the test's working directory when empty), Target what it builds ("." when empty), Flags
 // the flags before the target, and Env the whole environment of the go command (the process's
 // when nil).
+//
+// The go that builds it is the go that runs the test: go test puts its own GOROOT/bin first on
+// the test binary's PATH, so go build selects the toolchain go.work or go.mod asks for exactly as
+// that go test did, and finds it already there. So Env sets no GOTOOLCHAIN: a version written
+// there disagrees with those files as soon as they move, and makes go build fetch another
+// toolchain or refuse.
 type Command struct {
 	Name   string
 	Dir    string
@@ -176,8 +183,8 @@ func runBuild(c Command, overlay string) (string, string) {
 	args = append(args, target)
 	cmd := exec.Command("go", args...)
 	cmd.Dir, cmd.Env = c.Dir, c.Env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Sprintf("%v\n%s", err, out)
+	if _, err := testgo.Output(cmd); err != nil {
+		return "", err.Error()
 	}
 	return binary, ""
 }

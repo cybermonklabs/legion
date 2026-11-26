@@ -34,6 +34,9 @@ GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
     # manifest, which bun_job declares.
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "`packages/dispatch/e2e/engine-reading.ts#blockSchema`"),
     ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds the server's port through it"),
+    ("packages/test-fixtures/src/go-command.ts",
+     "`packages/dispatch/e2e/harness-postgres.ts#goOutput` imports it, which `packages/dispatch/e2e/global-setup.ts#startStacks` "
+     "loads through e2e/harness-pool.ts"),
     ("scripts/third-party-notices.ts", "`packages/dispatch/web/vite.config.ts#thirdPartyNotices` (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
 ) + two_builds_go_reads())
 GATE = with_reads(GATE, [

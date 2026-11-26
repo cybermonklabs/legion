@@ -47,12 +47,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # go-envoy-infra, restored only: .github/workflows/ci-caches.yaml's envoy-infra job fills the
+      # family on a push to main, and this job saves none. Its x86_64 entry holds the modules and
+      # the build of the three go commands below: the live tests' and the plugin schema's, in the
+      # infra module under its own go.work, and the container smoke test's, in packages/envoy under
+      # the root go.work, whose module versions are the root workspace's (packages/daemon's go.mod
+      # takes part in them). So on an exact hit none of the three fetches a module. An entry that
+      # held the infra workspace alone gave the smoke step 8 module downloads on an exact hit (x/net,
+      # x/sys, oauth2, gax-go and the Google auth modules at the root workspace's versions, job
+      # 139764742393), each a fetch a stall could hold. Without any entry each run fetched 161
+      # modules, 242 MB, from the proxy: 6-8 s of the live-test step in a passing run, but 14 m 45 s
+      # in run 43880882183, where the step started no other module for 7.5 and then 6 minutes after
+      # the pulumi-aws and pulumi-gcp SDKs, and the job reached its 20-minute limit before a live
+      # test ran. The key is the fill's key: the runner's architecture, the Go this setup-go
+      # installs from packages/envoy/go.mod, the family's fill the Go of packages/envoy/infra/go.mod,
+      # and the hash of the files that choose both workspaces' module versions. Both name go
+      # 1.27.3. Should the Go lines part or a module file move, the exact key misses and the prefix,
+      # which keeps the architecture, restores the family's newest entry for this runner, and the
+      # steps fetch what moved since it was filled. Both go test steps below pass -count=1, as every
+      # go test of a job that restores a Go family does: a cached pass in the restored build cache
+      # must not stand in for a run.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
       # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
@@ -134,7 +162,7 @@ jobs:
       # last in run 36508580490), and 2.2–20.7 s across four runs on a devbox at load average
       # 80, so the bound is deliberate headroom, not a build budget.
       - name: Container smoke test (testcontainers)
-        run: go test -tags smoke -v -timeout 5m ./internal/smoke/
+        run: go test -count=1 -tags smoke -v -timeout 5m ./internal/smoke/
         working-directory: packages/envoy
       # The envoy-infra plugin's live tests (packages/envoy/infra/host/live_test.go) apply Pulumi
       # YAML programs with the pinned Pulumi CLI (.github/actions/install-pulumi) against this
@@ -169,7 +197,7 @@ jobs:
       - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
       - name: Live tests of envoy-infra's host:Listener
-        run: go test -tags pulumilive -v -timeout 15m ./host/
+        run: go test -count=1 -tags pulumilive -v -timeout 15m ./host/
         working-directory: packages/envoy/infra
         env:
           ENVOY_INFRA_DOCKER_PLUGIN: ${{ steps.docker-plugin.outputs.tarball }}

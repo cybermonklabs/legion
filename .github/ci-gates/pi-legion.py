@@ -2,7 +2,7 @@
 # (pi-legion-build.py) is the half a pull request runs, the typecheck and the pack.
 GATE = gate("pi_legion", "pi-legion", runs=[
     script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
-               'const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {',
+               'return goOutputSync(["run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {',
                f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
 ], reads=reads(

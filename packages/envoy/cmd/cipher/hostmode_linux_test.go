@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
@@ -79,7 +80,7 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 	sock, requests := fakeHelperWithPids(t, helper.Response{OK: true, State: "enrolling", RuntimeID: "session-exec"})
 	cmd := exec.Command("go", "run", ".", "register", "--session-id", "exec", "--exec", "--", "sh", "-c", "echo $$")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock)
-	out, err := cmd.Output()
+	out, err := testgo.Output(cmd)
 	if err != nil {
 		t.Fatalf("register --exec: %v", err)
 	}

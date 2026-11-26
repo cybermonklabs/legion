@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -675,8 +676,8 @@ func TestVersionPrintsTheReleaseTheLinkerSets(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	binary := filepath.Join(t.TempDir(), "legion")
 	build := exec.Command("go", "build", "-ldflags", "-X main.revision="+commit+" -X main.release=v9.9.9", "-o", binary, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
+	if _, err := testgo.Output(build); err != nil {
+		t.Fatalf("go build: %v", err)
 	}
 	out, err := exec.Command(binary, "version").Output()
 	if err != nil {
@@ -757,8 +758,8 @@ func TestVersionContractsPrintsTheBuildsEntriesAndItsOrder(t *testing.T) {
 	stamped, refused := filepath.Join(t.TempDir(), "legion"), filepath.Join(t.TempDir(), "legion")
 	for binary, linked := range map[string]string{stamped: stamp, refused: strayStamp} {
 		build := exec.Command("go", "build", "-ldflags", "-X github.com/sjawhar/legion/daemon/internal/api.contractOrder="+linked, "-o", binary, ".")
-		if built, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("go build stamped %q: %v\n%s", linked, err, built)
+		if _, err := testgo.Output(build); err != nil {
+			t.Fatalf("go build stamped %q: %v", linked, err)
 		}
 	}
 	printed, err := exec.Command(stamped, "version", "--contracts").Output()

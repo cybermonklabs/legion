@@ -1,7 +1,7 @@
 # The envoy_session_stall filter's gate: what job envoy-session-stall reads.
 GATE = gate("envoy_session_stall", STALL, runs=[
     script_run("packages/envoy-client/test/envoy-stack.ts",
-               'const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
+               'await goOutput(["build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
                f"buildGoBinaries, which both rigs of that directory call; this one's packages are the Envoy "
                f"stack's, built for {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
                f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
