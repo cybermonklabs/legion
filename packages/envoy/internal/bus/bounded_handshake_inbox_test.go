@@ -92,18 +92,10 @@ func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t 
 		t.Fatalf("control: the forward's send answered %v, want it sent", err)
 	}
 	for range 2 {
-		select {
-		case <-waiting:
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: a request did not begin its wait for the reply within 30 s")
-		}
+		testwait.Receive(t, "control: a request to begin its wait for the reply", waiting)
 	}
 	for range 2 {
-		select {
-		case <-responded:
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the responder did not answer both requests within 30 s")
-		}
+		testwait.Receive(t, "control: the responder to answer a request", responded)
 	}
 	// The server takes the responder's answers before it answers the responder's flush, and sends
 	// them to the client before it answers the client's own flush.

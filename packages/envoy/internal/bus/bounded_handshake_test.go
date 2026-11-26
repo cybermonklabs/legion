@@ -316,11 +316,7 @@ func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) 
 
 	releaseUntilConnected(t, hold, conn)
 	for range reads {
-		select {
-		case <-readAnswers:
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: a read of the client's connection state gave no answer within 30 s of the hold's release")
-		}
+		testwait.Receive(t, "control: a read of the client's connection state to answer after the hold's release", readAnswers)
 	}
 }
 
@@ -464,20 +460,12 @@ func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(
 		answers <- answer{what: "PendingForward.Wait", err: err, at: time.Now()}
 	}()
 	for range 3 {
-		select {
-		case <-arrived:
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: a request did not reach the silent subscriber within 30 s")
-		}
+		testwait.Receive(t, "control: a request to reach the silent subscriber", arrived)
 	}
 	// The forward's send returned once its flush was confirmed, so its wait is the reply's; the
 	// probe and the consumer request say when theirs begins.
 	for range 2 {
-		select {
-		case <-waiting:
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: a request did not begin its wait for the reply within 30 s")
-		}
+		testwait.Receive(t, "control: a request to begin its wait for the reply", waiting)
 	}
 	notYet := func(when string) {
 		t.Helper()
@@ -668,11 +656,7 @@ func TestAWindowRequestAnswersAtItsDeadlineWhenAHandshakeIsHeldBeforeItsSend(t *
 	if err != nil {
 		t.Fatalf("control: a request before the hold was refused before it was sent: %v", err)
 	}
-	select {
-	case <-arrived:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: a request before the hold did not reach the subscriber within 30 s")
-	}
+	testwait.Receive(t, "control: a request before the hold to reach the subscriber", arrived)
 	// Nothing acknowledges a request to a subject the stream does not capture, so it ends at its
 	// timeout and its inbox goes.
 	if err := control(); !errors.Is(err, ErrNotAcknowledged) {
