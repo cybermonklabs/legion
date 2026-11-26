@@ -22,13 +22,20 @@
 #                                      packages/envoy/cmd/listener/api.go or
 #                                      packages/daemon/internal/pause/pause.go
 #     hit <path>:<n>: <line>           a production line that still spells one, which fails
+# Research records under docs/research/ are not production code: claim rows, recorded test
+# evidence and an inventory of an issue's documents as it stood, whose bytes are the evidence they
+# keep. The sweep tells them by that directory alone, edits none, and neither counts their lines
+# among its own nor fails on them. It prints each one that spells a string, never its text, as
+#     research <path>: hit count <n>, research evidence the production sweep leaves out
+# where <n> is how many of its lines spell one, a `decisions.md` preceded by `parked-` or `past-`
+# being no hit there either.
 # The step's Go code calls decisions_documents() and spells no slug, so no line under the id
 # `decisions-step` is admitted. Before it reads the checkout, the sweep reads a planted instance
 # through the same search and the same classification: a scratch git repository under the run's
-# own directory holding a copy of the first inventoried file the sweep counts as production, with
-# one line spelling decisions.md added. It prints each hit there as `planted hit <path>:<n>: <line>`
-# and fails unless the added line is one of them, so a zero over the checkout is never the reading
-# of a search that cannot find a production line.
+# own directory holding a copy of the first inventoried file the sweep counts as production, neither
+# a kept path nor a research record, with one line spelling decisions.md added. It prints each hit
+# there as `planted hit <path>:<n>: <line>` and fails unless the added line is one of them, so a
+# zero over the checkout is never the reading of a search that cannot find a production line.
 #
 # The third sweep is R11's: `git grep -n` for the word decisions in double quotes over
 # packages/contracts/src, packages/dispatch/web/src and packages/dispatch/e2e. It admits a line by
@@ -169,6 +176,9 @@ readonly applied_migration=packages/envoy/internal/dispatch/store/migrations/202
 # The citation packages/envoy/cmd/listener/api.go and packages/daemon/internal/pause/pause.go
 # carry: a retired decisions document's address under any issue key.
 readonly retired_citation='dispatch://[A-Z][A-Z0-9]*-[0-9]+/artifact/decisions-md'
+# The research records' directory: no production code, so the sweep leaves each record out by
+# that directory, counting its lines apart.
+readonly research_dir=docs/research/
 
 # The ids the root's list holds, with their things.
 declare -A kept_items=()
@@ -215,11 +225,13 @@ kept_comment_id() {
 }
 
 # literal_sweep: the first sweep over sweep_root, its kept paths in kept_paths (path to class), the
-# production lines that spell one of the strings in hits, and how many lines it found and admitted
-# in literal_seen and admitted. It prints each admitted line.
+# research records that spell one of the strings in research_hits (path to its count of such
+# lines), the production lines that spell one in hits, and how many lines outside the research
+# records it found and admitted in literal_seen and admitted. It prints each admitted line.
 literal_sweep() {
   local hit path rest number text stripped class id
   declare -gA kept_paths=()
+  declare -gA research_hits=()
   hits=()
   admitted=0
   literal_seen=0
@@ -232,6 +244,10 @@ literal_sweep() {
     stripped="${text//parked-decisions.md/}"
     stripped="${stripped//past-decisions.md/}"
     [[ "$stripped" =~ $literal ]] || continue
+    if [[ "$path" == "$research_dir"* ]]; then
+      research_hits["$path"]=$((${research_hits[$path]:-0} + 1))
+      continue
+    fi
     literal_seen=$((literal_seen + 1))
     class="$(kept_class "$path")"
     if [[ -z "$class" && "$path" == "$applied_migration" ]] && header_comment "$path" "$number"; then
@@ -265,13 +281,14 @@ literal_sweep() {
 
 # The planted instance, read first and by the same sweep: a scratch tree of its own (a git
 # repository the run makes under $work) holding a copy of the first file of the inventory that
-# the sweep counts as production, with one line added that spells the decisions document. The
-# sweep must report that line as a hit before its zero over the checkout is read; a sweep that
-# misses it, by a wrong pattern, a wrong tree or a classification that keeps or admits a
-# production line, would read zero over any checkout.
+# the sweep counts as production, neither a kept path nor a research record, with one line added
+# that spells the decisions document. The sweep must report that line as a hit before its zero over
+# the checkout is read; a sweep that misses it, by a wrong pattern, a wrong tree or a classification
+# that keeps, admits or leaves out as research a production line, would read zero over any checkout.
 planted_path=""
 while IFS=$'\t' read -r path _; do
-  [[ -n "$path" && "$path" != \#* && -f "$root/$path" && -z "$(kept_class "$path")" ]] || continue
+  [[ -n "$path" && "$path" != \#* && -f "$root/$path" && -z "$(kept_class "$path")" &&
+    "$path" != "$research_dir"* ]] || continue
   planted_path="$path"
   break
 done <"$inventory"
@@ -292,13 +309,16 @@ for hit in "${hits[@]}"; do
 done
 [[ "$planted_found" == 1 ]] ||
   fail literal "the sweep reports the planted line $planted_path:$planted_line as a hit" \
-    "it reported ${#hits[@]} hits there, ${#kept_paths[@]} kept paths and $admitted admitted lines: the search is broken"
+    "it reported ${#hits[@]} hits there, ${#kept_paths[@]} kept paths, ${#research_hits[@]} research records and $admitted admitted lines: the search is broken"
 pass literal "the sweep reports the planted line $planted_path:$planted_line, a copy of an inventoried file under $work/planted, as a hit"
 
 # The real search, over the checkout.
 literal_sweep
 for path in "${!kept_paths[@]}"; do
   printf 'kept %s %s\n' "${kept_paths[$path]}" "$path"
+done | sort
+for path in "${!research_hits[@]}"; do
+  printf 'research %s: hit count %s, research evidence the production sweep leaves out\n' "$path" "${research_hits[$path]}"
 done | sort
 for hit in "${hits[@]}"; do
   printf 'hit %s\n' "$hit"
@@ -307,7 +327,7 @@ done
 # that found nothing searched nothing.
 [[ "${#kept_paths[@]}" -gt 0 ]] ||
   fail literal "the sweep reads the checkout" "it found no hit at all, not even in the kept test material: the search is broken"
-pass literal "the sweep found $literal_seen lines in the checkout, ${#kept_paths[@]} kept paths and $admitted admitted lines among them"
+pass literal "the sweep found $literal_seen lines in the checkout outside $research_dir, ${#kept_paths[@]} kept paths and $admitted admitted lines among them, and left out ${#research_hits[@]} research records, each printed above as research"
 [[ "${#hits[@]}" -eq 0 ]] ||
   fail literal "no production file spells the decisions document or step" "${#hits[@]} lines still do, each printed above as hit"
 pass literal "no production file spells decisions.md, decisions-md, ArtifactRoleDecisions, GatedStepDecisions or DesignStepDecisions"
