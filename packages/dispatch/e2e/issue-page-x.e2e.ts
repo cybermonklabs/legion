@@ -17,7 +17,7 @@ import {
   ROW_MARK_WORDS,
   SETTLE_ANSWERS,
 } from "../web/src/features/issue-page/page-words";
-import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { parseNodeReference } from "../web/src/features/refs/routes";
 import { wordsOf as readingWords } from "../web/src/features/refs/tree-fragment";
 import { pageStateText } from "../web/src/theme/classes";
@@ -54,6 +54,7 @@ import {
   type Gate,
   heldAnswer,
   OWED_BY,
+  outlineAnswerOf,
   owedUnless,
   type TreeAnswerWatch,
   type TreeView,
@@ -93,14 +94,12 @@ import {
   nodeStateRequests,
   noteOwed,
   ownMarks,
-  questionAlike,
   questionReadId,
   RESERVED_NODES,
   rawValueTexts,
   referencedByCount,
   referencesTo,
   reservedUnder,
-  SPEC_QUESTIONS,
   STATEMENT_8_WORD,
   seedAuthorOnly,
   seedGateIssue,
@@ -427,18 +426,23 @@ function drawnWaiting(row: Locator): Promise<boolean | null> {
     );
 }
 
-/** What a row reads its page with: the issue, its tree read, the id the page draws each node of
- *  that read under, the comments the page draws in the margin beside a node's text, and the
- *  page's one watcher of its requests, made before its first load. */
+/** What a row reads its page with: the issue, its tree read, the reads the page names a node by
+ *  and the id it draws each node of that read under, the comments the page draws in the margin
+ *  beside a node's text, and the page's one watcher of its requests, made before its first load. */
 interface LoadedPage {
-  /** Conversation's tree read, as the page received it: the newest read with no view, which
-   *  holds each question of the spec by its ask (`questionReadId`). */
+  /** Conversation's tree read, as the page received it (`outlineAnswerOf`): the newest read with
+   *  no view and Conversation's kinds, which holds each question of the spec by its ask and no
+   *  ask block (`questionReadId`). */
   readonly answer: IssueTreeRead;
   readonly key: string;
   /** The comments the reader's comments read anchors, read once the load answered: a count
    *  counts none of them, nor their threads (`HeldRow.margin`). */
   readonly margin: ReadonlySet<string>;
   readonly plain: string;
+  /** The reads `treeIdOf` names a node by (`treeIdReads`), read once the load answered: with the
+   *  seed's whole tree read (`NodeStateSeed.answer`), they name a node Conversation's read holds
+   *  none of. */
+  readonly reads: TreeIdReads;
   readonly seeded: NodeStateSeed;
   readonly traffic: ApiRequests;
   readonly treeId: (readId: string) => string;
@@ -455,7 +459,7 @@ interface SeededPage extends LoadedPage {
 async function loadedPage(page: Page, seeded: NodeStateSeed): Promise<LoadedPage> {
   const key = seeded.whole.key;
   const plain = presetPath(key, "conversation");
-  const tree = treeAnswerOf(page);
+  const tree = outlineAnswerOf(page, "conversation");
   const traffic = watchApiRequests(page);
   await gotoSettled(page, traffic, plain);
   const answer = await heldTreeAnswer(tree, "the load", (held) =>
@@ -464,7 +468,7 @@ async function loadedPage(page: Page, seeded: NodeStateSeed): Promise<LoadedPage
     )
   );
   const [reads, margin] = await Promise.all([treeIdReads(key), marginComments(key)]);
-  return { answer, key, margin, plain, seeded, traffic, treeId: treeIdOf(answer, reads) };
+  return { answer, key, margin, plain, reads, seeded, traffic, treeId: treeIdOf(answer, reads) };
 }
 
 /**
@@ -737,27 +741,20 @@ async function expectDetails(page: Page, { seeded }: ProposedPage): Promise<void
 
 /** Every branch the page draws open, folded one at a time (`foldEachBranch`), counts what the
  *  tree read holds under it that Conversation draws, an overtaken node and what stands under it
- *  counted as every node is, and opens again. A question's row is found by the read id the read
- *  holds it by, and stands for every node of the read the page draws in it (`questionReadId`,
- *  `questionAlike`): in Conversation's read, its ask's node, under which the statement under the
- *  overtaken question stands. A comment on a node's text and its thread count in no branch
+ *  counted as every node is, and opens again. A question's row stands for the one node
+ *  Conversation's read holds it by, its ask's (`questionReadId`), under which the statement under
+ *  the overtaken question stands. A comment on a node's text and its thread count in no branch
  *  (`margin`), and a criterion is counted only where the page draws one (`criteria`). The page
  *  draws every branch open on load (part T's R11), so no row draws a count until a fold draws
  *  it. */
 async function expectFoldedCounts(
   page: Page,
-  { answer, key, margin, seeded }: ProposedPage,
+  { answer, key, margin }: ProposedPage,
   criteria: Gate
 ): Promise<void> {
-  const questions = new Map(
-    SPEC_QUESTIONS.map((question) => [
-      questionReadId(answer, seeded, question),
-      questionAlike(answer, seeded, question),
-    ])
-  );
   const undrawn = noteOwed(criteria) ? undefined : UNDRAWN_KINDS;
   await foldEachBranch(page, answer, key, READER, {
-    held: (readId) => ({ alike: questions.get(readId), margin, undrawn }),
+    held: () => ({ margin, undrawn }),
     including: "an overtaken node and what stands under it included",
   });
 }
@@ -1048,7 +1045,7 @@ async function expectOvertakenDecisionAddress(page: Page, read: ProposedPage): P
  * control counts every statement. No view draws a raw value of the tree read.
  */
 async function expectProposedViews(page: Page, read: ProposedPage): Promise<void> {
-  const { key, seeded, treeId } = read;
+  const { key, reads, seeded, treeId } = read;
   const { ids } = seeded;
   const statements = statementsOf(seeded);
 
@@ -1076,10 +1073,10 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
   await expectNoRawValue(page, "under Verification");
   await expectNoOvertakenCount(page, "under Verification");
   // Conversation's read holds no result and no plan task (`questionReadId`), so check 2's result's
-  // words and the plan tasks' ids are read from the whole tree read.
-  const [whole, reads] = await Promise.all([readTree(key, null), treeIdReads(key)]);
-  const wholeTreeId = treeIdOf(whole, reads);
-  const result = whole.nodes?.find(
+  // words and the plan tasks' ids are read from the whole tree read the seed kept after its last
+  // write (`NodeStateSeed.answer`), and nothing has written since.
+  const wholeTreeId = treeIdOf(seeded.answer, reads);
+  const result = seeded.answer.nodes?.find(
     (node) => node.supertag === "result" && node.parent?.id === ids.check2
   );
   expect(result?.text ?? "", "the tree read holds no words of check 2's result").not.toBe("");
@@ -1946,8 +1943,8 @@ interface ReaderReading {
   readonly filters: Readonly<Record<(typeof VIEWS)[number], number>>;
   /** Each branch's count, read once its row is folded. */
   readonly folded: readonly FoldedCount[];
-  /** The page's text as it opens, each view's, and Graph's where the page draws a Graph control
-   *  (`graphGate`). */
+  /** The page's text as it opens, each view's, and Graph's where the reading asked for it
+   *  (`graphText`) and the page draws a Graph control (`graphGate`). */
   readonly texts: readonly { readonly text: string; readonly where: string }[];
 }
 
@@ -2007,13 +2004,15 @@ async function foldEachBranch(
  * it opens, every node drawn whole and unfolded, its text and the nodes it draws; each branch's
  * count once its row folds it, beside the count the reader's own tree read and comments read
  * make; each view, its control's count beside the count its own view read makes where the page
- * holds that read; and Graph's text, where the page draws a Graph control (`graphGate`).
+ * holds that read; and with `graphText`, Graph's text, where the page draws a Graph control
+ * (`graphGate`).
  */
 async function readAsReader(
   page: Page,
   traffic: ApiRequests,
   key: string,
-  who: string
+  who: string,
+  { graphText = false }: { readonly graphText?: boolean } = {}
 ): Promise<ReaderReading> {
   const tree = treeAnswerOf(page);
   const views: Record<(typeof VIEWS)[number], TreeAnswerWatch> = {
@@ -2066,7 +2065,7 @@ async function readAsReader(
   }
   // Graph's read names no kind, so Graph draws what Conversation's read holds none of
   // (`questionReadId`), a constraint among it.
-  if (noteOwed(await graphGate(page))) {
+  if (graphText && noteOwed(await graphGate(page))) {
     await pickGraphSettled(page, traffic);
     texts.push({ text: await issuePage(page).innerText(), where: "Graph" });
   }
@@ -2226,7 +2225,8 @@ async function bobsReading(
     const page = await context.newPage();
     const traffic = watchApiRequests(page);
     await page.setViewportSize(DESKTOP);
-    const his = await readAsReader(page, traffic, key, "bob");
+    // His texts are read for a reserved node's words, Graph's among them (`expectNothingReserved`).
+    const his = await readAsReader(page, traffic, key, "bob", { graphText: true });
     const statementTwo = seeded.whole.requirements[1] ?? "";
     const references = await statementTwoReferences(
       page,
@@ -2296,19 +2296,13 @@ test("a node reserved for its author is on its author's page and on nobody else'
         { message: "the chip of her reserved lens does not carry Only you in its compact form" }
       )
       .toEqual([ONLY_YOU]);
-    // The reserved nodes Graph draws as a row, each marked as hers alone, and the rows Graph
-    // draws; null where the page draws no Graph control.
-    let herGraph: ReadonlySet<string> | null = null;
+    // The reserved nodes Graph draws as a row, each marked as hers alone, where the page draws a
+    // Graph control.
     if (noteOwed(await graphGate(page))) {
       await pickGraphSettled(page, traffic);
       for (const name of RESERVED_NODES.filter((one) => RESERVED_IN_GRAPH[one] === true)) {
         await expectMarkedInGraph(page, reserved.get(name) ?? "", ONLY_YOU, `her reserved ${name}`);
       }
-      // Each marking above found its row drawn, and nothing opens folded (part T's R11), so one
-      // read of Graph's rows is every row it draws as it opens.
-      herGraph = new Set(
-        (await treeItemsDrawn(page)).flatMap((item) => (item.readId === null ? [] : [item.readId]))
-      );
       await pickPreset(page, PRESET_NAMES.conversation);
     }
 
@@ -2345,7 +2339,7 @@ test("a node reserved for its author is on its author's page and on nobody else'
     }
 
     // Every node of the project is drawn for both, and the reserved ones for her alone: each where
-    // its row is read, her reserved constraint in Graph where the page draws one.
+    // Conversation draws it as a row, and her reserved constraint by its marking in Graph above.
     expect(
       [...her.drawn].filter((id) => !reservedIds.has(id)).sort(),
       "the project's nodes are not drawn alike for both readers"
@@ -2353,8 +2347,7 @@ test("a node reserved for its author is on its author's page and on nobody else'
     expect(
       RESERVED_NODES.flatMap((name) => {
         const id = reserved.get(name) ?? "";
-        const rows = RESERVED_IN_GRAPH[name] === true ? herGraph : her.drawn;
-        return rows === null || rows.has(id) ? [] : [id];
+        return RESERVED_IN_GRAPH[name] === true || her.drawn.has(id) ? [] : [id];
       }),
       "her page does not draw every node she reserved"
     ).toEqual([]);
