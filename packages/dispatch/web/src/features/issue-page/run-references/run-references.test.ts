@@ -1,10 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { ApiError, api } from "../../../api/client";
-import type { ReferenceTarget, ReferenceTargets } from "../../../api/types";
+import type { DispatchUser, ReferenceTarget, ReferenceTargets } from "../../../api/types";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseNodeReference, shortForm } from "../../refs/routes";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
@@ -319,6 +319,60 @@ test("a run's reference the reader may not see reads as its author wrote it", as
   expect(drawn).toBe(settled);
   expect(drawn).not.toContain(shortFormOf(hidden));
   expect(ownReads, "a read of one target of its own").toBe(0);
+});
+
+// Spec R1 (v19), decision 340 with decision 350: a party (an agent, a role or a person) stays out
+// of the one batched read and is named by a read of its own. Until that read answers, and wherever
+// it names nothing, the party reads as the words its author wrote, never by its short form.
+test("a run's party reference reads as its author wrote it until its read answers, and where it names nothing", async () => {
+  const person = "dispatch://person/ada@example.com";
+  const stranger = "dispatch://person/nobody@example.com";
+  const question = `Ask ${person}, not ${stranger}, before the release`;
+  const people = Promise.withResolvers<DispatchUser[]>();
+  const users = spyOn(api, "listUsers").mockReturnValue(people.promise);
+  const batch = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
+  const issue = issueDetails();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(
+    issueTreeQuery(issue.key).queryKey,
+    treeOf([ISSUE_NODE, runNode(RUN, ASKED_AT, question)], [changedBy(KEY, RUN)])
+  );
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(ReferenceNamesProvider, null, children)
+    );
+  function Questions(): ReactNode {
+    const { rows } = useRunRows(issue, false);
+    return createElement(NamedRunRows, {
+      draw: (named) => named.map((row) => createElement("p", { key: row.key }, row.excerpt)),
+      issue,
+      rows,
+    });
+  }
+  const { container, unmount } = render(createElement(Questions), { wrapper });
+  const drawn = () => [...container.querySelectorAll("p")].map((row) => row.textContent ?? "");
+  try {
+    // While the read of people is out, each person reads as the asker wrote it.
+    await screen.findByText(question);
+    expect(drawn()).toEqual([question]);
+    expect(users).toHaveBeenCalledTimes(1);
+    await act(async () => people.resolve([{ login: "ada@example.com" }]));
+    await waitFor(() => expect(drawn()[0]).not.toContain(person));
+    const settled = drawn()[0] ?? "";
+    // The person Dispatch knows is named; the one it does not know names nothing, so the words
+    // the asker wrote stand, and no short form is drawn on its own in their place.
+    expect(settled).toContain("ada@example.com");
+    expect(settled).toContain(stranger);
+    expect(settled.replaceAll(stranger, "")).not.toContain(shortFormOf(stranger));
+    expect(batch, "a party in the batched read").not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    client.clear();
+    users.mockRestore();
+    batch.mockRestore();
+  }
 });
 
 test("one run is one row however many writes it made", () => {
