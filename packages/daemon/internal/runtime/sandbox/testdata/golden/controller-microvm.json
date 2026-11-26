@@ -141,6 +141,7 @@
           "runAsNonRoot": true,
           "runAsUser": 1000
         },
+        "serviceAccountName": "legion-controller",
         "terminationGracePeriodSeconds": 30,
         "tolerations": [
           {

@@ -33,7 +33,9 @@ function rowFor(stdout: string, askId: string): string {
   return row ?? "";
 }
 
-/** The three numbers the listing carries: its total, and the size of each of its two groups. */
+/** The three numbers the listing carries: its total, and the size of each of its two groups. The
+ *  total opens the header in both forms: `<n> unanswered asks you authored …` for the session's
+ *  own listing, and `<n> unanswered asks on the <PROJECT> project's …` for `--project`. */
 function printedCounts(stdout: string): { agent: number; human: number; total: number } {
   const number = (pattern: RegExp): number => {
     const found = pattern.exec(stdout);
@@ -43,7 +45,7 @@ function printedCounts(stdout: string): { agent: number; human: number; total: n
   return {
     agent: number(/^Waiting on agent \((\d+)\):$/m),
     human: number(/^Waiting on human \((\d+)\):$/m),
-    total: number(/^(\d+) unanswered asks? you authored/m),
+    total: number(/^(\d+) unanswered asks? (?:you authored|on the [A-Z][A-Z0-9]* project's)/m),
   };
 }
 
@@ -118,9 +120,13 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     expect(printedCounts(own.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
 
     // 2. The project-wide listing, which is every open ask in the project whoever authored it,
-    // names the same two people and carries the same three numbers.
+    // names the same two people and carries the same three numbers, under the header that says
+    // whose asks they are.
     const project = await runDispatch(["open-asks", "--project", core], home);
     expect(project.code, `${project.stdout}${project.stderr}`).toBe(0);
+    expect(project.stdout).toContain(
+      `2 unanswered asks on the ${core} project's active issues and documents, whoever authored them.\n`
+    );
     expect(rowFor(project.stdout, issueAsk)).toContain(" · asked of alice · ");
     expect(rowFor(project.stdout, documentAsk)).toContain(` · asked of ${carol} · `);
     expect(printedCounts(project.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
