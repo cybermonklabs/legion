@@ -15,14 +15,15 @@
 #     entry does not change (it would reach the package if it did), so no entry merges with a
 #     package any change in it reaches untested. A diff from main instead would hold every entry
 #     ahead, which in the backtest of .github/ci-notes/ci.md#which-packages-a-go-leg-runs reached
-#     nearly every package. While CI_MERGE_GROUP_SELECTS is anything else, every package, as the
-#     changes job selects every job of a merge group then;
+#     nearly every package. While CI_MERGE_GROUP_SELECTS is anything else, every package, as
+#     before this switch existed;
 #   * a workflow_dispatch of a branch: its merge base with main (GO_LEGS_BASE when the caller has
 #     it, else .github/scripts/edited-migrations-base.sh's, which fetches both histories until it
 #     finds it); of main, or with every-job (EVERY_JOB=true), every package.
 # Any failure - no base, a fetch that fails, no merge base in the history fetched, the selection
-# itself - writes every leg with every package instead and says why: a run never skips a package
-# because its selection could not be computed.
+# itself - writes every leg with every package instead and says why. When this step itself does
+# not finish (it runs out of time, the runner is lost), the affected job fails, and ci.yaml's legs
+# callers then hand their files no selection, which also runs every leg with every package.
 #
 # Run from anywhere: .github/scripts/go-legs-select.sh
 # CI runs it in ci.yaml's affected job. Its tests are in go-legs-select.test.sh.
@@ -51,7 +52,7 @@ pick() {
   local base=${GO_LEGS_BASE:-}
   case "${GITHUB_EVENT_NAME:-}" in
     pull_request)
-      fetch 2 "${GITHUB_SHA:?}" || return 1
+      git rev-parse -q --verify "HEAD^1^{commit}" >/dev/null || fetch 2 "${GITHUB_SHA:?}" || return 1
       base=$(git rev-parse HEAD^1) || return 1
       echo "the change is the pull request's, from the merge commit's first parent $base" >&2 ;;
     merge_group)

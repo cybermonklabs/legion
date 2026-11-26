@@ -1,5 +1,7 @@
 package capabilities
 
+//ci:reads packages/daemon/docker/claude-code/** TestTheCommittedClaudeCodePinIsOneAPodCanInstall reads the worker image's claude-code pin through ../../docker
+
 import (
 	"context"
 	"encoding/json"

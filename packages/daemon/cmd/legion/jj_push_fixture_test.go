@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/jj rolePushFixture.podDir copies the pod's jj wrapper from ../../docker
+
 import (
 	"errors"
 	"maps"

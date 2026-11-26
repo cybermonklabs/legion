@@ -1,5 +1,8 @@
 package embedqueue
 
+//ci:reads docs/**/*.md repositoryProse reads every Markdown file under the repository's docs as prose
+//ci:reads skills/**/*.md repositoryProse reads every Markdown file under the repository's skills as prose
+
 import (
 	"bytes"
 	"cmp"

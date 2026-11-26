@@ -1,5 +1,8 @@
 package leakguard
 
+//ci:reads packages/daemon/docker/git wrapperCopy copies the pod's git wrapper from ../../docker
+//ci:reads packages/daemon/docker/jj wrapperCopy copies the pod's jj wrapper from ../../docker
+
 import (
 	"errors"
 	"fmt"

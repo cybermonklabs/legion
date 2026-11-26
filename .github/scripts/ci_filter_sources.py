@@ -136,46 +136,74 @@ def directive_files(files: list) -> list:
     return found
 
 
-def parse_directive(path: str, line: int, kind: str, rest: str, read_sets: dict) -> Directive:
-    """One //ci: line as a Directive, or a ValueError saying what is wrong with it. `line` is the
-    line the directive is on, which every read it declares names beside its why."""
-    words = rest.split()
-    where = f"{path}:{line}"
+@dataclass(frozen=True)
+class Words:
+    """One //ci: line's words as its grammar reads them, before any table is asked: a reads line's
+    glob and then its `!` globs as written (`globs`), a reads-set line's set (`name`), a builds
+    line's directory, packages and env (`directory`, `packages`, `env` as sorted pairs), and every
+    line's why. The one reading of the grammar: parse_directive builds the engine's records from
+    it, and .github/scripts/go_legs_select.py reads each line the selection follows from it too."""
+
+    kind: str
+    why: str
+    globs: tuple = ()
+    name: str = ""
+    directory: str = ""
+    packages: tuple = ()
+    env: tuple = ()
+
+
+def words(kind: str, rest: str) -> Words:
+    """A //ci: line's kind and the rest of it as Words, or a ValueError saying what is wrong with it.
+    A builds line's directory must be one of the repository."""
+    split = rest.split()
     if kind == "reads":
-        globs = [words[0]] if words else []
-        while len(words) > len(globs) and words[len(globs)].startswith("!"):
-            globs.append(words[len(globs)])
-        why = " ".join(words[len(globs):])
+        globs = [split[0]] if split else []
+        while len(split) > len(globs) and split[len(globs)].startswith("!"):
+            globs.append(split[len(globs)])
+        why = " ".join(split[len(globs):])
         if not globs or globs[0].startswith("!") or not why:
             raise ValueError("a reads line is `//ci:reads <glob> [!<glob>...] <why>`")
-        entries = (Read(globs[0], f"{where} {why}", tuple(g.removeprefix("!") for g in globs[1:])),)
-        return Directive(path, line, kind, tuple(globs), entries)
+        return Words(kind, why, globs=tuple(globs))
     if kind == "reads-set":
-        if len(words) < 2:
+        if len(split) < 2:
             raise ValueError("a reads-set line is `//ci:reads-set <name> <why>`")
-        name, why = words[0], " ".join(words[1:])
-        if name not in read_sets:
-            raise ValueError(f"names read set {name}, which ci_job_reads.py's READ_SETS does not have "
-                             f"({', '.join(sorted(read_sets)) or 'none'})")
-        return Directive(path, line, kind, (), tuple(read_sets[name](f"{where} {why}")))
+        return Words(kind, " ".join(split[1:]), name=split[0])
     if kind == "builds":
-        if not words:
+        if not split:
             raise ValueError("a builds line is `//ci:builds <directory> <package>... [NAME=value...] <why>`")
-        directory, i = words[0], 1
+        directory, i = split[0], 1
         packages, env = [], {}
-        while i < len(words) and (words[i] == "." or words[i].startswith("./")):
-            packages.append(words[i])
+        while i < len(split) and (split[i] == "." or split[i].startswith("./")):
+            packages.append(split[i])
             i += 1
-        while i < len(words) and ENV_WORD.match(words[i]):
-            name, value = words[i].split("=", 1)
+        while i < len(split) and ENV_WORD.match(split[i]):
+            name, value = split[i].split("=", 1)
             env[name] = value
             i += 1
-        why = " ".join(words[i:])
+        why = " ".join(split[i:])
         if not packages or not why or os.path.isabs(directory) or not (REPO / directory).is_dir():
             raise ValueError("a builds line is `//ci:builds <directory> <package>... [NAME=value...] <why>`, the "
                              "directory relative to the repository root and each package `.` or `./...`")
-        return Directive(path, line, kind, (), (run(directory, packages, f"{where} {why}", mode="build", env=env),))
+        return Words(kind, why, directory=directory, packages=tuple(packages), env=tuple(sorted(env.items())))
     raise ValueError(f"//ci:{kind} is no kind of line this table reads ({', '.join(KINDS)})")
+
+
+def parse_directive(path: str, line: int, kind: str, rest: str, read_sets: dict) -> Directive:
+    """One //ci: line as a Directive, or a ValueError saying what is wrong with it. `line` is the
+    line the directive is on, which every read it declares names beside its why."""
+    read = words(kind, rest)
+    where = f"{path}:{line}"
+    if read.kind == "reads":
+        entries = (Read(read.globs[0], f"{where} {read.why}", tuple(g.removeprefix("!") for g in read.globs[1:])),)
+        return Directive(path, line, read.kind, read.globs, entries)
+    if read.kind == "reads-set":
+        if read.name not in read_sets:
+            raise ValueError(f"names read set {read.name}, which ci_job_reads.py's READ_SETS does not have "
+                             f"({', '.join(sorted(read_sets)) or 'none'})")
+        return Directive(path, line, read.kind, (), tuple(read_sets[read.name](f"{where} {read.why}")))
+    return Directive(path, line, read.kind, (), (run(read.directory, read.packages, f"{where} {read.why}",
+                                                     mode="build", env=dict(read.env)),))
 
 
 def load_directives(files: list, read_sets: dict) -> tuple:

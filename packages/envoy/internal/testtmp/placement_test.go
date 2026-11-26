@@ -1,5 +1,7 @@
 package testtmp
 
+//ci:reads packages/envoy/**/*_test.go TestNoTestFilePlacesATemporaryDirectoryOfItsOwn parses every test file of the module (../..)
+
 import (
 	"bytes"
 	"go/ast"

@@ -1,6 +1,7 @@
 package main
 
 //ci:builds packages/envoy ./cmd/cipher cmdtest.BuildCommand . in ../cipher
+//ci:builds packages/envoy ./cmd/cipher buildAgentSecrets builds agent-secrets from ../cipher
 
 import (
 	"context"

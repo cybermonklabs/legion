@@ -1,5 +1,7 @@
 package sandbox
 
+//ci:reads packages/daemon/docker/claude-code/** the worker image's claude-code pin (package.json, package-lock.json), read through ../../../docker
+
 import (
 	"encoding/json"
 	"errors"

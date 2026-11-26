@@ -1,5 +1,7 @@
 package store
 
+//ci:reads docs/kubernetes.md the release's documented way back, read through ../../../../docs
+
 import (
 	"context"
 	"os"

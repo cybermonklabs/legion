@@ -1,5 +1,7 @@
 package contracts
 
+//ci:reads packages/contracts/fixtures/subject-project.json the shared subject-project cases, read through ../../../contracts
+
 import (
 	"encoding/json"
 	"os"

@@ -1,5 +1,7 @@
 package refs
 
+//ci:reads packages/envoy/internal/dispatch/**/*.go !packages/envoy/internal/dispatch/**/*_test.go the heads test parses every non-test Go file of the Dispatch tree (..)
+
 import (
 	"fmt"
 	"go/ast"

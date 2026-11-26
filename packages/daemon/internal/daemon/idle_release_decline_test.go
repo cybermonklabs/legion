@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/pi-shared/src/workspace-recreated.ts the plugin's workspace-recreated notice, read through ../../../pi-shared
+
 import (
 	"context"
 	"os"

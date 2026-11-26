@@ -1,5 +1,7 @@
 package holdrecord_test
 
+//ci:reads packages/envoy/infra/README.md readmeSays reads infra/README.md through ../../infra
+
 import (
 	"context"
 	"crypto/ed25519"

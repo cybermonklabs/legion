@@ -1,5 +1,7 @@
 package graphstore
 
+//ci:reads packages/envoy/**/*.go the store's writers: every non-test Go file of the module (../../..), and the test files of the directories that declare writers
+
 import (
 	"bytes"
 	"errors"

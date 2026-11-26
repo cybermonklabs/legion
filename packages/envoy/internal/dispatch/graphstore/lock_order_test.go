@@ -1,5 +1,7 @@
 package graphstore
 
+//ci:reads packages/envoy/internal/dispatch/api/inbox_read.go the lock order as written, the doc comment of markInboxReadThreads, read through ../api
+
 import (
 	"context"
 	"encoding/json"

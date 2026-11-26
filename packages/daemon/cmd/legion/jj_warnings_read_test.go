@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/jj TestThePodWrappersFilterOfJJsOutputIsLegionJJs runs the wrapper's once_only, read through ../../docker
+
 import (
 	"maps"
 	"os"

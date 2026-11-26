@@ -1,5 +1,7 @@
 package workspace
 
+//ci:reads packages/daemon/docker/worker.Dockerfile TestTheWorkerImageWritesPackWindowConfig reads the worker image's git config writes through ../../docker
+
 import (
 	"bufio"
 	"bytes"

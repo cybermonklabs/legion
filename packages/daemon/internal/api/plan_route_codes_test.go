@@ -1,5 +1,7 @@
 package api
 
+//ci:builds packages/daemon ./internal/workflow ./internal/intake loadCodeCensus type-checks workflow and intake from their non-test source (packages.Load of ../workflow and ../intake)
+
 import (
 	"go/ast"
 	"go/constant"

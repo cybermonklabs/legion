@@ -10,6 +10,7 @@ package main
 
 //ci:builds packages/envoy ./cmd/cipher CGO_ENABLED=0 GOOS=darwin TestTheAgentSecretsBinaryLinksItsListedModules requireModules' go list -deps . CGO_ENABLED=0 GOOS=darwin
 //ci:builds packages/envoy ./cmd/cipherd CGO_ENABLED=0 GOOS=linux TestTheBrokerBinaryLinksItsListedModules requireModules' go list -deps . in ../cipherd CGO_ENABLED=0 GOOS=linux
+//ci:builds packages/envoy ./cmd/cipherd CGO_ENABLED=0 GOOS=linux TestTheBrokerBinaryLinksItsListedModules lists the broker's modules with go list -deps of ../cipherd
 
 import (
 	"fmt"

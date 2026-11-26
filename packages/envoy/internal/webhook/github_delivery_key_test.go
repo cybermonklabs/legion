@@ -1,5 +1,7 @@
 package webhook
 
+//ci:reads packages/envoy/scripts/fixtures/github/*.json githubFixture reads GitHub deliveries through ../../scripts
+
 import (
 	"bytes"
 	"encoding/json"

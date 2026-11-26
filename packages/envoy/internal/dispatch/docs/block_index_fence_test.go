@@ -1,5 +1,8 @@
 package docs
 
+//ci:reads packages/envoy/internal/dispatch/**/*.go !packages/envoy/internal/dispatch/**/*_test.go dispatchSourceFiles reads every non-test Go file of the Dispatch tree (..)
+//ci:reads packages/envoy/cmd/**/*.go !packages/envoy/cmd/**/*_test.go dispatchSourceFiles reads every non-test Go file of the commands (../../../cmd)
+
 import (
 	"context"
 	"encoding/json"

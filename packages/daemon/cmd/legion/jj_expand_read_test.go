@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/jj the builtins= line and command_word function of the pod's jj wrapper, read through ../../docker
+
 import (
 	"errors"
 	"maps"

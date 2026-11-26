@@ -1,5 +1,7 @@
 package main
 
+//ci:builds packages/envoy ./cmd/listener the copy's listener is built from ../cmd/listener
+
 import (
 	"bytes"
 	"crypto"

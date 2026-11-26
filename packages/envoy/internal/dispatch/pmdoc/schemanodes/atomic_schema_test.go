@@ -1,5 +1,7 @@
 package schemanodes
 
+//ci:reads packages/envoy/cmd/dispatch/main.go TestTheInstalledSchemaIsOneAtomicValue reads where the server registers the schema channel
+
 import (
 	"context"
 	"encoding/json"

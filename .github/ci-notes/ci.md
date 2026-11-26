@@ -2665,34 +2665,40 @@ listing: the test main, the package, its test variants and everything they impor
 selects:
 
 - the package whose directory holds it (the nearest directory above it that go list knows as a
-  package), when it is a `_test.go` file of that package or under a testdata directory below it:
-  no other test binary reads it;
+  package), when it is a `_test.go` file directly in that directory: go compiles a test file into
+  its own package's test binary alone;
 - otherwise every package whose test binary compiles that directory: the package and each package
   that imports it, directly or not, from its test or its non-test build. A change to a shared
-  package or a shared contract so selects its consumers. The path need not exist in the head: a
-  deleted or renamed file selects by its directory;
+  package or a shared contract so selects its consumers, and a file of a package's testdata selects
+  every package that imports it, since its tests read such files through `../<package>/testdata`.
+  The path need not exist in the head: a deleted or renamed file selects by its directory;
 - every package whose test binary embeds it;
 - every package whose test binary compiles a Go file whose `//ci:reads` line names it, whose
   `//ci:builds` line builds a package whose directory holds it, or whose `//ci:reads-set` line
-  names a set that holds it. These lines are the only record of a test reading a file outside its
-  package, so the job also runs `go_legs_select.py --check`, which fails on a line it cannot read, a
-  glob that names no file of the repository or whose `!` globs leave none, and a build that does not
-  compile: such a line would hold its test's package to nothing.
+  names a set that holds it (the grammar is `ci_filter_sources.words`, and the sets are
+  `ci_job_reads.READ_SETS`, which check-ci-filters.sh reads too). These lines are the only record
+  of a test reading a file outside its package, so the ci-filters job runs
+  `go_legs_select.py --check-reads`: it reads each legs test for the paths it builds out of `..`
+  literals (`"../x"`, `filepath.Join("..", …)`, a walk of `..`) and fails on each that names a file
+  of the repository no rule above selects the package for, naming the `//ci:reads` line to add.
+  check-ci-filters.sh's rule 9 holds each line to the files it names.
 
 **What selects every package, and what selects none.** Each is read from the change's base, as
 content rather than as a touched path:
 
 - go.work, or a go.mod change to anything but its requirements (its go line, toolchain, a replace,
   an exclude, a godebug): every package of every job, since they decide how every package builds;
-- a go.mod requirement or a go.sum or go.work.sum line: the packages whose test binaries import a
-  module whose version moves; a moved module no package of the repository imports itself selects
-  every package, since the listing cannot say which third-party package imports it;
+- a go.mod requirement or a go.sum or go.work.sum line: every package whose test binary, or a
+  `//ci:builds` build of it, compiles a package of any module outside the repository. Under
+  GOPROXY=off a third-party package loads with no imports, so which of them a moved module reaches,
+  directly or through another module, is not known, and each of them is selected;
 - a file a legs job runs - a script a step of its legs job names, and what that script runs or
   sources, a local action that job uses, go_legs.py, go_legs_select.py, go-legs-select.sh - every
   package of that job;
-- a legs workflow file: every package of its job only when its legs job's definition changed, read
-  as parsed YAML, so a comment or a reflow selects none; ci.yaml the same, for the `affected` job,
-  the job that calls the legs workflow, and CI_MERGE_GROUP_SELECTS. Any other workflow selects none;
+- a legs workflow file: every package of its job only when the legs' definition changed, read as
+  parsed YAML, so a comment or a reflow selects none: the legs job, and the file's `on:`, `env:` and
+  `defaults:`, which every leg inherits; ci.yaml the same, for the `affected` job, the job that calls
+  the legs workflow, and CI_MERGE_GROUP_SELECTS. Any other workflow selects none;
 - .github/go-legs.yaml: only the packages whose leg or group moved; a groups file of
   .github/go-legs its own package;
 - a changelog fragment, a dashboard file, or any file outside a package directory: no package,
@@ -2701,6 +2707,9 @@ content rather than as a touched path:
 
 Any failure of the selection (a go command that fails, a package go list cannot load, a legs job no
 workflow step runs, an exception) selects every leg of every job with every package, and says why.
+When the `affected` job itself does not succeed (it runs out of time, its runner is lost), each
+legs job's caller in ci.yaml hands its file no selection (`needs.affected.result == 'success' &&
+… || ''`, its `if:` holding `!cancelled()`), which runs every leg with every package too.
 
 **Which change, from which base.** A pull request: the merge commit against its first parent, never
 the event's `pull_request.base.sha`, which is the base branch's tip when the event was sent and is
@@ -2719,7 +2728,7 @@ base and so with a new `base_sha` and its own run. So no entry merges with a pac
 change in it reaches unrun. Measured against the alternative, the group's commit against main as it
 stood when the group started: over the landing merge groups of the last 50 pull requests merged by
 2026-11-26 that touch packages/envoy or packages/daemon, that change held a median 154.5 files (every
-entry ahead in the queue) and the selection then saved a median 1.6 of the legs' job-minutes, where
+entry ahead in the queue) and the selection then saved a median 1.7 of the legs' job-minutes, where
 the entry's own change saves what the pull request's does. While CI_MERGE_GROUP_SELECTS is anything
 else, a merge group's selected legs jobs run every leg with every package, as before. The switch
 changes which packages run inside a legs job the changes job selected, and nothing else: the
@@ -2727,22 +2736,24 @@ changes job selects a merge group's jobs over `merge_group.base_sha` whatever it
 
 **What it saves.** Over those 50 pull requests, from their own changes (today's import graph,
 go-legs.yaml and `//ci:` lines; each file's base and head content from the pull request's own
-commits; the legs' minutes from #5576's run 45739249062 and the package seconds go-legs.yaml holds):
-the legs run a median 27.9% of the four jobs' package-seconds per pull-request run (37.0% over all
-50), a median 75.8 of 116.9 legs job-minutes saved, and a median 4.2 minutes off envoy-go's legs and
-3.7 off daemon-go's. Over the 100 merge-group runs 45726988798 to 45750874776, each from its own
-entry's change: a median 12.6% of the package-seconds (mean 23.0%); 21 of the 400 legs-job runs run
-every package (a script envoy-go's legs run, a go.mod change beyond its requirements, a module no
-package imports itself, a base whose go-legs.yaml had no envoy-go yet), and envoy-go starts no leg
-in 52 of them.
+commits; the legs' minutes from #5668's run 45843582069, which ran every leg of the six jobs, and
+the package seconds go-legs.yaml holds): the legs run a median 26.2% of the package-seconds per
+pull-request run (40.7% over all 50), a median 107.6 of 176.7 legs job-minutes are saved, and the
+legs' wall drops by a median 4.6 minutes in envoy-go, 1.4 in daemon-go, 1.3 in envoy-go-race, 9.7
+in envoy-go-race-api and 9.3 in envoy-go-race-docs. Over the 100 merge-group runs 45726988798 to
+45750874776, each from its own entry's change: a median 18.7% of the package-seconds (mean 24.7%);
+30 of the 600 legs-job runs run every package (a script a job's legs run, a go.mod change beyond
+its requirements, a base whose go-legs.yaml had no such job yet), and envoy-go starts no leg in 35
+of them, envoy-go-race-api in 77 and envoy-go-race-docs in 68.
 
-Of the 159 (package, failing run) pairs in those 50 pull requests' own runs, 112 were selected by
-the change at that run's head, 39 are packages no legs job runs, and 8 were not selected, none by a
+Of the 159 (package, failing run) pairs in those 50 pull requests' own runs, 145 were selected by
+the change at that run's head, 5 are packages no legs job runs, and 9 were not selected, none by a
 change that reaches it: 3 are tests that failed in other pull requests' runs as well (bus's
 TestAnEnsureThatFailsForAnotherReasonEndsTheStartAtItsFirstTry in #5244's and #5502's groups,
-cmd/listener's relay tests in #5523's); 5 failed where the change compiles none of the package and
-no `//ci:` line of it names a changed file (#3125, #5398, #5444, and twice #4565, whose entry
-changed a daemon test and the worker image while envoy's testcleanup failed).
+cmd/listener's relay tests in #5523's); 6 failed where the change compiles none of the package and
+no `//ci:` line of it names a changed file (#3125, #5398, #5444, #5445, whose change was testnats's
+while dispatch/docs, which did not compile testnats at that head either, failed, and twice #4565,
+whose entry changed a daemon test and the worker image while envoy's testcleanup failed).
 
 ## The envoy-infra module, its own workspace and its live tests
 

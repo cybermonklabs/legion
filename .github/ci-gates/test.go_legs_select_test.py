@@ -1,18 +1,16 @@
-# The go_legs_select_test filter's gate: what job test reads.
+# The go_legs_select_test filter's gate: what job test reads. The harness builds its own fixture
+# trees and copies the scripts the selection runs into each, so it reads those scripts alone.
 GATE = harness("go_legs_select_test", "Test which packages a change selects in the Go legs",
                f"{SCRIPTS}/go-legs-select.test.sh", [
-    (f"{SCRIPTS}/go_legs_select.py", "the selection under test, run in a worktree of HEAD"),
-    (f"{SCRIPTS}/go-legs-select.sh", "the affected job's wrapper, whose bases and switch a case drives"),
+    (f"{SCRIPTS}/go_legs_select.py", "the selection under test, copied into each fixture tree"),
+    (f"{SCRIPTS}/go-legs-select.sh", "the affected job's wrapper, copied into each fixture tree, whose bases and "
+                                     "switch a case drives"),
     (f"{SCRIPTS}/go_legs.py", "go_legs_select.py reads the legs file and each module's packages through it"),
-    (GO_LEGS, "the legs the selection reads; a case moves a daemon package between two of its legs"),
-    (CI, "a case changes the changes job and the affected job, which the selection compares"),
-    (".github/workflows/ci-job-envoy-go-race.yaml", "a case changes a comment and the legs step of envoy-go-race"),
-    ("packages/envoy/internal/bus/async.go", "a case changes the shared package's source"),
-    ("packages/envoy/internal/bus/release_test.go", "a case changes the package's own test file"),
-    ("packages/contracts/fixtures/session-grant.json", "a case changes the fixture natsgrant's //ci:reads names"),
-    ("packages/envoy/natsgrant/*_test.go", "the //ci:reads line of session-grant.json, which the check case plants a "
-                                           "dead glob in"),
-    ("packages/dispatch/e2e/project-default-assignee.e2e.ts", "a case changes a dashboard file no legs test reads"),
-    ("packages/envoy/go.mod", "a case adds a godebug line"),
-    ("packages/envoy/go.sum", "a case adds a version of nats.go"),
+    (f"{SCRIPTS}/ci_filter_coverage.py", "go_legs_select.py runs its go commands in its Session and reads the "
+                                         "workflows through its readers"),
+    (f"{SCRIPTS}/ci_filter_sources.py", "go_legs_select.py reads each //ci: line with its grammar"),
+    (".github/ci-gates/**", "ci_filter_sources.py, which go_legs_select.py imports, loads every gate file"),
+    (BUILD_TAGS, "go_legs_select.py decodes go list's stream with it, and ci_filter_coverage.py imports it"),
+    (f"{SCRIPTS}/workflow_paths.py", "go_legs_select.py matches a //ci: glob with its glob_regex, and "
+                                     "ci_filter_coverage.py imports it"),
 ])

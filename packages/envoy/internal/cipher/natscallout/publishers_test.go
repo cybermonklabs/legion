@@ -1,5 +1,7 @@
 package natscallout
 
+//ci:reads packages/envoy/scripts/lib/legacy-subjects-gate-callout-publishers.json the gate's list of publishers, read through ../../../scripts
+
 import (
 	"bytes"
 	"encoding/json"

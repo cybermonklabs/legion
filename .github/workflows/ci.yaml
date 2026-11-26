@@ -277,14 +277,16 @@ jobs:
   # The packages each Go legs job's legs run: those the change reaches through the Go import graph
   # and the tests' //ci: lines, so a selected legs job starts only the legs that hold one and runs
   # in each only those (.github/scripts/go_legs_select.py). A job of its own rather than a step of
-  # changes, which every job waits for. It reports to no ci-ok: when it fails, the legs jobs that
-  # need it do not run, and ci-ok fails each of those changes selected.
+  # changes, which every job waits for. It reports to no ci-ok. When it does not succeed (a step
+  # that fails or runs out of time, the job cancelled), each legs job's caller below hands its file
+  # no selection, so every leg runs every package; each caller's `if:` holds `!cancelled()` for it.
   # why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
   affected:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.daemon_go_tests == 'true' || needs.changes.outputs.envoy_go == 'true' || needs.changes.outputs.envoy_go_race == 'true' || needs.changes.outputs.envoy_go_race_api == 'true' || needs.changes.outputs.envoy_go_race_docs == 'true') }}
     runs-on: ubuntu-24.04-arm
-    # The checkout's 3, setup-go's 3 and the selection's 4.
+    # The checkout's 3, setup-go's 3 and the selection's 4: the steps' own limits, which add up
+    # to the job's.
     timeout-minutes: 10
     permissions:
       contents: read
@@ -311,11 +313,6 @@ jobs:
           GO_LEGS_BASE: ${{ github.event.merge_group.base_sha }}
           EVERY_JOB: ${{ inputs.every-job }}
         run: .github/scripts/go-legs-select.sh
-      # The //ci: lines the selection reads, held to the files they name: a glob that names none,
-      # or a build that does not compile, would hold a test's package to nothing.
-      - name: "Check every //ci: line names what its test reads"
-        timeout-minutes: 2
-        run: python3 .github/scripts/go_legs_select.py --check
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:
@@ -430,7 +427,7 @@ jobs:
     uses: ./.github/workflows/ci-job-daemon-go.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
-      affected-packages: ${{ needs.affected.outputs.affected_packages }}
+      affected-packages: ${{ needs.affected.result == 'success' && needs.affected.outputs.affected_packages || '' }}
 
   # why: .github/ci-notes/ci.md#why-the-three-plugin-pack-tests-are-a-job-of-their-own
   plugin-pack:
@@ -689,7 +686,7 @@ jobs:
   # why: .github/ci-notes/ci.md#what-the-envoy-go-job-runs
   envoy-go:
     needs: [changes, affected]
-    if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: ${{ !cancelled() && needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     permissions:
       contents: read
       actions: read
@@ -697,7 +694,7 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
-      affected-packages: ${{ needs.affected.outputs.affected_packages }}
+      affected-packages: ${{ needs.affected.result == 'success' && needs.affected.outputs.affected_packages || '' }}
 
   # why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
   envoy-infra-go:
@@ -742,7 +739,7 @@ jobs:
   # why: .github/ci-notes/ci.md#the-race-lane-what-it-runs-why-it-is-three-jobs-and-what-is-not-in-it
   envoy-go-race:
     needs: [changes, affected]
-    if: needs.changes.outputs.envoy_go_race == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: ${{ !cancelled() && needs.changes.outputs.envoy_go_race == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     permissions:
       contents: read
       actions: read
@@ -750,12 +747,12 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go-race.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
-      affected-packages: ${{ needs.affected.outputs.affected_packages }}
+      affected-packages: ${{ needs.affected.result == 'success' && needs.affected.outputs.affected_packages || '' }}
 
   # why: .github/ci-notes/ci.md#the-race-lane-what-it-runs-why-it-is-three-jobs-and-what-is-not-in-it
   envoy-go-race-api:
     needs: [changes, affected]
-    if: needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: ${{ !cancelled() && needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     permissions:
       contents: read
       actions: read
@@ -763,7 +760,7 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go-race-api.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
-      affected-packages: ${{ needs.affected.outputs.affected_packages }}
+      affected-packages: ${{ needs.affected.result == 'success' && needs.affected.outputs.affected_packages || '' }}
 
   # why: .github/ci-notes/ci.md#the-mention-senders-claim-model-alone-on-a-runner-of-its-own
   envoy-go-claim-model:
@@ -780,7 +777,7 @@ jobs:
   # why: .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector
   envoy-go-race-docs:
     needs: [changes, affected]
-    if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: ${{ !cancelled() && needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     permissions:
       contents: read
       actions: read
@@ -788,7 +785,7 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go-race-docs.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
-      affected-packages: ${{ needs.affected.outputs.affected_packages }}
+      affected-packages: ${{ needs.affected.result == 'success' && needs.affected.outputs.affected_packages || '' }}
 
   # why: .github/ci-notes/ci.md#the-real-process-memory-tests-and-why-they-are-a-job-of-their-own
   dispatch-memory:

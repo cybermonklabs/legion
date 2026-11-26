@@ -450,8 +450,8 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_legs_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-legs.test.sh .github/scripts/go-legs.test.sh
 
-      # After setup-go: its cases run the selection, and go list's Deps as its oracle, over this
-      # repository's own modules in a worktree of HEAD, GOPROXY=off over an empty module cache.
+      # After setup-go: its cases run the selection's go list over fixture modules it builds,
+      # GOPROXY=off over an empty module cache, as the selection does.
       - name: Test which packages a change selects in the Go legs
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_legs_select_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-legs-select.test.sh .github/scripts/go-legs-select.test.sh

@@ -1,5 +1,8 @@
 package record
 
+//ci:reads packages/daemon/cmd/**/*.go !packages/daemon/cmd/**/*_test.go TestEveryWriterOfTheCopyIsAReading parses every non-test Go file under ../../cmd
+//ci:reads packages/daemon/internal/**/*.go !packages/daemon/internal/**/*_test.go TestEveryWriterOfTheCopyIsAReading parses every non-test Go file under ../../internal
+
 import (
 	"cmp"
 	"go/ast"

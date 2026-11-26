@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/worker.Dockerfile TestGhReadsAreProvenAgainstThePinnedCheck reads the worker image's LEAK_CHECK_TAG pin through ../../docker
+
 import (
 	"crypto/sha256"
 	"encoding/hex"
