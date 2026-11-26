@@ -305,7 +305,7 @@ func withExecMode(t *testing.T, mode string) string {
 	t.Helper()
 	dsn, err := url.Parse(testDSN(t))
 	if err != nil {
-		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", err)
+		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", errors.Unwrap(err))
 	}
 	values := dsn.Query()
 	values.Set("default_query_exec_mode", mode)

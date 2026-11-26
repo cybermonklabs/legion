@@ -936,7 +936,7 @@ func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	}
 	u, err := url.Parse(loopTestPG(t))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse the loop test's DSN: %v", errors.Unwrap(err))
 	}
 	u.Path = "/" + name
 	dsn := u.String()

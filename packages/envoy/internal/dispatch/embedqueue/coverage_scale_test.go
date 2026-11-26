@@ -380,7 +380,7 @@ func serverDatabaseURL(t *testing.T, raw, database string) string {
 	t.Helper()
 	server, err := url.Parse(raw)
 	if err != nil {
-		t.Fatalf("parse %s: %v", coverageScaleURLEnv, err)
+		t.Fatalf("parse %s: %v", coverageScaleURLEnv, errors.Unwrap(err))
 	}
 	server.Path = "/" + database
 	return server.String()

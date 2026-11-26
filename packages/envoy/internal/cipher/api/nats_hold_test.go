@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -79,7 +80,7 @@ func newHoldRig(t *testing.T) *holdRig {
 	dsn := storetest.URL(t)
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {

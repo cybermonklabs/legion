@@ -300,7 +300,7 @@ func dropDatabase(name string) {
 func openAdmin(raw string) error {
 	server, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, err)
+		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, errors.Unwrap(err))
 	}
 	shared.server = *server
 	ctx := context.Background()

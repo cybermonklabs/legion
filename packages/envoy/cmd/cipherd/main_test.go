@@ -16,6 +16,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -508,7 +509,7 @@ func TestMainSignsInToALocalPasswordlessURLAsGiven(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
 	}
 	password, _ := parsed.User.Password()
 	parsed.User = url.User(parsed.User.Username())

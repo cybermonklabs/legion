@@ -230,7 +230,7 @@ func censusDatabase(t *testing.T) string {
 	}
 	server, err := url.Parse(raw)
 	if err != nil {
-		t.Fatalf("read %s: %v", storetest.DatabaseURLEnv, err)
+		t.Fatalf("read %s: %v", storetest.DatabaseURLEnv, errors.Unwrap(err))
 	}
 	suffix := make([]byte, 6)
 	if _, err := rand.Read(suffix); err != nil {
@@ -1484,7 +1484,7 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 	t.Helper()
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("read the census database URL: %v", err)
+		t.Fatalf("read the census database URL: %v", errors.Unwrap(err))
 	}
 	query := parsed.Query()
 	query.Set("options", "-c default_transaction_read_only=on")

@@ -561,7 +561,7 @@ func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
 	cfg.PostgresDSN = testdb.Outage(t, cfg.PostgresDSN, testdb.Reset, testdb.Reset).DSN
 	proxy, err := url.Parse(cfg.PostgresDSN)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse the outage proxy's DSN: %v", errors.Unwrap(err))
 	}
 	var logs syncBuffer
 	startDaemonLogging(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}), slog.New(slog.NewJSONHandler(&logs, nil)))

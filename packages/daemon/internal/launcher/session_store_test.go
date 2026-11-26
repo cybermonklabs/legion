@@ -363,7 +363,7 @@ func sessionDatabaseAt(t *testing.T, dsn string) (ompsessions.Database, *session
 	t.Helper()
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse the test database's DSN: %v", errors.Unwrap(err))
 	}
 	password, _ := parsed.User.Password()
 	t.Setenv("PGPASSWORD", password)

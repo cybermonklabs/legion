@@ -27,7 +27,7 @@ func storeWith(t *testing.T, query map[string]string) *Store {
 	t.Helper()
 	dsn, err := url.Parse(testdb.Database(t, "legion_store_bounds_test"))
 	if err != nil {
-		t.Fatalf("parse the test database's DSN: %v", err)
+		t.Fatalf("parse the test database's DSN: %v", errors.Unwrap(err))
 	}
 	values := dsn.Query()
 	for key, value := range query {

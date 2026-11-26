@@ -272,7 +272,7 @@ func openPool(t *testing.T, dsn string) *pgxpool.Pool {
 func schemaOf(t *testing.T, dsn string) string {
 	t.Helper()
 	parsed, err := url.Parse(dsn)
-	require.NoError(t, err)
+	require.NoError(t, errors.Unwrap(err), "parse the test database's URL")
 	return parsed.Query().Get("search_path")
 }
 

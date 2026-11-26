@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"testing"
@@ -22,7 +23,7 @@ func TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst(t *t
 	ctx := context.Background()
 	server, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
 	}
 	server.Path = "/postgres"
 	var role string

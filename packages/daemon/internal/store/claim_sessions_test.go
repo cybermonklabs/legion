@@ -685,7 +685,7 @@ func secondStore(t *testing.T, store *Store, configure func(*pgxpool.Config)) *S
 	}
 	u, err := url.Parse(testDSN(t))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", errors.Unwrap(err))
 	}
 	u.Path = "/" + name
 	config, err := pgxpool.ParseConfig(u.String())

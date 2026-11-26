@@ -67,7 +67,7 @@ func emptyStore(t *testing.T) *Store {
 
 	base, err := url.Parse(testDSN(t))
 	if err != nil {
-		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", err)
+		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", errors.Unwrap(err))
 	}
 	adminURL := *base
 	adminURL.Path = "/postgres"

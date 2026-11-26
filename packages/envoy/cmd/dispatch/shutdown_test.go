@@ -1162,7 +1162,7 @@ func startDatabaseRelay(t *testing.T, databaseURL string) *databaseRelay {
 	t.Helper()
 	target, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse the database URL: %v", err)
+		t.Fatalf("parse the database URL: %v", errors.Unwrap(err))
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
