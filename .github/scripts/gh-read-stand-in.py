@@ -13,7 +13,8 @@ the files a case writes to <state dir>, read at each request:
                the first refusal through the Nth: refusals counted, not timed. The count is kept
                in refused-calls.
   graphql-spent  present: the rate_limit route reports the graphql budget at 0, its reset an hour
-               off, while the core budget is as the files above say.
+               off, while the core budget is as the files above say, and POST /graphql is refused
+               as GitHub's GraphQL API refuses a spent budget (below, graphql-200).
   secondary    `<status> <retry-after seconds|none>`: route requests are refused for a secondary
                rate limit with that status and that retry-after header (none: no header), the
                first one alone, or every one while `secondary-always` is present; the core
@@ -46,6 +47,8 @@ the files a case writes to <state dir>, read at each request:
                request trace prints as it came, line for line.
   redirect     present: GET /repos/o/r/moved answers a 301 to /repos/o/r/pulls/1, which gh
                follows, before any refusal, with the text of redirect-body as its body.
+  workflow     present: GET /repos/o/r/actions/workflows/ci.yaml answers that workflow, id 7, so
+               gh workflow run goes on to its dispatch, which `answer` decides like any route.
 It appends `<epoch> <method> <path>` to `log` for every request it answers, and each request's
 body (gh sends one read from stdin chunked), a line of its own, to `bodies`.
 
@@ -245,6 +248,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         [("x-ratelimit-limit", "5000"), ("x-ratelimit-remaining", "0"),
                          ("x-ratelimit-used", "5000"), ("x-ratelimit-reset", str(spent_until)),
                          ("x-ratelimit-resource", "graphql")])
+        elif path == "/graphql" and os.path.exists(os.path.join(state, "graphql-spent")):
+            self.answer(200, {"data": None, "errors": [
+                {"type": "RATE_LIMITED", "message": "API rate limit already exceeded for installation ID 1."}]},
+                        [("x-ratelimit-limit", "5000"), ("x-ratelimit-remaining", "0"),
+                         ("x-ratelimit-used", "5000"), ("x-ratelimit-reset", str(int(now) + 3600)),
+                         ("x-ratelimit-resource", "graphql")])
         elif spent:
             self.answer(403, {"message": read("spent-message", "API rate limit exceeded for installation ID 1."),
                               "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
@@ -257,6 +266,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif os.path.exists(os.path.join(state, "release")) and path.startswith("/repos/o/r/releases"):
             time.sleep(float(read("release-delay", "0.3")))
             self.answer(200, RELEASE)
+        elif os.path.exists(os.path.join(state, "workflow")) and path == "/repos/o/r/actions/workflows/ci.yaml":
+            self.answer(200, {"id": 7, "node_id": "W_7", "name": "ci", "path": ".github/workflows/ci.yaml",
+                              "state": "active"})
         elif os.path.exists(os.path.join(state, "raw")) and path == "/repos/o/r/raw":
             with open(os.path.join(state, "raw"), "rb") as handle:
                 data = handle.read()
@@ -271,7 +283,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.answer(200, json.loads(read("body", "{}")))
 
-    do_GET = do_POST = do_PATCH = handle_any
+    do_GET = do_POST = do_PATCH = do_DELETE = handle_any
 
     def log_message(self, *args):
         pass

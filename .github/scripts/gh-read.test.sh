@@ -638,6 +638,44 @@ drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset bash -c "exit 1"'
 check "a command that ran no gh fails as it did, with no rate_limit read and no sleep" \
   "$(is "$status|$(calls /rate_limit)|$(slept)|$(warnings)|$(errors)" '1|0||0|0')"
 
+echo "case: gh run, gh cache and gh workflow spend the core budget alone, and a dispatch is sent once"
+# They call the actions API's REST routes. A failure of their own while the graphql budget is spent
+# (another caller spent it) is no refusal of theirs: no wait, and so no second dispatch after a
+# failed one. The job's limit is two hours, so a wait for the graphql reset an hour off would be
+# taken. A `gh workflow run` that names no --ref asks GraphQL for the default branch first, so a
+# refusal of that lookup is waited for.
+github never 404
+touch "$work/state/graphql-spent"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=120 -- 'gh_wait_reset gh run list --repo o/r --workflow ci.yaml --limit 1'
+check "a gh run list 404 with the graphql budget spent is gh's own failure, with no sleep" \
+  "$(is "$status|$(slept)|$(calls /repos/o/r/actions/workflows/ci.yaml)|$(calls /rate_limit)|$(warnings)|$(errors)" '1||1|1|0|0')"
+github never 404
+touch "$work/state/graphql-spent"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=120 -- 'gh_wait_reset gh cache list --repo o/r --limit 1'
+check "a gh cache list 404 with the graphql budget spent is gh's own failure, with no sleep" \
+  "$(is "$status|$(slept)|$(calls /repos/o/r/actions/caches)|$(calls /rate_limit)|$(warnings)|$(errors)" '1||1|1|0|0')"
+github never 404
+touch "$work/state/graphql-spent"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=120 -- 'gh_wait_reset gh cache delete 123 --repo o/r'
+check "a gh cache delete 404 with the graphql budget spent is gh's own failure, with no sleep" \
+  "$(is "$status|$(slept)|$(calls /repos/o/r/actions/caches/123)|$(calls /rate_limit)|$(warnings)|$(errors)" '1||1|1|0|0')"
+dispatch=/repos/o/r/actions/workflows/7/dispatches
+github never 404
+touch "$work/state/graphql-spent" "$work/state/workflow"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=120 -- 'gh_wait_reset gh workflow run ci.yaml --repo o/r --ref main -f migration-base=abc'
+check "a gh workflow run --ref whose dispatch fails on its own (404), the graphql budget spent: one dispatch, no sleep" \
+  "$(is "$status|$(slept)|$(calls "$dispatch")|$(calls /graphql)|$(warnings)|$(errors)" '1||1|0|0|0')"
+github never
+touch "$work/state/graphql-spent" "$work/state/workflow"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=120 -- 'gh_wait_reset gh workflow run ci.yaml --repo o/r --ref main -f migration-base=abc'
+check "a gh workflow run --ref that is answered dispatches once, and reads no rate limit" \
+  "$(is "$status|$(slept)|$(calls "$dispatch")|$(calls /rate_limit)" '0||1|0')"
+github never
+touch "$work/state/graphql-spent" "$work/state/workflow"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=120 -- 'gh_wait_reset gh workflow run ci.yaml --repo o/r -f migration-base=abc'
+check "a gh workflow run with no --ref, its default-branch lookup refused for the spent graphql budget: waits once for that reset, and dispatches nothing" \
+  "$(is "$(slept | awk '$1 >= 3000 { n++ } END { print n + 0 }')|$(warnings)|$(calls /graphql)|$(calls "$dispatch")" '1|1|2|0')"
+
 echo "case: in a Legion pane, whose gh refuses unless it is the first gh on PATH, the call goes through"
 # A pane's gh (`legion gh`) exits 2 when the first gh on PATH is not its own wrapper. The helper's
 # gh takes its own directory off PATH before it runs the real one; the gh first on PATH here does
@@ -656,38 +694,34 @@ drive JOB_TIMEOUT_MINUTES=5 PATH="$work/panebin:$PATH" -- 'gh_wait_reset bash -c
 check "and so is one through bash -c, gh's answer unread" "$(is "$status|$out|$err" '0|{"title":"t"}|')"
 rm -rf "$work/panebin"
 
-# left_of <token>: the processes still running whose command line carries the token.
+# left_of <token>: the processes still running whose command line carries the token. It reads
+# /proc with builtins alone: a `tr` forked per process took 120 s over this dev box's 22,000
+# processes, longer than the 30 s hold an orphaned gh outlives the helper by, so the scan missed
+# it; this one takes about half a second there.
 left_of() {
-  local proc cmdline left=''
-  for proc in /proc/[0-9]*/cmdline; do
-    cmdline=$(tr '\0' ' ' < "$proc" 2> /dev/null) || continue
-    [[ $cmdline != *"$1"* ]] || left+="${proc#/proc/} "
+  local proc left='' args=()
+  for proc in /proc/[0-9]*; do
+    mapfile -d '' args 2> /dev/null < "$proc/cmdline" || continue
+    [[ " ${args[*]} " != *"$1"* ]] || left+="${proc#/proc/} "
   done
   echo "$left"
 }
 
 echo "case: a TERM, an INT or a HUP sent to the helper's gh alone (timeout --foreground) reaches the real gh"
 # The helper's gh runs the real one as a child for `gh api`, so it passes the signal on and waits.
-# The route holds its answer 30 s; the case names its request with a header no other process
-# carries, and looks for it among the processes left once the helper has returned.
-github never
-echo 30 > "$work/state/route-delay"
-token="case-$(date +%s%N)"
-drive JOB_TIMEOUT_MINUTES=5 -- "gh_wait_reset timeout --foreground 1 gh api repos/o/r/pulls/1 -H 'X-Case: $token'"
-check "a TERM: exits 124, timeout's status, and no process of the call is left" \
-  "$(is "$status|$(left_of "$token")" '124|')"
-github never
-echo 30 > "$work/state/route-delay"
-token="case-$(date +%s%N)"
-drive JOB_TIMEOUT_MINUTES=5 -- "gh_wait_reset timeout --foreground -s INT -k 5 1 gh api repos/o/r/pulls/1 -H 'X-Case: $token'"
-check "an INT: exits 124, not the KILL's 137, and no process of the call is left" \
-  "$(is "$status|$(left_of "$token")" '124|')"
-github never
-echo 30 > "$work/state/route-delay"
-token="case-$(date +%s%N)"
-drive JOB_TIMEOUT_MINUTES=5 -- "gh_wait_reset timeout --foreground -s HUP -k 5 1 gh api repos/o/r/pulls/1 -H 'X-Case: $token'"
-check "a HUP: exits 124, not the KILL's 137, and no process of the call is left" \
-  "$(is "$status|$(left_of "$token")" '124|')"
+# The route holds its answer 30 s, and the stand-in logs the request before that hold, so one call
+# logged shows the real gh had started and sent it before the signal came, 5 s in: the trap's
+# forwarding is then the only thing that ends it before the hold does. The case names its request
+# with a header no other process carries, and looks for it among the processes left once the
+# helper has returned; -k 10 makes a helper's gh that does not end on the signal a KILL's 137.
+for signal in TERM INT HUP; do
+  github never
+  echo 30 > "$work/state/route-delay"
+  token="case-$(date +%s%N)"
+  drive JOB_TIMEOUT_MINUTES=5 -- "gh_wait_reset timeout --foreground -s $signal -k 10 5 gh api repos/o/r/pulls/1 -H 'X-Case: $token'"
+  check "$signal sent: the real gh had sent its request, the call exits 124 (not the KILL's 137), and no process of it is left" \
+    "$(is "$(calls /repos/o/r/pulls/1)|$status|$(left_of "$token")" '1|124|')"
+done
 
 echo "case: the real gh starts with INT and QUIT at their default, not ignored"
 # A background simple command starts with both ignored, and gh keeps an ignored INT until it

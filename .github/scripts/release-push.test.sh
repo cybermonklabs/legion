@@ -843,10 +843,14 @@ echo
 echo "Case 11: release creates a missing release, publishes a draft, and reuses a published one"
 # The stub gh, first on PATH. It logs each call to $GH_TEST_DIR/calls as one
 # line, each argument in brackets, so an argument the script splits or joins
-# shows up as a different log line. The GraphQL release lookup (`gh api graphql
+# shows up as a different log line. The REST tag route (`gh api
+# repos/example/repo/releases/tags/<tag> --jq .draft`) answers a published
+# release (false, what its --jq prints) and a 404 otherwise, as GitHub serves a
+# published release alone there. The GraphQL release lookup (`gh api graphql
 # ... -f tag=<tag> --jq ...`) answers for $GH_TEST_RELEASE what its --jq prints:
 # none (GitHub answers a release that does not exist with null), draft or
-# published (true or false), or odd (a value the lookup never prints);
+# published (true or false), or odd (a value the lookup never prints), and is
+# refused as GitHub refuses a GraphQL call where $GH_TEST_GRAPHQL_SPENT is set;
 # `gh release view --json body -q .body` prints $GH_TEST_DIR/body.md, the
 # release's body as the case left it, for the release-section cases below, and
 # `--json name,body` prints $GH_TEST_DIR/name.md and that same body, the draft
@@ -873,8 +877,22 @@ if [ "$1 $2" = "api rate_limit" ]; then
 fi
 { printf '[%s]' "$@"; printf '\n'; } >> "$GH_TEST_DIR/calls"
 case "$1 $2" in
+  "api repos/example/repo/releases/tags/"*)
+    if [ "$GH_TEST_RELEASE" = published ]; then
+      echo false
+    else
+      echo "gh: Not Found (HTTP 404)" >&2
+      exit 1
+    fi ;;
   "api graphql")
-    if [[ " $* " == *" -f tag="* ]]; then
+    if [[ " $* " != *" -f tag="* ]]; then
+      echo "a GraphQL call that is no release lookup: $*" >&2
+      exit 3
+    elif [ -n "${GH_TEST_GRAPHQL_SPENT:-}" ]; then
+      echo '{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 1."}]}'
+      echo "gh: API rate limit already exceeded for installation ID 1." >&2
+      exit 1
+    else
       case $GH_TEST_RELEASE in
         none) echo none ;;
         draft) echo true ;;
@@ -882,9 +900,6 @@ case "$1 $2" in
         odd) echo null ;;
         *) echo "unknown GH_TEST_RELEASE $GH_TEST_RELEASE" >&2; exit 3 ;;
       esac
-    else
-      echo "a GraphQL call that is no release lookup: $*" >&2
-      exit 3
     fi ;;
   "release view")
     if [[ " $* " == *" --json name,body "* ]]; then
@@ -926,10 +941,12 @@ release_run() {
 }
 # argv <arg>...: one call as the stub logs it.
 argv() { printf '[%s]' "$@"; }
-# The GraphQL release lookup release-push.sh makes, as the stub logs it.
+# The release lookups release-push.sh makes, as the stub logs them: the REST tag route, then, where
+# that answers no published release, the GraphQL lookup. A published release takes the first alone.
 lookup_query='query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }'
 lookup_jq='.data.repository.release | if . == null then "none" else .isDraft end'
-view=$(argv api graphql -f "query=$lookup_query" -f owner=example -f name=repo -f tag=pkg-v1.0.1 --jq "$lookup_jq")
+rest_view=$(argv api repos/example/repo/releases/tags/pkg-v1.0.1 --jq .draft)
+view=$rest_view$'\n'$(argv api graphql -f "query=$lookup_query" -f owner=example -f name=repo -f tag=pkg-v1.0.1 --jq "$lookup_jq")
 upload=$(argv release upload pkg-v1.0.1 a.tgz b.tgz --repo example/repo --clobber)
 publish=$(argv release edit pkg-v1.0.1 --repo example/repo --draft=false)
 # The assets these cases name, as the files they are: the leak guard lists an
@@ -947,15 +964,14 @@ release_run none "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none: exits 0" "$(is "$rc" 0)"
 check "none: creates it from the pushed tag, with generated notes" "$(is "$calls" "$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --generate-notes --verify-tag)")"
 check "none: the title reaches gh as one argument" "$(contains "$calls" '\[--title\]\[Pkg v1\.0\.1\]\[')"
-# A release not made yet, while the graphql budget is spent (another job spent it): the lookup
-# answers none at once, and gh-read.sh, which reads no rate_limit route for an answer it has, waits
-# for nothing. With `gh release view` here, whose two requests gh-read.sh cannot read, the view's
-# exit 1 met the spent graphql budget and the release waited for its reset, or failed.
+# A re-run of a published release while the graphql budget is spent (another job spent it): the
+# REST tag route answers it on the core budget, so the release is reused with no GraphQL call and
+# no rate_limit read. A GraphQL lookup alone was refused there and read the spent budget.
 graphql_spent=yes
-release_run none "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
+release_run published "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 graphql_spent=''
-check "none, the graphql budget spent: created after the one lookup, with no rate_limit read" \
-  "$(is "$rc|$calls|$(wc -l < "$work/rate-calls" | tr -d ' ')" "0|$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --generate-notes --verify-tag)|0")"
+check "published, the graphql budget spent: reused after the REST read alone, with no rate_limit read" \
+  "$(is "$rc|$calls|$(wc -l < "$work/rate-calls" | tr -d ' ')" "0|$rest_view|0")"
 release_run none "" --notes "Fixed notes, in a few words." pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none, --notes: creates it with those notes" "$(is "$calls" "$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --notes "Fixed notes, in a few words." --verify-tag)")"
 check "none, --notes: the notes reach gh as one argument" "$(contains "$calls" '\[--notes\]\[Fixed notes, in a few words\.\]\[')"
@@ -965,11 +981,11 @@ check "draft: uploads this run's assets over its own, reads the draft back, then
 check "draft: says it published the draft" "$(contains "$out" '^Published the draft release pkg-v1\.0\.1 with this run.s assets$')"
 release_run published "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "published: exits 0" "$(is "$rc" 0)"
-check "published: reuses it, touching nothing" "$(is "$calls" "$view")"
+check "published: reuses it, touching nothing" "$(is "$calls" "$rest_view")"
 check "published: says it reused it" "$(contains "$out" '^Release pkg-v1\.0\.1 already exists; reusing it$')"
 release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "published, --upload-to-published: exits 0" "$(is "$rc" 0)"
-check "published, --upload-to-published: uploads this run's assets over its own, and edits nothing" "$(is "$calls" "$view"$'\n'"$upload")"
+check "published, --upload-to-published: uploads this run's assets over its own, and edits nothing" "$(is "$calls" "$rest_view"$'\n'"$upload")"
 release_run draft upload pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "draft, upload fails: exits 1" "$(is "$rc" 1)"
 check "draft, upload fails: never publishes the draft" "$(is "$calls" "$view"$'\n'"$upload")"
@@ -1404,11 +1420,11 @@ printf 'Pkg v1.0.1\n' > "$work/name.md"
 leak_refuse=$leak_host
 release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" "$leak_host.tgz"
 check "the upload to the published release, refused over an asset's file name: exits 1, the stub logged the view alone" \
-  "$(is "$rc|$calls" "1|$view")"
+  "$(is "$rc|$calls" "1|$rest_view")"
 leak_refuse=''
 release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" "$leak_host.tgz"
 check "the upload to the published release, a passing engine: uploaded" \
-  "$(is "$rc|$calls" "0|$view"$'\n'"$leaky_name_upload")"
+  "$(is "$rc|$calls" "0|$rest_view"$'\n'"$leaky_name_upload")"
 # An asset that is no archive this lane lists is read as the file it is, which is the SHA256SUMS
 # a legion and an envoy-infra release each ship; an asset it cannot list at all is a setup
 # failure, named by its position so the log carries no name of its own.

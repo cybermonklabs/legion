@@ -58,12 +58,14 @@
 # Those, gh's other commands, and a gh api whose log holds no answer (a failed connection, or a
 # stand-in gh that logs nothing) leave an answer unread. When such a command fails with 1, gh's
 # status for an answer it refuses, the helper asks GET /rate_limit about the budget that command
-# spends: graphql for `gh api graphql`, core for any other `gh api` route, and either for gh's
-# other commands, which may send both. That budget at 0 is the hourly budget's refusal; their
-# secondary limit is the command's own failure. One false wait remains: such a command that fails
-# for its own reason (a 404, say) while its budget is at 0, as when its own call spent the last
-# unit, or, for gh's other commands, while the other budget is. A command that ran no gh by name
-# (git, say) spends no budget, and its failure is its own.
+# spends: graphql for `gh api graphql`; core for any other `gh api` route, and for `gh run`, `gh
+# workflow` and `gh cache`, which call REST routes alone; and either for gh's other commands (`gh
+# release`, `gh pr`), which may send both, and for a `gh workflow run` that names no --ref, whose
+# default-branch lookup is GraphQL (gh 2.98.0, pkg/cmd/workflow/run/run.go). That budget at 0 is
+# the hourly budget's refusal; their secondary limit is the command's own failure. One false wait
+# remains: such a command that fails for its own reason (a 404, say) while its budget is at 0, as
+# when its own call spent the last unit, or, for those that may send both, while the other budget
+# is. A command that ran no gh by name (git, say) spends no budget, and its failure is its own.
 #
 # Where the limit comes from. GitHub enforces a job's timeout-minutes from the job's start, and
 # a step's from the step's, and the runner exposes neither the limit nor the start to a step.
@@ -303,13 +305,38 @@ _gh_read_gh() {
 
 # _gh_read_budgets <gh argument>...: the budgets a gh command can spend, as GET /rate_limit names
 # them: `graphql` for `gh api graphql`, `core` for any other `gh api` route (its first argument
-# that is no flag and no flag's value), and `core graphql` for gh's other commands.
+# that is no flag and no flag's value) and for `gh run`, `gh workflow` and `gh cache` (REST
+# routes alone: the actions API), and `core graphql` for a `gh workflow run` with no --ref (its
+# default-branch lookup is GraphQL) and for gh's other commands.
 _gh_read_budgets() {
   local arg skip='' route=''
-  if [ "${1:-}" != api ]; then
-    echo core graphql
-    return
-  fi
+  case ${1:-} in
+    api) ;;
+    run | cache)
+      echo core
+      return
+      ;;
+    workflow)
+      if [ "${2:-}" = run ]; then
+        for arg in "$@"; do
+          case $arg in
+            -r | -r?* | --ref | --ref=*)
+              echo core
+              return
+              ;;
+          esac
+        done
+        echo core graphql
+      else
+        echo core
+      fi
+      return
+      ;;
+    *)
+      echo core graphql
+      return
+      ;;
+  esac
   shift
   for arg in "$@"; do
     if [ -n "$skip" ]; then
