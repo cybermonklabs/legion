@@ -30,6 +30,7 @@ import {
   pickNamed,
   textBoxes,
 } from "../../__tests__/list-picks";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import {
   answerAskSnoozes,
   answerAskUnsnoozes,
@@ -42,6 +43,7 @@ import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api, NetworkError, RequestTimeoutError } from "../../api/client";
 import { inboxThreadsQuery } from "../../api/queries";
 import type {
+  Agent,
   Artifact,
   AskRead,
   Comment,
@@ -49,6 +51,7 @@ import type {
   InboxRow,
   Issue,
   IssueDetails,
+  Message,
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
@@ -56,7 +59,7 @@ import { QUIET_MS } from "../doc/refocus-when-settled";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
-import { replyRow } from "../threads/replies-fixture";
+import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { SnoozeWrites } from "./ask-snooze-fixture";
 import { Inbox } from "./Inbox";
@@ -8457,6 +8460,111 @@ test("below the column's width r on an answered question's thread row opens its 
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+/** The planner session as the live list holds it, taking a message in either mode. */
+const PLANNER_SESSION: Agent = {
+  capabilities: ["steer", "btw"],
+  dir: "/w",
+  host: "m",
+  last_activity: null,
+  last_seen: Date.now(),
+  machine_id: "m",
+  open_asks: 0,
+  roles: [],
+  session_id: "planner",
+  state: "live",
+  title: "Planner",
+};
+
+/** The reads of an Inbox that lists the planner's Agent row alone (`plannerAgentRow`): its
+ *  conversation, the message the reader sent and the session's reply, and the live list holding
+ *  `sessions`. Returns what puts them back. */
+function plannerRowReads(sessions: readonly Agent[]): () => void {
+  const message = (id: string, body: string, overrides: Partial<Message> = {}): Message => ({
+    author: { id: "alice", kind: "user" },
+    body,
+    broadcast_id: null,
+    created_at: "2026-10-12T00:00:00Z",
+    deliveries: [],
+    ...messageCorrectionFields(),
+    id,
+    in_reply_to: null,
+    issue_key: null,
+    reply_block: null,
+    target: "session:planner",
+    ...overrides,
+  });
+  const spies = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-10-12T02:00:00Z",
+      limit: 200,
+      offset: 0,
+      rows: [plannerAgentRow()],
+      total: 1,
+    }),
+    spyOn(api, "listAgents").mockResolvedValue([...sessions]),
+    spyOn(api, "listAgentMessages").mockResolvedValue([
+      {
+        message: message("message-1", "Have a look at the build"),
+        replies: [
+          message("reply-1", "Looked at it.", {
+            author: { id: "planner", kind: "session" },
+            created_at: "2026-10-12T01:00:00Z",
+            in_reply_to: "message-1",
+          }),
+        ],
+      },
+    ]),
+  ];
+  return () => {
+    for (const spy of spies) spy.mockRestore();
+  };
+}
+
+// R18 on an Agent row below the column's width: its box is drawn only while the live list holds
+// its session (`AgentThreadBody`), which nothing the Inbox reads before the view draws says. So
+// `r` opens the row's view and lands once the thread has drawn: in its box, as on any other
+// thread row (the row above) ...
+test("below the column's width r on an Agent row whose session is live opens its reading view with the caret in the session's reply box", async () => {
+  const user = userEvent.setup();
+  const restore = plannerRowReads([PLANNER_SESSION]);
+  const { unmount } = renderInbox();
+  try {
+    const row = await waitFor(() => shortRow("agent:message-1"));
+    act(() => row.focus());
+    await user.keyboard("r");
+    const view = await screen.findByTestId("inbox-reading-view");
+    await waitFor(() =>
+      expect(
+        view.querySelector("[data-inbox-thread-body] [data-inbox-agent-composer] [data-reply-box]")
+      ).toHaveFocus()
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// ... and at the view's scroller, where any pick lands, once the thread has said that the live
+// list no longer holds the session and drawn no box.
+test("below the column's width r on an Agent row whose session is not live opens its reading view at its scroller once the thread says the session has ended", async () => {
+  const user = userEvent.setup();
+  const restore = plannerRowReads([]);
+  const { unmount } = renderInbox();
+  try {
+    const row = await waitFor(() => shortRow("agent:message-1"));
+    act(() => row.focus());
+    await user.keyboard("r");
+    const view = await screen.findByTestId("inbox-reading-view");
+    await within(view).findByTestId("agent-session-ended");
+    await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+    expect(view.querySelector("[data-reply-box]")).toBeNull();
+  } finally {
+    unmount();
+    restore();
   }
 });
 

@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useLayoutEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { openInNewTab } from "../shell/new-tab";
+import { linkHref, openInNewTab } from "../shell/new-tab";
 import { hrefTarget } from "./link-address";
 import { MARKDOWN_BODY_SELECTOR } from "./markdown-engine";
 import { fetchReferenceHref, needsSpecSlug } from "./reference-target";
@@ -17,7 +17,8 @@ import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "
  * too; any other scheme opens nothing, and so does a reference to a person, whom no page shows
  * (R5). The document editor calls it through its `openLink` option (`@legion/proof-editor`'s
  * `src/dispatch-link-open.ts`, from `ProofDocument`, `VersionView` and `PriorityDescription`),
- * and `LinkClickHost` for every rendered body.
+ * and `LinkClickHost` for every rendered body. A key that follows a link in this tab follows it
+ * by the same rule, save that another site loads in this tab (`useLinkFollower`).
  */
 
 /** Same-origin paths the server answers itself rather than this application: its API (the bytes
@@ -141,6 +142,31 @@ export function useLinkOpener(): OpenLink {
   const openDestination = useDestinationOpener();
   return useCallback(
     (target, { newTab }) => openDestination(linkDestination(target), newTab),
+    [openDestination]
+  );
+}
+
+/** The way a key follows a link in this tab where the page takes a plain click on the link for
+ *  itself: `o` on a thread's short row below 1280 px, whose title opens the row in place on a
+ *  plain click, a script's included (`ThreadTitle`'s `onOpen`). The address `element` links to
+ *  (`linkHref`) opens as a click on it would: a page of this application through the router,
+ *  with no new load of the application and nothing it holds lost. Another site loads in this
+ *  tab, the tab the key asked for, rather than in a new one. Nothing opens where `element` links
+ *  to none. It is one function for as long as the component lives, as `useDestinationOpener`'s
+ *  is. */
+export function useLinkFollower(): (element: Element | null) => void {
+  const openDestination = useDestinationOpener();
+  return useCallback(
+    (element: Element | null) => {
+      const href = linkHref(element);
+      if (href === null) return;
+      const destination = linkDestination(href);
+      if (destination?.kind === "away") {
+        window.location.assign(destination.href);
+        return;
+      }
+      openDestination(destination, false);
+    },
     [openDestination]
   );
 }

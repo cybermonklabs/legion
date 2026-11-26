@@ -6,7 +6,7 @@ import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import type { IssueReferenceSummary } from "../../api/types";
-import { LinkClickHost, linkDestination, useLinkOpener } from "./link-open";
+import { LinkClickHost, linkDestination, useLinkFollower, useLinkOpener } from "./link-open";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 
@@ -182,6 +182,63 @@ test("a reference to a person opens nothing, in the same tab or a new one", asyn
     await open("dispatch://person/alice@example.com", true);
     expect(windowOpen).not.toHaveBeenCalled();
     expect(route()).toBe("/issues/CORE-9");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The follower a key holds (`useLinkFollower`), at `PAGE`'s route, beside the route it is on,
+ *  and `follow`, which follows an element holding a link to `target`, or no link at all. */
+function renderFollower() {
+  let follower: ((element: Element | null) => void) | undefined;
+  function Probe(): ReactNode {
+    follower = useLinkFollower();
+    const location = useLocation();
+    return <p data-testid="route">{`${location.pathname}${location.search}${location.hash}`}</p>;
+  }
+  const view = render(
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter initialEntries={["/issues/CORE-9"]}>
+        <Probe />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  return {
+    follow: async (target: string | null) => {
+      const host = document.createElement("span");
+      if (target !== null) {
+        const link = document.createElement("a");
+        link.href = target;
+        host.append(link);
+      }
+      await act(async () => {
+        follower?.(host);
+      });
+    },
+    route: () => within(view.container).getByTestId("route").textContent,
+    view,
+  };
+}
+
+// `o` on a thread's short row follows its title in this tab, as a click on a link of the page:
+// a page of Dispatch through the router, with no new load of the application; any other address
+// by the browser's own load, in this tab, since the key asked for this one; nothing where the
+// element holds no link.
+test("a key's follow of a link opens a page of Dispatch through the router and loads any other address in this tab", async () => {
+  const { follow, route, view } = renderFollower();
+  try {
+    await follow(null);
+    expect(route()).toBe("/issues/CORE-9");
+    await follow("/issues/CORE-1/comments/c9");
+    expect(route()).toBe("/issues/CORE-1/comments/c9");
+    expect(locationAssign).not.toHaveBeenCalled();
+    await follow("https://example.com/a");
+    expect(locationAssign).toHaveBeenLastCalledWith("https://example.com/a");
+    await follow("/api/v1/issues/CORE-1");
+    expect(locationAssign).toHaveBeenLastCalledWith("http://dispatch.test/api/v1/issues/CORE-1");
+    expect(locationAssign).toHaveBeenCalledTimes(2);
+    expect(windowOpen).not.toHaveBeenCalled();
+    expect(route()).toBe("/issues/CORE-1/comments/c9");
   } finally {
     view.unmount();
   }

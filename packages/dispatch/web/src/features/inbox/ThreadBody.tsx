@@ -171,6 +171,7 @@ function ThreadTurnView({
  */
 function ThreadTurns({
   composer,
+  composerSettled = false,
   markNewest,
   openAtFirstUnread,
   replies,
@@ -179,6 +180,11 @@ function ThreadTurns({
   unread,
 }: {
   composer: ReactNode;
+  /** Whether every read the composer waits on has answered, so that a thread drawn with no
+   *  composer will draw none while those reads stand, and carries the mark that says so
+   *  (`NO_REPLY_BOX`). Set by a body whose composer waits on a read its turns do not: an Agent
+   *  row's, on the live list. Unset, a thread with no composer carries no mark. */
+  composerSettled?: boolean;
   /** The read mark's watch, placed on the thread's newest message: once that message has been
    *  on screen long enough (`useDwell`), the thread is read. */
   markNewest: DwellRef;
@@ -243,7 +249,11 @@ function ThreadTurns({
     />
   );
   return (
-    <div className="mt-2 space-y-2" data-inbox-thread={threadId}>
+    <div
+      className="mt-2 space-y-2"
+      data-inbox-no-reply-box={composerSettled && composer === null ? "" : undefined}
+      data-inbox-thread={threadId}
+    >
       {root === undefined ? null : turnView(root)}
       {composerFirst ? composer : fold}
       {shown.length === 0 ? null : <div className="space-y-2">{shown.map(turnView)}</div>}
@@ -263,6 +273,13 @@ type ThreadOwner = Extract<ComposerOwner, { kind: "issue" } | { kind: "artifact"
 export function threadSendKey(threadId: string): readonly unknown[] {
   return ["inbox-thread-reply", threadId];
 }
+
+/** A thread drawn with no reply box in it, and none to come while what it read stands: an Agent
+ *  row's whose session the live list does not hold, whose conversation the session's read does
+ *  not hold, or whose read failed (`AgentThreadBody`). Below 1280 px `r` lands at the reading
+ *  view's scroller there rather than waiting for a box (`ReadingView.tsx`'s `landingIn`); a
+ *  thread whose reads are still out carries neither the box nor this mark. */
+export const NO_REPLY_BOX = "[data-inbox-no-reply-box]";
 
 /**
  * The read mark a Reply row's thread carries: the dwell rule the thread's own pages already use
@@ -621,7 +638,11 @@ function AgentThreadBody({
   const markNewest = useAgentThreadRead(thread, read?.replies ?? NO_REPLIES);
   if (messages.isPending) return <LoadingSkeleton label="Opening the conversation" />;
   if (messages.isError) {
-    return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box="">
+        Could not load this conversation.
+      </p>
+    );
   }
   const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);
   const turn = (message: MessageWithTrees): ThreadTurn =>
@@ -669,6 +690,9 @@ function AgentThreadBody({
             </div>
           )
         }
+        // The live list's read can still be out once the conversation is drawn, and until it has
+        // answered no box is no answer yet: only then does a thread drawn with none say so.
+        composerSettled={!live.isPending}
         markNewest={markNewest}
         openAtFirstUnread={openAtFirstUnread}
         replies={turns.slice(1)}

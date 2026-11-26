@@ -47,6 +47,7 @@ import { writesOf } from "../writes/write-store";
 import { DismissControl, RowDismissContext } from "./DismissControl";
 import { Inbox } from "./Inbox";
 import { issueAsk } from "./inbox-fixture";
+import { address, RouteProbe } from "./inbox-page-fixture";
 import { type InboxListRow, rowId } from "./list-row";
 import {
   dismissesThread,
@@ -108,11 +109,13 @@ function seeded(rows: readonly MyReplyRow[], asks: readonly InboxRow[] = []): Qu
   return client;
 }
 
-function renderInbox(client: QueryClient, address = "/"): void {
+/** The Inbox at `path`, with the router's address drawn beside it (`RouteProbe`). */
+function renderInbox(client: QueryClient, path = "/"): void {
   render(
-    <MemoryRouter initialEntries={[address]}>
+    <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
+          <RouteProbe />
           <Inbox />
         </KeymapProvider>
       </QueryClientProvider>
@@ -322,17 +325,20 @@ test("below 1280 px a plain click on a thread row's title opens the row in place
   }
 });
 
-test("below 1280 px `o` on a focused thread row goes to the thread's own page, not the row's view", async () => {
+// `o` goes where the row's title links, the thread's own page, through the app's own navigation:
+// the router's address moves and the browser loads no page, so the app keeps what it holds in
+// memory, a write still out included, as `o` beside the column does by its router link.
+test("below 1280 px `o` on a focused thread row goes to the thread's own page, not the row's view, with no page load", async () => {
   const user = userEvent.setup();
   const assign = spyOn(window.location, "assign").mockImplementation(() => undefined);
   renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
   try {
     await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
     const row = document.querySelector<HTMLElement>('[data-inbox-row="reply:c9"]') as HTMLElement;
-    const title = row.querySelector<HTMLAnchorElement>("a[data-inbox-owner]") as HTMLAnchorElement;
     row.focus();
     await user.keyboard("o");
-    expect(assign).toHaveBeenCalledWith(title.href);
+    await waitFor(() => expect(address()).toBe("/issues/CORE-1/comments/c9"));
+    expect(assign).not.toHaveBeenCalled();
     expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
   } finally {
     assign.mockRestore();

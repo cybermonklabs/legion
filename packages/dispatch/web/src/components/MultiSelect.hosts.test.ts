@@ -73,7 +73,7 @@ const HOSTS: readonly Host[] = [
     digits: "`1`-`4`, and `0` on a snoozed item",
     elements: 1,
     file: "features/inbox/SnoozeControl.tsx",
-    rows: `k-snooze-menu (pane, card mode, drawer, the bar), k-next-item (bulk), k-phone, ${MENU_ROWS}`,
+    rows: `k-snooze-menu (the reading pane, the short-row list, the reading view, the drawer, the bar), k-next-item (bulk), k-phone, ${MENU_ROWS}`,
     rules: ["menu"],
     surface:
       "`SnoozePick`: the pane head's Snooze, a card's Snooze, the drawer's, and the selection bar's Snooze selected asks, which `inbox/Inbox.tsx` draws as `<SnoozePick>`",

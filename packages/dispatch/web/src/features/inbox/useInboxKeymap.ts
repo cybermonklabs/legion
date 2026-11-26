@@ -13,9 +13,10 @@ import { MENU_TRIGGER_SELECTOR, takesText } from "../../components/key-targets";
 import { openReplyBox, REPLY_BOX } from "../conversation/turn-keys";
 import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import { ITEM_COPY_REF_SELECTOR } from "../refs/CopyRefButton";
+import { useLinkFollower } from "../refs/link-open";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import type { KeymapActionId } from "../shell/keymap-catalogue";
-import { followLink, openLinkInNewTab } from "../shell/new-tab";
+import { openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import type { AskApprovalAction } from "./AskOptionRow";
 import { outsideAskCard } from "./ask-card";
@@ -191,6 +192,9 @@ export function useInboxKeymap({
     openId: paneSelection.id,
     viewRef: paneRef,
   });
+  /** Follows a link in this tab as a plain click on it would, where the page takes that click
+   *  for itself: `o` on a thread's short row. */
+  const followLink = useLinkFollower();
   const rows = () => rowsIn(listRef.current);
   const step = (delta: 1 | -1) => roveFocus(rows(), rowAround(document.activeElement), delta);
   const focusInPane = () => paneRef.current?.contains(document.activeElement) === true;
@@ -776,19 +780,16 @@ export function useInboxKeymap({
     },
     {
       // The thread in hand's reply box (R18), from where Enter would start. Below 1280 px with
-      // no row open the focused thread row's view opens, with the caret in its reply box; an
-      // Agent row's box is drawn only while its session is live, so its view opens at the
-      // scroller, where any pick lands.
+      // no row open the focused thread row's view opens, with the caret in its reply box once
+      // the thread has drawn it. An Agent row's box is drawn only while its session is live,
+      // which the thread knows only once its reads have answered, so where it draws none the
+      // view opens at its scroller, where any pick lands (`landingIn`, `NO_REPLY_BOX`).
       action: "inbox.reply",
       run: () => {
         if (mode === "list") {
           const row = handRow();
           if (row?.kind === "thread") {
-            openFocused(
-              row.thread.kind === "agent"
-                ? undefined
-                : { kind: "reply", threadId: row.thread.thread_id }
-            );
+            openFocused({ kind: "reply", threadId: row.thread.thread_id });
           }
           return;
         }
@@ -810,7 +811,8 @@ export function useInboxKeymap({
         const owner = inHand("[data-inbox-owner]");
         // Below 1280 px with no row open, a thread row's title opens the row in place on a plain
         // click (`ThreadTitle`'s `onOpen`), and a script's click is one. `o` is the way to the
-        // thread's own page, as it is beside the column, so it follows the link itself.
+        // thread's own page, as it is beside the column, so it follows the link itself, inside
+        // the app as the router's link beside the column goes, with no new load of the page.
         if (mode === "list" && handRow()?.kind === "thread") {
           followLink(owner);
           return;
