@@ -254,9 +254,9 @@ test("the seam gives the model's parts from today's reads and makes no request",
 
 // A Change stands under the decision it was asked on, though another decision holds its quote
 // too: here the Change quotes the paragraph both decisions open with, as the page's Change
-// quotes a decision's first paragraph. The tree read hangs the Change under the decision it was
-// asked on, so no quote is matched, and the first decision, whose words hold the same quote,
-// carries none.
+// quotes a decision's first paragraph. The Decisions view read hangs the Change under the
+// decision it was asked on, so no quote is matched, and the first decision, whose words hold the
+// same quote, carries none.
 test("a Change stands under the decision it was asked on, where another decision holds its quote too", async () => {
   const { change, parts } = await seamOf("The rail stays 56 px wide.");
   expect(idsOf(parts).yours[0]).toBe(D("asked"));

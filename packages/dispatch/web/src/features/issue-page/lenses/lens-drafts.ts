@@ -47,9 +47,9 @@ export interface LensChip {
    *  holds none of, whose row Graph's address reads Graph's pages to reach (both `graphOnly`).
    *  The link's `?node=`. */
   readonly id?: string;
-  /** Set where the chip links Graph's row of its target, from every view (`NodeLink.tsx`, R7):
+  /** Set where the chip links Graph's row of its target, from every view (`NodeLink.tsx`):
    *  where Graph alone draws that row, for a constraint of the issue that no step drafted from the
-   *  answer, as from Conversation's, which holds the issue's constraints as context (R5); and
+   *  answer, as from Conversation's, which holds the issue's constraints as context; and
    *  where the read so far holds no node of the target, since no view's row of it is known until
    *  its page is read, and Graph's address reads Graph's pages until it holds the node
    *  (`unheldChip`). */
@@ -233,7 +233,7 @@ export function storedFacts(
  * The draft of a lens, a finding, a risk or a constraint of the issue; undefined for any other
  * node, which the tree read's other steps are asked for. A catalogue node drafts no row: a
  * `lens_kind`, and a constraint whose parent is not the issue. Nor does a constraint the read
- * marks as context, as Conversation's answer holds each of the issue's (R5), but where a lens of
+ * marks as context, as Conversation's answer holds each of the issue's, but where a lens of
  * the answer stands under it: that answer holds it as the lens's ancestor (`issueConstraint`).
  *
  * It stands under its parent's row (`parentsOf`), with its address as its reference
@@ -386,7 +386,7 @@ export function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): Sto
 /** Whether `constraint` is one of the issue's own that draws a row: under the issue
  *  (`underIssue`), and not context the read brings in, but where a lens of `answer` stands under
  *  it (`lensParents`): Conversation's answer holds the issue's constraints as context, and one a
- *  lens stands under as that lens's ancestor, which it draws whole (R5). A catalogue constraint
+ *  lens stands under as that lens's ancestor, which it draws whole. A catalogue constraint
  *  a tuple names is context too, and stands under no issue. */
 function issueConstraint(
   constraint: TreeAnswerNode,

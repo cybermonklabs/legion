@@ -695,7 +695,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     },
     reach:
       "/issues/<ISSUE> with the new issue page on, a risk's Early warning and Prevention lines, a standard's reference line and a measurement's Taken at line",
-    reason: `A fact line is one line under its row, one stored attribute read to its plain words. Where it names a lens, a risk, a constraint or a finding the tree read holds, that name is a chip that links the node's row, which the outline's own step names (decision 388), and the words around it are drawn as plain words. ${PLAIN_WORDS_REASON}`,
+    reason: `A fact line is one line under its row, one stored attribute read to its plain words. Where it names a lens, a risk, a constraint or a finding the tree read holds, that name is a chip that links the node's row, which the outline's own step names, and the words around it are drawn as plain words. ${PLAIN_WORDS_REASON}`,
     record: true,
     rendered: false,
     surface: "lens-fact-line",
