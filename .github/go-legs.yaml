@@ -4,11 +4,14 @@
 # its check-run name and ci-ok's reading of it stay as they were.
 #
 # Each package of a module is in exactly one place here: one leg of one job, or `elsewhere`, a
-# job that runs it outside these legs. .github/scripts/go_legs.py, which each leg's go test step
-# runs for its packages, fails the step first when `go list ./...` prints a package no place names,
-# or names one twice, when a place names a directory that is no package, when a leg lists none, or
-# when the job's legs here are not the legs its matrix runs: so a new package fails every leg until
-# it is added here. A leg sees only its own job, so .github/scripts/ci_job_reads.py's
+# job that runs it outside these legs. A package too long for one leg is in several legs of one
+# job, each `- <package>: <group>`, a group of its top-level tests from
+# .github/go-legs/<module>/<package>.yaml, and those places are its one place.
+# .github/scripts/go_legs.py, which each leg's go test step runs, holds all of that before the
+# leg's tests run; which readings are errors that stop a leg and which are warnings it works
+# through is written once, in
+# .github/ci-notes/ci-job-daemon-go.md#why-internaldaemons-tests-run-in-three-legs. A leg sees
+# only its own job, so .github/scripts/ci_job_reads.py's
 # hold_daemon_legs, which the changes job imports, holds this module's job keys to the jobs whose
 # legs run (daemon-go, daemon-go-race) and `elsewhere`; with both, none runs in no job.
 #
@@ -81,6 +84,7 @@ packages/daemon:
       - internal/ghbranch
       - internal/controller
       - internal/runtime/workerbin
+      - internal/execfile
       - internal/githubrest
       - internal/testfifo
       - internal/testbin
@@ -124,12 +128,18 @@ packages/daemon:
       - internal/treelifecycle
       - internal/yamlerr
   # daemon-go-race (job daemon-go-race-legs): under the race detector, the five packages
-  # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon alone in leg 1;
-  # the four others in leg 2, whose time is internal/launcher's.
+  # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon runs in three
+  # legs, a group of its tests each (.github/go-legs/packages/daemon/internal/daemon.yaml), since
+  # one leg of it alone was the job's time; the four others are leg 4, whose time is
+  # internal/launcher's.
   daemon-go-race:
     1:
-      - internal/daemon                         # 537 s
+      - internal/daemon: 1                      # 537 s whole; 293, 260 and 218 s a group in run 45678673783
     2:
+      - internal/daemon: 2
+    3:
+      - internal/daemon: 3
+    4:
       - internal/launcher                       # 306 s
       - internal/intake                         # 235 s
       - internal/sessionproxy                   # 8 s

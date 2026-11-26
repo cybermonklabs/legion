@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // The private destination of every row here: Dispatch's public host, which the rules bind, and
@@ -506,8 +507,9 @@ func TestAnUnreachableUpstreamIsNotNamedToTheCommand(t *testing.T) {
 		t.Fatalf("control: the write to an answering destination = %v %v %q; want 201", answer, err, body)
 	}
 	r, _ = newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
-	// The destination's address now dials a port nothing listens on.
-	r.dialTo[net.JoinHostPort(privateAddress.String(), privatePort)] = closedAddress(t)
+	// The destination's address now dials a port that refuses every dial: one the test holds and
+	// nothing listens on, not a closed listener's, which any process can take and answer.
+	r.dialTo[net.JoinHostPort(privateAddress.String(), privatePort)] = testport.Refused(t)
 	answer, body, err := r.writeMinted()
 	if err != nil || answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Cipher-Proxy-Code") != codeUpstream {
 		t.Fatalf("the write to a destination where nothing answers = %v %v %q; want 502 %s", answer, err, body, codeUpstream)
@@ -522,16 +524,4 @@ func TestAnUnreachableUpstreamIsNotNamedToTheCommand(t *testing.T) {
 	if detail, _ := lines[len(lines)-1].fields["error"].(string); detail == "" {
 		t.Fatalf("the broker's line of the call it could not carry holds no error: %v", lines[len(lines)-1].fields)
 	}
-}
-
-// closedAddress is a loopback address and port nothing listens on: a listener's, closed.
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-	return addr
 }

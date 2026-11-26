@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -260,8 +261,12 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 // its pause holds (record.OutboxRow.HeldByPause, store.Store.TakePodWake), the third case's row,
 // already due when the pause began, as well as the second's. P's row is held back, under a lease
 // of the test's, until every other worker has reserved its turn, so the pacing lets P's worker
-// out last, 84 turns of 7.5 seconds after the resume. The resume ends P's hold, since P's
-// architect is live in the pod.
+// out last, 84 turns of 7.5 seconds after the resume. The others' wakes carry a role's message, so
+// they wait in the pacing's first queue (dispatch://INFRA-5682 R1), and so does P's held wake. A
+// hook's prompt carries none, and its launch would wait in the second queue and be let out at
+// that queue's first turn, three turns in: so in those two cases the listener reports a message
+// for P's worker once its launch waits, which moves it to the back of the first queue, behind
+// every other worker's. The resume ends P's hold, since P's architect is live in the pod.
 //
 // The round's pod keeps a process through P's architect, whose turn runs through the pause, as
 // k4's pod 6 does: a role the rig relaunches runs in no pod (the fake runtime records a tmux pane),
@@ -365,6 +370,15 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 			testwait.WithinPolling(t, 2*time.Minute, 200*time.Millisecond, "P's worker's launch to reserve the last turn", func() bool {
 				return len(r.rt.launches())-before+len(r.state().WakesWaiting) == others+1
 			})
+			if tc.hook {
+				r.applyFact("listener", "wake-1", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(worker(P)),
+					At: r.clock.Now(), Report: "report-1"})
+				testwait.WithinPolling(t, time.Minute, 100*time.Millisecond, "the message to move P's worker's launch behind every other worker's", func() bool {
+					waiting := r.state().WakesWaiting
+					last := slices.MaxFunc(waiting, func(a, b api.WakeWaiting) int { return a.DueAt.Compare(b.DueAt) })
+					return len(waiting) > 1 && last.Claim == worker(P)
+				})
+			}
 
 			var letOut time.Time
 			r.runPacing(before, others+1, func(launch waveLaunch) {

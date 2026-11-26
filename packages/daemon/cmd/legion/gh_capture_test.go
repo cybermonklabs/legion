@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -27,16 +28,15 @@ import (
 // realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
 // in a Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
 // neither skips, as the other gh-backed tests do. A gh on PATH that is a script skips too: it is
-// a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH, which is
-// the `legion gh` this test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
+// a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH), as boot
+// refuses one for the real gh (daemon.RefuseScriptGH).
 //
-// It also puts this test binary's own `legion gh` first on the test's PATH
-// (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
-// testing: Go resolves a command's name against the PATH of the process making the call and
-// never against the one the test sets on the child's environment (os/exec LookPath, read when
-// exec.Command is built), so on a machine that has a `gh` of its own — a Legion pod's
-// /opt/legion/bin/gh, which runs the image's legion and not this build, among them — that gh
-// would answer the call and the test would measure it. Every caller runs `gh` that way.
+// Its callers start every command by an absolute path (this binary as `legion`, a wrapper they
+// wrote, the gh this answers, the git exec.LookPath found) with an environment of the command's
+// own: Go resolves a bare name against the PATH of the process making the call and never against
+// the one a child's Env holds (os/exec LookPath, read when exec.Command is built), so a bare `gh`
+// would reach whatever gh this machine has. Nothing here changes this process's PATH, so the
+// tests that drive a real gh run beside the package's other tests.
 func realGHForCapture(t *testing.T) string {
 	t.Helper()
 	path := os.Getenv("LEGION_GH_PATH")
@@ -50,23 +50,7 @@ func realGHForCapture(t *testing.T) string {
 		}
 		path = found
 	}
-	ghWrapperFirstOnPath(t)
 	return path
-}
-
-// ghWrapperFirstOnPath puts a `gh` that runs this test binary's `legion gh` first on the test's
-// PATH for the rest of the test, as a pane's and a pod's PATH carries the wrapper the runtimes
-// install. The wrapper runs the binary under test, so a call a test makes by the name `gh`
-// reaches the code of this package; t.Setenv puts the PATH back when the test ends, and the
-// directory goes with the test's own temporary one.
-func ghWrapperFirstOnPath(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	wrapper := "#!/bin/sh\n" + testMainEnv + "=1 exec '" + os.Args[0] + "' gh \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(wrapper), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // Through the real gh and the real git, against a capture proxy standing in for GitHub: every
@@ -94,6 +78,7 @@ func ghWrapperFirstOnPath(t *testing.T) {
 // (R4 of dispatch://INFRA-3399); no alias or extension runs, none is installed, and gh's own help
 // and version answer.
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
+	t.Parallel()
 	gh := realGHForCapture(t)
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -111,11 +96,11 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	}
 	home := t.TempDir()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "legion"), []byte("#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "legion"), []byte("#!/bin/sh\n"+testMainEnv+"=1 exec '"+legionCopy(t)+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The pane's `gh` wrapper, first on PATH, as the runtimes install it.
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	base := []string{
@@ -216,11 +201,11 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	if err := os.MkdirAll(extension, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(extension, "gh-hello"), []byte("#!/bin/sh\ntouch '"+ran+"-hello'\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(extension, "gh-hello"), []byte("#!/bin/sh\ntouch '"+ran+"-hello'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	drift := filepath.Join(home, "gh-drift")
-	if err := os.WriteFile(drift, []byte("#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  '"+gh+"' \"$@\" | sed 's/<url>/<URL>/g'\n  exit\nfi\nexec '"+gh+"' \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(drift, []byte("#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  '"+gh+"' \"$@\" | sed 's/<url>/<URL>/g'\n  exit\nfi\nexec '"+gh+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// Every command of the three reviews' reproductions, and controls: each either sends GitHub
@@ -238,7 +223,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	check := func(dir string, env, args []string, owner, refuse string) {
 		t.Helper()
 		what := "legion gh " + strings.Join(args, " ")
-		code, out := runIn(dir, append(append([]string{}, ghEnv...), env...), os.Args[0], append([]string{"gh"}, args...)...)
+		code, out := runIn(dir, append(append([]string{}, ghEnv...), env...), legionCopy(t), append([]string{"gh"}, args...)...)
 		if refuse != "" {
 			if code != 2 || !slices.ContainsFunc(strings.Split(refuse, "||"), func(text string) bool { return strings.Contains(out, text) }) {
 				t.Errorf("%s = exit %d, %q; want exit 2 containing %q", what, code, out, refuse)
@@ -359,7 +344,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{"HTTPS_PROXY=" + induced.url, "https_proxy=" + induced.url, "SSL_CERT_FILE=", "SSL_CERT_DIR=" + inducedDir},
 	} {
 		what := fmt.Sprintf("legion gh api repos/acme/widgets under %q", env)
-		if code, out := runIn(home, append(append([]string{}, ghEnv...), env...), os.Args[0], "gh", "api", "repos/acme/widgets"); code == 0 {
+		if code, out := runIn(home, append(append([]string{}, ghEnv...), env...), legionCopy(t), "gh", "api", "repos/acme/widgets"); code == 0 {
 			t.Errorf("%s exit 0 through a proxy whose CA gh does not trust: %s", what, out)
 		}
 		connects := induced.takeConnects()
@@ -385,7 +370,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// guard never read; the Copilot API host GitHub names is handed the token by `gh agent-task`.
 	// Each is refused before gh runs, whatever names the editor, and the editor never runs.
 	editor := filepath.Join(home, "editor.sh")
-	if err := os.WriteFile(editor, []byte("#!/bin/sh\ntouch '"+ran+"-editor'\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
+	if err := execfile.Write(editor, []byte("#!/bin/sh\ntouch '"+ran+"-editor'\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -410,7 +395,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// editor fails, so nothing it wrote is sent. Measured with the editor left to gh's own choice:
 	// nano ran in both, and discussion create posted what it wrote.
 	nano := t.TempDir()
-	if err := os.WriteFile(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch '"+ran+"-nano'\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch '"+ran+"-nano'\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	editors := []string{"GH_EDITOR=" + editor, "EDITOR=" + editor, "VISUAL=" + editor, "PATH=" + nano + ":" + bin + ":" + filepath.Dir(git) + ":/usr/bin:/bin"}
@@ -422,7 +407,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{[]string{"preview", "prompter", "markdown-editor"}, 0},
 	} {
 		what := "legion gh " + strings.Join(tc.args, " ")
-		cmd := exec.Command(os.Args[0], append([]string{"gh"}, tc.args...)...)
+		cmd := exec.Command(legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		cmd.Env = append(append(append([]string{}, base...), ghEnv...), editors...)
 		cmd.Dir, cmd.Stdin = home, strings.NewReader("e\ne\ne\n")
 		out, err := cmd.CombinedOutput()
@@ -483,7 +468,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 1<<60, 30*time.Second))
-		cmd := exec.CommandContext(ctx, os.Args[0], "gh", "api", "repos/acme/widgets")
+		cmd := exec.CommandContext(ctx, legionCopy(t), "gh", "api", "repos/acme/widgets")
 		cmd.Env, cmd.Dir = append(append([]string{}, base...), ghEnv...), home
 		out, err := cmd.CombinedOutput()
 		cancel()
@@ -744,7 +729,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{marked, nil, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, "acme", "octocat"},
 	} {
 		what := "legion gh " + strings.Join(tc.args, " ")
-		code, out := runIn(tc.dir, slices.Concat(ghEnv, proven, tc.env), os.Args[0], append([]string{"gh"}, tc.args...)...)
+		code, out := runIn(tc.dir, slices.Concat(ghEnv, proven, tc.env), legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		requests := proxy.take()
 		if len(requests) == 0 {
 			t.Errorf("%s = exit %d, %q, and sent GitHub nothing; want its requests sent with %s's token", what, code, out, tc.owner)
@@ -793,7 +778,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	guardsRead := capturedRequest{host: "api.github.com", path: "/repos/acme/widgets", owner: "acme", auth: "token " + tokens["acme"]}
 	for _, option := range []string{"--view", "-v"} {
 		what := "legion gh repo set-default " + option
-		if code, out := runIn(marked, ghEnv, os.Args[0], "gh", "repo", "set-default", option); code != 0 || !strings.Contains(out, "acme/widgets") {
+		if code, out := runIn(marked, ghEnv, legionCopy(t), "gh", "repo", "set-default", option); code != 0 || !strings.Contains(out, "acme/widgets") {
 			t.Errorf("%s = exit %d, %q; want exit 0 naming acme/widgets", what, code, out)
 		}
 		if sent := proxy.take(); !slices.Equal(sent, []capturedRequest{guardsRead}) {
@@ -813,7 +798,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	gitRecord := filepath.Join(t.TempDir(), "git-record")
 	recorder := t.TempDir()
 	recordingGit := "#!/bin/sh\n{ printf '%s\\t' \"$*\"; env | grep '^GIT_CONFIG_' | sort | tr '\\n' ' '; echo; } >>'" + gitRecord + "'\nexec '" + git + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(recorder, "git"), []byte(recordingGit), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(recorder, "git"), []byte(recordingGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	repositoryInfo := `{"data":{"repository":{"id":"R_1","databaseId":1,"name":"widgets","owner":{"login":"acme"},"sshUrl":"git@github.com:acme/widgets.git","hasIssuesEnabled":true,"description":"","hasWikiEnabled":false,"viewerPermission":"WRITE","defaultBranchRef":{"name":"main"},"parent":null,"mergeCommitAllowed":true,"rebaseMergeAllowed":true,"squashMergeAllowed":true}}}`
@@ -843,7 +828,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			proxy.answer(key, body)
 		}
 		recordedPath := "PATH=" + bin + ":" + recorder + ":" + filepath.Dir(git) + ":/usr/bin:/bin"
-		code, out := runIn(tc.dir, append(append([]string{}, ghEnv...), recordedPath), os.Args[0], append([]string{"gh"}, tc.args...)...)
+		code, out := runIn(tc.dir, append(append([]string{}, ghEnv...), recordedPath), legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		proxy.clearAnswers()
 		for _, r := range proxy.take() {
 			if r.auth != "" && r.auth != "token "+tokens["acme"] && r.auth != "Basic "+base64.StdEncoding.EncodeToString([]byte(ghconfig.GitUser+":"+tokens["acme"])) {
@@ -917,7 +902,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		}
 		induced.take()
 		induced.takeConnects()
-		code, out := runIn(t.TempDir(), ghEnv, os.Args[0], append([]string{"gh"}, tc.args...)...)
+		code, out := runIn(t.TempDir(), ghEnv, legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		proxy.clearAnswers()
 		if code != 2 || !strings.Contains(out, "hands a git flag after -- to git clone") {
 			t.Errorf("%s with -c flags after -- = exit %d, %q; want exit 2 refusing the git flag", tc.name, code, out)
@@ -931,7 +916,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	}
 	// gh's own help, its topics and its version still answer, exit 0, and send nothing.
 	for _, args := range [][]string{{"help"}, {"help", "pr", "view"}, {"help", "environment"}, {"pr", "view", "--help"}, {"--version"}} {
-		code, out := run(ghEnv, os.Args[0], append([]string{"gh"}, args...)...)
+		code, out := run(ghEnv, legionCopy(t), append([]string{"gh"}, args...)...)
 		if code != 0 || out == "" {
 			t.Errorf("legion gh %s = exit %d, %q; want gh's help, exit 0", strings.Join(args, " "), code, out)
 		}

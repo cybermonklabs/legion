@@ -1071,6 +1071,7 @@ DAEMON_PLAIN_LEGS_JOB = "daemon-go-legs"
 DAEMON_RACE_LEGS_JOB = "daemon-go-race-legs"
 GO_LEGS = go_legs.LEGS
 GO_LEGS_SCRIPT = ".github/scripts/go_legs.py"
+GO_LEGS_GROUPS = go_legs.GROUPS
 DAEMON_LEGS = go_legs.module_entry(DAEMON, Path(GO_LEGS))
 
 
@@ -1083,7 +1084,10 @@ def hold_daemon_legs(entry: dict) -> None:
     `elsewhere`; the race legs run the race packages, each once, the set the gates and
     ci-caches.yaml's race fill read from DAEMON_RACE_PACKAGES; and the text checks, the
     text-check job's, are the one package no leg runs. check-ci-filters.sh imports this table in
-    the changes and ci-filters jobs, so a refusal here fails the run that brings the entry."""
+    the changes and ci-filters jobs, so a refusal here fails the run that brings the entry.
+
+    A package several legs of one job run a group of the tests of (`- internal/daemon: 1`) is one
+    package here, as go_legs.job_packages counts it: those legs together run it once."""
     problems = []
     keys = set(entry)
     wanted = {DAEMON_PLAIN_JOB, DAEMON_RACE_JOB, go_legs.ELSEWHERE}
@@ -1092,10 +1096,19 @@ def hold_daemon_legs(entry: dict) -> None:
                         f"are {DAEMON_PLAIN_JOB} and {DAEMON_RACE_JOB}, beside {go_legs.ELSEWHERE}: a package under "
                         f"{', '.join(sorted(keys - wanted)) or 'a missing key'} runs in no job, so file it under one "
                         f"of those")
-    race = sorted(p for leg in (entry.get(DAEMON_RACE_JOB) or {}).values() for p in leg or [])
+    race = sorted(go_legs.job_packages(entry.get(DAEMON_RACE_JOB) or {}))
     if race != sorted(DAEMON_RACE_PACKAGES):
         problems.append(f"its {DAEMON_RACE_JOB} legs run {race}, and DAEMON_RACE_PACKAGES here is "
                         f"{sorted(DAEMON_RACE_PACKAGES)}: make them one set, each package once")
+    # job_packages counts a package once however many legs name it, which is what the gate wants
+    # of a package split by test; `each package once` is held here on the entries themselves, so a
+    # whole package in two legs fails in the changes job rather than in every leg 90 s in.
+    whole = [package for leg in (entry.get(DAEMON_RACE_JOB) or {}).values() for package, group in
+             (go_legs.item(written) for written in leg or []) if group is None]
+    if len(whole) != len(set(whole)):
+        twice = sorted({package for package in whole if whole.count(package) > 1})
+        problems.append(f"its {DAEMON_RACE_JOB} legs run {', '.join(twice)} whole in more than one leg, so each "
+                        f"would run in every one of them: keep a whole package in one leg, or split it by test")
     if entry.get(go_legs.ELSEWHERE) != {TEXT_CHECK_PACKAGE: "text-checks"}:
         problems.append(f"it runs packages elsewhere as {entry.get(go_legs.ELSEWHERE)}, and the one package no leg "
                         f"runs is {TEXT_CHECK_PACKAGE}, the text-checks job's")
@@ -1104,18 +1117,26 @@ def hold_daemon_legs(entry: dict) -> None:
 
 
 hold_daemon_legs(DAEMON_LEGS)
-DAEMON_PLAIN_PACKAGES = [p for leg in DAEMON_LEGS[DAEMON_PLAIN_JOB].values() for p in leg]
-DAEMON_RACE_LEG_PACKAGES = [p for leg in DAEMON_LEGS[DAEMON_RACE_JOB].values() for p in leg]
+DAEMON_PLAIN_PACKAGES = go_legs.job_packages(DAEMON_LEGS[DAEMON_PLAIN_JOB])
+DAEMON_RACE_LEG_PACKAGES = go_legs.job_packages(DAEMON_LEGS[DAEMON_RACE_JOB])
 
 
 def daemon_legs_script(job, flags):
     """The whole run: of a legs job's go test step: its leg's packages, piped from go_legs.py into
     one go test with the step's flags. go_legs.py takes the leg's number and how many legs the
-    matrix runs, and refuses a file whose legs are not those or a leg with no package. `set -o
-    pipefail` is what fails the step when go_legs.py refuses the file or go list fails, rather
-    than test what xargs got."""
+    matrix runs, and refuses a file whose legs are not those or a leg with no package. It also
+    takes the step's build flags, under which it lists the tests of a package a leg runs a group
+    of, so the listing is the build the run then reuses and names the tests the run can choose
+    from: -race, and -tags, which decides which files are in the build and so which tests exist at
+    all (a listing without a step's -tags would leave that tag's tests in no group's -run). No step
+    of this module passes -tags today, and one that did would hand it on here. `set -o pipefail` is
+    what fails the step when go_legs.py refuses the file or go list fails, rather than test what
+    xargs got."""
+    words = flags.split()
+    build = "".join(f" {word}" for word in words if word == "-race" or word.startswith("-tags="))
+    build += "".join(f" -tags={words[index + 1]}" for index, word in enumerate(words[:-1]) if word == "-tags")
     return ("set -o pipefail\n"
-            f"python3 ../../{GO_LEGS_SCRIPT} {DAEMON} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}} "
+            f"python3 ../../{GO_LEGS_SCRIPT} {DAEMON} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
             f"| xargs go test {flags}")
 
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
@@ -2272,6 +2293,7 @@ def browser_gate(filter, job):
          f"e2e/visual.e2e.ts and e2e/visual-guard.e2e.ts import: {at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} "
          "resolves each visual row's read to the route the table serves it by"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, from the new URL TABLE_PATH holds, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
+        (f"{ENVOY}/internal/dispatch/api/testdata/text-refusals.json", "read at `packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` and `packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile`, from the new URL textRefusalsFile holds, for that spec's rows, which are the list's rows in each combination the spec runs"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/run-broker.sh#$e2e_dir/../../envoy/scripts/lib/pg-url.sh` sources it, and `packages/dispatch/e2e/harness-listeners.ts#realBrokerListeners` "
                                            f"starts that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "

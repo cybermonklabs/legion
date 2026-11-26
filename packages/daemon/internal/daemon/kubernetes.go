@@ -280,11 +280,10 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // command's other checks are audited, and a measurement of the probe as it then runs sizes it.
 // The reservation still fits a pool that cannot place a controller or issue pod. It has a 5Gi
 // bound on node disk and a 1Gi disk request. The probe runs at every boot, before anything is
-// served, and a probe that
-// reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
-// could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
-// 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met
-// exactly that).
+// served, and a probe that reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue
+// pod's 2 CPU and 8Gi, at the defaults — could leave the daemon unable to boot on a pool full
+// enough to place nothing that large (stage 4b's daemon-controller-liveness restart, whose
+// controller reservation no node can hold, met exactly that).
 var probeReservation = config.Reservation{CPU: "500m", CPURequest: "500m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
 
 // imageProbe is the probe of the daemon's worker image: this daemon's contract, the role prompts

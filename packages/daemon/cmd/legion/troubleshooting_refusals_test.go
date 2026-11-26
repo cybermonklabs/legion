@@ -259,6 +259,7 @@ var refusalsNoFixtureDrives = map[string]string{
 // space and are no texts. A row in neither table fails naming the row, as does a table row naming
 // no row of the copy.
 func TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (refusalFixtures).
 	rows := troubleshootingRows(t)
 	named := make(map[string]bool, len(rows))
 	compared := 0

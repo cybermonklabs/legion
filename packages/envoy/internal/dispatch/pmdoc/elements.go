@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/yuin/goldmark/ast"
 	extensionast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/parser"
@@ -288,8 +289,10 @@ var weights = func() string {
 }()
 
 // MaxDocumentBytes is the most bytes of markdown one document may hold: what one upload of a
-// markdown document may send, and what a write may grow a stored document's rendering to.
-const MaxDocumentBytes = 1 << 20
+// markdown document may send, and what a write may grow a stored document's rendering to. It is
+// the contract's bound (contracts.MarkdownDocumentMaxBytes), which `dispatch artifact` holds
+// inline text to before it sends.
+const MaxDocumentBytes = contracts.MarkdownDocumentMaxBytes
 
 // DocumentSize is what markdown measures as an upload of it is measured (ParseForWrite): its bytes,
 // against MaxDocumentBytes, and the elements the upload's parse makes of it - elementWeight over the

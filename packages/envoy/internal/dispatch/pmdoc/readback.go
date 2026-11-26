@@ -1,12 +1,14 @@
 package pmdoc
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // skip names what a comparison leaves aside: the attributes it names, or all of them, and with
@@ -45,6 +47,103 @@ type WrittenReadBack struct {
 func ReadBack(doc *Node) (*Node, error) {
 	written, err := readBackWritten(doc, maxSpanCells)
 	return written.Tree, err
+}
+
+// RenderingOf is what this build renders stored as, stored being a document's markdown that any
+// build of the store may have written, an older renderer version's among them: the tree stored
+// reads as (ParseRendering), rendered as the store renders a document (Render, the markdown
+// RenderWithBlockOffsets writes). read is false where stored reads as no document, and then
+// nothing was rendered; err is the refusal of the read or of the render.
+func RenderingOf(stored string) (rendering string, read bool, err error) {
+	tree, err := ParseRendering(stored)
+	if err != nil {
+		return "", false, err
+	}
+	rendering, err = Render(tree)
+	return rendering, true, err
+}
+
+// SameRendering reports whether a and b are one rendering: equal once each is taken without the
+// line feeds it ends in (withoutFinalLineFeeds), so a fragment cut from a document - a decision,
+// a block - compares with its own slice of the document's rendering.
+func SameRendering(a, b string) bool {
+	return withoutFinalLineFeeds(a) == withoutFinalLineFeeds(b)
+}
+
+// RenderingSum is the sha256 of what SameRendering compares of rendering (withoutFinalLineFeeds),
+// so two renderings have one sum where they are one rendering. A caller that holds a rendering to
+// compare later keeps its sum rather than its text.
+func RenderingSum(rendering string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(withoutFinalLineFeeds(rendering)))
+}
+
+// withoutFinalLineFeeds is what SameRendering compares of a rendering and RenderingSum sums: the
+// rendering without the line feeds it ends in.
+func withoutFinalLineFeeds(rendering string) string {
+	return strings.TrimRight(rendering, "\n")
+}
+
+// readsAsRendering reports whether stored, markdown that any build of the store may have written,
+// reads as rendering, each read alone: this build reads stored and renders it again (RenderingOf),
+// and that is one rendering (SameRendering) with rendering as given or, where it is not, with what
+// this build reads rendering as and renders again. The first comparison reads stored alone; only
+// stored text that renders otherwise than rendering pays for reading rendering too. A side that
+// reads as no document, or whose tree does not render, reads as nothing. It is
+// the rule FragmentReadsAs applies to a fragment that holds no `[^`, which says why both sides
+// are read alone.
+func readsAsRendering(stored, rendering string) bool {
+	again, _, err := RenderingOf(stored)
+	if err != nil {
+		return false
+	}
+	if SameRendering(again, rendering) {
+		return true
+	}
+	renderingAgain, _, err := RenderingOf(rendering)
+	return err == nil && SameRendering(again, renderingAgain)
+}
+
+// FragmentReadsAs reports whether stored reads as rendering where both are cut from documents - a
+// block, a decision - and each is read alone, away from the rest of its document: false where
+// either holds `[^`, and readsAsRendering otherwise.
+//
+// Both sides are read alone because a slice keeps what its place in the document gave it. The
+// renderer writes a list that follows a list of its kind with that kind's other marker (`*` after
+// `-`, `N)` after `N.`: otherListMarkers), so the two read back as two lists, and the same list
+// read alone renders with `-` or `N.`. A stored `* a\n* b\n\n* c` read alone renders
+// `- a\n\n- b\n\n- c`, never `* a\n\n* b\n\n* c`, its slice of a document that writes it second,
+// though the two are one tree; read alone too, that slice renders as the stored text does.
+//
+// Whether `[^label]` reads as a footnote reference depends on the labels its whole document
+// defines, and so does whether the renderer escapes text shaped like one as `\[^label]`
+// (definedFootnoteLabels, footnoteReferenceText). A fragment holds none of its document's
+// definitions, so literal text `see \[^1] here` and a reference `see [^1] here`, two trees in a
+// document that defines 1, read alone as one. A reference is written `[^`, its label and `]`, and
+// text shaped like one is escaped as `\[^`, so every spelling whose reading depends on the labels
+// holds `[^`: where neither side holds it, no reading of either depends on a definition it was
+// cut away from.
+//
+// It does not give a fragment back the container it was cut from. A block inside a list item, a
+// quote or a footnote definition starts after its container's marker, and its later lines carry
+// the container's prefix, which its text read alone loses, so two trees can read as one. The inner
+// list of `- a\n  - b\n  - c` is `- b\n  - c`: c stands beside b, but the prefix of its line is
+// also the content indent of a `- ` item, so read alone c stands under b, as it does in the inner
+// list of `- a\n  - b\n    - c`, `- b\n    - c`, and the two slices read alone as one.
+func FragmentReadsAs(stored, rendering string) bool {
+	return !strings.Contains(stored, "[^") && !strings.Contains(rendering, "[^") && readsAsRendering(stored, rendering)
+}
+
+// OtherRenderer reports whether stamp, the renderer version a stored rendering was written at (a
+// document version's renderer_version), names a renderer other than this build's
+// (RendererVersion): another renderer version's, or none, for a rendering stored before
+// renderings were stamped or with no stamp. Such a rendering may spell the tree it holds otherwise
+// than this build does, so where its bytes are not this build's rendering it is compared as this
+// build reads it and renders it again: a whole document through docs' counted path (docs'
+// readsAs and holdsRendering), which records the render as every render of a whole document is
+// recorded, and a fragment cut from it by FragmentReadsAs. A rendering this renderer version
+// stored is compared byte for byte.
+func OtherRenderer(stamp *int) bool {
+	return stamp == nil || *stamp != RendererVersion
 }
 
 // readBack is what doc's markdown, its tables' spans adding at most spanCells cells (render),

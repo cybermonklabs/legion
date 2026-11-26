@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { lazy, type ReactNode } from "react";
 
 import { NotFoundPage } from "../shell/NotFoundPage";
-import { credentialCapabilitiesQuery } from "./capabilities";
+import { credentialCapabilitiesQuery } from "./logic/capabilities";
 
 const MachineLoginPage = lazy(() =>
   import("./MachineLoginPage").then((module) => ({ default: module.MachineLoginPage }))

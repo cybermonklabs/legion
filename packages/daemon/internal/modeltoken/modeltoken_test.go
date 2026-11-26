@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 )
 
 // childConfig is the Config a test hands a fresh process of this test binary (TestMain), whose
@@ -25,6 +27,11 @@ const childConfig = "MODELTOKEN_TEST_CHILD_CONFIG"
 
 type childResult struct{ Token, Err string }
 
+// TestMain runs this binary as the child childConfig describes, where it is set, and runs the tests
+// otherwise. Only TestMain makes that child of a copy a test starts: in a build of these tests
+// without it, such a copy runs the tests, each of which starts copies that run them again.
+// tokenChildCopy refuses to start a copy in such a process (tokenChildCopyRefusal), and
+// TestACopyStartedAsTheChildRunsAsTheChild fails in such a build by name.
 func TestMain(m *testing.M) {
 	if encoded := os.Getenv(childConfig); encoded != "" {
 		var cfg Config
@@ -46,6 +53,57 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// tokenChildCopy is the path of this test binary, which a test runs as the child with childConfig
+// in the copy's environment. It fails t where tokenChildCopyRefusal refuses.
+func tokenChildCopy(t *testing.T) string {
+	t.Helper()
+	if err := tokenChildCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// tokenChildCopyRefusal is why this process may start no copy of this test binary, nil when it
+// may. A process that has childConfig set was started as the child, and TestMain runs such a
+// process as the child, so one that runs the tests runs in a build without TestMain, and a copy
+// started there would run the tests again.
+func tokenChildCopyRefusal() error {
+	if os.Getenv(childConfig) != "" {
+		return fmt.Errorf("this process has %s set, so a test started it as the child, but it runs the tests: this build of the tests has no TestMain that runs the child, and a copy started here would run the tests again", childConfig)
+	}
+	return nil
+}
+
+// tokenChildCopyRefusal, which tokenChildCopy asks before any copy starts, refuses a process that
+// has childConfig set and no other. While TestMain is in the build no copy reaches it, so this test
+// is what holds the refusal.
+func TestAProcessStartedAsTheChildStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, childConfig)
+	if err := tokenChildCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", childConfig, err)
+	}
+	t.Setenv(childConfig, "{}")
+	if err := tokenChildCopyRefusal(); err == nil || !strings.Contains(err.Error(), childConfig) {
+		t.Fatalf("with %s set: %v, want a refusal that names it", childConfig, err)
+	}
+}
+
+// A copy started with childConfig set runs as the child: it prints Token's result as JSON, here
+// the refusal of a Config that names no token file. The child does not read -h. In a build without
+// TestMain, the testing package reads -h before any test runs, prints its own flag usage and
+// exits, so this test fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsTheChildRunsAsTheChild(t *testing.T) {
+	t.Parallel()
+	child := exec.Command(tokenChildCopy(t), "-h")
+	child.Env = append(os.Environ(), childConfig+"={}")
+	out, err := child.Output()
+	var result childResult
+	decodeErr := json.Unmarshal(out, &result)
+	if want := "--service-account-token-file names "; err != nil || decodeErr != nil || !strings.HasPrefix(result.Err, want) {
+		t.Fatalf("a copy started as the child with -h: %v, printed %q (%v), want exit 0 and a result whose error starts %q", err, out, decodeErr, want)
+	}
+}
+
 // tokenInFreshProcess runs Token for cfg in a new process of this test binary with env added.
 func tokenInFreshProcess(t *testing.T, cfg Config, env ...string) childResult {
 	t.Helper()
@@ -53,7 +111,7 @@ func tokenInFreshProcess(t *testing.T, cfg Config, env ...string) childResult {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := exec.Command(os.Args[0])
+	child := exec.Command(tokenChildCopy(t))
 	child.Env = append(append(os.Environ(), env...), childConfig+"="+string(encoded))
 	out, err := child.Output()
 	if err != nil {
