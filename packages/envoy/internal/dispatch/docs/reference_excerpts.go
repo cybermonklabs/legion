@@ -263,16 +263,17 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, versi
 }
 
 // planBlockIndex plans the block index of version, one version of a document with its block
-// pointers (refs.PlanBlocks), at the marking rule rule of the build planning it, and returns the
-// targets it moves, the cited blocks it changes included (refs.BlockIndexing.Cited), the step
-// that writes it, what it states in the node and tuple store, held for the event the caller
-// appends for the version (refs.BlockIndexing.Stated), and whether it won the revision fence
-// (refs.BlockIndexing.Won): the step of a pass that lost writes nothing. version.Record is what
-// the version's own row says of it (indexedVersionOf). It plans against what the index holds: as
-// the transaction's own queued indexing of the document leaves it, when there is one, else as
-// read in tx; and it records what this one leaves for a later indexing of the same document. Each
-// block's excerpt is cut in the plan, around the dashboard URLs of the deployment at
-// version.ServerURL.
+// pointers (refs.PlanBlocks), at the marking rule rule of the build planning it, decides which of
+// its blocks keep their changed version across another renderer version's spelling
+// (refs.BlockIndexing.KeepRespelled), and returns the targets it moves, the cited blocks it
+// changes included (refs.BlockIndexing.Cited), the step that writes it, what it states in the
+// node and tuple store, held for the event the caller appends for the version
+// (refs.BlockIndexing.Stated), and whether it won the revision fence (refs.BlockIndexing.Won):
+// the step of a pass that lost writes nothing. version.Record is what the version's own row says
+// of it (indexedVersionOf). It plans against what the index holds: as the transaction's own
+// queued indexing of the document leaves it, when there is one, else as read in tx; and it
+// records what this one leaves for a later indexing of the same document. Each block's excerpt
+// is cut in the plan, around the dashboard URLs of the deployment at version.ServerURL.
 func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.VersionBlocks) ([]refs.Target, WriteStep, graphstore.Uncaused, bool, error) {
 	ledger := queueFor(ctx, tx)
 	index, held := refs.BlockIndex{}, false
@@ -291,6 +292,9 @@ func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.Versi
 	}
 	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, version)
 	if err != nil {
+		return nil, nil, graphstore.Uncaused{}, false, err
+	}
+	if err := indexing.KeepRespelled(ctx, tx); err != nil {
 		return nil, nil, graphstore.Uncaused{}, false, err
 	}
 	cited, err := indexing.Cited(ctx, tx)
@@ -333,9 +337,9 @@ func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version
 // records no author has the zero actor, nobody.
 func versionWriterOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (model.Actor, error) {
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		if pending, queued := ledger.latest[artifactID]; queued && pending.version.Number == version {
-			if len(pending.version.Authors) > 0 {
-				return pending.version.Authors[0], nil
+		if pending, queued := ledger.latest[artifactID]; queued && pending.Number == version {
+			if len(pending.Authors) > 0 {
+				return pending.Authors[0], nil
 			}
 			return model.Actor{}, nil
 		}

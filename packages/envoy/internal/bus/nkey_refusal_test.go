@@ -32,12 +32,7 @@ func TestANkeyConnectionRefusedTwiceClosesAsAtTheMergeBase(t *testing.T) {
 	seed, public := testnats.User(t)
 	_, other := testnats.User(t)
 	server, url := testnats.StartNkeyAuthorizedServer(t, public)
-	nc, err := bus.Dial("nkey-refusal-test", []string{url}, func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return seed, true
-		}
-		return "", false
-	})
+	nc, err := bus.Dial("nkey-refusal-test", []string{url}, testnats.SeedOnly(seed))
 	require.NoError(t, err)
 	defer nc.Close()
 	require.True(t, nc.IsConnected())
