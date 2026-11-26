@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -278,6 +280,25 @@ func TestAConnectWithNoTestDeadlineIsBoundedByTwoMinutes(t *testing.T) {
 	got := WithConnectDeadline(noDeadline{t}, "postgres://u@h:5432/db?sslmode=disable&connect_timeout=3")
 	if want := "postgres://u@h:5432/db?sslmode=disable&connect_timeout=120"; got != want {
 		t.Fatalf("WithConnectDeadline for a caller with no deadline =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+// A teardown that begins once its bound has passed still waits teardownFloor, as the broker
+// storetest's Run does where the Dispatch storetest's Run nested in it (internal/dispatch/api's
+// TestMain) waited to the bound both share; and one that begins at its tests' start keeps
+// TeardownGrace past the -timeout. Control: return the -timeout's bound alone, and the first
+// answer is a moment a day past.
+func TestATeardownThatBeginsPastItsBoundStillWaitsItsFloor(t *testing.T) {
+	before := time.Now()
+	if got := TeardownDeadline(before.Add(-24 * time.Hour)); got.Before(before.Add(teardownFloor)) {
+		t.Fatalf("a teardown whose tests began a day ago gives up %s from now; want at least %s", time.Until(got).Round(time.Millisecond), teardownFloor)
+	}
+	timeout, _ := flag.Lookup("test.timeout").Value.(flag.Getter).Get().(time.Duration)
+	if timeout <= 0 {
+		return
+	}
+	if got, want := TeardownDeadline(before), before.Add(timeout+TeardownGrace); !got.Equal(want) {
+		t.Fatalf("a teardown whose tests began now gives up %s from now; want TeardownGrace past the -timeout %s, %s", got.Sub(before), timeout, want.Sub(before))
 	}
 }
 

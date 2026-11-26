@@ -268,9 +268,9 @@ func adminExec(t testing.TB, statement string) error {
 	return err
 }
 
-// Main runs the package's tests, waits for their databases to drop, then drops every template
-// they were cloned from. A package whose tests call Open uses it as its TestMain:
-// func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
+// Main runs the package's tests, then drops every template they were cloned from beside their
+// databases' drops, and waits for all of them. A package whose tests call Open uses it as its
+// TestMain: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
 func Main(m *testing.M) int { return Run(m.Run) }
 
 // Run is Main for a package whose tests also need another harness's Main, which runs m.Run
@@ -284,22 +284,23 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // return, so a wait with no bound for a drop the server never answers held the binary until
 // cmd/go's kill ("ran too long", which names no drop and no database), and for ever under
 // -timeout 0 (TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered). No drop has a deadline of its
-// own: a cancelled drop leaves its database on the server, as testdb.Run says. At the bound Run
-// names each drop still in flight with its database and the statement it ran, reads once what the
-// server's backends wait on (testdb.WaitingOn), and returns the tests' exit code with the failures
-// of the drops that ended, since every test has reported by then. It leaves the admin pool open,
-// because closing it waits for the connections those drops hold; the process's exit closes them,
-// and a database whose drop the server never read stays on the server under the name Run printed.
+// own: a cancelled drop leaves its database on the server, as testdb.Run says. The templates'
+// drops start as soon as the tests return, beside the drops their cleanups started: a clone is a
+// database of its own, so no template's drop waits on one. One wait, under the one bound, covers
+// them all, so at the bound Run names every database whose drop is still in flight, templates
+// among them, with the statement it ran; a template's drop that could start only after the
+// clones' left every template unnamed and its drop unsent once a clone's drop reached the bound.
+// It then reads once what the server's backends wait on (testdb.WaitingOn), and returns the tests'
+// exit code with the failures of the drops that ended, since every test has reported by then. It
+// leaves the admin pool open, because closing it waits for the connections those drops hold; the
+// process's exit closes them, and a database whose drop the server never read stays on the server
+// under the name Run printed.
 func Run(run func() int) int {
 	shared.main = true
 	started := time.Now()
 	code := run()
 	if shared.admin == nil {
 		return code
-	}
-	bound := testdb.TeardownDeadline(started)
-	if !awaitDrops(started, bound) {
-		return withDropFails(code)
 	}
 	templates.Lock()
 	names := make([]string, 0, len(templates.byKey))
@@ -317,10 +318,9 @@ func Run(run func() int) int {
 			return ""
 		})
 	}
-	if !awaitDrops(started, bound) {
-		return withDropFails(code)
+	if awaitDrops(started, testdb.TeardownDeadline(started)) {
+		shared.admin.Close()
 	}
-	shared.admin.Close()
 	return withDropFails(code)
 }
 
@@ -338,8 +338,9 @@ func withDropFails(code int) int {
 }
 
 // awaitDrops waits for every drop started so far until bound, and answers whether they ended. At
-// bound it names each drop still in flight and the statement it ran, and what the server's
-// backends wait on, read once (testdb.WaitingOn): those drops keep their connections.
+// bound it names each database whose drop is still in flight and the statement that drop ran or
+// waits to run, and what the server's backends wait on, read once (testdb.WaitingOn): those drops
+// keep their connections.
 func awaitDrops(started, bound time.Time) bool {
 	ended := make(chan struct{})
 	go func() {
@@ -361,14 +362,13 @@ func awaitDrops(started, bound time.Time) bool {
 	}
 	shared.dropMu.Unlock()
 	if len(databases) == 0 {
-		// Each drop ended as the bound came; Wait returns as their goroutines do, and Run's next
-		// drops are added only after it has.
+		// Each drop ended as the bound came; Wait returns as their goroutines do.
 		<-ended
 		return true
 	}
 	after := time.Since(started).Round(time.Second)
 	for i, database := range databases {
-		fmt.Fprintf(os.Stderr, "storetest: drop database %s: still waiting at the teardown's bound, %s after the tests began, so the drop is left to the server (%q)\n", database, after, statements[i])
+		fmt.Fprintf(os.Stderr, "storetest: drop database %s: still waiting at the teardown's bound, %s after the tests began, so the database may be left on the server (%q)\n", database, after, statements[i])
 	}
 	fmt.Fprintf(os.Stderr, "storetest: at the teardown's bound: %s\n", testdb.WaitingOn(databaseURL(shared.server, "postgres"), statements...))
 	return false

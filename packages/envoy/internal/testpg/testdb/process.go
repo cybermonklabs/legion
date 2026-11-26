@@ -198,12 +198,32 @@ const (
 	teardownUnbounded = 5 * time.Minute
 )
 
+// teardownFloor is the least a teardown waits from its own start, for a harness's Run nested in
+// another's: internal/dispatch/api runs the Dispatch storetest's Run inside the broker
+// storetest's (this package's Run), and both take their bound from TeardownDeadline with nearly
+// the same start. Where the inner Run waited to that bound, the outer one's had passed by the time
+// its drop began, and it named its database at once, before that drop's statement could reach the
+// server, which then never dropped it: a statement the server has read it finishes after the
+// process exits (Run), and one it never read it never runs. With the floor the outer drop has
+// teardownFloor to reach the server, and both waits stay inside cmd/go's kill: the inner bound,
+// TeardownGrace past the -timeout; its pg_stat_activity read, up to waitingOnBound; the floor; and
+// the outer read for its one database, up to waitingOnBound: 55 s past the -timeout, inside the
+// kill's least, a minute. A Run that is no other's inner or outer starts its teardown before its
+// -timeout, so the floor never moves its bound.
+const teardownFloor = 5 * time.Second
+
 // TeardownDeadline is when a test binary's teardown gives up, for a binary whose tests began at
-// started: Run's, and internal/dispatch/store/storetest's Run's.
+// started: Run's, and internal/dispatch/store/storetest's Run's. It is TeardownGrace past the
+// -timeout, counted from started, and at least teardownFloor from now; teardownUnbounded from now
+// under -timeout 0.
 func TeardownDeadline(started time.Time) time.Time {
+	floor := time.Now().Add(teardownFloor)
 	if timeoutFlag := flag.Lookup("test.timeout"); timeoutFlag != nil {
 		if timeout, ok := timeoutFlag.Value.(flag.Getter).Get().(time.Duration); ok && timeout > 0 {
-			return started.Add(timeout + TeardownGrace)
+			if bound := started.Add(timeout + TeardownGrace); bound.After(floor) {
+				return bound
+			}
+			return floor
 		}
 	}
 	return time.Now().Add(teardownUnbounded)

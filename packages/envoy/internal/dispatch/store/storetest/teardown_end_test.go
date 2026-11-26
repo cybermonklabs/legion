@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -23,25 +24,35 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// teardownEndChildEnv names, in the child, the database whose drop its test's cleanup starts.
+// teardownEndChildEnv selects TestTheTeardownEndsAtItsBoundChild in a child of this test binary.
 const teardownEndChildEnv = "STORETEST_TEARDOWN_END_CHILD"
 
-// teardownEndChildTimeout is the child's -timeout. Its teardown's bound is testdb.TeardownGrace
-// past it, counted from the start of its tests (testdb.TeardownDeadline). The child's test makes
-// no connect of its own, so the -timeout need only outlast a test that returns at once.
-const teardownEndChildTimeout = 10 * time.Second
+// teardownEndChildTimeout is the child's -timeout. Its connect end (testdb.ConnectEnd) is 30 s
+// into its run, the time its OpenFrom has before that end, as the past-end row's first statement
+// has; its teardown's bound is testdb.TeardownGrace past the -timeout, counted from the start of
+// its tests (testdb.TeardownDeadline).
+const teardownEndChildTimeout = 60 * time.Second
+
+// teardownEndTemplate is the line in which the child names the template it made, so this row can
+// drop it whatever the child's Run did with it.
+var teardownEndTemplate = regexp.MustCompile(`the child made the template (dispatch_template_[0-9a-f]+)`)
 
 // TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered is Tester5486's finding at f358579ae6 on
 // cybermonklabs/legion#5189, made a row: a drop whose statement the server never answers held Run,
 // and with it the test binary, until cmd/go's kill ("ran too long", naming no drop and no
-// database), or for ever under -timeout 0. This row makes a database, and its child, under
-// -timeout 10s, drops it in its test's cleanup through a relay that lets the drop's login through
-// and holds its statement back (holdDrops). Run must then end at its bound, testdb.TeardownGrace
-// past the child's -timeout, name the database, and exit with its tests' code. A Run whose wait
-// for the drops has no bound never ends, and this row kills the child and fails by name
-// testwait.Margin past that bound. The row fails, too, where the relay held no drop of that
-// database or the child ended before its bound: then nothing held its teardown, and the run proves
-// nothing. The database itself is this test's, and its own drop, on the server directly, removes it.
+// database), or for ever under -timeout 0. The child, under -timeout 60s, opens a store cloned from
+// a template of its own (OpenFrom) through a relay that lets every login through and holds back
+// each drop's statement (holdDrops): the clone's drop, which its test's cleanup starts, and the
+// template's, which Run starts once the tests return. Run must then end at its bound,
+// testdb.TeardownGrace past the child's -timeout, with a line naming each of the two databases,
+// and exit with its tests' code. A Run whose wait for the drops has no bound never ends, and this
+// row kills the child and fails by name testwait.Margin past that bound. A Run that starts the
+// template's drop only after the clones' drops have ended never sends it once a clone's drop
+// reaches the bound, and leaves the template unnamed: the relay then holds no template's drop, and
+// the row fails by name (review 6067498217 at 5d0efe15a1). The row fails, too, where the child
+// ended before its bound: then nothing held its teardown, and the run proves nothing. It drops the
+// child's databases itself, on the server directly. The child skips, and this row on its skip,
+// where its OpenFrom failed past its connect end, too slow for the row to say anything.
 //
 // It needs no superuser, only a server it reaches over TCP without TLS, since the relay reads the
 // protocol's messages: it skips, by name, where DISPATCH_TEST_DATABASE_URL does not say
@@ -55,25 +66,35 @@ func TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered(t *testing.T) {
 	if why != "" {
 		t.Skip(why)
 	}
-	made, err := url.Parse(Empty(t))
-	if err != nil {
-		t.Fatalf("read the database Empty made: %v", err)
-	}
-	database := strings.TrimPrefix(made.Path, "/")
 	relay := holdDrops(t, upstream)
 	server := shared.server
 	server.Host = relay.address()
+	var output bytes.Buffer
+	// The child's databases, which no drop of its reached the server for: each whose drop the
+	// relay held, and the template it names, dropped here once the row ends, before the relay's
+	// own close.
+	testcleanup.Add(t, func() {
+		left := map[string]bool{}
+		for _, statement := range relay.heldStatements() {
+			left[strings.TrimPrefix(statement, "drop database ")] = true
+		}
+		if match := teardownEndTemplate.FindStringSubmatch(output.String()); match != nil {
+			left[match[1]] = true
+		}
+		for name := range left {
+			dropDatabase(name)
+		}
+	})
 
 	bound := teardownEndChildTimeout + testdb.TeardownGrace
 	giveUp := bound + testwait.Margin
 	ctx, cancel := context.WithTimeout(testwait.Context(t), giveUp)
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTheTeardownEndsAtItsBoundChild$", "-test.timeout="+teardownEndChildTimeout.String(), "-test.v")
-	child.Env = append(os.Environ(), DatabaseURLEnv+"="+server.String(), teardownEndChildEnv+"="+database)
-	var output bytes.Buffer
+	child.Env = append(os.Environ(), DatabaseURLEnv+"="+server.String(), teardownEndChildEnv+"=1")
 	child.Stdout, child.Stderr = &output, &output
 	began := time.Now()
-	err = child.Run()
+	err := child.Run()
 	took := time.Since(began)
 	for _, hold := range relay.holds() {
 		t.Logf("the relay held %s", hold)
@@ -84,31 +105,64 @@ func TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the child exited %v after %s: Run did not end at its bound with its tests' code:\n%s", err, took.Round(time.Second), &output)
 	}
+	if strings.Contains(output.String(), "--- SKIP: TestTheTeardownEndsAtItsBoundChild (") {
+		t.Skipf("the child skipped, so this machine was too slow for the row to say anything:\n%s", &output)
+	}
 	if !strings.Contains(output.String(), "--- PASS: TestTheTeardownEndsAtItsBoundChild (") {
-		t.Fatalf("the child's row did not pass, so it started no drop:\n%s", &output)
+		t.Fatalf("the child's row did not pass, so it made no database to drop:\n%s", &output)
 	}
-	if !relay.held("drop database " + database) {
-		t.Fatalf("the relay held no drop of %s, so nothing kept the child's teardown waiting and this run proves nothing:\n%s", database, &output)
+	var clones, templateDrops []string
+	for _, statement := range relay.heldStatements() {
+		switch name := strings.TrimPrefix(statement, "drop database "); {
+		case strings.HasPrefix(name, "dispatch_test_"):
+			clones = append(clones, name)
+		case strings.HasPrefix(name, "dispatch_template_"):
+			templateDrops = append(templateDrops, name)
+		}
 	}
-	if line := "storetest: drop database " + database + ": still waiting at the teardown's bound"; !strings.Contains(output.String(), line) {
-		t.Fatalf("the child ended without the line %q, so its teardown did not end at its bound naming the database:\n%s", line, &output)
+	if len(clones) == 0 {
+		t.Fatalf("the relay held no clone's drop, so nothing kept the child's teardown waiting and this run proves nothing:\n%s", &output)
+	}
+	if len(templateDrops) == 0 {
+		t.Fatalf("the relay held no template's drop: Run sent none by its bound, so the template stays on the server, named by no line:\n%s", &output)
+	}
+	named := append(clones, templateDrops...)
+	for _, name := range named {
+		if line := "storetest: drop database " + name + ": still waiting at the teardown's bound"; !strings.Contains(output.String(), line) {
+			t.Fatalf("the child ended without the line %q, so its teardown did not end at its bound naming that database:\n%s", line, &output)
+		}
 	}
 	if took < bound {
-		t.Fatalf("the child ended %s after it began, before its teardown's bound %s in: nothing held its drop, so this run proves nothing:\n%s", took.Round(time.Millisecond), bound, &output)
+		t.Fatalf("the child ended %s after it began, before its teardown's bound %s in: nothing held its drops, so this run proves nothing:\n%s", took.Round(time.Millisecond), bound, &output)
 	}
-	t.Logf("the child ended %s after it began, at its teardown's bound (%s in), naming %s", took.Round(time.Second), bound, database)
+	t.Logf("the child ended %s after it began, at its teardown's bound (%s in), naming %s", took.Round(time.Second), bound, strings.Join(named, " and "))
 }
 
 // TestTheTeardownEndsAtItsBoundChild is the child of
 // TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered. It runs only when the parent re-executes
 // this binary, with DISPATCH_TEST_DATABASE_URL naming the parent's relay.
 func TestTheTeardownEndsAtItsBoundChild(t *testing.T) {
-	database := os.Getenv(teardownEndChildEnv)
-	if database == "" {
+	if os.Getenv(teardownEndChildEnv) == "" {
 		t.Skip(teardownEndChildEnv + " is not set: this test is the child of TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered")
 	}
 	ready(t)
-	testcleanup.Add(t, func() { dropDatabase(database) })
+	end, bounded := testdb.ConnectEnd(t)
+	if !bounded {
+		t.Fatal("the child runs with no -test.timeout, so its teardown has no bound")
+	}
+	const key = "teardown-end"
+	failure := fatalOf(t, func(t testing.TB) { OpenFrom(t, key, func(string) error { return nil }) })
+	templates.Lock()
+	if entry := templates.byKey[key]; entry != nil && entry.name != "" {
+		t.Logf("the child made the template %s", entry.name)
+	}
+	templates.Unlock()
+	if failure != "" {
+		if past := time.Since(end); past >= 0 {
+			t.Skipf("the child's OpenFrom failed %s past its connect end, too slow for the row to say anything: %s", past.Round(time.Millisecond), failure)
+		}
+		t.Fatalf("the child's OpenFrom, before its connect end, failed: %s", failure)
+	}
 }
 
 // plainServerAddress is the host and port the relay dials for server, or why the row cannot use
@@ -173,11 +227,11 @@ func (r *dropRelay) holds() []string {
 	return holds
 }
 
-// held reports whether the relay held statement.
-func (r *dropRelay) held(statement string) bool {
+// heldStatements is each statement the relay held, in the order it held them.
+func (r *dropRelay) heldStatements() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return slices.Contains(r.statements, statement)
+	return slices.Clone(r.statements)
 }
 
 // track keeps conn for close, and answers false, closing conn, once the relay is closed.
