@@ -30,11 +30,38 @@ import (
 const nodeAnchorWireVariable = "NODE_ANCHOR_WIRE"
 
 // nodeAnchorWireLine is one line of that file: the schema of main's packages/contracts the value is
-// parsed with, what the test names the value by, and the value as the server answered it.
+// parsed with, what the test names the value by, and the value as the server answered it, a
+// comment.created payload without mainRoutingMembers.
 type nodeAnchorWireLine struct {
 	Schema string          `json:"schema"`
 	Label  string          `json:"label"`
 	Value  json.RawMessage `json:"value"`
+}
+
+// mainRoutingMembers are the three members of a comment.created payload that main's own server
+// writes (model.CommentEventPayload's SuppressRoute, SuppressedRoute and SuppressedRouteSessionID,
+// suppress_route on every payload) and main's strict WrittenCommentEventPayloadSchema does not
+// declare, so main refuses a payload of its own server with them. c-node-anchor keeps each payload
+// for that schema strict and strips these three alone (Verification v231), so any other member,
+// one this branch adds among them, is still refused.
+var mainRoutingMembers = []string{"suppress_route", "suppressed_route", "suppressed_route_session_id"}
+
+// withoutMainRoutingMembers is the comment.created payload without mainRoutingMembers, each other
+// member as stored.
+func withoutMainRoutingMembers(t *testing.T, payload json.RawMessage) json.RawMessage {
+	t.Helper()
+	var held map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &held); err != nil {
+		t.Fatalf("decode a comment.created payload: %v: %s", err, payload)
+	}
+	for _, member := range mainRoutingMembers {
+		delete(held, member)
+	}
+	stripped, err := json.Marshal(held)
+	if err != nil {
+		t.Fatalf("encode a comment.created payload: %v", err)
+	}
+	return stripped
 }
 
 // nodeAnchorTreeNode is what c-node-anchor reads of a node of the tree read: its kind and id, the
@@ -265,8 +292,9 @@ func (page activityCommentPage) first(id string) (map[string]json.RawMessage, bo
 // orphaned true with the same quote and occurrence, the tree answers the comment under the issue,
 // and the tree read changed nothing stored. The store census reads comment_anchor_block at zero
 // differences. The comments reads answer each of the five with anchor null and no node_anchor,
-// written to NODE_ANCHOR_WIRE for main's CommentSchema with each comment.created payload; with
-// node_anchor=true they answer each one's node_anchor, written there for
+// written to NODE_ANCHOR_WIRE for main's CommentSchema with each comment.created payload, less
+// main's own three routing members, for main's strict WrittenCommentEventPayloadSchema
+// (mainRoutingMembers); with node_anchor=true they answer each one's node_anchor, written there for
 // CommentWithNodeAnchorSchema. Each refusal is 400 INVALID_ANCHOR naming its field and writes no
 // comment, a quote of the risk's early warning, which is no part of its text, among them.
 //
@@ -630,7 +658,7 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 			t.Errorf("a comment.created payload carries anchor %s and node_anchor %t, want anchor null and no node_anchor: %s",
 				members(payload)["anchor"], carried, payload)
 		}
-		keep("WrittenCommentEventPayloadSchema", "comment.created", payload)
+		keep("WrittenCommentEventPayloadSchema", "comment.created", withoutMainRoutingMembers(t, payload))
 		payloads++
 	}
 	rows.Close()
