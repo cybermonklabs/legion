@@ -28,8 +28,8 @@
 # or that key followed by the commit, its own restores being lookups but those of a family it
 # saves under the commit, which download the newest entry, every restore of any workflow must
 # name a family some workflow saves,
-# ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
-# DAEMON_RACE_PACKAGES names,
+# each race build of a ci-caches.yaml job ci_job_reads.py's RACE_FILLS names must compile
+# exactly the packages of that entry's lane (DAEMON_RACE_PACKAGES, ENVOY_RACE_LANE),
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
 # passes -run must have a filter covering every file the tag step reads, every dorny/paths-filter
@@ -240,7 +240,7 @@ DAEMON_RACE_FILL_JOB = "fill"
 RACE_FILL_SCRIPTS = []
 RACE_FILLS = [(DAEMON_RACE_FILL_JOB, "DAEMON_RACE_FILL_JOB", [f"./{p}/" for p in DAEMON_RACE_PACKAGES],
                "DAEMON_RACE_PACKAGES", ".github/workflows/ci.yaml's race step", ".github/workflows/ci.yaml",
-               ".github/workflows/ci.yaml's two race steps")]
+               ".github/workflows/ci.yaml's two race steps follow it already")]
 TAG_RUNS = []
 READ_SETS = {}
 GATES, EXCLUDED = load_gate_files(globals())
@@ -4696,7 +4696,7 @@ second_fill() {
 YAML
   cat >> "$1/.github/scripts/ci_job_reads.py" <<'PY'
 RACE_FILLS.append(("second-fill", "SECOND_FILL_JOB", ["./lib/..."], "SECOND_LANE", "the second lane's step",
-                   "the second lane", "the second lane's steps"))
+                   "the second lane", "the second lane's steps follow it already"))
 PY
 }
 echo "case: a second lane's fill, held to its own list"

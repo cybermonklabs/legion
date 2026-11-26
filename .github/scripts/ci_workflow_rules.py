@@ -504,15 +504,16 @@ def race_builds(document: dict, only_job: str) -> list:
 def check_race_fill_packages(fills: list, problems: list) -> None:
     """Each entry of `fills` is (job, the name of the constant naming it, the package words its
     race build must name, the name of the list they come from, the step that restores the cache,
-    the jobs that restore it, the steps that follow the list): the race build of ci-caches.yaml's
-    job `job` compiles exactly the packages of its lane. The workflow fills on a push to main the
-    build cache the lane's race steps restore, so the two sides must name one set: a package the
-    fill compiles and the lane does not leaves the entry holding a race binary no job ever
-    restores, and a package the lane runs that the fill leaves out is linked from nothing in every
-    run of that step. Neither fails anything - it is the silence check_cache_round_trip is about
-    one level up, where the entry is found and holds the wrong objects - and the daemon's command
-    drifted twice for want of this rule: the fill kept ./internal/record/ after #2867 took it out
-    of the lane. The packages are held as a set and in order, each spelled as a command spells it
+    the jobs that restore it, and the clause saying which steps follow the list): the race build
+    of ci-caches.yaml's job `job` compiles exactly the packages of its lane. The workflow fills on
+    a push to main the build cache the lane's race steps restore, so the two sides must name one
+    set: a package the fill compiles and the lane does not leaves the entry holding a race binary
+    no job ever restores, and a package the lane runs that the fill leaves out is linked from
+    nothing in every run of that step. Neither fails anything - it is the silence
+    check_cache_round_trip is about one level up, where the entry is found and holds the wrong
+    objects - and the daemon's command drifted twice for want of this rule: the fill kept
+    ./internal/record/ after #2867 took it out of the lane. The packages are held as a set and in
+    order, each spelled as a command spells it
     (./internal/daemon/, ./internal/dispatch/delivery/...), since a command that reads in another
     order than the list is one a reader must sort before comparing, and an unreadable pair is
     where the next drift hides. A job with no race build at all fails too, rather than passing
@@ -552,14 +553,13 @@ def check_race_fill_packages(fills: list, problems: list) -> None:
                                                       f"build fills the cache {step} restores, so it compiles a race binary "
                                                       f"no job of {jobs} restores, and nothing fails; either the command follows the "
                                                       f"list, or the package joins {list_name}, the one place the lane is named - "
-                                                      f"{steps} follow it already"))
+                                                      f"{steps}"))
             for package in missing:
                 problems.append(error(CACHE_WORKFLOW, f"{TABLE}'s {list_name} names {package}, which {where} "
                                                       f"does not ({', '.join(wanted)} against {', '.join(named) or '(no package)'}): the "
                                                       f"fill then misses a race binary {step} links from nothing on every "
                                                       f"run, and nothing fails; either the command follows the list, or the package leaves "
-                                                      f"{list_name}, the one place the lane is named - {steps} follow "
-                                                      f"it already"))
+                                                      f"{list_name}, the one place the lane is named - {steps}"))
             if named != wanted and not extra and not missing:
                 problems.append(error(CACHE_WORKFLOW, f"{where} names {', '.join(named)}, where {TABLE}'s "
                                                       f"{list_name} has {', '.join(wanted)}: the same packages in another order, so the "

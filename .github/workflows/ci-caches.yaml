@@ -39,7 +39,7 @@ name: CI caches
 # matrix that fails leaves the other running (`fail-fast: false`): a cancelled leg saves nothing,
 # and one architecture's fill has no reason to cost the other's.
 #
-# Beside those six, the architecture-check and spec-check jobs fill the families of the composite
+# Beside those seven, the architecture-check and spec-check jobs fill the families of the composite
 # actions .github/actions/architecture-check and .github/actions/spec-check, which restore and
 # save their entries themselves.
 # why: .github/ci-notes/ci-caches.md#the-architecture-check-and-spec-check-families

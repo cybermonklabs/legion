@@ -133,8 +133,10 @@ nothing else; a package that changed, or that imports one that did, compiles aga
 binary links from what is current. So a reader never links an object of another closure, whatever
 entry it restored, and the per-push refill and refill-superseded keep the entry the last fill's:
 what was wrong with the entries of 2026-11-18 was that nothing refilled them, not that they could
-be read. A run that finds no entry at all (the first one after a Go version change) compiles
-everything, as every run did before this family.
+be read. After a Go version change the fill finds no entry of the new Go (its restore-keys carry
+the version) and compiles everything; the readers' restore-keys carry no version, so they restore
+the old Go's entry, whose modules they use and whose objects the new toolchain does not, and they
+compile everything too, as every run did before this family.
 
 forced-order.sh's builds (envoy-go-race's last two steps) compile a hooked copy of nats-server
 under the odatrace tag; this entry gives them the race standard library and the modules below
