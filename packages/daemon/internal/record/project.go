@@ -557,9 +557,12 @@ type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
 	// Priority is the priority that placed the entry, the first key of the whole line:
-	// PriorityOf, the issue's own, else its tree root's, else NoPriority, whose band stands after
-	// P3. The issue's own priority is Issue.Priority, which this does not change: the inherited
-	// priority orders the line and nothing else.
+	// PriorityOf, the priority Dispatch resolves the issue to where Dispatch sent one, else, with
+	// an older Dispatch that resolves none, the issue's own, else its tree root's, else
+	// NoPriority, whose band stands after P3. The issue's own priority is Issue.Priority, which
+	// this does not change. A P0 that Dispatch passes down starts outside the cap
+	// (Issue.StartsNow); only the tree root's priority, the fallback of an older Dispatch, orders
+	// the line and nothing else.
 	Priority Priority
 	// Part is the part of the line the entry stands in within its priority's band, and PartPlace
 	// its place within that band and part alone, counted from 1. Waiting sets both in its last
@@ -1705,13 +1708,14 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// (LineEntry.Since); and the rank that placed a starting entry is its tree root's, which the
 	// sort above read the same record for.
 	//
-	// Priority is the first key of the whole line: each entry stands in
-	// the band of the priority that places it (PriorityOf: its own, else its tree root's, else
-	// after P3), and within one band the returned part comes first, oldest first, and then the
-	// starting part by its tree root's rank and then its own, the order each part was just
-	// sorted into. So the two parts are laid out one after the other and sorted again by band
-	// alone, stably, which keeps that order within each band; an entry's place within its part
-	// counts within its band and part, read off that final order.
+	// Priority is the first key of the whole line: each entry stands in the band of the priority
+	// that places it (PriorityOf: the one Dispatch resolves it to, else, with an older Dispatch
+	// that resolves none, its own, else its tree root's, else after P3), and within one band the
+	// returned part comes first, oldest first, and then the starting part by its tree root's rank
+	// and then its own, the order each part was just sorted into. So the two parts are laid out
+	// one after the other and sorted again by band alone, stably, which keeps that order within
+	// each band; an entry's place within its part counts within its band and part, read off that
+	// final order.
 	line := make([]LineEntry, 0, len(returned)+len(starting))
 	for _, waiting := range returned {
 		entry := waiting.entry

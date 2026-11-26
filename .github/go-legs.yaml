@@ -123,6 +123,8 @@ packages/daemon:
       - internal/tlsalert
       - internal/treelifecycle
       - internal/prompts/cmd/approval-message
+      - internal/repocache/fakegcs
+      - internal/repocache/fakegcs/cmd/fakegcs
       - internal/subreaper
       - internal/startwalk
     3:
