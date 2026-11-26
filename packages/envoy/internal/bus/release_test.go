@@ -88,14 +88,12 @@ func publishReleaseProbe(t *testing.T, client *bus.Client, subject string) {
 // the wait for that delivery measures the hand-over alone.
 func awaitPendingForTheNextBind(t *testing.T, client *bus.Client, consumer string) {
 	t.Helper()
-	var info *natsgo.ConsumerInfo
-	testwait.Eventually(t, "the durable to count the message published since its subscriber went", func() bool {
+	info := testwait.Until(t, "the durable to count the message published since its subscriber went", func() (*natsgo.ConsumerInfo, bool) {
 		read, err := client.JS().ConsumerInfo(bus.Stream, consumer)
 		if err != nil {
-			return false
+			return nil, false
 		}
-		info = read
-		return info.NumPending+info.Delivered.Consumer >= 1
+		return read, read.NumPending+read.Delivered.Consumer >= 1
 	})
 	if info.NumPending != 1 || info.Delivered.Consumer != 0 || info.NumAckPending != 0 {
 		t.Fatalf("the durable reports %d message(s) pending, %d delivered and %d awaiting an ack, want the one message pending and none delivered: a delivery to a subscriber that has gone comes back only after the ack wait (%s)",
@@ -174,7 +172,10 @@ func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
 			awaitPendingForTheNextBind(t, client, consumer)
 			var fresh atomic.Int32
 			bindCounting(t, client, consumer, &fresh)
-			testwait.Eventually(t, "the fresh subscription to be handed the message", func() bool { return fresh.Load() == 1 })
+			testwait.Until(t, "the fresh subscription to be handed the message (the last read is how many it was handed)", func() (int32, bool) {
+				handed := fresh.Load()
+				return handed, handed == 1
+			})
 			if !client.SubOK() {
 				t.Fatal("SubOK reports the fresh subscription unbound")
 			}
@@ -303,7 +304,10 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 	awaitPendingForTheNextBind(t, direct, consumer)
 	var fresh atomic.Int32
 	bindCounting(t, direct, consumer, &fresh)
-	testwait.Eventually(t, "the second client to be handed what was published meanwhile", func() bool { return fresh.Load() == 1 })
+	testwait.Until(t, "the second client to be handed what was published meanwhile (the last read is how many messages it was handed)", func() (int32, bool) {
+		handed := fresh.Load()
+		return handed, handed == 1
+	})
 	if got := stopped.Load(); got != 0 {
 		t.Fatalf("the given-up subscription's handler was handed %d message(s)", got)
 	}

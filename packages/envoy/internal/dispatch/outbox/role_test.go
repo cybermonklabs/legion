@@ -991,7 +991,7 @@ func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	deps, registry := rig.countingDeps(t)
-	bustest.FillStream(t, client, 1024)
+	bustest.FillStream(t, client)
 
 	holding(t, deps).scan(context.Background(), unfenced{})
 

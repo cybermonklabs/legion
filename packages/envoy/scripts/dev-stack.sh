@@ -187,7 +187,8 @@ DEFAULT_READINESS_REQUEST_SECONDS=5
 usage() {
   cat <<'EOF'
 Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout]
-                    [--project-access] [--help]
+                    [--project-access] [--approve [--approve-allow-all]]
+                    [--broker-bin <file>] [--dispatch-bin <file>] [--help]
 
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
@@ -213,6 +214,15 @@ option none of this runs, as before.
 --callout and --project-access cannot run together: both of --callout's brokers would take the
 airlock proxy's one port. The pair is refused with exit 2 before anything is created or started.
 
+With --approve, a person's approvals go through Cipher's proxy (scripts/lib/approve-stack.sh):
+the broker gets its proxy port and the dpop block DISPATCH_APPROVE_TOKEN, bound to
+dispatch.approve.test and sent to this run's Dispatch on loopback, and Dispatch serves under
+https://dispatch.approve.test, the origin the proxy signs its proofs for. --approve-allow-all opens
+that block's allow list to every method on /api/. --approve runs alone of --callout and
+--project-access, each of which takes the proxy's port.
+
+--broker-bin and --dispatch-bin run the given file as the broker or Dispatch in place of the one
+built or copied, for a check's control build.
 EOF
   cat <<EOF
 DEV_STACK_STOP_GRACE_SECONDS ($DEFAULT_STOP_GRACE_SECONDS unless set) is how long the stop gives
@@ -228,6 +238,10 @@ CALLOUT=false
 DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
 PROJECT_ACCESS=false
+APPROVE=false
+APPROVE_ALLOW_ALL=false
+BROKER_BIN_OPTION=""
+DISPATCH_BIN_OPTION=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url)
@@ -266,6 +280,22 @@ while [ "$#" -gt 0 ]; do
       PROJECT_ACCESS=true
       shift
       ;;
+    --approve)
+      APPROVE=true
+      shift
+      ;;
+    --approve-allow-all)
+      APPROVE_ALLOW_ALL=true
+      shift
+      ;;
+    --broker-bin | --dispatch-bin)
+      if [ "$#" -lt 2 ] || [ ! -f "$2" ] || [ ! -x "$2" ]; then
+        echo "dev-stack: $1 needs an executable file" >&2
+        exit 2
+      fi
+      if [ "$1" = --broker-bin ]; then BROKER_BIN_OPTION="$2"; else DISPATCH_BIN_OPTION="$2"; fi
+      shift 2
+      ;;
     --help | -h)
       usage
       exit 0
@@ -284,6 +314,14 @@ done
 # anything is created or started. ---
 if [ "$CALLOUT" = true ] && [ "$PROJECT_ACCESS" = true ]; then
   echo "dev-stack: --callout and --project-access cannot run together: both of --callout's brokers would take the airlock proxy's one port" >&2
+  exit 2
+fi
+if [ "$APPROVE" = true ] && { [ "$CALLOUT" = true ] || [ "$PROJECT_ACCESS" = true ]; }; then
+  echo "dev-stack: --approve runs alone of --callout and --project-access: each takes the broker's proxy port" >&2
+  exit 2
+fi
+if [ "$APPROVE_ALLOW_ALL" = true ] && [ "$APPROVE" != true ]; then
+  echo "dev-stack: --approve-allow-all opens the allow list of --approve's block, so it needs --approve" >&2
   exit 2
 fi
 
@@ -370,6 +408,9 @@ fi
 if [ "$PROJECT_ACCESS" = true ]; then
   required_tools+=(docker)
 fi
+if [ "$APPROVE" = true ]; then
+  required_tools+=(openssl)
+fi
 for tool in "${required_tools[@]}"; do
   command -v "$tool" >/dev/null || {
     echo "dev-stack: $tool is required on PATH" >&2
@@ -432,6 +473,10 @@ FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
 # here, once that is made, on every run.
 # shellcheck source=lib/project-access-stack.sh
 . "$SCRIPT_DIR/lib/project-access-stack.sh"
+# What --approve adds: the broker's proxy with the approve capability's dpop block, and the origin
+# Dispatch serves under. Its functions do nothing without the option.
+# shellcheck source=lib/approve-stack.sh
+. "$SCRIPT_DIR/lib/approve-stack.sh"
 # The namespace the fake secrets sit under and an example KMS key in AWS's documentation account;
 # nothing here calls AWS.
 SECRETS_PREFIX="example/agent-secrets/"
@@ -709,6 +754,15 @@ else
     [ "$built" = "${stack_entry%%=*}" ] || mv "$BIN_DIR/$built" "$BIN_DIR/${stack_entry%%=*}"
   done
 fi
+# A check's control build, in place of the broker or Dispatch built or copied above.
+if [ -n "$BROKER_BIN_OPTION" ]; then
+  echo "dev-stack: running $BROKER_BIN_OPTION as the broker" >&2
+  cp "$BROKER_BIN_OPTION" "$BIN_DIR/broker"
+fi
+if [ -n "$DISPATCH_BIN_OPTION" ]; then
+  echo "dev-stack: running $DISPATCH_BIN_OPTION as Dispatch" >&2
+  cp "$DISPATCH_BIN_OPTION" "$BIN_DIR/dispatch"
+fi
 
 # --- Each process's readiness is read from its own log, or from its answer at the port it reported
 # there, never from a port this script chose: await runs one reader until it prints a value, and
@@ -772,6 +826,7 @@ KEEPER_PID=$!
 await 'the Dispatch port keeper' "$KEEPER_PID" "$KEEPER_LOG" "$KEEPER_PORT_FILE" 'the port it holds' kept_port_in
 DISPATCH_PORT="$awaited"
 DISPATCH_URL="http://127.0.0.1:${DISPATCH_PORT}"
+approve_dispatch_setup
 
 # --- The local issuer. It writes every token file before it logs its URL, so once that line is
 # there the files are there to be read. Every sign-in it serves, through the code flow or the
@@ -890,6 +945,8 @@ echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 # The broker's --project-access settings (PROJECT_ACCESS_ENV and AIRLOCK_ENV), and the airlock's
 # stands they name, started; without the option both are empty and nothing is started.
 project_access_broker_setup
+# The broker's --approve settings (APPROVE_ENV); empty without the option.
+approve_broker_setup
 # start_with_only LOG SETTING... -- COMMAND [ARG...] starts COMMAND in the background, its standard
 # output and error to LOG, with exactly the SETTINGs (NAME=value) as its environment, which env -i
 # gave the processes this script starts, and sets started_pid. The settings reach it through the
@@ -937,6 +994,7 @@ start_broker() {
     BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
     "${PROJECT_ACCESS_ENV[@]}" \
     "${AIRLOCK_ENV[@]}" \
+    "${APPROVE_ENV[@]}" \
     "${callout_broker_env[@]}" \
     -- "$BIN_DIR/broker"
 }
@@ -949,6 +1007,9 @@ await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_URL/healthz" 'its health check
 echo "dev-stack: broker $BROKER_URL" >&2
 # Under --project-access, the broker's proxy must be on the port this run picked, or the run stops.
 project_access_proxy_check
+# Under --approve, the broker's proxy must be on the port this run picked and serve the approve
+# capability, or the run stops.
+approve_proxy_check
 callout_after_first_broker
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
@@ -1053,10 +1114,9 @@ dispatch_settings=(PATH="$PATH"
   DATABASE_URL="$DISPATCH_DATABASE_URL"
   DISPATCH_LISTEN_FD=3
   DISPATCH_LISTEN_HOST=127.0.0.1
-  DISPATCH_SERVER_URL="$DISPATCH_URL"
+  DISPATCH_SERVER_URL="$DISPATCH_SERVER_URL_SETTING"
   DISPATCH_IDENTITY=cookie
-  DISPATCH_DEV_SIGNIN=1
-  DISPATCH_INSECURE_COOKIE=1
+  "${DISPATCH_SIGNIN_SETTINGS[@]}"
   DISPATCH_AGENT_TOKEN="$DISPATCH_TOKEN_VALUE"
   DISPATCH_AGENT_SECRETS_URL="$BROKER_URL"
   DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$ACCOUNT_TOKEN_FILE"
@@ -1236,6 +1296,7 @@ dev-stack: ready.
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
   export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$callout_exports
 $(project_access_exports)
+$(approve_exports)
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for

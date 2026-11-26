@@ -1,11 +1,11 @@
 // Package bustest holds the deployed stream the start tests of envoy-listener and envoy-dispatch
 // both begin from, the check each makes of what a start left of it, the drift table each start
-// corrects, the fill loop the full-stream tests begin from, and the narrowing of a hub move's
-// quiesce with its restore (narrow.go). The bus's own tests cannot import it (it imports the bus)
-// and keep their own copies: the fixture deployedClusterStream, the drift table in
-// internal/bus/stream_replicas_test.go, the fill loops in that file and in
-// internal/bus/publish_not_stored_test.go, and narrowedAsTheQuiesce in
-// internal/bus/adhoc_topic_test.go. Every test outside package bus takes them from here.
+// corrects, the fill the full-stream tests begin from, and the narrowing of a hub move's quiesce
+// with its restore (narrow.go). The bus's own tests cannot import it (it imports the bus) and keep
+// their own copies: the fixture deployedClusterStream, the drift table in
+// internal/bus/stream_replicas_test.go, and narrowedAsTheQuiesce in
+// internal/bus/adhoc_topic_test.go; they fill the stream through testnats.FillStream itself. Every
+// test outside package bus takes them from here.
 //
 // It is also the one fixture helper for the buckets a listener copies (bus.CopiedBuckets) on a
 // test's or a dev rig's own NATS server (fixture.go). No program of a deployment creates one of
@@ -22,10 +22,7 @@
 package bustest
 
 import (
-	"errors"
-	"fmt"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -160,37 +157,15 @@ func RequireFirstStartAtOneCopyAndNoSecondWrite(t testing.TB, url string, stream
 	}
 }
 
-// FillStream publishes messages of a kibibyte each through client, on subjects the stream captures
-// (notifications.github.fill.<n>), until the stream refuses one because it is full
-// (bus.ErrStreamFull). The test must start the client on a stream whose byte limit is small
-// (bus.WithStreamMaxBytes), or the fill never ends: most bounds the publishes, and a run that
-// reaches it fails the test. A publish that fails for any other reason fails the test too.
-//
-// internal/webhook's two full-stream tests call it: the one whose delivery is answered 503
-// (TestADeliveryToAFullStreamIsAnswered503) and the one whose delivery is stored on a redelivery
-// once the stream has room (TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHasRoom).
-// The bus's own tests keep their copies of this loop, because package bus cannot import this
-// package.
-func FillStream(t testing.TB, client *bus.Client, most int) {
+// FillSubject is the subject below which FillStream publishes, one the stream captures.
+const FillSubject = "notifications.github.fill"
+
+// FillStream fills the stream client owns until it holds too much to store one more message of one
+// byte (testnats.FillStream), on subjects below FillSubject. The test must start the client on a
+// stream whose byte limit is small (bus.WithStreamMaxBytes): a stream with none fails the test.
+// The stream then refuses every message no smaller than a one-byte fill message, any envelope
+// among them.
+func FillStream(t *testing.T, client *bus.Client) {
 	t.Helper()
-	payload := strings.Repeat("x", 1<<10)
-	for filled := 0; ; filled++ {
-		if filled == most {
-			t.Fatalf("the stream took %d messages of a kibibyte, want it full within %d", filled, most)
-		}
-		err := client.Publish(contracts.Envelope{
-			EventID:        fmt.Sprintf("fill-%d", filled),
-			Source:         "github",
-			Topic:          fmt.Sprintf("notifications.github.fill.%d", filled),
-			DedupeKey:      fmt.Sprintf("fill.%d", filled),
-			PayloadSummary: payload,
-		})
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, bus.ErrStreamFull) {
-			t.Fatalf("fill publish %d = %v, want nil or bus.ErrStreamFull", filled, err)
-		}
-		return
-	}
+	testnats.FillStream(t, client.JS(), bus.Stream, FillSubject)
 }

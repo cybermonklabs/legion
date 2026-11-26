@@ -8,6 +8,8 @@ package bus
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync/atomic"
@@ -240,7 +242,8 @@ func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
 // its create may have been answered before its stream's first election ended. The other start's
 // create is abandoned the moment a listener on its subject sees it go out, so it lands with its
 // answer lost; the cut is made on the create itself, so the account read nats.go makes before it
-// is answered first however slow the machine is.
+// is answered first. That read waits nats.go's own 5 s, which a loaded machine can outlast, ending
+// the try with no create sent, so a try that ends before its create is seen is made again.
 //
 // A create that has gone out has not landed. The meta leader hands each JetStream API request to
 // one of a pool of GOMAXPROCS workers (nats-server v2.15.1 server/jetstream_api.go:1029 and
@@ -267,24 +270,50 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the listener: %v", err)
 	}
-	createCtx, abandon := context.WithCancel(t.Context())
-	abandoned := make(chan error, 1)
-	go func() {
-		_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
-		abandoned <- err
-	}()
-	_, err = creates.NextMsg(time.Minute)
-	abandon()
-	if err != nil {
-		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
+	var abandon context.CancelFunc
+	var abandoned chan error
+	send := func() {
+		createCtx, cancel := context.WithCancel(t.Context())
+		abandon, abandoned = cancel, make(chan error, 1)
+		go func(ended chan<- error) {
+			_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
+			ended <- err
+		}(abandoned)
 	}
-	<-abandoned
-	testwait.Eventually(t, "the meta leader to list the other start's stream", func() bool {
-		listed := false
-		for name := range js.StreamNames() {
-			listed = listed || name == "KV_"+bucket
+	send()
+	// The reading is how many tries were made and how the last one that ended ended, so a try
+	// that always fails before its create goes out names its error when the wait gives up.
+	type createTries struct {
+		Tries   int
+		LastErr error
+	}
+	read := createTries{Tries: 1}
+	testwait.Until(t, "the other start's create to go out, without which this row holds nothing (the last read is how many tries were made and the last ended one's error)", func() (createTries, bool) {
+		_, err := creates.NextMsg(testwait.Poll)
+		if err == nil {
+			return read, true
 		}
-		return listed
+		if !errors.Is(err, nats.ErrTimeout) {
+			t.Fatalf("read the other start's create: %v", err)
+		}
+		select {
+		case ended := <-abandoned:
+			read.LastErr = ended
+			abandon()
+			send()
+			read.Tries++
+		default:
+		}
+		return read, false
+	})
+	abandon()
+	<-abandoned
+	testwait.Until(t, "the meta leader to list the other start's stream (the last read is the streams it listed)", func() ([]string, bool) {
+		var listed []string
+		for name := range js.StreamNames() {
+			listed = append(listed, name)
+		}
+		return listed, slices.Contains(listed, "KV_"+bucket)
 	})
 	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
@@ -392,13 +421,11 @@ func TestAReconnectRunThatFindsTheStreamWithNoLeaderRunsTheHooksAfterIt(t *testi
 	})
 	cluster.Servers[1].Stop(t)
 	cluster.Servers[2].Stop(t)
-	noLeader := testwait.Holds(60*time.Second, 100*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the remaining member to answer the stream's read with no leader, which this row needs", func() (string, bool) {
 		info, err := client.JS().StreamInfo(Stream)
-		return err == nil && leaderless(info)
+		none := err == nil && leaderless(info)
+		return fmt.Sprintf("read error %v, no leader %t", err, none), none
 	})
-	if !noLeader {
-		t.Fatal("the remaining member never answered the stream's read with no leader: this row needs that read")
-	}
 
 	started := time.Now()
 	err = client.runReconnectHooks(client.Conn)
