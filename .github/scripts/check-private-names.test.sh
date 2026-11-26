@@ -660,6 +660,42 @@ check "names the review comment by its id and line" "$(contains "$out" 'review-c
 check "does not print the host" "$(is "$(contains "$out" "$private_host_suffix")" false)"
 check "says how to take a review comment down" "$(contains "$out" 'delete each comment and review comment')"
 
+echo "case: a link to the pull request's own repository, whose owner names the company"
+PR_TEXT_TEST_REPO="$company-$labs-example/widgets"
+own="https://github.com/$PR_TEXT_TEST_REPO"
+write_pr_text "fix(dispatch): keep the inbox order" "Follows $own/pull/5." "fix: keep the order"
+items 301 "Show more details: [alert]($own/security/code-scanning/76)" \
+  302 "$(printf 'See %s/pull/26 and https://github.com/%s/WIDGETS.\n' "$own" "$company_proper-Labs-Example")" \
+  > "$work/review-comments.1"
+run_pr_text
+check "passes, in any case" "$(is "$status" 0)"
+
+for leak in "https://github.com/$company-$labs-example/widgets-smoke/pull/1" \
+  "https://github.com/$company-$labs-example/widgets%2Dsmoke/pull/1" \
+  "https://github.com/$company-$labs-example/other/pull/1" "$own/tree/$company-$labs-fix" \
+  "$PR_TEXT_TEST_REPO with no link"; do
+  clean_pr
+  items 301 "See $leak." > "$work/review-comments.1"
+  run_pr_text
+  check "still refuses: ${leak//$company/<company>}" "$(is "$status" 1)"
+  check "naming the review comment" "$(contains "$out" 'review-comment:301:1: names the company')"
+done
+
+run_pr_text "fix(dispatch): see $own/pull/5" "Refs LEGION-7" "fix: keep the order"
+check "a title with the link is still refused, since it becomes main's subject" "$(is "$status" 1)"
+check "naming the title" "$(contains "$out" 'title:1: names the company')"
+
+PR_TEXT_TEST_REPO="$company-$labs-example/my.repo"
+clean_pr
+items 301 "See https://github.com/$company-$labs-example/my.repo/pull/1." > "$work/review-comments.1"
+run_pr_text
+check "a dot in the name is the name's own" "$(is "$status" 0)"
+clean_pr
+items 301 "See https://github.com/$company-$labs-example/myXrepo/pull/1." > "$work/review-comments.1"
+run_pr_text
+check "and matches no other character" "$(is "$status" 1)"
+unset PR_TEXT_TEST_REPO
+
 echo "case: a pull request's own text refuses a host that ends in .internal, which the tree passes"
 # Each form of the ending in the body, one a line: a port, a path, a blank, a quote, a bracket, a
 # sentence's full stop, and the end of the line; and one in the title, a commit message, a comment,

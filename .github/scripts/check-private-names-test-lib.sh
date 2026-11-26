@@ -245,7 +245,8 @@ if [ "$1 $2" = "api graphql" ]; then
     echo 'gh: Could not resolve to a commit.' >&2
     exit 1
   fi
-  if [ "$operation" = PrText ] && [ "$(jq -c '[.owner, .repo, .number]' <<< "$variables")" != '["example","repo",7]' ]; then
+  # A case that names another repository (PR_TEXT_TEST_REPO) reads example/repo's answers.
+  if [ "$operation" = PrText ] && [ "$(jq -c '[.owner + "/" + .repo, .number]' <<< "$variables")" != "[\"$GITHUB_REPOSITORY\",7]" ]; then
     echo '{"data": {"repository": null}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a PullRequest."}]}'
     echo 'gh: Could not resolve to a PullRequest.' >&2
     exit 1
@@ -349,6 +350,8 @@ if [ "$1 $2" = "api graphql" ]; then
   exit
 fi
 printf '%s\n' "$*" >> "$dir/calls"
+prefix="repos/$GITHUB_REPOSITORY/"
+if [ $# -ge 2 ]; then set -- "$1" "${2/#"$prefix"/repos/example/repo/}" "${@:3}"; fi
 # The compare route is the event's own base...head, matched whole: base-sha...event-head-sha as
 # write_pr_text writes the event, or a real commit's id where a case sets one for git to read.
 compare_route="api repos/example/repo/compare/$(jq -r '.pull_request.base.sha' "$dir/event.json")"
@@ -412,7 +415,7 @@ run_pr_text() {
   if [ $# -gt 0 ]; then write_pr_text "$@"; fi
   : > "$work/calls"
   set +e
-  out=$(GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
+  out=$(GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY="${PR_TEXT_TEST_REPO:-example/repo}" \
     GITHUB_SERVER_URL="file://$work/remote" PR_TEXT_TEST_DIR="$work" PATH="$work/bin:$PATH" \
     "$pr_text_script" 2>&1)
   status=$?

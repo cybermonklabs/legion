@@ -416,6 +416,18 @@ for ((i = 0; i < ${#lists[@]}; i += 2)); do
   write_items "${lists[i]}" "${lists[i + 1]}"
 done
 
+# A link to this repository names its owner, and GitHub's own bots post such links (code
+# scanning's review comments link each alert): the owner and name are public wherever the pull
+# request is. So in the body and the comments, reviews and review comments, each link to it has
+# its owner and name masked before the scan, in any case, as GitHub reads them; a full stop right
+# after the name ends a sentence. The title, branch and commits are not masked: the title is
+# main's squash subject. The rest of the link is still read, and a link to another repository,
+# or the name with no link, is read whole. A trusted author can still write a link that walks
+# out of this repository (`/../`); the scan reads only trusted authors' text.
+own_repository=${repository//./\\.}
+find "$text/body" "${kinds[@]/#/$text/}" -type f -exec sed -E -i \
+  "s#(https?://(www\\.)?github\\.com/)${own_repository}(\\.?)([^A-Za-z0-9._%-]|\$)#\\1this-repository\\3\\4#Ig" {} +
+
 # The guard scans these by their absolute names; the log names each by the part after the
 # temporary directory, and an item as <kind>:<id>.
 kind_pattern="($(IFS='|'; echo "${kinds[*]}"))"
