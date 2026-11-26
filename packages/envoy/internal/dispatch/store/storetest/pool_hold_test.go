@@ -195,6 +195,8 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileEveryAdminConnectionIsHeld(
 	if os.Getenv(poolHeldChildEnv) != "" {
 		t.Skip("this is the child's binary")
 	}
+	// It only waits on its child, so it runs beside this package's other such rows.
+	t.Parallel()
 	ready(t)
 	ctx := testwait.Context(t)
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestATestsAdminStatementEndsByTheConnectEndWhileEveryAdminConnectionIsHeldChild$", "-test.timeout="+poolHeldChildTimeout.String(), "-test.v")
@@ -278,7 +280,7 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileEveryAdminConnectionIsHeldC
 	case <-done:
 		select {
 		case message := <-failure:
-			if !strings.Contains(message, "wait for an admin connection: context deadline exceeded") {
+			if !adminWait.MatchString(message) || !strings.Contains(message, "context deadline exceeded") {
 				t.Fatalf("Empty ended %s after it began on %q; want its wait for an admin connection to end on that wait's deadline", time.Since(began).Round(time.Millisecond), message)
 			}
 			t.Logf("Empty ended %s after it began, %s before the connect end, on its wait's deadline: %s", time.Since(began).Round(time.Millisecond), time.Until(end).Round(time.Millisecond), message)

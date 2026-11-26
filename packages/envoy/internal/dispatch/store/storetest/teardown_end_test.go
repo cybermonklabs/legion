@@ -54,6 +54,10 @@ var teardownEndTemplate = regexp.MustCompile(`the child made the template (dispa
 // child's databases itself, on the server directly. The child skips, and this row on its skip,
 // where its OpenFrom failed past its connect end, too slow for the row to say anything.
 //
+// It waits about 90 s, to the child's bound, and only on its child, so it runs beside this
+// package's other rows that only wait on a child (t.Parallel), which Go starts once the package's
+// serial rows have run; envoy-go-race then spends those 90 s once, not after the others.
+//
 // It needs no superuser, only a server it reaches over TCP without TLS, since the relay reads the
 // protocol's messages: it skips, by name, where DISPATCH_TEST_DATABASE_URL does not say
 // sslmode=disable or names no host of its own, as CI's and the build cluster's both do.
@@ -61,6 +65,7 @@ func TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered(t *testing.T) {
 	if os.Getenv(teardownEndChildEnv) != "" {
 		t.Skip("this is the child's binary")
 	}
+	t.Parallel()
 	ready(t)
 	upstream, why := plainServerAddress(shared.server)
 	if why != "" {

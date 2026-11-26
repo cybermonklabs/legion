@@ -253,15 +253,24 @@ func cloneStatement(name, template string) string {
 // connect end. So a statement that hangs once it has its connection, on a server that accepted it
 // and never answers, is bounded only by go test's alarm, as at main: the connect end is too short
 // a bound for it, and this package names no other. Where t names no deadline the wait has none.
+// A failed wait says how long it waited and its bound ("wait for an admin connection (waited 1.001s
+// of a 1s bound)"), so a reader can tell a wait that ran out from one that never waited
+// (TestATestsAdminStatementPastTheConnectEndStillRuns skips only on the first). The wait is
+// measured from before its deadline is set, so one that ran out reads at least its bound.
 func adminExec(t testing.TB, statement string) error {
+	began := time.Now()
 	ctx, cancel := context.Background(), func() {}
+	bound := "no"
 	if end, bounded := testdb.ConnectEnd(t); bounded {
-		ctx, cancel = context.WithTimeout(context.Background(), testdb.TimeoutUntil(end))
+		timeout := testdb.TimeoutUntil(end)
+		bound = "a " + timeout.String()
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
 	}
 	connection, err := shared.admin.Acquire(ctx)
+	waited := time.Since(began)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("wait for an admin connection: %w", err)
+		return fmt.Errorf("wait for an admin connection (waited %s of %s bound): %w", waited.Round(time.Millisecond), bound, err)
 	}
 	defer connection.Release()
 	_, err = connection.Exec(context.Background(), statement)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,8 @@ func TestATestsAdminStatementPastTheConnectEndStillRuns(t *testing.T) {
 	if os.Getenv(pastEndChildEnv) != "" {
 		t.Skip("this is the child's binary")
 	}
+	// It only waits on its child, so it runs beside this package's other such rows.
+	t.Parallel()
 	ready(t)
 	ctx := testwait.Context(t)
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestATestsAdminStatementPastTheConnectEndStillRunsChild$", "-test.timeout="+pastEndChildTimeout.String(), "-test.v")
@@ -112,11 +115,15 @@ func TestATestsAdminStatementPastTheConnectEndStillRunsChild(t *testing.T) {
 //   - the store's: a connect that timed out ("failed to connect to" with pgconn's "timeout: "). A
 //     deadline on store.Open's context, which past the end has passed, fails its ping at once on
 //     the context's bare error, which says neither.
-//   - the acquire's: a timeout once no admin connection is held. The child makes its statements
-//     one at a time with no drop in flight, so a connection still held is one never let go. A ping
-//     that ran out holds its connection a moment past the wait (pgxpool's Acquire lets the ping
-//     end under the same deadline, then destroys it: pool.go:660-698 at v5.13.0), so the count is
-//     read again until it is 0, or until 5 s before the child's alarm.
+//   - the acquire's: a wait that ran its whole bound, a second past the end, and then failed with
+//     no admin connection held. adminExec's error says how long it waited and its bound
+//     ("waited 1.001s of a 1s bound"); an acquire that failed at once, as one whose deadline is
+//     the connect end itself does past that end, says it waited less, and fails the row, as does
+//     an error that does not say. The child makes its statements one at a time with no drop in
+//     flight, so a connection still held is one never let go. A ping that ran out holds its
+//     connection a moment past the wait (pgxpool's Acquire lets the ping end under the same
+//     deadline, then destroys it: pool.go:660-698 at v5.13.0), so the count is read again until
+//     it is 0, or until 5 s before the child's alarm.
 //
 // It answers skip and the reason, or no skip and why the failure is the row's ("" where nothing
 // more is to be said).
@@ -127,9 +134,18 @@ func pastEndWait(t *testing.T, failure string) (why string, skip bool) {
 			return "the connect of the clone's store timed out on its second", true
 		}
 		return "it is no connect that timed out, so the store's connect was not what ran out", false
-	case strings.Contains(failure, "wait for an admin connection: "):
-		if !strings.Contains(failure, "deadline exceeded") && !strings.Contains(failure, "timeout: ") {
-			return "", false
+	case strings.Contains(failure, "wait for an admin connection"):
+		match := adminWait.FindStringSubmatch(failure)
+		if match == nil {
+			return "its wait for an admin connection does not say how long it waited", false
+		}
+		waited, waitedErr := time.ParseDuration(match[1])
+		bound, boundErr := time.ParseDuration(match[2])
+		if waitedErr != nil || boundErr != nil {
+			return fmt.Sprintf("its wait for an admin connection says it waited %q of a %q bound, which do not read as durations", match[1], match[2]), false
+		}
+		if waited < bound {
+			return fmt.Sprintf("its wait for an admin connection failed after %s of its %s bound, so it did not wait for one: the wait's deadline had passed before it began", waited, bound), false
 		}
 		began := time.Now()
 		released := testwait.Holds(testwait.Bounded(t, time.Minute, 5*time.Second), testwait.Poll, func() bool {
@@ -138,7 +154,10 @@ func pastEndWait(t *testing.T, failure string) (why string, skip bool) {
 		if !released {
 			return fmt.Sprintf("%d of the admin pool's connections were still held %s later: a connection was never let go", shared.admin.Stat().AcquiredConns(), time.Since(began).Round(time.Second)), false
 		}
-		return "its wait for an admin connection timed out on its second with no connection held", true
+		return fmt.Sprintf("its wait for an admin connection ran its %s bound with no connection held", bound), true
 	}
 	return "", false
 }
+
+// adminWait reads how long a failed wait of adminExec's waited, and its bound.
+var adminWait = regexp.MustCompile(`wait for an admin connection \(waited (\S+) of a (\S+) bound\): `)
