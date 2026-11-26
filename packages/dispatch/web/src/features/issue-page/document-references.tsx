@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useRef } from "react";
+import { memo, type ReactNode, useMemo, useRef } from "react";
 
 import type { Artifact } from "../../api/types";
 import { pageMutedText, pageQuietText } from "../../theme/classes";
@@ -30,9 +30,15 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
  * The read is `referencesQuery` of the document's address, under the key every Referenced-by panel
  * reads, kept fresh by events as the new page's reads are (`useNewIssuePageFreshness`), and its
  * edges are those every list of a node's references draws (`drawsEdge`). The list is drawn on
- * load, so it says nothing while its read is out.
+ * load, so it says nothing while its read is out. It is drawn again only when its document or
+ * what it reads changes, not at each toolbar the document's editor publishes as the reader types
+ * (`ArtifactRoutePanel.tsx`).
  */
-export function DocumentReferences({ artifact }: { artifact: Artifact }): ReactNode {
+export const DocumentReferences = memo(function DocumentReferences({
+  artifact,
+}: {
+  artifact: Artifact;
+}): ReactNode {
   const freshness = useNewIssuePageFreshness();
   const query = useQuery({
     ...referencesQuery(buildDispatchReference(documentRoute(artifact))),
@@ -87,4 +93,4 @@ export function DocumentReferences({ artifact }: { artifact: Artifact }): ReactN
       {rows.length === 0 ? null : <ReferenceList issueKey={issueKey} rows={rows} />}
     </section>
   );
-}
+});

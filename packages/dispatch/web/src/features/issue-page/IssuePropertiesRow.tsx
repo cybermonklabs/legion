@@ -514,8 +514,8 @@ interface LabelsFit {
 }
 
 /** The measure each reading of the labels is (`measured`), which the row of `c-header-labels`
- *  reads off the page (`performance.getEntriesByName`). */
-const LABELS_MEASURE = "issue-header-labels";
+ *  reads off the page (`performance.getEntriesByName`) and the header's unit case reads too. */
+export const LABELS_MEASURE = "issue-header-labels";
 
 /** How far past the room a chip may end and still be read as fitting in it. A box is read as a
  *  float, off from the layout's own unit (1/64 px, a third of that at a device scale of 3) by a

@@ -21,8 +21,8 @@ import { SHOW_MORE, showMoreName } from "./show-more-fixture";
  * tree draws no document, so every document and file of the issue is a row of this list, which
  * the stage draws in place of the outline, and the control that makes a document from a title -
  * the Artifacts panel's `New document` (`CreateDocument.tsx`) - stands with it, beside the
- * upload, and reaches the same write. The cases the node menu held at the source's checkpoint
- * read the list's rows where they read the menu's roles (the plan's departure 6).
+ * upload, and reaches the same write. Each case reads the list's rows and its controls, as the
+ * list holds no menu (the plan's departure 6).
  */
 
 /** A document of the issue: a row of the list, whose title New document refuses, since the

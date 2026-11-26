@@ -197,8 +197,8 @@ function NameVersion({ artifact, isClosed }: { artifact: Artifact; isClosed: boo
       // Made either way, so a second press names nothing twice. The write stays pending until
       // the issue's own read, whose documents' versions the picker lists, is in again: Save stays
       // busy until then, and the dialog closes only then. The issue's other reads and the
-      // document's are asked again beside it, as before; none of them asks that read again,
-      // which would cancel the one this waits for.
+      // document's are asked again beside it; none of them asks that read again, which would
+      // cancel the one this waits for.
       const reread = queryClient.invalidateQueries({
         exact: true,
         queryKey: ["issue", artifact.issue_key],

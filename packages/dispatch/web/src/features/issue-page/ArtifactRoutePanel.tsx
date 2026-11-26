@@ -1,4 +1,4 @@
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 
 import type { Artifact, Version } from "../../api/types";
 import { dangerText, pageQuietText } from "../../theme/classes";
@@ -65,12 +65,20 @@ export function ArtifactRoutePanel({
   // page's (`ArtifactHeader`), which draws the name in its heading with no mark, so the panel
   // marks that heading once it is drawn, as the opened document makes the same heading
   // focusable (`OpenedDocument.tsx`'s `headingOf`). React leaves an attribute it does not set
-  // where it is, and the heading is the same element while the panel draws the header.
+  // where it is, and the heading is the same element while the panel draws the header, so a
+  // heading already marked is left as it is.
   useLayoutEffect(() => {
-    region.current
-      ?.querySelector('[data-testid="artifact-header"] h2')
-      ?.setAttribute(AUTHOR_TEXT_ATTRIBUTE, "");
+    const heading = region.current?.querySelector('[data-testid="artifact-header"] h2');
+    if (heading !== null && heading !== undefined && !heading.hasAttribute(AUTHOR_TEXT_ATTRIBUTE)) {
+      heading.setAttribute(AUTHOR_TEXT_ATTRIBUTE, "");
+    }
   });
+  // Newest first, sorted again only when the versions change, and not at each toolbar the
+  // document's editor publishes as the reader types: the lists below are drawn again only then.
+  const listed = useMemo(
+    () => versionsNewestFirst(versions ?? artifact?.versions ?? null),
+    [versions, artifact?.versions]
+  );
   // A slug the issue does not hold is said in the page's own line: not the slug, which is an
   // identifier, and not the word the old tab used (part N's R2). The region is named by the
   // same line, so the opened place is still a landmark.
@@ -89,7 +97,6 @@ export function ArtifactRoutePanel({
   }
   const isDocument = artifact.kind === "doc";
   // The version the head names: the one the address pins, else the latest.
-  const listed = versionsNewestFirst(versions ?? artifact.versions);
   const shown =
     artifactRoute.version === undefined
       ? listed[0]

@@ -11,10 +11,10 @@ import { PULL_REQUEST_STATE_WORDS } from "./page-words";
  * N's R22, `IssuePropertiesRow.tsx`): drawn on the properties line after the assignee and before
  * the children's progress and the count of what waits on the reader, with its number and its
  * state in the page's own words. There it stands on the line of the status, the priority and the
- * assignee, which at 390 px has room for it on each seed `c-pull-request-link` reads; after the
- * progress it shared the line of the count and the labels, and on a long title's issue with no
- * approval request waiting it pushed the labels onto a line of their own. An issue with none, or
- * with an address that is neither `http:` nor `https:`, draws nothing.
+ * assignee, which at 390 px has room for it on each seed `c-pull-request-link` reads; placed after
+ * the progress, it would share the line of the count and the labels, and on a long title's issue
+ * with no approval request waiting it would push the labels onto a line of their own. An issue
+ * with none, or with an address that is neither `http:` nor `https:`, draws nothing.
  */
 export function PullRequestLink({
   pullRequest,

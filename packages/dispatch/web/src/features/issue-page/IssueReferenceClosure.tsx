@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useRef } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -66,8 +66,7 @@ export function IssueReferenceClosure({ issueKey }: { issueKey: string }): React
     queryKey: ["issue", issueKey, "references"],
     queryFn: () => api.getIssueReferences(issueKey),
   });
-  const list = useRef<HTMLUListElement>(null);
-  const pages = useListPages();
+  const pages = useListPages<HTMLUListElement>();
   const members = references.data?.members ?? [];
   if (members.length === 0) {
     return null;
@@ -78,7 +77,7 @@ export function IssueReferenceClosure({ issueKey }: { issueKey: string }): React
       <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
         References ({members.length})
       </h3>
-      <ul className="space-y-2" ref={list}>
+      <ul className="space-y-2" ref={pages.list}>
         {members.slice(0, pages.drawn).map(({ artifact, depth, via }) => (
           <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
             <Link
@@ -93,7 +92,7 @@ export function IssueReferenceClosure({ issueKey }: { issueKey: string }): React
           </li>
         ))}
       </ul>
-      {pages.more(members.length, (index) => list.current?.children[index])}
+      {pages.more(members.length)}
       {references.data?.truncated === true ? (
         <p className={`text-sm ${textMutedOnSurface}`}>more references beyond 8 hops</p>
       ) : null}

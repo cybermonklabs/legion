@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useRef, useState } from "react";
+import { Fragment, memo, type ReactNode, useState } from "react";
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
@@ -87,24 +87,24 @@ function fileFacts(artifact: Artifact, version: Version): string[] {
  * two.
  *
  * `versions` is newest first: the versions the document's editor read, newer than the issue's
- * own read once a version is named here.
+ * own read once a version is named here. It is drawn again only when its props change, not at
+ * each toolbar the editor publishes as the reader types (`ArtifactRoutePanel.tsx`).
  */
-export function DocumentVersions({
+export const DocumentVersions = memo(function DocumentVersions({
   artifact,
   versions,
 }: {
   artifact: Artifact;
   versions: readonly Version[];
 }): ReactNode {
-  const list = useRef<HTMLUListElement>(null);
-  const pages = useListPages();
+  const pages = useListPages<HTMLUListElement>();
   return (
     <div className="space-y-4">
       <section aria-label={`${FILE_WORDS.versions_for} ${artifact.name}`} className="space-y-2">
         <h3 className={`text-sm font-semibold ${pageMutedText}`} {...pageChrome}>
           {FILE_WORDS.versions}
         </h3>
-        <ul className="space-y-1" ref={list}>
+        <ul className="space-y-1" ref={pages.list}>
           {versions.slice(0, pages.drawn).map((version) => {
             const facts = fileFacts(artifact, version);
             return (
@@ -138,12 +138,12 @@ export function DocumentVersions({
             );
           })}
         </ul>
-        {pages.more(versions.length, (index) => list.current?.children[index])}
+        {pages.more(versions.length)}
       </section>
       {versions.length >= 2 ? <VersionComparison artifact={artifact} versions={versions} /> : null}
     </div>
   );
-}
+});
 
 /** One side of the comparison: a picker over every version, newest first, named after the
  *  document and the side, "Compare notes.md from". */

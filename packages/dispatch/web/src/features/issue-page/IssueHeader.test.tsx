@@ -52,6 +52,7 @@ import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
+import { LABELS_MEASURE } from "./IssuePropertiesRow";
 import { HEADER_SCROLLS_QUERY } from "./identity-block";
 import { CONTROL_LABELS } from "./page-words";
 import { PULL_REQUEST_STATE_WORDS } from "./page-words-n";
@@ -3604,8 +3605,8 @@ test("with 20 labels the line draws no chip it hides and the count names every c
 // notification that owes no reading takes none: the one the first fit's own move of the box
 // brings in its frame, and one in a frame where nothing changed.
 test("each reading of the labels is one `issue-header-labels` measure", async () => {
-  const measures = () => performance.getEntriesByName("issue-header-labels", "measure");
-  performance.clearMeasures("issue-header-labels");
+  const measures = () => performance.getEntriesByName(LABELS_MEASURE, "measure");
+  performance.clearMeasures(LABELS_MEASURE);
   const sizes = installResizeObserver();
   // A room that holds no chip and not the count either, so the first fit moves the box on to the
   // count's row, where it is 518 px wide.
@@ -3653,6 +3654,6 @@ test("each reading of the labels is one `issue-header-labels` measure", async ()
     restore();
     layout.restore();
     sizes.restore();
-    performance.clearMeasures("issue-header-labels");
+    performance.clearMeasures(LABELS_MEASURE);
   }
 });

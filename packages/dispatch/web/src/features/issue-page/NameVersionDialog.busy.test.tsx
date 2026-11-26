@@ -115,8 +115,9 @@ interface Naming {
   readonly dialog: HTMLElement;
   /** Lets the held read of the document after the write answer `answer`. */
   readonly answerReread: (answer: Artifact) => Promise<void>;
-  /** Lets the held write answer `answer`, or refuse it with `refusal`. */
+  /** Lets the held write answer `answer`. */
   readonly landWrite: (answer: Version) => Promise<void>;
+  /** Lets the held write refuse with `refusal`. */
   readonly refuseWrite: (refusal: Error) => Promise<void>;
   /** Every version the editor opened. */
   readonly opened: readonly number[];
