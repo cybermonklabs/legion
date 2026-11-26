@@ -21,7 +21,9 @@ import {
   setGatedSteps,
   userHeaders,
 } from "./api";
+import { countDocumentSockets } from "./editor";
 import { awaitBlockAsk } from "./issue-layout-seed-support";
+import { specBlockRef } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, issueRead } from "./issue-page";
 import { DESKTOP } from "./issue-page-g";
 import { approvalChip } from "./issue-page-p";
@@ -37,8 +39,7 @@ import { settledState, settledValue } from "./settled";
  *
  * - **The words** are `page-words-r.ts`'s (`EDIT_LABELS`, `EDIT_LINES`), with part W's Lens act
  *   and the page's shared tables. Neither this file nor the rows import a module of
- *   `web/src/features/issue-page/graph-edit/`, so both load before that code exists and under
- *   the before-change patch of the part's last task.
+ *   `web/src/features/issue-page/graph-edit/`, so both load before that code exists.
  * - **The seed** `seedGraphEdit` writes the Verification preamble's seed through the server's own
  *   routes, in the order `api/graph_edit_web_fixtures_test.go` writes the fixture the unit cases
  *   read: a converted issue Legion runs (label `legion`, its architect role held by
@@ -121,11 +122,11 @@ export function confirmWords(count: number): string {
 // ---------------------------------------------------------------------------------------------
 
 /** The project of every seeded issue. */
-export const GRAPH_PROJECT = "GEDIT";
+const GRAPH_PROJECT = "GEDIT";
 
 /** The agent session that holds the converted issue's architect role, which R28's writer check
  *  lets write a statement on an issue Legion runs (`refuseSpecWriterOfNode`). */
-export const ARCHITECT = "graph-edit-architect";
+const ARCHITECT = "graph-edit-architect";
 
 const architectActor: Actor = { id: ARCHITECT, kind: "session" };
 
@@ -179,19 +180,11 @@ export const SEED_WORDS = {
 
 /** What `seedGraphEdit` wrote, by the ids the server answered. */
 export interface GraphEditSeed {
-  /** The ask the spec's question block was indexed into, which the criterion stands under. */
-  readonly askId: string;
   /** The child of the converted issue, a view of its spec. */
   readonly child: string;
   /** The person's comment on the third statement's text. */
   readonly comment: string;
-  /** The person's comment on the issue itself, tied to no text. */
-  readonly issueComment: string;
   readonly key: string;
-  /** The person's message to the issue, and the architect's reply to it. */
-  readonly message: string;
-  readonly plan: string;
-  readonly reply: string;
   readonly spec: string;
   /** The issue's tree artifact: its own fragment, which a prose block is written in. */
   readonly tree: string;
@@ -273,7 +266,7 @@ function ownBlock(answer: IssueTreeRead, blockId: string, supertag: string): Iss
 }
 
 /** Whether `node` is a prose block (a block node that opens no typed block) holding `words`. */
-export function isProse(node: IssueTreeNode, words: string): boolean {
+function isProse(node: IssueTreeNode, words: string): boolean {
   return node.kind === "block" && node.supertag === "block" && node.text.includes(words);
 }
 
@@ -420,7 +413,7 @@ export async function seedGraphEdit(): Promise<GraphEditSeed> {
   const spec = issue.primary_artifact_id ?? "";
   const askId = await awaitBlockAsk(key, "q1");
   await answerAsk(askId, { expected_edited_at: null, selected: [], text: SEED_WORDS.answer });
-  const statement = (block: string) => `dispatch://${key}/spec#b-${block}`;
+  const statement = (block: string) => specBlockRef(key, block);
   const criterion = statement("k1");
   await insertInto(
     spec,
@@ -463,7 +456,7 @@ export async function seedGraphEdit(): Promise<GraphEditSeed> {
     },
     {}
   );
-  const plan = await createIssueArtifact(key, {
+  await createIssueArtifact(key, {
     content: `:::plan_task{#t1 serves="${statement("s1")}"}\n${SEED_WORDS.planTask}\n:::\n`,
     name: "plan.md",
   });
@@ -471,13 +464,9 @@ export async function seedGraphEdit(): Promise<GraphEditSeed> {
     anchor: { artifact: "spec", quote: SEED_WORDS.statement3Quote },
     body: SEED_WORDS.comment,
   });
-  const issueComment = await createComment(key, { body: SEED_WORDS.issueComment });
+  await createComment(key, { body: SEED_WORDS.issueComment });
   const message = await createMessage(key, { body: SEED_WORDS.message });
-  const reply = await createMessage(
-    key,
-    { body: SEED_WORDS.reply, in_reply_to: message.id },
-    asArchitect
-  );
+  await createMessage(key, { body: SEED_WORDS.reply, in_reply_to: message.id }, asArchitect);
 
   // The prose block: a paragraph at the end of the issue's own fragment, which stands under the
   // issue, moved under the criterion by alice. Naming the criterion alone places it after the
@@ -514,14 +503,9 @@ export async function seedGraphEdit(): Promise<GraphEditSeed> {
     `${unconverted} was born converted beside a process that lists no issue room`
   ).toBe(false);
   return {
-    askId,
     child: child.key,
     comment: comment.id,
-    issueComment: issueComment.id,
     key,
-    message: message.id,
-    plan: plan.artifact.id,
-    reply: reply.id,
     spec,
     tree,
     unconverted,
@@ -706,12 +690,8 @@ export async function deleteRouteGate(page: Page): Promise<Gate> {
   };
 }
 
-/** How long `roomWriteGate` waits for Enter's caret and its socket: Y's first Enter makes one read
- *  of the fragment's artifact and one socket, each a request of the real stack. */
-const ROOM_SOCKET_MS = 15_000;
-
 /**
- * Part Y's editor, which writes through the issue's one room (gate G3: Y's branch holding T's):
+ * Part Y's editor, which writes through the issue's one room (Y's branch holding T's):
  * on Graph, Enter on the third statement's row puts the caret in an editor on that row whose
  * document socket is the statement's own fragment of the room - its document's
  * (`/ws/doc/<spec>`), or the tree artifact's for a block no document holds - read from the
@@ -730,10 +710,7 @@ export async function roomWriteGate(page: Page, key: string): Promise<Gate> {
   const room = `/ws/doc/${artifact}`;
   const probe = await page.context().newPage();
   try {
-    const sockets: string[] = [];
-    probe.on("websocket", (socket) => {
-      sockets.push(new URL(socket.url()).pathname);
-    });
+    const roomSockets = countDocumentSockets(probe, artifact ?? "");
     await probe.setViewportSize(DESKTOP);
     await gotoIssue(probe, presetPath(key, "graph"));
     const row = readRow(probe, statement.id);
@@ -753,15 +730,13 @@ export async function roomWriteGate(page: Page, key: string): Promise<Gate> {
     await expect
       .poll(() => caretRowReadId(probe), {
         message: "Enter does not put the caret in the third statement",
-        timeout: ROOM_SOCKET_MS,
       })
       .toBe(statement.id);
     await expect
-      .poll(() => sockets, {
+      .poll(roomSockets, {
         message: `the statement's editor opens no socket on ${room}, its fragment in the issue room`,
-        timeout: ROOM_SOCKET_MS,
       })
-      .toContain(room);
+      .toBeGreaterThan(0);
     return { met: true, owed: "" };
   } finally {
     await probe.close();
@@ -769,10 +744,9 @@ export async function roomWriteGate(page: Page, key: string): Promise<Gate> {
 }
 
 /**
- * Part T's prose draft step, which draws a prose block of the issue's own fragment as a row
- * (gate G3p): Graph, opened at 1440 px where it draws every row at once, draws the seeded prose
- * block once it draws the third statement, whose row the same read brings. The row's own size is
- * set back after.
+ * Part T's prose draft step, which draws a prose block of the issue's own fragment as a row:
+ * Graph, opened at 1440 px where it draws every row at once, draws the seeded prose block once it
+ * draws the third statement, whose row the same read brings. The row's own size is set back after.
  */
 export async function proseRowGate(page: Page, key: string): Promise<Gate> {
   const answer = await requestedTreeRead(page, key);
@@ -786,13 +760,7 @@ export async function proseRowGate(page: Page, key: string): Promise<Gate> {
     "Graph drew no third statement row"
   ).toBeVisible();
   // The third statement's row is visible, so Graph has already committed every row from this read.
-  const drawn = await issuePage(page).evaluate(
-    (root, id) =>
-      [...root.querySelectorAll("[data-node-row]")].some(
-        (row) => row.getAttribute("data-node-read-id") === id
-      ),
-    prose.id
-  );
+  const drawn = (await readRow(page, prose.id).count()) > 0;
   await page.setViewportSize(size);
   return {
     met: drawn,
@@ -803,8 +771,8 @@ export async function proseRowGate(page: Page, key: string): Promise<Gate> {
 }
 
 /**
- * Gate G3: Graph draws the seeded criterion and opens its block editor. The probe uses a
- * separate signed-in page so the test's menu and request watches stay untouched.
+ * Graph draws the seeded criterion and opens its block editor. The probe uses a separate
+ * signed-in page so the test's menu and request watches stay untouched.
  * At desktop width the third statement and criterion come from the same committed tree read.
  * On a converted issue, a socket to the criterion's document reaches the issue's shared room
  * for that document's fragment. A criterion with no document uses the tree artifact instead.
@@ -823,10 +791,7 @@ export async function criterionEditorGate(page: Page, key: string): Promise<Gate
   });
   const probe = await page.context().newPage();
   try {
-    const sockets: string[] = [];
-    probe.on("websocket", (socket) => {
-      sockets.push(new URL(socket.url()).pathname);
-    });
+    const roomSockets = countDocumentSockets(probe, artifact ?? "");
     await probe.setViewportSize(DESKTOP);
     await gotoIssue(probe, presetPath(key, "graph"));
     await expect(
@@ -834,7 +799,6 @@ export async function criterionEditorGate(page: Page, key: string): Promise<Gate
       "Graph drew no third statement row"
     ).toBeVisible();
     const criterionRow = readRow(probe, criterion.id);
-    // The visible third statement and the criterion come from the same committed tree read.
     const editable = await criterionRow.evaluateAll(
       ([row]) => row?.hasAttribute("data-editable") ?? null
     );
@@ -852,10 +816,10 @@ export async function criterionEditorGate(page: Page, key: string): Promise<Gate
       })
       .toBe(criterion.id);
     await expect
-      .poll(() => sockets, {
+      .poll(roomSockets, {
         message: `the criterion's editor opens no socket on ${room}, its fragment in the issue room`,
       })
-      .toContain(room);
+      .toBeGreaterThan(0);
     return { met: true, owed: "" };
   } finally {
     await probe.close();
@@ -939,12 +903,13 @@ export function parentReadIdOf(page: Page, readId: string): Promise<string | nul
   return issuePage(page).evaluate((root, id) => {
     const rows = [...root.querySelectorAll("[data-node-row]")];
     const at = rows.findIndex((row) => row.getAttribute("data-node-read-id") === id);
+    if (at === -1) return null;
     const level = Number(rows[at]?.getAttribute("aria-level") ?? "");
     const parent = rows
-      .slice(0, Math.max(at, 0))
+      .slice(0, at)
       .reverse()
       .find((row) => Number(row.getAttribute("aria-level") ?? "") === level - 1);
-    return at === -1 ? null : (parent?.getAttribute("data-node-read-id") ?? null);
+    return parent?.getAttribute("data-node-read-id") ?? null;
   }, readId);
 }
 
@@ -1004,20 +969,22 @@ function startingWith(word: string): RegExp {
   return new RegExp(`^\\s*${word.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u");
 }
 
-/** The entry of the open menu whose text starts with `word`. */
-export function menuEntry(page: Page, word: string): Locator {
-  return rowMenu(page)
+/** The entry of `menu` whose text starts with `word`. */
+function entryIn(menu: Locator, word: string): Locator {
+  return menu
     .getByRole("menuitem")
     .filter({ hasText: startingWith(word) })
     .first();
 }
 
+/** The entry of the open menu whose text starts with `word`. */
+export function menuEntry(page: Page, word: string): Locator {
+  return entryIn(rowMenu(page), word);
+}
+
 /** The entry of the open submenu whose text starts with `word`. */
 export function submenuEntry(page: Page, word: string): Locator {
-  return rowSubmenu(page)
-    .getByRole("menuitem")
-    .filter({ hasText: startingWith(word) })
-    .first();
+  return entryIn(rowSubmenu(page), word);
 }
 
 /** The words of each entry of the menu `which` (0 the menu, 1 its submenu) in its order, each
@@ -1248,27 +1215,6 @@ export async function treeAfterReload(page: Page, key: string): Promise<IssueTre
   return requestedTreeRead(page, key);
 }
 
-/** How many paragraphs of the ProseMirror document `tree` hold no text: an empty paragraph, which
- *  is no node and which no write of the room may leave behind (R3). */
-export function emptyParagraphs(tree: unknown): number {
-  const content = member(tree, "content");
-  const children: readonly unknown[] = Array.isArray(content) ? content : [];
-  const empty =
-    member(tree, "type") === "paragraph" &&
-    !/"text":"[^"]*\S[^"]*"/u.test(JSON.stringify(children));
-  return children.reduce<number>((sum, child) => sum + emptyParagraphs(child), empty ? 1 : 0);
-}
-
-/** The issue's own fragment as the server holds it, as the ProseMirror document a reader is shown:
- *  `GET /api/v1/artifacts/{id}/text` of the tree artifact with `Dispatch-Trees: 1`, its
- *  `markdown_tree`. */
-export async function fragmentTree(page: Page, tree: string): Promise<unknown> {
-  const path = routeUrl("/api/v1/artifacts/{id}/text", { id: tree });
-  const response = await page.request.get(path, { headers: { "Dispatch-Trees": "1" } });
-  expect(response.ok(), `GET ${path} answers ${response.status()}`).toBe(true);
-  return member(await response.json(), "markdown_tree");
-}
-
 /** The version of the document `id` the server holds now (`GET /api/v1/artifacts/{id}/text`). */
 export async function documentVersion(page: Page, id: string): Promise<number> {
   const path = routeUrl("/api/v1/artifacts/{id}/text", { id });
@@ -1287,7 +1233,7 @@ export async function markDocument(page: Page): Promise<void> {
 }
 
 /** Whether the page still shows the document `markDocument` marked: no reload stood between. */
-export function sameDocument(page: Page): Promise<boolean> {
+function sameDocument(page: Page): Promise<boolean> {
   return page.evaluate(() => Reflect.get(window, "graphEditDocument") === true);
 }
 

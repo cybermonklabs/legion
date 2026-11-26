@@ -1120,7 +1120,8 @@ function expectLoadReadsNoLens(
 
 /** Opens the menu of lens kinds on the pre-mortem's row in `view`, as a reader does - the focus on
  *  the row the page draws for the read id `preMortem`, `f` to its Lens act, Enter - and waits
- *  until the menu's first kind holds the focus. */
+ *  until the menu's first kind holds the focus. In Graph the Lens act is the node menu's last
+ *  entry (part R's R1), which `m`, End and Enter open (`openLensKinds`). */
 async function openPreMortemMenu(page: Page, view: OutlineKind, preMortem: string): Promise<void> {
   const row = await focusRow(page, await drawnIn(page, view, preMortem, "the pre-mortem"));
   await openLensKinds(page, row, view, inView(view, "the pre-mortem's row offers no Lens act"));

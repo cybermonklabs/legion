@@ -8,6 +8,8 @@ import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { CONTROL_LABELS, LENS_WORDS } from "../web/src/features/issue-page/page-words";
 import { createComment, editArtifact, getComment } from "./api";
 import { holdFirstRequest } from "./editor";
+import { nextFrames } from "./frames";
+import { specBlockRef } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import { DESKTOP, PHONE, rowWords } from "./issue-page-g";
 import {
@@ -33,7 +35,6 @@ import {
   dryRuns,
   EDIT_LABELS,
   EDIT_LINES,
-  emptyParagraphs,
   expectApprovalChangedSince,
   expectApprovalWordsChanged,
   expectApproved,
@@ -41,7 +42,6 @@ import {
   expectMenusFit,
   expectOffered,
   focusOn,
-  fragmentTree,
   gateDesignSteps,
   graphEditIds,
   holdsTuple,
@@ -109,20 +109,20 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  *
  * Rows check prerequisites through `owedUnless` (`e2e/issue-page-t-tree.ts`). When one is absent
  * the row skips with an `owed` annotation, not a pass. The gates are `e2e/issue-page-r.ts`'s:
- * `deleteRouteGate` for every row that
- * drives the `DELETE` or its dry run, `roomWriteGate` for every row whose new row, retype or key
- * writes through the issue's one room (part Y's editor, stage B), and `proseRowGate` for every row
- * that reads the seeded prose block. One gate stands later in its rows: `criterionEditorGate`
- * (part Y's criterion row and its block editor) stands in c-move's first row and c-grey's first
- * row right before the first assertion that needs part Y, so every assertion above it runs. The
- * words a row reads are `page-words-r.ts`'s and the page's shared tables', and no module of
- * `graph-edit/` is imported, so this file loads before that code.
+ * `deleteRouteGate` for every row that drives the `DELETE` or its dry run, `roomWriteGate` for
+ * every row whose new row, retype or key writes through the issue's one room (part Y's editor,
+ * stage B), and `proseRowGate` for every other row that reads the seeded prose block: a row under
+ * `roomWriteGate` reads that block under that gate alone, since part Y's branch, which it probes
+ * for, holds part T's. One gate stands later in its rows: `criterionEditorGate` (part Y's
+ * criterion row and its block editor) stands in c-move's first row and c-grey's first row right
+ * before the first assertion that needs part Y, so every assertion above it runs. The words a row
+ * reads are `page-words-r.ts`'s and the page's shared tables', and no module of `graph-edit/` is
+ * imported, so this file loads before that code.
  *
  * Each step a check's negative control names is an `expect` message of its row, word for word, so
- * a control fails its row on that step. Two readings depart from the checks' words, each where it
- * stands: the fragment's text is read from `GET /api/v1/artifacts/{tree}/text` (its
- * `markdown_tree`), since the artifact's own read carries no text, and c-menu-keys' clause on the
- * page's key list naming `m` waits on cybermonklabs/legion#4304, which no gate of these rows reads.
+ * a control fails its row on that step. One reading departs from the checks' words: c-menu-keys'
+ * clause on the page's key list naming `m` waits on cybermonklabs/legion#4304, which no gate of
+ * these rows reads.
  */
 
 /** The size a `@phone` row reads: 390 px on the `iphone` project, 1440 px on every other. */
@@ -250,8 +250,8 @@ function expectPlaced(answer: IssueTreeRead, sent: readonly NodeRequest[], row: 
 // prose block, New row below on the first statement, each typed in and placed by one PATCH; the
 // greys of New row below, Enter at the end of a check's text, Escape before the first character,
 // Shift+Enter inside a statement, and a new row's greys until it is placed.
-// SLOW(>=2s): eleven landings, four new rows each typed and placed through the block index's read
-// of the room, a held tree read, and a reload.
+// SLOW(>=2s): nine landings, four new rows each typed and placed through the block index's read
+// of the room, a held tree read, a reload, and a load at each new row's address.
 test("a new node below and under is a prose block the reader types @phone", async ({ browser }) => {
   test.setTimeout(600_000);
   const size = rowSize();
@@ -333,7 +333,15 @@ test("a new node below and under is a prose block the reader types @phone", asyn
         rowMenu(page),
         "a pick of a grey entry picks nothing and keeps the menu"
       ).toBeVisible();
-      expect(nodeWrites(sent).length, "a grey move of a new row sends a request").toBe(from);
+      // The held tree read keeps the page from going quiet, so the count is read once two reads
+      // a poll apart agree.
+      expect(
+        await settledValue(
+          "the writes a pick of a grey entry sends",
+          async () => nodeWrites(sent).length
+        ),
+        "a grey move of a new row sends a request"
+      ).toBe(from);
       await closeRowMenu(page, "the new row under the prose block");
       await page.keyboard.press("Enter");
       // The letters typed next go into the block once the caret is back in it: until then the
@@ -401,11 +409,12 @@ test("a new node below and under is a prose block the reader types @phone", asyn
       .toBe(ids.checkShared);
     await page.keyboard.press("End");
     await page.keyboard.press("Enter");
-    await expect
-      .poll(() => caretRowReadId(page), {
-        message: "Enter at the end of the check's text adds a row",
-      })
-      .toBe(ids.checkShared);
+    expect(
+      await settledValue("the caret after Enter at the end of the check's text", () =>
+        caretRowReadId(page)
+      ),
+      "Enter at the end of the check's text adds a row"
+    ).toBe(ids.checkShared);
     await page.keyboard.press("Escape");
     await landOn(page, key, ids.prose, "the prose block");
     await openRowMenu(page, "press", "the prose block");
@@ -429,6 +438,14 @@ test("a new node below and under is a prose block the reader types @phone", asyn
       .toContain(TYPED.insideStatement);
 
     const answer = await treeAfterReload(page, key);
+    // An empty paragraph the room keeps is a block of the tree with no words: the canonical text
+    // writes it as a blank line alone, so only the tree read shows it.
+    expect(
+      (answer.nodes ?? []).flatMap((node) =>
+        node.role === "tree" && node.kind === "block" && !/\S/u.test(node.text) ? [node.id] : []
+      ),
+      "the fragment holds no empty paragraph"
+    ).toEqual([]);
     expect(
       answer.nodes?.length,
       "Enter at the end of the check's text, Escape on a new row or Shift+Enter adds a node"
@@ -485,10 +502,6 @@ test("a new node below and under is a prose block the reader types @phone", asyn
         .toBe(row.id);
     }
     for (const row of rows) expectPlaced(answer, sent, row);
-    expect(
-      emptyParagraphs(await fragmentTree(page, seed.tree)),
-      "the fragment holds no empty paragraph"
-    ).toBe(0);
   });
 });
 
@@ -666,12 +679,11 @@ test("a new node the index owes is read again every 30 seconds for 2 minutes", a
 interface Move {
   readonly after: string | null;
   readonly id: string;
-  /** The message its status, and its tag where `tagged` is that message too, are read under. */
+  /** The message its status and its tag are read under. */
   readonly kept: string;
   readonly parent: string;
   /** The quoted `If-Match` it sends: the placement the page held, or the answer before it. */
   readonly tag: string;
-  readonly tagged: string;
   readonly what: string;
 }
 
@@ -690,7 +702,7 @@ async function expectMove(
     { id: write.id, method: write.method, rest: write.rest },
     "each move is one PATCH of the node"
   ).toEqual({ id: move.id, method: "PATCH", rest: "" });
-  expect(write.ifMatch, move.tagged).toBe(move.tag);
+  expect(write.ifMatch, move.kept).toBe(move.tag);
   expect((await write.answer)?.status, move.kept).toBe(200);
   expect(placeOf(write), `${move.what} names R4's parent and after`).toEqual({
     after: move.after,
@@ -702,7 +714,7 @@ async function expectMove(
 // c-move, first row: the menu's Indent and Outdent with no pause, then Move up and Move down, on
 // the third statement; once the moves' drain reads have settled, Indent on the prose block, which
 // one outline read follows; the agent's statement moved; and the grey edges, each with its reason.
-// SLOW(>=2s): nine landings, six moves each answered by the server, the drain of five statement
+// SLOW(>=2s): seven landings, six moves each answered by the server, the drain of five statement
 // moves into the spec query waited out, and two reloads.
 test("a block indents, outdents and moves from the menu @phone", async ({ browser }) => {
   test.setTimeout(480_000);
@@ -804,7 +816,6 @@ test("a block indents, outdents and moves from the menu @phone", async ({ browse
       kept: "each move is kept",
       parent: statement2,
       tag: `"${nodeOf(held, statement3)?.placement_seq}"`,
-      tagged: "each move is kept",
       what: "the indent",
     });
     const outdent = await expectMove(sent, 2, {
@@ -813,7 +824,6 @@ test("a block indents, outdents and moves from the menu @phone", async ({ browse
       kept: "both moves are kept",
       parent: ids.criterion,
       tag: nextTag(await indent.answer),
-      tagged: "both moves are kept",
       what: "the outdent",
     });
     await expectApprovalChangedSince(
@@ -829,7 +839,6 @@ test("a block indents, outdents and moves from the menu @phone", async ({ browse
       kept: "each move is kept",
       parent: ids.criterion,
       tag: nextTag(await outdent.answer),
-      tagged: "each move is kept",
       what: "Move up",
     });
     await openRowMenu(page, "press", "the third statement");
@@ -840,7 +849,6 @@ test("a block indents, outdents and moves from the menu @phone", async ({ browse
       kept: "each move is kept",
       parent: ids.criterion,
       tag: nextTag(await up.answer),
-      tagged: "each move is kept",
       what: "Move down",
     });
 
@@ -864,7 +872,6 @@ test("a block indents, outdents and moves from the menu @phone", async ({ browse
       kept: "each move is kept",
       parent: statement3,
       tag: `"${prose?.placement_seq}"`,
-      tagged: "each move is kept",
       what: "the prose block's indent",
     });
     await expectLoadSettled(traffic);
@@ -966,18 +973,24 @@ test("a block indents, outdents and moves by key while its text is edited @phone
       .toBe(statement1);
     const writes = nodeWrites(sent).length;
     await page.keyboard.press("Tab");
-    await expect
-      .poll(() => caretRowReadId(page), { message: "Tab on the first statement keeps the caret" })
-      .toBe(statement1);
+    // Indent's reason is drawn in answer to Tab, so the caret is read once Tab has acted.
     await expect(
       readRow(page, statement1).first(),
       "Tab on the first statement shows Indent's reason"
     ).toContainText(EDIT_LINES.grey_no_sibling_above);
+    await expect
+      .poll(() => caretRowReadId(page), { message: "Tab on the first statement keeps the caret" })
+      .toBe(statement1);
     await page.keyboard.press("Escape");
 
     // In Conversation, Tab with the caret in a statement keeps today's behaviour.
     await landOn(page, key, statement1, "the first statement", presetPath(key, "conversation"));
     await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretRowReadId(page), {
+        message: "in Conversation, Enter puts no caret in the first statement",
+      })
+      .toBe(statement1);
     await page.keyboard.press("Tab");
     await page.keyboard.press("Escape");
     await expectLoadSettled(traffic);
@@ -1000,9 +1013,9 @@ async function openRetype(page: Page, what: string): Promise<void> {
 // c-retype: a new prose block under the criterion retyped to a statement, and one under the
 // question retyped to a criterion, each from the Retype submenu with no caret in the block; the
 // greys of Retype and of its kinds; and the submenus of the view and of its ancestor.
-// SLOW(>=2s): eleven landings, three new rows typed and placed, two of them in the converted
-// issue's room and one in the child's, two retypes written through the room, a paragraph written
-// under the issue, a comment written on the child, and the child's Graph loaded twice.
+// SLOW(>=2s): eight landings, two of them in the child's Graph, three new rows typed and placed,
+// two of them in the converted issue's room and one in the child's, two retypes written through
+// the room, a paragraph written under the issue, and a comment written on the child.
 test("Retype gives a prose block another kind", async ({ browser }) => {
   test.setTimeout(480_000);
   await phase(browser, seedGraphEdit, async (page, seed) => {
@@ -1024,11 +1037,16 @@ test("Retype gives a prose block another kind", async ({ browser }) => {
       "Retype is offered on a prose block of one paragraph"
     );
     await openRetype(page, "the new prose block under the criterion");
+    const statementKind = submenuEntry(page, EDIT_LABELS.retype_statement);
     await expect(
-      submenuEntry(page, EDIT_LABELS.retype_statement),
+      statementKind,
       "on a prose block of the first issue statement is offered"
     ).toBeVisible();
-    await submenuEntry(page, EDIT_LABELS.retype_statement).click();
+    await expect(
+      statementKind,
+      "on a prose block of the first issue statement is offered"
+    ).not.toHaveAttribute("aria-disabled", "true");
+    await statementKind.click();
     await expect
       .poll(async () => nodeOf(await requestedTreeRead(page, key), toStatement)?.supertag, {
         message: "the retype keeps no node of the same id as a statement",
@@ -1183,7 +1201,7 @@ async function expectFocusMoved(page: Page, gone: string, message: string): Prom
 // c-delete: Delete grey on the first statement and the shared check, which a result stands under;
 // the third statement's count, its confirm, its cancel and its confirm after an agent's write
 // moved the count; what the server keeps after; and the agent's check deleted by the person.
-// SLOW(>=2s): five landings, four dry runs each answered, an agent's room write and move while
+// SLOW(>=2s): four landings, four dry runs each answered, an agent's room write and move while
 // the confirm is open, two deletes each drained into the spec and Verification queries, a reload.
 test("a delete takes the block and its subtree after a confirm that names the count @phone", async ({
   browser,
@@ -1258,11 +1276,7 @@ test("a delete takes the block and its subtree after a confirm that names the co
     await expect(confirmDialog(page), "a confirm names the count").toContainText(
       confirmWords(again)
     );
-    await editArtifact(
-      seed.tree,
-      { ops: [{ after: "end", markdown: `${SEED_WORDS.agentProse}\n`, op: "insert" }] },
-      asArchitect
-    );
+    await insertInto(seed.tree, "end", `${SEED_WORDS.agentProse}\n`, asArchitect);
     const agentProse = await rankedProse(key, SEED_WORDS.agentProse);
     const moved = await moveNode(
       key,
@@ -1410,7 +1424,7 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
       }
       if (under) {
         // New row under writes through part Y's room: owed from the question's offer, every grey
-        // above asserted, until the base draws Y's criterion row and its block editor (gate G3).
+        // above asserted, until the base draws Y's criterion row and its block editor.
         if (id === ids.questionRow) owedUnless(await criterionEditorGate(page, key));
         await expectOffered(
           page,
@@ -1452,7 +1466,7 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
 
 // c-grey, second row: on the issue the conversion has not reached, the menu holds Lens alone and
 // fits the screen, and no key writes a node.
-// SLOW(>=2s): two landings, the menu and its submenu opened, and every key of R4 pressed twice.
+// SLOW(>=2s): a landing, the menu and its submenu opened, and every key of R4 pressed twice.
 test("an unconverted issue offers no editing entry @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   const size = rowSize();
@@ -1486,6 +1500,11 @@ test("an unconverted issue offers no editing entry @phone", async ({ browser }) 
     }
     await focusOn(row, "the unconverted statement");
     await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretRowReadId(page), {
+        message: "Enter puts no caret in the unconverted statement",
+      })
+      .toBe(ids.unconvertedStatement);
     for (const chord of keys.slice(1)) await page.keyboard.press(chord);
     await page.keyboard.press("Escape");
     await expectLoadSettled(traffic);
@@ -1510,6 +1529,8 @@ test("the node menu works by keyboard alone", async ({ browser }) => {
     const kinds = await lensCatalogue();
 
     const row = await landOn(page, key, statement3, "the third statement");
+    // The focused row draws its acts in the frames that follow its focus.
+    await nextFrames(page);
     await expect(lensAct(row), "Graph's row has no Lens act").toHaveCount(0);
     await openRowMenu(page, "m", "the third statement", "m opens the node menu");
     await expect
@@ -1594,6 +1615,8 @@ test("Graph puts Lens in the node menu and Conversation keeps it on the row", as
     const statement3 = ids.statements[2];
 
     const graphRow = await landOn(page, key, statement3, "the third statement");
+    // The focused row draws its acts in the frames that follow its focus.
+    await nextFrames(page);
     await expect(lensAct(graphRow), "Graph's row has no Lens act").toHaveCount(0);
     await openRowMenu(page, "press", "the third statement");
     await expect
@@ -1665,20 +1688,19 @@ test("a refused write keeps the tree as the server holds it", async ({ browser }
     };
     const nodeRoutes = (url: URL) => url.pathname.includes("/nodes/");
     await page.route(nodeRoutes, holdNodes);
+    let refused: NodeRequest;
     try {
       await openRowMenu(page, "press", "the third statement");
       await menuEntry(page, EDIT_LABELS.edit_move_up).click();
-      await nthWrite(sent, 1, "Move up sends no PATCH");
+      refused = await nthWrite(sent, 1, "Move up sends no PATCH");
       await openRowMenu(page, "press", "the third statement");
       await menuEntry(page, EDIT_LABELS.edit_move_up).click();
     } finally {
       queued.resolve();
     }
-    await page.unroute(nodeRoutes, holdNodes);
-    const refused = await nthWrite(sent, 1, "Move up sends no PATCH");
     expect((await refused.answer)?.status, "the move behind the architect's answers 412").toBe(412);
-    // The read hold stays routed once released, and passes each later read through, as the new
-    // row's hold does.
+    // Both holds stay routed once released, and pass each later request through, as the new
+    // row's hold does: unrouting a hold just released races its `route.continue`.
     reads.resolve();
     await expectLoadSettled(traffic);
     expect(nodeWrites(sent), "no request writes after the refusal").toHaveLength(1);
@@ -1757,7 +1779,7 @@ test("a citation of a node deleted in Graph opens the version that last held it 
     const key = seed.key;
     const statement3 = ids.statements[2];
     await page.setViewportSize(size);
-    const reference = `dispatch://${key}/spec#b-s3`;
+    const reference = specBlockRef(key, "s3");
     const second = await createComment(key, {
       body: `The delete in Graph takes ${reference} with it.`,
     });
