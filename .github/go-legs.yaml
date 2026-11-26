@@ -435,17 +435,17 @@ packages/envoy:
       - internal/oidc                           # 42 s
   # envoy-go-race-api (.github/workflows/ci-job-envoy-go-race-api.yaml, job
   # envoy-go-race-api-legs): one package, internal/dispatch/api, in three legs, a group of its
-  # tests each (.github/go-legs/packages/envoy/internal/dispatch/api.yaml). It took 1,476 s of a
-  # 1,579 s step alone, and one of its tests, which runs alone, is 595 s of that, so group 1 is
-  # that test and the groups below it model 438 s each.
+  # tests each (.github/go-legs/packages/envoy/internal/dispatch/api.yaml). The whole package took
+  # 999-1,043 s alone at main 3ebc542c, its 2,900 tests 8 at a time (run 45782644966), and the
+  # groups are dealt from that run to model 357 s each.
   # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
   envoy-go-race-api:
     1:
-      - internal/dispatch/api: 1                # one test, 609.9 s (run 45717135535)
+      - internal/dispatch/api: 1                # 935 tests, 357 s modelled
     2:
-      - internal/dispatch/api: 2                # 1,472 tests, 513.4 s (run 45735800190)
+      - internal/dispatch/api: 2                # 937 tests, 357 s modelled
     3:
-      - internal/dispatch/api: 3                # 1,392 tests, 417.1 s before the 27 moved here
+      - internal/dispatch/api: 3                # 1,028 tests, 357 s modelled
   # envoy-go-race-docs (job envoy-go-race-docs-legs): one package, internal/dispatch/docs, in
   # three legs, a group of its tests each; 1,430 s alone, and its longest test 491.6 s.
   # why: .github/ci-notes/ci-job-envoy-go-race-docs.md#why-the-document-services-tests-run-in-three-legs

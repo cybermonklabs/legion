@@ -20,18 +20,20 @@ service and its command, `-json` for each test's own time and `/proc/stat` every
 - **The tests' own times sum to 5,835 s**, a mean 3.95 running over the package's 1,476 s, and
   the 174 tests that run alone sum 847 s. So the lever is more test slots, which means more
   runners: a leg of its own for each group of its tests.
-- **One test is 595 s of that**, `TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter`,
-  and it runs alone, so it blocks every other test of its own leg: it is the floor of whatever leg
-  holds it, and three legs put it in a leg of its own. Below about 600 s this lane needs that
-  test's own rows to run beside each other, which is the package owner's change and not this one.
+- **One test was 595 s of that**, `TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter`,
+  and it ran alone, so it blocked every other test of its own leg: the first three groups gave it
+  a leg of its own, and in run 45717135535 that leg took 609.9 s beside 412.2 and 417.0 s.
 
-Three legs, from the measured times: group 1 is that one test, and groups 2 and 3 model 438 s
-each. A fourth leg would move nothing, since the floor stays 595 s. Measured: in run
-45717135535 leg 1 ran that one test in 609.9 s and legs 2 and 3 took 412.2 and 417.0 s. Main
-then added 76 API tests no group named; go_legs.py placed them, 27 of them in group 1, so in run
-45735800190 leg 1 ran 28 tests in 631.3 s beside 513.4 and 417.1 s. The 76 are named in the
-groups file now: the 27 that fell to group 1 are in group 3, the lightest, and the rest where they
-were placed, so leg 1 is that one test again.
+#5634 then ran that test's rows on eight worlds at once, and it fell to 95 s. The groups were
+dealt again from two runs of the whole package on this lane's runner at main 3ebc542c, which
+carries #5634 (throwaway run
+[45782644966](https://github.com/cybermonklabs/legion/actions/runs/45782644966), branch
+ci/envoy-api-redeal-measure, deleted after it; jobs 139781577470 and 139781577002, `go test -json
+-count=1 -race -timeout 70m`): the package took 1,043.1 and 999.0 s, its 2,900 tests summing
+4,893 and 4,753 s, the 221 that run alone 473 and 457 s. Each test weighs the longer of its two
+times, or that over 8 where it runs beside others, and the three groups model 357 s each. A test
+that runs alone is still the floor of its leg, and the longest is now that one at 95 s, so three
+legs are far from it.
 
 The groups are `.github/go-legs/packages/envoy/internal/dispatch/api.yaml`, one group per leg, and
 the rules they keep are in
