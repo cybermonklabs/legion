@@ -2570,7 +2570,7 @@ export const dispatchToolSpecs = [
       "Read an issue or document summary, targeted ask, or targeted comment reply chain, or the conversation " +
       "a message belongs to. Do not use it for document contents; use dispatch doc-read instead. Supply ref, issue, " +
       "issue plus artifact (one of its documents), project plus artifact, or project alone, which lists the project's documents on no issue and nothing more; or message alone, which reads a human's direct message to this session and every " +
-      "reply to it (they belong to no issue). A document summary names its issue, reference, versions and approval. " +
+      "reply to it (they belong to no issue). A document summary names its issue, reference, versions and, once its approval has been asked for, its approval. " +
       "An issue read lists every document, picture and file the issue holds under `Documents:`, each by slug, filename and kind. " +
       "An anchored comment or ask also says where its quote sits, as `Position:`: the block's path from the top, " +
       "and in a table the row (0 is the header), the cells before the anchored one, and the column's header; " +
@@ -2755,7 +2755,9 @@ export const dispatchToolSpecs = [
       "List a project's issues for a roadmap or backlog pass: every issue in one project, each carrying " +
       "its status, priority, parent, labels, open-ask count, progress (its spec's task-list items and " +
       "its direct children, each done of total, as `tasks 3/7 · children 2/5`, each only when it has " +
-      "any), and route with whether it reaches anyone, " +
+      "any), and route with whether it reaches anyone (a row's text names a route only when no live " +
+      "session holds it: nobody does, its holder is unresponsive, or that is unknown; `details` carry " +
+      "every route), " +
       "so you can see backlog shape without opening every issue. Optionally filter by status, parent, " +
       "label, priority, route status, or how recently it changed; priority takes one or more of 0-3 " +
       "(P0-P3) and null for an issue with no priority, so an owner's P0/P1 audit is priority [0, 1]. " +
@@ -3158,7 +3160,8 @@ export const dispatchToolSpecs = [
     description:
       "List what the Inbox of the person you act for shows, read with your own credential. " +
       "Each heading carries its count, then its rows: Needs you (their open asks waiting on a " +
-      "person and not inside a snooze, plus the credential requests they may decide), Waiting on " +
+      "person and not inside a snooze; its count also counts the credential requests they may " +
+      "decide, which are listed under Credential requests and not here), Waiting on " +
       "agents, Later (the asks they snoozed), Unread threads (the threads they wrote in that " +
       "somebody else has written in since, and the messages they sent an agent session that it " +
       "answered) and Credential requests. An ask's line names its " +

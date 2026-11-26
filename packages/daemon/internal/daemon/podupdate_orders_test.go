@@ -125,7 +125,7 @@ package daemon
 //     and waits for its answer (roundAsks, awaitsAnswer), so the sweep replaces P only at the
 //     round's bound.
 //   - A member that the operator holds suspended, where the sweep or a launch replaces P: the
-//     round waits for the operator whatever its bound (heldByOperator), so only P's own going ends
+//     round waits for the operator whatever its bound (heldClaims), so only P's own going ends
 //     it.
 //
 // The others are left out on purpose. A member the daemon suspended before the release and never
@@ -654,7 +654,7 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		// unknown. The operator's resume, with no session, is refused for P.
 		rig.startInPod(implementer, podUpdatePod)
 		rig.suspendByOperator(implementer)
-		rig.handle(implementer, supervise.RequestForgetSession{Claim: rig.tokens[implementer], Session: "ses_" + string(implementer)})
+		rig.handle(implementer, supervise.RequestForgetSession{Claim: rig.tokens[implementer], Session: "ses_" + string(implementer), By: supervise.SuspendedByOperator})
 		rig, refusals = rig.restarted()
 		refusals.refuse(implementer, podUpdatePod)
 		rig.resumedRefused(implementer)
@@ -1129,7 +1129,7 @@ func (r *podUpdateRig) retriesInto(refusals *launchRefusals, role claim.Role, po
 // refuses for the pod refuseLaunches names for it: the claim waits on that pod with no process.
 func (r *podUpdateRig) resumedRefused(role claim.Role) {
 	r.t.Helper()
-	if err := r.machineOf(role).Handle(r.ctx, supervise.RequestResume{Claim: r.tokens[role]}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+	if err := r.machineOf(role).Handle(r.ctx, supervise.RequestResume{Claim: r.tokens[role], By: supervise.SuspendedByOperator}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
 		r.t.Fatalf("the operator's resume of the %s answered %v, want its launch refused for the pod's round", role, err)
 	}
 	if c := r.claimOf(role); c.Locator != nil || c.AwaitsPod == nil {
@@ -1328,7 +1328,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 				c.State, c.SuspendedBy, c.Session, c.RegisteredPods)
 		}
 	case releasedLostSession:
-		rig.handle(implementer, supervise.RequestForgetSession{Claim: rig.tokens[implementer], Session: "ses_" + string(implementer)})
+		rig.handle(implementer, supervise.RequestForgetSession{Claim: rig.tokens[implementer], Session: "ses_" + string(implementer), By: supervise.SuspendedByOperator})
 		if c := rig.claimOf(implementer); !c.Released() || c.Session != "" || c.UpdateRound != podUpdateRound || len(c.RegisteredPods.Pods) != 1 || c.RegisteredPods.Unknown {
 			t.Fatalf("the implementer is %s by %q with session %q in round %q and set %+v; want it released in the round, with no session and the set it registered P0 in",
 				c.State, c.SuspendedBy, c.Session, c.UpdateRound, c.RegisteredPods)
@@ -1535,7 +1535,7 @@ func (r *podUpdateRig) wakeFor(role claim.Role) supervise.RequestRuleResume {
 func (r *podUpdateRig) resumeOf(role claim.Role, kind memberKind) supervise.Event {
 	switch cmp.Or(kind.takenOverBy(), kind.stoppedBeforeRelease()) {
 	case supervise.SuspendedByOperator:
-		return supervise.RequestResume{Claim: r.tokens[role]}
+		return supervise.RequestResume{Claim: r.tokens[role], By: supervise.SuspendedByOperator}
 	case supervise.SuspendedByDaemon:
 		return supervise.RequestRuleResume{Claim: r.tokens[role], Reason: "the outbox's start of the " + string(role) + "'s phase"}
 	}
