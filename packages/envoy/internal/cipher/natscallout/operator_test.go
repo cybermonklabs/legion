@@ -1,7 +1,6 @@
 package natscallout
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -242,24 +241,6 @@ func (r *operatorRig) admin(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 // kvBucket is KV_<bucket>, the stream behind a bucket.
 func kvBucket(bucket string) string { return "KV_" + bucket }
 
-// sentAgain sends a create until an answer comes. A create can land while its reply is lost, so
-// a send that draws no answer is sent again: the same create is then answered with the stream the
-// lost send made. Each send keeps its own request bound; only the test binary's deadline ends the
-// sends, so a create the cluster never answers still fails by name.
-func sentAgain(t *testing.T, what string, send func() error) {
-	t.Helper()
-	var err error
-	testwait.Until(t, what+" to be answered", func() (struct{}, bool) {
-		err = send()
-		lost := errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
-		if lost {
-			t.Logf("%s drew no answer (%v); sending it again", what, err)
-		}
-		return struct{}{}, !lost
-	})
-	require.NoError(t, err, "%s", what)
-}
-
 // The buckets the operator's grant names: envoy-infra buckets' copied buckets, the session
 // consumers' records, and the other protected buckets.
 var (
@@ -272,21 +253,18 @@ var (
 // makeStreams makes, as the admin, every bucket the operator's grant names, envoy_sessions holding
 // entries of entryBytes random bytes each, three copies of it and one of the others, and
 // ENVOY_NOTIFICATIONS capped at maxConsumers (0 for the server's default), and returns the admin's
-// JetStream context.
+// JetStream context. Each create is sent until the cluster answers it (testnats.SendCreate): a
+// create can land while its reply is lost, and the same create sent again is answered with the
+// stream it made.
 func (r *operatorRig) makeStreams(t *testing.T, entries, entryBytes, maxConsumers int) nats.JetStreamContext {
 	t.Helper()
-	_, js := r.admin(t)
+	admin, js := r.admin(t)
 	for _, bucket := range slices.Concat(copiedBuckets, []string{sessionConsumers}, otherProtected) {
 		replicas := 1
 		if bucket == bus.SessionBucket {
 			replicas = 3
 		}
-		var kv nats.KeyValue
-		sentAgain(t, "create bucket "+bucket, func() error {
-			var err error
-			kv, err = js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: replicas})
-			return err
-		})
+		kv := testnats.CreateKeyValueOn(t, admin, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: replicas})
 		if bucket == sessionConsumers {
 			_, err := kv.Put("listener.example-hub", []byte(`{"name":"session-a"}`))
 			require.NoError(t, err)
@@ -300,10 +278,7 @@ func (r *operatorRig) makeStreams(t *testing.T, entries, entryBytes, maxConsumer
 			}
 		}
 	}
-	sentAgain(t, "create stream "+bus.Stream, func() error {
-		_, err := js.AddStream(&nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Storage: nats.FileStorage, MaxConsumers: maxConsumers})
-		return err
-	})
+	testnats.CreateStreamOn(t, admin, nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Storage: nats.FileStorage, MaxConsumers: maxConsumers})
 	return js
 }
 
@@ -457,47 +432,33 @@ func succeeds(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 
 type streamRequester func(t *testing.T, nc *nats.Conn, subject string, body any) (apiAnswer, error)
 
-// createsStream creates config's named stream. A stream create can land while its reply is lost,
-// so a send that draws no answer is sent again, and a name-in-use answer is accepted only when
-// STREAM.INFO holds every setting the create named.
+// createsStream creates config's named stream with a raw create on subject, sent on nc until the
+// cluster answers it (testnats.SendCreate). A create can land while its reply is lost, and the
+// same create sent again is answered with the stream it made. Any refusal fails the test at once
+// and names it: an answer that carries an error, a name in use with other settings among them,
+// and a create nc's grant does not cover, which draws no answer and which the server reports on
+// nc. The held operator's grant names the barrier's create and delete and no read of it, so the
+// answer alone decides.
 func createsStream(t *testing.T, nc *nats.Conn, subject string, config map[string]any) {
 	t.Helper()
 	createsStreamWith(t, nc, subject, config, requestAnswer)
 }
 
 // createsStreamWith is createsStream with the request function the test uses. Its caller can make
-// a reply unavailable after the server created the stream, the loss the sends again recover.
+// a reply unavailable after the server created the stream, the loss the send again recovers.
 func createsStreamWith(t *testing.T, nc *nats.Conn, subject string, config map[string]any, ask streamRequester) {
 	t.Helper()
-	var answer apiAnswer
-	sentAgain(t, subject, func() error {
-		var err error
-		answer, err = ask(t, nc, subject, config)
-		return err
+	err := testnats.SendCreate(t, nc, subject, answerWait, []string{subject}, func() error {
+		answer, err := ask(t, nc, subject, config)
+		if err != nil {
+			return err
+		}
+		if answer.Error != nil {
+			return fmt.Errorf("answered %s", answer.raw)
+		}
+		return nil
 	})
-	if answer.Error == nil {
-		return
-	}
-	name, ok := config["name"].(string)
-	require.True(t, ok, "%s create has no stream name", subject)
-	info := answered(t, nc, "$JS.API.STREAM.INFO."+name, nil)
-	if info.Error == nil {
-		var stream struct {
-			Config map[string]any `json:"config"`
-		}
-		require.NoError(t, json.Unmarshal(info.raw, &stream), "read stream %s", name)
-		matches := true
-		for key, want := range config {
-			got, present := stream.Config[key]
-			wantJSON, wantErr := json.Marshal(want)
-			gotJSON, gotErr := json.Marshal(got)
-			matches = matches && present && wantErr == nil && gotErr == nil && bytes.Equal(wantJSON, gotJSON)
-		}
-		if matches {
-			return
-		}
-	}
-	require.Nil(t, answer.Error, "%s was refused: %s", subject, answer.raw)
+	require.NoError(t, err, "%s was refused", subject)
 }
 
 // refused requires a request on subject to get no answer, and the server to report a publish

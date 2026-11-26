@@ -550,9 +550,9 @@ func TestTheBarrierIsAStream(t *testing.T) {
 	operator.refused(t, "$JS.API.STREAM.CREATE.ENVOY_HOLD_OTHER", other)
 }
 
-// A stream create can reach the cluster while its reply is lost. The retry sends the same create,
-// which sees the stream that first request made. It is accepted only after STREAM.INFO confirms
-// that stream holds the original settings.
+// A stream create can reach the cluster while its reply is lost. The create is sent again, and the
+// cluster answers that identical create with the stream the first one made, so the barrier stands
+// with no read of it, which the held operator's grant does not name.
 func TestTheBarrierCreateRetriesALostReply(t *testing.T) {
 	r := newOperatorRig(t, nil)
 	r.setPhase(t, natsgrant.OperatorPhaseHeld)
