@@ -152,6 +152,16 @@ export function DocumentsList({
   }, []);
 
   const control = `${pageHeaderControl} refused:cursor-not-allowed`;
+  // A refused control draws its reason inside it, a sentence about as long as a phone is wide, and
+  // the header control's own `shrink-0` keeps it one line: at 390 px that line was 430 px, wider
+  // than the page. A refused control takes at most the row's width and wraps what it holds, the
+  // label and then its reason whole, as the row wraps its controls; an open one is as it was.
+  // New document's control sits in the title form's strip, which holds its idle control `shrink-0`
+  // at its max-content width (`TitleForm.tsx`), so the strip, and not the control, was the box
+  // that ran off the page: below `sm` a refused one's place is a one-column grid as wide as the
+  // row, whose track the strip fills and whose width the control's own `max-w-full` then bounds.
+  // From `sm` up, and while the control is open, the place draws no box, as it always did.
+  const refusedControl = `${control} max-w-full flex-wrap text-left`;
   // A refused control stays where it is with `aria-disabled`, so a reader on the keyboard reaches
   // it and hears why: its name is its label and the reason, drawn inside it, its description.
   const uploadControl = (
@@ -159,7 +169,7 @@ export function DocumentsList({
       aria-describedby={upload.refusal === null ? undefined : uploadRefusalId}
       aria-disabled={upload.refusal === null ? undefined : true}
       aria-labelledby={upload.refusal === null ? undefined : uploadLabelId}
-      className={control}
+      className={upload.refusal === null ? control : refusedControl}
       onClick={() => upload.openPicker()}
       type="button"
       {...pageChrome}
@@ -177,7 +187,7 @@ export function DocumentsList({
       aria-describedby={refusal === null ? undefined : newDocumentRefusalId}
       aria-disabled={refusal === null ? undefined : true}
       aria-labelledby={refusal === null ? undefined : newDocumentLabelId}
-      className={control}
+      className={refusal === null ? control : refusedControl}
       onClick={() => {
         if (refusal === null) creation.start();
       }}
@@ -216,7 +226,14 @@ export function DocumentsList({
         />
         {/* While a file is staged its own Upload sends it (below), so the pick stands down. */}
         {upload.pendingFile === null ? uploadControl : null}
-        <div className="contents" ref={titleForm}>
+        <div
+          className={
+            refusal === null
+              ? "contents"
+              : "grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)] sm:contents"
+          }
+          ref={titleForm}
+        >
           {creation.strip(newDocumentControl)}
         </div>
       </div>

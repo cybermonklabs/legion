@@ -399,6 +399,7 @@ function signOutFailure(error: Error): string {
 function NavigationContents({
   closeButtonRef,
   compact,
+  issueFrame,
   onClose,
   onCreateIssue,
   onHideSidebar,
@@ -411,6 +412,7 @@ function NavigationContents({
 }: {
   closeButtonRef: RefObject<HTMLButtonElement | null>;
   compact: boolean;
+  issueFrame: boolean;
   onClose: () => void;
   onCreateIssue: () => void;
   onHideSidebar: () => void;
@@ -465,7 +467,7 @@ function NavigationContents({
       <Sidebar
         onHide={compact ? undefined : onHideSidebar}
         onNavigate={onClose}
-        onOpenInboxDrawer={compact ? undefined : onOpenInboxDrawer}
+        onOpenInboxDrawer={compact && !issueFrame ? undefined : onOpenInboxDrawer}
         user={user}
       />
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
@@ -873,6 +875,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     <NavigationContents
       closeButtonRef={closeButtonRef}
       compact={isCompactViewport || issueFrame}
+      issueFrame={issueFrame}
       onClose={() => setNavigationOpen(false)}
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}

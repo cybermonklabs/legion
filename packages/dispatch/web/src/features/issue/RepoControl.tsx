@@ -181,6 +181,7 @@ export type RepoControlFailure = {
  * `No repository` when none does.
  */
 export function RepoControl({
+  clearWhenClosed = false,
   disabled = false,
   inRow = false,
   issueKey,
@@ -190,6 +191,12 @@ export function RepoControl({
   resolvedRepo: hostResolvedRepo,
   sayFailure,
 }: {
+  /** Whether a row of Details (`inRow`, inside `NoTooltips`) that is `disabled` and holds the
+   *  issue's own repository draws the box's clear control beside the wrapped value, disabled,
+   *  with its name: the control today's page draws on a closed issue, whose box and clear control
+   *  are both drawn disabled. It stays off by default, so `main`'s page, and a row that draws no
+   *  Clear beside its text, are as they were. The control sends no write. */
+  clearWhenClosed?: boolean;
   disabled?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
@@ -564,6 +571,27 @@ export function RepoControl({
               </datalist>
             </>
           )}
+          {/* A closed issue's own repository, in a row of Details that asks for its Clear
+              (`clearWhenClosed`): the text stays the wrapped value, and the control the box
+              would hold stands beside it, disabled, since a closed issue takes no write. It has
+              no press and no focus, and its description, the one the box's clear control
+              carries, is drawn with it, because the text, not the box, is what the row draws. */}
+          {clearWhenClosed && disabled && showsText && !showsNone && repo !== null ? (
+            <>
+              <button
+                aria-describedby={clearDescriptionId}
+                aria-label={`Clear the repository of ${issueKey}`}
+                className={`${clearPlace} shrink-0 items-center justify-center rounded-sm text-base disabled:opacity-50 ${ON_PAGE.clear}`}
+                disabled
+                type="button"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+              <span className="sr-only" id={clearDescriptionId} {...page.pageChrome}>
+                {CLEAR_EXPLAINS}
+              </span>
+            </>
+          ) : null}
           {/* One description, the box's or the repository's text's, whichever is drawn. */}
           <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
             {shownDescription}

@@ -3,7 +3,8 @@
  *  the real stack's */
 
 import { execFileSync } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { patchIssue } from "./api";
@@ -29,7 +30,7 @@ import { asUser } from "./users";
  * fixture is the ground truth and has to be recorded against today's page.
  *
  * **It is a recorder and no check of the page it runs against.** It reads the page through the
- * nine tabs today's page has (`#issue-<tab>-tab`). Today's page stays on `main` beside the new
+ * ten tabs today's page has (`#issue-<tab>-tab`). Today's page stays on `main` beside the new
  * one, unchanged, until INFRA-1196's last step, so it runs at the branch's own head, with the
  * new page's preference off, and `test.skip` leaves it alone everywhere else. Re-run it after
  * each merge of `main`, because `main` moves and the fixture describes its page: a tab today's
@@ -56,13 +57,13 @@ import { asUser } from "./users";
  * reached the new page fails rather than recording it as the old ground truth.
  *
  * That page renders only the active tab's panel - every other panel is `hidden`, which the
- * accessibility snapshot leaves out - so a state's inventory is the merge of the nine tabs'
+ * accessibility snapshot leaves out - so a state's inventory is the merge of the ten tabs'
  * panels, visited in turn at each width, and each panel is asserted to offer a control of its
  * own. The priority row's picker is a view of its own too, because no tab holds it: the row's
  * add control opens it, and an open state records the page with it open (`recordPriorityPicker`).
  */
 
-/** The nine tabs of the issue page, in the order `web/src/features/issue/issue-tab-list.ts`'s
+/** The ten tabs of the issue page, in the order `web/src/features/issue/issue-tab-list.ts`'s
  *  `issueTabs` lists them (`IssueTabs.tsx` renders that list). A tab's button and panel carry
  *  the DOM ids `Tabs.tsx`'s `tabButtonId` and `IssuePage.tsx` give them, which is how a tab is
  *  selected and its panel scoped here. `recordState` holds this list to the tablist the page
@@ -72,6 +73,7 @@ const ISSUE_TABS = [
   "spec",
   "verification",
   "plan",
+  "steps",
   "conversation",
   "children",
   "artifacts",
@@ -146,36 +148,30 @@ function named(entry: InventoryEntry): string {
 }
 
 /**
- * The priority row's picker (dispatch://INFRA-2947 R3), which the row's add control opens and
- * no tab holds: in an open state the page is recorded once more with it open, and it is closed
- * by its own Cancel. A closed issue's row draws the add control refused (`disabled`), so a
- * closed state has no picker to open, and asserting that is what keeps an open state whose
- * control could not be pressed from recording no picker without a word. The row's cap line is
- * a third state of the same control - drawn in its place once the issue advances as many
- * priorities as one may - and is text rather than a control, so no state records it.
+ * The priority row's picker (dispatch://INFRA-2947 R3), which the row's "Edit priorities" control
+ * opens (`IssuePriorityLine.tsx`, `MultiSelect` in a portal) and no tab holds: in an open state
+ * the page is recorded once more with it open, and it is closed by Escape. A closed issue's row
+ * draws the control refused (`disabled`), so a closed state has no picker to open, and asserting
+ * that is what keeps an open state whose control could not be pressed from recording no picker
+ * without a word.
  */
-async function recordPriorityPicker(
-  page: Page,
-  issueKey: string,
-  state: RecordedState
-): Promise<InventoryEntry[]> {
+async function recordPriorityPicker(page: Page, state: RecordedState): Promise<InventoryEntry[]> {
   const row = page.getByTestId("issue-advances");
-  const add = row.getByRole("button", { exact: true, name: `Add a priority to ${issueKey}` });
+  const edit = row.getByRole("button", { exact: true, name: "Edit priorities" });
   if (state.closed) {
     await expect(
-      add,
-      `the closed issue's priority row of ${state.key} refuses its add control`
+      edit,
+      `the closed issue's priority row of ${state.key} refuses its edit control`
     ).toBeDisabled();
     return [];
   }
-  await add.click();
-  await expect(
-    row.getByRole("combobox", { exact: true, name: "Priority to advance" })
-  ).toBeVisible();
+  await edit.click();
+  const picker = page.getByRole("combobox", { exact: true, name: "Priority to advance" });
+  await expect(picker).toBeVisible();
   await page.waitForLoadState("networkidle");
   const picked = await recordInventory(page);
-  await row.getByRole("button", { exact: true, name: "Cancel" }).click();
-  await expect(add, `Cancel left the priority picker of ${state.key} open`).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(picker, `Escape left the priority picker of ${state.key} open`).toHaveCount(0);
   return picked;
 }
 
@@ -185,10 +181,12 @@ async function recordPriorityPicker(
  * list. The tablist the page draws is read first and held to `ISSUE_TABS`, so a tab the base
  * has and this file does not - the way `collaborators` was left out of the recording before
  * dispatch://INFRA-1196's base moved - fails the recording rather than leaving that panel's
- * controls out of the fixture. Each panel is then asserted to offer a control of its own, so a
- * tab whose panel never rendered fails here rather than being counted as covered. A recording
- * run also prints, for each panel, a control no other panel of that state offers - the
- * evidence that the state covers all nine - falling back on its first control when every one of
+ * controls out of the fixture. Each panel is then asserted to offer a control of its own (or,
+ * for `steps`, which on a seed with no Legion runs draws only its `EmptyState` region, at least
+ * a landmark or control), so a tab whose panel never rendered fails here rather than being
+ * counted as covered. A recording run also prints, for each panel, an entry no other panel of
+ * that state offers - the evidence that the state covers all ten - falling back on its first
+ * entry when every one of
  * them is offered elsewhere too.
  */
 async function recordState(
@@ -225,13 +223,14 @@ async function recordState(
     found.push(...(await recordInventory(page)));
     const panel = await recordScopeInventory(page.locator(`#issue-${tab}-panel`));
     const controls = panel.filter((entry) => controlRoles.includes(entry.role));
+    const covered = tab === "steps" ? panel : controls;
     expect(
-      controls[0],
-      `the ${tab} panel of ${state.key} offers no control at all, so the state covers none of it`
+      covered[0],
+      `the ${tab} panel of ${state.key} offers ${tab === "steps" ? "no landmark or control" : "no control"} at all, so the state covers none of it`
     ).toBeDefined();
-    panels.set(tab, controls);
+    panels.set(tab, covered);
   }
-  found.push(...(await recordPriorityPicker(page, issueKey, state)));
+  found.push(...(await recordPriorityPicker(page, state)));
   if (report) {
     for (const [tab, controls] of panels) {
       const elsewhere = new Set(
@@ -254,7 +253,7 @@ test.beforeEach(async () => {
 test("the issue page's landmarks and controls, open and closed, at 1440 and at 390", async ({
   browser,
 }) => {
-  // A recorder, not a check: it reads today's page through its nine tabs, so it runs only when
+  // A recorder, not a check: it reads today's page through its ten tabs, so it runs only when
   // a person asks it to record (the header above).
   test.skip(!recording(), "set RECORD_PAGE_INVENTORY=1 to record today's page");
   test.setTimeout(600_000);
@@ -301,6 +300,7 @@ test("the issue page's landmarks and controls, open and closed, at 1440 and at 3
     "closed-1440": states["closed-1440"],
     "closed-390": states["closed-390"],
   };
+  await mkdir(dirname(fixturePath), { recursive: true });
   await writeFile(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`);
   const written = JSON.parse(await readFile(fixturePath, "utf8")) as PageInventoryFixture;
   expect(written.commit, "the fixture names another commit than the page it describes").toBe(

@@ -7,6 +7,7 @@
 
 import { expect, type Locator, type Page } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { KEY_REPORTS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
   PRESET_NAMES,
@@ -681,6 +682,7 @@ export const INVENTORY_CONTROLS = [
   "combobox",
   "link",
   "menuitem",
+  "menuitemradio",
   "option",
   "radio",
   "searchbox",
@@ -727,29 +729,34 @@ function readBox(value: unknown): Box | undefined {
 /**
  * What a name carries that belongs to the run rather than to the page, and what it is recorded
  * as. A control names the row it acts on - `Copy reference dispatch://LAY-2/comment/<id>`, `2
- * replies · last reply <time>` - so its name holds the uuid the server gave that row and the
- * relative time `Timestamp` draws for it (`web/src/features/refs/Timestamp.tsx`), and neither is a
- * property of the page: the uuid is new in every run, and the time crosses from `just now` to `1
- * minute ago` while the recording is still being made. Recording them as placeholders is what
- * makes two runs of one page give the same list.
+ * replies · last reply <time>`, `#11 acme/issue-layout-<run>` - so its name holds the uuid the
+ * server gave that row, the relative time `Timestamp` draws for it
+ * (`web/src/features/refs/Timestamp.tsx`), or the 8-hex suffix `seedIssueWithDocuments` appends
+ * to `WHOLE_REPO` so the server's repository cache stays per-run, and none of them is a
+ * property of the page. Recording them as placeholders is what makes two runs of one page give
+ * the same list.
  */
 const runSpecific: readonly (readonly [RegExp, string])[] = [
   [/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>"],
+  [/\b(acme\/issue-(?:layout|baseline))-[0-9a-f]{8}\b/g, "$1-<run>"],
   [
     /just now|yesterday|tomorrow|(?:last|next) (?:week|month|year)|(?:in )?\d+ (?:second|minute|hour|day|week|month|year)s?(?: ago)?/g,
     "<time>",
   ],
+  // The one control below 1280 px names each view with its signal - `Spec 13`, `Plan 9 steps`,
+  // `Verification 6 · 1 failing` - which is the author's number, no property of the control.
+  [/^(Spec|Verification|Plan|Decisions) \d+(?: [a-z]+)?(?: · .*)?$/, "$1"],
 ];
 
 /** Every landmark and control of one accessibility snapshot, in the order the tree holds them. */
-function collect(node: unknown, found: MeasuredEntry[]): void {
+function collect(node: unknown, found: MeasuredEntry[], rows: boolean): void {
   if (Array.isArray(node)) {
-    for (const child of node) collect(child, found);
+    for (const child of node) collect(child, found, rows);
     return;
   }
   if (typeof node !== "object" || node === null) return;
   const { box, children, name, role } = node as AriaSnapshotNode;
-  if (typeof role === "string" && inventoryRoles.has(role)) {
+  if (typeof role === "string" && (inventoryRoles.has(role) || (rows && role === "treeitem"))) {
     const announced =
       typeof name === "string"
         ? runSpecific.reduce(
@@ -759,7 +766,7 @@ function collect(node: unknown, found: MeasuredEntry[]): void {
         : "";
     found.push({ box: readBox(box), name: announced, role });
   }
-  collect(children, found);
+  collect(children, found, rows);
 }
 
 /** The key two entries are the same control under: its role and its name. */
@@ -839,9 +846,12 @@ async function settled(read: () => Promise<MeasuredEntry[]>): Promise<MeasuredEn
   }
 }
 
-async function measured(snapshot: Promise<unknown>): Promise<MeasuredEntry[]> {
+/** What one snapshot offers: the recorder's list, and with `rows` also each row of the outline (a
+ *  `treeitem`), which the page is read for, as it is read for its controls, but which no
+ *  recording holds. */
+async function measured(snapshot: Promise<unknown>, rows = false): Promise<MeasuredEntry[]> {
   const found: MeasuredEntry[] = [];
-  collect(await snapshot, found);
+  collect(await snapshot, found, rows);
   return found;
 }
 
@@ -861,6 +871,20 @@ export interface ParentRowMapping {
   readonly reason: string;
 }
 
+/**
+ * One entry of the old page that is the job of a row of the outline on the new page, which the
+ * entry's own role and name no longer show: a link to a node that is now the node's row, a
+ * thread's header that is now the comment's row, an event's link to a comment that is now the
+ * comment's row (the Design's "Where each thing goes"). The entry is carried exactly when a row
+ * of the outline that holds `words` is drawn in one of the views the check reads.
+ */
+export interface CarriedByRow {
+  /** Why the row stands in for the entry. */
+  readonly reason: string;
+  /** Words of the node whose row carries the entry, which that row holds. */
+  readonly words: string;
+}
+
 export interface CarriedOptions {
   /**
    * The fixture's rename table: each recorded entry, written as the `role "name"` a failure
@@ -876,8 +900,9 @@ export interface CarriedOptions {
    */
   readonly renames: Readonly<Record<string, string>>;
   /** Recorded entries, in the same `role "name"` form, that only a part not yet on the page
-   *  carries (`AWAITING_THE_BOX`): none is looked for, and one the page offers fails the check,
-   *  since that part's own pull request is what moves it back into the reading. */
+   *  carries (`AWAITING_THE_BOX` for part L, `AWAITING_THREADS` for INFRA-5704): none is looked
+   *  for, and one the page offers fails the check, since that part's own pull request is what
+   *  moves it back into the reading. */
   readonly awaiting?: readonly string[];
   /**
    * The fixture's links carried by a parent row (`ParentRowMapping`), keyed by the recorded
@@ -887,6 +912,12 @@ export interface CarriedOptions {
    * reaches that parent. Every other entry is read as a landmark or a control, as above.
    */
   readonly parentRows?: Readonly<Record<string, ParentRowMapping>>;
+  /**
+   * The fixture's entries carried by a row of the outline (`CarriedByRow`), keyed by the
+   * recorded entry in the same `role "name"` form. Such an entry is looked for in the rows of the
+   * outline and nowhere else.
+   */
+  readonly rows?: Readonly<Record<string, CarriedByRow>>;
   /** Puts the page where the outline draws the rows a parent-row mapping names, both of them:
    *  the walk's own views leave the page wherever the last one did. It returns once that outline
    *  is drawn - a load whose reads went quiet with every branch open, or below 1024 px the
@@ -960,6 +991,12 @@ async function parentRowMissing(
       .evaluate((row) => row === document.activeElement || row.contains(document.activeElement));
     if (reached) return undefined;
   }
+  // Below 1024 px the tree is read one node at a time, and a node's parent is the zoom's own first
+  // row, drawn above it: the key moves nothing there and says so at the row (`useTreeKeymap`'s
+  // `tree-fold`), which is the parent the mapping names reached, since it is the row the page is
+  // zoomed to.
+  const said = await rows.nth(under.at).locator("[data-row-report]").allTextContents();
+  if (under.parent === 0 && said.includes(KEY_REPORTS.parent_zoomed)) return undefined;
   return `the left arrow from "${mapping.node}" does not reach its parent row "${mapping.parent}"`;
 }
 
@@ -987,6 +1024,7 @@ export async function assertInventoryCarried(
   const seen = new Set<string>();
   const wanted: { carried: InventoryEntry[]; described: string; instances: MeasuredEntry[] }[] = [];
   const byParentRow: { described: string; mapping: ParentRowMapping }[] = [];
+  const byRow: { described: string; row: CarriedByRow }[] = [];
   for (const entry of recorded) {
     const described = describe(entry);
     if (seen.has(described)) continue;
@@ -995,6 +1033,11 @@ export async function assertInventoryCarried(
     const mapping = options.parentRows?.[described];
     if (mapping !== undefined) {
       byParentRow.push({ described, mapping });
+      continue;
+    }
+    const row = options.rows?.[described];
+    if (row !== undefined) {
+      byRow.push({ described, row });
       continue;
     }
     const renamed = options.renames[described];
@@ -1016,7 +1059,9 @@ export async function assertInventoryCarried(
     if ((await view()) === false) continue;
     await assertPageFits(page);
     read += 1;
-    for (const entry of await settled(() => measured(page.ariaSnapshotJSON({ boxes: true })))) {
+    for (const entry of await settled(() =>
+      measured(page.ariaSnapshotJSON({ boxes: true }), true)
+    )) {
       const key = entryKey(entry);
       present.set(key, [...(present.get(key) ?? []), entry]);
     }
@@ -1029,6 +1074,12 @@ export async function assertInventoryCarried(
     one.instances = one.carried.flatMap((entry) => present.get(entryKey(entry)) ?? []);
   }
   const lost = wanted.filter((one) => one.instances.length === 0).map((one) => one.described);
+  for (const { described, row } of byRow) {
+    const held = [...present.keys()].some(
+      (key) => key.startsWith("treeitem\u0000") && key.includes(row.words)
+    );
+    if (!held) lost.push(`${described} (no row of the outline holds "${row.words}")`);
+  }
   // Each link a parent row carries, read once the views are done: the left arrow moves the
   // focus and may fold a row, which no view's own reading should meet.
   for (const { described, mapping } of byParentRow) {
@@ -1046,23 +1097,28 @@ export async function assertInventoryCarried(
     return entry !== undefined && (present.get(entryKey(entry)) ?? []).length > 0;
   });
   expect
-    .soft(early, `${options.state} offers what only part L's box carries: ${early.join(", ")}`)
+    .soft(
+      early,
+      `${options.state} offers what only a part not yet on the page carries (the box of part L, or Threads): ${early.join(", ")}`
+    )
     .toEqual([]);
 
   const viewport = await page.evaluate(() => document.documentElement.clientWidth);
   const sideways = wanted
     .filter((one) => {
       // A control a page hides from sight and keeps for the keyboard - the shell's "Skip to
-      // content", which is `sr-only` until it is focused - is a 1 by 1 clipped box wherever it
-      // sits. It is reached by Tab and not by scrolling, so its box says nothing about
-      // scrolling sideways and the rule passes over it.
+      // content" and Documents' file input, which are `sr-only` until they are focused - is a box
+      // one pixel left of its container (`-m-px`), 1 by 1 and clipped, and below 1280 px
+      // `styles.css`'s 44 px minimum makes it 44 by 44. It is reached by Tab and not by
+      // scrolling, which cannot reach left of the page's start either, so that one pixel says
+      // nothing about scrolling sideways and the rule passes over it.
       const placed = one.instances.filter(
         (instance) =>
           instance.box !== undefined && instance.box.width > 1 && instance.box.height > 1
       );
       return (
         placed.length > 0 &&
-        placed.every(({ box }) => box !== undefined && (box.x < 0 || box.x + box.width > viewport))
+        placed.every(({ box }) => box !== undefined && (box.x < -1 || box.x + box.width > viewport))
       );
     })
     .map((one) => one.described);
@@ -1075,35 +1131,60 @@ export async function assertInventoryCarried(
 /**
  * The rename table of the inventory row (part N's R7): each entry today's page offered, written
  * as the `role "name"` a failure prints it as, mapped to what the new page offers in its place,
- * from the Design's table "Where each thing goes" and ruling 5. The checkpoint kept it in the
- * fixture, which the recorder writes again after each merge of `main`; declared here, a new
- * recording does not lose it.
+ * from the Design's table "Where each thing goes" and ruling 5, and with root version 183's
+ * renames: tab Artifacts to Documents (R2); part M's four, the Activity tab to History, the
+ * Collaborators tab, the Steps tab to the steps in Details and a block's "Referenced by" to
+ * "What references this row"; the margin's Comments to the margin beside their node. Each
+ * rename's reason is in `INVENTORY_RENAME_REASONS`, under the same key. The fixture is recorded
+ * again after each merge of `main`; the table is declared here, so a new recording does not lose
+ * it.
+ *
+ * Owed to dispatch://INFRA-5702, which this stack does not hold, and so renamed by its pull
+ * request: the ask body's Decline and Hand on, for "Decline to answer" and "Hand this question
+ * to", and the settled ask's body, for a settled question's record ("Change answer"). Until it
+ * lands the new page draws today's ask card's own controls under those names, so each of them
+ * stands unrenamed. Part M's Details facts of the focused ask carry an ask's edit history,
+ * recipients and copy handles under their own names, which the fixture holds unchanged.
  */
 export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
-  'tab "Spec"': 'button "Spec" | menuitem "Spec"',
-  'tab "Verification"': 'button "Verification" | menuitem "Verification"',
-  'tab "Plan"': 'button "Plan" | menuitem "Plan"',
-  'tab "Conversation"': 'region "Conversation"',
-  'tab "Children"': 'button "Children"',
-  'tab "Artifacts 7"': 'button "Files and documents"',
-  'tab "Activity"': 'region "Activity"',
-  'tab "Decisions"': 'button "Decisions" | menuitem "Decisions"',
+  'tab "Spec"': 'button "Spec" | menuitem "Spec" | menuitemradio "Spec"',
+  'tab "Verification"':
+    'button "Verification" | menuitem "Verification" | menuitemradio "Verification"',
+  'tab "Plan"': 'button "Plan" | menuitem "Plan" | menuitemradio "Plan"',
+  'tab "Steps"': 'region "Steps"',
+  'region "Steps empty state"': 'region "Steps"',
+  'tab "Conversation"': 'button "Conversation" | menuitem "Conversation"',
+  'region "Conversation"': 'button "Conversation" | menuitem "Conversation"',
+  'tab "Artifacts 7"': 'button "Documents" | menuitem "Documents"',
+  'tab "Activity"': 'region "History"',
+  'region "Activity"': 'region "History"',
+  'tab "Decisions"': 'button "Decisions" | menuitem "Decisions" | menuitemradio "Decisions"',
   'tab "Collaborators"': 'button "Collaborators"',
+  'button "All"': 'button "Filter"',
+  'button "Open"': 'button "Filter"',
+  'button "Closed"': 'button "Filter"',
+  'button "Show fields"': 'button "Hide fields"',
+  'button "Referenced by (1)"': 'button "What references this row" | button "Referenced by"',
+  'button "Referenced by (14)"': 'button "Referenced by"',
+  'button "Write a reply"': 'button "Reply"',
+  'button "Copy reference dispatch://LAY-2/comment/<id>"': 'button "Copy reference"',
+  'button "Copy reference dispatch://LAY-2/message/<id>"': 'button "Copy reference"',
   'button "Reopen issue"': 'button "Reopen into Backlog"',
-  'button "Upload"': 'menuitem "Upload"',
   'button "Upload artifact"': 'button "Upload a file"',
   'searchbox "Filter artifacts"': 'searchbox "Filter files and documents"',
-  'button "New document"': 'menuitem "New document"',
-  'link "Block r1"': 'link "Every property of the issue that carries a value is visible …"',
-  'link "Block r2"': 'link "Requirement 2 of the redesign stands on a row of its own."',
-  'link "Block r3"': 'link "Requirement 3 of the redesign stands on a row of its own."',
-  'link "Block r4"': 'link "Requirement 4 of the redesign stands on a row of its own."',
-  'link "Block r5"': 'link "Requirement 5 of the redesign stands on a row of its own."',
+  'combobox "Repository of LAY-2"': 'button "acme/issue-layout-<run>, Repository of LAY-2"',
+  'link "#11 acme/issue-layout-<run>"': 'link "#11 Open"',
+  'link "#2 Keep every old address, inherited"': 'link "#2 Keep every old address"',
+  'link "Block r1"': 'link "Every property of the issue…"',
+  'link "Block r2"': 'link "Requirement 2 of the redesign…"',
+  'link "Block r3"': 'link "Requirement 3 of the redesign…"',
+  'link "Block r4"': 'link "Requirement 4 of the redesign…"',
+  'link "Block r5"': 'link "Requirement 5 of the redesign…"',
+  'link "Block r6"': 'link "Requirement 6 of the redesign…"',
   'region "Open questions"': 'region "Decisions"',
   'region "Waiting for your review"': 'region "Decisions"',
   'region "Your decisions"': 'region "Decisions"',
   'region "Replaced"': 'region "Decisions"',
-  'link "session:e2e-seed…"': 'link "Recorder (issue layout)"',
   'button "Hide margin"': 'button "Close"',
   'button "Hide sidebar"': 'button "Open navigation"',
   'complementary "Navigation"': 'navigation "App"',
@@ -1113,9 +1194,84 @@ export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
   'complementary "Review panel"': 'complementary "Review margin"',
 };
 
-/** Why a rename is the same control under a new name, keyed as `INVENTORY_RENAMES` is, for a
- *  rename that no view-to-control or block-to-words rule explains on its own. */
+/** Why a child of the issue's link is the child's row on the new page. */
+const CHILD_ROW_REASON =
+  "The children are rows of the outline, not a section of their own (the architect's ruling that no children's section is drawn, root version 183's 'Children tab → the children's section'): a child's link is carried by the child's row, whose words are its title.";
+
+/** Why a pointer link to a block is a chip on the new page. */
+const BLOCK_LINK_REASON =
+  "A pointer link to a block, drawn as the block's short form, is a chip carrying the block's words (the Design's table 'Where each thing goes'): the decision row's 'Shapes' line draws it, its words cut at the chip's width.";
+
+/** Why the conversation's All, Open and Closed are one control on the new page. */
+const FILTER_REASON =
+  "The conversation's All, Open and Closed choice is the filter by words, which also matches a node's state word such as Open or Resolved (the Design's table 'Where each thing goes').";
+
+/** Why a name of the Repository control is the row's text button on the new page. */
+const REPOSITORY_REASON =
+  "Details draws the repository as text, whose button opens the box and its clear control in its place (`RepoControl`'s `inRow`); the row's one control is that button, named by the repository and 'Repository of <key>' (R13).";
+
+/** Why a name is part M's, from the Details panel (root version 183). */
+const DETAILS_FACTS_REASON =
+  "A block's 'Referenced by' list stands in the focused node's facts in Details as 'What references this row', and the issue's own is Details' 'Referenced by' row, which draws no count until its list is read (part M, root version 183).";
+
+/** Why a card's copy control is the row's Copy reference. */
+const COPY_REFERENCE_REASON =
+  "A comment's or a message's copy control is the Copy reference of its row, which copies the node's address and is named by its words alone (part G's R6, root R19).";
+
+/** Why a rename is the same control under a new name, keyed as `INVENTORY_RENAMES` is. */
 export const INVENTORY_RENAME_REASONS: Readonly<Record<string, string>> = {
+  'tab "Spec"':
+    "The Spec tab is the Spec view of the view row (R2), a button in the toolbar and a menu item in the one control.",
+  'tab "Verification"': "The Verification tab is the Verification view of the view row (R2).",
+  'tab "Plan"': "The Plan tab is the Plan view of the view row (R2).",
+  'tab "Steps"':
+    "The Steps tab is the Steps section of Details, under the history (part M, root version 183).",
+  'region "Steps empty state"':
+    "The Steps tab's empty line is the Steps section's own, in Details (part M).",
+  'tab "Conversation"':
+    "The Conversation tab is Conversation, the control of the view row that turns every view off (R2).",
+  'region "Conversation"':
+    "The Conversation tab's panel is Conversation, the control of the view row that turns every view off (R2).",
+  'tab "Artifacts 7"':
+    "The Artifacts tab is Documents (root version 183, R2): the view row's control for the issue's documents and files.",
+  'tab "Activity"': "The Activity tab is Details' History (part M, root version 183).",
+  'region "Activity"': "The Activity tab's list is Details' History (part M, root version 183).",
+  'tab "Decisions"': "The Decisions tab is the Decisions view of the view row (R2).",
+  'tab "Collaborators"':
+    "The Collaborators tab is Details' Collaborators control (part M, root version 183).",
+  'button "All"': FILTER_REASON,
+  'button "Open"': FILTER_REASON,
+  'button "Closed"': FILTER_REASON,
+  'button "Show fields"':
+    "The conversation's handoff cards are the history's handoff lines, whose fields are drawn open until the reader folds them, so the toggle reads Hide fields (R15, `HistoryHandoff`).",
+  'button "Referenced by (1)"': DETAILS_FACTS_REASON,
+  'button "Referenced by (14)"': DETAILS_FACTS_REASON,
+  'button "Write a reply"':
+    "A collapsed thread's Write a reply is the Reply of the row that takes a reply, which sets the line of the box (R16); the box is part L's.",
+  'button "Copy reference dispatch://LAY-2/comment/<id>"': COPY_REFERENCE_REASON,
+  'button "Copy reference dispatch://LAY-2/message/<id>"': COPY_REFERENCE_REASON,
+  'button "Reopen issue"':
+    "Close and Reopen are behind the identity block's one actions control (R11).",
+  'button "Upload artifact"':
+    "The upload's file chooser is Documents' own (R2), named by its page word.",
+  'searchbox "Filter artifacts"':
+    "The Artifacts list's filter is Documents' filter (R2), named by its page word.",
+  'combobox "Repository of LAY-2"': REPOSITORY_REASON,
+  'link "#11 acme/issue-layout-<run>"':
+    "The header's pull request link names its number and how it stands, Open, Merged or Closed (R22), where it named its number and repository.",
+  'link "#2 Keep every old address, inherited"':
+    "A priority the issue advances because an issue above it does is named by the priority alone; the row marks it inherited in words beside the link (R13).",
+  'link "Block r1"': BLOCK_LINK_REASON,
+  'link "Block r2"': BLOCK_LINK_REASON,
+  'link "Block r3"': BLOCK_LINK_REASON,
+  'link "Block r4"': BLOCK_LINK_REASON,
+  'link "Block r5"': BLOCK_LINK_REASON,
+  'link "Block r6"': BLOCK_LINK_REASON,
+  'region "Open questions"':
+    "The Decisions tab's four lists are the Decisions view's own parts (R2).",
+  'region "Waiting for your review"': "As above: the part for a decision waiting on the reader.",
+  'region "Your decisions"': "As above: the reader's own decisions.",
+  'region "Replaced"': "As above: the decisions another replaced.",
   'button "Hide margin"':
     "The margin's collapse is Details' Close now: the panel opens over the right of the page as a drawer and closing it is its collapse (R14), the same control under the drawer's word.",
   'button "Hide sidebar"':
@@ -1143,18 +1299,157 @@ export const INVENTORY_PARENT_ROWS: Readonly<Record<string, ParentRowMapping>> =
   },
 };
 
+/** Why a link to a node of the old page's lists is the node's row on the new page. */
+const NODE_ROW_REASON =
+  "A link to a node's own block in its document is the node's row in the outline, which focus reaches (the Design's table 'Where each thing goes').";
+
+/** Why a thread's header is the comment's row on the new page. */
+const THREAD_ROW_REASON =
+  "The spec conversation's threads are rows of the outline, a comment with its replies under its twisty (R1); the old thread card's header is the comment's row.";
+
+/** Why a reply's link is the reply's row on the new page. */
+const REPLY_ROW_REASON =
+  "A reply the old thread card linked is a row of the outline, under its comment's twisty (R1).";
+
+/** The entries of today's page that a row of the outline carries (`CarriedByRow`), keyed as
+ *  `INVENTORY_RENAMES` is. */
+export const INVENTORY_ROWS: Readonly<Record<string, CarriedByRow>> = {
+  'tab "Children"': {
+    reason:
+      "The Children tab is the issue's children as rows of the outline (the architect's ruling that no children's section is drawn, root version 183's 'The children's section').",
+    words: "Child 1 of the redesign",
+  },
+  'button "Expand thread"': { reason: THREAD_ROW_REASON, words: "Thread 1 opens here." },
+  'link "View in document"': {
+    reason: NODE_ROW_REASON,
+    words: "This requirement is the one the tree reads first.",
+  },
+  'link "LAY-3 · Child 1 of the redesign"': {
+    reason: CHILD_ROW_REASON,
+    words: "Child 1 of the redesign",
+  },
+  'link "LAY-4 · Child 2 of the redesign"': {
+    reason: CHILD_ROW_REASON,
+    words: "Child 2 of the redesign",
+  },
+  'link "LAY-5 · Child 3 of the redesign"': {
+    reason: CHILD_ROW_REASON,
+    words: "Child 3 of the redesign",
+  },
+  'link "LAY-6 · Child 4 of the redesign"': {
+    reason: CHILD_ROW_REASON,
+    words: "Child 4 of the redesign",
+  },
+  'link "LAY-7 · Child 5 of the redesign"': {
+    reason: CHILD_ROW_REASON,
+    words: "Child 5 of the redesign",
+  },
+  'link "LAY-8 · Child 6 of the redesign"': {
+    reason: CHILD_ROW_REASON,
+    words: "Child 6 of the redesign",
+  },
+  'link "LAY-9 · Child 7 of the redesign"': {
+    reason: CHILD_ROW_REASON,
+    words: "Child 7 of the redesign",
+  },
+  'button "Thread 1 opens here. Its second paragraph is a block of its own. 2 replies · last reply <time>"':
+    { reason: THREAD_ROW_REASON, words: "Thread 1 opens here." },
+  'button "Thread 2 opens here. Its second paragraph is a block of its own. 1 reply · last reply <time>"':
+    { reason: THREAD_ROW_REASON, words: "Thread 2 opens here." },
+  'link "— The fold budget counts no question."': {
+    reason: REPLY_ROW_REASON,
+    words: "The fold budget counts no question.",
+  },
+  'link "— Which is why the deepest question is still on the first screen."': {
+    reason: REPLY_ROW_REASON,
+    words: "Which is why the deepest question is still on the first screen.",
+  },
+  'link "view"': {
+    reason:
+      "The Activity tab's link to the comment an event made: the history leaves out each event of a row the outline draws, a comment created among them, so the comment's row is where it stands (`history-model.ts`, part M's R15).",
+    words: "Thread 1 opens here.",
+  },
+  'link "Recorder (issue layout)"': {
+    reason:
+      "The Activity tab's link to the session that recorded a result: the history leaves out a result recorded against a check, so the result's row, which names who wrote it, is where it stands (`history-model.ts`, part M's R15).",
+    words: "Written by an agent Recorder (issue layout)",
+  },
+  'link "Requirement 6 of the redesign stands on a row of its own."': {
+    reason: NODE_ROW_REASON,
+    words: "Requirement 6 of the redesign stands on a row of its own.",
+  },
+  'link "Requirement 7 of the redesign stands on a row of its own."': {
+    reason: NODE_ROW_REASON,
+    words: "Requirement 7 of the redesign stands on a row of its own.",
+  },
+  'link "Requirement 8 of the redesign stands on a row of its own."': {
+    reason: NODE_ROW_REASON,
+    words: "Requirement 8 of the redesign stands on a row of its own.",
+  },
+  'link "Task 1 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 1 of the redesign is one step of the build.",
+  },
+  'link "Task 2 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 2 of the redesign is one step of the build.",
+  },
+  'link "Task 3 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 3 of the redesign is one step of the build.",
+  },
+  'link "Task 4 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 4 of the redesign is one step of the build.",
+  },
+  'link "Task 5 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 5 of the redesign is one step of the build.",
+  },
+  'link "Task 6 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 6 of the redesign is one step of the build.",
+  },
+  'link "Task 7 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 7 of the redesign is one step of the build.",
+  },
+  'link "Task 8 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 8 of the redesign is one step of the build.",
+  },
+  'link "Task 9 of the redesign is one step of the build."': {
+    reason: NODE_ROW_REASON,
+    words: "Task 9 of the redesign is one step of the build.",
+  },
+};
+
 /**
  * What only part L's box carries (part N's R11): today's composer, as the fixture recorded it in
  * every state. While pull request 3125 and part L have not merged, `slots/foot.tsx` draws
  * nothing, so the inventory row looks for none of these and fails if the page offers one. Part
- * L's pull request empties this list, and the row then reads each of them again.
+ * L's pull request empties this list, and the row then reads each of them again. The message
+ * route's button, `Messages default to <agent>`, is no name of the box: Details' Route row carries
+ * it (R13), so it is read there.
  */
 export const AWAITING_THE_BOX: readonly string[] = [
   'form "Comment composer"',
   'textbox "Comment"',
   'button "Send"',
-  'button "Messages default to Planner (issue layout)"',
 ];
+
+/**
+ * What only Threads carries (part N's R11), dispatch://INFRA-5704, which follows this part: the
+ * names of today's page, as the fixture records them, whose only new home is Threads. The
+ * inventory row looks for none of them and fails if the page offers one; Threads' pull request
+ * empties this list, and the row then reads each of them again. It is empty: the fixture holds
+ * no name that is New thread's alone. New thread, the control that sends a message to an agent
+ * with an @ mention from Threads, is a control of the new page that the old page did not draw,
+ * so no recording holds it; today's composer, which also sends such a message, is the box's
+ * (`AWAITING_THE_BOX`), and listing its names here too would make this row fail once part L
+ * lands and the box offers them.
+ */
+export const AWAITING_THREADS: readonly string[] = [];
 
 // ---------------------------------------------------------------------------------------------
 // INV-1: every address of today's page (part N's R6).

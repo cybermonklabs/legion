@@ -2,13 +2,16 @@ import { afterEach, beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { http } from "msw";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
 import type { Agent, InboxRow, IssueDetails, UserAgentState } from "../api/types";
 import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
 import { jump, onFakeClock } from "./fake-clock";
+import { answerRequests } from "./network";
+import { decisionsAndReadMarkHandlers } from "./proof-document";
 import { answerAgentStates } from "./send-answers";
 // The issue page is a lazy route of the app, and the live view's page and the margin lazy parts
 // of the shell (`MountedLiveViews.tsx`, `MarginColumn.tsx`, which mounts the margin on every
@@ -117,6 +120,15 @@ function setViewport(width: number): void {
     }) as MediaQueryList) as typeof window.matchMedia;
 }
 
+// Where this browser keeps alice's choice of the new issue page (`features/issue-page/choice.ts`).
+const NEW_PAGE_KEY = "dispatch.issue.page:alice";
+
+/** The address the shell is at, written where a row can read it (a `MemoryRouter` has no URL bar). */
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{`${location.pathname}${location.search}`}</output>;
+}
+
 function renderShellAt(
   width: number,
   inbox: InboxRow[] = [],
@@ -202,6 +214,7 @@ function renderShellAt(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={["/issues/CORE-1/children"]}>
         <AuthGate />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -212,6 +225,7 @@ afterEach(() => {
   cleanup();
   Object.assign(api, originalApi);
   window.matchMedia = originalMatchMedia;
+  window.localStorage.removeItem(NEW_PAGE_KEY);
 });
 
 test("tablet uses the drawer and bottom-sheet controls instead of hidden desktop landmarks", async () => {
@@ -492,4 +506,82 @@ test("the shell tells the live-view registry which agents the person pinned", as
 
   expect(views.place("planner-session")).toEqual({ id: "dispatch:m-4", top: -120 });
   expect(views.place("other-session")).toBeNull();
+});
+
+const PEEK = "Peek at the inbox without leaving this page";
+
+// Peek is the one control that opens the Inbox over a page. With the new page off the shell draws
+// it where it always has: in the compact top bar below 1280 px, in the persistent sidebar from
+// there up, and in the navigation drawer never.
+test("with the new page off, the navigation draws Peek where it drew it and nowhere else", async () => {
+  const user = userEvent.setup();
+  renderShellAt(1280);
+  const sidebar = await screen.findByRole("navigation", { name: "Navigation" });
+  expect(within(sidebar).getAllByRole("button", { name: PEEK })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: PEEK })).toHaveLength(1);
+  cleanup();
+
+  renderShellAt(800);
+  // The bar is the header that holds the Menu control, read once it has loaded: until then the
+  // shell draws a skeleton of it, and the issue page draws a header of its own.
+  const menu = await screen.findByRole("button", { name: "Open navigation" });
+  const bar = menu.closest("header") as HTMLElement;
+  expect(within(bar).getAllByRole("button", { name: PEEK })).toHaveLength(1);
+  await user.click(within(bar).getByRole("button", { name: "Open navigation" }));
+  const sheet = await screen.findByRole("dialog", { name: "Navigation" });
+  expect(within(sheet).queryByRole("button", { name: PEEK })).toBeNull();
+  expect(screen.getAllByRole("button", { name: PEEK })).toHaveLength(1);
+});
+
+// The new page has no top bar and no sidebar, so its navigation drawer carries Peek. A press opens
+// the Inbox drawer over the page and leaves the navigation drawer under it; Escape closes the
+// Inbox drawer and the focus goes back to Peek. The address is the page's own throughout.
+test("in the new page's frame, the navigation drawer draws Peek, and Peek opens the Inbox drawer with the address unchanged", async () => {
+  const user = userEvent.setup();
+  // The new page's reads, each answered with the API's empty shape: the frame is what is asked
+  // here, not what the page draws in it.
+  answerRequests(
+    http.get("/api/v1/issues/:key/coverage", ({ params }) =>
+      Response.json({
+        gaps: [],
+        has_plan: false,
+        issue: String(params.key),
+        requirements: [],
+        spec_artifact_id: "",
+      })
+    ),
+    http.get("/api/v1/issues/:key/results", ({ params }) =>
+      Response.json({ checks: [], issue: String(params.key), verification_artifact_id: "" })
+    ),
+    http.get("/api/v1/issues/:key/messages", () => Response.json([])),
+    http.get("/api/v1/issues/:key/events", () => Response.json([])),
+    http.get("/api/v1/reference-targets", () => Response.json({ targets: [] })),
+    http.get("/api/v1/artifacts/:id/blocks", () => Response.json([])),
+    ...decisionsAndReadMarkHandlers()
+  );
+  window.localStorage.setItem(NEW_PAGE_KEY, "outline");
+  for (const width of [800, 1280]) {
+    renderShellAt(width);
+    const address = (await screen.findByTestId("location")).textContent;
+    expect(address, `at ${width} px the page is an issue's`).toBe("/issues/CORE-1/children");
+    expect(
+      screen.queryByRole("button", { name: PEEK }),
+      `at ${width} px the frame draws no Peek outside the navigation drawer`
+    ).toBeNull();
+
+    await user.click(await screen.findByRole("button", { name: "Open navigation" }));
+    const sheet = await screen.findByRole("dialog", { name: "Navigation" });
+    const peek = within(sheet).getByRole("button", { name: PEEK });
+    await user.click(peek);
+
+    const inbox = await screen.findByRole("dialog", { name: "Inbox" });
+    expect(screen.getByTestId("location").textContent, `Peek at ${width} px`).toBe(address);
+    expect(screen.getByRole("dialog", { name: "Navigation" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(inbox).not.toBeInTheDocument());
+    expect(document.activeElement, `Escape at ${width} px`).toBe(peek);
+    expect(screen.getByRole("dialog", { name: "Navigation" })).toBeTruthy();
+    expect(screen.getByTestId("location").textContent).toBe(address);
+    cleanup();
+  }
 });

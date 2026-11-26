@@ -694,6 +694,7 @@ export function IssueMarginPanel({
         </Row>
         <Row glyph={HOUSE} label={PROPERTY_LABELS.repository} valueRef={repoValue}>
           <RepoControl
+            clearWhenClosed
             disabled={isClosed}
             inRow
             issueKey={issue.key}

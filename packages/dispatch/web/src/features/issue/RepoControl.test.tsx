@@ -13,6 +13,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, Project } from "../../api/types";
+import { NoTooltips } from "../issue-page/NoTooltips";
 import { RepoControl } from "./RepoControl";
 
 const issue: Issue = {
@@ -644,5 +645,124 @@ test("RepoControl draws what Dispatch stored once its host is told, when the pic
     notifications?.tell();
     unmount();
     patchIssue.mockRestore();
+  }
+});
+
+/** The control as a row of Details draws it, or on `main`'s page where `inDetails` is false, for
+ *  an issue that holds `acme/widgets` of its own, closed or open, with or without the option. */
+function renderRow(
+  props: { clearWhenClosed?: boolean; disabled: boolean },
+  surface: { inDetails: boolean }
+) {
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const control = (
+    <RepoControl
+      {...props}
+      inRow={surface.inDetails}
+      issueKey="CORE-1"
+      project="CORE"
+      repo="acme/widgets"
+      resolvedRepo="acme/widgets"
+    />
+  );
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      {surface.inDetails ? <NoTooltips>{control}</NoTooltips> : control}
+    </QueryClientProvider>
+  );
+  return {
+    unmount: () => {
+      view.unmount();
+      listProjects.mockRestore();
+    },
+    user: userEvent.setup(),
+  };
+}
+
+const CLEAR = "Clear the repository of CORE-1";
+
+// Today's page draws a closed issue's repository as the box and its Clear, both disabled; Details
+// draws the value as wrapped text in the box's place, which left the closed issue no Clear at all
+// (R7). With the option the Clear stands beside the text, disabled, under its name and with its
+// description, and nothing it does can write.
+test("in Details, a closed issue with its own repository draws Clear disabled, with its name, beside the wrapped value", async () => {
+  const patchIssue = answerIssuePatches();
+  const { unmount, user } = renderRow(
+    { clearWhenClosed: true, disabled: true },
+    { inDetails: true }
+  );
+  try {
+    const value = await screen.findByRole("button", { name: "acme/widgets, Repository of CORE-1" });
+    expect(value).toBeDisabled();
+    // The value is the wrapped text of the row's place, and not the box.
+    expect(value.className).toContain("[overflow-wrap:anywhere]");
+    expect(screen.queryByRole("combobox")).toBeNull();
+
+    const clear = screen.getAllByRole("button", { name: CLEAR });
+    expect(clear).toHaveLength(1);
+    expect(clear[0]).toBeDisabled();
+    // Beside the value: the next control in the one place the row draws it in.
+    expect(value.nextElementSibling).toBe(clear[0]);
+    // The description its `aria-describedby` names is drawn while the text is, and says what a
+    // clear would do.
+    const describedby = clear[0]?.getAttribute("aria-describedby") ?? "";
+    expect(document.getElementById(describedby)).not.toBeNull();
+    expect(clear[0]).toHaveAccessibleDescription(
+      "Clear it, and the issue inherits a repository again"
+    );
+    expect(document.querySelectorAll(`[id="${describedby}"]`)).toHaveLength(1);
+
+    // A press of either control writes nothing and opens nothing.
+    await user.click(clear[0] as HTMLElement);
+    await user.click(value);
+    expect(patchIssue).not.toHaveBeenCalled();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.getAllByRole("button", { name: CLEAR })).toHaveLength(1);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// The option changes nothing where it is not asked for or cannot apply: Details without it, an
+// open issue in Details, and `main`'s page, which draws the box with its Clear whether or not the
+// option is passed.
+test("without the option, the control draws as before", async () => {
+  // Details without the option: the wrapped text, and no Clear beside it.
+  const closed = renderRow({ disabled: true }, { inDetails: true });
+  try {
+    expect(
+      await screen.findByRole("button", { name: "acme/widgets, Repository of CORE-1" })
+    ).toBeDisabled();
+    expect(screen.queryByRole("button", { name: CLEAR })).toBeNull();
+  } finally {
+    closed.unmount();
+  }
+
+  // An open issue in Details, with the option: the text carries no Clear until a press opens the
+  // box, which then draws its own one, enabled.
+  const open = renderRow({ clearWhenClosed: true, disabled: false }, { inDetails: true });
+  try {
+    const value = await screen.findByRole("button", { name: "acme/widgets, Repository of CORE-1" });
+    expect(screen.queryByRole("button", { name: CLEAR })).toBeNull();
+    await open.user.click(value);
+    expect(await screen.findByRole("combobox", { name: "Repository of CORE-1" })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: CLEAR })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: CLEAR })).toBeEnabled();
+  } finally {
+    open.unmount();
+  }
+
+  // `main`'s page, closed, with the option passed: the box and its one Clear, both disabled.
+  const main = renderRow({ clearWhenClosed: true, disabled: true }, { inDetails: false });
+  try {
+    expect(await screen.findByRole("combobox", { name: "Repository of CORE-1" })).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: CLEAR })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: CLEAR })).toBeDisabled();
+  } finally {
+    main.unmount();
   }
 });
