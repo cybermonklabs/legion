@@ -268,6 +268,35 @@ func (r execRunner) Timeout() time.Duration {
 	return r.timeout
 }
 
+// plantDir holds one file per planted fault of this verdict run. A file is read rather than an
+// environment variable because this package's TestMain guards the process's environment
+// (fixtureenv.Guard unsets every variable it does not keep), which left an environment-triggered
+// plant unarmed and its row passing.
+const plantDir = "/work/plant/"
+
+// plantSet is whether the plant named name is armed, and its text.
+func plantSet(name string) (string, bool) {
+	data, err := os.ReadFile(plantDir + name)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(data)), true
+}
+
+// plantDelay is the duration the plant named name holds, and zero when it is not armed. A value
+// that is no duration panics rather than leaving the plant silently unarmed.
+func plantDelay(name string) time.Duration {
+	value, armed := plantSet(name)
+	if !armed {
+		return 0
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		panic(plantDir + name + " = " + value + ": " + err.Error())
+	}
+	return parsed
+}
+
 func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	if command.Timeout <= 0 {
 		return Result{}, fmt.Errorf("workspace command has no timeout: %s", strings.Join(command.Argv, " "))
@@ -282,6 +311,18 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, command.Timeout)
 	defer cancel()
+	// PLANT (verdict run, not for merge): execRunner.Run applies no Command.Timeout of its own
+	// and bounds the command by its caller's context alone.
+	if _, armed := plantSet("no-timeout"); armed {
+		fmt.Fprintf(os.Stderr, "PLANT no-timeout fired: %s\n", strings.Join(command.Argv, " "))
+		bounded = ctx
+	}
+	// PLANT (verdict run, not for merge): execRunner.Run spends this long inside the command's
+	// own budget before it starts the command.
+	if stall := plantDelay("run-stall"); stall > 0 {
+		fmt.Fprintf(os.Stderr, "PLANT run-stall fired: %s before %s\n", stall, strings.Join(command.Argv, " "))
+		time.Sleep(stall)
+	}
 
 	executable, ok := r.tools[command.Argv[0]]
 	if !ok {

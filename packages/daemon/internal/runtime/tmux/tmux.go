@@ -464,6 +464,29 @@ type result struct {
 	signal         string
 }
 
+// plantDir holds one file per planted fault of this verdict run. A file is read rather than an
+// environment variable because a package's TestMain can guard the process's environment
+// (fixtureenv.Guard unsets every variable it does not keep), which leaves such a plant unarmed.
+const plantDir = "/work/plant/"
+
+// plantDelay is the duration the plant named name holds, and zero when it is not armed. A value
+// that is no duration panics rather than leaving the plant silently unarmed.
+func plantDelay(name string) time.Duration {
+	data, err := os.ReadFile(plantDir + name)
+	if err != nil {
+		return 0
+	}
+	value := strings.TrimSpace(string(data))
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		panic(plantDir + name + " = " + value + ": " + err.Error())
+	}
+	return parsed
+}
+
+// plantFirstCall is the one call of this process the first-call plant stalls.
+var plantFirstCall sync.Once
+
 // runTmux runs one argv against the private server under the pane environment, bounded by the
 // command timeout. A client that ran and did not succeed is a result: one that exited non-zero,
 // one its timeout killed, and one some other signal ended (the kernel's out-of-memory kill), so
@@ -476,6 +499,20 @@ type result struct {
 func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	bounded, cancel := r.clock.WithTimeout(ctx, r.commandTimeout)
 	defer cancel()
+	// PLANT (verdict run, not for merge): runTmux spends this long inside the client's own
+	// command timeout, before it starts the client, on every call.
+	if stall := plantDelay("tmux-stall"); stall > 0 {
+		fmt.Fprintf(os.Stderr, "PLANT tmux-stall fired: %s before %s\n", stall, strings.Join(argv, " "))
+		time.Sleep(stall)
+	}
+	// PLANT (verdict run, not for merge): the same stall, on the first call of the process alone
+	// (a lazy initialisation that happens once).
+	if stall := plantDelay("tmux-first-stall"); stall > 0 {
+		plantFirstCall.Do(func() {
+			fmt.Fprintf(os.Stderr, "PLANT tmux-first-stall fired: %s before %s\n", stall, strings.Join(argv, " "))
+			time.Sleep(stall)
+		})
+	}
 	cmd := exec.CommandContext(bounded, r.tmuxPath, argv[1:]...)
 	cmd.Env = r.environ
 	cmd.WaitDelay = pipeDrainDelay
