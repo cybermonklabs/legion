@@ -914,10 +914,11 @@ func countNoun(n int, noun string) string {
 }
 
 // resultHeadLine, resultTotalLine and shortenedStart read back resultHead, the line of listTotal
-// or pageTotal, and the start of shortenedNote.
+// or pageTotal with its numbers (the total it states first, and pageTotal's count of the list),
+// and the start of shortenedNote.
 var (
 	resultHeadLine  = regexp.MustCompile(`^step (\d+), call (\d+): status (\d+)$`)
-	resultTotalLine = regexp.MustCompile(`^` + regexp.QuoteMeta(totalPrefix) + `\d+ (?:matching )?[a-z ]+(?: in the list below|; the list below holds \d+ of them)\.\]$`)
+	resultTotalLine = regexp.MustCompile(`^` + regexp.QuoteMeta(totalPrefix) + `(\d+) (?:matching )?[a-z ]+(?: in the list below|; the list below holds (\d+) of them)\.\]$`)
 	shortenedStart  = regexp.MustCompile(`^` + regexp.QuoteMeta(shortenedPrefix) + `(\d+) bytes and you were given the first (\d+):`)
 )
 
@@ -943,7 +944,10 @@ func cutShortened(rest string) (string, bool) {
 // the model it: the tool it called and the arguments it called it with (call_tool's own tool and
 // arguments), the call's number within its step, its status and its body, and whether that body
 // is whole: Shortened where the model was given only its first bytes, all the step saved of it,
-// and Cut where the server cut the answer at agentwire.CallBodyLimit.
+// and Cut where the server cut the answer at agentwire.CallBodyLimit. Counted is whether the
+// step holds the line of the list's total resultText wrote before the body (resultCount), and
+// Listed and Total are that line's numbers: how many items the list holds, and how many there
+// are in all, which is Listed for a list that states no total.
 type SavedResult struct {
 	Tool      string
 	Arguments json.RawMessage
@@ -952,6 +956,9 @@ type SavedResult struct {
 	Body      []byte
 	Shortened bool
 	Cut       bool
+	Counted   bool
+	Listed    int
+	Total     int
 }
 
 // ReadSavedResult reads the call's answer a saved tool step's body holds, and an error where it
@@ -984,8 +991,9 @@ func ReadSavedResult(body json.RawMessage) (SavedResult, error) {
 }
 
 // parseResult reads what resultText wrote of a call's answer: the call's number within its step,
-// its status and its body, and whether that body is whole. It reports false where result holds no
-// call's answer: a refusal, or a tool's own words, such as find_tools'.
+// its status and its body, whether that body is whole, and the numbers of the line of the list's
+// total where it holds one. It reports false where result holds no call's answer: a refusal, or a
+// tool's own words, such as find_tools'.
 func parseResult(result string) (SavedResult, bool) {
 	saved, _, answered := readResult(result)
 	return saved, answered
@@ -993,7 +1001,8 @@ func parseResult(result string) (SavedResult, bool) {
 
 // readResult is parseResult's reading of result, with where its body starts in it: after the
 // data note, the head line, and the line of the list's total where resultText wrote one
-// (resultCount), which a step saved before it wrote none does not hold.
+// (resultCount), whose numbers it keeps (SavedResult.Counted). A step saved before resultText
+// wrote that line holds none.
 func readResult(result string) (SavedResult, int, bool) {
 	text, answered := strings.CutPrefix(result, storedDataNote+"\n")
 	head, rest, _ := strings.Cut(text, "\n")
@@ -1001,13 +1010,20 @@ func readResult(result string) (SavedResult, int, bool) {
 	if !answered || numbers == nil {
 		return SavedResult{}, 0, false
 	}
+	var saved SavedResult
 	if strings.HasPrefix(rest, totalPrefix) {
-		if total, body, lined := strings.Cut(rest, "\n"); lined && resultTotalLine.MatchString(total) {
-			rest = body
+		if line, body, lined := strings.Cut(rest, "\n"); lined {
+			if counts := resultTotalLine.FindStringSubmatch(line); counts != nil {
+				rest, saved.Counted = body, true
+				saved.Total, _ = strconv.Atoi(counts[1])
+				saved.Listed = saved.Total
+				if counts[2] != "" {
+					saved.Listed, _ = strconv.Atoi(counts[2])
+				}
+			}
 		}
 	}
 	start := len(result) - len(rest)
-	var saved SavedResult
 	saved.Call, _ = strconv.Atoi(numbers[2])
 	saved.Status, _ = strconv.Atoi(numbers[3])
 	rest, _ = strings.CutSuffix(rest, suggestTargetNote)

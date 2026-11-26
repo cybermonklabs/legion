@@ -194,32 +194,56 @@ func TestAStepThatEndedNamesItsCountAndItems(t *testing.T) {
 	}
 }
 
+// progressPage is a page of n of a project's issues out of total, as read_progress of a project
+// answers it (GET /api/v1/issues with a limit), each row long enough that a page of 250 passes
+// modelResultLimit.
+func progressPage(n, total int) string {
+	rows := make([]string, n)
+	for at := range rows {
+		rows[at] = fmt.Sprintf(`{"key":"DEMO-%d","title":"Issue %d of the project, which its progress read lists","status":"todo",`+
+			`"progress":{"tasks":{"done":1,"total":3},"children":null}}`, at+1, at+1)
+	}
+	return fmt.Sprintf(`{"issues":[%s],"total":%d,"limit":250,"offset":0}`, strings.Join(rows, ","), total)
+}
+
 // TestAProgressReadOfAProjectStatesItsTotal: read_progress of a project answers a page of the
 // project's issues and the total of them (GET /api/v1/issues with a limit), and both its step's
-// label and the line the model is told before the list state that total. read_progress of an
-// issue answers the issue (GET /api/v1/issues/{key}), whose own lists - its labels, blockers,
+// label and the line the model is told before the list state that total. A page of 250 issues
+// passes modelResultLimit, so the model is given its first bytes, which do not decode: its label
+// takes the count from the total line before them, and names no item, since no row was read. A
+// page the server cut has no total line, so its label states no count. read_progress of an issue
+// answers the issue (GET /api/v1/issues/{key}), whose own lists - its labels, blockers,
 // documents, open asks, children and the rest - answerList reads as no list of issues, so neither
 // its label nor its result states a count.
 func TestAProgressReadOfAProjectStatesItsTotal(t *testing.T) {
 	call := agentwire.CallRequest{Step: 2, Call: 1, Kind: agentwire.KindRoute, Tool: going.ReadProgress}
 	head := storedDataNote + "\nstep 2, call 1: status 200\n"
+	project := `{"tool":"read_progress","arguments":{"project":"DEMO"}}`
 	page := `{"issues":[{"key":"DEMO-1","title":"First","status":"todo","progress":{"tasks":null,"children":null}},` +
 		`{"key":"DEMO-2","title":"Second","status":"done","progress":{"tasks":{"done":2,"total":2},"children":null}}],"total":300,"limit":250,"offset":0}`
+	long := progressPage(250, 300)
 	issue := `{"key":"DEMO-12","project":"DEMO","number":12,"title":"The mill","status":"in_progress","priority":1,"labels":["ui"],"parent":null,` +
 		`"blocked_by":["DEMO-9"],"advances":[],"assignee":"alice@example.com","claim":null,"components":{"mode":"inherit","ids":[]},"external_links":[],` +
 		`"blocks":[],"progress":{"tasks":{"done":1,"total":3},"children":{"done":1,"total":2}},"artifacts":[],"open_asks":[],` +
 		`"children":[{"key":"DEMO-13","title":"A child","status":"done"},{"key":"DEMO-14","title":"Another child","status":"todo"}],"design_gates":[],"referenced_by_count":0}`
 	for _, row := range []struct {
 		name, input, body, total, label string
+		cut, shortened                  bool
 		count                           int
 		items                           []string
 	}{
-		{"a project's page", `{"tool":"read_progress","arguments":{"project":"DEMO"}}`, page,
-			"[Total: 300 matching issues; the list below holds 2 of them.]\n", "Read the progress of DEMO · 2 of 300 issues", 2, []string{"DEMO-1", "DEMO-2"}},
-		{"an issue", `{"tool":"read_progress","arguments":{"issue":"DEMO-12"}}`, issue, "", "Read the progress of DEMO-12", 0, []string{"DEMO-12"}},
+		{"a project's page", project, page, "[Total: 300 matching issues; the list below holds 2 of them.]\n",
+			"Read the progress of DEMO · 2 of 300 issues", false, false, 2, []string{"DEMO-1", "DEMO-2"}},
+		{"a project's page past the model's cut", project, long, "[Total: 300 matching issues; the list below holds 250 of them.]\n",
+			"Read the progress of DEMO · 250 of 300 issues", false, true, 250, []string{}},
+		{"a project's page the server cut", project, long[:modelResultLimit+1024], "", "Read the progress of DEMO", true, true, 0, []string{}},
+		{"an issue", `{"tool":"read_progress","arguments":{"issue":"DEMO-12"}}`, issue, "", "Read the progress of DEMO-12", false, false, 0, []string{"DEMO-12"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			result := resultText(call, agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(row.body)})
+			result := resultText(call, agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(row.body), Cut: row.cut})
+			if saved, _ := parseResult(result); saved.Shortened != row.shortened || saved.Cut != row.cut {
+				t.Fatalf("the answer of %d bytes reads back shortened %t and cut %t, want %t and %t", len(row.body), saved.Shortened, saved.Cut, row.shortened, row.cut)
+			}
 			told := strings.TrimPrefix(result, head)
 			if !strings.HasPrefix(told, row.total) || row.total == "" && strings.HasPrefix(told, totalPrefix) {
 				t.Errorf("the model is told %q after the head, want the total line %q", told[:min(len(told), 80)], row.total)
@@ -230,6 +254,23 @@ func TestAProgressReadOfAProjectStatesItsTotal(t *testing.T) {
 				t.Errorf("%s ended reading %q, count %d, items %q; want %q, %d, %q", row.input, end.label, end.count, end.items, row.label, row.count, row.items)
 			}
 		})
+	}
+}
+
+// TestAPlainListPastTheModelsCutStatesItsCount: a bare list, as GET /api/v1/issues answers all of
+// a project's issues, whose body passes modelResultLimit is given to the model as its first bytes,
+// which do not decode: its step's label takes the count from the total line before them
+// (resultCount), and names only the items its arguments name, since no row was read.
+func TestAPlainListPastTheModelsCutStatesItsCount(t *testing.T) {
+	list := issueList(1000)
+	result := resultText(agentwire.CallRequest{Step: 2, Call: 1, Kind: agentwire.KindRoute, Tool: "dispatch_issues"}, agentwire.CallAnswer{Status: http.StatusOK, Body: list})
+	if saved, _ := parseResult(result); !saved.Shortened || saved.Cut {
+		t.Fatalf("the list of %d bytes reads back shortened %t and cut %t, want it shortened at the model's cut alone", len(list), saved.Shortened, saved.Cut)
+	}
+	label, arguments := stepLabel(toolCallTool, json.RawMessage(`{"tool":"dispatch_issues","arguments":{"project":"ACME"}}`))
+	want := "Listed the issues of ACME · 1000 issues"
+	if end := ended(label, arguments, result, false); end.label != want || end.count != 1000 || !slices.Equal(end.items, []string{}) {
+		t.Errorf("the list ended reading %q, count %d, items %q; want %q, 1000, none", end.label, end.count, end.items, want)
 	}
 }
 

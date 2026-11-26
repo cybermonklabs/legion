@@ -201,10 +201,14 @@ const noneFoundWords = " · none found"
 // ended is the end of a call of label with arguments that answered result, refused where the call
 // failed: its past form filled, followed by the count of the list it answered where the label
 // counts one ("· 3 hits"), of the total the answer states where that is more than the list holds
-// ("· 50 of 73 sessions", listWords), or, for a call that failed, why in words (failedWords). A
-// read Dispatch answered 404 - the item or record it reads does not exist - is no failure the
-// person can act on: it reads as its past form with noneFoundWords, and is marked noneFound, so
-// its frame carries no error. A 403, a 5xx and every other refusal stay failures.
+// ("· 50 of 73 sessions", listWords), or, for a call that failed, why in words (failedWords). An
+// answer the model was given whole is counted from its body, and its rows' keys join the items. An
+// answer the model was given only the first bytes of is counted from the line of the list's total
+// resultText wrote before them (resultCount), and its items are those its arguments name alone.
+// An answer the server cut has no such line and a body that does not decode, so it states no
+// count. A read Dispatch answered 404 - the item or record it reads does not exist - is no failure
+// the person can act on: it reads as its past form with noneFoundWords, and is marked noneFound,
+// so its frame carries no error. A 403, a 5xx and every other refusal stay failures.
 func ended(label contracts.ToolLabel, arguments map[string]any, result string, refused bool) endedStep {
 	answer, answered := parseResult(result)
 	step := endedStep{items: argumentItems(arguments)}
@@ -218,11 +222,17 @@ func ended(label contracts.ToolLabel, arguments map[string]any, result string, r
 		return step
 	}
 	words := fillLabel(label.Past, arguments)
-	if label.Count != "" && answered && !answer.Shortened && !answer.Cut {
-		if list, total, listed := resultList(answer.Body, label.Count); listed {
-			step.count = len(list)
-			words += " · " + listWords(len(list), total, label.Count)
-			step.items = appendItems(step.items, listKeys(list)...)
+	if label.Count != "" && answered && !answer.Cut {
+		switch {
+		case !answer.Shortened:
+			if list, total, listed := resultList(answer.Body, label.Count); listed {
+				step.count = len(list)
+				words += " · " + listWords(len(list), total, label.Count)
+				step.items = appendItems(step.items, listKeys(list)...)
+			}
+		case answer.Counted:
+			step.count = answer.Listed
+			words += " · " + listWords(answer.Listed, answer.Total, label.Count)
 		}
 	}
 	step.label = cutWords(words, labelLimit)
