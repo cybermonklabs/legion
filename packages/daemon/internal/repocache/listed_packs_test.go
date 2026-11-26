@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -216,8 +217,8 @@ func (r *packsRig) stray(t *testing.T, name string) int64 {
 	return r.reader.seed(t, name, content, map[string]string{sha256Metadata: sha256Of(content)})
 }
 
-// lose deletes name's object from the double behind the cache's back, as a retention rule of the
-// deployment or another writer would, through the double's JSON API apart from the cache's code,
+// lose deletes name's object from the double behind the cache's back, as a lifecycle rule of the
+// bucket or another writer would, through the double's JSON API apart from the cache's code,
 // and fails the test unless the double deleted it.
 func (r *packsRig) lose(t *testing.T, name string) {
 	t.Helper()
@@ -402,7 +403,7 @@ func formatInt(n int64) string { return strconv.FormatInt(n, 10) }
 // the old set listed, /tar and /healthz answering, and the next refresh tries again; and a pack
 // without its index, or an index without its pack, is left out of the set, which lists the rest of
 // the clone. Every answer of every row holds the invariant requireWhole checks.
-// An object of the listed set that the bucket lost behind the cache's back, as a retention rule or
+// An object of the listed set that the bucket lost behind the cache's back, as a lifecycle rule or
 // another writer deletes one, is uploaded again with the clone's bytes at the next sync, logged by
 // name, whether that sync keeps the set or switches it.
 func TestCachePublishesCompletePackSets(t *testing.T) {
@@ -751,6 +752,8 @@ func testLostPackPutBackAtASwitch(t *testing.T) {
 // own clock; a delete that fails is tried again at the next sync; a restarted cache counts from its
 // own first switch, never from an object's creation; and nothing outside the prefix, or under it
 // but not of the cache's names, is deleted.
+// A sync whose list of the bucket fails, at a switch or keeping the set, drops the record of each
+// object the set it leaves listed or the clone holds, and keeps every other record as it was.
 func TestCacheRetiresOnlyUnlistedPacks(t *testing.T) {
 	if retireAfter != 30*time.Minute {
 		t.Fatalf("retireAfter is %s, not 30 minutes, twice an address's 15", retireAfter)
@@ -767,6 +770,8 @@ func TestCacheRetiresOnlyUnlistedPacks(t *testing.T) {
 		{"a delete that fails is tried again at the next sync", testFailedDeleteTriedAgain},
 		{"a cache restarted within the window counts from its own first switch", testRestartCountsFromItsOwnSwitch},
 		{"another repository's objects and a name the cache does not write are never deleted", testOtherPrefixesUntouched},
+		{"a switch whose list of the bucket fails drops the record of each object its set or the clone holds, and keeps the rest", func(t *testing.T) { testFailedListDropsHeldRecords(t, true) }},
+		{"a sync whose list of the bucket fails and that keeps the set drops the record of each object the set or the clone holds, and keeps the rest", func(t *testing.T) { testFailedListDropsHeldRecords(t, false) }},
 	} {
 		t.Run(row.name, row.run)
 	}
@@ -1035,6 +1040,59 @@ func testOtherPrefixesUntouched(t *testing.T) {
 	}
 	if notes != 1 {
 		t.Errorf("the file under the prefix that is no pack was logged %d times, not once: %q", notes, r.log.all())
+	}
+}
+
+// testFailedListDropsHeldRecords: a sync whose list of the bucket fails, at a fetch's switch
+// (switches) or with nothing new, so that it keeps the set, drops the absence record of an object
+// the set it leaves listed holds and of a lone pack the clone alone holds, as retire would, so a
+// later set that leaves either out counts its 30 minutes from that switch; and it keeps the record
+// of an object neither holds as it was. The list fails at a front of the double that answers the
+// cache's list requests 403, which the Storage client does not retry, and hands every other
+// request to the double.
+func testFailedListDropsHeldRecords(t *testing.T, switches bool) {
+	r := newPacksRig(t)
+	var refuseLists atomic.Bool
+	front := serveHandler(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if refuseLists.Load() && req.Method == http.MethodGet && req.URL.EscapedPath() == "/storage/v1/b/"+testBucket+"/o" {
+			http.Error(w, "the test refuses this list", http.StatusForbidden)
+			return
+		}
+		r.double.ServeHTTP(w, req)
+	}))
+	t.Setenv(emulatorHostEnv, strings.TrimPrefix(front, "http://"))
+	r.refresh(t)
+	listed := r.c.listed.Load()
+	if switches {
+		advance(t, r.remote, "moved")
+	}
+	lone := "pack-" + strings.Repeat("ab", 20) + ".pack"
+	if err := os.WriteFile(filepath.Join(r.c.dir, "objects", "pack", lone), randomContent(t, 4<<10), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	inSet, inClone, neither := listed.objects[0].name, testPrefix+lone, strayName(t)
+	recorded := absence{since: packsStart.Add(-time.Hour), generation: 1}
+	for _, name := range []string{inSet, inClone, neither} {
+		r.c.absent[name] = recorded
+	}
+	refuseLists.Store(true)
+	r.refresh(t)
+	if !logged(r.log.all(), "list the bucket's packs to put back those the listed set names and retire those no set names; tried again at the next sync: ") {
+		t.Fatalf("the sync whose list the front refused logged no failed list: %q", r.log.all())
+	}
+	if switched := r.c.listed.Load() != listed; switched != switches {
+		t.Fatalf("the sync whose list failed switched the set: %t, not %t", switched, switches)
+	}
+	if !r.c.listed.Load().holds(inSet) {
+		t.Fatalf("the set the sync left listed does not hold %s", inSet)
+	}
+	for _, name := range []string{inSet, inClone} {
+		if record, ok := r.c.absent[name]; ok {
+			t.Errorf("the sync whose list failed kept the record %+v of %s, which the set or the clone holds", record, name)
+		}
+	}
+	if record, ok := r.c.absent[neither]; !ok || record != recorded {
+		t.Errorf("the sync whose list failed left the record of %s, which neither the set nor the clone holds, as %+v, not %+v", neither, record, recorded)
 	}
 }
 
