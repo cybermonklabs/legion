@@ -216,3 +216,7 @@ unless `AIRLOCK_MODEL` names a built Lean model (`internal/cipher/proxyrules/air
 The broker's docs (`docs/site/src/content/docs/broker/`: `concepts.md`, `operate.md` and
 `guides/`) say how its packages, policy, enrollment and CLI work; `cmd/cipher-refgen` writes their
 reference pages from the code's doc comments at the docs build, not in `go test`.
+
+Cipher's proxy signs each bound host's leaf with a pod's own intermediate; "The proxy's chain" in
+`concepts.md` says which names its constraints bind, and in which clients.
+A copied intermediate key can sign, for up to 7 days, a certificate with no DNS alternative name that curl, Python and Node accept for a name outside the allowed ones when its common name is one label, such as `localhost`, or a wildcard over two or more labels, such as `*.evil.example` for `a.evil.example`. They refuse a plain name, such as `evil.example`, and a wildcard over one label, such as `*.example`, so for them the key reaches names of one label, and names of three or more labels through a wildcard, but no name of two labels. Bun accepts any name through the common name when the certificate also has a URI, email or registered-ID alternative name. git on GnuTLS rejects every form. Only the 7-day life limits this.

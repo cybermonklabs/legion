@@ -172,6 +172,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
 		},
 		{
+			Name: "admission_p0_bound", Default: "no bound", RequiredBy: "no",
+			Description: "How many P0 issues may hold a slot at once, a whole number from 1 to 2147483647; a P0 issue, one Dispatch resolves to P0 (its own priority, else the nearest issue's above it that has one), starts outside `admission_cap` and counts against this bound alone, and with no bound every P0 issue that waits only for a slot starts. A person sets another bound, or none, while the daemon runs, with `legion project set-p0-bound` or through the controller (`set_p0_bound`) on the person's cited word; it takes effect at the next admission pass with no restart and stands until it is cleared.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionP0Bound = v }),
+		},
+		{
 			Name: "controller", Default: "`operator`", RequiredBy: "no",
 			Description: "Who runs the project's controller: `operator`, a person with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running (a pane of its own window under `runtime: tmux`), which needs `dispatch_url`.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.Controller = v }),
@@ -618,8 +623,8 @@ var nestedKeys = []memberGroup{
 			Description: "The kubeconfig the daemon reaches the cluster with, as a path resolved against this file's directory."},
 		{Name: "context", Default: "the kubeconfig's own current context", RequiredBy: "when the kubeconfig sets no current context",
 			Description: "Which context of that kubeconfig the daemon uses; naming one requires `kubeconfig`."},
-		{Name: "scheduling", Default: "a pod selects the Legion pool and tolerates nothing else", RequiredBy: "no",
-			Description: "Where the pods may run beyond the pool the runtime selects itself: the node labels they also select, the taints they tolerate and their priority class."},
+		{Name: "scheduling", Default: "a pod selects no node label and tolerates no taint, so it runs on any of the cluster's general nodes", RequiredBy: "no",
+			Description: "Where the pods may run on the cluster's general nodes, which they share: the node labels they select, the taints they tolerate and their priority class, and nothing else but a microVM pod's ComputeClass label and toleration."},
 		{Name: "resources", Default: "both pods take the daemon's own reservations", RequiredBy: "no",
 			Description: "What each of the two pods the daemon builds reserves and is bounded by: `issue`, every issue pod's, and `controller`, the daemon-launched controller's."},
 		{Name: "gateway", Default: "", RequiredBy: "no",
@@ -656,8 +661,8 @@ var nestedKeys = []memberGroup{
 			Description: "The sandbox the project's issue pods and its controller's pod run in, gVisor or a GKE Sandbox microVM, the issues whose pods run in the other one for a canary, and where a microVM pod runs; the controller's pod follows `type` alone, and the repository cache pods and the image probe run in gVisor whatever it says."},
 	}},
 	{Path: kubernetesKey + ".scheduling", Members: []member{
-		{Name: "node_selector", Default: "a pod selects the Legion pool alone", RequiredBy: "no",
-			Description: "The node labels every pod selects as well, merged over the pool label the runtime sets itself and which this key may not name, since the cluster's admission policy requires the pool's own value."},
+		{Name: "node_selector", Default: "a pod selects no node label but a microVM pod's ComputeClass", RequiredBy: "no",
+			Description: "The node labels every pod selects, as written, which may not name `legion.dev/pool`: Legion's pods share the cluster's general nodes, and that label would set them apart on nodes of their own."},
 		{Name: "tolerations", Default: "a pod tolerates no taint, so a tainted pool needs its toleration named here", RequiredBy: "no",
 			Description: "The node taints every pod tolerates, each a key, an operator and an effect."},
 		{Name: "priority_class", Default: "a pod runs at the namespace's own default priority", RequiredBy: "no",
