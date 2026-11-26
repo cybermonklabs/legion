@@ -214,10 +214,9 @@ The pack and prompt probes, which read the rest of it, are the plugin-pack job's
 
 ## daemon_go_tests: The rule file internal/prompts/roles_test.go holds the role parts to
 
-The repository's own rule file, .github/private-names.toml, which
-internal/prompts/roles_test.go's TestNoReusablePartNamesARepositoryOrLibrary reads and
-runs over every reusable role part, since the `legion` binary embeds no rule. A change
-to that file alone changes what the test refuses, so it starts this job.
+`packages/daemon/internal/prompts/roles_test.go#TestNoReusablePartNamesARepositoryOrLibrary` reads `.github/private-names.toml` and runs its rules over every reusable role part.
+The `legion` binary embeds no rule.
+A change to that file alone changes what the test refuses, so it starts this job.
 
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
@@ -262,21 +261,15 @@ this job generates that Go from packages/contracts/schemas, and reads no file of
 
 ## dispatch_api_types: The two files the Dispatch API types are rendered from
 
-packages/contracts/src/dispatch-api.generated.ts, the Dispatch API's TypeScript types,
-is in no commit: every `bun install` renders it from schemas/dispatch-openapi.json
-with scripts/gen-api.ts (the root package.json's postinstall), and so does the
-`typecheck` script of each package that compiles it, so two pull requests
-that each add a route never edit one generated file; every CI typecheck runs after
-the job's install. Only a type check reads it:
-dispatch-api.ts re-exports it with `export type *` and every other import of it is
-an `import type`, so Bun, `bun build`, Vite and Astro erase each of them. A change
-to what a typecheck compiles there is a change to one of those two files, so the gate
-of every job whose tsc program holds the module declares both
-(`.github/scripts/ci_job_reads.py#dispatch_api_types`), and the listing of a program gives the two
-in the module's place (`.github/scripts/ci_ts_listing.py#RENDERED`), so check-ts-filters.sh holds each
-gate to them. The contracts gate takes the whole package. The Go the document is
-emitted from is not named here: a change to it is judged by envoy-go-build's
-`openapi --check`, whose gate declares both that Go and the document.
+The generated Dispatch API TypeScript types in `packages/contracts/src/dispatch-api.generated.ts` are not committed.
+The root `package.json` postinstall and each package's `typecheck` script render the types from `schemas/dispatch-openapi.json` with `scripts/gen-api.ts`.
+Two pull requests that each add a route therefore never edit one generated file.
+`dispatch-api.ts` re-exports the generated module with `export type *`, and all its other imports are type-only, so Bun, Vite and Astro erase them during a build.
+Every CI typecheck runs after the job's install.
+The gate of each job whose TypeScript program reads the generated module declares both source files (`.github/scripts/ci_job_reads.py#dispatch_api_types`).
+The program listing replaces the generated module with those two files (`.github/scripts/ci_ts_listing.py#RENDERED`), so `check-ts-filters.sh` holds each gate to both.
+The contracts gate takes the whole package.
+The Go code that emits the OpenAPI document is checked by envoy-go-build's `openapi --check`, whose gate declares both the Go code and the document.
 
 ## guide_layout_files: The six guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
 
@@ -749,14 +742,11 @@ A dependency's testdata no test of this job reads is not an input.
 
 ## private_names_port: The private-name port harness, in a job of its own: it
 
-The private-name port harness, in a job of its own: it builds the `legion` binary
-of this head (.github/scripts/check-private-names-port.test.sh, its `go build` of
-./cmd/legion) and holds the rules of .github/private-names.toml, as that binary
-runs them, to the frozen shell script's verdicts, case for case. That build is why
-this list is as long as it is - legion_command is what the binary is made of - and
-why the step has a job: while it was the test job's, the whole closure sat on the
-`test` filter, so a change to one package of the daemon ran thirty-odd shell
-harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+The private-name port harness builds this head's `legion` binary in its own job.
+The harness is `.github/scripts/check-private-names-port.test.sh`.
+For each case, it compares the binary's verdict under `.github/private-names.toml` with the frozen shell script's verdict.
+The gate declares `legion_command` because the harness builds that binary.
+When the step was in the `test` job, a change to one daemon package started that job's shell harnesses and Bun suites as well.
 
 ## private_names_port: The rule file the harness names to the binary
 
@@ -1851,9 +1841,11 @@ The job checks out its own commit alone and then fetches main and the release ta
 the whole repository, 3,242 branches and 3,710 tags on 2026-11-23, took the checkout to its 2-minute budget in three merge groups that day (the workflow's comment has the numbers).
 The first-rollout row runs the first-rollout build instead, the newest release before the first that registers its schema numbers:
 the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds it the same way.
-The going-runs row of INFRA-1588's check c25 runs a third build, the release legion-envoy-v32.15.0, pinned by its commit (GOING_RELEASE_COMMIT) in the same way and for a reason of its own:
+The going-runs row uses a third build, the release legion-envoy-v32.15.0, pinned by its commit (GOING_RELEASE_COMMIT) in the same way and for a reason of its own:
 that release's sweep deletes going_requests older than an hour, which the newest release need not do, so only a fixed release shows that a run of the head survives it.
-Each of the three builds is cached by its commit and the hash of the script that built it, with its src/ left out, since the test reads only the parts the script copies out of it.
+Each of the three builds is cached by its commit and the hash of the script that built it.
+The script removes the source archive directory (`src/`) after it copies the parts that the tests read, so each cache entry holds only the build.
+The old `!<dir>/src` line did not exclude the archive: actions/cache resolves `<dir>` to the directory without expanding its descendants, then tar archives the whole directory (run 45722872215, job 139585272669).
 The job restores each and saves none: .github/workflows/ci-caches.yaml's dispatch-builds job builds all three on a push to main, and again when release-envoy-listener.yaml has tagged a release (it dispatches ci-caches.yaml with `only: dispatch-builds`), and saves them in main's scope, which every pull request and merge group reads;
 its dispatch-builds-superseded job then deletes main's older entries of each build and every entry of it on any other ref.
 The job saved them itself before, in the scope of its run's own ref, where a merge group's entry is read by no later run and a pull request's by that pull request alone:
@@ -1888,10 +1880,10 @@ a job of its own, the list kept as JSON, jq selecting numeric ids, each id check
 
 Both jobs of ci-job-dispatch-two-builds.yaml restore go-envoy-test and save nothing, as envoy-go-claim-model and dispatch-browser.yaml's binaries job do.
 setup-go's own cache is off, so without a restore their Go steps start on an empty module cache and an empty build cache.
-When the two earlier builds come out of their own cache entries, the sizing step's `go run ./internal/dispatch/store/cmd/connections` and the twobuild test step are the first go commands of the job, and they download and compile the set from nothing.
+When the earlier builds come out of their own cache entries, the sizing step's `go run ./internal/dispatch/store/cmd/connections` and the twobuild test step are the first go commands of the job, and they download and compile the set from nothing.
 In the 10 green merge groups after 2026-11-24T08:40Z, the sizing step took 27 s, against 2 s before, when the previous build's compile had filled the caches first.
 In the dispatch-two-builds job of run 45360231949, the two steps printed 16 and 67 `go: downloading` lines.
-Each push to main fills go-envoy-test with `go test -c -o /dev/null ./...` over the envoy module, so it holds what both steps build.
+Each push to main fills go-envoy-test with `go test -count=1 -run '^$' ./...` over the Envoy module, which builds the test binaries without running tests, so the cache holds what both steps build.
 Measured with `go list -deps -test -tags twobuild ./cmd/dispatch ./internal/dispatch/store/cmd/connections` at main 1b636f3193e, the steps need 626 packages of 80 modules, and `go list -deps -test ./...` holds every one.
 go-envoy's build of the listener and natsd lacks 485 of the packages and 53 of the modules, so a restore of go-envoy would still download and compile most of the set.
 The restore is a read of an entry that already exists: it adds no bytes to the repository's cache.

@@ -101,7 +101,7 @@ So the budget carries the cold build rather than the warm one, as the multiproce
 go-envoy-test, restored only: this job builds the Dispatch server and the real broker's three commands, and that family's entry is the one that holds them.
 go-envoy is filled by a build of ./cmd/listener and ./internal/testnats/cmd/natsd alone (.github/workflows/ci-caches.yaml), so a job that restores it and builds these four downloads and compiles their closure on a key that hit:
 115 `go: downloading` lines in job 129055096326 of run 42585736615, where this build still sat inside the alone job's 3-minute browser step.
-go-envoy-test is filled by `go test -c -o /dev/null ./...` over the whole envoy module, so it carries every package built here:
+go-envoy-test is filled by `go test -count=1 -run '^$' ./...` over the whole Envoy module, so it carries every package built here:
 4 downloads and a 17 s restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB.
 No job here saves either one.
 
