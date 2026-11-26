@@ -57,17 +57,34 @@ func LockPerson(ctx context.Context, tx pgx.Tx, person string) error {
 	return err
 }
 
-// SubjectReplaced reports whether account is recorded, in tx, as an account that no longer
-// holds person's address. The caller holds LockPerson. An account not recorded is never
-// replaced.
-func SubjectReplaced(ctx context.Context, tx pgx.Tx, person string, account IssuerSubject) (bool, error) {
+// ErrSubjectReplaced is a sign-in trade (RecordPersonSignIn), an approval-page sign-in
+// (Store.CreateBrowserSession) or a machine login's approval (machine.Service.ApplyDecision) by an
+// account a revoke recorded as one that no longer holds the person's address
+// (RecordReplacedSubjectTx): the broker refuses that account every new credential and session
+// there.
+var ErrSubjectReplaced = errors.New("store: another account holds this person's address now")
+
+// LockPersonAs takes LockPerson for person in tx and then answers ErrSubjectReplaced when account
+// is recorded, in tx, as an account that no longer holds person's address; an account not recorded
+// is never replaced. A sign-in trade, an approval-page sign-in and a machine login's approval each
+// begin with it, so a revoke of that account either commits before the read, which then refuses
+// them, or waits for them to commit and ends what they wrote. The lock is held until tx ends.
+func LockPersonAs(ctx context.Context, tx pgx.Tx, person string, account IssuerSubject) error {
+	if err := LockPerson(ctx, tx, person); err != nil {
+		return err
+	}
 	if !account.Recorded() {
-		return false, nil
+		return nil
 	}
 	var replaced bool
-	err := tx.QueryRow(ctx, `select exists (select 1 from replaced_person_subjects
-		where person = $1 and issuer = $2 and subject = $3)`, person, account.Issuer, account.Subject).Scan(&replaced)
-	return replaced, err
+	if err := tx.QueryRow(ctx, `select exists (select 1 from replaced_person_subjects
+		where person = $1 and issuer = $2 and subject = $3)`, person, account.Issuer, account.Subject).Scan(&replaced); err != nil {
+		return err
+	}
+	if replaced {
+		return ErrSubjectReplaced
+	}
+	return nil
 }
 
 // SubjectReplacedWithin reports whether Dispatch has named any account replaced at person's

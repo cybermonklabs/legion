@@ -152,7 +152,7 @@ func TestDeleteBrowserSessionsForLoginEndsThatLoginsSessionsAlone(t *testing.T) 
 
 // A sign-in to the approval page records the account that signed in, and ends the session the
 // browser held in the transaction that writes the new one. A sign-in by an account recorded as
-// replaced under the address is ErrBrowserSessionSubjectReplaced: it writes no session and leaves
+// replaced under the address is ErrSubjectReplaced: it writes no session and leaves
 // the browser's previous one alone, as every other refused sign-in does. The revoke's delete ends
 // the replaced account's sessions and those that record no account, and leaves the holder's and
 // another person's.
@@ -216,8 +216,8 @@ func TestASignInToThePageRecordsItsAccountAndRefusesAReplacedOne(t *testing.T) {
 	}
 
 	err = st.CreateBrowserSession(ctx, store.BrowserSignIn{Hash: hashOf("again"), Login: ada, Account: replaced, Expires: expires, Previous: &previous})
-	if !errors.Is(err, store.ErrBrowserSessionSubjectReplaced) {
-		t.Fatalf("a sign-in of the replaced account = %v, want ErrBrowserSessionSubjectReplaced", err)
+	if !errors.Is(err, store.ErrSubjectReplaced) {
+		t.Fatalf("a sign-in of the replaced account = %v, want ErrSubjectReplaced", err)
 	}
 	if live("again") || !live("previous") {
 		t.Fatalf("the refused sign-in wrote a session (%t) or ended the browser's previous one (%t)", live("again"), !live("previous"))
