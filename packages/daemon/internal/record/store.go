@@ -3027,10 +3027,11 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
 // it is where the cap is applied. The store repeats this last rule (its slotWaitingStart, which
 // TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot holds to this one), so the idle release
-// keeps no pod for such a start and a backstop wakes no worker of its issue. Supervise rows need
-// no other such rule: a stop names the run it ends through the claim's own record of the newest
-// start run against it (claims.last_start_row), so ordering them here would buy nothing that
-// survives a retry the runtime delayed.
+// keeps no pod for such a start; what the start means for a backstop is the store's
+// PodRecords.WaitsForItsSlot's to say. Supervise rows need no other such rule: a stop names the
+// run it ends through the claim's own record of the newest start run against it
+// (claims.last_start_row), so ordering them here would buy nothing that survives a retry the
+// runtime delayed.
 //
 // None of the three holds an issue's later rows back. A row that is merely unclaimable takes no
 // lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose worker

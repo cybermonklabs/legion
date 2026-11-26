@@ -65,9 +65,8 @@ const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(
 // its payload writes as `"needsSlot": true`) while no slot of that issue stands. It is record's
 // outboxInOrder rule for such a row, which holds it back until the slot comes, written out here as
 // the store writes every statement of its own; TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot
-// holds the two together. The idle rule leaves such a start out (idleWaitingRow), and a backstop
-// wakes no worker of an issue that owes one (PodRecords.WaitsForItsSlot): the slot's start is what
-// brings that issue's worker back.
+// holds the two together. The idle rule leaves such a start out (idleWaitingRow); what it means
+// for a backstop is PodRecords.WaitsForItsSlot's to say.
 const slotWaitingStart = `kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'needsSlot', '') = 'true'
 	and not exists (select 1 from slots where slots.issue = outbox.issue)`
 

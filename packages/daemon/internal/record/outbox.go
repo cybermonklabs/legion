@@ -1302,8 +1302,8 @@ type SuperviseRequest struct {
 	// either way; what the mark decides is when the worker comes back with it. While the hold
 	// stands, the daemon's store reads the same rule (its slotWaitingStart, held to this one by
 	// TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot): the idle release does not keep
-	// the issue's pod for the start (idleWaitingRow), and a backstop wakes no worker of the issue
-	// (PodRecords.WaitsForItsSlot), since the start brings the worker back when the slot comes.
+	// the issue's pod for the start (idleWaitingRow). What such a start means for a backstop is
+	// the store's PodRecords.WaitsForItsSlot's to say.
 	NeedsSlot bool `json:"needsSlot,omitempty"`
 	// Relaunch is written by nothing. It marked the task-less half of the two rows a phase
 	// worker's start used to be, before a start became one row that carries its task
