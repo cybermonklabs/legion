@@ -3065,16 +3065,24 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // since an operator saw it cannot clear a later session. A session the claim records but does not
 // hold is cleared only once the Envoy listener no longer names it as the claim's role holder
 // (mayForget).
+//
+// Its answer is typed, so an asker decides on the answer alone and reads the claim no second
+// time: nil, the session forgotten and written; ErrForgetSessionNotRecorded, a claim recording
+// another session, or none, by the time of the forget, so another decision cleared or replaced
+// it; ErrForgetNotSuspendedBy, a claim no longer standing under the suspension the forget names;
+// a *ForgetUnwrittenError, the session forgotten in memory and its write refused by the store,
+// which the machine's next decision writes; and any other error, a refusal of mayForget — the
+// listener's answer about the role, or the store's — which changed nothing of the claim.
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
 	if !m.claim.HoldsSession(request.Session) {
-		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
+		return &RefusedError{Request: "forget-session", Err: forgetRefusal{kind: ErrForgetSessionNotRecorded, text: fmt.Sprintf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
-		)}
+		)}}
 	}
-	if by := request.SuspendedBy; by != "" && (m.claim.State != StateSuspended || m.claim.SuspendedBy != by) {
-		return &RefusedError{State: m.claim.State, Request: "forget-session", Reason: fmt.Sprintf(
-			"the claim stands %s, suspended by %q, and this forget is for a claim suspended by %q", m.claim.State, m.claim.SuspendedBy, by)}
+	if by := request.SuspendedBy; by != "" && !m.claim.SuspendedFrom(by) {
+		return &RefusedError{State: m.claim.State, Request: "forget-session", Err: forgetRefusal{kind: ErrForgetNotSuspendedBy, text: fmt.Sprintf(
+			"the claim stands %s, suspended by %q, and this forget is for a claim suspended by %q", m.claim.State, m.claim.SuspendedBy, by)}}
 	}
 	if err := m.mayForget(ctx, "forget-session"); err != nil {
 		return err
@@ -3086,8 +3094,37 @@ func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: forgetting the recorded session at "+asker, "session", m.claim.Session,
 		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State), "why", why)
 	m.forgetSession(why)
-	return m.persist(ctx)
+	if err := m.persist(ctx); err != nil {
+		return &ForgetUnwrittenError{Err: err}
+	}
+	return nil
 }
+
+// ErrForgetSessionNotRecorded and ErrForgetNotSuspendedBy are forgetSession's two refusals of a
+// claim another decision moved: one that records another session, or none, and one that no longer
+// stands under the suspension the forget names (RequestForgetSession.SuspendedBy). Each is matched
+// with errors.Is through the *RefusedError that carries it.
+var (
+	ErrForgetSessionNotRecorded = errors.New("the claim does not record the session the forget names")
+	ErrForgetNotSuspendedBy     = errors.New("the claim does not stand under the suspension the forget names")
+)
+
+// forgetRefusal is one of forgetSession's refusals, its text the refusal's own and its kind the
+// sentinel an asker matches.
+type forgetRefusal struct {
+	kind error
+	text string
+}
+
+func (e forgetRefusal) Error() string        { return e.text }
+func (e forgetRefusal) Is(target error) bool { return target == e.kind }
+
+// ForgetUnwrittenError is forgetSession's answer where it dropped the session and the store refused
+// the write: the claim forgot the session in memory, and the machine's next decision writes it.
+type ForgetUnwrittenError struct{ Err error }
+
+func (e *ForgetUnwrittenError) Error() string { return e.Err.Error() }
+func (e *ForgetUnwrittenError) Unwrap() error { return e.Err }
 
 // operatorClose is the operator's own close, asked of a claim through the API. TreeClosable is
 // asked here rather than by the caller, so the answer and the stop it decides sit together rather

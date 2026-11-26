@@ -820,6 +820,12 @@ func (c Claim) OpenTurn() (start time.Time, open bool) {
 	return c.LastTurnStart, c.LastTurnStart.After(c.LastTurnEnd)
 }
 
+// SuspendedFrom is whether the claim stands suspended by source by: the forget's test of the
+// suspension its asker names (RequestForgetSession.SuspendedBy).
+func (c Claim) SuspendedFrom(by SuspendSource) bool {
+	return c.State == StateSuspended && c.SuspendedBy == by
+}
+
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
 // operator's, which holds until an operator resumes the claim.
 func (c Claim) RuleMayResume() bool {

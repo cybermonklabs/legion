@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -53,36 +54,13 @@ func (k *controllerKeeper) mind(ctx context.Context, m *supervise.Machine) error
 // daemon, not as the operator, since a resume by rule refuses an operator's suspension
 // (supervise.Claim.RuleMayResume), and between turns (RequestSuspend.BetweenTurns): the machine,
 // under its own lock, refuses the suspension unless the claim is ready or idle with no task
-// waiting, its shim has connected to this daemon, and its agent says it is not streaming. This
-// keeper's read of the claim says only what the store held: after a daemon restart a turn an Envoy
-// message started while the daemon was down is read only from the frames the shim replays after
-// its hello, and a task can arrive between this read and the suspension. A refusal keeps the
-// session until the next look. The keeper then forgets the session with the rule's reason, which
-// the fresh session is told in its first prompt, naming the daemon's suspension it made
-// (RequestForgetSession.SuspendedBy). A claim an operator suspended by the time of the forget
-// refuses it, and the operator's resume brings back the same session: an operator's suspension
-// held through a turn whose stop the runtime refused, which the keeper's suspension ran as the
-// operator's; one decided before the keeper's, which its suspension answered with nil; and one
-// decided after it, which takes the daemon's suspension over on rank. The first two are settled
-// before the keeper's suspension returns; only the forget's own check closes the third. So does
-// a resume that came between the two, which leaves the claim running and the forget ignored. The
-// keeper reads the claim after a refusal and logs it at Info only where the claim no longer
-// stands suspended by the daemon; every other refusal — the Envoy listener's answer about the
-// role, which the forget asks before it clears a session the claim does not hold (mayForget) —
-// returns as the error it is, which the keeper's loop logs at Error. Last it resumes the claim by
-// rule, which launches a fresh agent. That is the order api's freshSession follows for a live
-// claim.
-//
-// One Warn line names the claim, the old session and the reason (R4), once the machine has dropped
-// the session. Where the forget's write fails after that, the line is written all the same: the
-// machine keeps the dropped session in memory and writes it at its next decision, and the next
-// look's resume by rule launches the fresh agent. A daemon restarted before that write reads the
-// old session back, suspended by the daemon, resumes it by rule and replaces it again at its next
-// idle look, so the first line named a replacement that did not happen and a second follows: that
-// costs one log line, and needs a failed store write and a restart in the same minute. The old
-// session's transcript stays in its store. A forget the machine refuses changes nothing: the claim
-// stays as the refusal found it, and a daemon's suspension is resumed by rule on the old session
-// at this keeper's next look.
+// waiting, holds the session it records, has its shim connected to this daemon, and its agent says
+// it is not streaming. This keeper's read of the claim says only what the store held: after a
+// daemon restart a turn an Envoy message started while the daemon was down is read only from the
+// frames the shim replays after its hello, and a task can arrive between this read and the
+// suspension. A claim that does not hold its session is one whose session the forget could clear
+// only on the Envoy listener's word (mayForget), and whose resume no launch could run, so the
+// keeper does not stop it. A refusal keeps the session until the next look; then forgetOld.
 func (k *controllerKeeper) replaceOld(ctx context.Context, m *supervise.Machine, c supervise.Claim, now time.Time) error {
 	if k.maxAge <= 0 || c.Session == "" {
 		return nil
@@ -113,21 +91,61 @@ func (k *controllerKeeper) replaceOld(ctx context.Context, m *supervise.Machine,
 		}
 		return fmt.Errorf("suspend the controller to replace its old session: %w", err)
 	}
-	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: c.Token, Session: c.Session, Why: why, SuspendedBy: supervise.SuspendedByDaemon})
-	if m.Claim().HoldsSession(c.Session) {
-		if after := m.Claim(); after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByDaemon {
-			k.log.Info("controller: the old controller session is not replaced at this look: the claim no longer stands under the keeper's suspension",
-				"claim", c.Token, "session", c.Session, "state", after.State, "suspendedBy", after.SuspendedBy, "reason", forgot)
-			return nil
+	return k.forgetOld(ctx, m, c.Token, c.Session, why, started)
+}
+
+// forgetOld is the half of replaceOld after the keeper's suspension: the forget of the old
+// session, with the rule's reason the fresh session is told in its first prompt, and the resume
+// by rule that launches the fresh agent, in the order api's freshSession follows for a live claim.
+// The forget names the daemon's suspension the keeper made (RequestForgetSession.SuspendedBy), and
+// the keeper decides on the forget's typed answer alone, reading the claim no second time:
+//
+//   - Forgotten: one Warn line names the claim, the old session and the reason (R4), and the
+//     resume by rule launches the fresh agent.
+//   - Forgotten in memory, its write refused (*supervise.ForgetUnwrittenError): the same Warn
+//     line, and the write's error, which the keeper's loop logs at Error. The machine writes the
+//     dropped session at its next decision, and the next look's resume by rule launches the fresh
+//     agent. A daemon restarted before that write reads the old session back, suspended by the
+//     daemon, resumes it by rule and replaces it again at its next idle look, so the first line
+//     named a replacement that did not happen and a second follows: one log line, for a failed
+//     store write and a restart in the same minute.
+//   - Not recorded (supervise.ErrForgetSessionNotRecorded): another decision cleared the session
+//     between the suspension and the forget — an operator's `legion claims forget-session` — and
+//     that is the operator's replacement: one Info line, no R4 line, no error.
+//   - Not suspended by the daemon (supervise.ErrForgetNotSuspendedBy): an operator's suspension
+//     took the claim over by the time of the forget, in one of the three ways
+//     RequestForgetSession.SuspendedBy's doc names, or a resume came between the two. The
+//     operator's resume brings back the same session: one Info line, no error.
+//   - Any other refusal changed nothing, so the claim still stands suspended by the daemon, and
+//     the keeper resumes the old session by rule in this same look, so a suspension the keeper made
+//     never leaves the controller stopped. The refusal returns as the error it is. The between-turns
+//     suspension held the session's names in the machine (supervise's Machine.betweenTurns), so the
+//     forget asks the Envoy listener nothing and is not refused for the hold, and the resume is not
+//     either: no branch here waits on an operator.
+//
+// The old session's transcript stays in its store.
+func (k *controllerKeeper) forgetOld(ctx context.Context, m *supervise.Machine, token claim.Token, old, why string, started time.Time) error {
+	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: old, Why: why, SuspendedBy: supervise.SuspendedByDaemon})
+	var unwritten *supervise.ForgetUnwrittenError
+	switch {
+	case forgot == nil, errors.As(forgot, &unwritten):
+		k.log.Warn(controllerSessionReplacedLine, "claim", token, "session", old, "requirement", "R3", "reason", why,
+			"sessionStartedAt", started)
+		if forgot != nil {
+			return fmt.Errorf("write the forget of the controller's old session %s: %w", old, forgot)
 		}
-		return fmt.Errorf("forget the controller's old session %s: %w", c.Session, forgot)
+		return m.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: "the keeper replaced the controller's old session"})
+	case errors.Is(forgot, supervise.ErrForgetSessionNotRecorded):
+		k.log.Info("controller: the old controller session is not replaced by the keeper: another decision cleared it after the keeper's suspension, an operator's forget-session among them",
+			"claim", token, "session", old, "reason", forgot)
+		return nil
+	case errors.Is(forgot, supervise.ErrForgetNotSuspendedBy):
+		k.log.Info("controller: the old controller session is not replaced at this look: the claim no longer stands under the keeper's suspension",
+			"claim", token, "session", old, "reason", forgot)
+		return nil
 	}
-	k.log.Warn(controllerSessionReplacedLine, "claim", c.Token, "session", c.Session, "requirement", "R3", "reason", why,
-		"sessionStartedAt", started)
-	if forgot != nil {
-		return fmt.Errorf("write the forget of the controller's old session %s: %w", c.Session, forgot)
-	}
-	return m.Handle(ctx, supervise.RequestRuleResume{Claim: c.Token, Reason: "the keeper replaced the controller's old session"})
+	resumed := m.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: "the keeper's forget of the controller's old session was refused, so the keeper resumes it"})
+	return fmt.Errorf("forget the controller's old session %s, refused, so the keeper resumed it by rule in this look (resume: %v): %w", old, resumed, forgot)
 }
 
 // sessionStarted is the time an Oh My Pi session id records, which is a UUIDv7: its first 48 bits
