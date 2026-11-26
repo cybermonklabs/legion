@@ -6,11 +6,12 @@ package api
 // that place carries them, `verdict`, `commit`, `handoffId`, `handoffVersion`, `returnTo`,
 // `planRating` and `planReason`), the architect's `complete_step`, takes it; `step` names the step
 // by its place in the task, 1 for its first, and 0 for the retro. It answers the empty object every
-// fact route answers. It refuses a grant of any claim but the issue's own architect `403
-// NOT_THE_OWNER`, a step that does not run now or whose agent is not the owner `409
-// OWNER_STEP_NOT_RUNNING`, a step below 0 `400 INVALID_STEP`, and otherwise as the completion route
-// refuses a report of that place. The owner's failed acceptance that names no step to return to,
-// with no step of the type implementation before it, stops the task as any such failed step does.
+// fact route answers, so the entry adds the route to that answer's row (answerRoutes). It refuses
+// a grant of any claim but the issue's own architect `403 NOT_THE_OWNER`, a step that does not run
+// now or whose agent is not the owner `409 OWNER_STEP_NOT_RUNNING`, a step below 0 `400
+// INVALID_STEP`, and otherwise as the completion route refuses a report of that place. The
+// owner's failed acceptance that names no step to return to, with no step of the type
+// implementation before it, stops the task as any such failed step does.
 // No plugin below this entry calls the route. A reviewer of an issue with no pull request record
 // reports its step on `POST /legion/v1/handoff/complete` with the verdict `pass` or `fail` and a
 // commit (`400 STEP_VERDICT_REQUIRED`, `400 MISSING_FIELD`), as the owner's review step does on the
@@ -45,5 +46,6 @@ func init() {
 		bands: []stateNarrowing{
 			{contract: completeStepContract, issue: withoutPlaceRole, dropped: "the issues' placeRole"},
 		},
+		answerRoutes: []answerRoutes{{answer: AnswerEmptyObject, routes: []string{"POST /legion/v1/steps/complete"}}},
 	})
 }
