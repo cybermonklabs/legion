@@ -10,7 +10,7 @@ import type { PointMark } from "./current-point";
 import { useDocumentAdmissions } from "./document-admission";
 import { type RowEditor, type RowReveal, useRowEdits } from "./graph-edit/row-edits";
 import { documentOfNode } from "./issue-artifacts";
-import type { TreeNode } from "./issue-tree";
+import { isStatement, type TreeNode } from "./issue-tree";
 import { LensActContext, useLensAct } from "./lenses/LensMenu";
 import { takesCaret, useRoomFacts } from "./model-rows/room-target";
 import { IndentGuides, NodeRow } from "./NodeRow";
@@ -35,6 +35,7 @@ import { nodeEditable } from "./useNodeEditing";
 export function TreeRows({
   artifacts,
   context,
+  coverageOut = false,
   editing,
   focused,
   foldedMore = false,
@@ -58,6 +59,10 @@ export function TreeRows({
   artifacts: ReadonlyMap<string, Artifact>;
   /** The ids of the rows this preset draws only as the ancestor of a match. */
   context: ReadonlySet<string>;
+  /** Whether the coverage read has not answered yet: each statement's row holds the line its
+   *  counts of what serves it are drawn in meanwhile (`NodeRow`'s `countsHeld`), so the counts
+   *  arriving move no row. False unless the tree passes it. */
+  coverageOut?: boolean;
   /** The row the reader is editing in and the document its editor belongs to. */
   editing: { readonly artifactId: string; readonly row: string } | undefined;
   /** The key of the row the focus is on: the row that holds the focus, or the one a press on
@@ -179,6 +184,9 @@ export function TreeRows({
                 reader: isReader(row.node.author, reader),
               }}
               context={context.has(row.node.id)}
+              // Only a statement's row is given the coverage read's state, so the read answering
+              // draws again no row it gives nothing to.
+              countsHeld={coverageOut && isStatement(row.node)}
               {...(current === undefined ? {} : { current })}
               {...(place === undefined ? {} : { document: place.artifact })}
               {...(edit === undefined ? {} : { edit })}

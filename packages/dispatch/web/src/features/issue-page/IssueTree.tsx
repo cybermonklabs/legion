@@ -115,6 +115,7 @@ export function IssueTree({
   addressKey,
   artifacts,
   context,
+  coverageOut = false,
   emptyLine,
   failedReads = NO_FAILED_READS,
   focusReveal,
@@ -153,6 +154,10 @@ export function IssueTree({
   artifacts: ReadonlyMap<string, Artifact>;
   /** The ids of the rows the view draws as context, faint and marked. */
   context: ReadonlySet<string>;
+  /** Whether the coverage read has not answered yet (`outline-reads.ts`'s `coverageOut`): each
+   *  statement's row holds the line its counts are drawn in until it has (`TreeRows.tsx`).
+   *  Answered unless the page says otherwise. */
+  coverageOut?: boolean;
   /** What the page says where the preset's query matched nothing under the issue, drawn only
    *  where it is given and while the reads are held (`readsHeld`). */
   emptyLine?: string;
@@ -1438,6 +1443,7 @@ export function IssueTree({
           <TreeRows
             artifacts={artifacts}
             context={context}
+            coverageOut={coverageOut}
             editing={editing}
             focused={focused}
             foldedMore={root.moreToRead === true}
