@@ -1068,13 +1068,15 @@ func onBasis(issue string, version int, served ...string) func(record.DesignGate
 // The cases the rig cannot build are the fake client's and the workflow's: an approval a session
 // or Dispatch itself gave, and the criteria step, in TestBasisGateRefusals and
 // TestTheCriteriaStepsBasisGateIsTheAncestorsVerificationDocument (internal/api); a check that
-// serves a paragraph block of P's primary document, in TestBasisGateRefusals (internal/api), since
-// every API route of the scratch Dispatch that writes R's Verification document refuses a
-// `serves` pointer it introduces at a block that is no requirement (pmdoc.CheckBlockPointers), and no
-// route gives a paragraph an id its writer chose (a paragraph's id is minted, and a retype keeps
-// an id only into a typed block, pmdoc.RetypeBlock), so no check can come to name a paragraph the
-// way kn comes to name a callout; and R waiting on a person, in
-// TestARegistrationOnABasisAnswersAWaitingRootAsItLeavesTheStep (internal/workflow).
+// serves a paragraph block of P's primary document, in TestBasisGateRefusals (internal/api); and
+// R waiting on a person, in TestARegistrationOnABasisAnswersAWaitingRootAsItLeavesTheStep
+// (internal/workflow). The rig reads the id Dispatch's live tree holds for a paragraph of P's
+// approved version, which no stored version writes, and Dispatch refuses every write of R's
+// Verification document whose check serves it, naming it a paragraph block, as it names an id no
+// document holds as that (pmdoc.CheckBlockPointers). No route turns a typed block back into a
+// paragraph or gives a paragraph an id its writer chose (a paragraph's id is minted, and a retype
+// makes a typed block alone, pmdoc.RetypeBlock), so no check can come to name a paragraph the way
+// kn comes to name a callout.
 // P's live text after its approved version cannot be written on the rig, since every route of the
 // scratch Dispatch that writes a document writes a version; the fake client holds it, in
 // TestBasisGateRefusals and TestBasisGateOpenings (internal/api), where the view is judged at the
@@ -1197,10 +1199,21 @@ func TestBasisGateRefusals(t *testing.T) {
 		insertAtEnd(":::callout{#pn}\nA note that is no requirement.\n:::\n"))
 	pv = r.approve(parent.PrimaryArtifactID).Version
 	cases.refused("a check that serves a block of P's primary document that is no requirement", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
-		"check kn", "serves "+pn, "p1, p2, p3, p:4")
+		"check kn", "serves "+pn, fmt.Sprintf("at version %d (it marks p1, p2, p3, p:4): version %d holds pn as a callout block;", pv, pv))
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "kg", serves: []string{pgone}}))
 	cases.refused("a check that serves a block id P's document does not hold", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
-		"check kg", "serves "+pgone)
+		"check kg", "serves "+pgone, fmt.Sprintf("at version %d (it marks p1, p2, p3, p:4): version %d holds no typed block pgone (its typed blocks are its requirement blocks and callout pn)", pv, pv))
+	// A paragraph of P: the one its first edit wrote, which every version the person approved since
+	// holds. Its id is the one Dispatch's live tree minted for it, read from Dispatch, and no stored
+	// version writes it. Dispatch refuses the check that serves it as a paragraph block, and the
+	// check that serves an id P never held as a block no document holds, and either refusal leaves
+	// R's Verification document as it was.
+	paragraph := specBlock(parent.Key, r.paragraphID(parent.PrimaryArtifactID, "The program keeps its old charts."))
+	r.refusedUpload(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "kp", serves: []string{paragraph}}),
+		fmt.Sprintf(`points at %s, a "paragraph" block; it points only at requirement`, paragraph))
+	never := specBlock(parent.Key, "pnever")
+	r.refusedUpload(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "kp", serves: []string{never}}),
+		fmt.Sprintf("points at %s, which no document holds", never))
 	decided := "dispatch://" + parent.Key + "/artifact/decisions-md#b-d1"
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{decided}}))
 	cases.refused("a check that serves a requirement block of P's decisions document", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
@@ -1347,4 +1360,61 @@ func TestBasisGateRefusals(t *testing.T) {
 		GitHubRepo: "acme/widgets", Tree: parent.Key, Project: r.cfg.Project, Title: parent.Key, Phase: phase.Merging, Generation: 1,
 		Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
 	cases.refused("P recorded by the daemon in merging", call(), http.StatusConflict, "BASIS_ACCEPTED", "the daemon records "+parent.Key+" in merging")
+}
+
+// paragraphID is the id Dispatch's live tree holds for the one paragraph of document whose text is
+// text: the document's text read with its blocks (GET /api/v1/artifacts/{id}/text?blocks=true),
+// each block listed with its byte range in the markdown of the same answer. Dispatch mints that id,
+// and no stored version writes it. Any other answer than one such paragraph with an id fails the
+// proof.
+func (r *personHandoverRig) paragraphID(document, text string) string {
+	t := r.t
+	t.Helper()
+	var read struct {
+		Markdown string `json:"markdown"`
+		Blocks   []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			From int    `json:"from"`
+			To   int    `json:"to"`
+		} `json:"blocks"`
+	}
+	dispatchCallAs(t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+document+"/text?blocks=true", nil, &read, asSession)
+	var ids []string
+	for _, block := range read.Blocks {
+		if block.Type == "paragraph" && 0 <= block.From && block.From <= block.To && block.To <= len(read.Markdown) &&
+			strings.TrimSpace(read.Markdown[block.From:block.To]) == text {
+			ids = append(ids, block.ID)
+		}
+	}
+	if len(ids) != 1 || ids[0] == "" {
+		t.Fatalf("Dispatch's text read of %s lists the paragraphs %q holding %q, want one with an id; its blocks: %+v", document, ids, text, read.Blocks)
+	}
+	return ids[0]
+}
+
+// refusedUpload asks Dispatch to take content as key's document name, as writeDocument does, and
+// requires a refusal, a 4xx whose error names says, with the document left at the version it stood
+// at: the token its text read names after the call is the one it named before. It logs the
+// refusal's status and code as Dispatch answered them, so a run shows what each refusal was.
+func (r *personHandoverRig) refusedUpload(key, name, content, says string) {
+	t := r.t
+	t.Helper()
+	token := r.documentToken(key, name)
+	upload := map[string]any{"name": name, "content": content}
+	if token != "" {
+		upload["precondition"] = map[string]string{"document": token}
+	}
+	status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", upload, asPerson)
+	var refusal struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(answer, &refusal); err != nil || status < 400 || status > 499 || !strings.Contains(refusal.Error, says) {
+		t.Fatalf("Dispatch answered the upload of %s to %s with %d %s, want a refusal naming %q", name, key, status, answer, says)
+	}
+	if after := r.documentToken(key, name); after != token {
+		t.Fatalf("the refused upload of %s moved %s's document from token %q to %q", name, key, token, after)
+	}
+	t.Logf("Dispatch refused %s on %s: status %d, code %s: %s", name, key, status, refusal.Code, refusal.Error)
 }

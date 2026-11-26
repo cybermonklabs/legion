@@ -359,17 +359,17 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 		}
 		version = latest.LatestVersion
 	}
-	requirements, err := s.requirementsOf(ctx, primary, version)
+	against, err := s.basisAt(ctx, ancestor.Key, primary, version)
 	if err != nil {
 		return failed(err)
 	}
-	if len(requirements) == 0 {
+	if len(against.requirements) == 0 {
 		return refuse("BASIS_NO_REQUIREMENTS", "%s's primary document (%s) at version %d marks no requirement block, so no root is a view on it; request a person's approval of the issue's own %s",
 			ancestor.Key, primary, version, step.Document())
 	}
 
 	// The root is a view on those requirements (R1's fourth condition).
-	serves, refusal, err := s.viewOf(ctx, root.Key, viewBasis{issue: ancestor.Key, version: version, requirements: requirements})
+	serves, refusal, err := s.viewOf(ctx, root.Key, against)
 	if err != nil {
 		return failed(err)
 	}
@@ -410,15 +410,15 @@ func (s *server) viewFact(w http.ResponseWriter, r *http.Request, root dispatch.
 	if nearest.Key == "" {
 		return "", true
 	}
-	requirements, err := s.requirementsOf(ctx, nearest.PrimaryArtifactID, shown.LatestVersion)
+	against, err := s.basisAt(ctx, nearest.Key, nearest.PrimaryArtifactID, shown.LatestVersion)
 	if err != nil {
 		s.refuseFailedRead(w, r, err)
 		return "", false
 	}
-	if len(requirements) == 0 {
+	if len(against.requirements) == 0 {
 		return "", true
 	}
-	_, refusal, err := s.viewOf(ctx, root.Key, viewBasis{issue: nearest.Key, version: shown.LatestVersion, requirements: requirements})
+	_, refusal, err := s.viewOf(ctx, root.Key, against)
 	if err != nil {
 		s.refuseFailedRead(w, r, err)
 		return "", false
@@ -429,23 +429,67 @@ func (s *server) viewFact(w http.ResponseWriter, r *http.Request, root dispatch.
 	return nearest.Key, true
 }
 
-// requirementsOf is the ids of the requirement blocks one version of a document marks, in document
-// order (dispatchblocks.RequirementIDs). A block whose markdown names no id is no block a
-// reference can name, so it is left out.
-func (s *server) requirementsOf(ctx context.Context, document string, version int) ([]string, error) {
+// basisAt reads one version of issue's primary document as a view is read against it (viewBasis):
+// the typed blocks that version's stored text holds, read as Dispatch reads them
+// (dispatchblocks.Read), and of them the ids of its requirement blocks in document order, as
+// dispatchblocks.RequirementIDs reads them. A requirement block whose markdown names no id is no
+// block a reference can name, so it is left out.
+func (s *server) basisAt(ctx context.Context, issue, document string, version int) (viewBasis, error) {
 	markdown, err := s.dispatch.DocumentVersion(ctx, document, version)
 	if err != nil {
-		return nil, &readFailure{what: fmt.Sprintf("version %d of %s", version, document), err: err}
+		return viewBasis{}, &readFailure{what: fmt.Sprintf("version %d of %s", version, document), err: err}
 	}
-	return dispatchblocks.RequirementIDs(markdown), nil
+	basis := viewBasis{issue: issue, version: version, blocks: dispatchblocks.Read(markdown)}
+	for _, block := range basis.blocks {
+		if block.Type == requirementBlock && block.ID != "" {
+			basis.requirements = append(basis.requirements, block.ID)
+		}
+	}
+	return basis, nil
 }
 
-// viewBasis is the ancestor's primary document a view is read against: its issue, the version read
-// and the ids of the requirement blocks that version marks.
+// viewBasis is the ancestor's primary document a view is read against: its issue, the version
+// read, the typed blocks that version holds and the ids of its requirement blocks (basisAt).
 type viewBasis struct {
 	issue        string
 	version      int
+	blocks       []dispatchblocks.Block
 	requirements []string
+}
+
+// shows is what Dispatch shows of the block ref names, as a refusal of a check that serves it
+// names it: a block of a project's document, of another issue or of another document of the
+// ancestor; a typed block of the version b reads, by its type; or no typed block of that version.
+// A stored version names its typed blocks alone by id. Dispatch writes no id of a paragraph, or of
+// any other untyped block, into the text it stores, and mints a new one at each read of it
+// (docs.VersionBlocks). So a reference to a paragraph of the document and an id the document
+// never held both name no typed block of the version, and the refusal names the two alike: the
+// daemon reads no live document to tell them apart.
+func (b viewBasis) shows(ref dispatchblocks.Ref) string {
+	switch {
+	case ref.Issue == "":
+		return fmt.Sprintf("it names a block of a document of project %s", ref.Project)
+	case ref.Issue != b.issue:
+		return "it names a block of " + ref.Issue
+	case !ref.Primary:
+		return fmt.Sprintf("it names a block of %s's document %s", b.issue, ref.Slug)
+	}
+	var others []string
+	for _, block := range b.blocks {
+		switch {
+		case block.ID == "":
+		case block.ID == ref.Block:
+			return fmt.Sprintf("version %d holds %s as a %s block", b.version, block.ID, block.Type)
+		case block.Type != requirementBlock:
+			others = append(others, block.Type+" "+block.ID)
+		}
+	}
+	typed := "its requirement blocks"
+	if len(others) > 0 {
+		typed += " and " + strings.Join(others, ", ")
+	}
+	return fmt.Sprintf("version %d holds no typed block %s (its typed blocks are %s), and a stored version writes the id of no other block",
+		b.version, ref.Block, typed)
 }
 
 // viewRefusal is why a root's documents do not read as a view on an ancestor (R1's fourth
@@ -543,8 +587,8 @@ func (s *server) viewOf(ctx context.Context, root string, basis viewBasis) ([]st
 			}
 			served++
 			if ref.Issue != basis.issue || !ref.Primary || !slices.Contains(basis.requirements, ref.Block) {
-				return refuse("VIEW_SERVES_OUTSIDE_BASIS", "check %s of %s serves %s, which is no requirement block of %s's primary document at version %d (it marks %s); each block a view's check serves is one of those",
-					blockNamed(check), documentNamed(root, documents[verification].artifact), ref.Text, basis.issue, basis.version, strings.Join(basis.requirements, ", "))
+				return refuse("VIEW_SERVES_OUTSIDE_BASIS", "check %s of %s serves %s, which is no requirement block of %s's primary document at version %d (it marks %s): %s; each block a view's check serves is one of those",
+					blockNamed(check), documentNamed(root, documents[verification].artifact), ref.Text, basis.issue, basis.version, strings.Join(basis.requirements, ", "), basis.shows(ref))
 			}
 			if pinned := ref.PinnedTo(basis.version); !slices.Contains(serves, pinned) {
 				serves = append(serves, pinned)
