@@ -421,8 +421,9 @@ export function skillTextFrontmatter(text: string): { description: string; hidde
   return listingFrontmatter(readFrontmatter(text));
 }
 
-/** `skillTextFrontmatter` of the frontmatter `frontmatter`, read already. */
-function listingFrontmatter(frontmatter: Readonly<Record<string, unknown>>): {
+/** `skillTextFrontmatter` of the frontmatter `frontmatter`, read already (load.ts's
+ *  `resolveTestSetup` reads the name from it too). */
+export function listingFrontmatter(frontmatter: Readonly<Record<string, unknown>>): {
   description: string;
   hidden: boolean;
 } {

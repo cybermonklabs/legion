@@ -2527,7 +2527,7 @@ export function modelFiles(
 ): { name: string; text: string }[] {
   return filedSkills(attribution, ranking).rows.map((row) => ({
     name: path.join("models", `${row.skill}.json`),
-    text: `${JSON.stringify(modelCount(row.sessions, models), null, 2)}\n`,
+    text: json(modelCount(row.sessions, models)),
   }));
 }
 

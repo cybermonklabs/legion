@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -43,7 +43,7 @@ import {
   withCacheBreakpoint,
 } from "./replay";
 import { FURTHER_ROUND_LIMIT } from "./score";
-import { f9Completed, fixtureReply } from "./testdata/fixtures";
+import { answeredBy, f9Completed, fixtureReply, pinnedTo } from "./testdata/fixtures";
 
 // The replay of an arm, on F5 and F9 (testdata/): the model gateway's replies to request bodies
 // made from F2 and F8, captured as testdata/CAPTURE.md says ("F5", and "F8 and F9") with
@@ -1001,21 +1001,10 @@ test("a run's requests carry an id no other run carries, the same in every round
   }
 });
 
-/** The made-up deployment a stand-in gateway of two pins a call to by its routing id, as the
- *  gateway pins one (SHA-256 of the id, modulo the deployments), or null for a call with none. */
-function pinnedTo(routing: string | null): string | null {
-  if (routing === null) return null;
-  const pick = (createHash("sha256").update(routing).digest()[0] ?? 0) % 2;
-  return pick === 0 ? "0a1b2c3d" : "4e5f6a7b";
-}
-
-/** `reply` with the stand-in's `x-litellm-model-id` of the deployment `prefix`, as the gateway
- *  names the deployment that answered; `reply` itself for none. */
-function answeredBy(reply: Response, prefix: string | null): Response {
-  if (prefix === null) return reply;
-  const headers = new Headers(reply.headers);
-  headers.set("x-litellm-model-id", `${prefix}-stand-in`);
-  return new Response(reply.body, { status: reply.status, headers });
+/** The made-up deployment a stand-in gateway of two pins a call to by its routing id
+ *  (testdata/fixtures.ts's `pinnedTo`), or null for a call with none. */
+function pinnedOrNull(routing: string | null): string | null {
+  return routing === null ? null : pinnedTo(routing);
 }
 
 // Catches: a run that goes with no routing id, or with another than its arm's k-th, a skill-read
@@ -1044,7 +1033,9 @@ test("a run goes with its arm's routing id on every round, records the deploymen
       const reply = isResponsesBody(body)
         ? f9(first ? "skill-read" : "text")
         : f5(first ? "skill-read" : "text");
-      return answeredBy(reply, pinnedTo(routing));
+      const prefix = pinnedOrNull(routing);
+      // The stand-in names no deployment to a call with no routing id.
+      return prefix === null ? reply : answeredBy(reply, prefix);
     },
     sleep: async () => {},
   });
@@ -1073,7 +1064,7 @@ test("a run goes with its arm's routing id on every round, records the deploymen
     expect(own.map(({ routing }) => routing)).toEqual([run.routingId, run.routingId]);
     const replayed = run.outcome.status === "fulfilled" ? run.outcome.value : undefined;
     expect(replayed?.routingId).toBe(run.routingId);
-    const deployment = pinnedTo(run.routingId) ?? "none";
+    const deployment = pinnedOrNull(run.routingId) ?? "none";
     expect(replayed?.deployments).toEqual([deployment, deployment]);
   }
 

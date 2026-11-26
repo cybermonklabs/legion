@@ -1407,7 +1407,27 @@ function resolving(script: string, args: string[], env: Record<string, string>) 
   return { ...result, lookups: readFileSync(lookups, "utf8").split("\n").filter(Boolean) };
 }
 
+/** Expects no row of SEEN (a row's name and `resolving`'s result) to show the credential USER or
+ * PASS in its output or among the names the getent stand-in was asked for. */
+function expectNoCredential(
+  seen: readonly { name: string; stdout: string; stderr: string; lookups: string[] }[],
+  user: string,
+  pass: string
+): void {
+  for (const row of seen) {
+    const shown = `${row.stdout}${row.stderr}${row.lookups.join("\n")}`;
+    expect({ name: row.name, user: shown.includes(user), pass: shown.includes(pass) }).toEqual({
+      name: row.name,
+      user: false,
+      pass: false,
+    });
+  }
+}
+
 describe("the spend collector's variables", () => {
+  /** rig.sh's spend_docker_args, the functions it calls, and a call of it. */
+  const spendDockerArgs = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("http_hostname")}\n${fn("spend_docker_args")}\nspend_docker_args`;
+
   // Catches: a scenario turn's Oh My Pi started with no spend variable (it records none of its
   // model calls), or with an OTEL_* variable beyond the six (another exporter, a header).
   test("a run's pane file gives its omp the six the caller sets, and no other OTEL_* variable", () => {
@@ -1444,8 +1464,7 @@ sleep() { command sleep 0.05; }`;
   // Catches: a judge's container given no spend variable, one beyond the six, or a value in its
   // `docker run` arguments, which any process of the machine can read.
   test("a judge's docker run names the six, each as `-e NAME` alone, and no other OTEL_* variable", () => {
-    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("http_hostname")}\n${fn("spend_docker_args")}\nspend_docker_args`;
-    const result = bash(script, [], { ...SPEND, ...OTHER_OTEL });
+    const result = bash(spendDockerArgs, [], { ...SPEND, ...OTHER_OTEL });
     expect(result.code).toBe(0);
     holdsNoSpendValue(result.stdout + result.stderr);
     // In spend_variables' order, SPEND's; the made-up hosts resolve to nothing, so no --add-host.
@@ -1455,7 +1474,7 @@ sleep() { command sleep 0.05; }`;
         .join("")
     );
     // A caller with none of them gives the container none.
-    expect(bash(script)).toMatchObject({ code: 0, stdout: "" });
+    expect(bash(spendDockerArgs)).toMatchObject({ code: 0, stdout: "" });
   });
 
   // Catches: a judge's container given no address for its collector, or one for a name that is no
@@ -1468,7 +1487,6 @@ sleep() { command sleep 0.05; }`;
     const user = fixtureSecret("user");
     const pass = fixtureSecret("pass");
     const { real, other, numeric } = HOSTS;
-    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("http_hostname")}\n${fn("spend_docker_args")}\nspend_docker_args`;
     interface Row {
       name: string;
       /** OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, when the row sets it. */
@@ -1538,7 +1556,7 @@ sleep() { command sleep 0.05; }`;
       { name: "no scheme", base: `${user}:${pass}@${real}:4318`, lookups: [] },
     ];
     const seen = rows.map((row) => {
-      const result = resolving(script, [], {
+      const result = resolving(spendDockerArgs, [], {
         ...(row.base === undefined ? {} : { OTEL_EXPORTER_OTLP_ENDPOINT: row.base }),
         ...(row.traces === undefined ? {} : { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: row.traces }),
       });
@@ -1562,14 +1580,7 @@ sleep() { command sleep 0.05; }`;
         lookups: row.lookups,
       }))
     );
-    for (const row of seen) {
-      const shown = `${row.stdout}${row.stderr}${row.lookups.join("\n")}`;
-      expect({ name: row.name, user: shown.includes(user), pass: shown.includes(pass) }).toEqual({
-        name: row.name,
-        user: false,
-        pass: false,
-      });
-    }
+    expectNoCredential(seen, user, pass);
   });
 });
 
@@ -1650,14 +1661,7 @@ describe("the judge's model endpoint host", () => {
         lookups: row.lookups,
       }))
     );
-    for (const row of seen) {
-      const shown = `${row.stdout}${row.stderr}${row.lookups.join("\n")}`;
-      expect({ name: row.name, user: shown.includes(user), pass: shown.includes(pass) }).toEqual({
-        name: row.name,
-        user: false,
-        pass: false,
-      });
-    }
+    expectNoCredential(seen, user, pass);
   });
 });
 

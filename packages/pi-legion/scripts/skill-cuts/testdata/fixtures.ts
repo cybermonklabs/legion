@@ -3,6 +3,7 @@
  * repository, commit and route they give made up, and the gateway replies this directory holds
  * (CAPTURE.md).
  */
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type Manifest, type ManifestKind, parseManifest } from "../copies";
@@ -86,4 +87,21 @@ export function f9Completed(shape: string): {
     .filter((line) => line.startsWith("data: {"))
     .map((line) => JSON.parse(line.slice("data: ".length)))
     .find((event) => event.type === "response.completed").response;
+}
+
+/** One of two made-up deployments, the one a stand-in gateway pins a call that goes with the
+ *  routing id `routing` to, as the gateway pins one: by the SHA-256 of the id, modulo the
+ *  deployments. */
+export function pinnedTo(routing: string): string {
+  return (createHash("sha256").update(routing).digest()[0] ?? 0) % 2 === 0
+    ? "0a1b2c3d"
+    : "4e5f6a7b";
+}
+
+/** `reply` with a stand-in's `x-litellm-model-id` of the deployment `prefix`, as the gateway
+ *  names the deployment that answered. */
+export function answeredBy(reply: Response, prefix: string): Response {
+  const headers = new Headers(reply.headers);
+  headers.set("x-litellm-model-id", `${prefix}-stand-in`);
+  return new Response(reply.body, { status: reply.status, headers });
 }

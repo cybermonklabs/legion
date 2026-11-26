@@ -344,6 +344,7 @@ import {
   installedCopies,
   LOCAL_SKILL_REPO,
   linkTargetPath,
+  listingFrontmatter,
   NoSuchFile,
   type RepoSource,
   skillFrontmatter,
@@ -508,7 +509,7 @@ export async function resolveTestSetup(
   if (name !== ownName) {
     throw new Refused(`${where}: its skill is named ${name}, not ${ownName} as --skill is`);
   }
-  if (skillTextFrontmatter(text).hidden) {
+  if (listingFrontmatter(frontmatter).hidden) {
     throw new Refused(`${where}: ${name} is hidden from the skill listing`);
   }
   return { label: TEST_SETUP_LABEL, copy: { ...at, name } };
@@ -525,7 +526,7 @@ async function setupDirectory(at: SetupLocation, source: RepoSource, dest: strin
     if (target === undefined) break;
     const next = linkTargetPath(dir, target);
     if (next === undefined) throw new Error(`${dir} links outside the repository to ${target}`);
-    dir = next === "" ? "." : next;
+    dir = next;
   }
   await source.tree(at.repo, at.commit, dir, dest);
 }
@@ -962,13 +963,16 @@ interface TaskProfile {
  *  Code a profile with no plugin layout, a namespaced skill (a layout places skills by their bare
  *  name, and Claude Code has no namespace), or a layout that puts a skill that goes in a plugin
  *  (`claudeKind`) in no plugin or in two, puts a project skill in a plugin, names a skill the
- *  profile does not install, or names a plugin twice. */
+ *  profile does not install, or names a plugin twice. With `setup` (`--test-setup`), it refuses
+ *  a profile that installs the inventory copy, unless the task is labelled (`staged`) and the
+ *  profile installs the copy once, under the copy's name and no namespace: it then leaves that
+ *  entry out, as the arm installs it. */
 export function loadProfile(
   file: string,
   host: Host,
   name: string,
   setup?: TestSetup,
-  marked?: TestSetup
+  staged = false
 ): TaskProfile {
   let bytes: Uint8Array;
   let raw: unknown;
@@ -988,7 +992,7 @@ export function loadProfile(
     if (installed.length !== 0) {
       const [entry] = installed;
       if (
-        marked === undefined ||
+        !staged ||
         installed.length !== 1 ||
         entry?.name !== setup.copy.name ||
         entry.namespace !== undefined
@@ -1082,7 +1086,7 @@ function taskProfiles(
     const key = setup === undefined ? file : `${file}\0${task.testSetup !== undefined}`;
     let profile = read.get(key);
     if (profile === undefined) {
-      profile = loadProfile(file, o.host, name, setup, task.testSetup);
+      profile = loadProfile(file, o.host, name, setup, task.testSetup !== undefined);
       read.set(key, profile);
     }
     profiled.push({ task, profile });
@@ -1266,12 +1270,18 @@ function callTarget(host: Host, call: ToolCall): string | undefined {
   return call.name === "Read" ? inputField(call, "file_path") : undefined;
 }
 
+/** The field of an Oh My Pi `bash` or `write` call's input that replay.ts's LOAD_RULE reads
+ *  (ReplyCall's `argument`): its command, its path. `ruleArgument` records it by this field, and
+ *  `auditLoadMixed` rebuilds the call's input from it. */
+const RULE_FIELD = { bash: "command", write: "path" } as const;
+
 /** What replay.ts's LOAD_RULE reads of an Oh My Pi `bash` or `write` call `call` (ReplyCall's
- *  `argument`): its command, its path; undefined for any other call, and on Claude Code. */
+ *  `argument`): its command, its path (RULE_FIELD); undefined for any other call, and on Claude
+ *  Code. */
 function ruleArgument(host: Host, call: ToolCall): string | undefined {
   if (host !== "omp") return undefined;
-  if (call.name === "bash") return inputField(call, "command");
-  return call.name === "write" ? inputField(call, "path") : undefined;
+  if (call.name === "bash") return inputField(call, RULE_FIELD.bash);
+  return call.name === "write" ? inputField(call, RULE_FIELD.write) : undefined;
 }
 
 /** How the tool call `call` of a reply loads `skill` in `host` (`read <path>`, `Skill <name>`,
@@ -1322,6 +1332,16 @@ export function namesSkill(text: string, name: string): boolean {
       `${before}${own}[ \\t]+[Ss]kill\\b`,
     ].join("|")
   ).test(text);
+}
+
+/** The read of the answered round `round` that sends a run of the skill `name` on (`sent by`): a
+ *  read of another skill, answered with no error, whose text past its header names `name`
+ *  (`namesSkill`); undefined for none. The live run and the mixed audit both end a run by it. */
+function senderOf(round: readonly SkillRead[], name: string): SkillRead | undefined {
+  return round.find(
+    ({ read, text }) =>
+      read.skill !== name && !read.isError && namesSkill(stripSkillHeader(text), name)
+  );
 }
 
 /** Whether load run `run` is judged: it `loaded` the skill or did not (`not loaded`). A run of any
@@ -1922,6 +1942,19 @@ const SavedListed = z.looseObject({
     .optional(),
 });
 
+/** Adds only the tested line of `name` to the recorded prompt `blocks` when it was absent. The
+ *  capture substitutes the drawn hint using its normal recorded-prompt rule. */
+function setupPrompt(blocks: string[], name: string): string[] {
+  if (listingOf(blocks).has(name)) return blocks;
+  const listing = /(<skills>\n[\s\S]*?)<\/skills>/;
+  const index = blocks.findIndex((block) => listing.test(block));
+  const line = `- ${name}: \n`;
+  if (index === -1) return [...blocks, `<skills>\n${line}</skills>`];
+  return blocks.map((block, at) =>
+    at === index ? block.replace(listing, `$1${line}</skills>`) : block
+  );
+}
+
 /** One load test, as `runLoad` runs it: its options, settings, scratch root, the tested skill's
  *  directory, and each task's daemon image item of its summary evidence, which its capture reads. */
 class LoadTest {
@@ -1970,17 +2003,14 @@ class LoadTest {
     return read;
   }
 
-  /** Adds only the tested line to a recorded prompt when it was absent. The capture substitutes
-   *  the drawn hint using its normal recorded-prompt rule. */
-  private setupPrompt(blocks: string[], name: string): string[] {
-    if (listingOf(blocks).has(name)) return blocks;
-    const listing = /(<skills>\n[\s\S]*?)<\/skills>/;
-    const index = blocks.findIndex((block) => listing.test(block));
-    const line = `- ${name}: \n`;
-    if (index === -1) return [...blocks, `<skills>\n${line}</skills>`];
-    return blocks.map((block, at) =>
-      at === index ? block.replace(listing, `$1${line}</skills>`) : block
-    );
+  /** The recorded prompt `blocks` as the case sends it: under `--test-setup` with the tested line
+   *  added where it was absent (`setupPrompt`), for a skill tested under another name with its
+   *  listing line renamed (`renamedListingBlocks`), else as recorded. */
+  private casePrompt(blocks: string[]): string[] {
+    const { name, renamedFrom, testSetup } = this.settings;
+    if (testSetup !== undefined) return setupPrompt(blocks, name);
+    if (renamedFrom === null) return blocks;
+    return renamedListingBlocks(blocks, renamedFrom, name);
   }
 
   /** The case a capture of `id` reads in the context of `profile`, and the arm it installs: the
@@ -2008,14 +2038,7 @@ class LoadTest {
     };
     // The recorded listing goes to the capture as lines (`recordedLines`), not in the profile.
     const { context, claude: _claude, systemPrompt, recordedListing: _listing, ...rest } = profile;
-    const recorded =
-      systemPrompt === undefined
-        ? undefined
-        : this.settings.testSetup !== undefined
-          ? this.setupPrompt(systemPrompt, name)
-          : renamedFrom === null
-            ? systemPrompt
-            : renamedListingBlocks(systemPrompt, renamedFrom, name);
+    const recorded = systemPrompt === undefined ? undefined : this.casePrompt(systemPrompt);
     const caseProfile: Profile = {
       ...rest,
       ...(recorded === undefined ? {} : { systemPrompt: recorded }),
@@ -2587,12 +2610,7 @@ class LoadTest {
         return true;
       }
       if (host === "claude") return true;
-      const sender = round?.find(
-        ({ read, text }) =>
-          read.skill !== tested.name &&
-          !read.isError &&
-          namesSkill(stripSkillHeader(text), tested.name)
-      );
+      const sender = round === undefined ? undefined : senderOf(round, tested.name);
       if (sender === undefined) return false;
       ended = { outcome: "sent by", by: sender.read.skill };
       return true;
@@ -3586,7 +3604,7 @@ export function auditLoadMixed(o: {
       }
       const profile =
         profiles.get(run.profile) ??
-        loadProfile(run.profile, "omp", run.name, run.testSetup, run.testSetup);
+        loadProfile(run.profile, "omp", run.name, run.testSetup, run.testSetup !== undefined);
       profiles.set(run.profile, profile);
       const arm: Arm = {
         name: ARM,
@@ -3609,7 +3627,7 @@ export function auditLoadMixed(o: {
             ? { path: call.target }
             : call.argument === undefined
               ? {}
-              : { [call.name === "bash" ? "command" : "path"]: call.argument },
+              : { [call.name === "bash" ? RULE_FIELD.bash : RULE_FIELD.write]: call.argument },
       }));
       let boundary: Boundary;
       try {
@@ -3626,10 +3644,7 @@ export function auditLoadMixed(o: {
           userId: run.userId,
           tools: partTools(others, part),
         });
-        const sender = boundary.reads.find(
-          ({ read, text }) =>
-            read.skill !== run.name && !read.isError && namesSkill(stripSkillHeader(text), run.name)
-        );
+        const sender = senderOf(boundary.reads, run.name);
         if (boundary.kind === "acts") audit.actions.push(named("act"));
         else if (boundary.kind === "undecided") audit.unresolved.push(named("undecided"));
         else if (sender !== undefined) audit.sentBy.push(named("preparation"));

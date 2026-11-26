@@ -70,7 +70,7 @@ import {
   type Stage,
   scoreSkill,
 } from "./score";
-import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
+import { answeredBy, pinnedTo, truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
@@ -143,14 +143,6 @@ let answer: (body: { model: string; [field: string]: unknown }) => string | Resp
  *  id (`x-litellm-model-id`, `pinnedTo`), as the gateway does; off but in the rows that set it. */
 let pinDeployments = false;
 
-/** One of two made-up deployments, the one the stand-in pins a call that goes with the routing id
- *  `routing` to, as the gateway pins one: by the SHA-256 of the id, modulo the deployments. */
-function pinnedTo(routing: string): string {
-  return (createHash("sha256").update(routing).digest()[0] ?? 0) % 2 === 0
-    ? "0a1b2c3d"
-    : "4e5f6a7b";
-}
-
 /** The stand-in's answer to `request`, as `answer` gives it for its body. */
 function standInReply(request: RecordedRequest): Response {
   const responses = request.path === "/v1/responses";
@@ -192,9 +184,7 @@ beforeAll(() => {
       const reply = standInReply(request);
       const routing = request.headers["x-litellm-session-id"];
       if (!pinDeployments || routing === undefined) return reply;
-      const headers = new Headers(reply.headers);
-      headers.set("x-litellm-model-id", `${pinnedTo(routing)}-stand-in`);
-      return new Response(reply.body, { status: reply.status, headers });
+      return answeredBy(reply, pinnedTo(routing));
     },
   });
 });
@@ -4071,9 +4061,7 @@ describe("behaviour continue-mixed", () => {
       }),
       "req_responses_continued"
     );
-    const headers = new Headers(reply.headers);
-    headers.set("x-litellm-model-id", `${RESPONSES_DEPLOYMENT}-stand-in`);
-    return new Response(reply.body, { status: reply.status, headers });
+    return answeredBy(reply, RESPONSES_DEPLOYMENT);
   };
 
   test("continues each saved run the rule continues from its saved reply, a Messages run's thinking and a Responses run's reasoning kept, its first request replayOnce's, on the deployment that answered it (from its record, or the saved request log); runs again fresh a run that lacks a part, one another deployment answers, one the gateway refuses and an unresolved one; leaves the saved --out as it was; and report counts each kind and its spend apart", async () => {
