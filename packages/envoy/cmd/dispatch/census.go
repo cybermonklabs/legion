@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -63,7 +66,7 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 	}
 	report, err := store.Census(ctx, databaseURL)
 	if err != nil {
-		writeCensusFailure(errOut, err)
+		writeCensusFailure(errOut, databaseURLRefusal(err))
 		return 2
 	}
 	report.Write(out)
@@ -79,7 +82,7 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 func storeCensus(ctx context.Context, databaseURL string, sizing bool, out, errOut io.Writer) int {
 	report, err := graphcensus.StoreCensus(ctx, databaseURL, sizing)
 	if err != nil {
-		writeCensusFailure(errOut, err)
+		writeCensusFailure(errOut, databaseURLRefusal(err))
 		return 2
 	}
 	report.Write(out)
@@ -99,6 +102,21 @@ func writeCensusFailure(errOut io.Writer, err error) {
 	fmt.Fprintln(errOut, message)
 }
 
+// databaseURLRefusal is err with the setting's name, DATABASE_URL, before it where err is the
+// store's refusal of a DATABASE_URL pgx cannot read (a *pgconn.ParseConfigError in its chain): the
+// store names such a URL in fixed words alone ("parse Postgres URL: pgx cannot read its connection
+// settings"), which tell an operator nothing of which setting to fix. Every command that opens the
+// database DATABASE_URL names prints its refusal through it: the census in both forms, versions,
+// the server's boot and the database subcommands. Any other error, a connection's, a query's or a
+// migration's, is err as it came: it names what failed, and it is no fault of the setting's text.
+func databaseURLRefusal(err error) error {
+	var unread *pgconn.ParseConfigError
+	if errors.As(err, &unread) {
+		return fmt.Errorf("DATABASE_URL: %w", err)
+	}
+	return err
+}
+
 // versions is `envoy-dispatch versions`: what schema_migrations, on the database DATABASE_URL
 // names, records of each version against the migrations this binary embeds, and what this
 // binary's next boot would do with each row (store.CheckVersions), written to out. It reads in a
@@ -113,7 +131,7 @@ func versions(ctx context.Context, databaseURL string, out, errOut io.Writer) in
 	}
 	check, err := store.CheckVersions(ctx, databaseURL)
 	if err != nil {
-		fmt.Fprintf(errOut, "versions: %v\n", err)
+		fmt.Fprintf(errOut, "versions: %v\n", databaseURLRefusal(err))
 		return 2
 	}
 	check.Write(out)

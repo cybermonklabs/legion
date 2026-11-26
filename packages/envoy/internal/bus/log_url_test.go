@@ -7,13 +7,18 @@ import (
 	"testing"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// nats.go authenticates with a server URL's userinfo, a user name alone as a token and
-// user:password as a password, so neither part may reach a log line or a logged error.
-// url.URL.Redacted is not enough: it keeps the user name, which is the whole of a token.
-func TestNATSURLWithoutUserinfo(t *testing.T) {
+// natsServerName names a configured NATS server by its scheme and host alone, whatever else the
+// URL holds. nats.go authenticates with a server URL's userinfo, a user name alone as a token and
+// user:password as a password, so neither part may reach a log line or a logged error;
+// url.URL.Redacted is not enough: it keeps the user name, which is the whole of a token. A URL that
+// does not parse is redact.NotPrinted, and so is one whose host url.Parse reads may be a piece of
+// the credential: a "/", "?" or "#" written into a userinfo ends the authority, and the "@" then
+// stands past it. A server list names each server so.
+func TestNATSServerName(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		raw, want string
@@ -22,13 +27,23 @@ func TestNATSURLWithoutUserinfo(t *testing.T) {
 		{"nats://token@127.0.0.1:4223", "nats://127.0.0.1:4223"},
 		{"u:secret@127.0.0.1:4224", "nats://127.0.0.1:4224"},
 		{" nats://127.0.0.1:4222 ", "nats://127.0.0.1:4222"},
-		{"127.0.0.1:4222", "127.0.0.1:4222"},
-		{"nats://user:secret@host:4222/%zz", "host:4222/%zz"},
-		{"nats://user:secret@host:4222/a@b", "b"},
+		{"127.0.0.1:4222", "nats://127.0.0.1:4222"},
+		{"nats://user:secret@host:4222/%zz", redact.NotPrinted},
+		{"nats://user:secret@host:4222/a@b", redact.NotPrinted},
+		{"nats://" + "u:p@h.example.test:4222/path?q=1#f", "nats://h.example.test:4222"},
+		{"tls://h.example.test:4443", "tls://h.example.test:4443"},
+		{"nats://" + "tok/en@h.example.test:4222", redact.NotPrinted},
+		{"nats://" + "u:12?3@h.example.test:4222", redact.NotPrinted},
+		{"nats://" + "u:12#3@h.example.test:4222", redact.NotPrinted},
+		{"nats://" + "u:p@", redact.NotPrinted},
+		{"", ""},
 	} {
-		if got := natsURLWithoutUserinfo(tc.raw); got != tc.want {
-			t.Errorf("natsURLWithoutUserinfo(%q) = %q, want %q", tc.raw, got, tc.want)
+		if got := natsServerName(tc.raw); got != tc.want {
+			t.Errorf("natsServerName(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
+	}
+	if got, want := serverList([]string{"a.example.test:4222", "nats://b.example.test:4222"}), "nats://a.example.test:4222,nats://b.example.test:4222"; got != want {
+		t.Errorf("serverList of two = %q, want %q", got, want)
 	}
 }
 

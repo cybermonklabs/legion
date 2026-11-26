@@ -60,6 +60,9 @@ func runRegister(args []string) error {
 					Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"},
 				})
 				resp, err := client.Post(subscribe, "application/json", bytes.NewReader(body))
+				// net/http's error names the URL with its user name and its query, and can quote the
+				// answering party's words: it prints as the rule prints it beside -url.
+				err = redact.Error(err, *url)
 				if err == nil {
 					answer, _ := redact.ReadAnswer(resp, 64<<10)
 					_ = resp.Body.Close()
@@ -91,6 +94,6 @@ func runRegister(args []string) error {
 		return err
 	default:
 	}
-	fmt.Printf("registered %d sessions through %s in %s\n", n, subscribe, time.Since(started).Round(time.Millisecond))
+	fmt.Printf("registered %d sessions through %s in %s\n", n, redact.URL(subscribe), time.Since(started).Round(time.Millisecond))
 	return nil
 }

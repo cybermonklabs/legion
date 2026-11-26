@@ -417,14 +417,14 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   whole up to 512 characters, and past that the first 512 and `… (<n> bytes)`, where `<n>` is the size of the text.
   The GitHub App client (`githubapp`) shows a refusal's body in its errors as `githubapp.ShownBody` shows it, and `<n>` is the size of the body.
   A value of an answer that the client cannot decode is in no error: the error names the member that did not decode, its Go type and the type that holds it, and, where Go names it, the JSON kind it held, and quotes none of the value.
-  An error for a request that GitHub did not answer, or whose answer could not be read or passed the size limit, names the request's URL as `githubapp.ShownBody` shows it, and `<n>` is the size of the URL.
+  An error for a request that GitHub refused, did not answer, or whose answer could not be read or passed the size limit, names the request by the API origin as the URL rule names a URL a request asked (`redact.AskedURL`: its scheme, host and path, never the user information or query `DISPATCH_GITHUB_API_BASE` carries) with the route Dispatch built after it, its own query included, as `githubapp.ShownBody` shows that name, and `<n>` is the size of the name; a next page is named by GitHub's link as `redact.AskedURL` names it, without its query.
   A transport error names its failure by `redact.Unanswered`: a transport failure's own words, for example `context deadline exceeded`, or a fixed class, so it quotes no line of the answer.
   `githubapp.ShownErr` cuts whole any other error that quotes GitHub's text, such as an error of the bucket that quotes a key, and `<n>` is the size of the error's text.
   No error that `githubapp.ShownErr` answers is longer than 4,414 bytes: two texts as `githubapp.ShownBody` shows them, each at most 2,079 bytes, and 256 bytes for the error's own words.
   An error whose text is still longer after the cuts above is cut whole, and `<n>` is the size of that text.
   The sweep's errors and lines therefore carry that text the same way.
   A next page link longer than 2048 bytes is refused rather than followed, and shown as `githubapp.ShownBody` shows it.
-  The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, shows the link the same way, and so does an error that names a next page GitHub answered with a status other than 200.
+  The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, shows the link the same way and names the origin as `redact.AskedURL` names it, and an error that names a next page GitHub answered with a status other than 200 shows that page's name, the link's scheme, host and path, the same way.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
   To that it adds the open deliveries the listing no longer returns that its index says are due, one still owed a request and one whose claim has run out alike.

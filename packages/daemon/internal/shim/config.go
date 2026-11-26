@@ -20,9 +20,11 @@ import (
 // ParseAddress reads --connect: the daemon's worker stream as `unix:///<absolute path>` or
 // `tcp://<host>:<port>`, the two families the listener accepts. It returns the network and
 // address net.Dial takes. The TCP rules are the shipped ones (worker-shim.ts:544-576): a host, a
-// port in 1..65535, and nothing else — no path beyond "/", no query, fragment, or user.
+// port in 1..65535, and nothing else — no path beyond "/", no query, fragment, or user. A refusal
+// names the flag alone: the value can carry a credential in its user information or its query, and
+// one written without "://" passes the daemon's output rule (redact.URLCredentials) as written.
 func ParseAddress(value string) (network, address string, err error) {
-	malformed := fmt.Errorf("--connect must be unix:///<path> or tcp://<host>:<port>, got %q", value)
+	malformed := errors.New("--connect must be unix:///<path> or tcp://<host>:<port> (the value given is not printed)")
 	u, err := url.Parse(value)
 	if err != nil || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return "", "", malformed

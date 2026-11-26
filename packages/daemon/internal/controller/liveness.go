@@ -95,8 +95,10 @@ func NewProber(opts ProberOptions) *Prober {
 // probe of one is never a death verdict.
 
 // Probe says whether session — the one registered with the current controller capability — is
-// alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
-// both sessions or the holder's state. A lookup that could not be made or got no answer logs its
+// alive: Gone and Unknown each log why, naming the lookup as oauth2call.AskedURL names it (scheme,
+// host and path; envoy_url may carry the listener's credential as its user information) and, where
+// the listener named them, both sessions or the holder's state. A lookup that could not be made or
+// got no answer logs its
 // failure through oauth2call.Unanswered; one whose URL http.NewRequest refuses (url.URL.String can
 // write text url.Parse refuses) logs no other name of that URL, whose text holds its user
 // information and its query whole.
@@ -110,12 +112,13 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		p.log.Warn("controller liveness: build the role lookup", "error", oauth2call.Unanswered(err, nil, ""))
 		return Unknown
 	}
+	asked := oauth2call.AskedURL(request.URL)
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", oauth2call.Unanswered(err, request, ""))
+		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", asked, "error", oauth2call.Unanswered(err, request, ""))
 		return Unknown
 	}
 	defer response.Body.Close()
@@ -126,18 +129,18 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		// controller is gone.
 		if readErr != nil {
 			p.log.Warn("controller liveness: the Envoy listener's 404 to the controller role lookup could not be read to its end",
-				"url", p.lookup, "session", session, "error", readErr)
+				"url", asked, "session", session, "error", readErr)
 			return Unknown
 		}
 		var refusal listenerwire.RoleRefusalAs[oauth2call.RemoteText, oauth2call.RemoteText, oauth2call.RemoteText]
 		_ = read.Decode(&refusal)
 		if refusal.HolderState.Equal(string(notify.StateUnresponsive)) {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
-				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
+				"url", asked, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
 			return Unknown
 		}
 		p.log.Info("controller liveness: the controller role has no live holder; the controller is gone",
-			"url", p.lookup, "session", session, "reason", refusal.Reason, "holderState", refusal.HolderState)
+			"url", asked, "session", session, "reason", refusal.Reason, "holderState", refusal.HolderState)
 		return Gone
 	}
 	if response.StatusCode != http.StatusOK {
@@ -145,12 +148,12 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		if p.token == "" {
 			reason += " with no bearer token sent"
 		}
-		p.log.Warn("controller liveness: "+reason, "url", p.lookup, "status", response.StatusCode)
+		p.log.Warn("controller liveness: "+reason, "url", asked, "status", response.StatusCode)
 		return Unknown
 	}
 	var answer listenerwire.RoleHolderAs[oauth2call.RemoteText, oauth2call.RemoteText]
 	if readErr != nil || read.Decode(&answer) != nil || answer.Holder.IsEmpty() || answer.LastSeen == nil {
-		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.lookup)
+		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", asked)
 		return Unknown
 	}
 	if !answer.Holder.Equal(session) {

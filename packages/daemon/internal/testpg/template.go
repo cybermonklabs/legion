@@ -100,12 +100,14 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 // ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
 // since Clone registered that cleanup first. The pool is built from store.PoolConfig, as the
 // daemon's own is, so a test that wraps it with store.NewPool writes through the store's text
-// rule.
+// rule. Its refusal of a URL pgx cannot read prints through store.ConnectError, as the daemon's
+// does: pgx's own error quotes the URL with its user name and its query, and a CI log is public.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
-	config, err := store.PoolConfig(Clone(t, prefix))
+	dsn := Clone(t, prefix)
+	config, err := store.PoolConfig(dsn)
 	if err != nil {
-		t.Fatalf("configure a pool on the cloned database: %v", err)
+		t.Fatalf("configure a pool on the cloned database: %v", store.ConnectError(dsn, err))
 	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
@@ -252,7 +254,8 @@ func prepare(dsn string) error {
 // adminConfig is the admin pool's configuration on the server dsn names: that server's postgres
 // database through testdb.DatabaseURL, which takes out every pool key the DSN sets, and
 // adminConns connections, so dropSlots' count holds whatever pool size the DSN sets for the tests'
-// own pools.
+// own pools. A URL pgx cannot read is refused through store.ConnectError, which names it by its
+// address alone: pgx's own error quotes it with its user name and its query.
 func adminConfig(dsn string) (*pgxpool.Config, error) {
 	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
 	if err != nil {
@@ -260,7 +263,7 @@ func adminConfig(dsn string) (*pgxpool.Config, error) {
 	}
 	config, err := pgxpool.ParseConfig(adminURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse the admin database URL: %w", err)
+		return nil, fmt.Errorf("parse the admin database URL LEGION_TEST_PG_DSN names: %w", store.ConnectError(adminURL, err))
 	}
 	config.MaxConns = adminConns
 	return config, nil

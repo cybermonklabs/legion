@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,6 +140,30 @@ type Settings struct {
 	// JWT it answers (BROKER_NATS_ACCOUNT, config.ParseNATSAccount): the global account, $G, when
 	// empty.
 	Account string
+}
+
+// HubHosts is urls, the hub's servers, as a line names them: each entry by its host alone, with
+// its port (url.URL.Host, of the entry read as nats.go reads it: nats://<entry> when it names no
+// scheme), comma-separated, and an entry that does not parse, names no host, or holds an "@" past
+// its authority by setting, the name of the setting that holds urls, alone. An entry's user
+// information is a NATS credential and its query can carry one. A "/", "?" or "#" written into the
+// user information ends the authority there, so the host url.Parse reads is a piece of the
+// credential, and nothing tells that entry from one whose path, query or fragment holds an "@", as
+// the bus names a server (natsServerName). An entry that does not parse is never printed either,
+// since nothing can say which part of it is the host.
+func HubHosts(setting string, urls []string) string {
+	hosts := make([]string, len(urls))
+	for i, entry := range urls {
+		if !strings.Contains(entry, "://") {
+			entry = "nats://" + entry
+		}
+		if parsed, err := url.Parse(entry); err == nil && parsed.Host != "" && !strings.Contains(parsed.Path+parsed.RawQuery+parsed.Fragment, "@") {
+			hosts[i] = parsed.Host
+		} else {
+			hosts[i] = setting
+		}
+	}
+	return strings.Join(hosts, ",")
 }
 
 // Service is the running auth service: one connection to the hub, subscribed to the authorization
@@ -292,7 +317,8 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
 		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithPromptReconnect())
 	if err != nil {
-		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
+		// The bus names an entry that does not parse by its class alone, so err quotes no entry.
+		return nil, fmt.Errorf("natscallout: connect to %s: %w", HubHosts("BROKER_NATS_URLS", settings.URLs), err)
 	}
 	s := &Service{
 		conn: conn,

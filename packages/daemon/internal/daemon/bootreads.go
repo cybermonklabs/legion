@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
@@ -273,20 +275,34 @@ func checkRoleConfigFiles(cfg config.Config) error {
 // cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
 // fills what the DSN leaves unset from the process's own PG* environment variables, whatever
 // lookup holds, as it does at boot. Each such refusal is store.ConnectError, as store.Open wraps
-// it: the DSN's address and the driver's detail, never the DSN's password. The driver's detail of
-// a DSN pgx cannot parse quotes the DSN with its user name and its query, which
-// `legion config check` and `legion start` both remove when they write the refusal (printRefusal,
-// the URL rule).
+// it: the DSN's address and the driver's detail, never the DSN's password, and for a DSN pgx
+// cannot parse fixed words in place of the driver's, which quote the DSN's user name and query,
+// after the setting's name (postgresDSNRefusal).
 func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
 		return "", "", err
 	}
 	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
-		return "", "", store.ConnectError(cfg.PostgresDSN, err)
+		return "", "", postgresDSNRefusal(store.ConnectError(cfg.PostgresDSN, err))
 	}
 	if r.nats.source == natsSeedDaemon {
 		daemonNatsUser = r.nats.user
 	}
 	return r.paneNatsUser, daemonNatsUser, nil
+}
+
+// postgresDSNRefusal is err with the setting's name, postgres_dsn, before it where err is the
+// store's refusal of a postgres_dsn pgx cannot read (a *pgconn.ParseConfigError in its chain):
+// the store names such a DSN by its address and fixed words alone, which tell an operator nothing
+// of which setting to fix. CheckStart and the boot's open of the store (run) print their refusal
+// through it. Any other error is err as it came: the store's other refusals name what they refuse
+// (an exec mode, a host that did not answer, the server's own answer), and the troubleshooting
+// guide quotes them as they are.
+func postgresDSNRefusal(err error) error {
+	var unread *pgconn.ParseConfigError
+	if errors.As(err, &unread) {
+		return fmt.Errorf("postgres_dsn: %w", err)
+	}
+	return err
 }

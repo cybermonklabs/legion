@@ -349,7 +349,7 @@ func main() {
 		if boot.DevSignInSharedKey != "" {
 			cookies = "cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY"
 		}
-		slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "origin", serverURL)
+		slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "origin", redact.URL(serverURL))
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -418,7 +418,7 @@ func main() {
 
 	database, err := store.Open(ctx, boot.DatabaseURL)
 	if err != nil {
-		slog.Error("dispatch: open database", "error", err)
+		slog.Error("dispatch: open database", "error", databaseURLRefusal(err))
 		os.Exit(1)
 	}
 	if err := database.Migrate(ctx); err != nil {
@@ -1792,18 +1792,21 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 refuses the App private key in %s, whatever DISPATCH_GITHUB_API_BASE names: that file is where the real App's key is kept, and with the flag any loopback client can have the App sign calls. Pass a throwaway App in the environment instead (DISPATCH_APP_CLIENT_ID and a generated DISPATCH_APP_PEM_B64, which take precedence over app.json), with DISPATCH_GITHUB_API_BASE naming a GitHub fake on a loopback host, as packages/dispatch/e2e/run-server.sh does", source.Path)
 	}
 	if !routes.LoopbackURL(boot.GitHubAPIBase) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", redact.URL(boot.GitHubAPIBase))
 	}
 	return nil
 }
 
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a
 // dev-sign-in server serves to any local process must be a scratch database here. pgx parses
-// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
+// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will. A
+// DATABASE_URL pgx cannot read is refused by its setting in fixed words (redact.Masked): pgx's
+// ParseConfigError quotes the URL with its password masked but its user name and every other
+// query pair kept, and the error it wraps can quote a query key alone.
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL: %w", err)
+		return fmt.Errorf("DATABASE_URL: %w", redact.Masked(err, "pgx cannot read its connection settings"))
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {

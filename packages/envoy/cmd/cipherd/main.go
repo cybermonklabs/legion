@@ -489,7 +489,7 @@ func main() {
 	}
 	if started.EdgeListener != nil {
 		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
-			"verification_uri", cfg.EdgeMachineLoginURL, "workspace_domains", cfg.WorkspaceDomains())
+			"verification_uri", "(the page BROKER_EDGE_MACHINE_LOGIN_URL names; not printed)", "workspace_domains", cfg.WorkspaceDomains())
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
@@ -625,7 +625,7 @@ func main() {
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
-		slog.Info("machine login device grant", "state", "on", "verification_uri", cfg.MachineLoginURL)
+		slog.Info("machine login device grant", "state", "on", "verification_uri", "(the page BROKER_MACHINE_LOGIN_URL names; not printed)")
 	} else {
 		slog.Info("machine login device grant", "state", "off", "detail", "BROKER_MACHINE_LOGIN_URL is unset, so no person types a code and POST /v1/oauth/device_authorization is not served")
 	}
@@ -884,7 +884,9 @@ func main() {
 		callout.Store(service)
 		go func() {
 			if err := service.Ready(ctx); err == nil {
-				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(cfg.NATS.Services))
+				// Each hub server by its host alone, and one whose host could be a piece of its
+				// credential by BROKER_NATS_URLS alone (natscallout.HubHosts).
+				slog.Info("broker: the NATS auth service is answering", "servers", natscallout.HubHosts("BROKER_NATS_URLS", cfg.NATS.URLs), "services", len(cfg.NATS.Services))
 			}
 		}()
 	} else {
@@ -1031,7 +1033,7 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	}
 	st, err := store.Open(ctx, cfg.DatabaseURL, opts...)
 	if err != nil {
-		return nil, aws.Config{}, fmt.Errorf("open the database: %w", err)
+		return nil, aws.Config{}, fmt.Errorf("open the database BROKER_DATABASE_URL names: %w", err)
 	}
 	return st, awsCfg, nil
 }
@@ -1571,7 +1573,7 @@ func wireJudge(ctx context.Context, cfg config.Config, rules proxyrules.Rules, m
 	m.Judge = runner.Consider
 	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
-		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
+		"dispatch", redact.URL(cfg.JudgeDispatchURL), "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // logPodRegistrars logs, once at boot, what POST /v1/oauth/exchange/pod-sessions admits: how

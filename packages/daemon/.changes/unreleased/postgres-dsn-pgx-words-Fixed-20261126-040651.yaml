@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A `postgres_dsn` pgx cannot read, such as a malformed URL, a bad `pool_*` key or an sslrootcert,
+  sslcert or sslkey file pgx cannot read, is now refused as the setting's name, the DSN's address
+  and fixed words, never in pgx's own words. `legion config check` and `legion start` refused one in
+  pgx's words, which quote the DSN with its password masked but its user name and every other query
+  pair kept, and can quote a query key alone, where a credential written as `?<token>` with no `=`
+  sits. The output rule took the URL's user name and query out but not such a key: ``legion config
+  check: connect to Postgres at 127.0.0.1:5432: cannot parse `postgres://127.0.0.1:5432/legion`:
+  failed to parse as URL (missing key/value separator "=" in URI query parameter: "<token>")``.
+
+  Both now print `legion config check: postgres_dsn: connect to Postgres at 127.0.0.1:5432: pgx
+  cannot read its connection settings` (`legion start: ...` at the start). Oh My Pi's session
+  database URL (`legion sessions import`, the launcher's session lookup) pgx cannot read is refused
+  as `connect to Postgres at <address>: pgx cannot read its connection settings`. The store's other
+  refusals, such as a `default_query_exec_mode` it cannot run in, a host that does not answer or the
+  server's own answer, print as before.
+time: 2026-11-26T04:06:51Z
+custom:
+    Issue: postgres-dsn-pgx-words

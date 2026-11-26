@@ -11,13 +11,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
@@ -38,8 +39,9 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	t.Helper()
 	server, err := url.Parse(adminURL)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
-		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
+		// url.Parse's error quotes the URL it was given, and the error it wraps can quote a part of
+		// it (a password read as the port of a URL that names no host), so only its class prints.
+		t.Fatalf("parse the admin URL of the Postgres server: %v", redact.Class(err))
 	}
 	name, err := newDatabaseName(prefix)
 	if err != nil {
@@ -106,7 +108,7 @@ func adminExec(t testing.TB, adminURL, host, statement string) {
 // printed in place of adminURL, which carries a credential.
 func execOn(adminURL, host, statement string) error {
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, adminURL)
+	conn, err := connectAdmin(ctx, adminURL)
 	if err != nil {
 		return fmt.Errorf("connect to the Postgres server at %s: %w", host, err)
 	}
@@ -115,4 +117,15 @@ func execOn(adminURL, host, statement string) error {
 		return fmt.Errorf("%s on %s: %w", statement, host, err)
 	}
 	return nil
+}
+
+// connectAdmin opens a connection of its own to adminURL. Where pgx cannot read adminURL, the
+// failure prints in fixed words alone: pgx's ParseConfigError quotes the URL with its password
+// masked but its user and its query kept, and the error it wraps can quote a query key.
+func connectAdmin(ctx context.Context, adminURL string) (*pgx.Conn, error) {
+	config, err := pgx.ParseConfig(adminURL)
+	if err != nil {
+		return nil, redact.Masked(err, "pgx cannot read its connection settings")
+	}
+	return pgx.ConnectConfig(ctx, config)
 }

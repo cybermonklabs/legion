@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -99,6 +100,12 @@ func Seed(ctx context.Context, options Options) error {
 	}
 	database, err := store.Open(ctx, options.DatabaseURL)
 	if err != nil {
+		// The store names a URL pgx cannot read in fixed words alone, which name no setting: the
+		// flag that gave it is named before them. Any other failure names what failed.
+		var unread *pgconn.ParseConfigError
+		if errors.As(err, &unread) {
+			err = fmt.Errorf("--database-url: %w", err)
+		}
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer database.Pool.Close()

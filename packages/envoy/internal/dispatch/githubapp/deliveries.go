@@ -49,7 +49,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 	if err != nil {
 		return nil, err
 	}
-	for target != "" {
+	for target.url != "" {
 		if before != nil {
 			if err := before(); err != nil {
 				return nil, err
@@ -67,9 +67,9 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 			return nil, limited
 		}
 		if status != http.StatusOK {
-			return nil, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+			return nil, fmt.Errorf("GET %s: %s", ShownBody(target.name), StatusText(status, body.Words().String()))
 		}
-		next, err := nextLink(header.Get("Link"), c.base.String())
+		next, err := nextLink(header.Get("Link"), c.base)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +83,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 			}
 			listed = append(listed, delivery)
 		}
-		target = next
+		target = nextCall(next)
 	}
 	return listed, nil
 }
@@ -116,10 +116,10 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 		return limited
 	}
 	if status == http.StatusNotFound {
-		return fmt.Errorf("POST %s: status %d: %w", ShownBody(target), status, ErrNoDelivery)
+		return fmt.Errorf("POST %s: status %d: %w", ShownBody(target.name), status, ErrNoDelivery)
 	}
 	if status != http.StatusAccepted {
-		return fmt.Errorf("POST %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
+		return fmt.Errorf("POST %s: %s", ShownBody(target.name), StatusText(status, body.Words().String()))
 	}
 	return nil
 }
@@ -506,14 +506,15 @@ const shownBodyRunes = 512
 //   - A refusal's body is cut alone, with the body's size. Every error of this package whose text
 //     holds a body GitHub answered holds it as this shows it (withBody). A reader that finds the
 //     body at the end of such a text (api's gitHubErrorText) finds it as this shows it.
-//   - A transport error of send names its target as ShownBody shows it, with the target's size,
-//     and then the URL it asked and its failure by redact.Unanswered: a transport failure's own
-//     words or a fixed class, so it quotes no line of an answer at all.
+//   - A transport error of send names its call by the call's name (Client.target, nextCall) as
+//     ShownBody shows it, with the name's size, and then the URL it asked and its failure by
+//     redact.Unanswered: a transport failure's own words or a fixed class, so it quotes no line of
+//     an answer at all.
 //   - Any other error that quotes GitHub's text, such as a bucket error that quotes a key
 //     (redeliver's bucketErr), is cut whole, with the size of its text (ShownErr).
-//   - A request's target, which a status error names, is cut alone, with the target's size. So is
-//     a next page link in nextLink's refusal. A target holds names Dispatch keeps and text GitHub
-//     gave (a next page link).
+//   - A call's name, which a status error names, is cut alone, with the name's size. So is a next
+//     page link in nextLink's refusal. A name holds names Dispatch keeps and text GitHub gave (a
+//     next page link's path).
 //   - A URL's parse error whose text is still longer than shownErrMost (4,414 bytes) after the
 //     cuts above is cut whole, with the size of that text (ShownErr).
 //
@@ -672,16 +673,18 @@ func NewStatusError(status int, body redact.Answer) *StatusError {
 }
 
 // nextLinkMaxBytes is the longest next page link nextLink follows. GitHub's links of the deliveries
-// listing are about a hundred bytes. A link is GitHub's text, and once followed it is the target of
-// the next request and of each error that names that request, so a longer one is refused and shown
-// as ShownBody shows GitHub's text.
+// listing are about a hundred bytes. A link is GitHub's text, and once followed it is the URL of
+// the next request, whose path each error that names that request names (nextCall), so a longer
+// one is refused and shown as ShownBody shows GitHub's text.
 const nextLinkMaxBytes = 2048
 
-// nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the
-// client's API origin, since the next page is fetched with the App's JWT, and one longer than
+// nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside origin,
+// the client's API origin, since the next page is fetched with the App's JWT, and one longer than
 // nextLinkMaxBytes. Each refusal names the link as ShownBody shows it, and the error of a link
-// that url.Parse cannot parse as ShownErr shows it, since that error quotes the link again.
-func nextLink(header, base string) (string, error) {
+// that url.Parse cannot parse as ShownErr shows it, since that error quotes the link again. A
+// refusal names origin as the URL rule names a URL a request asked (redact.AskedURL), never as
+// configured, which can carry a credential in its user information or its query.
+func nextLink(header string, origin *url.URL) (string, error) {
 	for _, part := range strings.Split(header, ",") {
 		segments := strings.Split(part, ";")
 		if len(segments) < 2 {
@@ -704,14 +707,24 @@ func nextLink(header, base string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("parse next page link %q: %w", ShownBody(target), ShownErr(err))
 		}
-		origin, err := url.Parse(base)
-		if err != nil {
-			return "", fmt.Errorf("parse API base %q: %w", base, err)
-		}
 		if parsed.Scheme != origin.Scheme || parsed.Host != origin.Host {
-			return "", fmt.Errorf("next page link %q leaves the API origin %s", ShownBody(target), base)
+			return "", fmt.Errorf("next page link %q leaves the API origin %s", ShownBody(target), redact.AskedURL(origin))
 		}
 		return target, nil
 	}
 	return "", nil
+}
+
+// nextCall is the call of link, the next page link nextLink followed, and no call for "": its url
+// is link, and its name the link as the URL rule names a URL a request asked (redact.AskedURL),
+// its scheme, host and path. It is GitHub's text, not a route Dispatch built (Client.target), and
+// its query, which holds GitHub's cursor, can repeat the API origin's own, a credential in it
+// among them; the cursor names nothing a reader of the listing's error looks for. nextLink
+// follows only a link url.Parse reads, and AskedURL names a nil URL redact.NotPrinted.
+func nextCall(link string) call {
+	if link == "" {
+		return call{}
+	}
+	parsed, _ := url.Parse(link)
+	return call{url: link, name: redact.AskedURL(parsed)}
 }

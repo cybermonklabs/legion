@@ -83,7 +83,7 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 	}
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
-		fmt.Fprintf(out, "redeliver-webhooks: open database: %v\n", err)
+		fmt.Fprintf(out, "redeliver-webhooks: open database: %v\n", databaseURLRefusal(err))
 		return 1
 	}
 	defer database.Pool.Close()

@@ -2,7 +2,6 @@ package testdb
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -12,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // processDatabases are the databases ProcessDatabaseOn makes, one per server and prefix in a test
@@ -76,8 +75,9 @@ func ProcessDatabaseOn(t testing.TB, adminURL, prefix string) string {
 func (d *processDatabase) create(prefix string) error {
 	server, err := url.Parse(d.adminURL)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is kept.
-		return fmt.Errorf("parse the admin URL of the Postgres server: %w", errors.Unwrap(err))
+		// url.Parse's error quotes the URL it was given, and the error it wraps can quote a part of
+		// it (a password read as the port of a URL that names no host), so only its class prints.
+		return fmt.Errorf("parse the admin URL of the Postgres server: %w", redact.Class(err))
 	}
 	name, err := newDatabaseName(prefix)
 	if err != nil {
@@ -204,7 +204,7 @@ func teardownDeadline(started time.Time) time.Time {
 func waitingOn(adminURL, statement string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), waitingOnBound)
 	defer cancel()
-	conn, err := pgx.Connect(ctx, adminURL)
+	conn, err := connectAdmin(ctx, adminURL)
 	if err != nil {
 		return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
 	}

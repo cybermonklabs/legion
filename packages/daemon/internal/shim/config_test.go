@@ -11,7 +11,8 @@ import (
 )
 
 // --connect names the daemon's worker stream in one of its two address families. Anything else
-// is refused naming the flag and the value, before the shim dials anything.
+// is refused naming the flag alone, before the shim dials anything: the value can carry a
+// credential in its user information or its query (TestAConnectRefusalNamesNoneOfTheValue).
 func TestParseAddressAcceptsTheListenersTwoFamiliesOnly(t *testing.T) {
 	for _, tc := range []struct {
 		value, network, address string
@@ -49,8 +50,8 @@ func TestParseAddressAcceptsTheListenersTwoFamiliesOnly(t *testing.T) {
 			t.Errorf("ParseAddress(%q) accepted a malformed address", value)
 			continue
 		}
-		if !strings.Contains(err.Error(), "--connect") || !strings.Contains(err.Error(), value) {
-			t.Errorf("ParseAddress(%q) = %v; the refusal must name --connect and the value", value, err)
+		if want := "--connect must be unix:///<path> or tcp://<host>:<port> (the value given is not printed)"; err.Error() != want {
+			t.Errorf("ParseAddress(%q) = %v; the refusal must be %q, naming --connect and not the value", value, err, want)
 		}
 	}
 }

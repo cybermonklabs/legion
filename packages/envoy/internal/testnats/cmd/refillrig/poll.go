@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/answertest"
 	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -110,15 +111,20 @@ func runPoll(args []string) error {
 // observe is one poll of list at target, the URL its route is asked at.
 func observe(ctx context.Context, client *http.Client, target, list string, sets []recordSet) observation {
 	o := observation{List: list, Start: time.Now().UnixNano()}
+	// A request that got no answer is written as the rule prints it beside target (redact.Error), and
+	// a judge prints it: net/http's error names the URL with its user name and its query, and
+	// http.NewRequest's quotes it whole.
+	unanswered := func(err error) observation {
+		o.Transport, o.End = redact.Error(err, target).Error(), time.Now().UnixNano()
+		return o
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		o.Transport, o.End = err.Error(), time.Now().UnixNano()
-		return o
+		return unanswered(err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		o.Transport, o.End = err.Error(), time.Now().UnixNano()
-		return o
+		return unanswered(err)
 	}
 	// The listener's list or metrics, the data the rig samples (answertest.Read).
 	body, err := answertest.Read(resp)

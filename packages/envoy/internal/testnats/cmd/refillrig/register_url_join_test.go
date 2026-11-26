@@ -11,14 +11,16 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // TestARegistrationJoinsTheRouteOntoTheListenerURL: --url with a path and a query (path and
 // query): each registration posts to /v1/interests/subscribe joined onto that path with the query
-// kept (urljoin.Join), and the line register prints names that URL. Where register wrote the
-// route after --url's text, the route went inside the query and the stand-in listener was asked
-// /prefix. A plain origin (origin) is asked the route, as before.
+// kept (urljoin.Join), and the line register prints names that URL as the URL rule reads it
+// (redact.URL). Where register wrote the route after --url's text, the route went inside the
+// query and the stand-in listener was asked /prefix. A plain origin (origin) is asked the route,
+// as before.
 func TestARegistrationJoinsTheRouteOntoTheListenerURL(t *testing.T) {
 	for _, c := range []struct{ name, suffix, asked string }{
 		{"path and query", "/prefix?key=k3y-made-up", "/prefix/v1/interests/subscribe?key=k3y-made-up"},
@@ -42,7 +44,7 @@ func TestARegistrationJoinsTheRouteOntoTheListenerURL(t *testing.T) {
 			if want := []string{"POST " + c.asked, "POST " + c.asked}; err != nil || !slices.Equal(asked, want) {
 				t.Errorf("register --url %s = %v and asked %q; want %q", given, err, asked, want)
 			}
-			if want := "registered 2 sessions through " + listener.URL + c.asked + " in "; !strings.HasPrefix(printed, want) {
+			if want := "registered 2 sessions through " + redact.URL(listener.URL+c.asked) + " in "; !strings.HasPrefix(printed, want) {
 				t.Errorf("register --url %s printed %q; want a line beginning %q", given, printed, want)
 			}
 		})

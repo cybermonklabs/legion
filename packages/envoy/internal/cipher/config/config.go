@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"net/netip"
@@ -2082,7 +2083,9 @@ func parsePrivateUpstream(entry string) (PrivateUpstream, error) {
 		return PrivateUpstream{}, fmt.Errorf("%s must be <host>=<url> entries, each with a host before its first = and a URL after it", setting)
 	}
 	if why := rulehost.Refusal(host); why != "" {
-		return PrivateUpstream{}, fmt.Errorf("%s must name a host an airlock proxy block can bind before its =, got %q, which %s", setting, host, why)
+		// The refusal quotes none of the entry: in an entry written as a URL alone whose query or
+		// password holds an =, the text before that = is the URL's scheme and user information.
+		return PrivateUpstream{}, fmt.Errorf("%s must name a host an airlock proxy block can bind before its first =, and the text before it %s", setting, why)
 	}
 	if strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
 		return PrivateUpstream{}, fmt.Errorf("%s must name its host in lower case, with no \"*.\", since the proxy compares it as written with one lower-cased host, got %q", setting, host)
@@ -2369,14 +2372,14 @@ func databaseIAM(databaseURL string) (bool, error) {
 	}
 	conn, err := pgconn.ParseConfig(databaseURL)
 	if err != nil {
-		// A ParseConfigError's own text quotes the URL; what it wraps says what was wrong.
-		var parseErr *pgconn.ParseConfigError
-		if errors.As(err, &parseErr) && errors.Unwrap(parseErr) != nil {
-			err = errors.Unwrap(parseErr)
-		} else {
-			err = errors.New("its connection settings do not parse")
+		// The refusal names a file pgx could not open by the call and the system's reason alone
+		// (redact.File), and any other failure in fixed words: pgx's own text quotes the URL, a
+		// query pair, or the path of a file the URL names.
+		var unread *fs.PathError
+		if errors.As(err, &unread) {
+			return refuse("pgx cannot read a file its connection settings name: " + redact.File(err).Error())
 		}
-		return refuse("pgx cannot read it: " + err.Error())
+		return refuse("pgx cannot read its connection settings (pgx's own words are not printed: they can quote the URL); check each query pair and the sslrootcert, sslcert and sslkey files it names")
 	}
 	// pgx signs in with the password it reads, which net/url can miss: a query pair holding a ';'
 	// (net/url drops it), PGPASSWORD, or a passfile entry. A connection that has one signs in with

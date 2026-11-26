@@ -340,15 +340,17 @@ func TestABlobErrorShowsTheTreesShaAndPathToABound(t *testing.T) {
 	}
 }
 
-// A status error names its request's target, and a target holds names Dispatch keeps and text
-// GitHub gave. So each status error that a githubapp caller words itself names the target as
-// ShownBody shows it: whole within the bound, and past it the first 512 runes and the target's
-// size, never the target whole. Each row's request is answered 500:
+// A status error names its request's call (Client.target, nextCall), and a call's name holds names
+// Dispatch keeps and text GitHub gave. So each status error that a githubapp caller words itself
+// names the call as ShownBody shows its name: whole within the bound, and past it the first 512
+// runes and the name's size, never the name whole. Each row's request is answered 500:
 //
 //   - The deliveries listing's next page. The first page answers 200 with a Link header that
-//     names a next page link on the API origin of about 1,500 bytes, under nextLinkMaxBytes.
+//     names a next page link on the API origin of about 1,500 bytes, under nextLinkMaxBytes, whose
+//     path passes 512 runes. The error names the link by its path (nextCall), never by its query,
+//     which holds GitHub's cursor.
 //   - A Branch read of a name of 60 characters of three bytes, each byte path-escaped as %XX, so
-//     its target passes 512 runes (review of cybermonklabs/legion#4373 at e185c085).
+//     its route passes 512 runes (review of cybermonklabs/legion#4373 at e185c085).
 func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 	const failure = `{"message":"Server Error"}`
 	branch := strings.Repeat("枝", 60)
@@ -357,14 +359,18 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 		// first is the listing's first page, which names target as its next page, and empty where
 		// the row's one request is to target.
 		first string
-		// target is the failed request's target after the client's base.
+		// target is the failed request's URI, its path and query, after the client's base.
 		target string
+		// named is the failed request's name after the client's base: target, or for a next page
+		// link its path alone.
+		named string
 		// read is the client's read that fails.
 		read func(*Client) error
 	}{{
 		name:   "the deliveries listing's next page",
 		first:  "/app/hook/deliveries?per_page=100",
-		target: "/app/hook/deliveries?per_page=100&cursor=" + strings.Repeat("c", 1_450),
+		target: "/app/hook/deliveries/" + strings.Repeat("c", 1_450) + "?per_page=100&cursor=v1_2",
+		named:  "/app/hook/deliveries/" + strings.Repeat("c", 1_450),
 		read: func(client *Client) error {
 			_, err := client.Deliveries(context.Background(), time.Time{}, nil)
 			return err
@@ -372,6 +378,7 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 	}, {
 		name:   "a branch of 60 characters of three bytes",
 		target: "/repos/acme/web/git/ref/heads/" + url.PathEscape(branch),
+		named:  "/repos/acme/web/git/ref/heads/" + url.PathEscape(branch),
 		read: func(client *Client) error {
 			_, err := client.Branch(context.Background(), "ghs_test", "acme", "web", branch)
 			return err
@@ -390,10 +397,10 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 					githubtest.Unexpected(t, w, r)
 				}
 			})
-			whole := client.base.String() + row.target
+			whole := client.base.String() + row.named
 			shown := ShownBody(whole)
 			if shown == whole || len(whole) > nextLinkMaxBytes {
-				t.Fatalf("the target is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(whole), nextLinkMaxBytes)
+				t.Fatalf("the name is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(whole), nextLinkMaxBytes)
 			}
 
 			err := row.read(client)
@@ -402,10 +409,13 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 			}
 			text := err.Error()
 			if strings.Contains(text, whole) {
-				t.Errorf("the error (%d bytes) names the %d-byte target whole; want it only as ShownBody shows it", len(text), len(whole))
+				t.Errorf("the error (%d bytes) names the %d-byte name whole; want it only as ShownBody shows it", len(text), len(whole))
+			}
+			if query := strings.TrimPrefix(row.target, row.named); query != "" && strings.Contains(text, query) {
+				t.Errorf("the error (%d bytes) holds the next page link's query %q; want the link named by its path alone", len(text), query)
 			}
 			if want := "GET " + shown + ": status 500: " + failure; text != want {
-				t.Errorf("the error is %.120q… (%d bytes); want the target as ShownBody shows it and the status, %.120q… (%d bytes)", text, len(text), want, len(want))
+				t.Errorf("the error is %.120q… (%d bytes); want the name as ShownBody shows it and the status, %.120q… (%d bytes)", text, len(text), want, len(want))
 			}
 		})
 	}
@@ -444,7 +454,7 @@ func TestANextLinkRefusalShowsTheLinkToABound(t *testing.T) {
 				t.Fatalf("the link is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(row.link), nextLinkMaxBytes)
 			}
 
-			next, err := nextLink("<"+row.link+`>; rel="next"`, base)
+			next, err := nextLink("<"+row.link+`>; rel="next"`, gitHubOrigin)
 			if err == nil {
 				t.Fatalf("the %d-byte link was followed (%d bytes); want a refusal", len(row.link), len(next))
 			}
