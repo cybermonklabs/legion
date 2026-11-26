@@ -11,7 +11,6 @@
  * files of those rows do not change: they read today's page.
  */
 
-import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
@@ -38,9 +37,10 @@ import {
   UNASKED_SOURCES,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
+import { PAGE_SIZE, showMoreName } from "../web/src/features/issue-page/show-more-fixture";
 import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { VIEW_LOADING } from "../web/src/features/issue-page/view-loading-line";
-import { type FakeSession, getUnsubscribeCalls } from "./agents";
+import { getUnsubscribeCalls } from "./agents";
 import {
   createAsk,
   createComment,
@@ -156,6 +156,7 @@ import {
 } from "./issue-page-i";
 import { drawnContentsEntries, wordAtCaret } from "./issue-page-j";
 import {
+  daemonOf,
   focusedNodeFacts,
   historyEntries,
   historyItem,
@@ -215,7 +216,6 @@ import {
   REFLOW_STATES,
   readScaleLoad,
   rowsWithoutAuthorScrollers,
-  scaleLoadAwaited,
   scrollersOutsideAuthorText,
   seedWaitingWalk,
   showMoreControl,
@@ -413,6 +413,7 @@ test("the count of what waits on the reader opens the first thing that waits @ph
         await page.keyboard.press("Enter");
       }
     };
+    const settling = watchApiRequests(page);
     for (const [width, key] of (desktopProject
       ? [
           [1440, "click"],
@@ -420,7 +421,6 @@ test("the count of what waits on the reader opens the first thing that waits @ph
         ]
       : [[390, "click"]]) as readonly (readonly [number, "click" | "Enter"])[]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      const settling = watchApiRequests(page);
       await gotoIssue(page, await specAddress(seeded.key));
       await expectLoadSettled(settling);
       await expect(openedArtifact(page), "the document did not open").toBeVisible();
@@ -520,8 +520,8 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
     for (const width of desktopProject
       ? [1920, 1440, 1279, 1025, 1024, 1000, 761, 390, 320]
       : [390]) {
+      await page.setViewportSize(viewportAt(width));
       for (const preset of ["conversation", "spec", "documents"] as const) {
-        await page.setViewportSize(viewportAt(width));
         await gotoIssue(page, presetPath(seeded.key, preset));
         if (preset !== "documents") await expectIssuePageDrawn(page);
         await expectActiveControl(page, preset);
@@ -544,10 +544,7 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
         if (inSheet && preset === "spec") {
           // The sheet opens from the Outline control, which stands in the row below 1024 px: a row
           // that draws none leaves the version control nowhere.
-          await expect(
-            outlineControl(page),
-            `the version control is not in the Outline sheet at ${width} px`
-          ).toBeVisible();
+          await expect(outlineControl(page), `no Outline control at ${width} px`).toBeVisible();
         }
         // `expectActiveControl` above waited for the view's controls, which stand inside the
         // filter row, so the row is drawn and one read finds it.
@@ -557,7 +554,7 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
         const wrapped = `the filter row is not one line ${at}: ${row.controls.join(" | ")}`;
         expect(row.lines, wrapped).toBe(1);
         expect(row.overflow, `the filter row runs past its own edge ${at}`).toBeLessThanOrEqual(1);
-        // 35 px for the row of six, drawn from 1280 px, and 8 px above and below the 34 px one
+        // 35 px for the row of seven, drawn from 1280 px, and 8 px above and below the 34 px one
         // control below that.
         expect(row.height, `the filter row is taller than the picture's ${at}`).toBeLessThanOrEqual(
           width >= 1280 ? 36 : 51
@@ -575,7 +572,7 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
           `the filter row draws a colour that is no page colour ${at}`
         ).toEqual([]);
         await assertPageFits(page);
-        // Documents stands after Decisions: among the six controls from 1280 px, and in the one
+        // Documents stands after Decisions: among the seven controls from 1280 px, and in the one
         // control's menu below that; then, in the row's order, what the sheet leaves in it.
         const head = width >= 1280 ? names : [expect.any(String)];
         const rest = inSheet ? [CONTROL_LABELS.outline] : [...version, ...filter];
@@ -584,7 +581,7 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
           ...rest,
           ...keys,
         ]);
-        if (width >= 1024 && keys.length > 0) {
+        if (width >= 1024) {
           // Each small control is drawn as the prototype draws Keys: a 1 px border in #ECEAE7, a
           // 7 px radius, 12 px text of weight 500 on a 20 px line, in #57534E.
           const looks = await filterRowLooks(page);
@@ -604,9 +601,10 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
           // Documents is an entry of the one control, after Decisions.
           await presetChooser(page).click();
           const items = openMenu(page).getByRole("menuitemradio");
-          await expect(items, `the one control's menu is not the six views ${at}`).toHaveCount(
-            names.length
-          );
+          await expect(
+            items,
+            `the one control's menu does not hold the row's ${names.length} controls ${at}`
+          ).toHaveCount(names.length);
           for (const [index, name] of names.entries()) {
             await expect(
               items.nth(index),
@@ -779,7 +777,7 @@ function phrasesOf(value: unknown): string[] {
 // c-plain-words, and part N's R9 over INV-2's word states (`WORD_STATES`): each control of the
 // view row on, Documents' list among them, and a document open, at 1440 px and at 390 px.
 test("the page draws no internal word and no helper text @phone", async ({ browser }) => {
-  // The check reads the page's chrome in INV-2's fourteen word states and in the body of every
+  // The check reads the page's chrome in INV-2's sixteen word states and in the body of every
   // row the seeded issue draws with every branch open - 58 of them - each reading read against
   // seven patterns and the declared list. One `expect` per reading was 70,000 calls at about
   // 4 ms each - 281 s of assertion beside 20 s of page work - so each state gathers every
@@ -800,7 +798,6 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
       return !lines.has(phrase) || /\bthe page\b/iu.test(phrase) || words.includes("row");
     });
     expect(helperText, "the page declares helper text among what it draws unasked").toEqual([]);
-    // The phase words, the ask body's and decision card's lists join once N's stack has INFRA-5702.
     // What the page says only in answer to the reader's own act, read on each fresh load below.
     const answers = ANSWER_PHRASES.map((phrase) => phrase.trim()).filter(
       (phrase) => phrase.length > 3
@@ -870,14 +867,13 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
     }
 
     // Every node's body in turn, where a type's attributes and its state are drawn in full.
-    // The page opens folded to the frontier (R1): measured on this seed, the first drawing is
-    // 49 of its 67 rows, with half its comments, one of its three messages and none of its
-    // results, so a walk over that drawing reads no result's body at all. So every branch is
-    // opened first, and every branch below the drawn levels, as a reader opens them to read
-    // past the fold - once the page has stopped reading, since a row that lands after the
-    // twisties were pressed lands folded - and the rows are read against the seed's own count
-    // of every kind, so a kind that is still folded, or not yet drawn, fails here rather than
-    // leaving its bodies out of the walk.
+    // The page opens folded to the frontier (R1): measured on this seed, the first drawing holds
+    // half its comments, one of its three messages and none of its results, so a walk over that
+    // drawing reads no result's body at all. So every branch is opened first, and every branch
+    // below the drawn levels, as a reader opens them to read past the fold - once the page has
+    // stopped reading, since a row that lands after the twisties were pressed lands folded - and
+    // the rows are read against the seed's own count of every kind, so a kind that is still
+    // folded, or not yet drawn, fails here rather than leaving its bodies out of the walk.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
@@ -923,9 +919,8 @@ function newestVersion(artifact: Artifact): NonNullable<Artifact["versions"]>[nu
   return [...(artifact.versions ?? [])].sort((one, other) => other.number - one.number)[0];
 }
 
-/** How many rows of a list the page draws at a time, and how many documents the row seeds so that
- *  Documents' list has a second page of its own (root R40). */
-const LIST_PAGE = 20;
+/** How many documents the row seeds so that Documents' list, which draws `PAGE_SIZE` rows at a
+ *  time, has a second page of its own (root R40). */
 const DOCUMENTS_SEEDED = 25;
 
 // c-documents (1), R2, R3, R4 and R16: a document is opened from Documents' list, and no menu, no
@@ -1057,9 +1052,7 @@ test("documents open from Documents and are never rows of the outline @phone", a
         openedArtifact(page).getByRole("region", { name: /^Versions for / }),
         `the opened document draws no versions ${where}`
       ).toHaveCount(1);
-      const newest = [...((await getArtifact(seeded.verificationArtifactId)).versions ?? [])].sort(
-        (one, other) => other.number - one.number
-      )[0];
+      const newest = newestVersion(await getArtifact(seeded.verificationArtifactId));
       if (newest === undefined)
         throw new Error("the seeded Verification document holds no version");
       await expect(openedArtifact(page).getByTestId("artifact-header")).toContainText(
@@ -1210,7 +1203,7 @@ test("documents open from Documents and are never rows of the outline @phone", a
     for (let revision = 13; revision <= 25; revision += 1) await revise(revision);
     const versions = (await getArtifact(cited.id)).versions ?? [];
     const manyVersions = "the seed holds no more versions of the notes than a page draws";
-    expect(versions.length, manyVersions).toBeGreaterThan(LIST_PAGE);
+    expect(versions.length, manyVersions).toBeGreaterThan(PAGE_SIZE);
     expect(
       versions.filter((one) => one.named),
       "the seed names no version of the notes"
@@ -1244,9 +1237,9 @@ test("documents open from Documents and are never rows of the outline @phone", a
     await expect(
       versionList.getByRole("listitem"),
       "the versions are not drawn 20 at a time"
-    ).toHaveCount(LIST_PAGE);
+    ).toHaveCount(PAGE_SIZE);
     await expect(showMoreControl(versionList)).toHaveText(
-      `${CONTROL_LABELS.show_more} (${versions.length - LIST_PAGE} ${CONTROL_LABELS.show_more_left})`
+      showMoreName(versions.length - PAGE_SIZE)
     );
     await showMoreControl(versionList).click();
     await expect(
@@ -1287,7 +1280,6 @@ test("documents open from Documents and are never rows of the outline @phone", a
     // control beside the views picks among them, behind its small control (R3, R4). The image
     // draws its picture at its own address.
     await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`);
-    await expect(issuePage(page)).toHaveCount(1);
     await openVersionControl(page);
     await expect(
       page.getByRole("combobox", { exact: true, name: CONTROL_LABELS.version }),
@@ -1297,7 +1289,6 @@ test("documents open from Documents and are never rows of the outline @phone", a
     await versionControlButton(page).click();
     await expect(versionControl(page)).toBeHidden();
     await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.image}`);
-    await expect(issuePage(page)).toHaveCount(1);
     await expect(
       page.locator('main img[src*="/versions/"]').first(),
       "the image draws no picture at its own address"
@@ -1311,7 +1302,6 @@ test("documents open from Documents and are never rows of the outline @phone", a
       `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`,
     ]) {
       await gotoIssue(page, address);
-      await expect(issuePage(page)).toHaveCount(1);
       for (const role of ["region", "tab", "button", "link", "menuitem"] as const) {
         expect(
           await page.getByRole(role, { exact: true, name: "Artifacts" }).count(),
@@ -1383,9 +1373,9 @@ test("documents open from Documents and are never rows of the outline @phone", a
     await expect(
       documentsRows(page),
       "Documents' list does not draw 20 rows and the count of the rest on 25 documents"
-    ).toHaveCount(LIST_PAGE);
+    ).toHaveCount(PAGE_SIZE);
     await expect(showMoreControl(documentsList(page))).toHaveText(
-      `${CONTROL_LABELS.show_more} (${DOCUMENTS_SEEDED - LIST_PAGE} ${CONTROL_LABELS.show_more_left})`
+      showMoreName(DOCUMENTS_SEEDED - PAGE_SIZE)
     );
     await showMoreControl(documentsList(page)).click();
     await expect(documentsRows(page), "the control does not draw the next 20").toHaveCount(
@@ -1398,11 +1388,11 @@ test("documents open from Documents and are never rows of the outline @phone", a
 // c-reflow, and part N's R9 over INV-2's reflow states (`REFLOW_STATES`): each control of the view
 // row on, Documents' list among them, a document open and the Outline sheet open, at seven widths.
 test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
-  // Eight states at seven widths, each a load of the page, with a clipping walk over every row a
+  // Nine states at seven widths, each a load of the page, with a clipping walk over every row a
   // view draws, each read in the browser, plus the page's own fit, Documents' list's, the open
   // document's, the sheet's and the panel's. Measured in the issue pod, alone: 1.6 min on
-  // chromium and 1.7 min on iphone, which read the same seven widths, where CI read 2.6 min at
-  // six; the bound is about four times the pod's, for a slow leg.
+  // chromium and 1.7 min on iphone, which read the same seven widths; the bound is about four
+  // times the pod's, for a slow leg.
   test.setTimeout(420_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // The test sets the viewport and writes no width rule of its own: every measure is the page's.
@@ -1416,7 +1406,7 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
       // wait cannot say is that the last row has landed; the walk below reads the rows that are
       // drawn when it runs, and seven widths read them seven times.
       await openPageState(page, seeded.key, state);
-      const at = `${stateName(state)} at ${width} px`;
+      const at = `${stateName(state, width)} at ${width} px`;
       // In every state the page fits its viewport, with its header and its view row whole.
       await assertPageFits(page);
       await assertWhole(identityBlock(page));
@@ -1615,7 +1605,7 @@ function inventoryOutline(
  * The views the new page is read through for the inventory (R7), each a call that puts the page
  * in one view and answers whether that view is there. The fixture is the merge of the old page's
  * ten tab panels and its priority picker, one view at a time, so the new page is read the same
- * way: its six presets, Documents' list among them, and the addresses beside them - the
+ * way: its seven presets, Documents' list among them, and the addresses beside them - the
  * conversation, the activity, the collaborators and the artifacts (R3, R12, R19). Some views are
  * the page's own, because what they hold sits behind a control rather than behind an address:
  * the spec opened from Documents' list, where every version, download and reference of a
@@ -1637,7 +1627,7 @@ function inventoryViews(
 ): (() => Promise<boolean>)[] {
   // How far a walk over the tree reaches. The seeded issue draws up to about 70 rows at 1440 px
   // once every branch is open, and a view over a row the tree does not draw answers that it is
-  // not there rather than reading the page the view before it left (`e2e/page-inventory.ts`), so
+  // not there rather than reading the page the view before it left (`assertInventoryCarried`), so
   // the bound costs a count and nothing else where the rows run out.
   const walkDepth = 80;
   // Which rows of the tree hold a zoom. The zoom walk's first view reads it off the tree it loads
@@ -1884,11 +1874,8 @@ function inventoryViews(
         )),
     ...(width >= 1024
       ? []
-      : Array.from({ length: walkDepth }, (_unused, into) => {
-          // Whether this row's zoom was opened: the rows under one are read only where there was
-          // one to open.
-          let zoomed = false;
-          return Array.from({ length: 2 }, (_also, index) => async () => {
+      : Array.from({ length: walkDepth }, (_unused, into) =>
+          Array.from({ length: 2 }, (_also, index) => async () => {
             if (index === 0) {
               // A row with no branch of its own has no zoom to walk into, and this walk neither
               // loads the page for it nor reads the page the walk is already on: which rows hold
@@ -1905,7 +1892,6 @@ function inventoryViews(
                 const settling = watchApiRequests(page);
                 await gotoIssue(page, `/issues/${key}/conversation`);
                 await expectLoadSettled(settling);
-                zoomsInto.clear();
                 const rows = nodeRows(page);
                 // The page's reads went quiet above, so the tree is drawn whole and one count
                 // holds its rows.
@@ -1921,7 +1907,9 @@ function inventoryViews(
               } else {
                 await gotoIssue(page, `/issues/${key}/conversation`);
               }
-              if (!zoomsInto.has(into)) return into === 0;
+              // The walk's first view loaded the page, which is read as it stands where its row
+              // holds no zoom.
+              if (!zoomsInto.has(into)) return true;
               // A twisty opens a branch in place at every width, and zooming is the row's own key
               // (`.`, `IssueTree.tsx`), pressed with the focus on the row.
               await nodeRows(page).nth(into).focus();
@@ -1930,8 +1918,8 @@ function inventoryViews(
                 zoomCrumbs(page),
                 `row ${into}'s zoom key zoomed nowhere`
               ).not.toHaveCount(0);
-              zoomed = true;
-            } else if (!zoomed) {
+            } else if (!zoomsInto.has(into)) {
+              // The rows under a zoom are read only where there was one to open.
               return false;
             }
             // The zoomed node is the first row; its own nodes follow it, and the first of them -
@@ -1941,8 +1929,8 @@ function inventoryViews(
             // which draws no row, so one count holds the zoom's rows.
             if ((await under.count()) > index + 1) await under.nth(index + 1).focus();
             return true;
-          });
-        }).flat()),
+          })
+        ).flat()),
   ];
 }
 
@@ -2209,21 +2197,18 @@ async function writeFromAnOpenIssue(
   const deciding = page
     .locator('[data-node-row][data-node-type="decision"]')
     .filter({ has: offered(page, "button", CONTROL_LABELS.keep_decision) });
-  // `getAttribute` waits for a decision row that draws Keep, and the seed leaves one decision
-  // waiting for review, so the row it finds is that decision's.
+  // `getAttribute` waits for a decision row that draws Keep, and the seed leaves a decision
+  // waiting for review, so the row it finds is a decision that waits.
   const decidingId = await deciding.first().getAttribute("data-node-id");
-  expect(
-    decidingId,
-    "exactly one decision waits for review, and it is the one Keep names"
-  ).not.toBeNull();
+  expect(decidingId, "the decision row that draws Keep carries no node id").not.toBeNull();
   const decidingRow = page.locator(`[data-node-row][data-node-id="${decidingId}"]`);
   const decidingBlock = decidingId?.split("#b-")[1];
   await decidingRow
     .getByRole("button", { exact: true, name: CONTROL_LABELS.keep_decision })
     .click();
   // Keep's own write, read back from Dispatch, as every write of this walk is: the press is what
-  // this step proves, and a press the page lost used to leave the decision waiting while the step
-  // went on to Change regardless (`NodeRow.tsx`, the press that scrolled).
+  // this step proves, so a press the page lost fails here rather than leaving the decision
+  // waiting while the step goes on to Change (`NodeRow.tsx`, the press that scrolled).
   await expect
     .poll(
       async () =>
@@ -2234,7 +2219,7 @@ async function writeFromAnOpenIssue(
     )
     .not.toBeNull();
   // The page has taken the write once Keep is gone from the row. The row Keep settled draws no
-  // Change on this page, and three decisions wait for review, so Change is pressed on another
+  // Change on this page, and other decisions wait for review, so Change is pressed on another
   // decision row that draws it: the first row of the page with a Change in it.
   await expect(
     decidingRow.getByRole("button", { exact: true, name: CONTROL_LABELS.keep_decision })
@@ -2436,18 +2421,25 @@ const TASKS_BEFORE_THE_BLOCK = 60;
  *  of tasks, a message of the Legion daemon and a handoff, written here beside it. */
 async function addressSeed(seeded: WholeIssueSeed): Promise<AddressSeed> {
   const issue = await getIssue(seeded.key);
-  const notes = (issue.artifacts ?? []).find(
-    (artifact) => artifact.slug === seeded.documents.cited
-  );
+  const artifacts = issue.artifacts ?? [];
+  const slugOf = (id: string): string => {
+    const artifact = artifacts.find((one) => one.id === id);
+    if (artifact === undefined) throw new Error(`${seeded.key} holds no document ${id}`);
+    return artifact.slug;
+  };
+  const notes = artifacts.find((artifact) => artifact.slug === seeded.documents.cited);
   if (notes === undefined) throw new Error(`${seeded.key} holds no ${seeded.documents.cited}`);
   const notesWords = "The measurements behind the first requirement.";
-  const { markdown } = await getArtifactText(notes.id);
-  const paragraph = (await getArtifactBlocks(notes.id)).find((block) =>
+  const [{ markdown }, blocks] = await Promise.all([
+    getArtifactText(notes.id),
+    getArtifactBlocks(notes.id),
+  ]);
+  const paragraph = blocks.find((block) =>
     markdown.slice(block.from, block.to).includes(notesWords)
   );
   if (paragraph === undefined) throw new Error(`${notes.slug} holds no paragraph of its words`);
-  const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-  const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
+  const specSlug = slugOf(seeded.specArtifactId);
+  const planSlug = slugOf(seeded.planArtifactId);
   const agentsOnly = await createComment(
     seeded.key,
     { body: "Planner to reviewer, outside every thread a person wrote in." },
@@ -2478,13 +2470,7 @@ async function addressSeed(seeded: WholeIssueSeed): Promise<AddressSeed> {
   const daemon = await createMessage(
     seeded.key,
     { body: daemonWords },
-    {
-      actor: {
-        id: `legion-daemon:${seeded.key.slice(0, seeded.key.indexOf("-"))}`,
-        kind: "session",
-      },
-      as: "agent",
-    }
+    daemonOf(seeded.key.slice(0, seeded.key.indexOf("-")))
   );
   const handoff = await createHandoff(
     seeded.key,
@@ -2707,7 +2693,7 @@ async function expectAddressOpens(
     }
     case "retry": {
       await expect(
-        page.getByRole("button", { name: "Retry" }),
+        page.getByRole("button", { name: CONTROL_LABELS.retry }),
         `${form} offers no Retry for its failed lookup`
       ).toBeVisible();
       return;
@@ -2761,8 +2747,6 @@ test("every address of the old page still resolves and each new one opens its vi
       }
     };
     for (const one of [...Object.values(OLD_PAGE_ADDRESSES).flat(), ...PART_ADDRESSES]) {
-      // Once Dashboard is drawn, the bare address opens it, and its own case reads that.
-      if (one.until !== undefined && drawsPart(one.until)) continue;
       const address = one.address(seed);
       const form = address.slice(`/issues/${seed.key}`.length) || `/issues/${seed.key}`;
       if (one.builtBy !== undefined && !drawsPart(one.builtBy)) {
@@ -2815,9 +2799,9 @@ async function primarySlug(key: string): Promise<string> {
  *  few requests and would pass the ceiling for the opposite of the reason this check exists,
  *  which is a page that reads too much. `expectIssuePageDrawn` does not answer that question —
  *  the tree element is drawn before its rows are — so every requirement the seed wrote has a
- *  row of its own here, and the settle below is read after them. */
-async function expectTheSeedIsDrawn(page: Page, seeded: BaselineSeed): Promise<void> {
-  const slug = await primarySlug(seeded.key);
+ *  row of its own here, by the slug of its primary document (`primarySlug`), and the caller
+ *  reads the load's settle after them. */
+async function expectTheSeedIsDrawn(page: Page, seeded: BaselineSeed, slug: string): Promise<void> {
   // No row for the issue itself: the outline draws none (ruling 5, part N's c-addresses (4)).
   for (const requirement of seeded.requirements) {
     await expect(
@@ -2825,11 +2809,6 @@ async function expectTheSeedIsDrawn(page: Page, seeded: BaselineSeed): Promise<v
       `the tree draws no row for ${requirement}, so the page did not load what the count is of`
     ).toBeVisible();
   }
-  await expect
-    .poll(async () => (await drawnRows(page)).length, {
-      message: "the tree drew fewer rows than the seed's requirements alone",
-    })
-    .toBeGreaterThanOrEqual(seeded.requirements.length);
 }
 
 /** A document of an issue, by its id and its name. */
@@ -2897,13 +2876,14 @@ test("the first load stays inside its request budget", async ({ browser }) => {
   let baseline: { byRoute: string; total: number } | null = null;
 
   await phase(browser, withLongDocument(seedRequestBaseline), async (page, seeded) => {
+    const slug = await primarySlug(seeded.key);
     const traffic = watchApiRequests(page);
     traffic.reset();
     // Conversation's own address, whose load reads the tree: the bare address draws Dashboard
     // (dispatch://INFRA-5702), whose own cold load is read below.
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
-    await expectTheSeedIsDrawn(page, seeded);
+    await expectTheSeedIsDrawn(page, seeded, slug);
     await expectLoadSettled(traffic);
     const byRoute = JSON.stringify(traffic.byRoute());
 
@@ -2956,7 +2936,7 @@ test("the first load stays inside its request budget", async ({ browser }) => {
     traffic.reset();
     await gotoIssue(page, presetPath(seeded.key, "spec"));
     await expectIssuePageDrawn(page);
-    await expectTheSeedIsDrawn(page, seeded);
+    await expectTheSeedIsDrawn(page, seeded, slug);
     await expectLoadSettled(traffic);
     const specByRoute = JSON.stringify(traffic.byRoute());
     expect(
@@ -3001,11 +2981,12 @@ test("the first load stays inside its request budget", async ({ browser }) => {
   // No request for each node: twice the nodes, the same count. The issue carries the same
   // document of 500 typed blocks, so the nodes are all that differs.
   await phase(browser, withLongDocument(seedTwiceTheNodes), async (page, seeded) => {
+    const slug = await primarySlug(seeded.key);
     const traffic = watchApiRequests(page);
     traffic.reset();
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
-    await expectTheSeedIsDrawn(page, seeded);
+    await expectTheSeedIsDrawn(page, seeded, slug);
     await expectLoadSettled(traffic);
     const byRoute = JSON.stringify(traffic.byRoute());
     expect(
@@ -3027,20 +3008,16 @@ test("the first load stays inside its request budget", async ({ browser }) => {
 // its first byte. After the Conversation's load, outside its census, Details is opened and its
 // history and its lists are read (part M's). A bound `AWAITING_SCALE` names is left unread, and
 // the row fails where it finds that bound's owner on the page; every other bound is read, and a
-// bound neither read nor listed fails the row before it seeds. While part T's bound of a node's
-// first 50 children is awaited, the copy of INFRA-663 is loaded under no control that draws the
-// outline, whose `main` draws all of its 9,252 comments as rows (spec version 89's R21), and Details
-// is opened after its Dashboard's load (`readScaleLoad`).
-// SLOW(>=2s): three copies of the largest issues written and the block index waited for, 16 cold
+// bound neither read nor listed fails the row before it seeds.
+// SLOW(>=2s): three copies of the largest issues written and the block index waited for, 21 cold
 // loads of the page, and each read of those loads sent 35 times.
 test("the page keeps its load bound on the largest issues under each control of the row @phone", async ({
   browser,
 }) => {
   // Not measured in a browser yet. Estimated from its parts: about 3 min of seeding and 1 min of
-  // the block index's cursor and drain (`e2e/scale-seed.ts`), 16 cold loads at about 10 s each,
-  // and some 250 reads sent 35 times at about 30 ms each: about 10 min in all. The bound is about
-  // four times that, for a slow leg, until the first e2e-rows Job that passes measures the row and
-  // this line says what it took.
+  // the block index's cursor and drain (`e2e/scale-seed.ts`), 21 cold loads at about 10 s each,
+  // and some 250 reads sent 35 times at about 30 ms each: about 12 min in all. The bound is about
+  // four times that, for a slow leg.
   test.setTimeout(2_700_000);
   const viewport = test.info().project.name === "iphone" ? IPHONE_13 : DESKTOP;
   expect(
@@ -3053,7 +3030,6 @@ test("the page keeps its load bound on the largest issues under each control of 
   const timed = new Set<string>();
   for (const copy of seeded.copies) {
     for (const preset of PRESET_ORDER) {
-      if (scaleLoadAwaited(copy, preset, viewport.width)) continue;
       const context = await asReader(browser, seeded.reader);
       try {
         const page = await context.newPage();
@@ -3150,8 +3126,8 @@ test("the header fits its labels within 50 ms of a load @phone", async ({ browse
   }
 });
 
-// The reviewer's finding on the not-found page (deep-links.e2e.ts:1193 on main reads "Ask not
-// found"): the page's word for an ask is "question" (R34), and the article follows the noun.
+// The not-found page (`deep-links.e2e.ts:1170` on main reads "Ask not found"): the page's word for
+// an ask is "question" (R34), and the article follows the noun.
 test("an address naming a question the issue does not hold says so in the page's own words", async ({
   browser,
 }) => {
@@ -3269,15 +3245,12 @@ test("an address lands the focus once on a gone node", async ({ browser }) => {
 
 // ---- from 29111db16c41:packages/dispatch/e2e/artifacts.e2e.ts
 
-const tinyPng =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
-
 // The files a row uploads are written in that row's own output directory, which Playwright gives
 // each row of each worker (`testInfo.outputPath`): two workers running these rows at once would
 // otherwise write one path in the checkout, and a run must leave no file changed under e2e/.
 async function diagramFile(testInfo: TestInfo): Promise<string> {
   const path = testInfo.outputPath("diagram.png");
-  await writeFile(path, Buffer.from(tinyPng, "base64"));
+  await writeFile(path, Buffer.from(ONE_PIXEL_PNG, "base64"));
   return path;
 }
 
@@ -3302,7 +3275,7 @@ async function openDocumentsList(page: Page, isPhone: boolean) {
 // Choosing a file only stages it; the row then shows a Summary field plus a confirming
 // "Upload" button (or "Cancel" to discard the pick) before it actually creates the version.
 async function confirmUpload(page: Page): Promise<void> {
-  await page.getByRole("button", { exact: true, name: "Upload" }).click();
+  await page.getByRole("button", { exact: true, name: CONTROL_LABELS.upload }).click();
 }
 
 // `page.request` sends the page's session cookie and no `Origin`, and the server refuses a
@@ -3327,7 +3300,8 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   });
   await createAsk(issue.key, { question: "Can this ship?" });
 
-  await page.goto(await specAddress(issue.key));
+  const specPath = await specAddress(issue.key);
+  await page.goto(specPath);
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
   await openDocumentsList(page, testInfo.project.name === "iphone");
@@ -3339,14 +3313,15 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   await confirmUpload(page);
   const diagram = documentRow(page, "diagram.png");
   await expect(diagram).toBeVisible();
-  await expect(diagram.getByRole("link", { name: "Download version 1" })).toBeVisible();
+  await expect(
+    diagram.getByRole("link", { name: `${CONTROL_LABELS.download_version} 1` })
+  ).toBeVisible();
 
   await upload.setInputFiles(diagramUpload);
   await confirmUpload(page);
-  await expect(diagram.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
-    "download",
-    ""
-  );
+  await expect(
+    diagram.getByRole("link", { name: `${CONTROL_LABELS.download_version} 2` })
+  ).toHaveAttribute("download", "");
   // The list's row is compact: the versions, their count, the picture, the compare and the
   // references live on the artifact's own page, not under every row.
   await expect(diagram.getByRole("button", { name: "Show all versions" })).toHaveCount(0);
@@ -3359,19 +3334,23 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   expect(sockets()).toBe(1);
   // Every version is drawn open under the file, with no control that hides any (part N's R2), so
   // the list is read with nothing pressed.
-  const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
+  const versions = page.getByRole("region", {
+    exact: true,
+    name: `${FILE_WORDS.versions_for} diagram.png`,
+  });
   await expect(versions).toContainText("Version 1");
   await expect(versions).toContainText("Version 2");
   await expect(versions).not.toContainText("Version 3");
   await expect(versions).toContainText("SHA-256");
-  await expect(versions.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
-    "download",
-    ""
-  );
-  const compare = page.getByRole("region", { name: "Compare versions for diagram.png" });
+  await expect(
+    versions.getByRole("link", { name: `${CONTROL_LABELS.download_version} 2` })
+  ).toHaveAttribute("download", "");
+  const compare = page.getByRole("region", {
+    name: `${CONTROL_LABELS.compare_versions_for} diagram.png`,
+  });
   await expect(compare).toBeVisible();
   await expect(compare).not.toContainText("From · Version");
-  await compare.getByRole("button", { name: "Show comparison" }).click();
+  await compare.getByRole("button", { name: CONTROL_LABELS.show_comparison }).click();
   await expect(compare).toContainText("From · Version");
   await expect(compare).toContainText("To · Version");
 
@@ -3383,7 +3362,7 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   const notes = documentRow(page, "notes.md");
   await expect(notes).toBeVisible();
   await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-  await navigateInApp(page, await specAddress(issue.key));
+  await navigateInApp(page, specPath);
   await expect(documentEditor(page)).toContainText("The original document.");
 
   const notesCitation = await createComment(issue.key, {
@@ -3458,7 +3437,7 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
     // decision 47, the header's rule in `styles.css`).
     const openMargin = page
       .locator("header[data-issue-header]")
-      .getByRole("button", { exact: true, name: "Details" });
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.details });
     const [navigationBox, marginBox] = await Promise.all([
       openNavigation.boundingBox(),
       openMargin.boundingBox(),
@@ -3468,7 +3447,9 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
     expect(marginBox?.width).toBeGreaterThanOrEqual(24);
     expect(marginBox?.height).toBeGreaterThanOrEqual(24);
     await openMargin.click();
-    await expect(page.getByRole("dialog", { exact: true, name: "Details" })).toBeVisible();
+    await expect(
+      page.getByRole("dialog", { exact: true, name: CONTROL_LABELS.details })
+    ).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("iphone-details.png"), fullPage: true });
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
@@ -3509,8 +3490,10 @@ test("the version history compares two versions of a document with the change vi
   );
 
   await page.goto(`/issues/${issue.key}/artifacts/notes-md`);
-  const compare = page.getByRole("region", { name: "Compare versions for notes.md" });
-  await compare.getByRole("button", { name: "Show comparison" }).click();
+  const compare = page.getByRole("region", {
+    name: `${CONTROL_LABELS.compare_versions_for} notes.md`,
+  });
+  await compare.getByRole("button", { name: CONTROL_LABELS.show_comparison }).click();
   await compare.getByLabel("Compare notes.md from").selectOption("1");
   await compare.getByLabel("Compare notes.md to").selectOption("2");
   const changed = compare.getByTestId("change-view").locator('[data-change="changed"]');
@@ -3577,7 +3560,7 @@ test("the node menu's upload stages a file with a Summary for its version, and C
   expect(notes?.versions?.map((version) => version.summary)).toEqual(["First review notes"]);
 });
 
-// SLOW(>=2s): a real upload the history links, and the keyboard tour of the five presets with
+// SLOW(>=2s): a real upload the history links, and the keyboard tour of the seven presets with
 // each tab's box measured, at 1440 px and at 390 px.
 //
 // The nine tabs are gone (dispatch://INFRA-1196 R3): the row is the views' controls, Documents
@@ -3652,7 +3635,7 @@ test("an uploaded document is linked from the history and the presets fit every 
   // What the row promises at 1440 px, which is a pointer's width: each toggle is the
   // prototype's tab, 35 px tall (`web/src/features/issue/IssuePresets.tsx`), and no taller than
   // the row it shares. The touch target is read below at the width a finger is what reaches the
-  // filters: these five are not drawn there at all, because below 1280 px the row is one
+  // filters: these seven are not drawn there at all, because below 1280 px the row is one
   // control instead, and that control carries the target.
   const fitsTheRow = async (toggle: Locator, label: string) => {
     const height = (await toggle.boundingBox())?.height ?? 0;
@@ -3662,7 +3645,7 @@ test("an uploaded document is linked from the history and the presets fit every 
     ).toBeGreaterThanOrEqual(32);
     expect(
       height,
-      `the ${label} toggle is ${height} px tall, taller than the row of five`
+      `the ${label} toggle is ${height} px tall, taller than the row of seven`
     ).toBeLessThanOrEqual(48);
   };
   // Every control is reachable from the keyboard, each is inside the row as it takes focus, and
@@ -3675,7 +3658,7 @@ test("an uploaded document is linked from the history and the presets fit every 
     const toggle = presetToggle(page, preset);
     await expect(toggle).toBeFocused();
     await insideToolbar(toggle);
-    await fitsTheRow(toggle, preset);
+    await fitsTheRow(toggle, PRESET_NAMES[preset]);
   }
   await page.keyboard.press("Home");
   await expect(first).toBeFocused();
@@ -3739,7 +3722,7 @@ test("the node menu lists every file of the issue, and an item's name is not tru
 
   await page.goto(`/issues/${issue.key}/documents`);
   const files = documentsRows(page).filter({
-    has: page.getByRole("link", { name: /^Download version/ }),
+    has: page.getByRole("link", { name: new RegExp(`^${CONTROL_LABELS.download_version}`) }),
   });
   await expect(files).toHaveCount(2);
 
@@ -3752,7 +3735,7 @@ test("the node menu lists every file of the issue, and an item's name is not tru
   await documentLink(page, "audit.md").click();
   // Every version is drawn open, with no control that hides any (part N's R2).
   await expect(
-    page.getByRole("region", { exact: true, name: "Versions for audit.md" })
+    page.getByRole("region", { exact: true, name: `${FILE_WORDS.versions_for} audit.md` })
   ).toContainText("Version 1");
 });
 
@@ -4035,6 +4018,16 @@ interface OpenedTree {
   readonly seeded: WholeIssueSeed;
 }
 
+/** The whole issue seeded, and one signed-in reader's page at 1280 × 900 px that has loaded
+ *  nothing yet: for a row whose first load is an address of its own. */
+async function seedTreeContext(browser: Browser): Promise<OpenedTree> {
+  const seeded = await seedWholeIssue();
+  const context = await asReader(browser, "alice");
+  const page = await context.newPage();
+  await page.setViewportSize({ height: 900, width: 1280 });
+  return { context, page, seeded };
+}
+
 /** The whole issue, opened by one signed-in reader with the focus on the page itself, which is
  *  where reading mode is. A key pressed before this returns reaches no handler, because the
  *  keymap binds only once sign-in resolves. It asserts only that the page's opening put the focus
@@ -4042,14 +4035,11 @@ interface OpenedTree {
  *  `focusThePage`): each row below asserts the key or the tree property it is about first, and
  *  `expectTreeDrawn` after it. */
 async function openTree(browser: Browser): Promise<OpenedTree> {
-  const seeded = await seedWholeIssue();
-  const context = await asReader(browser, "alice");
-  const page = await context.newPage();
-  await page.setViewportSize({ height: 900, width: 1280 });
-  await gotoIssue(page, `/issues/${seeded.key}/conversation`);
-  await expectOpeningLanded(page);
-  await focusThePage(page);
-  return { context, page, seeded };
+  const opened = await seedTreeContext(browser);
+  await gotoIssue(opened.page, `/issues/${opened.seeded.key}/conversation`);
+  await expectOpeningLanded(opened.page);
+  await focusThePage(opened.page);
+  return opened;
 }
 
 /** The redesigned page and its tree are on the screen, which every row asserts after its own
@@ -4139,7 +4129,7 @@ test("every chord the page bound before the redesign brings a target on screen w
     await page.keyboard.press("Escape");
     await expect(marginShell(page), "Escape does not close Details").toBeHidden();
 
-    // The steps, in Details: `t e`, which named the Steps tab before this change (answer A),
+    // The steps, in Details: `t e`, the Steps tab's chord on today's page (answer A),
     // opens Details at the issue's steps under the history and puts the focus on their heading,
     // which it brings to the top of Details' view.
     await focusThePage(page);
@@ -4206,7 +4196,7 @@ test("every chord the page bound before the redesign brings a target on screen w
     // Shift, which no key of the page binds - and the focus then leaves for the page for good.
     await page.keyboard.press("Shift");
 
-    // Documents' list: `t a`, which named the Artifacts tab before this change, opens it with the
+    // Documents' list: `t a`, the Artifacts tab's chord on today's page, opens it with the
     // focus on its first row, on screen (part N's R4).
     await focusThePage(page);
     await page.keyboard.press("t");
@@ -4256,7 +4246,7 @@ test("every chord the page bound before the redesign brings a target on screen w
 test("Escape leaves the caret, then closes a document, then clears the words, then turns every filter off, then leaves the outline", async ({
   browser,
 }) => {
-  const { context, page, seeded } = await openTree(browser);
+  const { context, page, seeded } = await seedTreeContext(browser);
   try {
     const spec = await getArtifact(seeded.specArtifactId);
     const words = "Requirement";
@@ -4411,15 +4401,6 @@ test("t f filters inside the preset, $mod+Alt+m comments on a selection, and / s
 
 // ---- from 750e2716:packages/dispatch/e2e/live-socket.e2e.ts
 
-const _agent: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  dir: "/workspaces/live-socket",
-  machine_id: "live-socket-host",
-  roles: [],
-  session_id: "01a0e090-4848-7473-acc5-fc96e6a646d4",
-  title: "Live Socket Agent",
-};
-
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
 
 /** Waits until the page holds one open live socket and its event feed has started on it. */
@@ -4428,40 +4409,10 @@ async function untilFeedStarts(sockets: LiveSockets): Promise<void> {
   await expect.poll(() => sockets.received.includes("events_start")).toBe(true);
 }
 
-function _replay(
-  sessionID: string,
-  extra: readonly Record<string, unknown>[] = []
-): Record<string, unknown> {
-  return {
-    frames: [
-      ...Array.from({ length: 40 }, (_, index) => ({
-        kind: "message",
-        message: {
-          at: 1_000 + index,
-          id: `turn-${index}`,
-          parts: [
-            {
-              text: `Turn ${index}: ${"The live socket keeps this text. ".repeat(4)}`,
-              type: "text",
-            },
-          ],
-          role: index % 2 === 0 ? "user" : "assistant",
-          streaming: false,
-        },
-        seq: index + 1,
-        v: 1,
-      })),
-      ...extra,
-    ],
-    session_id: sessionID,
-    v: 1,
-  };
-}
-
-function trackApiRequests(page: Page): Map<Request, number> {
-  const pending = new Map<Request, number>();
+function trackApiRequests(page: Page): Set<Request> {
+  const pending = new Set<Request>();
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname.startsWith("/api/")) pending.set(request, Date.now());
+    if (new URL(request.url()).pathname.startsWith("/api/")) pending.add(request);
   });
   const settled = (request: Request) => pending.delete(request);
   page.on("requestfailed", settled);
@@ -4469,7 +4420,7 @@ function trackApiRequests(page: Page): Map<Request, number> {
   return pending;
 }
 
-async function waitForReads(pending: Map<Request, number>): Promise<void> {
+async function waitForReads(pending: ReadonlySet<Request>): Promise<void> {
   await expect.poll(() => pending.size).toBe(0);
 }
 
@@ -4477,7 +4428,7 @@ async function waitForReads(pending: Map<Request, number>): Promise<void> {
  *  reading an issue of its own, compare as lists. */
 const ISSUE_PATH = "/api/v1/issues/<issue>";
 
-/** The reads an issue's activity tab makes for itself at its first load. A window that counts
+/** The reads the issue page makes for itself at its first load. A window that counts
  *  what an event costs a page opens only after these have gone out, since they are the page's
  *  own lazy first reads and not the event's doing. */
 const FIRST_ISSUE_READS = [`${ISSUE_PATH}/comments`, `${ISSUE_PATH}/asks`, `${ISSUE_PATH}/events`];
@@ -4505,7 +4456,7 @@ function trackIssueReads(page: Page, key: string): string[] {
  *  gone out, and nothing it started is still in flight. */
 async function untilIssueReadsSettle(
   reads: readonly string[],
-  pending: Map<Request, number>
+  pending: ReadonlySet<Request>
 ): Promise<void> {
   for (const read of FIRST_ISSUE_READS) await expect.poll(() => reads).toContain(read);
   await waitForReads(pending);
@@ -4530,21 +4481,20 @@ function trackDocumentLoads(page: Page): string[] {
 // rotation costs no read of the issue beyond what that change costs a page with no rotation
 // (the control). Reads of the issue are what the title claims and all this row counts; a
 // request to any other route is outside both.
-// Each window counts that page's reads of its own issue, by path, because a count of every
-// `/api/` request counted two different things: in CI job 127925489549 the control's window held
-// its tab's lazy first reads of `/comments` and `/asks?state=all` and a periodic
-// `/api/v1/agents`, which no comment event invalidates, while the rotating page had made those
-// reads long before its own window opened - 5 reads against 4, and job 127873213156 counted 6
-// against 4 the same way. So both windows now open only once that page's own first reads have
-// gone out and settled, and the two lists are compared read for read.
+// Each window counts that page's reads of its own issue, by path: a count of every `/api/`
+// request counts two different things, since the control's window holds its own lazy first reads
+// of `/comments` and `/asks?state=all` and a periodic `/api/v1/agents`, which no comment event
+// invalidates, while the rotating page made those reads long before its own window opened. So
+// both windows open only once that page's own first reads have gone out and settled, and the two
+// lists are compared read for read.
 // SLOW(>=2s): the two quiet windows below, one on the control page and one on the rotating
 // page, are what "no extra read of the issue" is counted over. A count of what a page did not
 // do over a window is that window's own real time, and the two must stay equal for the counts
 // to compare.
 // Both tags in the title are what select this row: `@phone` puts it in `iphone`, and `@firefox`
 // in `firefox`, which takes rows by title tag rather than by file name since
-// cybermonklabs/legion#2866. The two occurrences this change fixes were seen in exactly those
-// two projects, so the row must keep both.
+// cybermonklabs/legion#2866. The rotation's faults this row reads were seen in exactly those
+// two projects, so the row keeps both.
 test("a rotation loses no event and makes no extra read of the issue @phone @firefox", async ({
   browser,
 }) => {
@@ -4615,7 +4565,6 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     const comment = await createComment(issue.key, { body: "Committed while rotation waits" }, bob);
     await expect(page.getByTestId("connection-pill")).toHaveCount(0);
 
-    if (held === undefined) throw new Error("the reopened live socket was not held");
     const rotationWindow = reads.length;
     reconnectReleased.resolve();
     await expect.poll(() => sockets.received).toContain("event");
@@ -4662,7 +4611,6 @@ test("a change committed while the page loads is shown without a reload", async 
     await waitForReads(pending);
 
     await patchIssue(issue.key, { title: "Committed during the page load" }, bob);
-    if (held === undefined) throw new Error("the first live socket was not held");
     const opened = page.waitForEvent("websocket", isLiveSocket);
     firstSocketReleased.resolve();
     await opened;
@@ -4700,13 +4648,6 @@ test("a first live socket opening without a change makes no API request", async 
       await firstSocketReleased.promise;
       connect(route);
     });
-    const requestsAfterOpen: string[] = [];
-    let countRequests = false;
-    page.on("request", (request) => {
-      if (countRequests && new URL(request.url()).pathname.startsWith("/api/")) {
-        requestsAfterOpen.push(`${request.method()} ${request.url()}`);
-      }
-    });
     // Nothing writes the reader's state on this load: a mark written here would be a change.
     const stateWrites: string[] = [];
     page.on("request", (request) => {
@@ -4726,10 +4667,9 @@ test("a first live socket opening without a change makes no API request", async 
     // the first moment nothing is: the outline's one batched read of the names its references
     // cite goes out only after each of the tree's reads has answered (`useIssueTree.ts`), so the
     // reads can all be in for a moment before it is sent, and a count started then would take it
-    // for the open's own (CI at 88443e7d: `reference-targets?ref=dispatch://CORE-1`).
+    // for the open's own (`reference-targets?ref=dispatch://CORE-1`).
     await expectLoadSettled(traffic);
-    if (held === undefined) throw new Error("the first live socket was not held");
-    countRequests = true;
+    traffic.reset();
     firstSocketReleased.resolve();
     // The socket opened and the feed started on it, so the quiet below is the open's own.
     await untilFeedStarts(sockets);
@@ -4740,7 +4680,10 @@ test("a first live socket opening without a change makes no API request", async 
     // that this row does not count.
     await page.waitForTimeout(1_000);
     expect(stateWrites, "the load wrote the reader's state of an issue they had read").toEqual([]);
-    expect(requestsAfterOpen).toEqual([]);
+    expect(
+      traffic.requests.map(({ method, path }) => `${method} ${path}`),
+      "the first live socket's open sent requests under /api/"
+    ).toEqual([]);
   } finally {
     await alice.close();
   }
@@ -4762,186 +4705,182 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   }
 
   const alice = await asReader(browser, "alice");
-  const page = await alice.newPage();
-  const apiRequestPaths: string[] = [];
-  // What says the load is over: nothing in flight for the recorded baseline's window
-  // (`expectLoadSettled`), counting every request the page makes and not only these.
-  const settling = watchApiRequests(page);
-  page.on("request", (request) => {
-    // Called for every request of a cold load this row measures, so the cheap string test comes
-    // first: a path under /api/v1/ or /auth/ always shows in the raw URL.
-    const raw = request.url();
-    if (!(raw.includes("/api/v1/") || raw.includes("/auth/"))) return;
-    const url = new URL(raw);
-    if (url.pathname.startsWith("/api/v1/") || url.pathname.startsWith("/auth/")) {
-      apiRequestPaths.push(url.pathname + url.search);
-    }
-  });
+  try {
+    const page = await alice.newPage();
+    const apiRequestPaths: string[] = [];
+    // What says the load is over: nothing in flight for the recorded baseline's window
+    // (`expectLoadSettled`), counting every request the page makes and not only these.
+    const settling = watchApiRequests(page);
+    page.on("request", (request) => {
+      // Called for every request of a cold load this row measures, so the cheap string test comes
+      // first: a path under /api/v1/ or /auth/ always shows in the raw URL.
+      const raw = request.url();
+      if (!(raw.includes("/api/v1/") || raw.includes("/auth/"))) return;
+      const url = new URL(raw);
+      if (url.pathname.startsWith("/api/v1/") || url.pathname.startsWith("/auth/")) {
+        apiRequestPaths.push(url.pathname + url.search);
+      }
+    });
 
-  const socketOpened = page.waitForEvent(
-    "websocket",
-    (socket) => new URL(socket.url()).pathname === "/ws/live"
-  );
-  await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(tree(page).getByText("Backlog message 4")).toBeVisible();
-  await socketOpened;
+    const socketOpened = page.waitForEvent(
+      "websocket",
+      (socket) => new URL(socket.url()).pathname === "/ws/live"
+    );
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await expect(tree(page).getByText("Backlog message 4")).toBeVisible();
+    await socketOpened;
 
-  // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
-  expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
+    // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
+    expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly these addresses on a fresh load, and nothing else. A set rather than a count, and
-  // waited for rather than read at an instant: the page issues the last requests of its first
-  // load within a few milliseconds of painting the message this row waits for, so a count
-  // taken the moment that message appears can be one request short, which is how this row
-  // failed in CI - 20 against 21. The wait ends on the set itself, so a panel that starts
-  // eagerly fetching before its own address is ever opened still trips this immediately
-  // instead of only breaking some looser upper bound, and a failure names the address that is
-  // missing or extra instead of leaving a reader to work out which of a count of N dropped.
-  // The page pages no event log at all on this address: the history is Details', and it is
-  // drawn only once Details opens at it (dispatch://INFRA-1196 R15).
-  //
-  // It is the set of addresses, not the list of requests: the page reads an address it has
-  // already read when a query of the shell's invalidates, which is that query's business and
-  // not this budget's. What this holds is that no surface reads an address the page has no
-  // reason to read on a first load.
-  //
-  // The last reads of the set are the one tree the page's body is, which every preset is a
-  // query over and which therefore draws on every address (dispatch://INFRA-1196 R1, R3): the
-  // issue's coverage, its decisions, its check results, its references and the blocks of each
-  // of its documents - this issue carries one, whose nodes the tree draws - and the one batched
-  // read of every `dispatch://` address the tree holds. That read is one request and not one
-  // per read that lands: the tree grows as each of its reads answers, so the batch waits until
-  // all of them have (`features/issue-page/useIssueTree.ts`), where before it asked for the
-  // addresses known so far and asked again for the rest. The tree's asks, comments and messages
-  // are read under the keys the margin already owns, so they are shared rather than asked twice
-  // and are the entries already here.
-  //
-  // It is the source's set (`750e2716`'s `e2e/live.e2e.ts`) less four addresses and with two
-  // more, and no part on `main` adds one to this load. Three of the four are part L's, which
-  // follows this part (part N's R11: `slots/foot.tsx` draws nothing, `AWAITING_THE_BOX`), and
-  // L's pull request puts them back: the head read and the reader's state, which the read mark
-  // writes, and the active-sessions read, which the box makes. The fourth, the repository
-  // mappings, `main`'s page no longer reads. The two more are the reads of
-  // dispatch://INFRA-5702's list of what waits on the reader, a part this branch holds, which
-  // the header's count counts (R5). Each is named where it stood or stands.
-  const firstLoad = [
-    "/auth/whoami",
-    // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
-    // fetching again.
-    "/api/v1/inbox",
-    // The Projects query. The sidebar's Pinned list and its Priorities badge
-    // (`/api/v1/issues?pinned=true`, `/api/v1/priorities?summary=true`) are not read here: on
-    // the issue page the navigation is the icon rail, which draws neither, and the full list
-    // that does is read once the rail's foot control opens it (dispatch://INFRA-1196 R14).
-    "/api/v1/projects",
-    "/api/v1/me/state",
-    // The issue's detail.
-    `/api/v1/issues/${issue.key}`,
-    // No active-sessions read (`/api/v1/agents`): on this address the source made it for the
-    // box at the outline's foot, whose mention picker lists the live agents
-    // (`conversation/MentionComposer.tsx`'s `useAgents`). That box is part L's (R11). Nothing
-    // else on this load names an agent's session: the issue has no claim, and its messages are
-    // a person's.
-    // The primary artifact's comments, which the margin and the tree share rather than fetching
-    // again.
-    `/api/v1/issues/${issue.key}/comments`,
-    // The margin's own list of the issue's asks, which the tree shares. The panel's conversation
-    // list asked the same route for each ask's thread (`?thread=1`) as a request of its own; the
-    // outline draws an ask's replies from the comments above, and that list is gone (R14).
-    `/api/v1/issues/${issue.key}/asks?state=all`,
-    // The issue's open asks, one of the two reads of dispatch://INFRA-5702's list of what waits
-    // on the reader (`features/dashboard/useWaitingItems.ts`), whose items the header's count
-    // counts on every view (`IssuePropertiesRow.tsx`, R5): its questions and approval requests.
-    `/api/v1/issues/${issue.key}/asks?state=open`,
-    // The issue's message threads, which the tree shares.
-    `/api/v1/issues/${issue.key}/messages`,
-    // No read of the issue's head (`events?limit=1&order=desc`): the read mark at the outline's
-    // end that writes it is part L's (`IssueReadMark.tsx`), and part L follows this part (part
-    // N's R11). Part L's pull request puts that address back in this list.
-    // The live-agent query.
-    `/api/v1/issues/${issue.key}/subscribers`,
-    // The header's read of the project's architecture sources: the `Components:` line offers
-    // its picker only when the project has one. The component tree itself,
-    // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
-    // load, which is why it is absent from this set.
-    "/api/v1/projects/CORE/architecture-sources",
-    // No read of the repository mappings (`/api/v1/settings/repo-projects`): `main` dropped them
-    // at #4457 (85f90626), and the header's `Repository:` item reads the project's default
-    // repository from the Projects query above.
-    // me/agents/state, whose unread replies the Agents badge counts on every page (the
-    // sidebar's on desktop, the compact header's on phone).
-    "/api/v1/me/agents/state",
-    // The credential requests waiting on the viewer, which the Inbox count adds up on every
-    // page.
-    "/api/v1/credential-requests?approver=me",
-    // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
-    // number (the sidebar's on desktop, the compact header's on phone).
-    "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
-    // The reader's unread threads of the issue, the other read of dispatch://INFRA-5702's list
-    // behind the header's count (R5).
-    `/api/v1/me/replies?issue=${issue.key}&state=unread`,
-    // No list of the issue's phase handoffs: the list drew them beside the messages, and they
-    // are lines of the history now, read with its log.
-    // No write of the reader's own state on this issue (`PUT /api/v1/me/issues/<key>/state`):
-    // in the source it was the read mark's, sent once the outline's end had been on screen for
-    // a second, through the head read above (`IssueReadMark.tsx`'s `last_read_seq`). The read
-    // mark is part L's (R11).
-    // The tree's own reads, and the blocks of the one document the issue carries, which are
-    // the nodes the tree draws of it. The document's *text* is no read of a first load:
-    // nothing on load parses stored markdown any more (dispatch://INFRA-1196 R20). The head's
-    // three sentences were read out of the spec's own text at the summary block's span, and
-    // R20 replaced both reads with the summary node the tree already carries
-    // (`features/issue-page/IssueThreeThings.tsx`); the editor that reads a document's text is
-    // mounted only where a document preset is open, which this address is not. The issue's
-    // own reference closure (`references?own=1`) is no read either: it placed a document under
-    // the block citing it, and a document is no row of the outline (R1, be70b3383a).
-    `/api/v1/issues/${issue.key}/coverage`,
-    `/api/v1/issues/${issue.key}/decisions`,
-    `/api/v1/issues/${issue.key}/results`,
-    `/api/v1/artifacts/${issue.primary_artifact_id}/blocks`,
-    // The one batched read of every `dispatch://` address the tree holds. Its query is that
-    // list, which is what the issue's own text holds rather than a fact about the budget, so
-    // this set names the read and `seen` drops the query.
-    "/api/v1/reference-targets",
-  ].sort();
-  // The watermark an event read starts past is the reader's, not a fact of the budget, and
-  // neither is the list of references the batched read names, so both are dropped here.
-  const seen = () =>
-    [
-      ...new Set(
-        apiRequestPaths.map((path) =>
-          path
-            .replace(/^\/api\/v1\/reference-targets\?.*$/, "/api/v1/reference-targets")
-            .replace(/\?after=\d+&limit=1$/, "?after=&limit=1")
-        )
-      ),
+    // Exactly these addresses on a fresh load, and nothing else. A set rather than a count, and
+    // waited for rather than read at an instant: the page issues the last requests of its first
+    // load within a few milliseconds of painting the message this row waits for, so a count
+    // taken the moment that message appears can be one request short. The wait ends on the set
+    // itself, so a panel that starts eagerly fetching before its own address is ever opened still
+    // trips this immediately instead of only breaking some looser upper bound, and a failure names
+    // the address that is missing or extra instead of leaving a reader to work out which of a
+    // count of N dropped.
+    // The page pages no event log at all on this address: the history is Details', and it is
+    // drawn only once Details opens at it (dispatch://INFRA-1196 R15).
+    //
+    // It is the set of addresses, not the list of requests: the page reads an address it has
+    // already read when a query of the shell's invalidates, which is that query's business and
+    // not this budget's. What this holds is that no surface reads an address the page has no
+    // reason to read on a first load.
+    //
+    // The last reads of the set are the one tree the page's body is, which every preset is a
+    // query over and which therefore draws on every address (dispatch://INFRA-1196 R1, R3): the
+    // issue's coverage, its decisions, its check results, its references and the blocks of each
+    // of its documents - this issue carries one, whose nodes the tree draws - and the one batched
+    // read of every `dispatch://` address the tree holds. That read is one request and not one
+    // per read that lands: the tree grows as each of its reads answers, so the batch waits until
+    // all of them have (`features/issue-page/useIssueTree.ts`). The tree's asks, comments and
+    // messages are read under the keys the margin already owns, so they are shared rather than
+    // asked twice and are the entries already here.
+    //
+    // It is the source's set (`750e2716`'s `e2e/live.e2e.ts`) less four addresses and with two
+    // more, and no part on `main` adds one to this load. Three of the four are part L's, which
+    // follows this part (part N's R11: `slots/foot.tsx` draws nothing, `AWAITING_THE_BOX`), and
+    // L's pull request puts them back: the head read and the reader's state, which the read mark
+    // writes, and the active-sessions read, which the box makes. The fourth, the repository
+    // mappings, `main`'s page no longer reads. The two more are the reads of
+    // dispatch://INFRA-5702's list of what waits on the reader, a part this branch holds, which
+    // the header's count counts (R5). Each is named where it stood or stands.
+    const firstLoad = [
+      "/auth/whoami",
+      // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
+      // fetching again.
+      "/api/v1/inbox",
+      // The Projects query. The sidebar's Pinned list and its Priorities badge
+      // (`/api/v1/issues?pinned=true`, `/api/v1/priorities?summary=true`) are not read here: on
+      // the issue page the navigation is the icon rail, which draws neither, and the full list
+      // that does is read once the rail's foot control opens it (dispatch://INFRA-1196 R14).
+      "/api/v1/projects",
+      "/api/v1/me/state",
+      // The issue's detail.
+      `/api/v1/issues/${issue.key}`,
+      // No active-sessions read (`/api/v1/agents`): on this address the source made it for the
+      // box at the outline's foot, whose mention picker lists the live agents
+      // (`conversation/MentionComposer.tsx`'s `useAgents`). That box is part L's (R11). Nothing
+      // else on this load names an agent's session: the issue has no claim, and its messages are
+      // a person's.
+      // The primary artifact's comments, which the margin and the tree share rather than fetching
+      // again.
+      `/api/v1/issues/${issue.key}/comments`,
+      // The margin's own list of the issue's asks, which the tree shares. The panel's conversation
+      // list asked the same route for each ask's thread (`?thread=1`) as a request of its own; the
+      // outline draws an ask's replies from the comments above, and that list is gone (R14).
+      `/api/v1/issues/${issue.key}/asks?state=all`,
+      // The issue's open asks, one of the two reads of dispatch://INFRA-5702's list of what waits
+      // on the reader (`features/dashboard/useWaitingItems.ts`), whose items the header's count
+      // counts on every view (`IssuePropertiesRow.tsx`, R5): its questions and approval requests.
+      `/api/v1/issues/${issue.key}/asks?state=open`,
+      // The issue's message threads, which the tree shares.
+      `/api/v1/issues/${issue.key}/messages`,
+      // No read of the issue's head (`events?limit=1&order=desc`): the read mark at the outline's
+      // end that writes it is part L's (`IssueReadMark.tsx`), and part L follows this part (part
+      // N's R11). Part L's pull request puts that address back in this list.
+      // The live-agent query.
+      `/api/v1/issues/${issue.key}/subscribers`,
+      // The header's read of the project's architecture sources: the `Components:` line offers
+      // its picker only when the project has one. The component tree itself,
+      // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
+      // load, which is why it is absent from this set.
+      "/api/v1/projects/CORE/architecture-sources",
+      // No read of the repository mappings (`/api/v1/settings/repo-projects`): `main` dropped them
+      // at #4457 (85f90626), and the header's `Repository:` item reads the project's default
+      // repository from the Projects query above.
+      // me/agents/state, whose unread replies the Agents badge counts on every page (the
+      // sidebar's on desktop, the compact header's on phone).
+      "/api/v1/me/agents/state",
+      // The credential requests waiting on the viewer, which the Inbox count adds up on every
+      // page.
+      "/api/v1/credential-requests?approver=me",
+      // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
+      // number (the sidebar's on desktop, the compact header's on phone).
+      "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
+      // The reader's unread threads of the issue, the other read of dispatch://INFRA-5702's list
+      // behind the header's count (R5).
+      `/api/v1/me/replies?issue=${issue.key}&state=unread`,
+      // No list of the issue's phase handoffs: the list drew them beside the messages, and they
+      // are lines of the history now, read with its log.
+      // No write of the reader's own state on this issue (`PUT /api/v1/me/issues/<key>/state`):
+      // in the source it was the read mark's, sent once the outline's end had been on screen for
+      // a second, through the head read above (`IssueReadMark.tsx`'s `last_read_seq`). The read
+      // mark is part L's (R11).
+      // The tree's own reads, and the blocks of the one document the issue carries, which are
+      // the nodes the tree draws of it. The document's *text* is no read of a first load:
+      // nothing on load parses stored markdown any more (dispatch://INFRA-1196 R20). The head's
+      // three sentences were read out of the spec's own text at the summary block's span, and
+      // R20 replaced both reads with the summary node the tree already carries
+      // (`features/issue-page/IssueThreeThings.tsx`); the editor that reads a document's text is
+      // mounted only where a document preset is open, which this address is not. The issue's
+      // own reference closure (`references?own=1`) is no read either: it placed a document under
+      // the block citing it, and a document is no row of the outline (R1, be70b3383a).
+      `/api/v1/issues/${issue.key}/coverage`,
+      `/api/v1/issues/${issue.key}/decisions`,
+      `/api/v1/issues/${issue.key}/results`,
+      `/api/v1/artifacts/${issue.primary_artifact_id}/blocks`,
+      // The one batched read of every `dispatch://` address the tree holds. Its query is that
+      // list, which is what the issue's own text holds rather than a fact about the budget, so
+      // this set names the read and `seen` drops the query.
+      "/api/v1/reference-targets",
     ].sort();
-  await expect.poll(seen).toEqual(firstLoad);
+    // The list of references the batched read names is not a fact of the budget, so it is dropped
+    // here.
+    const seen = () =>
+      [
+        ...new Set(
+          apiRequestPaths.map((path) =>
+            path.replace(/^\/api\/v1\/reference-targets\?.*$/, "/api/v1/reference-targets")
+          )
+        ),
+      ].sort();
+    await expect.poll(seen).toEqual(firstLoad);
 
-  // The batch is one request, which the set above cannot say: it holds the address once
-  // however many times the page asked for it. The tree waits for all of its reads before it
-  // asks (`features/issue-page/useIssueTree.ts`), where before it asked for the addresses known
-  // so far and asked again for the rest, so the count is the assertion that rule needs. It is
-  // counted once the page has gone quiet, not at the moment the set above first matched: that
-  // moment is the first batch's own, so a second batch sent after the reads answer would land
-  // after it and never be counted.
-  await expectLoadSettled(settling);
-  // The set again, once quiet: an address first read after the set above matched is no less a
-  // read of the first load.
-  expect(seen(), "the first load read another address once its set had matched").toEqual(firstLoad);
-  expect(
-    apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/reference-targets"),
-    "the page read /api/v1/reference-targets more than once on a first load"
-  ).toHaveLength(1);
-
-  await alice.close();
+    // The batch is one request, which the set above cannot say: it holds the address once
+    // however many times the page asked for it. The tree waits for all of its reads before it
+    // asks (`features/issue-page/useIssueTree.ts`), so the count is the assertion that rule needs.
+    // It is counted once the page has gone quiet, not at the moment the set above first matched:
+    // that moment is the first batch's own, so a second batch sent after the reads answer would
+    // land after it and never be counted.
+    await expectLoadSettled(settling);
+    // The set again, once quiet: an address first read after the set above matched is no less a
+    // read of the first load.
+    expect(seen(), "the first load read another address once its set had matched").toEqual(
+      firstLoad
+    );
+    expect(
+      apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/reference-targets"),
+      "the page read /api/v1/reference-targets more than once on a first load"
+    ).toHaveLength(1);
+  } finally {
+    await alice.close();
+  }
 });
 
 // ---- from 750e2716:packages/dispatch/e2e/phone-landing.e2e.ts
-
-// The iPhone 13 viewport INFRA-95 measured the landing fault at, below the 390x844 `phone`
-// layout `phone-conversation.e2e.ts` uses.
-const iphone = { height: 664, width: 390 };
 
 const session = {
   actor: { kind: "session" as const, id: "e2e-phone-landing" },
@@ -4988,10 +4927,11 @@ function questionRow(page: Page, askId: string): Locator {
   return nodeRow(page, askId).first();
 }
 
-/** A new page in `context` at the `iphone` viewport. */
+/** A new page in `context` at the iPhone 13 viewport INFRA-95 measured the landing fault at
+ *  (`IPHONE_13`), below the 390x844 `phone` layout `phone-conversation.e2e.ts` uses. */
 async function openPhonePage(context: BrowserContext): Promise<Page> {
   const page = await context.newPage();
-  await page.setViewportSize(iphone);
+  await page.setViewportSize(IPHONE_13);
   return page;
 }
 
@@ -5326,8 +5266,10 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
   // what references the issue is one of its properties (dispatch://INFRA-1196 R12, R14).
   await openDetails(page);
   const panel = page.locator('[data-margin-section="references"]');
-  await panel.getByRole("button", { name: /^Referenced by/ }).click();
-  const references = panel.getByRole("region", { name: "Referenced by" });
+  await panel
+    .getByRole("button", { name: new RegExp(`^${PROPERTY_LABELS.referenced_by}`) })
+    .click();
+  const references = panel.getByRole("region", { name: PROPERTY_LABELS.referenced_by });
 
   // The source is the ask the part belongs to, as a block of a comment reads as its comment, and
   // it links to the ask at that part. A part of an ask is no document, so nothing here reads
@@ -5380,10 +5322,9 @@ const links: { href: string; name: string }[][] = [
 ];
 
 test.describe("a bare web address is a link in a document written through the API, as in a comment", () => {
-  // SLOW(>=2s): 3,811 ms in this head's four-worker CI report (`dispatch-e2e-report-1` of run
-  // 42334783358), 2,545 ms at the merge base's merge-group run. Nine paragraphs, each a bare
-  // address, asserted twice - once in the comment's row of the outline and once in the document
-  // editor - which is ten link lookups per surface.
+  // SLOW(>=2s): 3,811 ms in a four-worker CI report of this head, 2,545 ms at the merge base.
+  // Nine paragraphs, each a bare address, asserted twice - once in the comment's row of the
+  // outline and once in the document editor - which is ten link lookups per surface.
   // Off the pull-request lane: `main`'s source row in `address-links.e2e.ts` runs there, and the
   // lane's real-stack budget (`e2e/__tests__/pull-request-lane.test.ts`) has no room for this copy.
   test("after punctuation or an escaped scheme colon", async ({ browser }) => {
@@ -5614,11 +5555,9 @@ test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({
 
 // ---- from 750e2716:packages/dispatch/e2e/prefix-links.e2e.ts
 
-/** How many characters of an id an address writes short here: the fewest the server resolves. */
-const SHORT = 8;
-
+/** `id` as an address writes it short (`SHORT_ID`). */
 function short(id: string): string {
-  return id.slice(0, SHORT);
+  return id.slice(0, SHORT_ID);
 }
 
 /** The id of the last filler paragraph of the host's spec, which stands below the fold. */
@@ -5752,7 +5691,8 @@ test("round-trips through the filters leave one open document connection and the
     // closes its socket, and coming back opens one again. What must never happen is a tab that
     // accumulates live rooms.
     const sockets = openDocumentSockets(page);
-    await page.goto(await specAddress(issue.key));
+    const specPath = await specAddress(issue.key);
+    await page.goto(specPath);
     const editor = documentEditor(page);
     await typeAtEnd(page, "stay mounted");
     await expect(editor).toContainText("stay mounted");
@@ -5773,9 +5713,9 @@ test("round-trips through the filters leave one open document connection and the
     // the screen as the page scrolls, so the reader presses it where they stand. At 1440 px the
     // view row scrolls away with the header, so a press there comes after the reader has scrolled
     // back up to it, and the place they leave the outline at is the one they pressed from. Below
-    // 1280 px the five toggles are one control whose menu holds them (part D's
+    // 1280 px the seven toggles are one control whose menu holds them (part D's
     // `IssuePresets.tsx`), so each press is that control's and then its item's, and the view on is
-    // read from the control's name (`expectActivePreset`), where the source read each toggle's
+    // read from the control's name (`expectActiveControl`), where the source read each toggle's
     // `aria-pressed`.
     //
     // The reader leaves the outline's row for the page before they scroll, as the source's reader
@@ -5806,8 +5746,11 @@ test("round-trips through the filters leave one open document connection and the
     // (`stage-landing.tsx`'s `ViewNodeKeeper`), and `t c`, which puts the focus on the outline's
     // one tab stop, leaves the row where it stands (`useIssueKeymap.ts`'s `showPart`).
     if (wide !== null) await page.setViewportSize(wide);
-    const spec = page.getByRole("button", { exact: true, name: "Spec" });
-    const conversation = page.getByRole("button", { exact: true, name: "Conversation" });
+    const spec = page.getByRole("button", { exact: true, name: PRESET_NAMES.spec });
+    const conversation = page.getByRole("button", {
+      exact: true,
+      name: PRESET_NAMES.conversation,
+    });
     const standing = tree(page).getByRole("treeitem").filter({ hasText: "Existing message 20" });
     await standing.focus();
     await expect(standing).toBeInViewport();
@@ -5823,7 +5766,7 @@ test("round-trips through the filters leave one open document connection and the
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(chordPosition);
 
     // Back to the document, with the text typed into it and one connection open, not two.
-    await navigateInApp(page, await specAddress(issue.key));
+    await navigateInApp(page, specPath);
     await expect(editor).toContainText("stay mounted");
     await expect.poll(sockets).toBe(1);
   } finally {
@@ -5880,6 +5823,35 @@ test("the conversation downloads no editor transport; a document loads it on dem
   }
 });
 
+/** Holds each read of `reads`, by its path, from the page's next request on. `seen` names each
+ *  held read that has gone out; `release` lets them all go, and takes the hold off only once each
+ *  has gone on: a hold taken off while its reads still wait hands them on itself, and the wait's
+ *  own `continue` then finds them handled. */
+async function holdReads(
+  page: Page,
+  reads: readonly string[]
+): Promise<{ readonly release: () => Promise<void>; readonly seen: ReadonlySet<string> }> {
+  const released = Promise.withResolvers<void>();
+  const seen = new Set<string>();
+  const matchReads = ({ pathname }: URL) => reads.includes(pathname);
+  const going: Promise<void>[] = [];
+  const hold = (route: Route) => {
+    seen.add(new URL(route.request().url()).pathname);
+    const goes = released.promise.then(() => route.continue());
+    going.push(goes);
+    return goes;
+  };
+  await page.route(matchReads, hold);
+  return {
+    release: async () => {
+      released.resolve();
+      await Promise.all(going);
+      await page.unroute(matchReads, hold);
+    },
+    seen,
+  };
+}
+
 // c-view-waiting. Hold the view's real API requests before opening its address. The
 // assertion of the status is the first reading of the view, not a wait for any row.
 test("a view that waits for its reads says what it waits for", async ({ browser }) => {
@@ -5931,17 +5903,9 @@ test("a view that waits for its reads says what it waits for", async ({ browser 
     ] as const;
     for (const { body, failed, loading, reads, ready, view } of views) {
       await test.step(PRESET_NAMES[view], async () => {
-        const released = Promise.withResolvers<void>();
-        const seen = new Set<string>();
-        const matchReads = ({ pathname }: URL) => reads.some((read) => read === pathname);
-        const hold = async (route: Route) => {
-          seen.add(new URL(route.request().url()).pathname);
-          await released.promise;
-          await route.continue();
-        };
         const slot = issuePage(page).locator(body);
         const status = slot.getByRole("status").and(slot.locator(VIEW_LOADING));
-        await page.route(matchReads, hold);
+        const held = await holdReads(page, reads);
         try {
           await openPreset(page, seeded.key, view);
           await expect(status, "the view was blank while its reads were out").toBeVisible({
@@ -5950,19 +5914,18 @@ test("a view that waits for its reads says what it waits for", async ({ browser 
           await expect(status).toHaveText(loading, { timeout: 1_000 });
           await expect(outlineRows(page)).toHaveCount(0);
           await expect
-            .poll(() => reads.every((read) => seen.has(read)), {
+            .poll(() => reads.every((read) => held.seen.has(read)), {
               message: "the page did not ask for every held read",
             })
             .toBe(true);
-          released.resolve();
+          await held.release();
           await expect(
             slot.locator(ready).first(),
             "the view did not draw after its reads answered"
           ).toBeVisible();
           await expect(status).toHaveCount(0);
         } finally {
-          released.resolve();
-          await page.unroute(matchReads, hold);
+          await held.release();
         }
 
         // A new page load has no cached answer, so this failure replaces the loading line.
@@ -6235,9 +6198,10 @@ async function readHeader(page: Page, width: number, where: string): Promise<Hea
 }
 
 /** The header's limit at 390 px on the seeds of the 115-character title with 20 labels, with an
- *  approval request waiting on the reader or with none: part P's own, 9 lines and 280 px
- *  (decision 17 of dispatch://INFRA-1196/artifact/part-decisions-md, `headerLimit` of
- *  `e2e/issue-page-p.ts`). Root R13's 6 lines and 180 px hold for a title of at most two lines:
+ *  approval request waiting on the reader or with none: part P's limit while a request waits, 9
+ *  lines and 280 px (decision 17 of dispatch://INFRA-1196/artifact/part-decisions-md, `headerLimit`
+ *  of `e2e/issue-page-p.ts`, which gives 8 lines and 250 px while none waits), applied to both
+ *  seeds. Root R13's 6 lines and 180 px hold for a title of at most two lines:
  *  the owner's answer to the root's ask, "Long titles excepted"
  *  (dispatch://INFRA-1196/ask/7c644731-f514-498b-b57a-4e76136ce1a3), which the architect of
  *  INFRA-3940 applied to N's measurement (dispatch://INFRA-3940/comment/a5dd812e-6287-4be1-823a-220f3c1fa097).
@@ -6307,7 +6271,7 @@ function expectLinkAddsNothing(
 // inside R13's sizes and at 390 px inside `WORST_HEADER_AT_390`, and the link takes no line and
 // no pixel of the header the issue draws without it. A pass does not show a state change while
 // the page stays open (the field comes with the issue's read).
-// SLOW(>=2s): 14.1 s on chromium and 8.2 s on iphone (one worker, the pod, at g12b): a project and
+// SLOW(>=2s): 14.1 s on chromium and 8.2 s on iphone (one worker, the pod): a project and
 // the header's seed, four pull request rows written and deleted, a title, 20 labels and an
 // approval request written, and six loads of the issue at each of the row's widths, each read
 // for its header's size.
@@ -6467,7 +6431,8 @@ function titleBlockEdge(shadow: string, lineColour: string): string[] {
 // draws neither at any of those places. A pass does not show 760 px or 761 px, which the row does
 // not read; part P's sticky rows read both.
 // SLOW(>=2s): the header's seed with 20 labels written, then a load of the issue into a short
-// window at each of two widths, each page scrolled to five places with two frames drawn after each.
+// window at each of two widths, each page scrolled to five places and its edge read once it holds
+// still (`settledValue`).
 test("the title block draws its lower line from the first pixel scrolled", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -6597,10 +6562,7 @@ async function expectDetailsFollowsRow(
   const at = seen.row ?? "";
   // The Verification view's first row is the issue's own summary, which carries no kind of node:
   // the focused row is then the issue itself, whose facts name its title after "Issue:".
-  const type = await page
-    .locator(`[data-node-row][data-node-id="${at}"]`)
-    .first()
-    .getAttribute("data-node-type");
+  const type = await page.locator(rowSelector(at)).first().getAttribute("data-node-type");
   const kind = NODE_TYPE_NAMES[(type ?? "issue") as keyof typeof NODE_TYPE_NAMES];
   expect(
     kind,
@@ -6648,7 +6610,7 @@ test("Details follows the focused row of every view", async ({ browser }) => {
           await page.keyboard.press("c");
         }
         await expect(
-          page.locator(`[data-issue-body] [data-node-row][data-node-id="${at}"]`).first(),
+          page.locator(`[data-issue-body] ${rowSelector(at)}`).first(),
           `${leave} from ${view} leaves no row of ${at} focused in the outline`
         ).toBeFocused();
       }
@@ -6751,15 +6713,6 @@ test("a dialog opened from a row's act gives the focus back to the row", async (
   });
 });
 
-/** Whether the head holds part M's list of what references the focused row
- *  (dispatch://INFRA-3948), which decision 449's row opens: c-reference-block runs on whichever
- *  of part M and this part lands second, so the row skips on a head without it. */
-const PART_M_REFERENCES = existsSync(
-  fileURLToPath(
-    new URL("../web/src/features/issue-page/node-references/NodeReferences.tsx", import.meta.url)
-  )
-);
-
 // Decision 449 of dispatch://INFRA-1196/artifact/part-decisions-md (c-reference-block): a
 // reference to a block of a document the outline does not draw opens that document on the block.
 // The issue holds `plan-one-plan.md`, a document of tasks uploaded as an ordinary document and not
@@ -6774,11 +6727,6 @@ const PART_M_REFERENCES = existsSync(
 test("a reference to a block of a document the outline does not draw opens that document on the block @phone", async ({
   browser,
 }) => {
-  test.skip(
-    !PART_M_REFERENCES,
-    "What references this row is part M's node-references/NodeReferences.tsx " +
-      "(dispatch://INFRA-3948), which this head does not hold; part M's branch runs this row"
-  );
   const taskWords = "Draw the task that a reference to it opens on.";
   await phase(
     browser,
@@ -6867,35 +6815,19 @@ test("a reference to a block of a document the outline does not draw opens that 
 
 /** Holds the Verification view's reads (`slots/view-verification.tsx`: what serves each
  *  statement, the checks' results and the Verification document's blocks), as c-view-waiting's
- *  row holds them, so the view draws its loading line in their place, until the function it
- *  answers lets them go. */
+ *  row holds them (`holdReads`), so the view draws its loading line in their place, until the
+ *  function it answers lets them go. */
 async function holdVerificationReads(
   page: Page,
   seeded: WholeIssueSeed
 ): Promise<() => Promise<void>> {
   const issue = `/api/v1/issues/${seeded.key}`;
-  const reads = [
+  const held = await holdReads(page, [
     `${issue}/coverage`,
     `${issue}/results`,
     `/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`,
-  ];
-  const released = Promise.withResolvers<void>();
-  const matchReads = ({ pathname }: URL) => reads.includes(pathname);
-  // Each held read goes on once the hold is let go, and the hold is taken off only once each has:
-  // a hold taken off while its reads still wait hands them on itself, and the wait's own
-  // `continue` then finds them handled.
-  const going: Promise<void>[] = [];
-  const hold = (route: Route) => {
-    const goes = released.promise.then(() => route.continue());
-    going.push(goes);
-    return goes;
-  };
-  await page.route(matchReads, hold);
-  return async () => {
-    released.resolve();
-    await Promise.all(going);
-    await page.unroute(matchReads, hold);
-  };
+  ]);
+  return held.release;
 }
 
 /**

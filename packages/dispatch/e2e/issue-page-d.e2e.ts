@@ -60,7 +60,7 @@ The view row is one line at every width.
 
 /** What the seed below gives each control of the view row to count: no question and no thread
  *  of the reader's, two statements, one check, no plan and no decision. */
-const SEEDED_COUNTS: Readonly<Partial<Record<Preset, number>>> = {
+const SEEDED_COUNTS: Readonly<Record<Exclude<Preset, "dashboard" | "documents">, number>> = {
   conversation: 0,
   decisions: 0,
   plan: 0,
@@ -505,12 +505,13 @@ test("the six controls are toggles with an address each, one line at every width
     // counts. Dashboard, Conversation and Documents have no count.
     await expect(presetToolbar(page), "no toolbar named Filters holds the controls").toHaveCount(1);
     await expect(presetToggles(page)).toHaveCount(PRESET_ORDER.length);
+    const names = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]);
     expect(
       await presetToggles(page).evaluateAll((buttons) =>
         buttons.map((button) => button.querySelector("[data-preset-name]")?.textContent ?? "")
       ),
-      "the row's controls are not Dashboard, Conversation, Spec, Verification, Plan and Decisions"
-    ).toEqual(PRESET_ORDER.map((preset) => PRESET_NAMES[preset]));
+      `the row's controls are not ${names.join(", ")}`
+    ).toEqual(names);
     for (const preset of PRESET_ORDER) {
       const toggle = presetToggle(page, preset);
       await expect(toggle, `no toggle named ${PRESET_NAMES[preset]}`).toHaveCount(1);
@@ -576,8 +577,8 @@ test("the six controls are toggles with an address each, one line at every width
     await page.keyboard.press("ArrowLeft");
     await expect(presetToggle(page, "documents")).toBeFocused();
 
-    // Keys opens the list of keys, which names each view's chord; the five of Conversation and
-    // the filters are read here.
+    // Keys opens the list of keys, which names each view's chord; Conversation's and the four
+    // filters' (Spec, Verification, Plan and Decisions) are read here.
     await filterRow(page).getByRole("button", { exact: true, name: "Keys" }).click();
     const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await expect(keys).toBeVisible();

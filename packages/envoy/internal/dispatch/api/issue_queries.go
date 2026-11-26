@@ -1121,9 +1121,8 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 	first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&read.CommentCount)
 	})
-	// No row is an issue no pull request is attributed to, which the read leaves without one. The
-	// callback answers nil for it, as the issue row's does for a missing issue: an error returned
-	// here would close the batch on it (getIssue).
+	// An issue no pull request is attributed to answers no row, which the read leaves without one
+	// (getIssue's batch 1 says why the callback answers nil for it).
 	first.Queue(issuePullRequestStatement, key).QueryRow(func(row pgx.Row) error {
 		pullRequest, err := scanIssuePullRequest(row)
 		if errors.Is(err, pgx.ErrNoRows) {

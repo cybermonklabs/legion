@@ -13,9 +13,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// issueReadKeysBeforePullRequest is every key GET /api/v1/issues/{key} answered for
-// buildFullIssueRead's issue before the read named a pull request (main at 58ba1b4b), sorted.
-var issueReadKeysBeforePullRequest = []string{
+// issueReadKeysWithoutPullRequest is every key GET /api/v1/issues/{key} answers for
+// buildFullIssueRead's issue while no pull request is attributed to it, sorted.
+var issueReadKeysWithoutPullRequest = []string{
 	"advances", "advances_revision", "artifacts", "assignee", "blocked_by", "blocks", "children",
 	"claim", "closed_at", "comment_count", "components", "created_at", "created_by",
 	"decisions_artifact_id", "design_gates", "external_links", "holder_state", "key", "labels",
@@ -206,18 +206,19 @@ func TestIssueDetailsPullRequest(t *testing.T) {
 		// runs beside the new one.
 		fixture := buildFullIssueRead(t, handler)
 		before := readIssueAnswer(t, handler, fixture.key)
-		if keys := slices.Sorted(maps.Keys(before)); !slices.Equal(keys, issueReadKeysBeforePullRequest) {
-			t.Fatalf("the read of %s with no pull request answers the keys\n%q\nmain answered\n%q",
-				fixture.key, keys, issueReadKeysBeforePullRequest)
+		if keys := slices.Sorted(maps.Keys(before)); !slices.Equal(keys, issueReadKeysWithoutPullRequest) {
+			t.Fatalf("the read of %s with no pull request answers the keys\n%q\nwant\n%q",
+				fixture.key, keys, issueReadKeysWithoutPullRequest)
 		}
 		const repo = "acme/batch"
 		writePullRequestHeads(t, database, pullRequestHead{
 			repo: repo, number: 90, state: "open", issue: fixture.key, url: address(repo, 90), eventAt: at(0),
 		})
 		after := readIssueAnswer(t, handler, fixture.key)
-		want := slices.Sorted(slices.Values(append(slices.Clone(issueReadKeysBeforePullRequest), "pull_request")))
+		want := append(slices.Clone(issueReadKeysWithoutPullRequest), "pull_request")
+		slices.Sort(want)
 		if keys := slices.Sorted(maps.Keys(after)); !slices.Equal(keys, want) {
-			t.Fatalf("the read of %s with a pull request answers the keys\n%q\nwant main's and pull_request\n%q",
+			t.Fatalf("the read of %s with a pull request answers the keys\n%q\nwant those of the read without one and pull_request\n%q",
 				fixture.key, keys, want)
 		}
 		delete(after, "pull_request")

@@ -5,7 +5,14 @@
  * helper is imported from the part that brought it.
  */
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  type Response,
+  test,
+} from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
@@ -15,6 +22,7 @@ import {
   PRESET_ORDER,
   type Preset,
 } from "../web/src/features/issue-page/page-words";
+import { showMoreName } from "../web/src/features/issue-page/show-more-fixture";
 import { type IssueRoute, parseIssuePath } from "../web/src/features/refs/routes";
 import { PAGE_COLORS } from "../web/src/theme/classes";
 import { oklchToSrgb8 } from "../web/src/theme/contrast";
@@ -35,6 +43,7 @@ import {
 } from "./api";
 import { mainHolds } from "./dashboard-seed";
 import { connectedDot, documentEditor } from "./editor";
+import { nextFrames } from "./frames";
 import { asPlanner, PROJECT, pause } from "./issue-layout-seed-support";
 import {
   contentsPane,
@@ -106,16 +115,10 @@ export async function expectDocumentConnected(page: Page): Promise<void> {
 /** The selectors the readers below pass into the browser. Nothing outside this module spells one:
  *  a test reads the page through the locators and readers this module exports. */
 const SELECTORS = {
-  answerAuthor: "[data-answer-author]",
-  answerLine: "[data-node-answer]",
-  answerText: "[data-answer-text]",
   authorText: "[data-author-text]",
-  branchMore: "[data-branch-more]",
-  details: '[data-testid="desktop-margin-shell"]',
-  /** Details' drawer by the mark R13 names it with (`margin-slot.tsx`'s `DETAILS_ATTRIBUTE`): the
-   *  element `details` finds, whose every colour c-page-colours reads. */
+  /** Details' drawer by the mark R13 names it with (`margin-slot.tsx`'s `DETAILS_ATTRIBUTE`),
+   *  whose every colour c-page-colours reads. */
   detailsDrawer: "aside[data-details]",
-  childRow: "[data-child-row]",
   /** One crumb of the line a zoomed outline draws above its rows; none while it is not zoomed. */
   crumb: "[data-crumb]",
   /** Dashboard, drawn in place of the outline at the issue's own address and at `/dashboard`
@@ -126,32 +129,17 @@ const SELECTORS = {
   /** The whole filter row: the five controls or the one control, Outline, and the small
    *  controls at its right end (`IssuePresets.tsx`). */
   filterRow: "[data-filter-row]",
-  gap: "[data-gap]",
   /** The part of the identity block that stays at the top of the screen from 761 px up: the
    *  key's row and the title (`IssueHeader.tsx`). */
   identityBand: "[data-identity-block]",
   identityBlock: "header[data-issue-header]",
   issuePage: "[data-issue-page]",
-  marginSlot: '[data-testid="issue-margin"]',
-  nodeAuthor: "[data-node-author]",
-  nodeBody: "[data-node-body]",
-  nodeChip: "[data-node-chip]",
-  nodeFirstLine: "[data-node-first-line]",
-  nodeGlyph: "svg[data-glyph]",
   nodeRow: "[data-node-row]",
-  nodeUnsure: "[data-node-unsure]",
-  nodeTag: "[data-node-tag]",
-  nodeWords: "[data-node-words]",
-  nodeState: "[data-node-state]",
   /** The sheet the Outline control opens below 1024 px, drawn in the page's body and not inside
    *  its root (`contents-frame.tsx`), which holds the view row's three small controls at 760 px
    *  and below. */
   outlineSheet: '[data-testid="issue-outline-sheet"]',
   pageChrome: "[data-page-chrome]",
-  parentLine: "[data-node-parent-line]",
-  presetCount: "[data-preset-count]",
-  presetRow: '[data-testid="issue-presets"]',
-  tree: '[role="tree"]',
 } as const;
 
 // ---------------------------------------------------------------------------------------------
@@ -212,6 +200,14 @@ export function dashboardView(page: Page): Locator {
   return issuePage(page).locator(SELECTORS.dashboard);
 }
 
+/** Dashboard's list of what waits on the reader. */
+function dashboardWaiting(page: Page): Locator {
+  return dashboardView(page).getByRole("region", {
+    exact: true,
+    name: DASHBOARD_WORDS.parts.waiting,
+  });
+}
+
 /** Fails unless the page has Dashboard on and draws it with its list read, and no outline beside
  *  it, as `e2e/issue-page-dashboard.e2e.ts`' `expectDashboard` reads it: the list of what waits on
  *  the reader draws its count only once every read its items come from has answered
@@ -220,9 +216,7 @@ export async function expectDashboardDrawn(page: Page, where: string): Promise<v
   await expectActiveControl(page, "dashboard");
   await expect(dashboardView(page), `${where} draws no Dashboard`).toBeVisible();
   await expect(
-    dashboardView(page)
-      .getByRole("region", { exact: true, name: DASHBOARD_WORDS.parts.waiting })
-      .getByTestId("dashboard-waiting-count"),
+    dashboardWaiting(page).getByTestId("dashboard-waiting-count"),
     `${where} draws no count of what waits on the reader, so its list has not been read`
   ).toBeVisible();
   await expect(tree(page), `${where} draws the outline with Dashboard`).toHaveCount(0);
@@ -286,7 +280,7 @@ export async function expectActiveControl(page: Page, preset: Preset): Promise<v
 export const VIEWS_FOCUS = ["spec", "verification", "plan", "decisions"] as const;
 
 /** The hidden file input the upload opens, which is how a test hands it a file. */
-export function uploadInput(page: Page): Locator {
+function uploadInput(page: Page): Locator {
   return page.locator('input[type="file"]');
 }
 
@@ -367,19 +361,6 @@ export function openedEditor(page: Page): Locator {
  *  writes today. */
 export function offered(page: Page, role: Parameters<Page["getByRole"]>[0], name: string): Locator {
   return page.getByRole(role, { exact: true, name });
-}
-
-/** What a `select` offers, as its value and its label: a test that writes a property picks the
- *  option it means rather than an index (c-nothing-lost). */
-export function optionsOf(control: Locator): Promise<{ label: string; value: string }[]> {
-  return control.evaluateAll((found) =>
-    found.flatMap((element) =>
-      [...(element as HTMLSelectElement).options].map((option) => ({
-        label: option.label,
-        value: option.value,
-      }))
-    )
-  );
 }
 
 /** What the page says in its own words: the text of each `[data-page-chrome]` element with every
@@ -502,7 +483,8 @@ interface DrawnColour {
  *  that element and each of its visible elements: the text colour of each that draws words or a
  *  shape of its own (an `svg` fills with its `currentColor`), each background, and each border
  *  that has a width. An element that draws no word and no shape draws no text colour, though it
- *  computes one. An element inside one that `chosen` selects is left out. */
+ *  computes one. An element inside one that `chosen` selects is left out, and so is each colour
+ *  that is `rgba(0, 0, 0, 0)`, which `offPalette` leaves out as transparent. */
 function drawnColours(
   page: Page,
   roots: readonly string[],
@@ -517,6 +499,25 @@ function drawnColours(
           if (element.closest("[hidden]") !== null || !element.checkVisibility()) continue;
           if (asked.chosen.some((selector) => element.closest(selector) !== null)) continue;
           const style = getComputedStyle(element);
+          const drawsWords = [...element.childNodes].some(
+            (child) => child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() !== ""
+          );
+          const colours: [property: string, value: string][] = [];
+          if (
+            drawsWords ||
+            element instanceof SVGSVGElement ||
+            element instanceof HTMLInputElement
+          ) {
+            colours.push(["color", style.color]);
+          }
+          colours.push(["background-color", style.backgroundColor]);
+          for (const side of ["top", "right", "bottom", "left"] as const) {
+            if (style.getPropertyValue(`border-${side}-style`) === "none") continue;
+            if (Number.parseFloat(style.getPropertyValue(`border-${side}-width`)) === 0) continue;
+            colours.push([`border-${side}-color`, style.getPropertyValue(`border-${side}-color`)]);
+          }
+          const drawn = colours.filter(([, value]) => value !== "rgba(0, 0, 0, 0)");
+          if (drawn.length === 0) continue;
           const name =
             element.getAttribute("aria-label") ??
             (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
@@ -526,25 +527,7 @@ function drawnColours(
           const own = testId === null ? "" : `[data-testid="${testId}"]`;
           const near = testId !== null || around === null ? "" : ` in [data-testid="${around}"]`;
           const at = `${element.tagName.toLowerCase()}${own} "${name}"${near}`;
-          const drawsWords = [...element.childNodes].some(
-            (child) => child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() !== ""
-          );
-          if (
-            drawsWords ||
-            element instanceof SVGSVGElement ||
-            element instanceof HTMLInputElement
-          ) {
-            found.push({ drawn: `${at} color`, value: style.color });
-          }
-          found.push({ drawn: `${at} background-color`, value: style.backgroundColor });
-          for (const side of ["top", "right", "bottom", "left"] as const) {
-            if (style.getPropertyValue(`border-${side}-style`) === "none") continue;
-            if (Number.parseFloat(style.getPropertyValue(`border-${side}-width`)) === 0) continue;
-            found.push({
-              drawn: `${at} border-${side}-color`,
-              value: style.getPropertyValue(`border-${side}-color`),
-            });
-          }
+          for (const [property, value] of drawn) found.push({ drawn: `${at} ${property}`, value });
         }
       }
       return found;
@@ -628,8 +611,9 @@ export interface ControlLook {
   readonly radius: string;
 }
 
-/** The look of each button the filter row draws on the page itself, by its name, as
- *  `filterRowReading` names it. */
+/** The look of each button the filter row draws on the page itself, keyed by the words it shows
+ *  with its `aria-hidden` parts left out: its text alone, where `filterRowReading` takes a
+ *  button's `aria-label` or `aria-labelledby` before its text. */
 export function filterRowLooks(page: Page): Promise<Record<string, ControlLook>> {
   return page.evaluate((selectors) => {
     const row = document.querySelector(selectors.filterRow);
@@ -654,7 +638,7 @@ export function filterRowLooks(page: Page): Promise<Record<string, ControlLook>>
 
 /** The three things inside a node's own text that may scroll sideways (R17): a code block, a
  *  table and a picture. c-reflow names them by selector and leaves them out of its walk. */
-export const AUTHOR_SCROLLERS = ["pre", "table", "img"] as const;
+const AUTHOR_SCROLLERS = ["pre", "table", "img"] as const;
 
 /** Each of those three that is drawn outside a `[data-author-text]` element, which is where the
  *  exception does not reach. */
@@ -676,8 +660,9 @@ export function scrollersOutsideAuthorText(page: Page): Promise<string[]> {
 }
 
 /** Every row of the tree that holds none of those three, which is the set c-reflow walks with
- *  `assertWhole`. Both facts of each row are read in one pass over the page, so each index is a
- *  row of the same drawing: a row drawn between two reads would move every index after it. */
+ *  `assertWhole`. Both facts of each row are read in one pass over the page, but each row is
+ *  answered as a locator by its index (`nodeRows(page).nth`), which is found again each time it is
+ *  read: a row drawn after the pass moves every index after it. */
 export async function rowsWithoutAuthorScrollers(page: Page): Promise<Locator[]> {
   const walked = await page.evaluate(
     ({ scrollers, selectors }) =>
@@ -786,7 +771,7 @@ export interface InventoryEntry {
 }
 
 /** The landmarks an inventory records: the regions a reader navigates a page by. */
-export const INVENTORY_LANDMARKS = [
+const INVENTORY_LANDMARKS = [
   "banner",
   "complementary",
   "contentinfo",
@@ -1671,7 +1656,7 @@ export type AddressContent =
 
 /** The parts that build a view an address of INV-1 opens, none of which this part builds: each
  *  by its issue or its letter in the plan. */
-export type AddressPart = "INFRA-4870" | "INFRA-5702" | "INFRA-5704" | "T";
+export type AddressPart = "INFRA-4870" | "INFRA-5704" | "T";
 
 /** One address of today's page, and what it opens on the new page. */
 export interface AddressCase {
@@ -1686,9 +1671,6 @@ export interface AddressCase {
   /** The read the row answers with a server error for this address alone: the lookup that
    *  fails, by its URL. */
   readonly unreadable?: (seed: AddressSeed) => (url: URL) => boolean;
-  /** The part whose view takes this address from what `opens` says: the row leaves the case
-   *  out once the page draws that part, whose own case reads the address. */
-  readonly until?: AddressPart;
 }
 
 /** The issue's own address on `seed`, with `rest` after it. */
@@ -1850,8 +1832,7 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
   dashboard: [
     {
       address: (seed) => issuePath(seed, "/dashboard"),
-      builtBy: "INFRA-5702",
-      opens: () => ({ kind: "control", name: "Dashboard" }),
+      opens: () => ({ kind: "control", name: PRESET_NAMES.dashboard }),
     },
   ],
   decisions: [
@@ -1861,12 +1842,6 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
     },
   ],
   issue: [
-    {
-      address: (seed) => issuePath(seed),
-      opens: () => ({ kind: "view", preset: "conversation" }),
-      // Until Dashboard is drawn, which opens the bare address (`PART_ADDRESSES`).
-      until: "INFRA-5702",
-    },
     {
       address: (seed) => issuePath(seed, `?q=${encodeURIComponent("Requirement 2")}`),
       opens: () => ({ kind: "words", words: "Requirement 2" }),
@@ -1956,17 +1931,17 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
  * (dispatch://INFRA-5702), whose route kind is the issue's own, Threads' (dispatch://INFRA-5704),
  * Graph's (part T) and a handoff's (dispatch://INFRA-4870). None but Dashboard's has a route kind
  * of `IssueRoute` on this branch, so none is a case of `OLD_PAGE_ADDRESSES`, where Dashboard's
- * own `/dashboard` is; each is marked with the part that builds it, and the row reads it only
- * where the page draws that part (`drawsPart`). Where it does not, the row names the address as
- * not read, and the pull request names it. While dispatch://INFRA-5704 follows this part,
- * `/threads`, `/threads/<id>` and each address root R20 lands in Threads are left out here (R11).
- * When a part lands, its kind joins `OLD_PAGE_ADDRESSES` with its cases.
+ * own `/dashboard` is. Dashboard is under this branch's head and its address is read; each other
+ * is marked with the part that builds it, and the row reads it only where the page draws that
+ * part (`drawsPart`). Where it does not, the row names the address as not read, and the pull
+ * request names it. While dispatch://INFRA-5704 follows this part, `/threads`, `/threads/<id>`
+ * and each address root R20 lands in Threads are left out here (R11). When a part lands, its
+ * kind joins `OLD_PAGE_ADDRESSES` with its cases.
  */
 export const PART_ADDRESSES: readonly AddressCase[] = [
   {
     address: (seed) => issuePath(seed),
-    builtBy: "INFRA-5702",
-    opens: () => ({ kind: "control", name: "Dashboard" }),
+    opens: () => ({ kind: "control", name: PRESET_NAMES.dashboard }),
   },
   {
     address: (seed) => issuePath(seed, "/threads"),
@@ -2005,8 +1980,6 @@ export function drawsPart(part: AddressPart): boolean {
   switch (part) {
     case "INFRA-4870":
       return parseIssuePath("/issues/KEY-1/handoffs/handoff-1") !== undefined;
-    case "INFRA-5702":
-      return controls.includes("dashboard");
     case "INFRA-5704":
       return controls.includes("threads");
     case "T":
@@ -2054,14 +2027,16 @@ export const WORD_STATES: readonly StateAtWidth[] = atEachWidth(
 
 /** INV-2's states in which no part of the page scrolls in two dimensions (R9's second sentence,
  *  `c-documents` (5)): each control of the view row on, Documents' list among them, a document
- *  open and the Outline sheet open, at R9's seven widths. */
+ *  open and the Outline sheet open, at R9's seven widths. From 1024 px the page draws no Outline
+ *  control, so there the sheet's state is no view with the outline's list in the Contents pane
+ *  (`openPageState`), and `stateName` names it so. */
 export const REFLOW_STATES: readonly StateAtWidth[] = atEachWidth(
   [...VIEWS, { kind: "document" }, { kind: "outline-sheet" }],
   [320, 390, 768, 1024, 1280, 1440, 1920]
 );
 
-/** How a failure names `state`. */
-export function stateName(state: PageState): string {
+/** How a failure names `state`, at `width` px where the state's page depends on the width. */
+export function stateName(state: PageState, width?: number): string {
   switch (state.kind) {
     case "view":
       if (state.preset === "conversation") return "no view";
@@ -2070,7 +2045,9 @@ export function stateName(state: PageState): string {
     case "document":
       return "the spec open as a document";
     case "outline-sheet":
-      return `the Outline sheet open over the ${PRESET_NAMES.spec} view`;
+      return width !== undefined && width >= 1024
+        ? "no view, with the Contents pane in place of the Outline sheet"
+        : `the Outline sheet open over the ${PRESET_NAMES.spec} view`;
   }
 }
 
@@ -2309,11 +2286,7 @@ export async function expectFocusLandedOnce(
 ): Promise<void> {
   await expect(landed, `${what}: the focus did not land where the address names`).toBeFocused();
   await expectLoadSettled(traffic);
-  await page.evaluate(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    return promise;
-  });
+  await nextFrames(page);
   const moves = await page.evaluate(
     (name) => [...((window as unknown as Record<string, readonly string[]>)[name] ?? [])],
     FOCUS_LOG
@@ -2496,7 +2469,7 @@ export async function seedWaitingWalk(): Promise<WaitingWalkSeed> {
 // ---------------------------------------------------------------------------------------------
 
 /** R21's numbers, which no copy, control or width moves. */
-export const SCALE_LIMITS = {
+const SCALE_LIMITS = {
   /** The rows Dashboard's list draws before the control that draws its next five. */
   dashboardPage: 5,
   /** The rows a list of Details draws before the control that draws its next 20. */
@@ -2529,7 +2502,7 @@ export const SCALE_LIMITS = {
  * children and the children's section's 20 rows. Threads' 20 rows wait with `AWAITING_THREADS`
  * (R11): the view row draws no Threads on this branch.
  */
-export const SCALE_BOUNDS = [
+const SCALE_BOUNDS = [
   "Dashboard's list",
   "Documents' list",
   "the history",
@@ -2550,7 +2523,7 @@ export type ScaleBound = (typeof SCALE_BOUNDS)[number];
  *  reading finds is part T's own, and part T's pull request adds their reading here as it takes
  *  their entries off `AWAITING_SCALE`. Until one of the two holds each bound, the row fails
  *  (`unheldScaleBounds`). */
-export const SCALE_BOUNDS_READ: readonly ScaleBound[] = [
+const SCALE_BOUNDS_READ: readonly ScaleBound[] = [
   "Dashboard's list",
   "Documents' list",
   "the history",
@@ -2651,52 +2624,13 @@ export function unheldScaleBounds(): ScaleBound[] {
   return SCALE_BOUNDS.filter((bound) => !SCALE_BOUNDS_READ.includes(bound) && !awaitsScale(bound));
 }
 
-/**
- * The copy whose cold loads under a control that draws the outline wait, with every bound they
- * read, on part T's bound of a node's first 50 children (spec version 89's R21): `main`'s outline
- * draws every one of the copy's 9,252 comments as a row. The CPU profile of its Conversation load
- * (Job e2e-rows-g2s6x, 139 s sampled from the navigation on) spent 87.5% of it in one layout effect
- * of each row, `useOutOfTabOrder`'s pass over the row's elements (`RowText.tsx`), inside React's
- * commit of the outline, which held 9,272 rows at the end; Job e2e-rows-gkwdh's load of it drew no
- * `[data-issue-page]` in 165 s. The row loads every control on the other two copies.
- */
-const OUTLINE_AWAITED_COPY = "INFRA-663";
-
-/** Whether the row leaves the cold load of `preset` on `copy` unread while part T's bound of a
- *  node's first 50 children is awaited (`OUTLINE_AWAITED_COPY`). */
-function outlineLoadAwaited(copy: ScaleCopy, preset: Preset): boolean {
-  return (
-    copy.census === OUTLINE_AWAITED_COPY &&
-    OUTLINE_CONTROLS.includes(preset) &&
-    awaitsScale("a node's first 50 children")
-  );
-}
-
-/** Whether the row leaves the cold load of `preset` on `copy` at `width` px unread
- *  (`outlineLoadAwaited`), printing it as awaited where it does: the row then opens no context
- *  for it. */
-export function scaleLoadAwaited(copy: ScaleCopy, preset: Preset, width: number): boolean {
-  if (!outlineLoadAwaited(copy, preset)) return false;
-  report(
-    "scale-awaited",
-    `SCALE awaited ${copy.census} ${preset} ${width} px: the load, whose outline draws every comment (part T)`
-  );
-  return true;
-}
-
-/** The control after whose cold load the row opens Details on `copy`: Conversation's, or
- *  Dashboard's where the copy's outline loads are awaited (`outlineLoadAwaited`). */
-function detailsAfter(copy: ScaleCopy): Preset {
-  return outlineLoadAwaited(copy, "conversation") ? "dashboard" : "conversation";
-}
-
 /** The control under Dashboard's list that draws its next five and says how many are left,
  *  "Show the next five · 1 left" (`WaitingList.tsx`): what the row reads the list's count by, and
  *  dispatch://INFRA-5702's sign. */
-export function dashboardNextFive(page: Page): Locator {
-  return dashboardView(page)
-    .getByRole("region", { exact: true, name: DASHBOARD_WORDS.parts.waiting })
-    .getByRole("button", { name: new RegExp(`^${DASHBOARD_WORDS.next_five}\\b`, "u") });
+function dashboardNextFive(page: Page): Locator {
+  return dashboardWaiting(page).getByRole("button", {
+    name: new RegExp(`^${DASHBOARD_WORDS.next_five}\\b`, "u"),
+  });
 }
 
 /** Prints one reading of R21's row and keeps it among the row's annotations, under `type`. */
@@ -2723,7 +2657,7 @@ function watchScaleLoad(page: Page) {
   const api = watchApiRequests(page);
   const reads = new Map<string, ScaleRead>();
   const bodies: Promise<number | string>[] = [];
-  page.on("request", (request) => {
+  const onRequest = (request: Request) => {
     const url = new URL(request.url());
     const address = `${url.pathname}${url.search}`;
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/") || reads.has(address)) {
@@ -2731,8 +2665,8 @@ function watchScaleLoad(page: Page) {
     }
     const route = apiRoute(url.pathname);
     reads.set(address, { address, headers: request.headers(), route, status: undefined });
-  });
-  page.on("response", (response) => {
+  };
+  const onResponse = (response: Response) => {
     const url = new URL(response.url());
     if (isLiveSocket(url)) return;
     const read = reads.get(`${url.pathname}${url.search}`);
@@ -2746,7 +2680,9 @@ function watchScaleLoad(page: Page) {
         () => response.url()
       )
     );
-  });
+  };
+  page.on("request", onRequest);
+  page.on("response", onResponse);
   return {
     api,
     json: async (): Promise<{ readonly bytes: number; readonly unread: readonly string[] }> => {
@@ -2758,6 +2694,11 @@ function watchScaleLoad(page: Page) {
       };
     },
     reads: (): readonly ScaleRead[] => [...reads.values()],
+    /** Stops the census: no later request or answer of the page is read. */
+    stop: (): void => {
+      page.off("request", onRequest);
+      page.off("response", onResponse);
+    },
   };
 }
 
@@ -2869,10 +2810,7 @@ async function expectDashboardPaged(
   where: string,
   leg: string
 ): Promise<void> {
-  const waiting = dashboardView(page).getByRole("region", {
-    exact: true,
-    name: DASHBOARD_WORDS.parts.waiting,
-  });
+  const waiting = dashboardWaiting(page);
   const reading = await settledValue(`${where}: Dashboard's list`, async () => ({
     count: (await waiting.getByTestId("dashboard-waiting-count").innerText()).trim(),
     drawn: await waiting.locator('[data-testid^="dashboard-item-"]').count(),
@@ -2929,9 +2867,7 @@ async function expectDocumentsPaged(
       reading.more,
       `${where}: Documents' list draws no control that says how many of its ${copy.listed} documents and files are left`
     )
-    .toEqual([
-      `${CONTROL_LABELS.show_more} (${copy.listed - reading.drawn} ${CONTROL_LABELS.show_more_left})`,
-    ]);
+    .toEqual([showMoreName(copy.listed - reading.drawn)]);
 }
 
 /** What each control `controls` finds says, each with its runs of space made one: the words of a
@@ -2941,9 +2877,8 @@ async function wordsOf(controls: Locator): Promise<string[]> {
 }
 
 /**
- * Opens Details on the page of the Conversation's cold load (Dashboard's on the copy whose outline
- * loads are awaited, `detailsAfter`), whose census `readScaleLoad` has taken, so nothing the open
- * reads counts in that load, and reads each list of Details that holds
+ * Opens Details on the page of the Conversation's cold load, whose census `readScaleLoad` has
+ * taken, so nothing the open reads counts in that load, and reads each list of Details that holds
  * more than its page on the copy (R21, part M's): the history, which Details draws under its
  * properties 20 entries at a time, under a Show more that says how many of the entries read are
  * left, with "+" while an older page of the log is unread (`IssueHistory.tsx`); its Files, every
@@ -3011,9 +2946,7 @@ async function expectDetailsPaged(
       listed.more,
       `${opened}: Details' Files draws no control that says how many of its ${copy.listed} documents and files are left`
     )
-    .toEqual([
-      `${CONTROL_LABELS.show_more} (${copy.listed - listed.drawn} ${CONTROL_LABELS.show_more_left})`,
-    ]);
+    .toEqual([showMoreName(copy.listed - listed.drawn)]);
   if (copy.referencedBy <= SCALE_LIMITS.detailsPage) {
     report(
       "scale-list",
@@ -3061,11 +2994,10 @@ async function expectDetailsPaged(
  * read of the load that no load before it made (`timed`) sent 35 times through the page's own
  * session (`firstByteTimes`), each at most 200 ms to its first byte at the 90th percentile of the
  * last 30. After the Conversation's load, and outside its census, it opens Details and reads the
- * history and Details' lists (`expectDetailsPaged`); on the copy whose outline loads wait on part
- * T (`OUTLINE_AWAITED_COPY`), after Dashboard's load instead. A bound `AWAITING_SCALE` names is
- * not read, and is printed as awaited where it applies; the load fails at once where it shows a
- * listed owner's sign (`failOnOwnerSigns`). A bound that fails is recorded (`expect.soft`), so one
- * run names every bound a copy, a control and a width breaks, and the row fails at its end. A load
+ * history and Details' lists (`expectDetailsPaged`). A bound `AWAITING_SCALE` names is not read,
+ * and is printed as awaited where it applies; the load fails at once where it shows a listed
+ * owner's sign (`failOnOwnerSigns`). A bound that fails is recorded (`expect.soft`), so one run
+ * names every bound a copy, a control and a width breaks, and the row fails at its end. A load
  * reads every comment where it sends the issue's whole comments read, which is how `main`'s
  * outline builds its tree.
  */
@@ -3094,6 +3026,7 @@ export async function readScaleLoad(
   const reads = load.reads();
   const routes = load.api.byRoute().map(({ count, route }) => `${count} × ${route}`);
   const json = await load.json();
+  load.stop();
   const comments = `/api/v1/issues/${copy.key}/comments`;
   const whole = requests.some((request) => request.method === "GET" && request.path === comments);
   report(
@@ -3157,5 +3090,5 @@ export async function readScaleLoad(
       .soft(p90, `GET ${read.address}, a read of ${where}, answers its first byte in ${spread}`)
       .toBeLessThanOrEqual(SCALE_LIMITS.firstByteMs);
   }
-  if (preset === detailsAfter(copy)) await expectDetailsPaged(page, copy, where, leg, awaited);
+  if (preset === "conversation") await expectDetailsPaged(page, copy, where, leg, awaited);
 }

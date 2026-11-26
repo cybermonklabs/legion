@@ -84,7 +84,7 @@ const PROJECT = "SCALE";
 
 /** The person R21's row signs in as: one who never read the copies, and whom six questions on
  *  each wait on. */
-export const SCALE_READER = "bob";
+const SCALE_READER = "bob";
 
 /** The person who writes the copies, their documents and files, and their comments' roots; the
  *  replies are the planner session's (`plannerActor`). */
@@ -110,6 +110,9 @@ const REQUIREMENTS = 8;
 
 /** The blocks of each small document a floor adds: three paragraphs. */
 const SMALL_DOCUMENT_BLOCKS = 3;
+
+/** The bytes of every file a copy uploads, decoded once. */
+const FIGURE_BYTES = new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64"));
 
 /** The most events one page of an issue's event log holds (`maxEventPage`, `api/events.go`). */
 const EVENT_PAGE = 200;
@@ -237,19 +240,19 @@ interface WrittenCopy {
   readonly shape: CopyShape;
 }
 
-/** `count` writes, ten at a time, each answered in the order of its index. */
-async function tenAtATime<T>(count: number, write: (index: number) => Promise<T>): Promise<T[]> {
-  const written: T[] = [];
+/** `count` requests, ten at a time, each answered in the order of its index. */
+async function tenAtATime<T>(count: number, send: (index: number) => Promise<T>): Promise<T[]> {
+  const answered: T[] = [];
   for (let start = 0; start < count; start += 10) {
-    written.push(
+    answered.push(
       ...(await Promise.all(
         Array.from({ length: Math.min(10, count - start) }, (_value, offset) =>
-          write(start + offset)
+          send(start + offset)
         )
       ))
     );
   }
-  return written;
+  return answered;
 }
 
 /**
@@ -376,19 +379,17 @@ async function expectCommentsWritten(copy: WrittenCopy): Promise<void> {
       `${where}: the SQL wrote ${comments.length} comment.created events where ${shape.comments} were asked for, ${outOfOrder.length} of them out of seq order after seq ${before}`
     );
   }
-  const events: { readonly id: unknown; readonly seq: number; readonly type: string }[] = [];
-  for (let after = before; events.length < comments.length; ) {
-    const page = await getIssueEvents(key, { after, limit: EVENT_PAGE });
-    const last = page.at(-1);
-    if (last === undefined) break;
-    for (const event of page) {
-      const payload: unknown = event.payload;
-      const id =
-        typeof payload === "object" && payload !== null && "id" in payload ? payload.id : undefined;
-      events.push({ id, seq: event.seq, type: event.type });
-    }
-    after = last.seq;
-  }
+  // The check above proved the events' seqs run on from `before` with no gap, and a seq is the
+  // issue's own, so each page's `after` is known before any page answers.
+  const pages = await tenAtATime(Math.ceil(comments.length / EVENT_PAGE), (page) =>
+    getIssueEvents(key, { after: before + page * EVENT_PAGE, limit: EVENT_PAGE })
+  );
+  const events = pages.flat().map((event) => {
+    const payload: unknown = event.payload;
+    const id =
+      typeof payload === "object" && payload !== null && "id" in payload ? payload.id : undefined;
+    return { id, seq: event.seq, type: event.type };
+  });
   const differ = comments.flatMap((comment, index) => {
     const event = events[index];
     return event?.seq === comment.seq && event.type === "comment.created" && event.id === comment.id
@@ -452,8 +453,10 @@ async function writeCopy(shape: CopyShape): Promise<WrittenCopy> {
   const roles = [issue.primary_artifact_id ?? "", verification.artifact.id, plan.artifact.id];
   // Each role document is far under the 2,000 blocks a write indexes in its own request
   // (`deferBlockIndexBlocks`, `docs/reference_excerpts.go`), so its blocks are read here at once.
-  let roleBlocks = 0;
-  for (const id of roles) roleBlocks += (await getArtifactBlocks(id)).length;
+  const roleBlocks = (await Promise.all(roles.map((id) => getArtifactBlocks(id)))).reduce(
+    (sum, blocks) => sum + blocks.length,
+    0
+  );
   const sizes = documentSizes(shape, roleBlocks);
   // INFRA-3149's copy's largest, of 5,600 blocks, is above that bound, so its blocks reach the
   // index through the block index's reconciliation, which `awaitBlockIndexDrained` waits for.
@@ -465,7 +468,7 @@ async function writeCopy(shape: CopyShape): Promise<WrittenCopy> {
   );
   await tenAtATime(shape.files, (index) =>
     uploadIssueFile(key, {
-      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+      bytes: FIGURE_BYTES,
       contentType: "image/png",
       name: `figure-${String(index + 1).padStart(2, "0")}.png`,
     })
@@ -552,8 +555,9 @@ async function awaitBlockIndexDrained(keys: readonly string[]): Promise<number> 
 async function expectCopyWritten(copy: WrittenCopy): Promise<ScaleCopy> {
   const { key, shape } = copy;
   const where = `the copy of ${shape.census} (${key})`;
-  const blocks: number[] = [];
-  for (const id of copy.census) blocks.push((await getArtifactBlocks(id)).length);
+  const blocks = (
+    await tenAtATime(copy.census.length, (index) => getArtifactBlocks(copy.census[index] ?? ""))
+  ).map((read) => read.length);
   const total = blocks.reduce((sum, count) => sum + count, 0);
   const largest = Math.max(...blocks);
   if (shape.documents.blocks !== undefined && total !== shape.documents.blocks) {
@@ -566,7 +570,11 @@ async function expectCopyWritten(copy: WrittenCopy): Promise<ScaleCopy> {
       `${where}'s largest document holds ${largest} blocks, where the census's holds ${shape.documents.largest}`
     );
   }
-  const issue = await getIssue(key);
+  const [issue, asks, messageList] = await Promise.all([
+    getIssue(key),
+    listIssueAsks(key),
+    listIssueMessages(key),
+  ]);
   const artifacts = issue.artifacts ?? [];
   const documents = artifacts.filter((artifact) => artifact.kind === "doc").length;
   const files = artifacts.filter((artifact) => artifact.kind === "image").length;
@@ -577,9 +585,8 @@ async function expectCopyWritten(copy: WrittenCopy): Promise<ScaleCopy> {
       `${where}'s issue read lists ${documents} documents, ${files} files and ${children} children, where the seed wrote ${wanted}, ${shape.files} and ${FLOORS.children}`
     );
   }
-  const asks = await listIssueAsks(key);
   const waiting = asks.filter((ask) => ask.waiting_on_person === SCALE_READER).length;
-  const messages = (await listIssueMessages(key)).length;
+  const messages = messageList.length;
   if (
     asks.length !== shape.asks ||
     waiting !== FLOORS.waiting ||
@@ -624,28 +631,33 @@ async function expectCopyWritten(copy: WrittenCopy): Promise<ScaleCopy> {
 }
 
 /**
- * Writes the three copies into a project of their own, once the block index has written its event
- * cursor (`awaitBlockIndexCursor`), reads each copy's comments and events back after its
- * transaction (`expectCommentsWritten`), waits for the block index to take them all in
- * (`awaitBlockIndexDrained`), and reads every count back through the API (`expectCopyWritten`)
- * before the row's first load. The reader signed in as each copy's questions were asked of them
- * (`handAskOn`), and has read none of the copies.
+ * Writes the copies of `shapes` into a project of their own, once the block index has written
+ * its event cursor (`awaitBlockIndexCursor`), reads each copy's comments and events back after
+ * its transaction (`expectCommentsWritten`), waits for the block index to take them all in
+ * (`awaitBlockIndexDrained`; the drain's line names them as `drained`), and reads every count
+ * back through the API (`expectCopyWritten`) before the row's first load. The reader signed in
+ * as each copy's questions were asked of them (`handAskOn`), and has read none of the copies.
  */
-export async function seedScale(): Promise<ScaleSeed> {
+async function seedCopies(shapes: readonly CopyShape[], drained: string): Promise<ScaleSeed> {
   await createProject({ key: PROJECT, name: "The largest issues" });
   const cursor = await awaitBlockIndexCursor();
   console.log(`SCALE cursor: the block index's event cursor stood after ${cursor / 1000} s`);
   const written: WrittenCopy[] = [];
-  for (const shape of COPIES) {
+  for (const shape of shapes) {
     const copy = await writeCopy(shape);
     await expectCommentsWritten(copy);
     written.push(copy);
   }
-  const drained = await awaitBlockIndexDrained(written.map((copy) => copy.key));
-  console.log(`SCALE drain: the block index took in the copies in ${drained / 1000} s`);
+  const took = await awaitBlockIndexDrained(written.map((copy) => copy.key));
+  console.log(`SCALE drain: the block index took in ${drained} in ${took / 1000} s`);
   const copies: ScaleCopy[] = [];
   for (const copy of written) copies.push(await expectCopyWritten(copy));
   return { copies, reader: SCALE_READER };
+}
+
+/** Writes the three copies (`seedCopies`). */
+export function seedScale(): Promise<ScaleSeed> {
+  return seedCopies(COPIES, "the copies");
 }
 
 /**
@@ -660,14 +672,10 @@ export async function seedLargestScaleCopy(): Promise<{
 }> {
   const shape = COPIES.find((each) => each.census === "INFRA-3149");
   if (shape === undefined) throw new Error("the scale seed holds no copy of INFRA-3149");
-  await createProject({ key: PROJECT, name: "The largest issues" });
-  const cursor = await awaitBlockIndexCursor();
-  console.log(`SCALE cursor: the block index's event cursor stood after ${cursor / 1000} s`);
-  const written = await writeCopy(shape);
-  await expectCommentsWritten(written);
-  const drained = await awaitBlockIndexDrained([written.key]);
-  console.log(
-    `SCALE drain: the block index took in the copy of ${shape.census} in ${drained / 1000} s`
-  );
-  return { copy: await expectCopyWritten(written), reader: SCALE_READER };
+  const {
+    copies: [copy],
+    reader,
+  } = await seedCopies([shape], `the copy of ${shape.census}`);
+  if (copy === undefined) throw new Error("the scale seed wrote no copy of INFRA-3149");
+  return { copy, reader };
 }

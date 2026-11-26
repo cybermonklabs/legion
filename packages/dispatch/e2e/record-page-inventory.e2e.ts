@@ -3,10 +3,11 @@
  *  the real stack's */
 
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { issueTabs } from "../web/src/features/issue/issue-tab-list";
 import { patchIssue } from "./api";
 import { seedWholeIssueAdvancing } from "./issue-layout-seed";
 import {
@@ -30,12 +31,14 @@ import { asUser } from "./users";
  * fixture is the ground truth and has to be recorded against today's page.
  *
  * **It is a recorder and no check of the page it runs against.** It reads the page through the
- * ten tabs today's page has (`#issue-<tab>-tab`). Today's page stays on `main` beside the new
- * one, unchanged, until INFRA-1196's last step, so it runs at the branch's own head, with the
- * new page's preference off, and `test.skip` leaves it alone everywhere else. Re-run it after
- * each merge of `main`, because `main` moves and the fixture describes its page: a tab today's
- * page grew since the last recording is one this file's list has to grow too, which
- * `recordState` asserts against the tablist the page draws rather than trusting the list.
+ * tabs today's page has (`#issue-<tab>-tab`), as `issueTabs` lists them in the checkout it runs
+ * in. The fixture describes today's page at the branch's merge-base with `main`, because the
+ * part's check `c-inventory` holds the fixture to that commit, and while the branch holds a tab
+ * `main` lacks (dispatch://INFRA-5702's Dashboard) its own today's page is not that page. So the
+ * recorder runs on today's page of the merge-base: a checkout at that commit, with this branch's
+ * e2e files as the patch, and the new page's preference off; `test.skip` leaves it alone
+ * everywhere else. Re-run it so after each merge of `main`, because `main` moves and the fixture
+ * describes its page; `recordState` holds the tablist the page draws to `issueTabs`' list.
  *
  * Two things it deliberately is not, so neither is decided again:
  *
@@ -50,37 +53,27 @@ import { asUser } from "./users";
  * recording a person asked for.
  *
  * The fixture names two commits: `commit` is the branch's merge-base with `main`
- * (`git merge-base HEAD origin/main`), whose today's page the fixture describes and which the
- * part's check `c-inventory` holds it to, and `recordedAtHead` is the working copy's own
- * commit, which carries the seeds and this spec. The page recorded is today's page only while it
- * draws no `data-issue-page`, the new page's mark, so each state asserts that: a recording that
- * reached the new page fails rather than recording it as the old ground truth.
+ * (`git merge-base HEAD origin/main`, which in that checkout is its own commit), whose today's
+ * page the fixture describes and which `c-inventory` holds it to, and `recordedAtHead` is the
+ * checkout's own commit (`git rev-parse HEAD`), under the patch that carries the seeds and this
+ * spec. The page recorded is today's page only while it draws no `data-issue-page`, the new
+ * page's mark, so each state asserts that: a recording that reached the new page fails rather
+ * than recording it as the old ground truth.
  *
  * That page renders only the active tab's panel - every other panel is `hidden`, which the
- * accessibility snapshot leaves out - so a state's inventory is the merge of the ten tabs'
- * panels, visited in turn at each width, and each panel is asserted to offer a control of its
+ * accessibility snapshot leaves out - so a state's inventory is the merge of every tab's panel,
+ * each visited in turn at each width, and each panel is asserted to offer a control of its
  * own. The priority row's picker is a view of its own too, because no tab holds it: the row's
  * add control opens it, and an open state records the page with it open (`recordPriorityPicker`).
  */
 
-/** The ten tabs of the issue page, in the order `web/src/features/issue/issue-tab-list.ts`'s
- *  `issueTabs` lists them (`IssueTabs.tsx` renders that list). A tab's button and panel carry
- *  the DOM ids `Tabs.tsx`'s `tabButtonId` and `IssuePage.tsx` give them, which is how a tab is
- *  selected and its panel scoped here. `recordState` holds this list to the tablist the page
- *  draws, so a tab added to the page and not to this list fails the recording instead of
- *  leaving its controls out of the fixture. */
-const ISSUE_TABS = [
-  "spec",
-  "verification",
-  "plan",
-  "steps",
-  "conversation",
-  "children",
-  "artifacts",
-  "activity",
-  "decisions",
-  "collaborators",
-] as const;
+/** The tabs of the issue page, read from `web/src/features/issue/issue-tab-list.ts`'s `issueTabs`
+ *  (`IssueTabs.tsx` renders that list) in the checkout the recorder runs in, so the list is that
+ *  page's own. A tab's button and panel carry the DOM ids `Tabs.tsx`'s `tabButtonId` and
+ *  `IssuePage.tsx` give them, which is how a tab is selected and its panel scoped here.
+ *  `recordState` holds this list to the tablist the page draws, so a tab the page draws that the
+ *  list lacks fails the recording instead of leaving its controls out of the fixture. */
+const ISSUE_TABS: readonly string[] = issueTabs(0).map((tab) => tab.id);
 
 interface RecordedState {
   /** Whether the issue is closed in this state. */
@@ -101,7 +94,7 @@ const STATES: readonly RecordedState[] = [
 interface PageInventoryFixture {
   /** The commit whose page this describes: the branch's base. */
   readonly commit: string;
-  /** The working copy's own commit when it was recorded, which carries the recorder itself. */
+  /** The checkout's own commit when it was recorded, under the patch that carries the recorder. */
   readonly recordedAtHead: string;
   readonly recordedAt: string;
   readonly "open-1440": readonly InventoryEntry[];
@@ -113,12 +106,12 @@ interface PageInventoryFixture {
 const fixturePath = fileURLToPath(new URL("./fixtures/issue-page-inventory.json", import.meta.url));
 
 /** Whether this run records the fixture. The guard is read as an assertion: a value the spec does
- *  not understand fails the test instead of being taken for "check". */
+ *  not understand fails the test instead of being taken for "skip". */
 function recording(): boolean {
   const guard = process.env.RECORD_PAGE_INVENTORY ?? "";
   expect(
     ["", "1"],
-    `RECORD_PAGE_INVENTORY is "${guard}": set it to 1 to record the fixture, or leave it unset to check the page against it`
+    `RECORD_PAGE_INVENTORY is "${guard}": set it to 1 to record the fixture, or leave it unset to skip the recording`
   ).toContain(guard);
   return guard === "1";
 }
@@ -168,7 +161,6 @@ async function recordPriorityPicker(page: Page, state: RecordedState): Promise<I
   await edit.click();
   const picker = page.getByRole("combobox", { exact: true, name: "Priority to advance" });
   await expect(picker).toBeVisible();
-  await page.waitForLoadState("networkidle");
   const picked = await recordInventory(page);
   await page.keyboard.press("Escape");
   await expect(picker, `Escape left the priority picker of ${state.key} open`).toHaveCount(0);
@@ -178,25 +170,22 @@ async function recordPriorityPicker(page: Page, state: RecordedState): Promise<I
 /**
  * One state's inventory: the page at that width, in that open or closed state, with every tab
  * visited in turn, then the priority row's picker opened, and what each offers merged into one
- * list. The tablist the page draws is read first and held to `ISSUE_TABS`, so a tab the base
- * has and this file does not - the way `collaborators` was left out of the recording before
- * dispatch://INFRA-1196's base moved - fails the recording rather than leaving that panel's
+ * list. The tablist the page draws is read first and held to `ISSUE_TABS`, so a tab the page
+ * draws and `issueTabs` does not list fails the recording rather than leaving that panel's
  * controls out of the fixture. Each panel is then asserted to offer a control of its own (or,
  * for `steps`, which on a seed with no Legion runs draws only its `EmptyState` region, at least
  * a landmark or control), so a tab whose panel never rendered fails here rather than being
- * counted as covered. A recording run also prints, for each panel, an entry no other panel of
- * that state offers - the evidence that the state covers all ten - falling back on its first
- * entry when every one of
- * them is offered elsewhere too.
+ * counted as covered. It also prints, for each panel, an entry no other panel of that state
+ * offers - the evidence that the state covers every tab - falling back on its first entry when
+ * every one of them is offered elsewhere too.
  */
 async function recordState(
   page: Page,
   issueKey: string,
-  state: RecordedState,
-  report: boolean
+  state: RecordedState
 ): Promise<InventoryEntry[]> {
   await page.setViewportSize(state.viewport);
-  await page.goto(`/issues/${issueKey}/spec`);
+  await page.goto(`/issues/${issueKey}/spec`, { waitUntil: "networkidle" });
   await expect(page.getByTestId("issue-header")).toBeVisible();
   // Today's page and not the new one: the new page's root carries `data-issue-page`, and the
   // preference that draws it is off for this login, so a recording that reached it would record
@@ -219,7 +208,6 @@ async function recordState(
     const button = page.locator(`#issue-${tab}-tab`);
     await button.click();
     await expect(button).toHaveAttribute("aria-selected", "true");
-    await page.waitForLoadState("networkidle");
     found.push(...(await recordInventory(page)));
     const panel = await recordScopeInventory(page.locator(`#issue-${tab}-panel`));
     const controls = panel.filter((entry) => controlRoles.includes(entry.role));
@@ -231,35 +219,30 @@ async function recordState(
     panels.set(tab, covered);
   }
   found.push(...(await recordPriorityPicker(page, state)));
-  if (report) {
-    for (const [tab, controls] of panels) {
-      const elsewhere = new Set(
-        [...panels].filter(([other]) => other !== tab).flatMap(([, entries]) => entries.map(named))
-      );
-      const own = controls.find((entry) => !elsewhere.has(named(entry)));
-      const shown = own ?? controls[0];
-      console.log(
-        `${state.key} ${tab}: ${controls.length} controls, ${shown === undefined ? "none" : named(shown)}${own === undefined ? " (shared)" : ""}`
-      );
-    }
+  for (const [tab, controls] of panels) {
+    const elsewhere = new Set(
+      [...panels].filter(([other]) => other !== tab).flatMap(([, entries]) => entries.map(named))
+    );
+    const own = controls.find((entry) => !elsewhere.has(named(entry)));
+    const shown = own ?? controls[0];
+    console.log(
+      `${state.key} ${tab}: ${controls.length} controls, ${shown === undefined ? "none" : named(shown)}${own === undefined ? " (shared)" : ""}`
+    );
   }
   return mergeInventory(found);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 test("the issue page's landmarks and controls, open and closed, at 1440 and at 390", async ({
   browser,
 }) => {
-  // A recorder, not a check: it reads today's page through its ten tabs, so it runs only when
-  // a person asks it to record (the header above).
+  // A recorder, not a check: it reads today's page through its tabs, so it runs only when a
+  // person asks it to record (the header above).
   test.skip(!recording(), "set RECORD_PAGE_INVENTORY=1 to record today's page");
   test.setTimeout(600_000);
-  // The fixture describes today's page as the branch's merge-base with `main` holds it, which
-  // today's page at the branch's head is, since no part changes it (INFRA-1196 R33); each state
-  // asserts it read today's page and not the new one (`recordState`).
+  await resetDatabase();
+  // The fixture describes today's page at the branch's merge-base with `main`, which is the
+  // checkout the recorder runs in (the header says why); each state asserts it read today's page
+  // and not the new one (`recordState`).
   const commit = git("merge-base", "HEAD", resolves("origin/main") ? "origin/main" : "main");
   const recordedAtHead = git("rev-parse", "HEAD");
   expect(commit, "git merge-base answered no commit").toMatch(/^[0-9a-f]{40}$/);
@@ -278,38 +261,21 @@ test("the issue page's landmarks and controls, open and closed, at 1440 and at 3
         await patchIssue(seeded.key, { status: "done" });
         closed = true;
       }
-      recorded.set(state.key, await recordState(page, seeded.key, state, true));
+      recorded.set(state.key, await recordState(page, seeded.key, state));
     }
   } finally {
     await alice.close();
   }
 
-  const states = {
-    "closed-1440": recorded.get("closed-1440") ?? [],
-    "closed-390": recorded.get("closed-390") ?? [],
-    "open-1440": recorded.get("open-1440") ?? [],
-    "open-390": recorded.get("open-390") ?? [],
-  };
-
   const fixture: PageInventoryFixture = {
     commit,
     recordedAtHead,
     recordedAt: new Date().toISOString(),
-    "open-1440": states["open-1440"],
-    "open-390": states["open-390"],
-    "closed-1440": states["closed-1440"],
-    "closed-390": states["closed-390"],
+    "open-1440": recorded.get("open-1440") ?? [],
+    "open-390": recorded.get("open-390") ?? [],
+    "closed-1440": recorded.get("closed-1440") ?? [],
+    "closed-390": recorded.get("closed-390") ?? [],
   };
   await mkdir(dirname(fixturePath), { recursive: true });
   await writeFile(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`);
-  const written = JSON.parse(await readFile(fixturePath, "utf8")) as PageInventoryFixture;
-  expect(written.commit, "the fixture names another commit than the page it describes").toBe(
-    commit
-  );
-  expect(written.recordedAtHead, "the fixture names another working copy").toBe(recordedAtHead);
-  for (const state of STATES) {
-    expect(written[state.key], `the fixture holds another ${state.key} than was read`).toEqual(
-      states[state.key]
-    );
-  }
 });
