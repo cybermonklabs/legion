@@ -654,28 +654,19 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses, the OAuth scopes it stamps from routeScopes, what it reads, which it stamps from
-// readSources, and what it writes as a read, which it stamps from readClasses. Register mounts the
-// table and GET /api/v1 lists it, so the two can never disagree about what the server serves.
+// writeClasses, the OAuth scopes it stamps from routeScopes, what it reads (Reads, stamped from
+// readSources), what it writes as a read (Read, stamped from readClasses), and whether an
+// approve-only token may call it (ApproveOnly, stamped from approveScopeRoutes). Register mounts
+// the table and GET /api/v1 lists it, so the two can never disagree about what the server serves.
 // Every mutating row carries a Scope, and a GET row carries none (project_scope.go); every GET row
 // carries Reads, and a mutating row carries none (read_sources.go); OAuthScopes is empty on every
 // row any authenticated caller may reach; Read is the GET row's entry of readClasses, and the zero
 // entry, which classes nothing, on every other row, so no row but a GET row is ever a read. Only
-// the read-only gate reads Read (refuseReadOnlyToken), never the route index or the OpenAPI
-// document. The row's own five columns are read through it by promotion. What the route takes and
-// answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
-// writeClasses, the OAuth scopes it stamps from routeScopes, the read class it stamps from
-// readClasses, and whether an approve-only token may call it, which it stamps from
-// approveScopeRoutes. Register mounts the table and GET /api/v1 lists it, so the two can never
-// disagree about what the server serves. Every mutating row carries a Scope, and a GET row carries
-// none (project_scope.go); OAuthScopes is empty on every row any authenticated caller may reach;
-// Read is the GET row's entry of readClasses, and the zero entry, which classes nothing, on every
-// other row, so no row but a GET row is ever a read. Only the read-only gate reads Read
-// (refuseReadOnlyToken); ApproveOnly is true on the rows the approve list names and on no other,
-// and only the approve-only gate reads it (refuseApproveOnlyToken); neither reaches the route
-// index or the OpenAPI document. The row's own five columns are read through it by promotion.
-// What the route takes and answers is routeShapes', which only the OpenAPI emitter reads, so no
-// row carries it.
+// the read-only gate reads Read (refuseReadOnlyToken); ApproveOnly is true on the rows the approve
+// list names and on no other, and only the approve-only gate reads it (refuseApproveOnlyToken);
+// neither reaches the route index or the OpenAPI document. The row's own five columns are read
+// through it by promotion. What the route takes and answers is routeShapes', which only the OpenAPI
+// emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope

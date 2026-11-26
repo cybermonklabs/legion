@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/url"
 	"strconv"
@@ -300,7 +301,7 @@ func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
 // every socket of theirs closed too, as recheckAdmission closes a socket whose read fails: the pass
 // cannot show they still read those rooms, and each reconnect's admission reads them again.
 func (s *Service) recheckAccess(ctx context.Context) {
-	if s.stopping.Load() {
+	if serverStopping(ctx) {
 		return
 	}
 	// hidden is each socket whose person's read answered that they no longer read its room, and
@@ -310,7 +311,7 @@ func (s *Service) recheckAccess(ctx context.Context) {
 	for person, admissions := range s.schemaAdmissions.beginAccessCheck() {
 		readable, err := s.readableRooms(ctx, person, admissions)
 		if err != nil {
-			if s.stopping.Load() {
+			if serverStopping(ctx) {
 				return
 			}
 			if ctx.Err() == nil {
@@ -327,8 +328,7 @@ func (s *Service) recheckAccess(ctx context.Context) {
 			}
 		}
 	}
-	if s.stopping.Load() || (len(hidden) == 0 && len(unread) == 0) {
-		return
+	if serverStopping(ctx) || (len(hidden) == 0 && len(unread) == 0) {
 	}
 	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] && !unread[admission] }, errAccessRevoked) {
 		if hidden[admission] {
@@ -432,6 +432,17 @@ func (schemaRevoked) CloseCode() (int, string) {
 // provider reconnects, and the reconnect's admission refuses the room as a room no document holds
 // (readIssue) when the person no longer reads it.
 var errAccessRevoked error = accessRevoked{}
+
+// ErrServerStopping is the cause cmd/dispatch cancels the process context with at shutdown
+// (context.WithCancelCause): the access re-check returns without revoking when it is the cause
+// of ctx, so the close code tells the truth (shutdown's going-away, not a loss of access). A
+// plain cancelled context, as a per-pass deadline, still fails closed with errAccessRevoked.
+var ErrServerStopping = errors.New("server stopping")
+
+// serverStopping reports whether ctx was cancelled with ErrServerStopping.
+func serverStopping(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), ErrServerStopping)
+}
 
 // accessRevoked is that cause's type.
 type accessRevoked struct{}
