@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A message from a registered session names the machine and directory of the registration this
@@ -274,7 +275,7 @@ func TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer(t *testing.T) {
 			[]string{contracts.LegacyAgentSubject(sessionID)}); err != nil {
 			t.Fatalf("write %s's interest record: %v", sessionID, err)
 		}
-		waitFor(t, 10*time.Second, "the interest cache to hold "+sessionID+"'s record", func() bool {
+		testwait.Eventually(t, "the interest cache to hold "+sessionID+"'s record", func() bool {
 			_, held := registry.Cached(sessionID)
 			return held
 		})
