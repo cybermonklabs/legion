@@ -235,16 +235,26 @@ func BuiltSettingsIn(ctx context.Context, q delivery.Querier, repos []string) ([
 	if err != nil {
 		return nil, err
 	}
+	return BuiltSettingsOf(ctx, q, delivery.DeployRules(projects), repos)
+}
+
+// BuiltSettingsOf is BuiltSettingsIn over saved, the rules of the sources that read repositories
+// now (delivery.DeployRules over the settings the caller already read in q), so a reader that needs
+// the settings itself reads them once and answers one state of them: it reads the record alone,
+// and nothing where repos is empty.
+func BuiltSettingsOf(ctx context.Context, q delivery.Querier, saved []delivery.DeliverySettings, repos []string) ([]*delivery.DeliverySettings, error) {
+	if len(repos) == 0 {
+		return nil, nil
+	}
 	built, err := builtUnderIn(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	rules := delivery.DeployRules(projects)
 	answers := make([]*delivery.DeliverySettings, len(repos))
 	for i, repo := range repos {
 		var settings *delivery.DeliverySettings
-		if at := slices.IndexFunc(rules, func(rule delivery.DeliverySettings) bool { return ruleKey(rule.DeployRepo) == ruleKey(repo) }); at >= 0 {
-			settings = new(rules[at])
+		if at := slices.IndexFunc(saved, func(rule delivery.DeliverySettings) bool { return ruleKey(rule.DeployRepo) == ruleKey(repo) }); at >= 0 {
+			settings = new(saved[at])
 		}
 		recorded, held := built[ruleKey(repo)]
 		switch {

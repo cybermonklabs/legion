@@ -188,7 +188,8 @@ func (bound windowBound) parsed() (*time.Time, error) {
 // the population's pull requests and no run.
 //
 // Each source repository's rule is the one its stored day rows stand built under
-// (evals.BuiltSettingsIn): the production rule and the deploy cards' jobs as the refresher recorded
+// (evals.BuiltSettingsOf, over the settings read here, so one read of them answers both): the
+// production rule and the deploy cards' jobs as the refresher recorded
 // them with the repository's rows (eval_days_rules), and the saved ones where it has recorded none
 // yet. The Evals tab reads the same, so between a save of a source's rule and the refresher's commit
 // that brings the rows to it the timeline, the measures, the Pipeline and a deploy run's drill-down
@@ -208,7 +209,7 @@ func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.Sourc
 	for i, rule := range saved {
 		repos[i] = rule.DeployRepo
 	}
-	built, err := evals.BuiltSettingsIn(ctx, q, repos)
+	built, err := evals.BuiltSettingsOf(ctx, q, saved, repos)
 	if err != nil {
 		return nil, err
 	}
