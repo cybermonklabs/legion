@@ -972,14 +972,10 @@ test("in a named box the kept place moves up with the focused row, and the next 
   }
 });
 
-// INFRA-3135, round 31 (the tester's red row of round 29, builds Job infra-3135-i-h5-g6tnd): in
-// the Inbox at 1440x900 the pointer rests on a row below the rows the bar's Snooze took, while the
-// focus stands on the mark of the row marked last, where the bar's hand-off parked it. The commit
-// that takes those rows away lets the rows after them move up, the row under the pointer with
-// them, and scrolls nothing. The anchor kept a place for that row from before, and the resize the
-// commit makes of the list put the row back there, scrolling the whole list back by the rows'
-// height after the hand-off had landed. The place kept for a row the commit did not put back is
-// let go with the rows, so the resize moves nothing.
+// When the pointer rests on a row below rows a press is taking away while the focus stands on a
+// leaving row, the commit that takes those rows away lets the rows after them move up, the row
+// under the pointer with them, and scrolls nothing. The place the anchor kept for that row before
+// the commit is let go with the rows, so the resize that follows the commit moves nothing.
 test("a resize after the rows a press took away have gone puts back no row under the pointer while the focus stood in another", () => {
   const sizes = installResizeObserver();
   const going = (id: string) => id === "r3" || id === "r4";

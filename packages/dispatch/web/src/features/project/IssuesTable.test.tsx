@@ -2,11 +2,12 @@ import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ComponentProps, type ReactNode, useRef } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { controlBar } from "../../__tests__/chips-line";
 import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { FootFloat } from "../../__tests__/foot-float";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { optionNames, pick, pickNamed } from "../../__tests__/list-picks";
@@ -19,7 +20,7 @@ import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { useTableLayout } from "../../components/table-layout";
 import { readLayout } from "../../components/table-storage";
-import { useFootInset } from "../../hooks/useFootInset";
+import { DOCUMENT_SCROLL_ATTRIBUTE, footPassNow, MARK_ATTRIBUTE } from "../../hooks/useFootInset";
 import { oneReadAnswer } from "../inbox/inbox-fixture";
 import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/status-change-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -1636,37 +1637,10 @@ test("Take out of epic lands its focus wholly in the box the List draws once the
   );
 });
 
-/** A float of the foot's status layer, as Pending changes is (`hooks/useFootInset.ts`), with a box
- *  48 px tall at the window's foot, given to it as it is drawn since happy-dom lays nothing out:
- *  while it has a box, a change of the foot's page elements, the bar's going among them, asks for
- *  the foot's pass at the next frame. */
-function FootFloat(): ReactNode {
-  const ref = useRef<HTMLDivElement | null>(null);
-  useFootInset(ref, true, "status");
-  return (
-    <div
-      data-testid="foot-float"
-      ref={(node) => {
-        ref.current = node;
-        if (node !== null) {
-          node.getBoundingClientRect = () => new DOMRect(600, window.innerHeight - 64, 300, 48);
-        }
-      }}
-    />
-  );
-}
-
-// INFRA-3135, round 31 (the tester's row of `e2e/table-controls.e2e.ts`, "after Take out of epic
-// with the rows marked last far above the view lands, the project List's box keeps the frame it
-// had when the focus landed"): at 1440x900 the List gave its box its height as the bar went, 400
-// px while main still held 100 px of end room for the bar's foot, and the foot's pass then took
-// that room away, so the box's next read made it 430 px, a frame after the landing. The List
-// gives its box its height in the hand-off's own turn after the foot's pass instead, right before
-// the landing (`MarkedList`'s `fit`). Here a float stands at the foot, so the foot's pass is still
-// to come as the bar goes; main holds 100 px of end room while the bar is drawn, and none after
-// the pass that follows its going. The box takes the window's height less that room, as the page
-// lays it out. The landing on the checkbox of the issue marked last is made against the box with
-// no room taken from it, and the box's own read after the landing moves nothing.
+// With a float at the foot, the foot pass is still to come as the bar goes. Main holds 100 px of
+// end room while the bar is drawn and none after that pass. The List fits its box after the pass
+// and before landing on the last marked checkbox, so the box's own read after landing finds the
+// same height.
 test("with the foot's pass still to come as the bar goes, the List gives its box its height after that pass and lands against it, and the box keeps that height", async () => {
   const user = userEvent.setup();
   table(
@@ -1723,6 +1697,103 @@ test("with the foot's pass still to come as the bar goes, the List gives its box
   // The box's own read after the landing finds the height it landed against.
   act(() => window.dispatchEvent(new Event("resize")));
   expect(boxPx()).toBe(atLanding);
+});
+
+// If the table's scroll box is at its end when the bar goes, removing main's end room would clamp
+// the box. The landing scrolls the box off its end, so the early foot pass releases that room.
+// The hand-off refits the box and re-checks the landing without waiting for another frame.
+test("when the List's landing scrolls its box off its end, the kept foot room is released and the box holds its kept height in the landing's own task", async () => {
+  const user = userEvent.setup();
+  const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const docScrollTop = document.documentElement.scrollTop;
+  document.documentElement.scrollTop = 0;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+  restores.push(() => {
+    if (innerHeight === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", innerHeight);
+    document.documentElement.scrollTop = docScrollTop;
+  });
+  table(
+    Array.from({ length: 3 }, (_, index) => issue(`CORE-${index + 1}`)),
+    "",
+    { inMain: true }
+  );
+  await screen.findByRole("checkbox", { name: "Select CORE-2" });
+  const box = tableBox();
+  const main = document.querySelector("main");
+  if (box === null || main === null) throw new Error("The List drew no box in main");
+  main.setAttribute(DOCUMENT_SCROLL_ATTRIBUTE, "");
+  const line = document.createElement("p");
+  line.textContent = "Pager";
+  line.getBoundingClientRect = () => new DOMRect(0, 880, 800, 20);
+  main.append(line);
+  const pager = screen.getByTestId("issues-table-pager");
+  const boxPx = () => Number.parseFloat(box.style.height || box.style.maxHeight) || 400;
+  box.style.overflowY = "auto";
+  Object.defineProperties(box, {
+    clientHeight: { configurable: true, get: () => boxPx() },
+    scrollHeight: { configurable: true, get: () => 2000 },
+  });
+  box.getBoundingClientRect = () => new DOMRect(0, 300, 800, boxPx());
+  pager.getBoundingClientRect = () => new DOMRect(0, 300 + boxPx(), 800, 20);
+  const head = box.querySelector("thead th") as HTMLElement | null;
+  if (head === null) throw new Error("The List drew no header cell");
+  head.getBoundingClientRect = () => new DOMRect(0, 300, 800, 40);
+  let markTop = 190;
+  const scrolled = spyOn(box, "scrollBy").mockImplementation((by?: ScrollToOptions | number) => {
+    const dy = typeof by === "object" ? (by.top ?? 0) : 0;
+    box.scrollTop += dy;
+    markTop -= dy;
+  });
+  restores.push(() => scrolled.mockRestore());
+  let floatNode: HTMLElement | null = null;
+  Object.defineProperty(document, "elementsFromPoint", {
+    configurable: true,
+    value: () => (floatNode === null ? [line] : [floatNode, line]),
+  });
+  restores.push(() => Reflect.deleteProperty(document, "elementsFromPoint"));
+  const float = render(<FootFloat />);
+  floatNode = screen.getByTestId("foot-float");
+  const unmountFloat = () => {
+    if (floatNode === null) return;
+    floatNode = null;
+    float.unmount();
+  };
+  restores.unshift(() => {
+    box.scrollTop = 0;
+    unmountFloat();
+    footPassNow();
+  });
+  // Give main 80 px of end room while the float is up, and measure the box against it.
+  await afterFrameAndTasks();
+  expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+  expect(main.style.paddingBottom).toBe("80px");
+  act(() => window.dispatchEvent(new Event("resize")));
+  await afterFrameAndTasks();
+  const keptWithRoom = boxPx();
+  expect(keptWithRoom).toBe(500);
+  // Mark CORE-2 while it stands in view, then move the box to its scroll end so CORE-2 sits
+  // 150 px above the sticky head's bottom (340), and take the float away: main keeps its 80 px.
+  const liveMark = () => screen.getByRole("checkbox", { name: "Select CORE-2" });
+  await user.click(liveMark());
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  liveMark().getBoundingClientRect = () => new DOMRect(10, markTop, 16, 16);
+  box.scrollTop = 2000 - keptWithRoom;
+  unmountFloat();
+  expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+  expect(main.style.paddingBottom).toBe("80px");
+  // Clear selection: the landing scrolls the box 150 px off its end, the early foot pass releases
+  // main's 80 px room, and the second fitHeight sets the box to 580 px in the landing's own task.
+  act(() => within(bar).getByRole("button", { name: "Clear selection" }).focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(focusedName()).toBe("Select CORE-2"));
+  expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
+  expect(main.style.paddingBottom).toBe("");
+  expect(boxPx()).toBe(580);
+  expect(liveMark().getBoundingClientRect().top).toBe(340);
+  // A resize measure after the landing agrees with that height.
+  act(() => window.dispatchEvent(new Event("resize")));
+  expect(boxPx()).toBe(580);
 });
 
 // A table action's bar stays, held, until the list read after its writes has settled, and goes
@@ -3621,22 +3692,12 @@ test("after a partly refused Take out of epic, Clear selection lands on the issu
   expect(focusedName()).toBe("Select CORE-2");
 });
 
-// INFRA-3135, round 31 (the tester's row of `e2e/table-controls.e2e.ts`, "with Take out of epic's
-// writes held and both marks then unticked, the project List leaves the focus on a control of the
-// list, never the page body, once the rows leave"): the List names each issue an action's writes
-// are for as leaving from the reader's press (`useIssueTableActions`'s `leaving`), not from its
-// write's answer. Under the Epic filter the reader marks two rows, the lower first, presses Take
-// out of epic, and unticks both marks while its writes are out, so the bar goes by their own
-// untick. A click that leaves the focus on the mark, as Chromium's and Firefox's do, keeps it the
-// reader's: the bar hands on nothing (`SelectionBar`), and the hand-off owes the landing itself
-// because the focus stands in a row the List names (`useLastMarkedPlace`). A click that leaves the
-// focus where it was, on Take out of epic, as WebKit's does, drops it onto the body with the bar:
-// the bar's hand-off owes the landing and parks the focus on the mark of the row marked last. Each
-// way the focus stands on that mark while the writes are out. Once they are let through, the list
-// read after them takes both rows out of the view, and the focus goes to the checkbox of the row
-// now at their place, never to the page's body. A List that named a row only once its write had
-// answered named neither at the bar's going, so the landing was made at once on the mark, and the
-// row's going then dropped the focus onto the body.
+// The List names rows as leaving from the reader's press, before the writes answer. Under the
+// Epic filter, the reader starts Take out of epic on two rows and unticks them while the writes
+// are out. A click can either leave focus on the mark or leave it with the bar, where the bar's
+// going drops it to the body and the hand-off parks it on the mark. Either way the mark holds
+// focus during the writes, and once the two rows go, focus lands on the row now at their place.
+// Naming the rows only when the writes answer would let focus fall to the body when they go.
 for (const [how, untick] of [
   [
     "a click that leaves the focus on the mark",
@@ -3711,16 +3772,10 @@ for (const [how, untick] of [
   });
 }
 
-// INFRA-3135, round 31: the name of an issue a Finish sends a write again for ends at once where
-// that write is refused or stopped again, as a write the action sends itself does (`apply`). Start
-// next over CORE-2 is refused, so it is left to be finished and keeps its selection: the bar stays
-// over CORE-2. Finish sends the refused rank write again and that write is stopped, as the reader's
-// stop in Pending changes ends it; a stopped write may have landed, so the Finish holds through the
-// list read after it, which the case holds. With the focus in the bar, the reader unticks
-// CORE-2 by a click that leaves the focus where it was, as WebKit's does, and the bar goes with it.
-// Nothing is leaving, so the landing is made on CORE-2's checkbox and nothing is owed after it: a
-// wheel of the reader's moves no focus. A name that outlived the stopped write owed that landing
-// instead, and parked the focus meanwhile.
+// When a write sent again by Finish is refused or stopped, its row stops being named as leaving.
+// Here a refused Start next keeps CORE-2 marked, then Finish sends the rank write again and it
+// stops. Finish is still waiting for the list read, but unticking CORE-2 while the bar holds focus
+// lands on its checkbox without leaving a landing owed: a wheel then moves no focus.
 test("a write Finish sends again that is stopped ends its issue's name at once, so the bar's going lands on the issue marked last and owes nothing", async () => {
   const user = userEvent.setup();
   const rows = [

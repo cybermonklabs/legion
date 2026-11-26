@@ -3,7 +3,12 @@ import { type RenderResult, render, screen } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
 
 import { nextFrame } from "../__tests__/frames";
-import { DOCUMENT_SCROLL_ATTRIBUTE, MARK_ATTRIBUTE, useFootInset } from "./useFootInset";
+import {
+  DOCUMENT_SCROLL_ATTRIBUTE,
+  footPassNow,
+  MARK_ATTRIBUTE,
+  useFootInset,
+} from "./useFootInset";
 
 // happy-dom lays nothing out and has no hit test, so the harness is the geometry. The float, in
 // the foot's status layer as Pending changes is, stands 1rem above the foot of the screen, and so
@@ -376,6 +381,42 @@ test("the document's scroller keeps its room while taking it would clamp a box t
     expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
     expect(main.style.paddingBottom).toBe("");
   } finally {
+    scrollBox(box, 0);
+    await nextFrame();
+    view.unmount();
+  }
+});
+
+test("footPassNow runs a foot pass immediately, releases kept room once a box leaves its end, and cancels a queued frame", async () => {
+  boxes = { line: { bottom: window.innerHeight, top: window.innerHeight - 20 } };
+  under = "line";
+  const view = render(<PageGivingWay float />);
+  const main = screen.getByTestId("main");
+  const box = screen.getByTestId("given-way");
+  const cancel = spyOn(window, "cancelAnimationFrame");
+  try {
+    await nextFrame();
+    expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+    expect(main.style.paddingBottom).toBe("80px");
+
+    scrollBox(box, 1400);
+    view.rerender(<PageGivingWay float={false} />);
+    await nextFrame();
+    expect(main.style.paddingBottom).toBe("80px");
+
+    // Moving the box off its end asks for a pass at the next frame; `footPassNow` cancels that
+    // frame and takes the kept room away at once in the same task.
+    scrollBox(box, 1300);
+    expect(main.style.paddingBottom).toBe("80px");
+    cancel.mockClear();
+    expect(footPassNow()).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
+    expect(main.style.paddingBottom).toBe("");
+    // A second pass with nothing left to change reports false.
+    expect(footPassNow()).toBe(false);
+  } finally {
+    cancel.mockRestore();
     scrollBox(box, 0);
     await nextFrame();
     view.unmount();

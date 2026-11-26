@@ -4915,17 +4915,15 @@ test("a bulk Snooze that lands with the pointer on a row below the marked rows l
   }
 });
 
-// INFRA-3135, round 31 (the architect's rule that the list's anchor and the bar's hand-off read one
-// answer of the rows a press is taking away, after the tester's red row of round 29, builds Job
-// infra-3135-i-h5-g6tnd): the pointer rests on a row and then travels over the list from before
-// the bar's Snooze is picked, from the keyboard, until after it lands, so the motion hold keeps
-// the read from before the pick and the rows it took stay drawn in their band after the write,
-// while the hand-off still waits for them. The rows marked stood above the window, so the hand-off
-// parked the focus on the list's own stop, and the row under the pointer is the one the anchor
-// keeps. Once the pointer rests, the rows go, and the anchor lets them go with no scroll of its
-// own (it used to name a snoozed row only while its write was out, and scrolled the window back by
-// the rows' height): the one scroll is R8's landing bringing the row after them to the window's
-// top.
+// The list's anchor and the bar's hand-off share one view of the rows a press is taking away. Here
+// the pointer rests on a row and then travels over the list from before the bar's Snooze is picked,
+// from the keyboard, until after it lands, so the motion hold keeps the read from before the pick
+// and the rows it took stay drawn in their band after the write, while the hand-off still waits for
+// them. The rows marked stood above the window, so the hand-off parked the focus on the list's own
+// stop, and the row under the pointer is the one the anchor keeps. Once the pointer rests, the rows
+// go, and the anchor lets them go with no scroll of its own (it used to name a snoozed row only
+// while its write was out, and scrolled the window back by the rows' height): the one scroll is
+// R8's landing bringing the row after them to the window's top.
 test("a bulk Snooze that lands while the pointer travels over the list lets the rows it took go once the pointer rests, and only the landing scrolls", async () => {
   const user = userEvent.setup();
   const rows = Array.from({ length: 12 }, (_, index) =>

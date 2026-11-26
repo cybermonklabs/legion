@@ -11,7 +11,7 @@ import {
 
 import { focusOnDocument } from "../features/shell/roving";
 import { useMediaQuery } from "../features/shell/useDialog";
-import { afterFootPass, useFootInset } from "../hooks/useFootInset";
+import { afterFootPass, footPassNow, useFootInset } from "../hooks/useFootInset";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import {
@@ -30,6 +30,7 @@ import {
   pressMadeIn,
   pressOnRowMark,
   repeatTookFocusFrom,
+  scrollToNearest,
   visibleMarkPoint,
 } from "./focus-place";
 import { ROW_SELECTOR } from "./row-marker";
@@ -84,13 +85,16 @@ export interface MarkedList {
    *  null. */
   readonly control: (id: string) => HTMLElement | null;
   /** Draws row `id`, which the list holds (`order`) and its window has not drawn (`control` is
-   *  null), and lands on its mark once drawn. Answers what takes that landing back. A list that
-   *  draws every row it holds leaves this out. */
-  readonly drawRow?: (id: string) => () => void;
+   *  null), and lands on its mark once drawn, calling `onLand` with that mark in the task that
+   *  lands it so the hand-off can run the foot's pass and fit the box against the scroll that
+   *  drew it. Answers what takes that landing back. A list that draws every row it holds leaves
+   *  this out. */
+  readonly drawRow?: (id: string, onLand?: (mark: HTMLElement) => void) => () => void;
   /** Makes the list's own layout current against the room the page gives it now: the hand-off
    *  calls it right before each landing it makes, the table's own through `drawRow` included, and
-   *  after the foot's own pass (`afterFootPass`), so the box the landing is judged against is the
-   *  box the list keeps after it. A list whose layout follows the page by itself leaves this out. */
+   *  after the foot's own pass (`afterFootPass`), and again right after a landing's scroll once
+   *  `footPassNow()` runs, so the box the landing is judged against is the box the list keeps
+   *  after it. A list whose layout follows the page by itself leaves this out. */
   readonly fit?: () => void;
   /** Whether a press of the reader's is taking row `id` away while the page still draws it: from
    *  the press until the row is no longer in `order`, or until the press is refused or undone. The
@@ -138,7 +142,9 @@ export interface MarkedList {
  * same way. Every landing is made once the foot's own pass has given the list the room the bar's
  * foot had back (`hooks/useFootInset.ts`'s `afterFootPass`), since that pass moves the box the
  * reader sees the rows through, and against the list's layout made current right then
- * (`MarkedList`'s `fit`).
+ * (`MarkedList`'s `fit`). Right after a landing's scroll, the hand-off runs the foot's pass early
+ * (`footPassNow`), fits the box again and checks the landing once more against that box in the
+ * same task, so a scroll off the box's end releases kept end room before the first painted frame.
  *
  * **Drawing.** The place is not drawn yet: the target the page named, where the list has not
  * drawn it (the Inbox draws its empty message only once the rows a press takes away have gone),
@@ -170,8 +176,8 @@ export interface MarkedList {
  *
  * So a reader deep in a long list keeps their place, and the focus goes neither to the list's first
  * row nor to the page's body. One case is not answered yet: a bar action that a dialog confirms,
- * as main's parent-status question does for Move to epic, ends on the body, because the dialog's
- * confirm is then the armed press and the bar's own gate is not (the pull request's Fast-follow).
+ * as the parent-status confirmation dialog for Move to epic does, ends on the body, because the
+ * dialog's confirm is then the armed press and the bar's own gate is not.
  */
 export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
@@ -282,7 +288,11 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   const drawLast = useCallback(
     (live: MarkedList, id: string): boolean => {
       if (live.drawRow === undefined) return false;
-      waitDrawn(live, { abandon: live.drawRow(id), id, kind: "own" });
+      waitDrawn(live, {
+        abandon: live.drawRow(id, (mark) => refitAfterLand(latest.current, mark)),
+        id,
+        kind: "own",
+      });
       return true;
     },
     [waitDrawn]
@@ -294,8 +304,11 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       const head = live.head?.() ?? null;
       if (to !== undefined) {
         const target = to();
-        if (target !== null) landNearest(target, head);
-        else waitDrawn(live, { kind: "drawing", to });
+        if (target !== null) {
+          if (landNearest(target, head)) refitAfterLand(live, target);
+        } else {
+          waitDrawn(live, { kind: "drawing", to });
+        }
         return;
       }
       const order = live.order();
@@ -307,7 +320,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
           : markAtPlace(order, before.current, last, live.control, head);
       const mark = id === null ? null : live.control(id);
       if (mark !== null) {
-        landNearest(mark, head);
+        if (landNearest(mark, head)) refitAfterLand(live, mark);
         return;
       }
       if (listed && drawLast(live, last)) return;
@@ -330,6 +343,19 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       landNow(live, place.kind === "place" ? place.last : null, place.to);
     });
   }, [landNow, settle]);
+  /** Parks the focus while the list names a listed row as leaving, as `park` does for the row
+   *  `last` (or the target `to` the page named), else makes the owed landing after the foot's
+   *  pass. */
+  const parkOrLand = useCallback(
+    (live: MarkedList, last: string | null, to?: LandingTarget) => {
+      if (anyLeaving(live)) {
+        if (focusOnDocument()) park(live, last, to);
+        return;
+      }
+      landAfterFootPass();
+    },
+    [landAfterFootPass]
+  );
   // Each commit of the host asks the hand-off again while a landing is owed: the commit that lets
   // the press's rows go is the one that makes the landing, and the first commit that draws a target
   // the landing waits on lands it. A windowed table's own landing is made once the focus stands in
@@ -358,11 +384,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       if (stop?.contains(focused) === true && focused !== stop) settle();
       return;
     }
-    if (anyLeaving(live)) {
-      if (focusOnDocument()) park(live, place.last, place.to);
-      return;
-    }
-    landAfterFootPass();
+    parkOrLand(live, place.last, place.to);
   });
   /** Owes the landing on the place the row `last` gives (or on `to`, where the page named one),
    *  and asks for it at once, as each commit asks while it is owed: the focus parked while the
@@ -370,19 +392,14 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
    *  landing made after the foot's pass. */
   const owePlace = useCallback(
     (live: MarkedList, last: string | null, to?: LandingTarget) => {
-      if (anyLeaving(live)) {
-        owe({ kind: "place", last, to });
-        if (focusOnDocument()) park(live, last, to);
-        return;
-      }
-      if (to !== undefined && to() === null) {
+      if (!anyLeaving(live) && to !== undefined && to() === null) {
         waitDrawn(live, { kind: "drawing", to });
         return;
       }
       owe({ kind: "place", last, to });
-      landAfterFootPass();
+      parkOrLand(live, last, to);
     },
-    [landAfterFootPass, owe, waitDrawn]
+    [owe, parkOrLand, waitDrawn]
   );
   // Where the reader's act left the focus, once it has been answered: in a row the list names as
   // leaving, or on the body because the control that held it (`from`) went with its row, the
@@ -529,6 +546,19 @@ function park(list: MarkedList, last: string | null, to?: LandingTarget): void {
     return;
   }
   focusNoScroll(mark);
+}
+
+/** Runs the foot's own pass early after a landing's scroll, fits the list's box again and checks
+ *  the landing once more against the box as it then stands, in the landing's own task: a pass
+ *  that ran as the bar went keeps a scroller's end room while a box it holds stands at its end,
+ *  and a landing that scrolls that box off its end lets this pass take the room away before the
+ *  first painted frame, so the box never resizes a frame after the focus lands. Moves nothing
+ *  where the mark already stands whole below the head. */
+function refitAfterLand(live: MarkedList, mark: HTMLElement): void {
+  const roomChanged = footPassNow();
+  if (!roomChanged && live.fit === undefined) return;
+  live.fit?.();
+  if (document.activeElement === mark) scrollToNearest(mark, live.head?.() ?? null);
 }
 
 /** Puts the focus on a list's own stop with no scroll, as a component's hand-off gives a region
