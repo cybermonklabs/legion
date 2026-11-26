@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"iter"
 	"maps"
 	"regexp"
 	"slices"
@@ -22,7 +23,7 @@ var (
 
 // identifierByte reports whether b can continue an identifier, a byte at or above 0x80 among
 // them as Postgres's scanner reads it (ident_cont), so that a name, an E before a quote or a $
-// before a tag is read as part of the identifier it touches.
+// before a tag or a parameter's digits is read as part of the identifier it touches.
 func identifierByte(b byte) bool {
 	return b == '_' || b == '$' || b >= 0x80 || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
@@ -36,88 +37,136 @@ func standalone(code string, start, end int) bool {
 	return end >= len(code) || !identifierByte(code[end-1]) || !identifierByte(code[end])
 }
 
-// maskSQL answers src as Postgres's lexer reads it, with nothing but code left: each comment (`--`
-// to the line's end, and `/* */`, nested) becomes a space; each string literal (an ordinary one,
-// whose doubled quote is one quote, an E-prefixed one, whose backslash escapes, and a
-// dollar-quoted one of any tag) becomes an empty literal; and a quoted identifier becomes its name
-// where that name is a plain identifier, so "to_tsvector" reads as to_tsvector. Every check below
-// reads the masked text, so a quote inside a comment or a dollar-quoted string hides no code, and
-// text inside a literal is no call.
+// sqlSpanKind is what one span of a SQL text is to Postgres's lexer (sqlSpans).
+type sqlSpanKind int
+
+const (
+	// sqlCode is text the lexer reads as tokens: names, numbers, operators, parameters and the
+	// white space between them.
+	sqlCode sqlSpanKind = iota
+	// sqlLineComment runs from `--` to the line's end, its newline left to the code after it.
+	sqlLineComment
+	// sqlBlockComment is `/* */`, nested.
+	sqlBlockComment
+	// sqlString is a string literal: an ordinary one, whose doubled quote is one quote, an
+	// E-prefixed one, its E included, whose backslash escapes, and a dollar-quoted one of any tag.
+	sqlString
+	// sqlQuotedIdentifier is a name in double quotes, whose doubled quote is one quote.
+	sqlQuotedIdentifier
+)
+
+// sqlSpan is one span of a SQL text: a run of code, or one comment, string literal or quoted
+// identifier whole, with its quotes or delimiters. One the text does not close runs to its end.
+type sqlSpan struct {
+	kind sqlSpanKind
+	text string
+}
+
+// sqlSpans yields src as Postgres's lexer reads it, in order: each comment, string literal and
+// quoted identifier whole, and each run of code between them. The spans' texts joined are src.
+// maskSQL masks every span but code, and searchSplitWrittenIn writes values in for the parameters
+// of code alone, so a quote inside a comment or a dollar inside a literal hides or names nothing.
+func sqlSpans(src string) iter.Seq[sqlSpan] {
+	return func(yield func(sqlSpan) bool) {
+		codeFrom := 0 // where the run of code being read begins
+		for i := 0; i < len(src); {
+			start, end := i, i
+			var kind sqlSpanKind
+			switch rest := src[i:]; {
+			case strings.HasPrefix(rest, "--"):
+				kind, end = sqlLineComment, len(src)
+				if newline := strings.IndexByte(rest, '\n'); newline >= 0 {
+					end = i + newline
+				}
+			case strings.HasPrefix(rest, "/*"):
+				kind = sqlBlockComment
+				for depth := 0; end < len(src); {
+					switch {
+					case strings.HasPrefix(src[end:], "/*"):
+						depth, end = depth+1, end+2
+					case strings.HasPrefix(src[end:], "*/"):
+						depth, end = depth-1, end+2
+					default:
+						end++
+					}
+					if depth == 0 {
+						break
+					}
+				}
+			case src[i] == '\'':
+				// An E that no identifier byte precedes opens an escape string with the quote.
+				escapes := i > 0 && (src[i-1] == 'E' || src[i-1] == 'e') && (i == 1 || !identifierByte(src[i-2]))
+				if escapes {
+					start = i - 1
+				}
+				kind, end = sqlString, quotedEnd(src, i, escapes)
+			case src[i] == '"':
+				kind, end = sqlQuotedIdentifier, quotedEnd(src, i, false)
+			case src[i] == '$' && (i == 0 || !identifierByte(src[i-1])) && dollarTag.MatchString(rest):
+				tag := dollarTag.FindString(rest)
+				kind, end = sqlString, len(src)
+				if close := strings.Index(rest[len(tag):], tag); close >= 0 {
+					end = i + len(tag) + close + len(tag)
+				}
+			default:
+				i++
+				continue
+			}
+			if start > codeFrom && !yield(sqlSpan{sqlCode, src[codeFrom:start]}) {
+				return
+			}
+			if !yield(sqlSpan{kind, src[start:end]}) {
+				return
+			}
+			i, codeFrom = end, end
+		}
+		if codeFrom < len(src) {
+			yield(sqlSpan{sqlCode, src[codeFrom:]})
+		}
+	}
+}
+
+// quotedEnd answers the index just past the quote that closes the one at open in src, or len(src)
+// when none closes it. A doubled quote is one quote of the text, and where escapes a backslash
+// takes the byte after it.
+func quotedEnd(src string, open int, escapes bool) int {
+	quote := src[open]
+	for i := open + 1; i < len(src); i++ {
+		switch {
+		case escapes && src[i] == '\\':
+			i++
+		case src[i] == quote && i+1 < len(src) && src[i+1] == quote:
+			i++
+		case src[i] == quote:
+			return i + 1
+		}
+	}
+	return len(src)
+}
+
+// maskSQL answers src as Postgres's lexer reads it (sqlSpans), with nothing but code left: a line
+// comment goes, its newline left, and a block comment becomes a space; each string literal
+// becomes an empty literal; and a quoted identifier becomes its name where that name is a plain
+// identifier, so "to_tsvector" reads as to_tsvector. Every check below reads the masked text, so
+// a quote inside a comment or a dollar-quoted string hides no code, and text inside a literal is
+// no call.
 func maskSQL(src string) string {
 	var code strings.Builder
-	for i := 0; i < len(src); {
-		switch rest := src[i:]; {
-		case strings.HasPrefix(rest, "--"):
-			for i < len(src) && src[i] != '\n' {
-				i++
-			}
-		case strings.HasPrefix(rest, "/*"):
-			for depth := 0; i < len(src); {
-				switch {
-				case strings.HasPrefix(src[i:], "/*"):
-					depth, i = depth+1, i+2
-				case strings.HasPrefix(src[i:], "*/"):
-					depth, i = depth-1, i+2
-				default:
-					i++
-				}
-				if depth == 0 {
-					break
-				}
-			}
+	for span := range sqlSpans(src) {
+		switch span.kind {
+		case sqlCode:
+			code.WriteString(span.text)
+		case sqlLineComment:
+		case sqlBlockComment:
 			code.WriteByte(' ')
-		case src[i] == '\'':
-			escapes := i > 0 && (src[i-1] == 'E' || src[i-1] == 'e') && (i == 1 || !identifierByte(src[i-2]))
-			if escapes {
-				written := code.String()
-				code.Reset()
-				code.WriteString(written[:len(written)-1])
-			}
-			for i++; i < len(src); i++ {
-				if escapes && src[i] == '\\' {
-					i++
-					continue
-				}
-				if src[i] == '\'' {
-					if i+1 < len(src) && src[i+1] == '\'' {
-						i++
-						continue
-					}
-					break
-				}
-			}
-			i++
+		case sqlString:
 			code.WriteString("''")
-		case src[i] == '"':
-			var name strings.Builder
-			for i++; i < len(src); i++ {
-				if src[i] == '"' {
-					if i+1 < len(src) && src[i+1] == '"' {
-						name.WriteByte('"')
-						i++
-						continue
-					}
-					break
-				}
-				name.WriteByte(src[i])
-			}
-			i++
-			if plainIdentifier.MatchString(name.String()) {
-				code.WriteString(name.String())
+		case sqlQuotedIdentifier:
+			if name := strings.ReplaceAll(strings.TrimSuffix(span.text[1:], `"`), `""`, `"`); plainIdentifier.MatchString(name) {
+				code.WriteString(name)
 			} else {
 				code.WriteString("quoted_identifier")
 			}
-		case src[i] == '$' && (i == 0 || !identifierByte(src[i-1])) && dollarTag.MatchString(rest):
-			tag := dollarTag.FindString(rest)
-			if close := strings.Index(rest[len(tag):], tag); close < 0 {
-				i = len(src)
-			} else {
-				i += len(tag) + close + len(tag)
-			}
-			code.WriteString("''")
-		default:
-			code.WriteByte(src[i])
-			i++
 		}
 	}
 	return code.String()

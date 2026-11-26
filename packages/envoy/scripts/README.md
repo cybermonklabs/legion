@@ -1682,10 +1682,10 @@ read written by hand writes `public.` before each name of the database. `subject
 `split.sql` break those rules, so steps 1 and 3 also write a production form beside them, in the
 same `$OUT`:
 
-- `subjects-read.sql`, written at step 1: the read of `subjects.sql`, each name written with its
-  schema (`public.issues`), and the words to pass over written in. `DISPATCH_SEARCH_SPLIT_PASS_OVER`
-  lists them, comma-separated, for step 1; unset or empty, it passes over none. It prints the same
-  JSON as `subjects.sql`.
+- `subjects-read.sql`, written at step 1: the read of `subjects.sql`, which also writes each name
+  with its schema (`public.issues`), with the words to pass over written in in place of psql's
+  variable. `DISPATCH_SEARCH_SPLIT_PASS_OVER` lists them, comma-separated, for step 1; unset or
+  empty, it passes over none. It prints the same JSON as `subjects.sql`.
 - `split-read/NNN-<name>.sql`, written at step 3: one file for each explain, numbered in the order
   `split.sql` runs them. A file holds `set local search_path = public`, the run's settings and one
   `explain (analyze, buffers, verbose, format json)` of the server's statement text byte for byte,
