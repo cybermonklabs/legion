@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   type ArchitectureSource,
+  DISPATCH_ASKS_HEADER,
   type IssueSummary,
   type ItemBlocks,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
@@ -465,6 +466,37 @@ describe("DispatchClient", () => {
       suggestion: { replace_with: "final" },
       actor,
     });
+  });
+  // This client reads each ask's state and answer from the live text's `asks` member
+  // (`liveTextAsks`), so every live read of a text route says so with `Dispatch-Asks: 1` and is
+  // served markdown with none of an ask block's server-owned attributes; a version's read, which
+  // serves the stored bytes whatever a request sends, carries no such header.
+  test("reads the live text under Dispatch-Asks and a version without it", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      jsonResponse({ markdown: "", token: "t", version: 2 }),
+      jsonResponse({ markdown: "", token: "t", version: 2, blocks: [] }),
+      jsonResponse({ number: 2, markdown: "" }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test/",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.docRead("artifact-1");
+    await client.docReadWithBlocks("artifact-1");
+    await client.docRead("artifact-1", 2);
+
+    expect(
+      requests.map((request) => [
+        new URL(request.url).pathname + new URL(request.url).search,
+        new Headers(request.init.headers).get(DISPATCH_ASKS_HEADER),
+      ])
+    ).toEqual([
+      ["/api/v1/artifacts/artifact-1/text", "1"],
+      ["/api/v1/artifacts/artifact-1/text?blocks=true", "1"],
+      ["/api/v1/artifacts/artifact-1/versions/2", null],
+    ]);
   });
   test("maps dispatch operations to authenticated JSON and multipart API requests", async () => {
     const { fetchImpl, requests } = fakeFetch([

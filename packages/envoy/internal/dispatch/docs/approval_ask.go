@@ -114,14 +114,15 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // of that version as the approval's restore compares it (restoresApprovedText: byte for byte, or,
 // for a version another renderer version stored or none stamped, as this build renders it) or
 // differs from it in the server-owned attributes of its ask blocks alone, every ask block agreeing
-// with its node (R10's test, changesAskAttributesAlone), does its requested_version move with its
-// version, quietly: a settlement saves what the room already holds - the blocks a close and a
-// reopen wrote back, or the state a person's answer, resolve or decline wrote into the ask's block
-// - so the text the person was asked about did not change and the request keeps its turn as if it
-// had not moved, waking nobody. A version a route writes - a named version, an upload, an edit or
-// a summary edit - moves the request to its agent whatever text it stores, as every move did
-// before the rule: the Legion daemon answers an agent's gate wait with such a version's
-// artifact.version, telling the agent the request is back on its turn, which this keeps true.
+// with its node (R5's test, changesAskAttributesAlone, which holds that version to its rendering
+// by the same rule), does its requested_version move with its version, quietly: a settlement saves
+// what the room already holds - the blocks a close and a reopen wrote back, or the state a
+// person's answer, resolve or decline wrote into the ask's block - so the text the person was
+// asked about did not change and the request keeps its turn as if it had not moved, waking nobody.
+// A version a route writes - a named version, an upload, an edit or a summary edit - moves the
+// request to its agent whatever text it stores, as every move did before the rule: the Legion
+// daemon answers an agent's gate wait with such a version's artifact.version, telling the agent
+// the request is back on its turn, which this keeps true.
 //
 // It runs in a transaction a caller joined, as every other document operation does, and in the
 // one a settlement or the block-id backfill owns, which no caller joins (Ledger): the version

@@ -134,6 +134,31 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 // backfillAt is Backfill as a build of the marking rule rule runs it: its marks and its horizon
 // are that rule's. A test runs a backfill of another rule through it.
 func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
+	report, moved := backfillBeforeAskNodesAt(ctx, database, out, rule)
+	if moved != nil && !onlyProjectMoved(moved) {
+		return report, moved
+	}
+	// The asks and their followers run after the object pass has written the ask nodes.
+	// A row that pass left in another project does not hold back these passes.
+	for _, write := range askPasses {
+		done, err := write(ctx, database)
+		report.Kinds = append(report.Kinds, done)
+		writeKindBackfill(out, done)
+		if err != nil {
+			return report, errors.Join(moved, err)
+		}
+	}
+	return report, moved
+}
+
+// BackfillBeforeAskNodes runs the passes of backfill-graph-store that precede the ask node
+// migration. The migration census uses it to reproduce a store already filled by the earlier
+// release, before it judges the migrations still pending on that store.
+func BackfillBeforeAskNodes(ctx context.Context, database *store.Store, out io.Writer) (BackfillReport, error) {
+	return backfillBeforeAskNodesAt(ctx, database, out, refs.BlockIndexMarkingRule)
+}
+
+func backfillBeforeAskNodesAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
 	report := BackfillReport{}
 	if err := requireBackfillIndexes(ctx, database); err != nil {
 		return report, err

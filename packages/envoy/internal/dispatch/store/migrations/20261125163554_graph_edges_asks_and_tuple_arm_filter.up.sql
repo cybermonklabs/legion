@@ -1,48 +1,39 @@
--- 20261116094101_graph_edges_asks.up.sql
+-- 20261125163554_graph_edges_asks_and_tuple_arm_filter.up.sql
 --
--- The store answers an ask's relations. An ask is a node of the store (kind `ask`, its id the
--- ask's own), and the writers of this release state on that node the artifact it is anchored to
--- and the artifact it belongs to (anchored_to, owned_by) and each session that follows it
--- (followed_by), and name the node on the asks or ask_followers row in the same transaction
--- (20261116094058's node_kind and node_address). So the three arms of graph_edges over those two
--- tables move into the store's arm exactly as 20261109215947 moved a comment's two, and the
--- view answers each of those rows once, from the arm the row itself decides:
+-- `graph_edges` restated once more, last, with both of the two changes made to it since
+-- 20261109215947 restated it. Two migrations restated the view after that one, each from that
+-- one's arm list and each without the other's change, and a database runs each version once, in
+-- version order, so whichever of the two ran last would leave the view without the other's:
 --
---   the asks arm of anchored_to, the asks arm of owned_by and the ask_followers arm of
---   followed_by each answer only the rows whose `node_kind` is null, which is a row no writer of
---   this release marked: one written before it, and one a process of the release before writes
---   during a roll or after a rollback;
+--   20261125163553_graph_edges_asks: the asks arms of anchored_to and owned_by
+--   and the ask_followers arm of followed_by answer only the rows whose `node_kind` is null, and
+--   the tuple arm's `projects` case gains three `when` arms for an ask's relations - anchored_to
+--   and owned_by projected by its asks row, followed_by by its ask_followers row, and shaped by
+--   its block_refs row - with an `exists` probe of the asks row and of the ask_followers row, each
+--   ending in `offset 0`;
 --
---   the tuple arm answers an ask's anchored_to and owned_by only while the asks row that names
---   the ask's node carries it, and an ask's followed_by only while the ask_followers row of that
---   ask and that session carries it, through the join it makes for a comment. A row a build of
---   the release before deletes, retracting nothing, is then answered by neither arm, and one it
---   writes again with no node is answered by its old arm alone.
+--   20261120122700_graph_edges_tuple_arm_filter: the tuple arm's sub-select keeps
+--   only the kinds the arm renders before its `distinct on` sorts the tuples, its test spelled
+--   over the tuple's own `from_kind` and `kind` as the `when` arms of the `projects` case, and the
+--   outer `edge.projects is not null` test is gone.
 --
--- The tuple arm also renders an ask's `shaped` (an answered ask's tie to the spec blocks its
--- answer shaped) through the block_refs row of the pair, which the writer of an ask block's links
--- marks with the ask's node, ('ask', <ask id>), rather than the block's: the answer is the ask's,
--- so the tie hangs on the ask node. It takes the join a block's own link takes, so the block_refs
--- row of the pair is what says the tie still stands, and the old block_refs arm, which answers
--- only rows whose node_kind is null, never answers a row so marked. `shaped` on an ask declares no
--- targets, so block_pointer_targets finds no attribute of a document block under the ask's id and
--- the types test lists the tie.
+-- Here the sub-select's test is the `when` arms of the `projects` case as this arm list has them,
+-- now six: the three of 20261120122700 and 20261125163553's three for an ask. Every other arm, the
+-- column list and the order of the arms are 20261125163553's, and `block_pointer_targets` is as
+-- 20261109215947 created it. This is a new migration rather than an edit of either because a
+-- database that ran one of them keeps the definition it wrote until a later version restates it.
+--
+-- It changes no row the view answers. A database that ran both answers what 20261125163553's
+-- view answered with 20261120122700's filter, which drops only the groups of tuples whose
+-- `projects` is null: both columns its test reads are columns of the `distinct on` key, so it
+-- keeps or drops a whole group and never changes which tuple of a kept group is the newest.
 --
 -- The three arms over asks and ask_followers, and the tuple arm's three joins to those rows, stay
--- for one release: the root's own pull request deletes them.
+-- for one release, as 20261125163553 keeps them: the root's own pull request deletes them.
 -- kept for one release: asks-arms
 --
--- Each `exists` the tuple arm makes under its `case` ends in `offset 0`, the fence 20261109215947
--- gives its three: PostgreSQL plans a correlated `exists` of equalities either as a probe per edge
--- or as a hashed `= any` that reads the whole table once a statement, by its cost estimate alone,
--- and the offset keeps the one plan that is the probe. The two new probes read asks_node_address
--- and ask_followers_node_address (20261116094059 and 20261116094100).
---
--- The arm list re-stated is 20261109215947's, with the three `node_kind is null` tests and the
--- tuple arm's three new cases added, and it is the list a later migration re-states from. The
--- root's own pull request deletes the three old arms and the tuple arm's
--- joins to asks and ask_followers. Re-stating the view holds graph_edges ACCESS EXCLUSIVE for this
--- migration's short transaction. Nothing here refuses or rewrites a row.
+-- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short transaction,
+-- so a reference read waits behind it. Nothing here reads, refuses or rewrites a row.
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all
@@ -141,6 +132,11 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   select 'message', m.id::text, 'replies_to', 'message_block', m.replies_to_block, m.created_at, null
   from messages m where m.replies_to_block is not null
   union all
+  -- The store's own arm. Its sub-select keeps only the kinds the arm renders, the test that
+  -- `projects` is not null spelled over the tuple's own from_kind and kind, before the
+  -- `distinct on` sorts the tuples: both are columns of the `distinct on` key, so the test keeps or
+  -- drops whole groups and changes no row the arm answers, and a read keyed on one end of an edge
+  -- sorts only that node's tuples of those kinds.
   select edge.from_kind, edge.from_id, edge.kind, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
   from (
     select distinct on (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id)
@@ -163,10 +159,16 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
            end as projects
     from graph_tuples tuple
     where tuple.to_kind <> 'value'
+      and ((tuple.from_kind = 'block' and tuple.kind = 'in_document')
+           or (tuple.from_kind = 'block' and tuple.kind <> 'part_of')
+           or (tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by'))
+           or (tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by'))
+           or (tuple.from_kind = 'ask' and tuple.kind = 'followed_by')
+           or (tuple.from_kind = 'ask' and tuple.kind = 'shaped'))
     order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
   ) edge
   join graph_nodes node on node.kind = edge.from_kind and node.id = edge.from_id
-  where edge.asserted and node.state <> 'gone' and edge.projects is not null
+  where edge.asserted and node.state <> 'gone'
     and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
          or block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id))
     and case edge.projects

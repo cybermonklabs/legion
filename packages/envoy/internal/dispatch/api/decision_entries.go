@@ -470,8 +470,8 @@ func (entry *decisionEntry) readFacts(encoded []byte) error {
 	var answer asks.NodeAnswer
 	for _, fact := range facts {
 		value := fact.ToID
-		if held, err := answer.Read(fact.Kind, value); held {
-			if err != nil {
+		if asks.IsAnswerKind(fact.Kind) {
+			if err := answer.Read(fact.Kind, value); err != nil {
 				return err
 			}
 			continue
@@ -490,8 +490,17 @@ func (entry *decisionEntry) readFacts(encoded []byte) error {
 			entry.UncertaintyReason = &value
 		}
 	}
-	entry.AnswerState, entry.Answer, entry.Selected = answer.State, answer.Answer, answer.Selected
-	entry.AnsweredAt, entry.AnsweredBy, entry.Resolution = answer.AnsweredAt, answer.AnsweredBy, answer.Resolution
+	// The node's answer holds "" for an answer state and an answerer it states none of; the entry
+	// answers null for each.
+	entry.AnswerState, entry.AnsweredBy = nil, nil
+	if answer.State != "" {
+		entry.AnswerState = &answer.State
+	}
+	if answer.AnsweredBy != "" {
+		entry.AnsweredBy = &answer.AnsweredBy
+	}
+	entry.Answer, entry.Selected = answer.Answer, answer.Selected
+	entry.AnsweredAt, entry.Resolution = answer.AnsweredAt, answer.Resolution
 	if entry.Resolution != nil && entry.Resolution.Kind == model.AskResolutionDeclined {
 		// D9: a declined ask is an entry of its own, with the person's note, and never an answer.
 		entry.Declined, entry.Kind = true, "declined"

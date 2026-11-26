@@ -2390,9 +2390,10 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 	if err != nil {
 		return err
 	}
-	// ask holds what the route states on the ask's node in this transaction, its writes queued
-	// behind this one, so the block is written from the node as the commit leaves it.
-	keep := askStateWrite(twoBuilds, ask, "")
+	// Once the fleet is one build, ask holds what the route states on the ask's node in this
+	// transaction, its writes queued behind this one, so the block is written from the node as the
+	// commit leaves it.
+	keep := fleetAskAttributes(twoBuilds, ask, "")
 	err = s.applyLive(ctx, *ask.BlockArtifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		valid, err := startTree(current, doc)
 		if err != nil {

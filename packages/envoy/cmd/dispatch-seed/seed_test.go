@@ -726,8 +726,8 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // graphArmCount guards that the census reads every arm. It is the arm list of
 // 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
 // answers arm among them, and the one arm over the store's current tuples that migration adds.
-// 20261121034242_graph_edges_asks_and_tuple_arm_filter, the last migration to restate
-// graph_edges, keeps that list, with 20261116094101's tests on the asks and ask_followers arms
+// 20261125163554_graph_edges_asks_and_tuple_arm_filter, the last migration to restate
+// graph_edges, keeps that list, with 20261125163553's tests on the asks and ask_followers arms
 // and 20261120122700's filter of the tuple arm. Each of the seven arms over a kind the store now
 // writes answers only the rows of its table that name no node, and the seed names the node of
 // every row it writes, so those seven answer nothing here (armGatedPerRow).

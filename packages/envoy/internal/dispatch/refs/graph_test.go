@@ -566,7 +566,7 @@ func (a edgesBlockArm) String() string {
 // joined to its source block, which must hold a position; a comment's reply to a comment's block
 // and to an ask's part, told apart by the ask/ that starts an ask part's node id; a message's
 // reply to a message's block; and the store's own arm over graph_tuples (migration
-// 20261121034242), which answers the links of the block_refs rows that name their node, a block's
+// 20261125163554), which answers the links of the block_refs rows that name their node, a block's
 // link and an answered ask's shaped among them (keyedTupleArm). refs.Edges' in read reads each of
 // them by the node's block ids, and the fixture writes a link of each into each read node's
 // blocks. The arms case holds the view to this list, so an arm a later migration adds fails it
@@ -1514,7 +1514,7 @@ func (w *edgesFixtureWriter) storeTuple(fromKind, fromID, kind string, to Target
 }
 
 // tupleLink writes a mention from block blockID of document as this build's block index writes
-// one, which graph_edges answers from its tuple arm (migration 20261121034242): the block's node,
+// one, which graph_edges answers from its tuple arm (migration 20261125163554): the block's node,
 // in state; the block_refs row of the link, naming that node; and the link's tuple, followed by a
 // retraction of it where retracted. It answers the block's node id and the time of the tuple the
 // view answers the edge at.
@@ -1531,7 +1531,7 @@ func (w *edgesFixtureWriter) tupleLink(document edgesDocument, blockID string, t
 }
 
 // shapedTie writes an answered ask's shaped tie to block to, as the store states it (migration
-// 20261116094101): the ask's node, its tuple, and the block_refs row of the ask's block blockID of
+// 20261125163553): the ask's node, its tuple, and the block_refs row of the ask's block blockID of
 // document that names the ask's node. It answers the ask's id and the tie's time.
 func (w *edgesFixtureWriter) shapedTie(document edgesDocument, blockID string, to Target) (string, time.Time) {
 	ask := w.uuid()

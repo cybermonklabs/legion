@@ -174,8 +174,8 @@ const edgeSuffix = "_edge"
 // edge the view answers that no tuple states is a row no tuple states, a tuple the view answers no
 // edge for is a tuple no row projects, and an edge that reaches the wrong node reads as both.
 //
-// The view's newest definition (store/migrations/20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql,
-// 20261116094101's arms with 20261120122700's filter of the tuple arm) answers
+// The view's newest definition (store/migrations/20261125163554_graph_edges_asks_and_tuple_arm_filter.up.sql,
+// 20261125163553's arms with 20261120122700's filter of the tuple arm) answers
 // each of these ties from one arm, which the projection row decides. For a row that names its
 // node, the tuple arm answers the newest tuple of the triple while it asserts, out of a node not
 // gone: shaped, from_ask and decided_by out of a block node, and shaped out of an ask's node, while

@@ -248,3 +248,65 @@ func TestALiveDecisionKeepsItsReadingWhateverOrderItsBlocksStandIn(t *testing.T)
 		t.Fatalf("a callout holding a reading = %v, want the reading refused", err)
 	}
 }
+
+func TestADecisionHoldsAnyBlocksItsUncertaintyHasNoDefaultAndReplacedReadsFalse(t *testing.T) {
+	const mixed = "::::decision{#d1%s}\nWe chose Friday.\n\n- Bring notes\n- Leave time\n\n:::callout{#c1 kind=\"note\"}\nKeep this in view.\n:::\n::::\n"
+	held, err := ParseRendering(strings.Replace(mixed, "%s", ` uncertainty="low"`, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"", "low", "medium", "high", "unknown"} {
+		attr := ""
+		if value != "" {
+			attr = ` uncertainty="` + value + `"`
+		}
+		doc, err := ParseForWrite(strings.Replace(mixed, "%s", attr, 1), held)
+		if value == "unknown" {
+			if err == nil || !strings.Contains(err.Error(), "uncertainty") {
+				t.Errorf("uncertainty %q = %v, want a refusal naming uncertainty", value, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("write with uncertainty %q: %v", value, err)
+		}
+		decision := doc.Children[0]
+		if len(decision.Children) != 3 || decision.Children[0].Type != "paragraph" ||
+			decision.Children[1].Type != "bullet_list" || decision.Children[2].Type != "callout" {
+			got := BlockNames(decision.Children)
+			t.Errorf("decision content = %v, want the paragraph, list and callout", got)
+		}
+		if got, ok := decision.Attrs["uncertainty"]; ok != (value != "") || ok && got != value {
+			t.Errorf("uncertainty %q reads %v (present %t), want no default and each declared choice read back", value, got, ok)
+		}
+		// A build that cannot create an attribute yet writes no default of it, and the
+		// declaration supplies the value when the stored block does not name it.
+		got, present := decision.Attrs["replaced"]
+		if !present {
+			attrs, _ := BlockTypeAttributes(decision.Type)
+			got = attrs.Get("replaced").Default
+		}
+		if got != false {
+			t.Errorf("replaced = %v, want false", got)
+		}
+	}
+}
+
+func TestTheShapedPointerOfAnAskIsReadAsABlockListAndAMalformedOneIsRefused(t *testing.T) {
+	const first = "dispatch://CORE-1/spec#b-r1"
+	const second = "dispatch://CORE-1/spec#b-r2"
+	read := func(pointer string) (*Node, error) {
+		return ParseRendering(":::ask{#a1 shaped=\"" + pointer + "\"}\nWhich change?\n:::\n")
+	}
+	doc, err := read(first + " " + second)
+	if err != nil {
+		t.Fatalf("read shaped on an ask: %v", err)
+	}
+	if got, _ := doc.Children[0].Attrs["shaped"].([]string); !slices.Equal(got, []string{first, second}) {
+		t.Fatalf("ask shaped = %v, want [%s %s] in that order", got, first, second)
+	}
+	_, err = read("not-a-block-address")
+	if !errors.Is(err, ErrBlockPointer) || !strings.Contains(err.Error(), `"shaped"`) {
+		t.Fatalf("read malformed shaped on an ask = %v, want ErrBlockPointer naming shaped", err)
+	}
+}

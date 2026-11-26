@@ -69,12 +69,21 @@ func IsTypedBlock(name string) bool {
 }
 
 // BlockTypeAttributes is the attributes the installed schema declares for the typed block name,
-// in declaration order, and false for a type it does not declare. The block index reads a
-// decision's from it to tell a tie its caller writes from one the server derives (refs'
-// DecisionFacts): the schema's `server` flag is what says whose a value is.
+// in declaration order, and false for a type it does not declare. The schema's `server` flag is
+// what says whose a value is: the caller's or the server's. The block index reads a decision's
+// from it to tell a tie its caller writes from one the server derives (refs' DecisionFacts).
 func BlockTypeAttributes(name string) (BlockAttributes, bool) {
 	typ, ok := typedBlock(name)
 	return typ.Attributes, ok
+}
+
+// ServerAttributesInMarkdown is the names of the server attributes the installed schema declares
+// for the typed block name that its markdown carries (BlockAttributeSchema.InMarkdown), in
+// declaration order, read off the manifest once when it was compiled; none for a type that
+// declares none or that the schema does not declare. Every caller shares the list, which none
+// writes.
+func ServerAttributesInMarkdown(name string) []string {
+	return active.Load().markdownServerAttributes[name]
 }
 
 func typedBlock(name string) (BlockTypeSchema, bool) {
@@ -430,7 +439,11 @@ func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
 		}
 		return value, nil
 	case BlockAttributeBlockList:
-		return ParseBlockPointerValue(text)
+		pointers, err := ParseBlockPointerValue(text)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrBlockPointer, err)
+		}
+		return pointers, nil
 	default:
 		return nil, fmt.Errorf("has unknown kind %q", attr.Kind)
 	}

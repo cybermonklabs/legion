@@ -49,7 +49,7 @@ func attributeRemovalSentence(from int) string {
 // each of the seven off a block once the fleet is one build, and the version it writes differs
 // from the one he approved by that attribute alone. The two are byte-equal once both have had the
 // eight attributes taken off every ask block, and the block agrees with its node, so his approval
-// is carried to it with the attribute case's reason (R10: "It carries the approval when the new
+// is carried to it with the attribute case's reason (R5: "It carries the approval when the new
 // rendering equals the approved rendering after both have had those eight attributes removed from
 // every ask block").
 func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWithoutIt(t *testing.T) {
@@ -103,7 +103,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 // whose state the answer writes into its block (R3); the agent reworded its question through the edits route, which
 // versions in the route's own transaction; the human approved that version inside the settle
 // window, and settlement then wrote the decided wording back. That version differs from the one he
-// approved in the question's words, which no carry case takes out, so nothing is carried (R10: "A
+// approved in the question's words, which no carry case takes out, so nothing is carried (R5: "A
 // write that changes one further character supersedes the approval"). The agent adds a second
 // block and the human answers it, which writes one version of its block's state alone, so the approval stays stale.
 func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t *testing.T) {

@@ -514,10 +514,11 @@ await test('a pasted typed block carrying a refused block pointer is not read as
   assert(rule.getAttrs(section({ 'data-proof-block-attr-serves': 'dispatch://CORE-1/artifact/spec#b-x' })) === false, 'a refused pointer was parsed as the typed block');
 });
 
-// The shapes of the version-6 schema the rules below read: a decision and an ask that a reading
-// closes, an ask attribute, and attributes markdown never carries.
+// The shapes of this build's version-7 schema the rules below read, all read from version 6 and
+// created from version 7: a decision and an ask that a reading closes, an ask attribute, and
+// attributes markdown never carries.
 const readingSchema = {
-  version: 6,
+  version: 7,
   types: [
     {
       name: 'ask',

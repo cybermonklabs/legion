@@ -11,41 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// stateCopiesAndReadability plans the copied_from of the nodes of the document's ask blocks
-// (claimCopies) and the readability of the asks whose blocks this settlement read
-// (stateInvalidReasons), both in the name the version carries (versionActor) at at, and queues
-// their statements under cause as one step (write): the version's event, which the step follows
-// right after its append (graphstore.LatestEvent), or graphstore.NoEvent for a settlement that
-// writes no version. It runs once the version's blocks are planned, so the copies read the nodes
-// the block index leaves (heldBlockIndex).
-func (st *settlement) stateCopiesAndReadability(ctx context.Context, at time.Time, cause int64) error {
-	who := st.credit.versionActor()
-	copies, err := st.reconciliation.claimCopies(ctx, st.tx, st.room, who, at)
-	if err != nil {
-		return err
-	}
-	readability, err := st.reconciliation.stateInvalidReasons(ctx, st.tx, who, at)
-	if err != nil {
-		return err
-	}
-	if copies == nil && readability == nil {
-		return nil
-	}
-	return write(ctx, st.tx, func(b *store.WriteBatch) error {
-		if copies != nil {
-			if err := copies(b, cause); err != nil {
-				return err
-			}
-		}
-		if readability != nil {
-			return readability(b, cause)
-		}
-		return nil
-	})
-}
 
 // commitVersion renders the document the settlement settled, writes its version when the document
 // now reads differently from the latest one, and commits the transaction all of that and the

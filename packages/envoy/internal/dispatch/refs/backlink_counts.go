@@ -253,7 +253,7 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // release before this one deletes a row and appends no retraction, so the tuple outlives the row,
 // and only the row can say the edge still stands; that build may also write the row again with
 // no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same join
-// (migrations 20261109215947 and 20261116094101). An ask holds a follower row per session, so the
+// (migrations 20261109215947 and 20261125163553). An ask holds a follower row per session, so the
 // follower row that carries a followed_by is the one of the session the tuple reaches.
 func projectionCarries(table, fromKind, alias string) string {
 	session := ""
@@ -268,7 +268,7 @@ func projectionCarries(table, fromKind, alias string) string {
 // blockRefCarries is projectionCarries for a link, whose projection row is the block_refs row of
 // the pair: the same node, kind and far end as the tuple at alias. The node is fromKind's: a
 // block's own link, or an answered ask's shaped, whose block_refs row names the ask's node
-// (migration 20261116094101).
+// (migration 20261125163553).
 func blockRefCarries(fromKind, alias string) string {
 	return `exists (select 1 from block_refs projected
 		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id
@@ -281,7 +281,7 @@ func blockRefCarries(fromKind, alias string) string {
 // declares (pmdoc.LinkKinds), a comment's and an ask's anchored_to and owned_by, an ask's
 // followed_by, and a decision block's from_ask and decided_by, which the
 // arm renders through the block_refs row of the pair as it renders a block's every other link. It
-// is the list the view's tuple arm renders (migrations 20261109215947 and 20261116094101) and the
+// is the list the view's tuple arm renders (migrations 20261109215947 and 20261125163554) and the
 // list the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which is
 // how the release that deletes an old arm of the view reads whether the release a rollback would
 // reach writes that arm's kinds as tuples too. A child that moves another relation into the store
@@ -619,7 +619,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	}
 	// An answered ask's shaped, its tie to a block of its issue, which the store states from the
 	// ask's node and the view's tuple arm answers while the block_refs row of the pair, marked with
-	// that node, stands (migration 20261116094101). An ask's shaped declares no targets, so it
+	// that node, stands (migration 20261125163553). An ask's shaped declares no targets, so it
 	// carries no types test.
 	if target.kind == BlockNodeKind {
 		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'

@@ -154,13 +154,16 @@ func parseInput(markdown string) (*pmdoc.Node, error) {
 	return parseReplacing(nil, markdown)
 }
 
-// parseFragmentInput parses text written into a document - an insert's, or an accepted
-// suggestion's - where a leading `---` is a rule rather than front matter, except that a closed
-// front-matter block is front matter where the text lands at the document's start
-// (pmdoc.ParseFragment). A block id the text repeats is refused, as parseInput refuses it. Its
-// tables' short rows are padded on budget, which the write's other markdown shares.
-func parseFragmentInput(markdown string, opensDocument bool, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
-	return uploadedInput(pmdoc.ParseFragment(markdown, opensDocument, budget))
+// parseFragmentInput parses text written into live, the document as the write found it - an
+// insert's, a replace's `with`, or an accepted suggestion's - where a leading `---` is a rule
+// rather than front matter, except that a closed front-matter block is front matter where the
+// text lands at the document's start (pmdoc.ParseFragmentHolding). The text may hold an element
+// this build reads but cannot create yet where live holds one already, as an upload of the whole
+// document may, and is refused one live holds none of. A block id the text repeats is refused, as
+// parseInput refuses it. Its tables' short rows are padded on budget, which the write's other
+// markdown shares.
+func parseFragmentInput(markdown string, opensDocument bool, budget *pmdoc.WriteBudget, live *pmdoc.Node) (*pmdoc.Node, error) {
+	return uploadedInput(pmdoc.ParseFragmentHolding(markdown, opensDocument, budget, live))
 }
 
 // opensDocument reports whether text written at position lands where the document begins: before

@@ -271,31 +271,49 @@ func withWrittenReadBack(doc *Node) (*Node, WrittenReadBack, error) {
 // as ParseForWrite parses a fragment: a leading `---` line is a horizontal rule, as it is anywhere
 // after a document's start. Written where the document begins (opensDocument), a closed
 // front-matter block opening the markdown is front matter, as Parse reads it. Its tables' short
-// rows are padded on budget, the caller write's, which its other fragments share.
+// rows are padded on budget, the caller write's, which its other fragments share. It judges the
+// markdown against no document, so an element this build cannot create yet is refused wherever
+// it is written: a write into a live document parses with ParseFragmentHolding.
 func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*Node, error) {
 	return parseForWrite(markdown, nil, opensDocument, "", budget)
 }
 
-// ParseFragmentInto parses markdown a caller writes inside a block of type parent, after that
-// block's last child, as ParseFragment parses one written between blocks: its blocks are read as
-// that block's children rather than a document's, so a block of a type whose parents name parent
-// - a reading in a decision or an ask (TypedContent) - is read where it is written, as it is
-// nowhere at a document's level. A block's children hold no front matter, so none is read. The
-// tree is a document holding those blocks, as ParseFragment's is; whether they may close the block
-// is InsertInto's to judge, against the children the block holds already.
-func ParseFragmentInto(markdown, parent string, budget *WriteBudget) (*Node, error) {
-	return parseForWrite(markdown, nil, false, parent, budget)
+// ParseFragmentHolding is ParseFragment of markdown written into live - an insert, a replace's
+// `with`, an accepted suggestion - which carries none of live's block IDs into the fragment. An
+// element live already holds need not be creatable by this build, as an upload of the whole
+// document over live may keep it.
+func ParseFragmentHolding(markdown string, opensDocument bool, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, opensDocument, "", budget)
 }
 
-// parseForWrite is the parse ParseForWrite, ParseFragment and ParseFragmentInto share. The
-// markdown's tree is judged for repeated ids (RepeatedBlockID) with only the ids it names, then
-// takes the ids of the blocks of live it leaves unchanged (carryBlockIDs), and only then is an id
-// minted for each block still without one (EnsureBlockIDs), so the refusal and the carry see only
-// the ids the markdown named. The tree is held to the content rule of each block a live document
-// keeps in any order (writtenContentError), since a caller wrote it in one piece. within is the
-// type of the block whose children the markdown's blocks are, "" for a document's
-// (validateWithin).
+// ParseFragmentInto parses markdown a caller writes inside a block of type parent of live, after
+// that block's last child, as ParseFragmentHolding parses one written between blocks: its blocks
+// are read as that block's children rather than a document's, so a block of a type whose parents
+// name parent - a reading in a decision or an ask (TypedContent) - is read where it is written, as
+// it is nowhere at a document's level. A block's children hold no front matter, so none is read.
+// It carries none of live's block IDs, and an element live already holds need not be creatable by
+// this build. The tree is a document holding those blocks, as ParseFragment's is; whether they may
+// close the block is InsertInto's to judge, against the children the block holds already.
+func ParseFragmentInto(markdown, parent string, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, false, parent, budget)
+}
+
+// parseForWrite is the parse ParseForWrite and ParseFragment share. The markdown's tree is judged
+// for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
+// of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
+// without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
+// The tree is held to the content rule of each block a live document keeps in any order
+// (writtenContentError), since a caller wrote it in one piece. within is the type of the block
+// whose children the markdown's blocks are, "" for a document's (validateWithin).
 func parseForWrite(markdown string, live *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
+	return parseForWriteHolding(markdown, live, live, readFrontmatter, within, budget)
+}
+
+// parseForWriteHolding is parseForWrite whose markdown may keep an element held holds that this
+// build cannot create (refuseUncreatable), live being the tree whose block ids it carries:
+// ParseFragmentHolding and ParseFragmentInto carry none, and hold the live document they write
+// into.
+func parseForWriteHolding(markdown string, live, held *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
 	doc, err := parseMarkdown(LineFeeds(markdown), fromStart, readFrontmatter, within, budget, nil)
 	if err != nil {
 		return nil, err
@@ -307,7 +325,7 @@ func parseForWrite(markdown string, live *Node, readFrontmatter bool, within str
 		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
 	}
 	// A write may keep an element live holds that this build cannot create, never add one.
-	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
+	if err := refuseUncreatable([]*Node{doc}, func() *Node { return held }); err != nil {
 		return nil, err
 	}
 	carryBlockIDs(doc, live)

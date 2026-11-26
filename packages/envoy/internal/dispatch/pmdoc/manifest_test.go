@@ -153,8 +153,9 @@ func TestAnElementThisBuildReadsButCannotCreateIsReadAndNeverCreated(t *testing.
 	if got, want := SchemaVersion(), shipped+1; got != want {
 		t.Fatalf("SchemaVersion() = %d, want %d", got, want)
 	}
-	if got := SchemaCreatable(); got != shippedCreatable {
-		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want the shipped manifest's %d", got, shippedCreatable)
+	// The staged version creates decision and reading here; S3 and the head keep the shipped value.
+	if got, want := SchemaCreatable(), shippedCreatable+1; got != want {
+		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want %d, the shipped manifest's and one", got, want)
 	}
 	versions, declared := Element{Kind: TypedBlockElement, Name: "future"}.Versions()
 	if !declared || versions != (BlockElementVersions{Since: shipped + 1, CreatableSince: shipped + 2}) {

@@ -234,7 +234,7 @@ func keyedBlockArm(blockKind, ids, source string) string {
 			where ` + source
 }
 
-// keyedTupleArm is graph_edges' tuple arm (migration 20261121034242) for the edges that end at
+// keyedTupleArm is graph_edges' tuple arm (migration 20261125163554) for the edges that end at
 // the block k.node_id, of storage kind blockKind: the links of the block_refs rows that name their
 // node, read by the row's target through block_refs_to_source as the arm beside it reads the rows
 // that name none. Such a row is the projection of the tuple of the node it names (node_kind and

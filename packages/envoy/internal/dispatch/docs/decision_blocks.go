@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,16 +21,12 @@ type decisionServerAttribute struct{ name, kind string }
 
 // decisionServerAttributes is the decision type's server-owned attributes, read off the block
 // schema with their store names, and false where the installed manifest declares no decision
-// type. It depends on the installed manifest alone, so it is read once for each manifest
-// installed (decisionServerNames), as storedAskAttributes is, and every settlement shares the
-// list, which none writes.
+// type. The installed manifest names each once, and a settlement reads it once per decision
+// document it settles.
 func decisionServerAttributes() ([]decisionServerAttribute, bool) {
 	schema, declared := pmdoc.BlockTypeAttributes(decisionType)
 	if !declared {
 		return nil, false
-	}
-	if read := decisionServerNames.Load(); read != nil && sameAttributeSchema(read.schema, schema) {
-		return read.attributes, true
 	}
 	var server []decisionServerAttribute
 	for _, attribute := range schema {
@@ -39,21 +34,8 @@ func decisionServerAttributes() ([]decisionServerAttribute, bool) {
 			server = append(server, decisionServerAttribute{name: attribute.Name, kind: schemanodes.StoreName(decisionType, attribute.Name)})
 		}
 	}
-	decisionServerNames.Store(&decisionServerNamesRead{schema: schema, attributes: server})
 	return server, true
 }
-
-// decisionServerNamesRead is decisionServerAttributes's answer for one installed manifest: the
-// decision type's attribute schema as that manifest holds it, and the attributes read off it.
-type decisionServerNamesRead struct {
-	schema     pmdoc.BlockAttributes
-	attributes []decisionServerAttribute
-}
-
-// decisionServerNames holds decisionServerAttributes's last read. A manifest installed since
-// (pmdoc.Install, or one a test installs) is compiled whole into new slices, so its decision
-// schema is another slice and the read is made again for it (sameAttributeSchema).
-var decisionServerNames atomic.Pointer[decisionServerNamesRead]
 
 // reconcileDecisionBlocks holds the server-owned attributes of every decision block of tree, the
 // tree settlement read of document artifactID, to what the store holds of the block's node: an

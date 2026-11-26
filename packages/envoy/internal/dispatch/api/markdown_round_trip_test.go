@@ -738,7 +738,21 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t
 	issue := createInteractionIssue(t, handler, "TEST", "A replacement over a browser's ask", "The spec.\n")
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "Intro.\n")
 	writeBrowserDocument(t, documentService, artifactID, "Intro.\n\n"+askAfterOptions)
-	held := documentMarkdown(t, handler, artifactID)
+	// The client reads the document's text as every reader of this build reads it, under
+	// `Dispatch-Asks: 1` (textRead): markdown with none of an ask block's server-owned attributes,
+	// which an upload takes back unchanged. A reader without the header is served the form kept for
+	// one release, whose `state="open"` on the ask an upload takes off.
+	clientText := func() string {
+		t.Helper()
+		read := textRead(t, handler, "/api/v1/artifacts/"+artifactID+"/text", true)
+		if read.Code != http.StatusOK {
+			t.Fatalf("read document text: status=%d body=%s", read.Code, read.Body.String())
+		}
+		return decodeBody[struct {
+			Markdown string `json:"markdown"`
+		}](t, read).Markdown
+	}
+	held := clientText()
 	if !strings.Contains(held, "- SQLite\n\nPick one by Friday.\n") {
 		t.Fatalf("the document holds %q, want the browser's ask with a paragraph after its options", held)
 	}
@@ -772,7 +786,7 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("the replacement naming the document's token: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
-	if stored := documentMarkdown(t, handler, artifactID); stored != replacement {
+	if stored := clientText(); stored != replacement {
 		t.Fatalf("the store holds %q after the replacement, want %q", stored, replacement)
 	}
 }

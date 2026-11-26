@@ -1,8 +1,8 @@
 -- pgmigrate:non-transactional
--- 20261116094058 gave asks a foreign key on (node_kind, node_address) and no index over those
+-- 20261125163550 gave asks a foreign key on (node_kind, node_address) and no index over those
 -- columns, and Postgres indexes the referenced side of a key and never the referencing side. So
 -- every delete of a graph_nodes row would read asks once for each node deleted, with nothing to
--- read it by, and graph_edges' tuple arm (20261116094101) probes asks for the row that names an
+-- read it by, and graph_edges' tuple arm (20261125163553) probes asks for the row that names an
 -- ask's node once for each anchored_to and owned_by edge it answers. This is the index both read.
 -- 20261111043000 carries the measurement for the first: deleting 16,809 nodes with no such index
 -- read its table for each one and took 2 minutes 51 seconds.

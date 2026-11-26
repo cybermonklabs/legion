@@ -1,8 +1,10 @@
--- 20261123174700_graph_supertags_decision_reading.up.sql
+-- 20261125163555_graph_supertags_decision_reading.up.sql
 --
 -- The block schema moves from version 5 to version 6, for the decision and reading block types.
--- `pmdoc/schema/blocks.json` adds two typed blocks and one attribute of `ask`, each read and
--- created from version 6:
+-- `pmdoc/schema/blocks.json` adds two typed blocks and one attribute of `ask`, each read from
+-- version 6. `decision` and `reading`, every attribute of `decision`, and `ask`'s `shaped` are
+-- created only from version 7 (`creatable_since` 7), so a build of version 6 reads and validates
+-- a stored one and refuses to create one:
 --
 -- - `decision`, an agent's decision, holding any blocks (`block+`), with the attributes
 --   `uncertainty` (an enum of low, medium and high with no default), `uncertainty_reason`,
@@ -78,11 +80,11 @@
 -- node is changed in place and keeps the `made_at` and `made_by` the seed gave it. The two take
 -- different values, so each is a statement of its own.
 update graph_nodes
-set attributes = '{"block_type": true, "content": "block+", "render": "host", "version": 6, "position": 5, "since": 6, "creatable_since": 6}'::jsonb
+set attributes = '{"block_type": true, "content": "block+", "render": "host", "version": 6, "position": 5, "since": 6, "creatable_since": 7}'::jsonb
 where (kind, id) in (('supertag', 'decision'));
 
 update graph_nodes
-set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 6, "position": 6, "since": 6, "creatable_since": 6, "parents": ["decision", "ask"]}'::jsonb
+set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 6, "position": 6, "since": 6, "creatable_since": 7, "parents": ["decision", "ask"]}'::jsonb
 where (kind, id) in (('supertag', 'reading'));
 
 -- The attribute nodes. Each id is `<supertag>/<store name>`, and its attributes are what the seed
@@ -95,31 +97,31 @@ where (kind, id) in (('supertag', 'reading'));
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
 values
   ('attribute', 'decision/uncertainty', 'attribute', 'project', 'live',
-   '{"kind": "enum", "choices": ["low", "medium", "high"], "since": 6, "creatable_since": 6, "name": "uncertainty", "store_name": "uncertainty", "position": 0}',
+   '{"kind": "enum", "choices": ["low", "medium", "high"], "since": 6, "creatable_since": 7, "name": "uncertainty", "store_name": "uncertainty", "position": 0}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'decision/uncertainty_reason', 'attribute', 'project', 'live',
-   '{"kind": "string", "since": 6, "creatable_since": 6, "name": "uncertainty_reason", "store_name": "uncertainty_reason", "position": 1}',
+   '{"kind": "string", "since": 6, "creatable_since": 7, "name": "uncertainty_reason", "store_name": "uncertainty_reason", "position": 1}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'decision/shaped', 'attribute', 'project', 'live',
-   '{"kind": "block[]", "since": 6, "creatable_since": 6, "name": "shaped", "store_name": "shaped", "position": 2}',
+   '{"kind": "block[]", "since": 6, "creatable_since": 7, "name": "shaped", "store_name": "shaped", "position": 2}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'decision/from_ask', 'attribute', 'project', 'live',
-   '{"kind": "ask", "since": 6, "creatable_since": 6, "name": "from_ask", "store_name": "from_ask", "position": 3}',
+   '{"kind": "ask", "since": 6, "creatable_since": 7, "name": "from_ask", "store_name": "from_ask", "position": 3}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'decision/replaced', 'attribute', 'project', 'live',
-   '{"kind": "bool", "default": false, "since": 6, "creatable_since": 6, "name": "replaced", "store_name": "replaced", "position": 4}',
+   '{"kind": "bool", "default": false, "since": 6, "creatable_since": 7, "name": "replaced", "store_name": "replaced", "position": 4}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'decision/decided_by', 'attribute', 'project', 'live',
-   '{"kind": "actor", "server": true, "markdown": false, "since": 6, "creatable_since": 6, "name": "decided_by", "store_name": "decided_by", "position": 5}',
+   '{"kind": "actor", "server": true, "markdown": false, "since": 6, "creatable_since": 7, "name": "decided_by", "store_name": "decided_by", "position": 5}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'decision/kept_by', 'attribute', 'project', 'live',
-   '{"kind": "actor", "server": true, "markdown": false, "since": 6, "creatable_since": 6, "name": "kept_by", "store_name": "kept_by", "position": 6}',
+   '{"kind": "actor", "server": true, "markdown": false, "since": 6, "creatable_since": 7, "name": "kept_by", "store_name": "kept_by", "position": 6}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'decision/kept_text_sum', 'attribute', 'project', 'live',
-   '{"kind": "string", "server": true, "markdown": false, "since": 6, "creatable_since": 6, "name": "kept_text_sum", "store_name": "kept_text_sum", "position": 7}',
+   '{"kind": "string", "server": true, "markdown": false, "since": 6, "creatable_since": 7, "name": "kept_text_sum", "store_name": "kept_text_sum", "position": 7}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'ask/shaped', 'attribute', 'project', 'live',
-   '{"kind": "block[]", "since": 6, "creatable_since": 6, "name": "shaped", "store_name": "shaped", "position": 10}',
+   '{"kind": "block[]", "since": 6, "creatable_since": 7, "name": "shaped", "store_name": "shaped", "position": 10}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0);
 
 -- `ask`'s `invalid` takes `markdown: false` and nothing else changes on it: the rest of the value
@@ -174,13 +176,13 @@ values
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
   ('attribute', 'ask/invalid', 'markdown', 'value', 'false', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'ask/shaped', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'ask/shaped', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'kind', 'value', 'block[]', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'name', 'value', 'shaped', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'position', 'value', '10', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'store_name', 'value', 'shaped', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'decision/decided_by', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'decision/decided_by', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/decided_by', 'kind', 'value', 'actor', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/decided_by', 'markdown', 'value', 'false', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/decided_by', 'name', 'value', 'decided_by', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
@@ -188,13 +190,13 @@ values
   ('attribute', 'decision/decided_by', 'server', 'value', 'true', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/decided_by', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/decided_by', 'store_name', 'value', 'decided_by', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'decision/from_ask', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'decision/from_ask', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/from_ask', 'kind', 'value', 'ask', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/from_ask', 'name', 'value', 'from_ask', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/from_ask', 'position', 'value', '3', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/from_ask', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/from_ask', 'store_name', 'value', 'from_ask', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'decision/kept_by', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'decision/kept_by', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_by', 'kind', 'value', 'actor', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_by', 'markdown', 'value', 'false', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_by', 'name', 'value', 'kept_by', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
@@ -202,7 +204,7 @@ values
   ('attribute', 'decision/kept_by', 'server', 'value', 'true', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_by', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_by', 'store_name', 'value', 'kept_by', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'decision/kept_text_sum', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'decision/kept_text_sum', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_text_sum', 'kind', 'value', 'string', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_text_sum', 'markdown', 'value', 'false', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_text_sum', 'name', 'value', 'kept_text_sum', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
@@ -210,27 +212,27 @@ values
   ('attribute', 'decision/kept_text_sum', 'server', 'value', 'true', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_text_sum', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/kept_text_sum', 'store_name', 'value', 'kept_text_sum', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'decision/replaced', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'decision/replaced', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/replaced', 'default', 'value', 'false', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/replaced', 'kind', 'value', 'bool', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/replaced', 'name', 'value', 'replaced', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/replaced', 'position', 'value', '4', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/replaced', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/replaced', 'store_name', 'value', 'replaced', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'decision/shaped', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'decision/shaped', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/shaped', 'kind', 'value', 'block[]', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/shaped', 'name', 'value', 'shaped', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/shaped', 'position', 'value', '2', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/shaped', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/shaped', 'store_name', 'value', 'shaped', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty', 'choices', 'value', '["low", "medium", "high"]', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'decision/uncertainty', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'decision/uncertainty', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty', 'kind', 'value', 'enum', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty', 'name', 'value', 'uncertainty', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty', 'position', 'value', '0', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty', 'store_name', 'value', 'uncertainty', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'decision/uncertainty_reason', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'decision/uncertainty_reason', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty_reason', 'kind', 'value', 'string', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty_reason', 'name', 'value', 'uncertainty_reason', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'decision/uncertainty_reason', 'position', 'value', '1', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
@@ -238,14 +240,14 @@ values
   ('attribute', 'decision/uncertainty_reason', 'store_name', 'value', 'uncertainty_reason', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'decision', 'block_type', 'value', 'true', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'decision', 'content', 'value', 'block+', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('supertag', 'decision', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('supertag', 'decision', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'decision', 'position', 'value', '5', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'decision', 'render', 'value', 'host', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'decision', 'since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'decision', 'version', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'reading', 'block_type', 'value', 'true', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'reading', 'content', 'value', 'paragraph+', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('supertag', 'reading', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('supertag', 'reading', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'reading', 'parents', 'value', '["decision", "ask"]', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'reading', 'position', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('supertag', 'reading', 'render', 'value', 'host', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
