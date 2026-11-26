@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
@@ -22,7 +20,7 @@ const session = `{"type":"session","version":3,"id":"0001","cwd":"/legion/worksp
 {"type":"message","id":"a1","message":{"role":"user","content":"remember the nonce — BETA"}}
 `
 
-func connect(t *testing.T) *pgx.Conn {
+func connect(t *testing.T) *Conn {
 	t.Helper()
 	_, file := testdb.DSNFile(t, "legion_ompsessions_test")
 	conn, err := Connect(context.Background(), file)
@@ -47,7 +45,7 @@ func TestImportWritesTheRowOhMyPiReadsAsAnOlderReleases(t *testing.T) {
 	var content string
 	var byteLen, mtimeMs int64
 	var title, titleSource, titleUpdatedAt *string
-	if err := conn.QueryRow(ctx, "SELECT content, byte_len, mtime_ms, title, title_source, title_updated_at FROM omp_session_files WHERE path = $1",
+	if err := conn.c.QueryRow(ctx, "SELECT content, byte_len, mtime_ms, title, title_source, title_updated_at FROM omp_session_files WHERE path = $1",
 		sessionPath).Scan(&content, &byteLen, &mtimeMs, &title, &titleSource, &titleUpdatedAt); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +56,7 @@ func TestImportWritesTheRowOhMyPiReadsAsAnOlderReleases(t *testing.T) {
 		t.Errorf("title columns = %v, %v, %v; want none", title, titleSource, titleUpdatedAt)
 	}
 	var parts int
-	if err := conn.QueryRow(ctx, "SELECT count(*) FROM omp_session_files_parts WHERE path = $1", sessionPath).Scan(&parts); err != nil {
+	if err := conn.c.QueryRow(ctx, "SELECT count(*) FROM omp_session_files_parts WHERE path = $1", sessionPath).Scan(&parts); err != nil {
 		t.Fatal(err)
 	}
 	if parts != 0 {
@@ -82,7 +80,7 @@ func TestImportIsIdempotentAndRefusesARowWithOtherContent(t *testing.T) {
 		t.Fatalf("Import again = %q, %v; want identical", outcome, err)
 	}
 	appended := `{"type":"message","id":"a2","message":{"role":"assistant","content":"BETA noted"}}` + "\n"
-	if _, err := conn.Exec(ctx, "INSERT INTO omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)",
+	if _, err := conn.c.Exec(ctx, "INSERT INTO omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)",
 		sessionPath, len(session), appended); err != nil {
 		t.Fatal(err)
 	}
@@ -112,11 +110,11 @@ func TestImportDropsPartsAPathWithNoRowLeft(t *testing.T) {
 	conn := connect(t)
 	ctx := context.Background()
 	for _, statement := range createTables {
-		if _, err := conn.Exec(ctx, statement); err != nil {
+		if _, err := conn.c.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := conn.Exec(ctx, "INSERT INTO omp_session_files_parts (path, start_offset, content) VALUES ($1, 0, 'orphan')", sessionPath); err != nil {
+	if _, err := conn.c.Exec(ctx, "INSERT INTO omp_session_files_parts (path, start_offset, content) VALUES ($1, 0, 'orphan')", sessionPath); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Import(ctx, conn, sessionPath, []byte(session), time.Now()); err != nil {
@@ -162,9 +160,9 @@ var podSessionWritten = time.Date(2026, 11, 19, 22, 12, 27, 829_000_000, time.UT
 
 // putSession is a row of Oh My Pi's session table at path, last written at mtimeMs (milliseconds
 // since the epoch), with no parts.
-func putSession(t *testing.T, conn *pgx.Conn, path string, mtimeMs int64) {
+func putSession(t *testing.T, conn *Conn, path string, mtimeMs int64) {
 	t.Helper()
-	if _, err := conn.Exec(context.Background(), "INSERT INTO omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, $2, $3, $4)",
+	if _, err := conn.c.Exec(context.Background(), "INSERT INTO omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, $2, $3, $4)",
 		path, "{}\n", mtimeMs, 3); err != nil {
 		t.Fatal(err)
 	}
@@ -181,13 +179,13 @@ func putSession(t *testing.T, conn *pgx.Conn, path string, mtimeMs int64) {
 func TestFindByIDReadsTheNewestRowWhosePathEndsInTheID(t *testing.T) {
 	ctx := context.Background()
 	later := podSessionWritten + time.Hour.Milliseconds()
-	finds := func(t *testing.T, conn *pgx.Conn, id, want string) {
+	finds := func(t *testing.T, conn *Conn, id, want string) {
 		t.Helper()
 		if path, found, err := FindByID(ctx, conn, id); err != nil || !found || path != want {
 			t.Errorf("FindByID(%q) = %q, %t, %v; want %s", id, path, found, err, want)
 		}
 	}
-	findsNone := func(t *testing.T, conn *pgx.Conn, id string) {
+	findsNone := func(t *testing.T, conn *Conn, id string) {
 		t.Helper()
 		if path, found, err := FindByID(ctx, conn, id); err != nil || found || path != "" {
 			t.Errorf("FindByID(%q) = %q, %t, %v; want no session and no error", id, path, found, err)
@@ -225,7 +223,7 @@ func TestFindByIDReadsTheNewestRowWhosePathEndsInTheID(t *testing.T) {
 		putSession(t, conn, podSessionFile, podSessionWritten)
 		putSession(t, conn, strings.TrimSuffix(podSessionFile, ".jsonl")+"/0-scout.jsonl", later)
 		finds(t, conn, podSessionID, podSessionFile)
-		if _, err := conn.Exec(ctx, "DELETE FROM omp_session_files WHERE path = $1", podSessionFile); err != nil {
+		if _, err := conn.c.Exec(ctx, "DELETE FROM omp_session_files WHERE path = $1", podSessionFile); err != nil {
 			t.Fatal(err)
 		}
 		findsNone(t, conn, podSessionID)
@@ -321,7 +319,7 @@ const (
 
 // connectWithTables is a connection to a fresh database that holds Oh My Pi's two tables, as a
 // writer of Append and Replace makes them once it connects.
-func connectWithTables(t *testing.T) *pgx.Conn {
+func connectWithTables(t *testing.T) *Conn {
 	t.Helper()
 	conn := connect(t)
 	if err := CreateTables(context.Background(), conn); err != nil {
@@ -331,9 +329,9 @@ func connectWithTables(t *testing.T) *pgx.Conn {
 }
 
 // partsOf is the parts the table holds under path, by offset.
-func partsOf(t *testing.T, conn *pgx.Conn, path string) map[int64]string {
+func partsOf(t *testing.T, conn *Conn, path string) map[int64]string {
 	t.Helper()
-	rows, err := conn.Query(context.Background(), "SELECT start_offset, content FROM omp_session_files_parts WHERE path = $1", path)
+	rows, err := conn.c.Query(context.Background(), "SELECT start_offset, content FROM omp_session_files_parts WHERE path = $1", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +367,7 @@ func TestAClaudeSaveWritesOhMyPisOwnForm(t *testing.T) {
 	var content string
 	var byteLen, mtimeMs int64
 	row := "SELECT content, byte_len, mtime_ms FROM omp_session_files WHERE path = $1"
-	if err := conn.QueryRow(ctx, row, claudeTranscript).Scan(&content, &byteLen, &mtimeMs); err != nil {
+	if err := conn.c.QueryRow(ctx, row, claudeTranscript).Scan(&content, &byteLen, &mtimeMs); err != nil {
 		t.Fatal(err)
 	}
 	if content != "" || byteLen != int64(len(line)) || mtimeMs != written.UnixMilli() {
@@ -383,7 +381,7 @@ func TestAClaudeSaveWritesOhMyPisOwnForm(t *testing.T) {
 	if err := Append(ctx, conn, claudeTranscript, int64(len(line)), []byte(appended), later); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.QueryRow(ctx, row, claudeTranscript).Scan(&content, &byteLen, &mtimeMs); err != nil {
+	if err := conn.c.QueryRow(ctx, row, claudeTranscript).Scan(&content, &byteLen, &mtimeMs); err != nil {
 		t.Fatal(err)
 	}
 	if byteLen != int64(len(line)+len(appended)) || mtimeMs != later.UnixMilli() {
@@ -468,7 +466,7 @@ func TestAClaudeRowHasAByteLenBesideAnOhMyPiRowLeftAsItWas(t *testing.T) {
 	if err := Replace(ctx, conn, claudeRecord, Absent, []byte(`{"state":"open","count":2}`), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := conn.Query(ctx, "SELECT f.path, f.byte_len, octet_length(f.content) + "+
+	rows, err := conn.c.Query(ctx, "SELECT f.path, f.byte_len, octet_length(f.content) + "+
 		"coalesce((SELECT sum(octet_length(p.content)) FROM omp_session_files_parts p WHERE p.path = f.path), 0) FROM omp_session_files f")
 	if err != nil {
 		t.Fatal(err)

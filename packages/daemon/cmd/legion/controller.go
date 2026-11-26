@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -208,8 +209,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	// the daemon's own NATS seed, which an operator shell that also runs a daemon may export, is
 	// dropped by value and by pointer; its pane seed pointer is the controller's set's. A pane's boot
 	// token, which a start from inside a Legion pane inherits, is dropped too: the plugin takes a
-	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
-	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
+	// controller carrying one for a controller the daemon launched (`controller: daemon`). So is the
+	// table of every role's identity such a start inherits (runtime.RoleIdentitiesVariable): a
+	// controller pushes nothing, and its process has no table, as the daemon's controller has none.
+	// So are the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
 	// controller hears a project's mentions, and an inherited list is no project's word for this
 	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
 	// told: this controller resumes no recorded session, and an inherited value would stop it where
@@ -234,6 +237,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	delete(env, natsauth.DaemonSeedFileVariable)
 	delete(env, "LEGION_BOOT_TOKEN")
 	delete(env, "LEGION_BOOT_TOKEN_FILE")
+	delete(env, runtime.RoleIdentitiesVariable)
 	delete(env, "LEGION_SLACK_CHANNELS")
 	delete(env, runtime.SessionExclusiveVariable)
 	if cfg.DispatchTokenBroker {
@@ -259,7 +263,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: attempts,
-		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
+		Contract: api.DaemonAPIVersion(), Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
 	if err != nil {
 		removeDirs(created)
@@ -501,7 +505,7 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // (absent or null, a shape no conforming daemon serves) and a `live` entry whose `repo` is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&requestTimeout))
 	defer cancel()
 	status, body, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
 	if err != nil {

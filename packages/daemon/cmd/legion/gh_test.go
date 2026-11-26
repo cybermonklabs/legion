@@ -1,6 +1,6 @@
 package main
 
-//ci:reads packages/daemon/docker/gh TestGhTargetOfRoutesEverySelectorKindOfARead ../../docker/gh
+//ci:reads packages/daemon/docker/gh TestTheRuntimesGhWrappersAreOnesLegionGhAccepts ../../docker/gh
 
 import (
 	"bytes"
@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -21,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -28,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/testfifo"
+	"github.com/sjawhar/legion/daemon/internal/testkernel"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -89,6 +93,7 @@ var (
 // each of a kind the tables know or none. It refuses a help it cannot read whole, and the help a gh
 // alias prints, its command's, which lists no such alias.
 func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
+	t.Parallel()
 	read := func(path ...string) ghCommand {
 		t.Helper()
 		text, err := savedGhHelp(path)
@@ -233,6 +238,7 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 // one or more arguments even with no `...`, and every slot taking more than one fits one argument
 // more than the usage has slots, wherever the slot stands.
 func TestEveryArgumentGhsReferenceNamesIsOfAKnownKind(t *testing.T) {
+	t.Parallel()
 	refused := map[string]bool{"args": true, "command": true, "flags": true, "...": true, "public": true, "private": true, "org": true, "endpoint": true}
 	for name := range refused {
 		if _, known := ghSlotKinds[name]; known {
@@ -277,6 +283,7 @@ func TestEveryArgumentGhsReferenceNamesIsOfAKnownKind(t *testing.T) {
 // that names one is refused rather than read as naming nothing. No entry names nothing while its
 // placeholder is a repository's, an owner's or an organization's.
 func TestEveryOptionGhsReferenceNamesARepositoryWithIsInTheTable(t *testing.T) {
+	t.Parallel()
 	options, mentioning := 0, 0
 	for _, usage := range ghReferenceUsages(t) {
 		for _, line := range usage.flags {
@@ -351,6 +358,7 @@ func ghReferenceUsages(t *testing.T) []ghReferenceUsage {
 // repository for it, runs with GH_CONFIG_DIR's directory (R4 of dispatch://INFRA-3399); every
 // other call naming such an owner is routed and refused as with no R4.
 func TestGhTargetOfFailsClosed(t *testing.T) {
+	t.Parallel()
 	acme := map[string]string{"GH_REPO": "acme/widgets"}
 	// A pane of the issue owner acme, whose GH_CONFIG_DIR is acme's directory of the bundle.
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
@@ -375,6 +383,10 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	ghWithARepositoryOption := editedGhHelp(map[string][2]string{
 		"pr view": {"\nINHERITED FLAGS\n", "      --mirror string    Read the pull request from this repository instead\n\nINHERITED FLAGS\n"},
 	})
+	// gh 2.98.0's help of every command, saved whole, which holds `gh status`, so the words of a
+	// -h row are gh's commands and the row is refused for its -h alone.
+	walked := savedGhHelpOf(t, "2.98.0")
+	const hBeforeTheCommand = `"-h" comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value`
 	for _, tc := range []struct {
 		argv    []string
 		env     map[string]string
@@ -512,6 +524,19 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"--version", "co"}, err: `"--version" comes before the command's name`},
 		{argv: []string{"-R", "sjawhar/legion", "--version", "hello"}, help: ghWithAnExtensionAndANestedAlias, err: `"--version" comes before the command's name`},
 		{argv: []string{"--help", "--version"}, err: `"--version" comes before the command's name`},
+		// A -h before the command's name is refused but as the whole argv (the walk's -h case
+		// says why); `gh pr --help` is the way to ask.
+		{argv: []string{"-h", "status", "config", "set", "-h", "github.com", "editor", "x"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status", "auth", "logout", "-h", "github.com"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status", "repo", "create", "acme/x", "--public"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"auth", "-h", "status", "logout", "-h", "github.com"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"repo", "-h", "view", "create", "acme/x", "--public"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-R", "acme/widgets", "-h", "pr", "view", "1"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h", "pr", "view", "1", "-R", "acme/w"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-R", "acme/widgets", "-h"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"pr", "-h"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h"}, help: walked},
 		// A first word gh's own help does not list, whose help gh may answer by installing an
 		// extension, and the commands that run another program on gh's token.
 		{argv: []string{"stack", "view"}, err: `"stack" is no command gh's own help lists`},
@@ -645,7 +670,6 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr"}},
 		{argv: nil},
 		{argv: []string{"--help"}},
-		{argv: []string{"-h", "pr", "view", "1", "-R", "acme/w"}},
 		{argv: []string{"pr", "view", "1", "--help"}},
 		{argv: []string{"pr", "view", "1", "-R", "acme/w", "-h"}},
 		{argv: []string{"api", "graphql", "-f", "query={viewer{login}}"}},
@@ -819,6 +843,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 // Every refusal names the argument it could not place and how to name the repository instead:
 // -R, or, for gh api, which has none, the endpoint; for a gh alias, the command it stands for.
 func TestGhTargetOfRefusalsSayHowToNameTheRepository(t *testing.T) {
+	t.Parallel()
 	for argv, want := range map[string]string{
 		"pr view 1 --bogus":              "pass -R <owner>/<repo>",
 		"api repositories/12345":         "name it in the endpoint, repos/<owner>/<repo>/…",
@@ -847,6 +872,7 @@ func TestGhTargetOfRefusalsSayHowToNameTheRepository(t *testing.T) {
 // owner:/org:/user: qualifier, a team, an owner option — name none, and the command runs as the
 // owner.
 func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
+	t.Parallel()
 	remotes := func(listed ...ghRemote) func() ([]ghRemote, error) {
 		return func() ([]ghRemote, error) { return listed, nil }
 	}
@@ -933,6 +959,7 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 // (gh api's help: "adding request parameters will automatically switch the request method to
 // `POST`").
 func TestGhTargetOfRoutesEverySelectorKindOfARead(t *testing.T) {
+	t.Parallel()
 	// The pane of the issue owner acme, whose bundle under /owners serves acme and sjawhar and
 	// holds no directory for octocat, which dirFor answers as ghConfigDirFor answers an owner it
 	// holds none for: a bare OwnerNotServedError, wrapping nothing.
@@ -1144,6 +1171,7 @@ func ownersOwnDirectories(owner, _ string) (string, error) {
 // `(fetch) [blob:none]`), and every remote's gh-resolved setting; a directory that is no git
 // repository has none.
 func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -1151,7 +1179,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	repository := t.TempDir()
 	t.Chdir(repository)
-	if remotes, err := readGitRemotes(); err != nil || remotes != nil {
+	if remotes, err := readGitRemotes(context.Background()); err != nil || remotes != nil {
 		t.Errorf("readGitRemotes outside a git repository = %v, %v; want none", remotes, err)
 	}
 	// One home for every fixture of this test: each command reads the repository it is given and
@@ -1175,7 +1203,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 		// credential a GIT_ variable planted back after the guard could name.
 		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
-	remotes, err := readGitRemotes()
+	remotes, err := readGitRemotes(context.Background())
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
 		{name: "origin", url: "https://github.com/acme/pushed.git", push: true},
@@ -1194,6 +1222,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 // git's order, with git's own key and value and whether git printed one: a key given two values,
 // a marker on a dotted remote name, an empty value and a key set with none.
 func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -1221,7 +1250,7 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 	// git config writes no key without a value, so that line is written into the repository's
 	// configuration file itself.
 	appendTo(t, filepath.Join(repository, ".git", "config"), "[remote \"upstream\"]\n\tgh-resolved\n")
-	remotes, err := readGitRemotes()
+	remotes, err := readGitRemotes(context.Background())
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
 		{name: "origin", url: "https://github.com/acme/widgets.git", push: true},
@@ -1246,6 +1275,7 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 // on. The three shapes the gates probed, each gh acting on evilown's repository: a filter holding a
 // second `<url> (fetch)`, the same after a GitHub URL, and a URL holding a second URL.
 func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -1270,7 +1300,7 @@ func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 				// environment is its own too, for the reason the test above gives.
 				fixture.Run(repository, append([]string{"git"}, args...)...)
 			}
-			if remotes, err := readGitRemotes(); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
+			if remotes, err := readGitRemotes(context.Background()); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
 				t.Errorf("readGitRemotes = %+v, %v; want the line naming evilown refused", remotes, err)
 			}
 		})
@@ -1290,7 +1320,7 @@ func legionGh(t *testing.T, env map[string]string, args ...string) (code int, st
 func ghWrapperDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec '"+os.Args[0]+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec '"+legionCopy(t)+"' gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -1304,7 +1334,7 @@ func ghWrapperDir(t *testing.T) string {
 // the command and runs it, so that base environment is built in one place.
 func legionCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], args...)
+	cmd := exec.Command(legionCopy(t), args...)
 	cmd.Dir = dir
 	cmd.Env = append([]string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}, testDeadlineEnviron()...)
 	for name, value := range env {
@@ -1346,7 +1376,17 @@ func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...st
 // under the environment legionGhCommand builds, and answers what it exited with and printed.
 func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	cmd := legionGhCommand(t, dir, env, args...)
+	return legionIn(t, dir, env, stdin, append([]string{"gh"}, args...)...)
+}
+
+// legionIn runs this test binary as `legion args…` in a process of its own (legionCommand), in the
+// working directory dir with stdin and env, and answers what it exited with and printed. A command
+// that changes its own process's state (`legion model-token` clears SSL_CERT_FILE) or reads what
+// a test would otherwise have to set on this one (`legion state`'s LEGION_DAEMON_URL) runs so
+// beside the package's other tests.
+func legionIn(t *testing.T, dir string, env map[string]string, stdin string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	cmd := legionCommand(t, dir, env, args...)
 	var out, errb bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &out, &errb
 	err := cmd.Run()
@@ -1354,7 +1394,7 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 		return exit.ExitCode(), out.String(), errb.String()
 	}
 	if err != nil {
-		t.Fatalf("legion gh %v: %v", args, err)
+		t.Fatalf("legion %v: %v", args, err)
 	}
 	return 0, out.String(), errb.String()
 }
@@ -1375,6 +1415,7 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 // required, and an unset one is named with exit 2; --help with no real gh to hand it to is
 // legion's usage.
 func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -1390,7 +1431,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		"\"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GIT_CONFIG_KEY_1\" \"$GIT_CONFIG_VALUE_1\" \"$GIT_CONFIG_KEY_2\" \"$GIT_CONFIG_VALUE_2\" " +
 		"\"$GIT_CONFIG_KEY_3\" \"$GIT_CONFIG_VALUE_3\" \"$GIT_CONFIG_KEY_4\" \"$GIT_CONFIG_VALUE_4\" " +
 		"\"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\" \"$GH_EDITOR\" \"$GH_TELEMETRY\" \"$GIT_CONFIG_GLOBAL\" \"$GIT_CONFIG_NOSYSTEM\"\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
@@ -1483,7 +1524,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 	// Nor may another wrapper of the machine's own lead PATH: gh would make it its git helper.
 	shims := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/sh\nGH_TOKEN=$(cat ~/.token) exec '"+stub+"' \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(shims, "gh"), []byte("#!/bin/sh\nGH_TOKEN=$(cat ~/.token) exec '"+stub+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	shimmed := map[string]string{"PATH": shims + ":" + wrappers + ":" + os.Getenv("PATH")}
@@ -1526,6 +1567,40 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 }
 
+// The git gh runs makes pushes of its own (`gh repo create --source=. --push`), and git runs the
+// pre-push hook for each, `legion leak-check pre-push`, under the environment gh was handed. So
+// gh keeps every variable of its caller's that the hook's guard reads, each with its value: the
+// shared check (PUBLIC_LEAK_CHECK), the deployment's rule file (LEGION_PRIVATE_NAME_RULES_FILE),
+// without which the hook would run the shared check alone and none of the role's private-name
+// rules, and the git wrapper's loop guard (WRAPPED_GIT_AT). The stand-in gh prints each as it
+// reads it, and "unset" for one it was not handed.
+func TestLegionGhHandsGhThePrePushHooksVariables(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	script := ghStandInPrefix(help) + "printf '%s|%s|%s\\n' " +
+		"\"${" + leakguard.CheckVar + "-unset}\" \"${" + leakguard.RulesFileVar + "-unset}\" \"${" + wrappedGitAt + "-unset}\"\n"
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	check := leakguardtest.Write(t, t.TempDir(), ghCheckPasses)
+	rules := leakguardtest.WriteRules(t, t.TempDir())
+	const chain = "0:/usr/bin/git"
+	env := map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root, "XDG_STATE_HOME": t.TempDir(),
+		leakguard.CheckVar: check, leakguard.RulesFileVar: rules, wrappedGitAt: chain,
+	}
+	args := []string{"pr", "create", "-R", "acme/widgets", "--title", "a clean title", "--body", "a clean body"}
+	code, stdout, stderr := legionGhIn(t, t.TempDir(), env, "", args...)
+	if want := check + "|" + rules + "|" + chain + "\n"; code != 0 || stdout != want {
+		t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and gh handed %q", args, code, stdout, stderr, want)
+	}
+}
+
 // `legion gh` never runs itself as the real gh. A LEGION_GH_PATH that is not an absolute path,
 // which exec would look up on PATH, whose first gh is the wrapper, is refused, exit 2, before
 // anything runs, and so is one that is the wrapper first on PATH, or another script of the
@@ -1549,11 +1624,12 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 // the wrapper, and the one that read's shim leads back to, which refuses. A refusal that let the
 // guard's reads through under the variable loops under the token until the cap stops it.
 func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	starts := filepath.Join(t.TempDir(), "starts")
 	legion := filepath.Join(t.TempDir(), "legion")
 	counting := "#!/bin/sh\necho start >>'" + starts + "'\n[ \"$(wc -l <'" + starts + "')\" -le 4 ] || exit 97\n" +
-		testMainEnv + "=1 exec '" + os.Args[0] + "' \"$@\"\n"
+		testMainEnv + "=1 exec '" + legionCopy(t) + "' \"$@\"\n"
 	wrappers, elsewhere := t.TempDir(), t.TempDir()
 	shim := filepath.Join(t.TempDir(), "gh")
 	for path, script := range map[string]string{
@@ -1562,7 +1638,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 		filepath.Join(elsewhere, "gh"): "#!/bin/sh\nexec '" + legion + "' gh \"$@\"\n",
 		shim:                           "#!/bin/sh\nexec '" + filepath.Join(wrappers, "gh") + "' \"$@\"\n",
 	} {
-		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		if err := execfile.Write(path, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1577,10 +1653,14 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 		}
 		return strings.Count(string(raw), "start\n")
 	}
+	// The push cases need the hook's guard to read the destination's visibility, which it does
+	// only where the deployment names a rule file, so every case names the fixture's.
+	rules := leakguardtest.WriteRules(t, t.TempDir())
 	envFor := func(gh string) map[string]string {
 		return map[string]string{
 			"LEGION_GH_PATH": gh, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 			"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+			leakguard.RulesFileVar: rules,
 		}
 	}
 	for _, tc := range []struct {
@@ -1693,7 +1773,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'run by %s\\n' \"$"+leakguard.RunByRealGhVar+"\"\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"printf 'run by %s\\n' \"$"+leakguard.RunByRealGhVar+"\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if code, stdout, stderr := legionGh(t, envFor(stub), "pr", "list"); code != 0 || stdout != "run by "+stub+"\n" {
@@ -1705,6 +1785,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 // tmux pane's launcher directory holds (workerbin), is one `legion gh` accepts as its wrapper
 // (ghWrapperScript), so the git gh runs names it as its helper; a machine's own wrapper is not.
 func TestTheRuntimesGhWrappersAreOnesLegionGhAccepts(t *testing.T) {
+	t.Parallel()
 	image, err := os.ReadFile(filepath.Join("..", "..", "docker", "gh"))
 	if err != nil {
 		t.Fatal(err)
@@ -1774,6 +1855,7 @@ func TestTheRuntimesGhWrappersAreOnesLegionGhAccepts(t *testing.T) {
 // the environment already holds and in place of a stale entry at the next index; a count that is
 // no number is refused.
 func TestWithGitHubUseHTTPPathAddsToGitsConfiguration(t *testing.T) {
+	t.Parallel()
 	got, err := withGitHubUseHTTPPath([]string{"A=1", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.x", "GIT_CONFIG_VALUE_0=y", "GIT_CONFIG_KEY_1=stale", "GIT_CONFIG_VALUE_1=stale"})
 	want := []string{"A=1", "GIT_CONFIG_KEY_0=core.x", "GIT_CONFIG_VALUE_0=y", "GIT_CONFIG_KEY_1=credential.https://github.com.useHttpPath", "GIT_CONFIG_VALUE_1=true", "GIT_CONFIG_COUNT=2"}
 	if err != nil || !slices.Equal(got, want) {
@@ -1888,6 +1970,7 @@ func readRecord(t *testing.T, path string) string {
 // another read under the variable, the guard's read under no variable, and the guard's read of
 // another repository than the variable names are each refused.
 func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -1901,7 +1984,7 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"printf 'stdin %s\\n' \"$(cat)\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"exit 7\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
@@ -2136,6 +2219,95 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	}
 }
 
+// With the deployment's rule file named, `legion gh` refuses a call whose body file names the
+// fixture's host, exit 2, and gh never runs the call: the guard reads the destination's
+// visibility, which the stand-in gh answers public, then the file, and the fixture's host rule
+// matches. Standard error shows what matched, as `legion leak-check` does: the record, which is
+// the file as the call names it; the rule's description; the host and the space after it; and the
+// line of the file it stands on, the second, whole. The refusal is the whole of what it prints.
+func TestGhRefusalShowsMatch(t *testing.T) {
+	t.Parallel()
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
+	const line = "the runner answers at " + leakguardtest.RulesHost + " today"
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("a first line of no interest\n"+line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"pr", "create", "-R", "acme/widgets", "--title", "a title of no interest", "--body-file", body}
+	got := run(t, ghCheckAt(t, ghCheckPasses), "", args...)
+	want := "legion gh: LEAK CHECK: refusing the gh call: the deployment's private-name rules match it\n" +
+		"  " + leakguardtest.ReportLine(body, leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 2, line) + "\n"
+	if got.code != 2 || got.stderr != want {
+		t.Errorf("legion gh %q = exit %d, stderr %q; want exit 2 and %q", args, got.code, got.stderr, want)
+	}
+	if want := ghGuardRun(args); got.checked != want {
+		t.Errorf("the shared check recorded %q, want its one run of the call, %q", got.checked, want)
+	}
+	// The guard's visibility read alone: gh never ran the call.
+	if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("acme/widgets"), " ") + "\n"; got.gh != want {
+		t.Errorf("gh recorded %q, want the guard's visibility read alone, %q", got.gh, want)
+	}
+}
+
+// `legion gh` hands the guard the use the call makes of standard input, read out of its parse
+// from the option that named that input (leakguard.GhRequest.Sent), so the guard reads that
+// input as what it is. A JSON request body on `gh api --input -` whose one field holds the fixture
+// pair's name and another field its word is read one string at a time and cleared, and gh runs it
+// with the input the guard read; read raw as well, as it is where no use is known, the two would
+// stand on one line and the pair rule would refuse it. The same text on `--body-file -` is a body
+// GitHub stores as it stands, read whole, and refused.
+func TestLegionGhHandsTheGuardTheOptionThatNamedStandardInput(t *testing.T) {
+	t.Parallel()
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
+	const body = `{"title":"` + leakguardtest.PairName + `","body":"` + leakguardtest.PairWord + `"}`
+	args := []string{"api", "repos/acme/widgets/pulls", "--method", "POST", "--input", "-"}
+	got := run(t, ghCheckAt(t, ghCheckReading(0)), body, args...)
+	if got.code != 7 || got.stderr != "" {
+		t.Errorf("legion gh %q with a JSON body = exit %d, stderr %q; want gh's own 7 and nothing printed", args, got.code, got.stderr)
+	}
+	if want := "gh " + strings.Join(args, " ") + "\n" + ghRigEnv + "stdin " + body + "\n"; !strings.HasSuffix(got.gh, want) {
+		t.Errorf("gh recorded %q, want the call with the input the guard read, %q", got.gh, want)
+	}
+	args = []string{"pr", "create", "-R", "acme/widgets", "--title", "a title of no interest", "--body-file", "-"}
+	got = run(t, ghCheckAt(t, ghCheckReading(0)), body, args...)
+	if want := "the gh call's standard input: " + leakguardtest.PairClass + ": matched "; got.code != 2 || !strings.Contains(got.stderr, want) {
+		t.Errorf("legion gh %q with the same text = exit %d, stderr %q; want exit 2 and a line holding %q", args, got.code, got.stderr, want)
+	}
+	if strings.Contains("\n"+got.gh, "\ngh ") {
+		t.Errorf("gh ran a call the guard refused: %q", got.gh)
+	}
+}
+
+// `gh workflow run <workflow> --json` reads the run's inputs from standard input as one JSON
+// object (testdata/gh-help/workflow_run.txt: "--json  Read workflow inputs as JSON via STDIN", and
+// its example `echo '{"name":"scully", "greeting":"hello"}' | gh workflow run triage.yml --json`),
+// and GitHub keeps each input as a value of its own. So that input is read one string at a time,
+// as a JSON request body is: inputs whose one value holds the fixture pair's name and another the
+// word are cleared, and gh runs the call with the input the guard read; one value holding both is
+// refused, the report naming the input by its JSON path. Read raw as well, as an input of no known
+// use is, the two values would stand on one line and the pair rule would refuse the first call.
+func TestLegionGhReadsAWorkflowRunsJSONInputsOneFieldAtATime(t *testing.T) {
+	t.Parallel()
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
+	args := []string{"workflow", "run", "triage.yml", "-R", "acme/widgets", "--json"}
+	const apart = `{"name":"` + leakguardtest.PairName + `","greeting":"` + leakguardtest.PairWord + `"}`
+	got := run(t, ghCheckAt(t, ghCheckReading(0)), apart, args...)
+	if got.code != 7 || got.stderr != "" {
+		t.Errorf("legion gh %q with two inputs = exit %d, stderr %q; want gh's own 7 and nothing printed", args, got.code, got.stderr)
+	}
+	if want := "gh " + strings.Join(args, " ") + "\n" + ghRigEnv + "stdin " + apart + "\n"; !strings.HasSuffix(got.gh, want) {
+		t.Errorf("gh recorded %q, want the call with the input the guard read, %q", got.gh, want)
+	}
+	const together = `{"name":"the ` + leakguardtest.PairName + ` and the ` + leakguardtest.PairWord + `","greeting":"hello"}`
+	got = run(t, ghCheckAt(t, ghCheckReading(0)), together, args...)
+	if want := "the gh call's standard input, JSON .name: " + leakguardtest.PairClass + ": matched "; got.code != 2 || !strings.Contains(got.stderr, want) {
+		t.Errorf("legion gh %q with one input holding both = exit %d, stderr %q; want exit 2 and a line holding %q", args, got.code, got.stderr, want)
+	}
+	if strings.Contains("\n"+got.gh, "\ngh ") {
+		t.Errorf("gh ran a call the guard refused: %q", got.gh)
+	}
+}
+
 // graphQLOf is the guard's GraphQL visibility read of sjawhar/legion with query in place of the
 // guard's own, and inventedMutation a mutation to put there: `legion gh` must check either one
 // like any other call, whatever PUBLIC_LEAK_CHECK_VISIBILITY_READ names.
@@ -2151,6 +2323,7 @@ const inventedMutation = "mutation($owner: String!, $name: String!) { createIssu
 // read, and neither takes the GraphQL read of another repository, another query, a mutation, the
 // read with a field added, the read with no variable, or a variable naming no repository.
 func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
+	t.Parallel()
 	const slug = "sjawhar/legion"
 	env := map[string]string{leakguard.VisibilityReadVar: slug}
 	graphql := leakguard.VisibilityGraphQLArgs(slug)
@@ -2221,6 +2394,7 @@ func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 // nothing, for octo/elsewhere, whose owner the bundle holds no directory for, as much as for a
 // repository it does hold one for (#4219).
 func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysOrTheCallersToken(t *testing.T) {
+	t.Parallel()
 	root := pairRoutedBundle(t)
 	defaultDir := ghconfig.Dir(root, "cybermonklabs")
 	help, err := filepath.Abs(ghHelpDir)
@@ -2233,7 +2407,7 @@ func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysOrTheCallersToken
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$GH_CONFIG_DIR\" \"$GH_TOKEN\" \"$GITHUB_TOKEN\" \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
 		strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n") + "exit 0\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
@@ -2287,6 +2461,7 @@ func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysOrTheCallersToken
 // the read's own repository. ghTargetOf never reads these reads, which read no gh help
 // (TestLegionGhReadsNoHelpForTheGuardsVisibilityReads).
 func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerToken(t *testing.T) {
+	t.Parallel()
 	root := pairRoutedBundle(t)
 	defaultDir := ghconfig.Dir(root, "cybermonklabs")
 	help, err := filepath.Abs(ghHelpDir)
@@ -2294,7 +2469,7 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
@@ -2338,6 +2513,7 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // repository of an owner the bundle holds no directory for, `legion gh` refuses the guard's REST
 // read before any gh runs, and ls-remote alone answers: public, or nothing.
 func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -2471,17 +2647,17 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 				"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
 				"if [ \"$4\" = graphql ]; then\n  :\n" + tc.graphql + "fi\n" +
 				"echo rest >> \"$GH_STANDIN_RECORD\"\n" + tc.rest
-			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+			if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			// The stand-in curl runs with only the names leakguard.TokenChildKeeps keeps, which hold
 			// no GH_STANDIN_RECORD, so its record's path is written into it. It reads the token the
 			// guard hands it on its standard input, as curl does, and keeps none of it.
 			curl := filepath.Join(t.TempDir(), "curl")
-			if err := os.WriteFile(curl, []byte("#!/bin/sh\ncat >/dev/null\necho curl >> '"+record+"'\n"+cmp.Or(tc.curl, curlUnreached)), 0o700); err != nil {
+			if err := execfile.Write(curl, []byte("#!/bin/sh\ncat >/dev/null\necho curl >> '"+record+"'\n"+cmp.Or(tc.curl, curlUnreached)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			code, stdout, stderr := legionGh(t, map[string]string{
@@ -2511,8 +2687,11 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 }
 
 // Two wrapped calls to one repository reuse its public visibility answer, and their audit entries
-// identify the call without preserving the text that the command would send.
+// identify the call without preserving the text that the command would send. The deployment
+// names a rule file (the fixture's), without which the guard reads no visibility at all
+// (TestLegionGhRunsAWriteWithNoRuleFile).
 func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -2521,7 +2700,7 @@ func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 	state := t.TempDir()
 	record := filepath.Join(t.TempDir(), "gh")
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	env := map[string]string{
@@ -2532,6 +2711,7 @@ func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 		"LEGION_ISSUE":         "issue-9",
 		"LEGION_ROLE":          "tester",
 		"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+		leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 		"XDG_STATE_HOME":       state,
 	}
 	args := []string{"pr", "create", "-R", "acme/widgets", "--title", "argument text must not be logged"}
@@ -2579,6 +2759,7 @@ func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 // appends one line, which one P does as well as many. Every copy is waited for before the test
 // reports, so a failure leaves none running into the next test.
 func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
+	t.Parallel()
 	if repository := os.Getenv("LEGION_TEST_GH_CALL_LOG_REPOSITORY"); repository != "" {
 		appendGhCallLog(map[string]string{"XDG_STATE_HOME": os.Getenv("LEGION_TEST_GH_CALL_LOG_STATE")}, repository, "api", "", 0)
 		return
@@ -2631,8 +2812,10 @@ func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 // check runs and no visibility is read. A GET of another endpoint writes nothing, so it runs the
 // check, and a check that refuses it refuses it, but it reads no visibility: where the visibility
 // read fails, as it does in an hour whose REST limit is spent, the GET still reaches gh. A write
-// to the same repository still reads its visibility, and is refused when that read fails.
+// to the same repository still reads its visibility where the deployment names a rule file, as
+// every case here does, and is refused when that read fails.
 func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -2653,7 +2836,7 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 	if !strings.Contains(script, "echo unavailable") {
 		t.Fatal("the stand-in's visibility answer was not replaced, so this test would read a visibility")
 	}
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	root, defaultDir := gitCredentialBundle(t)
@@ -2681,6 +2864,7 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 				"PUBLIC_LEAK_CHECK":    check,
 				leakguard.CheckerVar:   ghManifestOf(t, check),
 				testProvenCheckEnv:     ghProvenProgramSHA256,
+				leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 			}
 			if code, _, stderr := legionGhIn(t, repository, env, "", tc.args...); code != tc.wantCode {
 				t.Fatalf("legion gh %q = exit %d, stderr %q; want exit %d", tc.args, code, stderr, tc.wantCode)
@@ -2703,6 +2887,7 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 // The stand-in gh records the signal it caught and exits with a status of its own, so what this
 // reads is both halves: gh ended on the signal, and its status came back through `legion gh`.
 func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -2731,7 +2916,7 @@ func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
 				": >\"$GH_STANDIN_RUNNING\"\n" +
 				"ticks=0\nwhile [ \"$ticks\" -lt 600 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
 				"printf 'gh caught nothing\\n' >>\"$GH_STANDIN_RECORD\"\nexit 9\n"
-			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+			if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			command := legionGhCommand(t, t.TempDir(), map[string]string{
@@ -2802,6 +2987,7 @@ func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
 // started ignoring the signal cannot set, so a gh that records catching the hangup is one whose
 // hangup the arming un-ignored.
 func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -2830,7 +3016,7 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 		": >\"$GH_STANDIN_RUNNING\"\n" +
 		"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && kill -0 \"$GH_STANDIN_TEST_PID\" 2>/dev/null; do sleep 0.05; done\n" +
 		"printf 'gh survived the hangup\\n' >>\"$GH_STANDIN_RECORD\"\nexit 0\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	command := legionGhCommand(t, t.TempDir(), map[string]string{
@@ -2978,17 +3164,17 @@ func requireGhStartedIgnoringHangup(t *testing.T, path string) {
 const hangupBit = uint64(1) << (syscall.SIGHUP - 1)
 
 // requireHangupIgnored fails the row unless process pid ignores SIGHUP and has no handler for it,
-// as /proc/<pid>/status reports; when names the moment. A process whose status cannot be read, or
-// whose masks do not parse, fails the row too: the row then has no answer, not a clean one.
-//
-// A kernel that reports neither mask line has no source of the answer: gVisor's
-// release-20260803.0 is one, whose /proc/<pid>/stat also gives 0 for the masks of a process that
-// ignores a signal, and no other interface reports another process's disposition. There the row
-// follows the daemon's rule for a test this machine cannot run (internal/launcher's
-// skipOutsideCI): under GITHUB_ACTIONS it fails, since CI's runners report the masks and a runner
-// that reports none is broken; anywhere else it skips, naming why.
+// as /proc/<pid>/status reports; when names the moment. It first reads that this kernel's status
+// records both masks, and records what a process does with a signal there
+// (testkernel.RequireSignalMasks): gVisor's release-20260803.0 records neither, its
+// /proc/<pid>/stat gives 0 for the masks of a process that ignores a signal, and no other interface
+// reports another process's disposition, so where the kernel has no such record the row follows
+// the daemon's rule for a test this machine cannot run, skipping by name outside CI and failing
+// under GITHUB_ACTIONS. A process whose status cannot be read, lacks a line the probe found, or
+// holds a mask that does not parse, fails the row too: the row then has no answer, not a clean one.
 func requireHangupIgnored(t *testing.T, pid int, when string) {
 	t.Helper()
+	testkernel.RequireSignalMasks(t, "SigIgn", "SigCgt")
 	status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 	if err != nil {
 		t.Fatalf("read the signal masks of `legion gh` (pid %d) %s: %v", pid, when, err)
@@ -2996,14 +3182,8 @@ func requireHangupIgnored(t *testing.T, pid int, when string) {
 	ignored, ignoredOK := statusSignalMask(t, status, "SigIgn")
 	caught, caughtOK := statusSignalMask(t, status, "SigCgt")
 	switch {
-	case !ignoredOK && !caughtOK:
-		reason := "this kernel's /proc/<pid>/status reports no signal masks (gVisor's release-20260803.0 is one), so nothing reports whether `legion gh` ignores SIGHUP or holds a handler for it"
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			t.Fatalf("%s: CI's runners report them, so this runner is broken", reason)
-		}
-		t.Skip(reason)
 	case !ignoredOK || !caughtOK:
-		t.Fatalf("the status of `legion gh` (pid %d) %s holds one of SigIgn and SigCgt and not the other:\n%s", pid, when, status)
+		t.Fatalf("the status of `legion gh` (pid %d) %s lacks SigIgn or SigCgt, which this kernel's probe found in a shell's:\n%s", pid, when, status)
 	case caught&hangupBit != 0:
 		t.Fatalf("`legion gh` has a handler for SIGHUP %s (SigCgt %#x): the handler takes the hangup, and may end `legion gh` or forward it to gh at any later moment", when, caught)
 	case ignored&hangupBit == 0:
@@ -3052,6 +3232,7 @@ func statusSignalMask(t *testing.T, status []byte, name string) (uint64, bool) {
 // context fails the SIGINT and the SIGTERM rows: they answer the visibility, exit 0, with gh run
 // for the read.
 func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -3073,19 +3254,19 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 			// The stand-in is the prefix alone: it records the visibility read it would answer
 			// if it were ever started as gh.
 			stub := filepath.Join(t.TempDir(), "gh")
-			if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)), 0o700); err != nil {
+			if err := execfile.Write(stub, []byte(ghStandInPrefix(help)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			bin := t.TempDir()
 			hold := filepath.Join(bin, "legion")
 			holding := "#!/bin/sh\nprintf 'legion gh held\\n' >>\"$GH_STANDIN_RECORD\"\nticks=0\n" +
 				"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && [ \"$ticks\" -lt 200 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
-				"sleep 0.05\nexec '" + os.Args[0] + "' \"$@\"\n"
-			if err := os.WriteFile(hold, []byte(holding), 0o700); err != nil {
+				"sleep 0.05\nexec '" + legionCopy(t) + "' \"$@\"\n"
+			if err := execfile.Write(hold, []byte(holding), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			wrappers := t.TempDir()
-			if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+hold+"' gh \"$@\"\n"), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+hold+"' gh \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			command := legionGhCommand(t, t.TempDir(), map[string]string{
@@ -3131,68 +3312,168 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 	}
 }
 
+// ghSentBy is the leakguard.GhSent that steps build, each in turn, on the zero value: calls of
+// its exported methods Names and UsesStdin (sentNames, sentUsesStdin), the two ghSentFiles builds
+// its answer with. Its fields of standard input are leakguard's own and no literal here can set
+// them, so an answer to compare whole is built so.
+func ghSentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
+	sent := &leakguard.GhSent{}
+	for _, step := range steps {
+		step(sent)
+	}
+	return sent
+}
+
+// sentNames is the step of ghSentBy that names path as option's value (leakguard.GhSent.Names).
+func sentNames(option, path, field string, use leakguard.StdinUse) func(*leakguard.GhSent) {
+	return func(sent *leakguard.GhSent) { sent.Names(option, path, field, use) }
+}
+
+// sentUsesStdin is the step of ghSentBy that names standard input with use alone
+// (leakguard.GhSent.UsesStdin).
+func sentUsesStdin(use leakguard.StdinUse) func(*leakguard.GhSent) {
+	return func(sent *leakguard.GhSent) { sent.UsesStdin(use) }
+}
+
 // The files a call would send to GitHub as content are read out of the same parse that reads the
-// owner, so the leak guard reads each file's text (leakguard.GhRequest.Files) and needs no second
+// owner, so the leak guard reads each file's text (leakguard.GhRequest.Sent) and needs no second
 // reader of the argv. The parse knows each option's arity from the leaf's own help, which is what
 // a table of option names cannot: `-F` is --body-file in `gh pr create` and --field in `gh api`,
 // a short cluster gives its last letter the next argument (`-dF <path>` is `--draft --body-file
-// <path>`), and an attached value may carry an `=` of its own (`-F=<path>`). A value of `-`, an
-// `@-`, a field given a literal and a raw field name no file to open.
+// <path>`), and an attached value may carry an `=` of its own (`-F=<path>`). A file a field names
+// carries the field's name. A value of `-`, an `@-`, a field given a literal and a raw field name
+// no file to open; a `-` and an `@-` are standard input instead, which the parse answers is sent,
+// with the use the option that named it makes of it, or none where two options with different
+// uses did, and with the name of each field whose value it is: `query` in a `gh api graphql`
+// call is what makes the guard read that input one GraphQL literal at a time. `gh workflow run
+// --json`, at a last value of true, names it as a request body; `--json` of any other command
+// takes the fields to print and names none. Each command here has a leaf, so its answer is never
+// nil, a command that sends nothing among them: the guard then reads nothing of it from the argv
+// again. The answer is compared whole, since the names of the fields of standard input are
+// leakguard's own and can be seen no other way.
 func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		argv []string
-		want []leakguard.GhFile
+		// want is the parse's whole answer, built by the calls ghSentFiles makes for it.
+		want *leakguard.GhSent
 	}{
 		{
 			name: "a short cluster whose last letter is the option",
 			argv: []string{"pr", "create", "-R", "acme/widgets", "-dF", "body.md"},
-			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+			want: ghSentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 		},
 		{
 			name: "a short option with its value attached by an equals sign",
 			argv: []string{"pr", "create", "-R", "acme/widgets", "-F=body.md"},
-			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+			want: ghSentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 		},
 		{
 			name: "a separate --body-file",
 			argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "body.md"},
-			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+			want: ghSentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 		},
 		{
 			name: "gh api's field read from a file",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "--method", "PATCH", "-F", "body=@body.md"},
-			want: []leakguard.GhFile{{Option: "--field", Path: "body.md"}},
+			want: ghSentBy(sentNames("--field", "body.md", "body", leakguard.StdinField)),
 		},
 		{
 			name: "gh api's request body",
 			argv: []string{"api", "repos/acme/widgets/pulls", "--input", "request.json"},
-			want: []leakguard.GhFile{{Option: "--input", Path: "request.json"}},
+			want: ghSentBy(sentNames("--input", "request.json", "", leakguard.StdinRequestBody)),
 		},
 		{
 			name: "a raw field, which sends its value literally",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "-f", "body=@body.md"},
-			want: []leakguard.GhFile{},
+			want: ghSentBy(),
 		},
 		{
 			name: "a field given a literal value",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=text"},
-			want: []leakguard.GhFile{},
+			want: ghSentBy(),
 		},
 		{
 			name: "a body option whose value is standard input",
 			argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "-"},
-			want: []leakguard.GhFile{},
+			want: ghSentBy(sentNames("--body-file", "-", "", leakguard.StdinText)),
+		},
+		{
+			name: "a short option whose value is standard input",
+			argv: []string{"pr", "create", "-R", "acme/widgets", "-F", "-"},
+			want: ghSentBy(sentNames("--body-file", "-", "", leakguard.StdinText)),
 		},
 		{
 			name: "a field read from standard input",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@-"},
-			want: []leakguard.GhFile{},
+			want: ghSentBy(sentNames("--field", "-", "body", leakguard.StdinField)),
 		},
 		{
+			name: "a GraphQL query read from standard input",
+			argv: []string{"api", "graphql", "-F", "query=@-"},
+			want: ghSentBy(sentNames("--field", "-", "query", leakguard.StdinField)),
+		},
+		{
+			// The options are read in the order their names sort, so the field before --input.
+			name: "a GraphQL query read from standard input beside a request body on it",
+			argv: []string{"api", "graphql", "--input", "-", "-F", "query=@-"},
+			want: ghSentBy(sentNames("--field", "-", "query", leakguard.StdinField),
+				sentNames("--input", "-", "", leakguard.StdinRequestBody)),
+		},
+		{
+			name: "gh workflow run's field read from standard input",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "-F", "notes=@-"},
+			want: ghSentBy(sentNames("--field", "-", "notes", leakguard.StdinField)),
+		},
+		{
+			name: "gh api's request body on standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls", "--input", "-"},
+			want: ghSentBy(sentNames("--input", "-", "", leakguard.StdinRequestBody)),
+		},
+		{
+			name: "gh workflow run's inputs as JSON on standard input",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json"},
+			want: ghSentBy(sentUsesStdin(leakguard.StdinRequestBody)),
+		},
+		{
+			name: "gh workflow run's --json=true, which sends standard input as its inputs",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json=true"},
+			want: ghSentBy(sentUsesStdin(leakguard.StdinRequestBody)),
+		},
+		{
+			name: "gh workflow run's --json whose last value is false",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "--json=false"},
+			want: ghSentBy(),
+		},
+		{
+			name: "gh workflow run's --json beside a field read from standard input",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "-F", "notes=@-"},
+			want: ghSentBy(sentNames("--field", "-", "notes", leakguard.StdinField),
+				sentUsesStdin(leakguard.StdinRequestBody)),
+		},
+		{
+			name: "another command's --json, which names the fields to print",
+			argv: []string{"pr", "list", "-R", "acme/widgets", "--json", "number"},
+			want: ghSentBy(),
+		},
+		{
+			name: "two fields read from standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "title=@-", "-F", "body=@-"},
+			want: ghSentBy(sentNames("--field", "-", "title", leakguard.StdinField),
+				sentNames("--field", "-", "body", leakguard.StdinField)),
+		},
+		{
+			name: "two different options naming standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "--input", "-", "-F", "body=@-"},
+			want: ghSentBy(sentNames("--field", "-", "body", leakguard.StdinField),
+				sentNames("--input", "-", "", leakguard.StdinRequestBody)),
+		},
+		{
+			// Named once, by the option whose name sorts first.
 			name: "the same file named twice",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@body.md", "--input", "body.md"},
-			want: []leakguard.GhFile{{Option: "--field", Path: "body.md"}},
+			want: ghSentBy(sentNames("--field", "body.md", "body", leakguard.StdinField)),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3200,11 +3481,172 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ghTargetOf(%q) = %v", tc.argv, err)
 			}
-			if !slices.Equal(target.files, tc.want) {
-				t.Fatalf("ghTargetOf(%q) read the files %v, want %v", tc.argv, target.files, tc.want)
+			if target.sent == nil {
+				t.Fatalf("ghTargetOf(%q) handed no parse of what the call sends, so the guard would read the argv again", tc.argv)
+			}
+			if !reflect.DeepEqual(target.sent, tc.want) {
+				t.Errorf("ghTargetOf(%q) read what the call sends as %+v, want %+v", tc.argv, target.sent, tc.want)
 			}
 		})
 	}
+}
+
+// ghHelpStandIn is a stand-in gh that answers a help read of the resolver's, `[<command>]
+// --help`, with that command's help from gh 2.98.0's saved walk, and any other run, a help call
+// whose words are more than a command's path among them, with a line of help, after recording
+// the run in the file GH_STANDIN_RECORD names.
+func ghHelpStandIn(t *testing.T) string {
+	t.Helper()
+	help, err := filepath.Abs(filepath.Join(ghHelpWalkDir, "2.98.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	script := "#!/bin/sh\nfor last; do :; done\n" +
+		"if [ \"$last\" = --help ]; then\n" +
+		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
+		"  if [ -f '" + help + "'/\"${path:-gh}\".txt ]; then exec cat '" + help + "'/\"${path:-gh}\".txt; fi\n" +
+		"fi\n" +
+		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"echo 'the help gh prints'\n"
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return stub
+}
+
+// A call that only prints gh's help of a command sends nothing, so `legion gh` hands the guard
+// the zero GhSent of it (ghPrintsOnly), and the guard opens no file its options name. With the
+// fixture's rule file named, each help call below passes the whole guard, and gh runs it with
+// its arguments untouched and prints its help: `gh release upload` and `gh release create` with a
+// tag, and with an asset whose text names the fixture's word as well, and `gh pr comment` whose
+// --body-file names a file that is not there, under `--help` and under a `-h` no option of the
+// leaf takes. Handed no parse (a nil GhRequest.Sent), the guard reads the argv with tables of its
+// own, which open the --body-file and refuse the `gh pr comment` rows as a file they could not
+// open. At bd51cbc1 those tables refused the release rows too, as calls that may upload an asset
+// no bare argv shows; they no longer refuse a release call, so for the four release rows only the
+// check of ghTargetOf's sent holds a help call to the zero GhSent. The rows stay: they are the
+// help rows of c-public-upload. Every command is read from gh 2.98.0's saved walk, whose help
+// names `gh release upload`.
+func TestLegionGhPassesAHelpCallAndOpensNothing(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	stub := ghHelpStandIn(t)
+	asset := writeFile(t, "notes.txt", "the "+leakguardtest.Word+" notes\n")
+	absent := filepath.Join(t.TempDir(), "absent.md")
+	rules := leakguardtest.WriteRules(t, t.TempDir())
+	savedHelp := savedGhHelpOf(t, "2.98.0")
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"release upload's help", []string{"release", "upload", "v1", "--help"}},
+		{"release create's help", []string{"release", "create", "v1", "--help"}},
+		{"release upload's help with an asset", []string{"release", "upload", "v1", asset, "--help"}},
+		{"release create's help with an asset", []string{"release", "create", "v1", asset, "--help"}},
+		{"pr comment's help with a --body-file that is not there", []string{"pr", "comment", "1", "--body-file", absent, "--help"}},
+		{"pr comment's -h with a --body-file that is not there", []string{"pr", "comment", "1", "--body-file", absent, "-h"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := ghTargetOfKept(t, tc.args, nil, savedHelp, noGitRepository, ownersOwnDirectories)
+			if err != nil || !reflect.DeepEqual(target.sent, &leakguard.GhSent{}) {
+				t.Errorf("ghTargetOf(%q) = %+v, %v; want the target of a call that sends nothing, whose sent is the zero GhSent", tc.args, target, err)
+			}
+			records := t.TempDir()
+			ghRecord, checkRecord := filepath.Join(records, "gh"), filepath.Join(records, "check")
+			code, stdout, stderr := legionGh(t, map[string]string{
+				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+				"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses), leakguard.RulesFileVar: rules,
+				"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": filepath.Join(records, "state"),
+			}, tc.args...)
+			if code != 0 || stdout != "the help gh prints\n" || stderr != "" {
+				t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want gh's help, exit 0, and nothing of the guard's", tc.args, code, stdout, stderr)
+			}
+			if got, want := readRecord(t, ghRecord), "gh "+strings.Join(tc.args, " ")+"\n"; got != want {
+				t.Errorf("gh recorded %q, want its one run of the call, %q", got, want)
+			}
+			if got, want := readRecord(t, checkRecord), ghGuardRun(tc.args); got != want {
+				t.Errorf("the shared check recorded %q, want its one run of the call, %q", got, want)
+			}
+		})
+	}
+}
+
+// A -h before the command's name with words after it is refused before gh runs, and the call
+// sends nothing (the walk's -h case in ghTargetOf says how gh reads it): `legion gh -h status
+// config set -h github.com editor x`, which gh runs as `gh config set --host github.com editor
+// x`, exits 2 naming the -h. The stand-in gh (ghHelpStandIn) records no run, so gh ran nothing
+// but the resolver's help reads and never `config set`, and the shared check runs nothing.
+func TestLegionGhRefusesAHelpFlagBeforeTheCommandAndRunsNothing(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	args := []string{"-h", "status", "config", "set", "-h", "github.com", "editor", "x"}
+	records := t.TempDir()
+	ghRecord, checkRecord := filepath.Join(records, "gh"), filepath.Join(records, "check")
+	code, stdout, stderr := legionGh(t, map[string]string{
+		"LEGION_GH_PATH": ghHelpStandIn(t), "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses), leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+		"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": filepath.Join(records, "state"),
+	}, args...)
+	if want := `"-h" comes before the command's name`; code != 2 || stdout != "" || !strings.Contains(stderr, want) {
+		t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 2 and a refusal containing %q", args, code, stdout, stderr, want)
+	}
+	if got := readRecord(t, ghRecord); got != "" {
+		t.Errorf("gh recorded %q, want no run but the resolver's help reads", got)
+	}
+	if got := readRecord(t, checkRecord); got != "" {
+		t.Errorf("the shared check recorded %q, want no run", got)
+	}
+}
+
+// A release asset is handled as on main: the private-name rule pass opens no positional asset
+// file of `gh release upload` or `gh release create`, and reads each argument as written. With
+// the fixture's rule file named, the guard, handed the parse `legion gh` hands it of each call
+// (ghTargetOf, at gh 2.98.0, as leakguard.GhRequest.Sent), passes an upload and a create to a
+// public repository of a file whose text names the fixture's word and whose argument holds no
+// label. The same upload of a clean file with a `#label` naming the word is refused, the report
+// naming the argument that holds the label.
+func TestGhGuardHandlesAReleaseAssetAsMainDoes(t *testing.T) {
+	t.Parallel()
+	help := savedGhHelpOf(t, "2.98.0")
+	rules := leakguardtest.WriteRules(t, t.TempDir())
+	asset := writeFile(t, "notes.txt", "the "+leakguardtest.Word+" notes\n")
+	clean := writeFile(t, "clean.txt", "a clean asset\n")
+	// call is the guard's answer to the call args, to a repository GitHub reports public, as
+	// runGh hands it: the repository and the parse ghTargetOf answers.
+	call := func(t *testing.T, args ...string) error {
+		t.Helper()
+		target, err := ghTargetOfKept(t, args, nil, help, noGitRepository, ownersOwnDirectories)
+		if err != nil {
+			t.Fatalf("ghTargetOf(%q) = %v", args, err)
+		}
+		guard := leakguard.New(leakguard.Options{
+			Check:      leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+			Visibility: func(context.Context, string) (leakguard.Visibility, error) { return leakguard.Public, nil },
+			Env:        append(fixtureenv.Isolated(t.TempDir()), leakguard.RulesFileVar+"="+rules),
+		})
+		_, err = guard.GhCall(context.Background(), leakguard.GhRequest{Args: args, Repo: target.owner + "/" + target.repo, Sent: target.sent})
+		return err
+	}
+	for _, args := range [][]string{
+		{"release", "upload", "v1", asset, "-R", "acme/widgets"},
+		{"release", "create", "v1", asset, "--notes", "the notes of a clean release", "-R", "acme/widgets"},
+	} {
+		t.Run(strings.Join(args[:2], " ")+" of an asset whose text names the word", func(t *testing.T) {
+			if err := call(t, args...); err != nil {
+				t.Errorf("the guard answered %q with %v, want it cleared", args, err)
+			}
+		})
+	}
+	t.Run("release upload of an asset whose label names the word", func(t *testing.T) {
+		args := []string{"release", "upload", "v1", clean + "#the " + leakguardtest.Word + " notes", "-R", "acme/widgets"}
+		err := call(t, args...)
+		var refused *leakguard.Refusal
+		want := "the gh call's argument 3: " + leakguardtest.WordClass + ": matched "
+		if !errors.As(err, &refused) || !slices.ContainsFunc(refused.Lines, func(line string) bool { return strings.HasPrefix(line, want) }) {
+			t.Errorf("the guard answered %q with %v, want a refusal with a line starting %q", args, err, want)
+		}
+	})
 }
 
 // gh 2.104.0's --attach uploads the file it names to GitHub, an SVG's text among what it takes,
@@ -3216,6 +3658,7 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 // create that names a file by argument, which it also uploads, is refused for an argument this
 // does not know.
 func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
+	t.Parallel()
 	latest := savedGhHelpOf(t, "2.104.0")
 	rows := 0
 	for _, argv := range [][]string{
@@ -3274,6 +3717,7 @@ func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 // never expands), a routing key's name as a value, and a directory holding neither file pass; one
 // that does not parse is refused.
 func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
+	t.Parallel()
 	hosts := ghconfig.Hosts("ghs_acme_write")
 	fifo := func(dir, name string) error { return syscall.Mkfifo(filepath.Join(dir, name), 0o600) }
 	link := func(text string) func(dir, name string) error {
@@ -3383,6 +3827,7 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 // environment keeps both of its caller's: without the checker, that guard would run a check whose
 // program hashes otherwise, which the role's own guard refuses.
 func TestGhsChildEnvironmentKeepsTheLeakCheckAndItsChecker(t *testing.T) {
+	t.Parallel()
 	checker := strings.Repeat("5e", 32)
 	caller := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(),
 		leakguard.CheckVar + "=/opt/check/public-leak-check.sh", leakguard.CheckerVar + "=" + checker}

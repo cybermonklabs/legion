@@ -1,8 +1,11 @@
 package duty_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,9 +150,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	if _, err := locker.Exec(ctx, `select 1 from duty_holds where name = $1 for update`, holdName); err != nil {
 		t.Fatalf("lock the hold's row: %v", err)
 	}
-	if waiting := storetest.WaitForLockWaiters(t, locker, 1, 5*time.Second); waiting < 1 {
-		t.Fatal("no renewal queued behind the locked row")
-	}
+	storetest.WaitForLockWaiters(t, locker, 1)
 
 	waitLost(t, hold, 2*opts.TTL)
 	var (
@@ -263,11 +264,14 @@ func TestHoldLapseFreesAtOnceAndKeepsTheToken(t *testing.T) {
 
 // A renewal that affects no row - the row taken over by another holder after a lapse - closes Lost
 // at once, long before the loss deadline, and the holder's Release then leaves the new holder's
-// row alone.
+// row alone. The renewal says so on the logger the holder handed it (HoldOptions.Logger), not on
+// the default one.
 func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := duty.HoldOptions{TTL: 10 * time.Second, Renew: 200 * time.Millisecond, Margin: time.Second}
+	var logs bytes.Buffer
+	opts := duty.HoldOptions{TTL: 10 * time.Second, Renew: 200 * time.Millisecond, Margin: time.Second,
+		Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	ctx := context.Background()
 	hold := mustTakeHold(t, database.Pool, uuid.New(), opts)
 
@@ -280,6 +284,11 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 	waitLost(t, hold, 3*time.Second)
 	if !time.Now().Before(deadline) {
 		t.Fatal("Lost closed at the deadline rather than on the zero-row renewal")
+	}
+	// The renewal writes its line before it closes Lost, and writes nothing after, so the buffer
+	// is read once Lost has closed.
+	if line := `msg="hold lost: its row names another holder or none" hold=` + holdName; !strings.Contains(logs.String(), line) {
+		t.Fatalf("the holder's logger holds %q, want the renewal's line %q", logs.String(), line)
 	}
 
 	if err := hold.Release(ctx); err != nil {

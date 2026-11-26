@@ -668,7 +668,7 @@ func (r *readRecorder) take() []recordedRead {
 func runningSweep(sweeper *redeliver.Sweeper) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sweeper.RunUnderLease(ctx, time.Hour, func(ctx context.Context, _ duty.Leases, _ string, _ time.Time, _ time.Duration, pass func(context.Context)) bool {
+	sweeper.RunUnderLease(ctx, time.Hour, func(ctx context.Context, _ *slog.Logger, _ duty.Leases, _ string, _ time.Time, _ time.Duration, pass func(context.Context)) bool {
 		pass(ctx)
 		cancel()
 		return true

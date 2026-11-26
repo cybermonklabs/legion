@@ -83,18 +83,19 @@
 # Kubernetes ServiceAccount token (BROKER_API_ACCOUNTS, verified against BROKER_K8S_OIDC_ISSUER),
 # and so does the RFC 8693 token exchange's subject token. With no cluster to mint one, this
 # script starts cmd/dev-oidc-issuer, the Go tests' local issuer (internal/oidc/oidctest) served on
-# a loopback port, which keeps six tokens in WORK_DIR and rewrites each before it lapses, as a
+# a loopback port, which keeps seven tokens in WORK_DIR and rewrites each before it lapses, as a
 # kubelet does a pod's projected token: account-token, for API_ACCOUNT, the caller "dispatch" the
 # broker lists, which agent-secrets-devrelay presents in Dispatch's place to decide a machine
 # login; listener-token, for LISTENER_ACCOUNT, the caller "listener", which the broker lists for
 # introspection alone, so a person can see a listed caller refused a route its name does not
 # carry (403 ACCOUNT_LACKS_POWER); exchange-token, for EXCHANGE_ACCOUNT's pod, which the broker's
 # exchange takes for a Dispatch access token; read-token, for READ_ACCOUNT's pod, which the
-# broker's exchange takes for a Dispatch access token that only reads; pod-token,
-# EXCHANGE_ACCOUNT's pod's token for the broker's own audience, which names it in its
+# broker's exchange takes for a Dispatch access token that only reads; job-token, for
+# JOB_ACCOUNT's pod, which the broker's exchange takes for a job's Dispatch access token (below);
+# pod-token, EXCHANGE_ACCOUNT's pod's token for the broker's own audience, which names it in its
 # registration; and registrar-token, for REGISTRAR_ACCOUNT, the service login
 # (BROKER_SERVICE_LOGINS) that stands in for the deployment's daemon and registers the pod under
-# the session name it writes as. The broker trusts that issuer for all six. A login alone
+# the session name it writes as. The broker trusts that issuer for all seven. A login alone
 # registers nothing: BROKER_POD_REGISTRARS pairs REGISTRAR_ACCOUNT with EXCHANGE_ACCOUNT, the one
 # registrar and pod account pair this stack's registration needs, and a broker whose list holds
 # no such entry (or is unset) refuses that registration 403 POD_REGISTRAR_NOT_LISTED.
@@ -102,11 +103,25 @@
 # READ_ACCOUNT is a read entry (BROKER_EXCHANGE_READ_ACCOUNTS) beside the one example entry
 # (BROKER_EXCHANGE_ACCOUNTS). The token its pod exchanges for holds the scope read alone, the
 # project scope none, the service READ_SERVICE and the session READ_SESSION, and names no person
-# and no project. Dispatch serves such a token on the routes its read list names (today GET
-# /api/v1/projects/{key}/architecture alone) and answers it 403 READ_ONLY_TOKEN on every other
-# route, which packages/dispatch/e2e/read-token-live.ts drives against this stack and a
+# and no project. Dispatch serves such a token on every GET route it classes as a read and
+# answers it 403 READ_ONLY_TOKEN on every other route, which
+# packages/dispatch/e2e/read-token-live.ts drives against this stack and a
 # `bun run dispatch:local` Dispatch. A read entry fixes its session, so its pod needs no
 # registration below, and the broker refuses one with 409 SESSION_FIXED.
+#
+# Two job entries are listed beside them, each a job that writes for no person. JOB_ACCOUNT is a job
+# pod (BROKER_EXCHANGE_JOB_ACCOUNTS): its pod token, job-token, exchanges under JOB_SESSION for a
+# token that names that account as its service, no person, and the project EXAMPLE alone. The
+# workflow JOB_WORKFLOW of JOB_REPOSITORY on JOB_REF is a job workflow
+# (BROKER_EXCHANGE_JOB_WORKFLOWS): its run's token exchanges under WORKFLOW_SESSION for a token of
+# the project scope public that names <repository>/<workflow path>@<ref> as its service. The same
+# issuer stands in for GitHub there (--actions-token): it is BROKER_EXCHANGE_GITHUB_ISSUER, the
+# run asks it for WORKFLOW_AUDIENCE (BROKER_EXCHANGE_GITHUB_AUDIENCE), and it writes the run's
+# request token into actions-request-token and logs the request URL the banner prints, the two
+# values GitHub puts in a job's ACTIONS_ID_TOKEN_REQUEST_TOKEN and ACTIONS_ID_TOKEN_REQUEST_URL.
+# Both entries fix their sessions, so neither needs a registration. packages/dispatch/e2e/
+# job-token-live.ts drives both through `dispatch api` against this stack and a
+# `bun run dispatch:local` Dispatch, with the example entry's token as the control.
 #
 # SERVICE is registered under both halves a service needs: BROKER_SERVICE_LOGINS names the
 # account that logs in as it, and BROKER_SERVICES names the account its pods run as
@@ -294,10 +309,24 @@ EXCHANGE_SESSION="example-worker-session"
 READ_ACCOUNT="system:serviceaccount:example-ns:example-reader"
 READ_SERVICE="example-reader"
 READ_SESSION="example-reader-session"
+# The two job entries (see the header). The job pod's account is a pod account of its own, listed
+# in no other setting, as the read entry's is; it writes EXCHANGE_PROJECT. The workflow's run is
+# the one dev-oidc-issuer answers a token request for in GitHub's place, for WORKFLOW_AUDIENCE.
+# Each entry fixes its session.
+JOB_ACCOUNT="system:serviceaccount:example-ns:example-job"
+JOB_SESSION="example-job-session"
+JOB_REPOSITORY="example-org/example-repo"
+JOB_WORKFLOW=".github/workflows/example-job.yaml"
+JOB_REF="refs/heads/main"
+JOB_WORKFLOW_RUN="$JOB_REPOSITORY/$JOB_WORKFLOW@$JOB_REF"
+WORKFLOW_SESSION="example-workflow-session"
+WORKFLOW_AUDIENCE="legion-broker-github"
 ACCOUNT_TOKEN_FILE="$WORK_DIR/account-token"
 LISTENER_TOKEN_FILE="$WORK_DIR/listener-token"
 EXCHANGE_TOKEN_FILE="$WORK_DIR/exchange-token"
 READ_TOKEN_FILE="$WORK_DIR/read-token"
+JOB_TOKEN_FILE="$WORK_DIR/job-token"
+ACTIONS_REQUEST_TOKEN_FILE="$WORK_DIR/actions-request-token"
 REGISTRAR_TOKEN_FILE="$WORK_DIR/registrar-token"
 POD_TOKEN_FILE="$WORK_DIR/pod-token"
 # The broker's own sign-in client at that issuer (BROKER_SIGNIN_*), through which a person signs in
@@ -553,9 +582,10 @@ fi
 
 # --- Start the local issuer, teed like the broker below. It writes every token file before it
 # logs its URL, so once that line is in ISSUER_LOG the files are there for devrelay and a pod to
-# read, and the URL is the issuer the broker discovers at boot, for ServiceAccount tokens and for
-# a person's sign-in alike. Every sign-in it serves signs APPROVER_LOGIN in: nothing here queues
-# another person at its POST /_dev/sign-in-as control route. ---
+# read, and the URL is the issuer the broker discovers at boot, for ServiceAccount tokens, for the
+# workflow run's GitHub token and for a person's sign-in alike. Every sign-in it serves signs
+# APPROVER_LOGIN in: nothing here queues another person at its POST /_dev/sign-in-as control
+# route. ---
 echo "dev-broker: starting dev-oidc-issuer..." >&2
 : >"$ISSUER_LOG"
 "$ISSUER_BIN" \
@@ -563,10 +593,12 @@ echo "dev-broker: starting dev-oidc-issuer..." >&2
   --token "$BROKER_AUDIENCE=$LISTENER_ACCOUNT=$LISTENER_TOKEN_FILE" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
   --token "$EXCHANGE_AUDIENCE=$READ_ACCOUNT=$READ_TOKEN_FILE" \
+  --token "$EXCHANGE_AUDIENCE=$JOB_ACCOUNT=$JOB_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
   --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE=http://127.0.0.1/signin/callback" \
   --sign-in-as "$APPROVER_LOGIN" \
+  --actions-token "$JOB_REPOSITORY=$JOB_WORKFLOW=$JOB_REF=$ACTIONS_REQUEST_TOKEN_FILE" \
   > >(trap '' TERM INT; exec tee -a "$ISSUER_LOG" >&2) 2>&1 &
 ISSUER_PID=$!
 ISSUER_URL=""
@@ -597,6 +629,14 @@ fi
 POD_UID="$(sed -n "s#^dev-oidc-issuer: ${POD_TOKEN_FILE} holds .* (pod \(.*\))\$#\1#p" "$ISSUER_LOG" | head -n1)"
 if [ -z "$POD_UID" ]; then
   echo "dev-broker: dev-oidc-issuer logged no pod uid for $POD_TOKEN_FILE" >&2
+  exit 1
+fi
+# The workflow run's request URL, off the issuer's own line for its request token file:
+# `<file> holds the request token of <run>'s Actions run (request URL <URL>)`, logged before its
+# URL as the token lines are. The banner prints it, as GitHub hands it to a job.
+ACTIONS_REQUEST_URL="$(sed -n "s#^dev-oidc-issuer: ${ACTIONS_REQUEST_TOKEN_FILE} holds the request token of .* (request URL \(.*\))\$#\1#p" "$ISSUER_LOG" | head -n1)"
+if [ -z "$ACTIONS_REQUEST_URL" ]; then
+  echo "dev-broker: dev-oidc-issuer logged no request URL for $ACTIONS_REQUEST_TOKEN_FILE" >&2
   exit 1
 fi
 
@@ -656,6 +696,10 @@ BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
 BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
 BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
 BROKER_EXCHANGE_READ_ACCOUNTS="$READ_ACCOUNT=$READ_SERVICE=$READ_SESSION" \
+BROKER_EXCHANGE_JOB_ACCOUNTS="$JOB_ACCOUNT=$EXCHANGE_PROJECT=$JOB_SESSION" \
+BROKER_EXCHANGE_JOB_WORKFLOWS="$JOB_REPOSITORY=$JOB_WORKFLOW=$JOB_REF=public=$WORKFLOW_SESSION" \
+BROKER_EXCHANGE_GITHUB_ISSUER="$ISSUER_URL" \
+BROKER_EXCHANGE_GITHUB_AUDIENCE="$WORKFLOW_AUDIENCE" \
 BROKER_SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT" \
 BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
 BROKER_SERVICES="$SERVICE=$EXCHANGE_ACCOUNT" \
@@ -824,7 +868,11 @@ dev-broker: ready.
   listener token:      $LISTENER_TOKEN_FILE  ($LISTENER_ACCOUNT, the caller "listener")
   exchange token:      $EXCHANGE_TOKEN_FILE  ($EXCHANGE_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE)
   pod token:           $POD_TOKEN_FILE  (the same pod, audience $BROKER_AUDIENCE: what its registration named it by)
-  read token:          $READ_TOKEN_FILE  ($READ_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE: exchanges under $READ_SESSION for a token of the scope read alone, which Dispatch serves on GET /api/v1/projects/{key}/architecture and answers 403 READ_ONLY_TOKEN on every other route)
+  read token:          $READ_TOKEN_FILE  ($READ_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE: exchanges under $READ_SESSION for a token of the scope read alone, which Dispatch serves on every GET route it classes as a read and answers 403 READ_ONLY_TOKEN on every other route)
+  job token:           $JOB_TOKEN_FILE  ($JOB_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE: a job entry, BROKER_EXCHANGE_JOB_ACCOUNTS, that exchanges under $JOB_SESSION for a token naming that account as its service, no person, and the project $EXCHANGE_PROJECT)
+  actions request URL: $ACTIONS_REQUEST_URL  (ACTIONS_ID_TOKEN_REQUEST_URL of $JOB_WORKFLOW_RUN's run, served by dev-oidc-issuer in GitHub's place)
+  actions request token: $ACTIONS_REQUEST_TOKEN_FILE  (ACTIONS_ID_TOKEN_REQUEST_TOKEN of that run)
+  github audience:     $WORKFLOW_AUDIENCE  (BROKER_EXCHANGE_GITHUB_AUDIENCE, the AGENT_SECRETS_MACHINE_AUDIENCE that run asks for; BROKER_EXCHANGE_JOB_WORKFLOWS lists it, and its token exchanges under $WORKFLOW_SESSION for one of the project scope public that names $JOB_WORKFLOW_RUN as its service and no person)
   registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "$SERVICE", listed to register $EXCHANGE_ACCOUNT's pods: BROKER_POD_REGISTRARS=$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT)
   registered service:  $SERVICE  (BROKER_SERVICE_LOGINS=$REGISTRAR_ACCOUNT, BROKER_SERVICES=$EXCHANGE_ACCOUNT)
   github stand:        $GITHUB_URL  (BROKER_AIRLOCK_TEST_GITHUB_API_BASE; plain http, since the broker's minter trusts this host's own roots and nothing else)
@@ -907,6 +955,15 @@ dev-broker: ready.
   DISPATCH_E2E_AGENT_SECRETS_URL=$PUBLIC_URL and
   DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$ACCOUNT_TOKEN_FILE before bun run dispatch:local,
   and run e2e/read-token-live.ts as its header says.
+
+  The job token exchanges the same way, naming no session, under $JOB_SESSION for a token that
+  names $JOB_ACCOUNT as its service, no person, and the project $EXCHANGE_PROJECT
+  (BROKER_EXCHANGE_JOB_ACCOUNTS). The workflow run's token, which a GitHub Actions job asks
+  dev-oidc-issuer for at the actions request URL, with the actions request token as its bearer, as
+  it would ask GitHub, exchanges under $WORKFLOW_SESSION for a token of the project scope public
+  that names $JOB_WORKFLOW_RUN as its service (BROKER_EXCHANGE_JOB_WORKFLOWS). Both entries fix
+  their sessions, so neither pod is registered. Against that same Dispatch, e2e/job-token-live.ts
+  drives both through dispatch api, as its header says.
 EOF
 
 wait "$BROKER_PID"

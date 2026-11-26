@@ -104,6 +104,7 @@ func serveSlowly(t *testing.T, path string, handler http.Handler, headers map[st
 // A GitHub delivery whose body takes longer than the server's 10 s to arrive is read whole and
 // published, not cut off with no answer.
 func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}
@@ -141,7 +142,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 	}
 	_, _ = io.WriteString(conn, "POST /webhook/github HTTP/1.1\r\nHost: listener\r\nX-GitHub-Delivery: delivery-cut\r\nX-GitHub-Event: push\r\nContent-Length: 1000\r\n\r\n"+strings.Repeat("x", 300))
 	conn.Close() // the sender goes away with 700 bytes still owed
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !strings.Contains(logged.String(), "github body read failed") && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}

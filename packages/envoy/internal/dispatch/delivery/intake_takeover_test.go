@@ -42,7 +42,7 @@ func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOve
 		t.Fatalf("connect the process's intake: %v", err)
 	}
 	t.Cleanup(client.Close)
-	intake := newIntake(client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
+	intake := newIntake(tuningFor(t), client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	t.Cleanup(func() {
 		stopping, cancel := context.WithTimeout(context.Background(), intakeStopBudget)
@@ -115,7 +115,7 @@ func requireOneBinder(t *testing.T, publisher *bus.Client, first, second *takeOv
 		t.Fatalf("%d of the two processes deliver from the durable (%v), want exactly one: %s",
 			len(bound), bound, consumerState(publisher))
 	}
-	info := awaitPushBound(t, publisher, "the durable the two processes polled is bound to neither of them")
+	info := awaitPushBound(t, publisher, "", "the durable the two processes polled is bound to neither of them")
 	if info.Config.DeliverSubject != bound[0] {
 		t.Fatalf("the durable delivers to %s, want the one binder's subject %s", info.Config.DeliverSubject, bound[0])
 	}
@@ -145,7 +145,7 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	publisher := intakeTestClient(t)
 
 	holder := startIntakeProcess(t, pool, natsURL, nil)
-	held := awaitPushBound(t, publisher, "the holder never bound the durable")
+	held := awaitPushBound(t, publisher, "", "the holder never bound the durable")
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 	// Two of the standby's polls: by then it has tried for the hold, found it held and stood by,
 	// so the hand-over measured below is one of its ordinary polls and not its first.
@@ -184,7 +184,8 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 // the step that replaced it: there is no confirmation read any more, because the create's own
 // answer is the confirmation.
 func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -231,8 +232,11 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 		t.Fatalf("the intake said nothing about the create it gave up on: %v", logs())
 	}
 
-	// The create lands on a later attempt, and the intake binds the durable afresh and delivers.
+	// The create lands on a later attempt, and the intake binds the durable afresh and delivers. No
+	// durable existed before that create, so it is the durable's first bind, which starts at the
+	// stream's next message: the pull request goes out once the durable is bound.
 	failing.Store(false)
+	awaitPushBound(t, publisher, "", "the intake never bound the durable afresh after the take-over it gave up")
 	publishMergedPullRequest(t, publisher, 12)
 	waitFor(t, 30*time.Second, func() bool { return process.fetches(12) == 1 }, func() string {
 		return "the intake never bound the durable afresh after the take-over it gave up: " + consumerState(publisher)

@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -276,6 +275,41 @@ func heldSocket(t *testing.T) (*os.File, int) {
 	return file, port
 }
 
+// takeHeldSocket takes the listener holdPortAt holds for address (heldListen) and returns a
+// descriptor of its own for that listening socket, closed when t ends: the descriptor is taken
+// before the listener closes, so the port is held throughout, and a test can hand it to one daemon
+// after another (heldSocketListen).
+func takeHeldSocket(t *testing.T, address string) *os.File {
+	t.Helper()
+	listener, err := heldListen("tcp", address)
+	if err != nil {
+		t.Fatalf("take the held port %s: %v", address, err)
+	}
+	file, err := listener.(*net.TCPListener).File()
+	_ = listener.Close()
+	if err != nil {
+		t.Fatalf("take the descriptor of %s: %v", address, err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+// heldSocketListen is the listen of a daemon on the loopback socket on port that the test holds
+// (heldSocket, takeHeldSocket) for longer than that daemon lives: each call takes a listener of a
+// descriptor of its own (net.FileListener), which the daemon closes when it stops, while the test's
+// descriptor keeps the socket listening, so a daemon started again on the port finds it never let
+// go. A call for any other address is refused rather than bound, as heldListen refuses an address
+// nothing holds.
+func heldSocketListen(socket *os.File, port int) func(network, address string) (net.Listener, error) {
+	held := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	return func(network, address string) (net.Listener, error) {
+		if network != "tcp" || address != held {
+			return nil, &net.AddrError{Err: "the test holds no socket for " + network + " there, only for tcp " + held, Addr: address}
+		}
+		return net.FileListener(socket)
+	}
+}
+
 // rebindHeldPorts hands cfg a freshly held API port. A daemon that has stopped closed the
 // listener it was handed, and from then on the port it used is any process's, so a test that
 // starts a second daemon on the same config holds one again first. The worker stream needs no
@@ -318,6 +352,8 @@ type stillClock struct{}
 func (stillClock) Now() time.Time { return time.Now() }
 
 func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
+
+func (stillClock) At(time.Time, func()) supervise.Cancel { return stopped{} }
 
 func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
@@ -476,109 +512,6 @@ func secretDSN(address string) string {
 	return (&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "hunter2"), Host: address, Path: "/legion", RawQuery: "sslmode=disable"}).String()
 }
 
-// pgConnection is what pgProxy does with one connection it accepts.
-type pgConnection int
-
-const (
-	// forwardConnection relays the connection to the Postgres behind the proxy, both ways.
-	forwardConnection pgConnection = iota
-	// resetConnection ends the connection with a TCP reset (SO_LINGER 0) as soon as it is accepted.
-	resetConnection
-	// silentConnection holds the connection open and never answers it.
-	silentConnection
-)
-
-// pgProxy is dsn's Postgres reached through a TCP proxy on 127.0.0.1 that does with the n-th
-// connection it accepts what plan[n] says, and forwards every connection after the plan's last.
-// The URL it returns is dsn at the proxy's address with sslmode=disable: under pgx's default,
-// prefer, one attempt to open the store can open a TLS connection and then a plain one, and a
-// test of the attempts counts one connection to each. The proxy and every connection through it
-// close when the test ends.
-func pgProxy(t *testing.T, dsn string, plan ...pgConnection) string {
-	t.Helper()
-	upstream, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("read the address of the Postgres behind the proxy: %v", err)
-	}
-	server := net.JoinHostPort(upstream.Host, strconv.Itoa(int(upstream.Port)))
-	proxied, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("parse the URL of the Postgres behind the proxy: %v", err)
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the Postgres proxy: %v", err)
-	}
-	var mu sync.Mutex
-	var held []net.Conn
-	closed := false
-	// hold keeps conns until the test ends, or closes them at once when it has.
-	hold := func(conns ...net.Conn) bool {
-		mu.Lock()
-		defer mu.Unlock()
-		if closed {
-			for _, conn := range conns {
-				_ = conn.Close()
-			}
-			return false
-		}
-		held = append(held, conns...)
-		return true
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-		mu.Lock()
-		defer mu.Unlock()
-		closed = true
-		for _, conn := range held {
-			_ = conn.Close()
-		}
-	})
-	go func() {
-		for n := 0; ; n++ {
-			client, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			handling := forwardConnection
-			if n < len(plan) {
-				handling = plan[n]
-			}
-			switch handling {
-			case resetConnection:
-				_ = client.(*net.TCPConn).SetLinger(0)
-				_ = client.Close()
-			case silentConnection:
-				hold(client)
-			default:
-				go func() {
-					postgres, err := net.Dial("tcp", server)
-					if err != nil {
-						_ = client.Close()
-						return
-					}
-					if !hold(client, postgres) {
-						return
-					}
-					go func() {
-						_, _ = io.Copy(postgres, client)
-						_ = postgres.Close()
-						_ = client.Close()
-					}()
-					_, _ = io.Copy(client, postgres)
-					_ = postgres.Close()
-					_ = client.Close()
-				}()
-			}
-		}
-	}()
-	proxied.Host = listener.Addr().String()
-	query := proxied.Query()
-	query.Set("sslmode", "disable")
-	proxied.RawQuery = query.Encode()
-	return proxied.String()
-}
-
 // refusingPostgres answers each connection's startup message with one FATAL ErrorResponse of code
 // and message, as a Postgres that refuses the connection answers it, and returns its address and
 // the count of the connections it has accepted.
@@ -625,7 +558,7 @@ func storeOpenWaits(t *testing.T, logs string) []map[string]any {
 func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
-	cfg.PostgresDSN = pgProxy(t, cfg.PostgresDSN, resetConnection, resetConnection)
+	cfg.PostgresDSN = testdb.Outage(t, cfg.PostgresDSN, testdb.Reset, testdb.Reset).DSN
 	proxy, err := url.Parse(cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -1049,7 +982,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 		}
 		putClaim(t, cfg, supervise.Claim{
 			Token: token, Project: project, Tree: issue, Issue: issue, Role: role,
-			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion(),
 		})
 		writePrompt(t, cfg, token)
 		unfinished[token] = role
@@ -1102,11 +1035,14 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 
 // The other lane of the same wave (api.State.WakesWaiting): a re-admission whose architect is
 // already running writes it a catch-up in place of a launch, and that wake waits on its outbox row
-// rather than in a machine (workflow.QueueCatchUp, record.Notice.PacedAt). The state names it like
-// any other — the root architect's claim, its issue, architect, kind `catch-up` and the row's own
-// moment — and names it no longer once that moment has passed, since the wake the pacing was
-// holding is then out. Without this lane a state read during a re-admission wave would show an
-// empty queue while every architect of it still waited.
+// rather than in a machine (record.Notice.PacedAt). The row here is one a release before the
+// pacing's two queues wrote, which reserved a moment for it and which this release still finds in
+// an outbox it is upgraded over: the state names it like any other — the root architect's claim,
+// its issue, architect, kind `catch-up` and the row's own moment — and names it no longer once
+// that moment has passed, since the wake the pacing was holding is then out. Without this lane a
+// state read during a re-admission wave would show an empty queue while every architect of it
+// still waited. A row this release holds in its queue is named with the pacer's estimate for its
+// place instead (TestHeldCatchUpsRejoinInIDOrderAndADeletedRowGivesUpItsPlace).
 func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
@@ -1126,18 +1062,11 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(30 * time.Second)
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		root := runningRoot(issue, phase.Implementing)
-		if err := records.PutIssue(ctx, tx, root); err != nil {
-			return err
-		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), root, 1, "", now, due)
+		return records.PutIssue(ctx, tx, runningRoot(issue, phase.Implementing))
 	}); err != nil {
-		t.Fatalf("record the running root and the catch-up its re-admission's start wrote: %v", err)
+		t.Fatalf("record the running root: %v", err)
 	}
-	var row int64
-	if err := st.Pool().QueryRow(ctx, "select id from outbox where issue = $1 and kind = $2", issue, string(record.OutboxKindNotice)).Scan(&row); err != nil {
-		t.Fatalf("read the catch-up's row: %v", err)
-	}
+	row := pacedCatchUp(t, st.Pool(), records, issue, 1, now, due)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
@@ -1179,7 +1108,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 		t.Fatalf("controllerLocator before any controller = %+v, want none", state.ControllerLocator)
 	}
 
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("controller secret = %d; body %s", status, body)
 	}
@@ -1189,7 +1118,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 	}
 	status, body = d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d; body %s", status, body)
@@ -1242,8 +1171,8 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 }
 
 // startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
-// against a boot that never serves, not its speed, so it is testwait's bound (a minute, or the test
-// binary's own deadline less a second): a fixed 10 s failed a test about the stranded report (1 of
+// against a boot that never serves, not its speed, so it is a minute, or the test binary's own
+// deadline less a second (testwait.Bounded): a fixed 10 s failed a test about the stranded report (1 of
 // 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
 // other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
@@ -2375,13 +2304,16 @@ func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
 }
 
 // Every launch secret's pointer is a pane variable the operator may not set
-// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch.
+// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch: the
+// Envoy bearer's, the deployment's private-name rule file's and the pane NATS seed's. The names
+// are known from the configuration alone, so none of the three files is read to name them.
 func TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable(t *testing.T) {
 	t.Parallel()
-	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
+	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED",
+		PrivateNameRulesFile: "/etc/legion/private-names.toml", PrivateNameRulesNamedBy: "private_name_rules_file"}
 	names := launchSecretNames(cfg, lookup(nil))
-	if len(names) != 2 {
-		t.Fatalf("launchSecretNames = %v, want both launch secrets of a daemon configured with each", names)
+	if want := []string{"ENVOY_TOKEN", leakguard.RulesSecret, "NATS_NKEY_SEED"}; !slices.Equal(names, want) {
+		t.Fatalf("launchSecretNames = %v, want %v, every launch secret of a daemon configured with each, in name order", names, want)
 	}
 	for _, name := range names {
 		if runtime.PaneVariableRefusal(name+"_FILE", "/etc/acme/secret") == "" {

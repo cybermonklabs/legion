@@ -1,3 +1,10 @@
+import {
+  HARD_BREAK_PIECE,
+  referenceReading,
+  type WordsPiece,
+  wordsFormatting,
+  wordsPieceUnder,
+} from "@legion/contracts";
 import type { Mark, Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { type EditorState, Plugin, PluginKey, type Transaction } from "@milkdown/kit/prose/state";
 import {
@@ -18,15 +25,29 @@ export interface ReferenceCandidate {
   readonly key: string;
 }
 
+/** One distinct reference the document's candidates name, as the editor offers it to the host
+ *  (`EditorReferences.onKeys`): `key` the reader's key for it, and `mention` whether a mention
+ *  names it - a link whose words are a mention's (`@legion/contracts`'s `referenceReading`: they
+ *  open with the mention sign, with no code among them and no formatting over a part of them)
+ *  and whose whole address is that key - which the host answers in `EditorReferences.mentions`
+ *  rather than in `targets`. A key both a mention and a candidate of another kind name is
+ *  offered once as each. */
+export interface OfferedReference {
+  readonly key: string;
+  readonly mention: boolean;
+}
+
 /** What a candidate resolves to: `href` is the `dispatch://` reference the drawn title carries as
- *  `data-dispatch-href` (the host's click handler and hover card read it), `title` the words the
- *  editor draws in place of the stored text, `titleKey` an issue key `title` starts with, drawn
- *  in semibold, and `length` how many of the candidate's characters, from its start, the title
- *  stands for, when that is fewer than all of them: the rest stay drawn as stored text (a `#q2-`
- *  whose question is q2 draws its title for `#q2` and keeps the `-`, so no character the
- *  reference does not name is ever hidden from the author who typed it). */
+ *  `data-dispatch-href` (the host's click handler and hover card read it), absent for a target
+ *  that opens no page - a person, whom no page shows - whose title is drawn as words and no link;
+ *  `title` the words the editor draws in place of the stored text, `titleKey` an issue key
+ *  `title` starts with, drawn in semibold, and `length` how many of the candidate's characters,
+ *  from its start, the title stands for, when that is fewer than all of them: the rest stay
+ *  drawn as stored text (a `#q2-` whose question is q2 draws its title for `#q2` and keeps the
+ *  `-`, so no character the reference does not name is ever hidden from the author who typed
+ *  it). */
 export interface ReferenceTarget {
-  readonly href: string;
+  readonly href?: string;
   readonly title: string;
   readonly titleKey?: string;
   readonly length?: number;
@@ -44,25 +65,42 @@ export interface EditorReferences {
   /** What each candidate key resolves to; a key absent from the map or mapped to `null` stays
    *  drawn as the words the author wrote. */
   readonly targets: ReadonlyMap<string, ReferenceTarget | null>;
-  /** Called with the distinct keys of the document's candidates, sorted, whenever that set
-   *  changes, so the host resolves exactly what the document holds. */
-  onKeys(keys: readonly string[]): void;
+  /** What a mention of each key draws (`OfferedReference.mention`), by the same terms as
+   *  `targets`: the host answers a key only where its address names a party it draws by name,
+   *  as `@legion/contracts`'s `mentionName` writes one, and every other mention keeps the words
+   *  its author wrote. */
+  readonly mentions: ReadonlyMap<string, ReferenceTarget | null>;
+  /** Called with the distinct references the document's candidates name, sorted by key and a
+   *  key's plain candidate before its mention, whenever that set changes, so the host resolves
+   *  exactly what the document holds. */
+  onKeys(keys: readonly OfferedReference[]): void;
 }
 
 /** One candidate in the document. Kept as an undrawn inline decoration so mapping carries its
  *  range through an edit outside its text block. */
 interface CandidateSpec {
   readonly key: string;
+  /** Whether the candidate is a mention, which `EditorReferences.mentions` answers. */
+  readonly mention: boolean;
   /** The marks its title is drawn inside: those of its first character. */
   readonly marks: readonly Mark[];
 }
+
+/** A candidate of one text block, in the block's own offsets, and whether it is a mention. */
+interface BlockCandidate extends ReferenceCandidate {
+  readonly mention: boolean;
+}
+
+/** What the host answered for the document's candidates: `EditorReferences` without its reader. */
+type ReferenceAnswers = Pick<EditorReferences, "mentions" | "targets">;
 
 interface ReferenceDecorations {
   /** What the host last set, or `null` while it has set nothing. */
   readonly references: EditorReferences | null;
   readonly candidates: DecorationSet;
-  /** The distinct keys of `candidates`, sorted; the same array while that set is unchanged. */
-  readonly keys: readonly string[];
+  /** The distinct references `candidates` name, sorted as `EditorReferences.onKeys` reports them;
+   *  the same array while that set is unchanged. */
+  readonly keys: readonly OfferedReference[];
   readonly focused: boolean;
   /** The ranges (`from:to`) of the resolved candidates the selection touches, joined by spaces. */
   readonly revealed: string;
@@ -87,7 +125,7 @@ const LINK_MASK = "<";
  *  beside it, never inside it. */
 const CODE_MASK = "`";
 
-const NO_TARGETS: ReadonlyMap<string, ReferenceTarget | null> = new Map();
+const NO_ANSWERS: ReferenceAnswers = { mentions: new Map(), targets: new Map() };
 
 /** What stands in for a run of code's text, as its stored backtick does; undefined for text read
  *  as written. A link's text is masked by the walk below, which keeps the run itself. */
@@ -99,19 +137,29 @@ function linkOf(marks: readonly Mark[]): Mark | undefined {
   return marks.find((mark) => mark.type.name === "link");
 }
 
-/** A run of text one link mark covers, in the block's own offsets. */
+/** A run of text one link mark covers, in the block's own offsets, and the formatting over each
+ *  text node of it (`@legion/contracts`'s `wordsPieceUnder`), which says how its words are
+ *  formatted: words formatted in part are their author's, and a code span's `@` is the code's
+ *  characters, never a mention's sign. */
 interface LinkRun {
   readonly mark: Mark;
   readonly start: number;
+  readonly pieces: WordsPiece[];
   end: number;
   text: string;
 }
 
 /** The candidates of one text block whose content starts at `start`. The text read is the
  *  block's with code and links masked, so it is as long as the block's own text and a
- *  candidate's offsets are its positions. A link whose text its author wrote keeps those words
- *  and is never drawn over; a link whose text is its own address - the autolink a document
- *  stores as `[dispatch://…](dispatch://…)` - is one candidate of that address. */
+ *  candidate's offsets are its positions. A link is read by the rule every reader of a record
+ *  reads one by (`@legion/contracts`'s `referenceReading`): one whose text is its own address -
+ *  the autolink a document stores as `[dispatch://…](dispatch://…)` - is one candidate of that
+ *  address; one whose words are a mention - they open with the mention sign, with no code among
+ *  them and no formatting or hard break over a part of them - is one mention of that address,
+ *  which the host draws as the party's current name or leaves as the words; and one whose text
+ *  its author wrote any other way keeps those words and is never drawn over. A hard break holds
+ *  no mark, so a link whose words one cuts is a run of text on each side of it with the same
+ *  link, which is read as the one link it is (`HARD_BREAK_PIECE`). */
 function blockCandidates(
   block: ProseMirrorNode,
   start: number,
@@ -119,10 +167,23 @@ function blockCandidates(
 ): Decoration[] {
   let text = "";
   const runs: LinkRun[] = [];
-  block.forEach((child, offset) => {
+  block.forEach((child, offset, index) => {
     if (!child.isText) {
       const leaf = child.type.spec.leafText?.(child);
       text += leaf?.length === child.nodeSize ? leaf : LINK_MASK.repeat(child.nodeSize);
+      const last = runs.at(-1);
+      const next = block.maybeChild(index + 1);
+      if (
+        child.type.name === "hardbreak" &&
+        last !== undefined &&
+        last.end === offset &&
+        next?.isText === true &&
+        last.mark.isInSet(next.marks)
+      ) {
+        last.end += child.nodeSize;
+        last.text += " ";
+        last.pieces.push(HARD_BREAK_PIECE);
+      }
       return;
     }
     const childText = child.text ?? "";
@@ -132,8 +193,15 @@ function blockCandidates(
       if (last !== undefined && last.end === offset && last.mark.eq(link)) {
         last.end += childText.length;
         last.text += childText;
+        last.pieces.push(wordsPieceUnder(child.marks));
       } else {
-        runs.push({ end: offset + childText.length, mark: link, start: offset, text: childText });
+        runs.push({
+          end: offset + childText.length,
+          mark: link,
+          pieces: [wordsPieceUnder(child.marks)],
+          start: offset,
+          text: childText,
+        });
       }
       text += LINK_MASK.repeat(childText.length);
       return;
@@ -142,7 +210,7 @@ function blockCandidates(
     text += mask === undefined ? childText : mask.repeat(childText.length);
   });
 
-  const found: ReferenceCandidate[] = [];
+  const found: BlockCandidate[] = [];
   let reached = 0;
   for (const candidate of references.scan(text)) {
     if (
@@ -153,22 +221,32 @@ function blockCandidates(
       continue;
     }
     reached = candidate.end;
-    found.push(candidate);
+    found.push({ ...candidate, mention: false });
   }
   for (const run of runs) {
     const href = run.mark.attrs.href;
-    // The whole address and nothing else: the reader must read the link's text, which is its
-    // destination, as one reference running end to end.
-    if (typeof href !== "string" || run.text !== href) continue;
+    if (typeof href !== "string") continue;
+    // Whether the address names a party is the host's to say, so every link whose words are a
+    // mention's is offered as one.
+    const reads = referenceReading({
+      address: href,
+      party: true,
+      words: run.text,
+      wordsFormatting: wordsFormatting(run.pieces),
+    });
+    if (reads === "words") continue;
+    // The whole address and nothing else: the reader must read the link's destination as one
+    // reference running end to end.
     const [only, ...others] = references.scan(href);
     if (only !== undefined && others.length === 0 && only.start === 0 && only.end === href.length) {
-      found.push({ end: run.end, key: only.key, start: run.start });
+      found.push({ end: run.end, key: only.key, mention: reads === "mention", start: run.start });
     }
   }
 
   return found.map((candidate) => {
     const spec: CandidateSpec = {
       key: candidate.key,
+      mention: candidate.mention,
       // A link's marks but the link itself, so the title stands beside its anchor, never inside
       // it: a link inside a link is no link at all.
       marks:
@@ -218,13 +296,44 @@ function changedRanges(transaction: Transaction): Array<[number, number]> | unde
   return ranges;
 }
 
-function candidateKeys(candidates: DecorationSet, previous: readonly string[]): readonly string[] {
-  const keys = [
-    ...new Set(candidates.find().map((candidate) => (candidate.spec as CandidateSpec).key)),
-  ].sort();
+/** The distinct references `candidates` name, sorted by key and a key's plain candidate before
+ *  its mention (`EditorReferences.onKeys`); `previous` while it names the same ones. */
+function candidateKeys(
+  candidates: DecorationSet,
+  previous: readonly OfferedReference[]
+): readonly OfferedReference[] {
+  const seen = new Set<string>();
+  const keys: OfferedReference[] = [];
+  for (const candidate of candidates.find()) {
+    const { key, mention } = candidate.spec as CandidateSpec;
+    const id = `${mention ? 1 : 0}${key}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    keys.push({ key, mention });
+  }
+  keys.sort((left, right) =>
+    left.key === right.key
+      ? Number(left.mention) - Number(right.mention)
+      : left.key < right.key
+        ? -1
+        : 1
+  );
   const same =
-    keys.length === previous.length && keys.every((key, index) => key === previous[index]);
+    keys.length === previous.length &&
+    keys.every(
+      (offered, index) =>
+        offered.key === previous[index]?.key && offered.mention === previous[index]?.mention
+    );
   return same ? previous : keys;
+}
+
+/** What the host answered for the candidate `spec` describes: a mention's answer is in
+ *  `mentions`, every other candidate's in `targets`. */
+function answerFor(
+  answers: ReferenceAnswers,
+  spec: CandidateSpec
+): ReferenceTarget | null | undefined {
+  return (spec.mention ? answers.mentions : answers.targets).get(spec.key);
 }
 
 /** The candidates after `transaction`: the previous ones mapped through it, with each text block
@@ -273,14 +382,14 @@ function drawnEnd(candidate: Decoration, target: ReferenceTarget): number {
 function revealedRanges(
   state: EditorState,
   candidates: DecorationSet,
-  targets: ReadonlyMap<string, ReferenceTarget | null>,
+  answers: ReferenceAnswers,
   focused: boolean
 ): string {
   if (!focused) return "";
   const ranges: string[] = [];
   for (const range of state.selection.ranges) {
     for (const candidate of candidates.find(range.$from.pos, range.$to.pos)) {
-      const target = targets.get((candidate.spec as CandidateSpec).key);
+      const target = answerFor(answers, candidate.spec as CandidateSpec);
       if (!target) continue;
       const to = drawnEnd(candidate, target);
       if (to > candidate.from && range.$from.pos <= to) {
@@ -291,40 +400,44 @@ function revealedRanges(
   return ranges.sort().join(" ");
 }
 
+/** The title drawn over a resolved candidate: a link carrying its target's address, or, for a
+ *  target that opens no page, the same words as no link. */
 function titleWidget(target: ReferenceTarget): (view: EditorView) => HTMLElement {
   return (view) => {
     const document = view.dom.ownerDocument;
-    const link = document.createElement("a");
-    link.className = TITLE_CLASS;
-    link.setAttribute("role", "link");
-    link.dataset.dispatchHref = target.href;
-    const { title, titleKey } = target;
+    const { href, title, titleKey } = target;
+    const drawn = document.createElement(href === undefined ? "span" : "a");
+    drawn.className = TITLE_CLASS;
+    if (href !== undefined) {
+      drawn.setAttribute("role", "link");
+      drawn.dataset.dispatchHref = href;
+    }
     if (titleKey !== undefined && titleKey !== "" && title.startsWith(titleKey)) {
       const key = document.createElement("strong");
       key.textContent = titleKey;
-      link.append(key, title.slice(titleKey.length));
+      drawn.append(key, title.slice(titleKey.length));
     } else {
-      link.textContent = title;
+      drawn.textContent = title;
     }
     // A press on the title neither moves the caret nor focuses the editor, so the title stays
     // drawn until the click lands and the host follows it.
-    link.addEventListener("mousedown", (event) => event.preventDefault());
-    return link;
+    drawn.addEventListener("mousedown", (event) => event.preventDefault());
+    return drawn;
   };
 }
 
 function drawnDecorations(
   doc: ProseMirrorNode,
   candidates: DecorationSet,
-  targets: ReadonlyMap<string, ReferenceTarget | null>,
+  answers: ReferenceAnswers,
   revealed: string
 ): DecorationSet {
-  if (targets.size === 0) return DecorationSet.empty;
+  if (answers.targets.size === 0 && answers.mentions.size === 0) return DecorationSet.empty;
   const shown = new Set(revealed === "" ? [] : revealed.split(" "));
   const decorations: Decoration[] = [];
   for (const candidate of candidates.find()) {
     const spec = candidate.spec as CandidateSpec;
-    const target = targets.get(spec.key);
+    const target = answerFor(answers, spec);
     if (!target) continue;
     const to = drawnEnd(candidate, target);
     if (to <= candidate.from || shown.has(`${candidate.from}:${to}`)) continue;
@@ -371,7 +484,8 @@ function sameReferences(left: EditorReferences, right: EditorReferences): boolea
   return (
     left.scan === right.scan &&
     left.onKeys === right.onKeys &&
-    sameTargets(left.targets, right.targets)
+    sameTargets(left.targets, right.targets) &&
+    sameTargets(left.mentions, right.mentions)
   );
 }
 
@@ -383,11 +497,12 @@ function dispatchReferenceChange(view: EditorView, change: ReferenceChange): voi
 /**
  * The editor's reference titles, drawn without a change to the stored text. The host's reader
  * reads each text block (code blocks, code spans and a link's own text left out) and says what
- * each candidate's key resolves to; both reach the plugin through `setReferences`, as a host's
- * change marks reach `./editor-change-decorations.ts`, because a host class written on editor DOM
- * is read back as an edit. A resolved candidate is drawn as its target's title, a link carrying
- * `data-dispatch-href`, with its stored text hidden; while the focused editor's selection touches
- * it, the stored text shows instead, so an author edits what is stored. An edit re-reads only the
+ * each candidate's key resolves to, and what each mention draws; both reach the plugin through
+ * `setReferences`, as a host's change marks reach `./editor-change-decorations.ts`, because a
+ * host class written on editor DOM is read back as an edit. A resolved candidate is drawn as its
+ * target's title, a link carrying `data-dispatch-href` (words and no link for a target that
+ * opens no page), with its stored text hidden; while the focused editor's selection touches it,
+ * the stored text shows instead, so an author edits what is stored. An edit re-reads only the
  * text blocks it touched; mapping carries the other candidates.
  */
 export const referenceDecorationsPlugin = $prose(
@@ -415,8 +530,8 @@ export const referenceDecorationsPlugin = $prose(
           } else if (transaction.docChanged) {
             candidates = nextCandidates(value.candidates, transaction, references);
           }
-          const targets = references?.targets ?? NO_TARGETS;
-          const revealed = revealedRanges(state, candidates, targets, focused);
+          const answers = references ?? NO_ANSWERS;
+          const revealed = revealedRanges(state, candidates, answers, focused);
           if (
             candidates === value.candidates &&
             references === value.references &&
@@ -426,7 +541,7 @@ export const referenceDecorationsPlugin = $prose(
           }
           return {
             candidates,
-            decorations: drawnDecorations(state.doc, candidates, targets, revealed),
+            decorations: drawnDecorations(state.doc, candidates, answers, revealed),
             focused,
             keys:
               candidates === value.candidates ? value.keys : candidateKeys(candidates, value.keys),

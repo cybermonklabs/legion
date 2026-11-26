@@ -98,7 +98,9 @@ func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer strin
 	}
 	bound := boundOf(t)
 	for {
-		info, err := js.ConsumerInfo(stream, consumer, natsgo.MaxWait(bound.step(dialTimeout)))
+		// The read waits as MaxWait's do: a cut read fails the test below, and a dial's 1 s
+		// (dialTimeout, before) cut a server that answered late on a loaded machine.
+		info, err := js.ConsumerInfo(stream, consumer, MaxWait(t))
 		if errors.Is(err, natsgo.ErrConsumerNotFound) || errors.Is(err, natsgo.ErrStreamNotFound) {
 			return
 		}

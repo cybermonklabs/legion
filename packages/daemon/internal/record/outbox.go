@@ -41,8 +41,14 @@ const (
 	OutboxKindRoleMessage      OutboxKind = "role_message"
 	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
 	OutboxKindUpdateAsk        OutboxKind = "update_ask"
-	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
-	OutboxKindIssueRelease     OutboxKind = "issue_release"
+	// OutboxKindIssueBundle is the kind of the idle release's workspace check
+	// (IssueWorkspaceCheck). The check replaced the release's save of a bundle, and its kind keeps
+	// the save's stored name, which this identifier spells: a row either release queued reads as
+	// the first act of a release, so a row an earlier daemon queued before an upgrade runs as this
+	// check, and a row this daemon queued before a rollback runs as that release's save, with no
+	// migration of the outbox's kind check and no row left that one release cannot run.
+	OutboxKindIssueBundle  OutboxKind = "issue_bundle"
+	OutboxKindIssueRelease OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
@@ -400,36 +406,40 @@ type Notice struct {
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
-	// PacedAt is the moment the daemon's wake pacing reserved for a catch-up it holds to its turn,
-	// and the zero value on every other notice: the catch-up the outbox writes in place of a
-	// launch when a start row finds an architect already running (the outbox's start,
-	// workflow.Config.Reserve). Reading that catch-up is a wake of the architect, and what the
-	// organization's per-minute cap counts is the context it reads, so the row waits its turn like
-	// a launch does.
+	// PacedAt is the moment the daemon's wake pacing let out a catch-up it held to its turn: the
+	// catch-up the outbox writes in place of a launch when a start row finds an architect already
+	// running (the outbox's start, workflow's claimReady). Reading that catch-up is a wake of the
+	// architect, and what the organization's per-minute cap counts is the context it reads, so the
+	// row waits its turn in the pacing's second queue as a launch does (dispatch://INFRA-5682 R1).
+	// It is CatchUpHeldAt while the row waits there, the let-out's moment once the pacer has let
+	// the row out (ReleaseHeldCatchUp), and the zero value on every other notice.
 	//
 	// The moment is kept here rather than read back from the row's next_at because the two part
 	// company: a failed attempt rewrites next_at to its backoff (RetryOutbox), while the turn the
 	// pacing gave this wake never moves. The outbox writes that wake's one line from it, on
 	// whichever attempt publishes (the daemon's wakeRan), and a ready that releases the
 	// architect's waiting notices leaves the row where it stands only while the moment is still
-	// ahead (the daemon's releaseWaiting), so a catch-up whose turn has come is released like any
-	// other notice rather than waiting out a backoff the pacing never asked for. It is the
-	// daemon's own bookkeeping, so the publish drops it (Published) as it drops ResendOf; a
-	// re-held copy keeps it for that one line alone, its next_at being the re-send delay rather
-	// than a reservation (the daemon's noticeAnswered).
+	// ahead (the daemon's releaseWaiting), so a catch-up still held stays held, and one whose turn
+	// has come is released like any other notice rather than waiting out a backoff the pacing
+	// never asked for. It is the daemon's own bookkeeping, so the publish drops it (Published) as
+	// it drops ResendOf; a re-held copy keeps it for that one line alone, its next_at being the
+	// re-send delay (the daemon's noticeAnswered).
 	PacedAt time.Time `json:"paced_at,omitzero"`
-	// PacedFrom is the moment the reservation above was made, on the clock that made it, and the
-	// two travel together: PacedAt less PacedFrom is how long the pacing held this wake, which is
-	// what the line it writes reports (the daemon's wakeRan).
-	//
-	// The wait is read from this pair rather than from PacedAt less the row's created_at, which
-	// is two clocks subtracted from each other: created_at is the database's now() at the start
-	// of the fact's transaction (store/migrations/0004_record.up.sql), while the reservation is
-	// made from the engine's clock later in that same transaction (workflow's claimReady). A
-	// catch-up the burst let straight through — PacedAt equal to PacedFrom, the first wake of a
-	// wave — would otherwise report the transaction's own duration as a wait, and under clock
-	// skew a wait the other way about.
+	// PacedFrom is the moment the engine wrote the row held, on the clock the let-out is read on,
+	// and the two travel together: PacedAt less PacedFrom is how long the pacing held this wake,
+	// which is what the line it writes reports (the daemon's wakeRan). The wait is read from this
+	// pair rather than from PacedAt less the row's created_at, which is two clocks subtracted from
+	// each other: created_at is the database's now() at the start of the fact's transaction
+	// (store/migrations/0004_record.up.sql), while the row is held from the engine's clock later
+	// in that same transaction (workflow's claimReady). A row the pacer let out at its join waited
+	// no turn, and its let-out writes PacedAt as PacedFrom (ReleaseHeldCatchUp), so the commit
+	// that came between the write and the join is not read as a wait.
 	PacedFrom time.Time `json:"paced_from,omitzero"`
+	// PacedTurns is how many turns the pacing let out between the row's join of its queue and its
+	// own let-out (wakepace.Let.Turns), which the line its wake writes names beside the queue. The
+	// let-out writes it with PacedAt (ReleaseHeldCatchUp), and it goes where PacedAt goes: dropped
+	// at the publish, kept on a re-held copy.
+	PacedTurns int `json:"paced_turns,omitempty"`
 	// ResendOf is the outbox row a re-held copy copies. The copy is published under that row's
 	// dedupe key (OutboxKey), so the listener's report of a failed forward names the original row,
 	// whichever copy failed (exceptionNotice), and the listener's role lane drops a copy that
@@ -901,20 +911,42 @@ func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 // bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
 // notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
 // the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
-// and puts nothing back, and only the receipt-timeout path restores the two paced moments by
-// hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
+// and puts nothing back, and only the receipt-timeout path restores the paced moments and turns
+// by hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
 // (reholdNotice, through NewOutboxRow), so a field validateOutboxPayload requires for its kind,
 // as it requires CatchUp of a catch-up notice, is stripped here only together with a restore of
 // its own there, or every re-hold of that kind is refused for want of it
 // (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
-	n.PacedAt, n.PacedFrom = time.Time{}, time.Time{}
+	n.PacedAt, n.PacedFrom, n.PacedTurns = time.Time{}, time.Time{}, 0
 	if n.ResendOf == 0 {
 		return n, OutboxKey(id)
 	}
 	copied := n.ResendOf
 	n.ResendOf = 0
 	return n, OutboxKey(copied)
+}
+
+// CatchUpHeldAt is the moment a catch-up the wake pacing holds is written at, in its row's
+// next_at and in its notice's PacedAt: a moment no clock of this daemon reaches, which is the row
+// having no due moment until the pacer lets it out (ReleaseHeldCatchUp). A place in the pacing's
+// queue has no moment of its own until then (dispatch://INFRA-5682 R1), and the row has to stand
+// in the outbox meanwhile, so that a restart finds it and joins it to the queue again (the
+// daemon's catchUpPacing). The outbox runs a row only once it is due, so no lane takes a held row
+// up, and a reader of a notice's due moment that meets this one (CatchUpIsHeld) reads the pacer's
+// estimate for the row's place instead (the daemon's pacedCatchUps and deliverNotice).
+var CatchUpHeldAt = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// CatchUpIsHeld is whether at, a row's next_at or a notice's PacedAt, is CatchUpHeldAt: the
+// moment of a catch-up the wake pacing still holds in its queue, which is no due moment. The
+// daemon's earlierNoticeFor, catchUpPacing.restore and pacedCatchUps, where it names a row's moment
+// in the state's wakesWaiting, test the moment with it, so none of them takes it for a deadline.
+// Two statements of the store compare next_at with CatchUpHeldAt itself (ReleaseHeldCatchUp,
+// CatchUpHeld), and the other readers rely on the held moment sorting after any now: the outbox
+// runs a row only once its next_at has come, and the daemon's releaseWaiting and pacedCatchUps
+// tell a held notice by a PacedAt still ahead of now.
+func CatchUpIsHeld(at time.Time) bool {
+	return at.Equal(CatchUpHeldAt)
 }
 
 // ControllerNotice is a Notice for the project's controller topic (notify.ControllerTopic) alone,
@@ -1284,6 +1316,19 @@ type SuperviseRequest struct {
 	Linger uint64 `json:"linger,omitempty"`
 	// Reason is why a suspend stops the claim, for the line the suspended claim logs.
 	Reason string `json:"reason,omitempty"`
+	// TurnStart fences the `suspend` of a left pod's close on a turn: it is the newest turn start
+	// of the issue's claims in the view the pass queued the close from, as the close's workspace
+	// check carried it (IssueWorkspaceCheck.TurnStart), the zero moment where none had had a turn.
+	// The suspend of a claim whose last turn started after it finishes without acting (the daemon
+	// outbox's suspend), since that turn may have made work the check's read did not see, as a
+	// release's role stop is cancelled by a turn after its mark (issue_releases.turn_start). The
+	// claim stays live, the close's Sandbox suspension carries the same fence and finishes without
+	// acting too (IssueSuspend.TurnStart), and the next idle pass decides the close again. Every
+	// other request carries none: nil is no
+	// fence, and the zero moment is a fence that any turn passes. A release before this field
+	// refuses a row that carries it (DisallowUnknownFields), so a rollback waits for such rows to
+	// run (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+	TurnStart *time.Time `json:"turnStart,omitempty"`
 	// CheckLook is the look of the issue's production check a start starts, 0 for a phase start.
 	// A check start runs after the close, where the issue has no phase and its tree may linger, so
 	// the outbox fences it on the open check and its look (the row acts only while the check is
@@ -1348,45 +1393,76 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 // fence a later re-admission or start. The issue keeps nothing: an ephemeral disk is its pod's own
 // and goes with the pod, and a kept volume goes with the Sandbox, so a later todo re-enters the
 // issue fresh on a Sandbox its next launch makes.
+//
+// TurnStart, on the suspension of a left pod's close that stops a role, is the turn start its
+// workspace check read, as each of that close's `suspend` rows carries it
+// (SuperviseRequest.TurnStart): the suspension finishes without acting where a claim of the issue
+// started a turn after it (store.IssueSuspension), as the stop of that claim's role did, so
+// nothing of the close outlives a stop its fence held and the next idle pass decides the close
+// again with a read of its own. Every other suspension carries none: nil is no fence, and the
+// zero moment is a fence that any turn passes. A release before this field refuses a row that
+// carries it (DisallowUnknownFields), so a rollback waits for such rows to run
+// (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
 type IssueSuspend struct {
-	Tree           string `json:"tree"`
-	Generation     uint64 `json:"generation"`
-	TreeGeneration uint64 `json:"treeGeneration"`
+	Tree           string     `json:"tree"`
+	Generation     uint64     `json:"generation"`
+	TreeGeneration uint64     `json:"treeGeneration"`
+	TurnStart      *time.Time `json:"turnStart,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 
-// IssueBundle is the first act of an idle pod's release: it asks the shim of Role — a role whose
-// process is still running in the pod, because this row runs before the `release` rows that stop
-// them — for the git bundle of the unpushed work of the workspace every role of the issue shares,
-// and saves it in the daemon's own database (runtime.WorkspaceBundler). Only a shim can build it:
-// it runs the `jj` of the workspace it already works in, and it dies with its role's process, so
-// the save has to happen while that process is there.
+// IssueWorkspaceCheck is the first act of an idle pod's release: it asks the shim of Role — a role
+// whose process is still running in the pod, because this row runs before the `release` rows that
+// stop them — to read whether the workspace every role of the issue shares holds work that no
+// branch or tag on origin holds (runtime.WorkspaceWorkReader). Only a shim can read it: it runs the
+// `jj` of the workspace it already works in, and it dies with its role's process, so the read has
+// to happen while that process is there. A read that finds work, or that fails, declines the
+// release: the pod stays with the work, and Role is told once that the release waits for its push
+// (internal/daemon's checkIssueWorkspace). The daemon pushes nothing for a role.
 //
-// It stops nothing, so a release cancelled here costs only the save, and it sits before the
+// It stops nothing, so a release cancelled here costs only the read, and it sits before the
 // release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release and takes the stored bundle with it (outbox.cancelRelease).
-type IssueBundle struct {
-	Tree           string     `json:"tree"`
-	Generation     uint64     `json:"generation"`
-	TreeGeneration uint64     `json:"treeGeneration"`
-	Role           claim.Role `json:"role"`
+// the whole release (outbox.cancelRelease). The teardown waits for it (store.IssueRelease).
+//
+// CloseRoles, where it names any role, makes the row the first act of another act: the close of a
+// pod whose issue left the workflow while its tree runs on (workflow.LeftPodClose), which marks no
+// release. Those are the live roles the close stops. The check reads the same way and declines the
+// same way, and on a read that finds nothing origin does not hold it queues the close's stops and
+// the Sandbox suspension itself (internal/daemon's checkLeftPodWorkspace). A row with no
+// CloseRoles is a release's, and its JSON is the one an earlier release wrote.
+//
+// TurnStart, on a close's row, is the newest turn start of the issue's claims in the view the pass
+// queued the close from (pods.IdleView.NewestTurnStart), zero where none had had a turn: the close
+// stops no role after a turn that started since, as a release's mark holds the same moment for its
+// own stops (issue_releases.turn_start). The check holds the close on a turn before its decision
+// (workflow.LeftPodCloseAfterCheck), and each `suspend` it queues carries the moment on
+// (SuperviseRequest.TurnStart), so a turn between the decision and the stop holds that stop. A
+// release's row leaves it zero, since its mark holds it.
+type IssueWorkspaceCheck struct {
+	Tree           string       `json:"tree"`
+	Generation     uint64       `json:"generation"`
+	TreeGeneration uint64       `json:"treeGeneration"`
+	Role           claim.Role   `json:"role"`
+	CloseRoles     []claim.Role `json:"closeRoles,omitempty"`
+	TurnStart      time.Time    `json:"turnStart,omitzero"`
 }
 
-func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
+func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
-// IssueRelease is the last act of an idle pod's release, queued behind the save (IssueBundle) and
-// the per-role `release` supervise rows that stopped the pod's role processes: it asks the
-// runtime's release (runtime.IssueReleaser), which suspends the issue's Sandbox and waits its pod
-// out, keeps a Sandbox that owns the issue's kept volume and deletes every other Sandbox with the
-// role Secrets it owns, and records the release with the size of the bundle the save stored.
-// Both workflow generations and this row's ID fence a start or a re-admission that came after, as
-// an IssueSuspend's do.
+// IssueRelease is the last act of an idle pod's release, queued behind the workspace check
+// (IssueWorkspaceCheck) and the per-role `release` supervise rows that stopped the pod's role
+// processes: it asks the runtime's release (runtime.IssueReleaser), which suspends the issue's
+// Sandbox and waits its pod out, keeps a Sandbox that owns the issue's kept volume and deletes
+// every other Sandbox with the role Secrets it owns, and records the release. Both workflow
+// generations and this row's ID fence a start or a re-admission that came after, as an
+// IssueSuspend's do.
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
-// task, and the next wake for one of the roles brings a new pod that restores the bundle before
-// any role starts. A new pod of a kept Sandbox mounts the volume the work was taken off, so it
-// restores nothing, and the daemon drops the bundle (runtime.HeldWorkspaceBundleDrop).
+// task, and the next wake for one of the roles brings a new pod, whose workspace provisioning makes
+// again from what was pushed to the issue's branch. The check took the pod only because the
+// workspace held nothing that was not pushed. A new pod of a kept Sandbox mounts the volume the
+// last pod used.
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
@@ -1544,6 +1620,12 @@ type StepRecord struct {
 	// members are members of the payload itself, written together and left out together when it is
 	// nil (validateOutboxPayload holds a stored row to that).
 	*PlanRating
+	// StepExperiment is the experiment a draw put the record's issue in and the variant it drew
+	// there, nil for an issue that no such draw names. Dispatch takes it on the record's experiment
+	// route, after the write of the record itself (dispatch.HTTPClient.PutStepExperiment). It is
+	// embedded, as PlanRating is, so its two members are members of the payload, written together
+	// and left out together (validateOutboxPayload holds a stored row to that).
+	*StepExperiment
 }
 
 // PlanRating is a retro's rating of the plan its issue ran: Rating, on the scale
@@ -1555,6 +1637,16 @@ type StepRecord struct {
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
+}
+
+// StepExperiment is the experiment a draw put an issue in and the variant it drew there. The two
+// are one value, so a step record names both or neither. It mirrors dispatch.StepExperiment, which
+// the publication converts it to (publishStepExperiment), as PlanRating mirrors
+// dispatch.PlanRating; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two
+// to the same fields.
+type StepExperiment struct {
+	Experiment string `json:"experiment"`
+	Variant    string `json:"variant"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
@@ -1611,21 +1703,26 @@ func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
-// (ProductionCheck.WakeAt), or the retry of a look nobody reported. There is at most one such row
-// per check: it is enqueued once, at the end of a look, and consumed when it fires, and the one
-// deferral that queues another — workflow's checkWakeDue, for an issue back in the workflow —
-// queues it in the transaction that finishes the row it came from. Nothing else wakes a check: no
-// boot, no build and no deploy event reads production any more.
+// (ProductionCheck.WakeAt), or the retry of a look nobody reported. It is enqueued at the end of a
+// look and consumed when it fires. Two writes queue another while it waits, each in the
+// transaction that moves the check's wake: workflow's checkWakeDue, for an issue back in the
+// workflow, which finishes the row it came from, and a failure of the checking role's claim
+// between looks, which names the next look later (workflow's failedBetweenLooks) and leaves the
+// row before it standing. Nothing else wakes a check: no boot, no build and no deploy event reads
+// production any more.
 //
 // Look is the look the check stood at when the wake was named, so a row left over from an earlier
 // look starts nothing; OpenedAt is the check instance it was named for
 // (ProductionCheck.OpenedAt), since a later merge of the same issue replaces the check and counts
-// its looks from one again — zero names no instance and is not fenced. Reason is what the wake
-// is, for the look's wake and the log: the agent's own wake, or the retry of a look nobody
-// reported.
+// its looks from one again — zero names no instance and is not fenced. WakeAt is the wake the row
+// was queued for (ProductionCheck.WakeAt, at the microsecond), so a row whose wake the check no
+// longer records, the one a failure between looks moved, starts nothing either; zero, a row a
+// release before this field queued, is not fenced. Reason is what the wake is, for the look's
+// wake and the log: the agent's own wake, or the retry of a look nobody reported.
 type CheckWakeDue struct {
 	Look     int       `json:"look"`
 	OpenedAt time.Time `json:"openedAt,omitzero"`
+	WakeAt   time.Time `json:"wakeAt,omitzero"`
 	Reason   string    `json:"reason"`
 }
 
@@ -2146,7 +2243,7 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		}
 		payload = value
 	case OutboxKindIssueBundle:
-		value := IssueBundle{}
+		value := IssueWorkspaceCheck{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -2334,9 +2431,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
 		}
-	case IssueBundle:
+	case IssueWorkspaceCheck:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
-			return fmt.Errorf("a release's workspace save requires its tree, both workflow generations and the role whose shim is asked")
+			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
 		}
 	case IssueRelease:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
@@ -2497,6 +2594,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.WakeKind == pods.WakePause && value.Pause == 0 {
 			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
 		}
+		if value.TurnStart != nil && value.Op != "suspend" {
+			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)
+		}
 	case RoleMessage:
 		if value.Role == "" {
 			return fmt.Errorf("role message requires role")
@@ -2624,7 +2724,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
 	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of
 	// the daemon, refused where it is queued rather than found by a warning after the completion
-	// that carried it committed.
+	// that carried it committed. The experiment and the variant of the record's issue are held
+	// whole for the same reason: they are one value, which a row naming one of them alone breaks.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
@@ -2643,6 +2744,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
 			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
 				value.PlanRating.Rating, value.PlanRating.Reason)
+		}
+		if value.StepExperiment != nil && (value.StepExperiment.Experiment == "" || value.StepExperiment.Variant == "") {
+			return fmt.Errorf("a step record carries the experiment of its issue with its variant or neither; it carries the experiment %q with the variant %q",
+				value.StepExperiment.Experiment, value.StepExperiment.Variant)
 		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.
@@ -2708,9 +2813,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
 // passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree now
 // (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
-// moves a member to another tree; the reason names each version, its document and its giver,
-// the plan the first step runs (an owner's, of the issue's generation or carried to it, or the
-// default steps), and that the architect may give the plan again with register_plan as its own.
+// moves a member to another tree; the reason names each version once, its document and the
+// givers of its copies, the plan the first step runs (an owner's, of the issue's generation or
+// carried to it, or the default steps), and that the architect may give the plan again with
+// register_plan as its own.
 // Or a plan of an issue whose experiment's group takes no plan from its owner (workflow's
 // passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
 // run takes the project's default steps, and the reason names each version and the group

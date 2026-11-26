@@ -57,14 +57,22 @@
 //     the exact arguments by running that command with `--dry-run` after the command name, in the
 //     call's working directory (then its `cd`, as the call will) and environment, its
 //     here-document still on stdin and without its `2>&1` and its pipe stage, and reviews the
-//     JSON it prints. The reads (the dry run, and the `cd`'s `pwd -P` probe) take at most half
+//     JSON it prints. The reads (the dry run, and the `cd`'s `pwd -P` probe) run with
+//     DISPATCH_DRY_RUN_LOCAL=1 added to that environment (`spawnDryRun`), which the probe
+//     ignores: the CLI's dry run then checks the arguments alone and contacts no Dispatch server,
+//     where `dispatch artifact --dry-run` otherwise asks Dispatch to check the text as the call
+//     does: how it would store text given inline, read from --content-file or from stdin, or what
+//     it refuses of a Markdown `--path` file's bytes. The call runs without the variable and
+//     itself refuses a text Dispatch would store
+//     under another spelling or refuses for the text alone, so the gate's read needs no round
+//     trip. The reads take at most half
 //     the call's deadline: the first run of each is cut at 20 s, or sooner when that half ends
 //     sooner, and a run cut there is run once more with what is left of that half, when at
 //     least 2 s of it is left (`DRY_RUN_TIMEOUT_MS`). A dry-run that fails, times out again or
 //     prints no JSON object is recorded as `error` and the call runs (the CLI refuses arguments
 //     it cannot parse, before it sends anything); a dry run that timed out tells the agent it
 //     contacts no Dispatch server, so the likely cause is a busy machine, and to read back what
-//     the write posted. A `dispatch` command with `--dry-run` or `--help` sends nothing and is
+//     the write posted. A `dispatch` command with `--dry-run` or `--help` stores nothing and is
 //     not reviewed. An upload given with `--path` prints the path, not the text. Every file whose
 //     text the write posts, that path and each `--<field>-file`, is read in place before the
 //     model is asked, and the call runs as written. The model reviews those bytes (an upload's
@@ -259,6 +267,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
+import { spawnWatched } from "@legion/envoy-client/process-group";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -336,14 +345,15 @@ const UPLOAD_COMMAND = "artifact";
 const INLINE_FLAGS = ["--content", "--content-file"];
 /** The upload flags that read the name or the path from a file, which only the dry run resolves. */
 const INDIRECT_FLAGS = ["--name-file", "--path-file"];
-/** Flags under which a `dispatch` command sends nothing. */
-const NO_SEND_FLAGS = ["--dry-run", "--help"];
+/** Flags under which a `dispatch` command stores nothing, so it is no write to review. */
+const NO_STORE_FLAGS = ["--dry-run", "--help"];
 const REBUTTAL_KEY = "advisor_rebuttal";
 const REBUTTAL_FLAG = "--advisor-rebuttal";
-// A read script (the dry run, and the `cd`'s `pwd -P` probe) contacts no Dispatch server, so a
-// slow one most likely means a busy machine. Its first run is cut at DRY_RUN_TIMEOUT_MS, above
-// every dry run the gate saw finish on a shared dev box in the week of 2026-10-27 (p99 7.2 s,
-// longest 12.3 s; that box ran at about six runnable processes per core while it was measured).
+// A read script (the dry run, and the `cd`'s `pwd -P` probe) runs with DISPATCH_DRY_RUN_LOCAL=1
+// (`spawnDryRun`) and contacts no Dispatch server, so a slow one most likely means a busy
+// machine. Its first run is cut at DRY_RUN_TIMEOUT_MS, above every dry run the gate saw finish on
+// a shared dev box in the week of 2026-10-27 (p99 7.2 s, longest 12.3 s; that box ran at about
+// six runnable processes per core while it was measured).
 // A run cut there is run once more with what is left of the reads' share of the call's deadline
 // (READ_SHARE), when that is at least MIN_RETRY_MS; the review keeps the rest, which at the 90 s
 // default is 45 s, above the p95 of a reviewed call's whole gate time (42 s, its dry run included).
@@ -670,7 +680,7 @@ interface Deps {
     directory: string,
     signal: AbortSignal,
     deadlineMs?: number
-  ) => DispatchSession | undefined;
+  ) => Promise<DispatchSession | undefined>;
   /**
    * The session's decision recorder, shared with the host's record of unmarked writes: the gate
    * builds none of its own. Two recorders would each upload the session's document under its name,
@@ -1362,12 +1372,12 @@ type Word = { raw: string; value: string; start?: number; end?: number };
 
 /**
  * Whether `name` with `flags` is a write the gate reviews: a scoped command, with no flag under
- * which it sends nothing, an `issue` only with a spec, and an `artifact` unless its words show it
+ * which it stores nothing, an `issue` only with a spec, and an `artifact` unless its words show it
  * is no markdown document (`uploadMayBeDocument`).
  */
 function reviewedWrite(name: string, flags: readonly Word[]): boolean {
   if (!(SCOPED_COMMANDS as readonly string[]).includes(name)) return false;
-  if (flags.some((flag) => NO_SEND_FLAGS.includes(flag.value))) return false;
+  if (flags.some((flag) => NO_STORE_FLAGS.includes(flag.value))) return false;
   if (name === SPEC_ONLY_COMMAND) return flags.some((flag) => SPEC_FLAGS.includes(flagName(flag)));
   if (name === UPLOAD_COMMAND) return uploadMayBeDocument(flags);
   return true;
@@ -1811,42 +1821,51 @@ export interface UnreadableCommand {
   file: { flag: string; path: string; reason: string; inMessage?: true };
 }
 
-/** Runs `script` under bash in a process group of its own, which is killed at the limit or on the signal. */
+/**
+ * Runs `script` under bash in a process group of its own, which is killed at the limit, on the
+ * signal and once the script's own shell exits, and which ends with this process however it ends
+ * (`spawnWatched`): a helper the script left running neither outlives the dry run nor holds its
+ * pipes, and so its answer, open until the limit. The script gets `env` with
+ * DISPATCH_DRY_RUN_LOCAL=1 added: under it the CLI's dry run of an upload
+ * (`dispatch artifact --dry-run`) checks the arguments alone and asks Dispatch nothing, where it
+ * otherwise asks Dispatch to check the text as the call does: how it would store text given
+ * inline, read from --content-file or from stdin (POST /api/v1/markdown/round-trip), or what it
+ * refuses of a Markdown `--path` file's bytes
+ * (POST /api/v1/markdown/file-round-trip). The variable leaves a `dispatch result` record's dry
+ * run asking Dispatch, as it did before, and the gate reviews no `result`. The gate reads
+ * arguments, and the call makes those round trips itself and refuses a text Dispatch would store
+ * under another spelling or refuses for the text alone, so the read needs none. The
+ * `cd`'s `pwd -P` probe, the other script the gate runs here, ignores the variable. The call
+ * never gets it: Oh My Pi runs the call in its own environment, and `env` is copied here, not
+ * changed. A `dispatch` older than the variable ignores it and asks nothing either way.
+ */
 export async function spawnDryRun(
   script: string,
   { cwd, env, timeoutMs, signal }: DryRunOptions
 ): Promise<DryRunResult> {
-  const child = Bun.spawn(["bash", "-c", script], {
+  const { child, endGroup } = spawnWatched(["bash", "-c", script], {
     cwd,
-    env,
-    stdin: "ignore",
+    env: { ...env, DISPATCH_DRY_RUN_LOCAL: "1" },
     stdout: "pipe",
     stderr: "pipe",
-    detached: true,
   });
   let timedOut = false;
-  const kill = () => {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The group already exited.
-    }
-  };
   const timer = setTimeout(() => {
     timedOut = true;
-    kill();
+    endGroup();
   }, timeoutMs);
-  signal?.addEventListener("abort", kill, { once: true });
+  signal?.addEventListener("abort", endGroup, { once: true });
   try {
     const [stdout, stderr] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
+      child.exited.finally(endGroup),
     ]);
-    await child.exited;
     return { exitCode: child.exitCode, stdout, stderr, timedOut };
   } finally {
     clearTimeout(timer);
-    signal?.removeEventListener("abort", kill);
+    signal?.removeEventListener("abort", endGroup);
+    endGroup();
   }
 }
 
@@ -2292,11 +2311,11 @@ const renderUnreviewed = (outcome: GateEntry["outcome"], reason: string | undefi
 };
 /**
  * The note of a write whose dry run did not finish in time, run again once where the deadline
- * left room. The dry run contacts no Dispatch server, so the cause is the machine, and the one
- * thing the agent can do is check what the write posted.
+ * left room. The gate's dry run contacts no Dispatch server (`spawnDryRun`), so the cause is the
+ * machine, and the one thing the agent can do is check what the write posted.
  */
 const renderSlowDryRun = (reason: string) =>
-  `<advisor-gate advisor="AskGate" outcome="error">\nAskGate did not review this Dispatch write: ${agentFacing(reason)}. A dry run only checks the arguments on this machine and contacts no Dispatch server, so the likely cause is a busy machine, not Dispatch. The call ran unreviewed: read back what it posted, and correct it if it is wrong.\n</advisor-gate>`;
+  `<advisor-gate advisor="AskGate" outcome="error">\nAskGate did not review this Dispatch write: ${agentFacing(reason)}. AskGate's dry run only checks the arguments on this machine and contacts no Dispatch server, so the likely cause is a busy machine, not Dispatch. The call ran unreviewed: read back what it posted, and correct it if it is wrong.\n</advisor-gate>`;
 /**
  * The flags a refused file's text can go through instead: a `--<field>-file` reads `-` as stdin and
  * any other path as a file. An upload's `--path` (and `--path-file`, which names it) is a path the

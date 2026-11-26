@@ -20,6 +20,33 @@ export const MAX_ISSUE_BLOCKERS = 20;
 export const MAX_ISSUE_ADVANCES = 20;
 
 /**
+ * The most labels one issue holds, and so the most one `labels` or `labels_add` input names,
+ * before duplicates, which differ in case alone, are removed. `labels_add` is held to it twice:
+ * the input alone, and the issue's labels with the input added. Generated into Go as
+ * `contracts.MaxIssueLabels`, which `POST /api/v1/issues`, `PATCH /api/v1/issues/{key}` and the
+ * `label` filter of `GET /api/v1/issues` enforce as `400 LABELS_INPUT` naming the limit, and the
+ * issue tools' `labels` and `labels_add` take it as their bound.
+ */
+export const MAX_ISSUE_LABELS = 20;
+
+/**
+ * The longest label, in UTF-16 units, counted after the trim the issue routes apply; a blank or
+ * longer one is `400 LABELS_INPUT`. Generated into Go as `contracts.IssueLabelMax`, which those
+ * routes enforce, and which the label the dashboard gives an issue it files from a person's typed
+ * words (`DISPATCH_NEW_ISSUE_LABEL`) is held to at boot; the issue tools' labels take it as each
+ * item's bound.
+ */
+export const ISSUE_LABEL_MAX = 40;
+
+/**
+ * The most component ids one `components` input of mode `explicit` names, before duplicates are
+ * removed. Generated into Go as `contracts.MaxIssueComponents`, which `POST /api/v1/issues` and
+ * `PATCH /api/v1/issues/{key}` enforce as `400 COMPONENTS_INPUT` naming the limit, and the issue
+ * tools' `components.ids` take it as its bound.
+ */
+export const MAX_ISSUE_COMPONENTS = 50;
+
+/**
  * The longest issue title, in UTF-16 units, counted after the trim `POST /api/v1/issues` and
  * `PATCH /api/v1/issues/{key}` apply; a longer one is `400 CAP_EXCEEDED`. Production's longest
  * title was 326 characters when this was set. It bounds the duplicate-title check, which compares
@@ -31,6 +58,18 @@ export const MAX_ISSUE_ADVANCES = 20;
 export const ISSUE_TITLE_MAX = 1000;
 
 /**
+ * The longest priority id, in characters: an id is ASCII, so in bytes too. Two readers take it,
+ * so they hold one number. `POST /api/v1/priorities` refuses an `id` the caller names that is
+ * longer, as `400 PRIORITY_INPUT` naming this bound. The same route cuts the id it derives from
+ * the title, when the body names none, to fit it. The cut keeps a slug of at most this many
+ * characters whole; it cuts a longer one to its longest start that fits and ends at the end of a
+ * word, or to its first this many characters when its first word is longer.
+ * `fixtures/priority-ids.json` holds the cases of that rule, and its `description` names the
+ * tests that read them. Generated into Go as `contracts.PriorityIDMax`.
+ */
+export const PRIORITY_ID_MAX = 200;
+
+/**
  * The longest project name, in UTF-16 units, counted after the trim `POST /api/v1/projects`
  * applies; a longer one is `400 CAP_EXCEEDED`. A name shows beside its key in the sidebar's
  * 20rem rail and in every project picker's `KEY · Name` option, any bearer may write one, and no
@@ -39,6 +78,42 @@ export const ISSUE_TITLE_MAX = 1000;
  * server enforces, and the Settings name field and `dispatch project` take it as their maximum.
  */
 export const PROJECT_NAME_MAX = 80;
+
+/**
+ * The most bytes of markdown one document may hold, counted in UTF-8 as the server counts a body:
+ * what one upload of a markdown document may send, and what a write may grow a stored document's
+ * rendering to. An upload past it is `413 CAP_EXCEEDED` with MARKDOWN_DOCUMENT_TOO_LARGE, up to the
+ * server's 25 MiB file cap; past that cap the server answers `artifact blob exceeds 25 MB` instead.
+ * Generated into Go as `contracts.MarkdownDocumentMaxBytes`, which is the server's
+ * `pmdoc.MaxDocumentBytes`. `dispatch artifact` and its dry run refuse a text past it, given
+ * inline, in `--content-file`, on stdin or in a Markdown `--path` file, before they ask the round
+ * trip or upload, and the call before it reads whether the owner holds the name.
+ */
+export const MARKDOWN_DOCUMENT_MAX_BYTES = 1 << 20;
+
+/**
+ * What the `413 CAP_EXCEEDED` of an upload whose markdown is past MARKDOWN_DOCUMENT_MAX_BYTES says.
+ * Generated into Go as `contracts.MarkdownDocumentTooLarge`, which the upload route answers, and
+ * `dispatch artifact` prints it after `CAP_EXCEEDED: ` for a text past that bound, however it is
+ * given, so its own refusal and the server's are one text for an upload within the server's 25 MiB
+ * file cap.
+ */
+export const MARKDOWN_DOCUMENT_TOO_LARGE = `a markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB; a larger file is stored as a binary artifact under another content type`;
+
+/**
+ * The response header that the markdown round trips (`POST /api/v1/markdown/round-trip`, `POST
+ * /api/v1/markdown/file-round-trip`) put on their refusal of a text for the text alone, whatever
+ * the refusal's status: a mark, with one value, that says the answer is Dispatch's refusal of the
+ * text, so a client reads only that the header is there. The routes make the checks an upload
+ * makes of the text alone, in the order, status, code and words of that upload, and make a new
+ * document's only for a request that asks for them (`new_document`). Generated into Go as
+ * `contracts.TextRefusalHeader`. `dispatch artifact` asks for a new document's refusals only where
+ * the call makes a new document, so it reads an answer carrying the header as the call's own
+ * refusal, and any other failure of the round trip as no answer at all, so a check of the text
+ * Dispatch adds to that upload, at any status, reaches the call and its dry run with no change to
+ * the client.
+ */
+export const TEXT_REFUSAL_HEADER = "Dispatch-Text-Refusal";
 
 /**
  * The most issues one page of `GET /api/v1/issues` holds: `limit` is 1 to this. Generated into Go
@@ -125,6 +200,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
+
+/**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
  * server answers `400 CAP_EXCEEDED`. It is set above the heaviest set a page was seen to name:
  * 247 distinct references, measured on 2026-11-05 on the issue the new issue page was designed
@@ -155,8 +239,11 @@ export const REFERENCE_TARGETS_MAX = 256;
  * `IDEMPOTENCY_REPLAYED_HEADER` and the resource read afresh in the first answer's shape (a
  * broadcast with the first answer's `excluded`), so a recipient whose attempt a live sender holds
  * can still read `pending`, and a repeat after a lost answer is that replay, never
- * `409 IDEMPOTENCY_KEY_COMMITTED`. Where a first answer was a comment or an issue message, eight
- * routes answer its repeat with that post read afresh, under the first answer's status: a
+ * `409 IDEMPOTENCY_KEY_COMMITTED`. `POST /api/v1/issues/{key}/status-change` keeps a recovery
+ * point too: a repeat of a finished call answers its `200` from what its steps stored, each issue
+ * as its step's write answered it, and a repeat that takes the key of a call that stopped runs
+ * only the steps the point does not hold. Where a first answer was a comment or an issue message,
+ * eight routes answer its repeat with that post read afresh, under the first answer's status: a
  * comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's
  * reply to a comment or a message. Any other stored success is not replayed once it holds a
  * comment or an issue message that is deleted (an object whose own id is the post, such as a
@@ -225,23 +312,37 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 
 /**
  * The code of the `403` for a write by an access token the secrets broker issued that names a
- * session and a service but no person: the machine holding it has signed nobody in, so Dispatch
- * has nobody to record the write under. Its reads are unaffected. The message names
- * `agent-secrets login`, the one command that makes the write possible, because whoever reads
- * the refusal is whoever must run it.
+ * session and a service but no person under the project scope `person`: a machine's token, and
+ * the machine holding it has signed nobody in, so Dispatch has nobody to record the write under.
+ * Its reads are unaffected. A job's token names a service and no person too, but under the
+ * project scope `named` or `public`, and Dispatch takes its writes as that service rather than
+ * refusing them; so does a token an exchange account entry naming no person minted, under the
+ * project scope `named`, whose service is that account. The message names `agent-secrets
+ * login`, the one command that makes the write possible, because whoever reads the refusal is
+ * whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 
 /**
- * The code of the `403` for a request by an access token the secrets broker issued that holds
- * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
- * service and a session, no person and no project, and Dispatch serves it on the routes its read
- * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
- * runs and before its idempotency key is read, so the refused request claims no key and writes
- * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
- * the request possible for that token.
+ * The code of the `403` for a request by a read-only token to a route outside Dispatch's read
+ * class. Every token that holds `read` is read-only: one the secrets broker minted from a read
+ * entry or narrowed when its trade asked for `read`, and a personal token minted with `read`.
+ * Dispatch serves such a token on the GET routes it classes as reads and refuses it on every
+ * other route and on `GET /ws/live`, before the route's handler runs and before its idempotency
+ * key is read. So the refused request claims no key, and writes nothing but the record of the
+ * token's use: a broker token's spent DPoP proof, or a personal token's last use. No sign-in and
+ * no other scope makes the request possible for that token.
  */
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
+
+/**
+ * The code of the `403` for a request by a read-only token that carries a cut (the broker's
+ * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
+ * No build serves a read at a past time yet, so Dispatch refuses the request before the route's
+ * handler runs, and names the cut, rather than answer it with the present. On a route outside
+ * the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ */
+export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
 
 /** The codes of a repeat Dispatch gives no copy of its first answer for: `409 KEY_COMMITTED`, a
  *  write that landed, or a replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats a write's as

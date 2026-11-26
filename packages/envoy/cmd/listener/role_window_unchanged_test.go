@@ -151,14 +151,14 @@ func heldEventIDs(held []contracts.Envelope) []string {
 // it has returned.
 func (rig *windowRig) awaitHeldForSession(t *testing.T, sessionID, eventID, what string) contracts.Envelope {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		held := rig.heldForSession(t, sessionID)
 		if index := slices.IndexFunc(held, func(item contracts.Envelope) bool { return item.EventID == eventID }); index >= 0 {
 			return held[index]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: the stream holds %v on %s's own subject after 10s, want event %s among them",
+			t.Fatalf("%s: the stream holds %v on %s's own subject in the time it was given, want event %s among them",
 				what, heldEventIDs(held), sessionID, eventID)
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -183,6 +183,7 @@ func (rig *windowRig) awaitHeldForSession(t *testing.T, sessionID, eventID, what
 // routes, with the registry's clock moved past the window, read the holder unresponsive. So the
 // live answers before them come from the registration's age and from nothing else of the rig.
 func TestARoleHolderInsideTheLiveWindowReadsLiveOnEveryRoleRoute(t *testing.T) {
+	t.Parallel()
 	rig := newWindowRig(t)
 	const (
 		holder = "ses_window_holder"

@@ -44,11 +44,11 @@ import (
 // waveSize is how many claims each wave wakes at once.
 const waveSize = 40
 
-// waveClock is the machines' time, held still until a test moves it: a timer is due at a moment
-// rather than after a wait, because a paced wake is armed for the turn the limiter gave it and a
-// test that advances to that turn must fire that timer and no other. heldClock
-// (supervision_test.go) fires by the exact wait a timer was armed for, which no wave can name: the
-// daemon jitters every paced release, so the forty waits of one wave are forty different numbers.
+// waveClock is the machines' time, held still until a test moves it, with each timer due at a
+// moment: a test that advances to a paced wake's turn fires that timer and no other. heldClock
+// (supervision_test.go) fires by the exact wait a timer was armed for, and no wave can name its
+// waits, since the daemon jitters every paced release: the forty turns of one wave are forty
+// different moments.
 type waveClock struct {
 	mu     sync.Mutex
 	now    time.Time
@@ -82,7 +82,18 @@ func (c *waveClock) Sleep(ctx context.Context, _ time.Duration) error { return c
 func (c *waveClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	timer := &waveTimer{clock: c, due: c.now.Add(d), f: f}
+	return c.armLocked(c.now.Add(d), f)
+}
+
+func (c *waveClock) At(at time.Time, f func()) supervise.Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armLocked(at, f)
+}
+
+// armLocked arms f for due. The caller holds mu.
+func (c *waveClock) armLocked(due time.Time, f func()) supervise.Cancel {
+	timer := &waveTimer{clock: c, due: due, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -131,6 +142,49 @@ func (c *waveClock) advanceTo(at time.Time) {
 // advance moves the clock on by d.
 func (c *waveClock) advance(d time.Duration) { c.advanceTo(c.Now().Add(d)) }
 
+// advanceUntil moves the clock to due, and on from there to each next timer until done holds or no
+// timer is left (fireNext). due is a moment the state named for a wake, which the jitter of the
+// turns ahead of it can only make later (advanceToLaunch).
+func (c *waveClock) advanceUntil(due time.Time, done func() bool) {
+	c.advanceTo(due)
+	for !done() && c.fireNext() {
+	}
+}
+
+// fireNext moves the clock to the earliest timer still armed, when that is later than now, and
+// runs what falls due there (advanceTo), as a clock that moves on its own reaches its next event.
+// It reports false when no timer is armed.
+func (c *waveClock) fireNext() bool {
+	c.mu.Lock()
+	var next *waveTimer
+	for _, timer := range c.timers {
+		if !timer.done && (next == nil || timer.due.Before(next.due)) {
+			next = timer
+		}
+	}
+	c.mu.Unlock()
+	if next == nil {
+		return false
+	}
+	c.advanceTo(next.due)
+	return true
+}
+
+// advanceToLaunch moves the clock until the runtime has made want launches: first to due, the
+// moment the state named for the wake whose launch is the want-th (api.WakeWaiting.DueAt), and on
+// from there to each next timer until that launch is made. The state names the moment the pacer
+// estimates for a wake's place (wakepace.Place.Estimate): exact at the head of the queue, and for
+// a place behind it the head's turn and one interval for each place between, short of the jitter
+// those turns are still to draw. So the launch comes at the named moment or after it, never
+// before, at a turn of the pacer's own.
+func advanceToLaunch(t *testing.T, clock *waveClock, rt *waveRuntime, due time.Time, want int) {
+	t.Helper()
+	clock.advanceUntil(due, func() bool { return len(rt.launches()) >= want })
+	testwait.Eventually(t, fmt.Sprintf("launch %d, due from %s", want, due), func() bool {
+		return len(rt.launches()) >= want
+	})
+}
+
 // waveRuntime is the fake runtime with the moment of every launch on the test's clock: what the
 // wave's consumer sees is when each process started, and the fake records the call alone.
 type waveRuntime struct {
@@ -141,6 +195,9 @@ type waveRuntime struct {
 	// held, while it is open, is what every launch waits for before it reaches the runtime
 	// (holdLaunches); nil lets every launch straight through.
 	held chan struct{}
+	// sweeps, while it is set, holds every orphan sweep at its reconciliation until the test lets
+	// it through (gateSweeps); nil lets every sweep through.
+	sweeps *sweepGate
 }
 
 // waveLaunch is one launch the runtime was asked for: whose claim, when on the test clock, and
@@ -179,13 +236,110 @@ func (r *waveRuntime) Resume(ctx context.Context, prev *runtime.Locator, spec ru
 // above zero: reconcileOrphans passes orphanGrace, and reconcileBootOrphans passes 0. The sweep
 // goes from ReconcileOrphans to refreshStalePlugins, which calls the same refreshGate.Correct
 // and Admit as the boot pass. Without this hold, a sweep that runs while launches are held
-// changes the shared gate, and the boot pass's count is wrong.
+// changes the shared gate, and the boot pass's count is wrong. The sweep's reconciliation waits at
+// the sweep gate too while a test has one set (gateSweeps).
 func (r *waveRuntime) ReconcileOrphans(ctx context.Context, known []runtime.Known, grace time.Duration) error {
 	if grace > 0 {
 		r.await(ctx)
+		r.mu.Lock()
+		gate := r.sweeps
+		r.mu.Unlock()
+		gate.hold(ctx)
 	}
 	return r.Runtime.ReconcileOrphans(ctx, known, grace)
 }
+
+// sweepGate holds the orphan sweep at its reconciliation, which the sweep makes after it has read
+// the claims and before its refresh pass (reconcileOrphans): a test that lets one sweep through
+// at a time runs exactly one pass for each it lets through, on the wall clock's sweep but no
+// longer at its pace. That is what a test needs that counts passes: the sweep's own ticker runs
+// whatever the test does, so a count of sweeps between two readings of the state counts the
+// machine's load as much as the passes.
+type sweepGate struct {
+	// waiting carries each sweep that reaches the gate, one send for each.
+	waiting chan *sweepHold
+	// opened, closed, lets every sweep through from then on.
+	opened chan struct{}
+	once   sync.Once
+	// held is the sweep awaitSweep read last, which letOne lets through; nil once it has. Only
+	// the test's own goroutine reads or writes it, as only that goroutine calls those two.
+	held *sweepHold
+}
+
+// sweepHold is one sweep's wait at the gate: the test closes through to let that sweep go on, and
+// the sweep closes gone if it leaves the gate without being let through — its daemon's context
+// ended, or the gate opened. Closing is what lets the test hand a sweep through: a send would
+// block for ever where the sweep has left, and the row would then hold to the test binary's
+// deadline rather than failing by name (letOne).
+type sweepHold struct {
+	through chan struct{}
+	gone    chan struct{}
+}
+
+// gateSweeps sets the sweep gate: from now on every sweep waits at its reconciliation until the
+// test lets it through (letOne) or opens the gate (open). A sweep already past its reconciliation
+// runs on; the next one waits.
+func (r *waveRuntime) gateSweeps() *sweepGate {
+	gate := &sweepGate{waiting: make(chan *sweepHold), opened: make(chan struct{})}
+	r.mu.Lock()
+	r.sweeps = gate
+	r.mu.Unlock()
+	return gate
+}
+
+// hold is the sweep's wait at the gate: it says it waits, then waits to be let through. A nil gate,
+// an open one and an ended context hold nothing; a sweep that leaves without being let through
+// says so, so the test fails by name rather than waiting on a sweep that is gone.
+func (g *sweepGate) hold(ctx context.Context) {
+	if g == nil {
+		return
+	}
+	held := &sweepHold{through: make(chan struct{}), gone: make(chan struct{})}
+	select {
+	case g.waiting <- held:
+	case <-g.opened:
+		return
+	case <-ctx.Done():
+		return
+	}
+	select {
+	case <-held.through:
+	case <-g.opened:
+		close(held.gone)
+	case <-ctx.Done():
+		close(held.gone)
+	}
+}
+
+// awaitSweep waits for the next sweep to reach the gate, which it reaches having read the claims
+// its refresh pass will walk. The sweep it read is the one letOne lets through.
+func (g *sweepGate) awaitSweep(t *testing.T, what string) {
+	t.Helper()
+	g.held = testwait.Receive(t, what, g.waiting)
+}
+
+// letOne lets through the sweep that awaitSweep read: it runs its reconciliation, its refresh pass
+// and the rest of its tick, and the sweep after it waits at the gate. It waits on nothing — the
+// sweep is let through by a close — and fails the test by name where there is no sweep to let
+// through, or where the one read has left the gate since, which is a run that would otherwise
+// wait at the next awaitSweep for a pass that never ran.
+func (g *sweepGate) letOne(t *testing.T) {
+	t.Helper()
+	held := g.held
+	g.held = nil
+	if held == nil {
+		t.Fatal("no sweep waits at the gate: awaitSweep reads the sweep that letOne lets through")
+	}
+	close(held.through)
+	select {
+	case <-held.gone:
+		t.Fatal("the sweep that waited at the gate left it before the test let it through, so no refresh pass ran for it: its daemon's context ended, or the gate was opened")
+	default:
+	}
+}
+
+// open lets every sweep through from now on, the one waiting included.
+func (g *sweepGate) open() { g.once.Do(func() { close(g.opened) }) }
 
 // holdLaunches makes every launch the runtime is asked for from now on wait until release is
 // called, or until the launch's own context ends. A launch the burst lets out runs inside the
@@ -470,9 +624,14 @@ func wakeChanges(t *testing.T, d *daemon, before, after []api.WakeWaiting) strin
 
 // assertQueueLeft reads the queue the decisions left and checks four things of it: one wake gone
 // for each decided claim and no other, no decided claim's wake still waiting, no wake waiting
-// that was not waiting in before, and every wake left due at the moment before says it already
-// held. It reads the queue itself, since the only queue it may judge is the one standing when it
-// runs. why names the decisions, for each failure.
+// that was not waiting in before, and every wake left due no later than the moment before named
+// for it. A decision that takes a wake gives its place up, so the wakes behind that place may move
+// up to the turns it would have taken (wakepace.Place.Leave), and none of them moves back; before
+// the place-based pacing a dropped wake left its moment spent, and this read every wake left due
+// at the very moment it held. The order the wakes run in is the caller's to read at their turns:
+// a machine publishes its wake's estimate at its own decisions, so the moments read here are of
+// different instants and say nothing of order. It reads the queue itself, since the only queue it
+// may judge is the one standing when it runs. why names the decisions, for each failure.
 func assertQueueLeft(t *testing.T, d *daemon, why string, before []api.WakeWaiting, decided ...claim.Token) {
 	t.Helper()
 	after := waitingWakes(t, d)
@@ -493,8 +652,8 @@ func assertQueueLeft(t *testing.T, d *daemon, why string, before []api.WakeWaiti
 			t.Fatalf("a wake of %s waits after %s and no wake of it waited before, so the count above hid a wake that left; %s",
 				wake.Claim, why, wakeChanges(t, d, before, after))
 		}
-		if !wake.DueAt.Equal(was) {
-			t.Fatalf("the wake of %s is due at %s, want the turn it already held, %s: %s moved nobody else's turn",
+		if wake.DueAt.After(was) {
+			t.Fatalf("the wake of %s is due at %s, want no later than the turn it already held, %s: %s moved nobody else's turn back",
 				wake.Claim, wake.DueAt, was, why)
 		}
 	}
@@ -517,17 +676,6 @@ func awaitWave(t *testing.T, d *daemon, count int) []api.WakeWaiting {
 		return len(waiting) == count-1 && slices.Equal(waiting, settled)
 	})
 	return waiting
-}
-
-// wakeMoments is the moment each wake of a wave runs at: the first at origin, which the burst let
-// straight out, then every waiting wake's own turn.
-func wakeMoments(origin time.Time, waiting []api.WakeWaiting) []time.Time {
-	moments := make([]time.Time, 0, len(waiting)+1)
-	moments = append(moments, origin)
-	for _, wake := range waiting {
-		moments = append(moments, wake.DueAt)
-	}
-	return moments
 }
 
 // assertSpread is the whole of what c-spread asks of a wave's schedule: the first wake goes at
@@ -636,36 +784,46 @@ func assertWakeLines(t *testing.T, logged *syncBuffer, kind string, moments []ti
 	}
 }
 
-// runWave advances the clock to each waiting wake's turn, one turn at a time, and requires that
-// turn to run that wake's launch and no other: nothing goes before its moment, and what the state
-// promised for a moment is what happens at it. before is how many launches the wave had already
-// made when the queue was read.
+// runWave moves the clock through each waiting wake's turn, in the order the state names them,
+// and requires that turn to run that wake's launch and no other: nothing goes before the moment
+// the state named for it, and the queue the state named is the order the wakes run in. The moment
+// is the pacer's estimate for the wake's place (advanceToLaunch), which a wake behind the head of
+// the queue meets late by the jitter of the turns ahead of it; before the place-based pacing the
+// state named the very moment the limiter had handed each wake, and this read that the launch ran
+// at it. before is how many launches the wave had already made when the queue was read.
 func runWave(t *testing.T, clock *waveClock, rt *waveRuntime, waiting []api.WakeWaiting, before int) []waveLaunch {
 	t.Helper()
 	for i, wake := range waiting {
-		clock.advanceTo(wake.DueAt)
 		want := before + i + 1
-		testwait.Eventually(t, fmt.Sprintf("the launch of %s at its turn, %s", wake.Claim, wake.DueAt), func() bool {
-			return len(rt.launches()) >= want
-		})
+		advanceToLaunch(t, clock, rt, wake.DueAt, want)
 		launches := rt.launches()
 		if len(launches) != want {
-			t.Fatalf("%d launches at %s, want %d: one wake's turn runs one wake", len(launches), wake.DueAt, want)
+			t.Fatalf("%d launches by %s, want %d: one wake's turn runs one wake", len(launches), clock.Now(), want)
 		}
-		if got := launches[want-1]; got.claim != wake.Claim || !got.at.Equal(wake.DueAt) {
-			t.Fatalf("the launch at %s is %s at %s, want %s at its own turn", wake.DueAt, got.claim, got.at, wake.Claim)
+		if got := launches[want-1]; got.claim != wake.Claim || got.at.Before(wake.DueAt) {
+			t.Fatalf("the launch at %s is %s, want %s at its own turn, no earlier than %s", got.at, got.claim, wake.Claim, wake.DueAt)
 		}
 	}
 	return rt.launches()
 }
 
+// launchMoments is the moment each of launches ran at, in order.
+func launchMoments(launches []waveLaunch) []time.Time {
+	moments := make([]time.Time, 0, len(launches))
+	for _, launch := range launches {
+		moments = append(moments, launch.at)
+	}
+	return moments
+}
+
 // Forty launches a restart raises in one instant — every claim of the roll, launching with no
 // process recorded, relaunched by boot (launchUnfinished) — go out at the operator's pace: the
-// burst lets the first out at once, the state names every other with the turn the limiter gave it,
-// no minute of the test clock holds more than the rate plus the burst, the gaps differ because
-// each release waits a random part of an interval after its turn, and each claim's process starts
-// at its own turn and not before. Each wake writes the one line an operator counts a minute's
-// wakes from.
+// burst lets the first out at once, the state names every other with the moment the pacer
+// estimates for its place, no minute of the test clock holds more than the rate plus the burst,
+// the gaps differ because each release waits a random part of an interval after its turn, and
+// each claim's process starts at its own turn and not before. Each wake writes the one line an
+// operator counts a minute's wakes from. The spread is read off the launches as they ran, since
+// the state's estimates draw no jitter for the places behind the head.
 //
 // The negative control is the pacing reverted for this case, the rate set to 0
 // (TestWithNoPacingTheBootWaveGoesOutInOneTick): all forty launches then go out inside one tick of
@@ -697,10 +855,9 @@ func TestABootWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 		t.Fatalf("the burst's launch is at %s, want the instant the wave was raised, %s", first[0].at, origin)
 	}
 
-	moments := wakeMoments(origin, waiting)
-	assertSpread(t, "the boot wave's launches", moments, origin)
-
 	launches := runWave(t, clock, rt, waiting, 1)
+	moments := launchMoments(launches)
+	assertSpread(t, "the boot wave's launches", moments, origin)
 	launched := map[claim.Token]int{}
 	for _, launch := range launches {
 		launched[launch.claim]++
@@ -739,8 +896,9 @@ func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t 
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	now := func() time.Time { return wakeOrigin }
-	engine := wakeEngine(records, pacedWakes(), now)
+	clock := &waveClock{now: wakeOrigin}
+	now := clock.Now
+	engine := wakeEngine(records, testCatchUpPacing(t, pool, pacedWakes(), clock), now)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
 		trees: outboxTreeStore(t, pool), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		handlers: []intake.Handler{engine, admit.New(records, engine, 2, "legion", quietLogger())}, now: now}
@@ -764,6 +922,7 @@ func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t 
 			}
 		}
 	}
+	letOutCatchUps(t, clock, waveSize-1)
 
 	rows := noticeRows(t, pool)
 	if len(rows) != waveSize+1 {
@@ -792,8 +951,8 @@ func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t 
 	assertSpread(t, "the catch-up wave's rows", moments, wakeOrigin)
 }
 
-// The negative control of the catch-up case: the engine with no Reserve, which is the daemon's
-// own wiring when the rate is 0 (openWorkflow). Every catch-up of the wave is then written due at
+// The negative control of the catch-up case: the engine with no hold hook, which is the daemon's
+// wiring when the rate is 0 (openWorkflow). Every catch-up of the wave is then written due at
 // once, and the architects it wakes all read their context in the same minute.
 func TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce(t *testing.T) {
 	t.Parallel()
@@ -872,7 +1031,7 @@ func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, api.DaemonAPIVersion)
+		return liveClaim(i, token, api.DaemonAPIVersion())
 	})
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
@@ -892,9 +1051,9 @@ func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 	}
 
 	waiting := awaitWave(t, d, waveSize)
-	moments := wakeMoments(origin, waiting)
-	assertSpread(t, "the displaced wave's launches", moments, origin)
 	launches := runWave(t, clock, rt, waiting, 1)
+	moments := launchMoments(launches)
+	assertSpread(t, "the displaced wave's launches", moments, origin)
 	for _, launch := range launches {
 		if !launch.resumed {
 			t.Fatalf("%s was spawned rather than resumed; a displaced claim comes back on its recorded session", launch.claim)
@@ -916,7 +1075,7 @@ func TestWithNoPacingTheDisplacedWaveGoesOutInOneTick(t *testing.T) {
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, api.DaemonAPIVersion)
+		return liveClaim(i, token, api.DaemonAPIVersion())
 	})
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
@@ -971,7 +1130,7 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 	putClaim(t, cfg, supervise.Claim{
 		Token: suspended, Project: project, Tree: cfg.Project + "-901", Issue: cfg.Project + "-901",
 		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator,
-		Session: "ses_suspended", SessionFile: "/sessions/suspended.jsonl", PluginContract: api.DaemonAPIVersion,
+		Session: "ses_suspended", SessionFile: "/sessions/suspended.jsonl", PluginContract: api.DaemonAPIVersion(),
 	})
 	writePrompt(t, cfg, suspended)
 	controller := claim.ControllerToken(project)
@@ -1041,8 +1200,14 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 			t.Fatalf("the wake of %s is due at %s, want the turn it already held, %s", wake.Claim, wake.DueAt, was)
 		}
 	}
-	assertSpread(t, "the wave the exempt wakes went around", wakeMoments(origin, after), origin)
-	runWave(t, clock, rt, after, rt.launchesOf(controller)+rt.launchesOf(suspended)+1)
+	launches := runWave(t, clock, rt, after, rt.launchesOf(controller)+rt.launchesOf(suspended)+1)
+	var wave []waveLaunch
+	for _, launch := range launches {
+		if slices.Contains(tokens, launch.claim) {
+			wave = append(wave, launch)
+		}
+	}
+	assertSpread(t, "the wave the exempt wakes went around", launchMoments(wave), origin)
 	for _, token := range tokens {
 		if got := rt.launchesOf(token); got != 1 {
 			t.Fatalf("%s launched %d times, want once: the wave kept its own spacing after the exempt wakes", token, got)
@@ -1160,7 +1325,7 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 	}
 
 	// Nothing waited for a turn: the clock is where the wave left it, and every wake still in the
-	// queue is due at the moment it already held.
+	// queue is due no later than the moment it already held (assertQueueLeft).
 	if now := clock.Now(); !now.Equal(origin) {
 		t.Fatalf("the test clock is at %s, want %s: every event was decided without a wake's turn coming", now, origin)
 	}
@@ -1168,28 +1333,28 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 		fmt.Sprintf("the suspend of %s, the stop of %s and the close of %s", drained, stopped, closed),
 		waiting, drained, stopped, closed)
 
-	// Each turn in order: the three claims whose wakes went launch nothing at the turns those
-	// wakes held, and every wake behind them runs at the turn it already held — a dropped wake
-	// frees nothing and takes nothing.
+	// Each turn in order: the three claims whose wakes went launch nothing, and every wake behind
+	// them runs in the order the queue held, one launch to a turn. The places the three wakes held
+	// were given up with them, so the turns they would have taken go to the wakes behind: a waiting
+	// place had drawn no token. Before the place-based pacing a dropped wake left its moment spent,
+	// and this read every wake behind it run at the moment it already held.
 	launched := 1
 	for _, wake := range waiting {
-		clock.advanceTo(wake.DueAt)
 		switch wake.Claim {
 		case drained, stopped, closed:
-			if got := rt.launchesOf(wake.Claim); got != 0 {
-				t.Fatalf("the claim %s, whose wake went with the event that decided it, launched %d times at the turn that wake held, want none",
-					wake.Claim, got)
-			}
-		default:
-			launched++
-			testwait.Eventually(t, fmt.Sprintf("the launch of %s at its own turn %s", wake.Claim, wake.DueAt), func() bool {
-				return rt.launchesOf(wake.Claim) == 1
-			})
-			launches := rt.launches()
-			if got := launches[len(launches)-1]; !got.at.Equal(wake.DueAt) {
-				t.Fatalf("the launch of %s is at %s, want the turn it held, %s: the three events moved nobody's turn",
-					wake.Claim, got.at, wake.DueAt)
-			}
+			continue
+		}
+		launched++
+		advanceToLaunch(t, clock, rt, origin, launched)
+		launches := rt.launches()
+		if got := launches[len(launches)-1]; len(launches) != launched || got.claim != wake.Claim {
+			t.Fatalf("launch %d is of %s, %d launches in all, want %s's, the next wake the queue held: the three events moved nobody out of the queue's order",
+				launched, got.claim, len(launches), wake.Claim)
+		}
+	}
+	for _, token := range []claim.Token{drained, stopped, closed} {
+		if got := rt.launchesOf(token); got != 0 {
+			t.Fatalf("the claim %s, whose wake went with the event that decided it, launched %d times, want none", token, got)
 		}
 	}
 	if got := len(rt.launches()); got != launched {
@@ -1351,16 +1516,11 @@ func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing
 		}
 	}
 
-	moments := wakeMoments(origin, waiting)
-	assertSpread(t, "the stale-plugin relaunch wave", moments, origin)
 	for _, wake := range waiting {
-		clock.advanceTo(wake.DueAt)
-		testwait.Eventually(t, fmt.Sprintf("the relaunch of %s at its turn", wake.Claim), func() bool {
-			return rt.launchesOf(wake.Claim) == 1
-		})
+		advanceToLaunch(t, clock, rt, wake.DueAt, len(rt.launches())+1)
 		launches := rt.launches()
-		if got := launches[len(launches)-1]; got.claim != wake.Claim || !got.at.Equal(wake.DueAt) {
-			t.Fatalf("the relaunch at %s is of %s at %s, want %s at its own turn", wake.DueAt, got.claim, got.at, wake.Claim)
+		if got := launches[len(launches)-1]; got.claim != wake.Claim || got.at.Before(wake.DueAt) {
+			t.Fatalf("the relaunch at %s is of %s, want %s at its own turn, no earlier than %s", got.at, got.claim, wake.Claim, wake.DueAt)
 		}
 		was := running[wake.Claim]
 		if previous := resumedPrevious(t, rt, wake.Claim); previous.Incarnation != was.Incarnation {
@@ -1373,6 +1533,10 @@ func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing
 			t.Fatalf("%s was relaunched %d times, want once", token, got)
 		}
 	}
+	// The spread is read off the relaunches as they ran: the state's estimates draw no jitter for
+	// the places behind the head (advanceToLaunch).
+	moments := launchMoments(rt.launches())
+	assertSpread(t, "the stale-plugin relaunch wave", moments, origin)
 	assertWakeLines(t, logged, "plugin-refresh", moments)
 }
 
@@ -1588,9 +1752,11 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 			line, supervise.WakePluginRefresh)
 	}
 
-	// Every admitted refresh runs at its turn, and the credit each took comes back there.
+	// Every admitted refresh runs at its turn, and the credit each took comes back there. The
+	// state names each wake's estimated turn, which the jitter of the turns ahead of it can only
+	// make later (advanceToLaunch), so the clock moves on from there to each next timer.
 	for _, wake := range first {
-		clock.advanceTo(wake.DueAt)
+		clock.advanceUntil(wake.DueAt, func() bool { return rt.launchesOf(wake.Claim) != 0 })
 		testwait.Eventually(t, fmt.Sprintf("the relaunch of %s at its turn", wake.Claim), func() bool {
 			return rt.launchesOf(wake.Claim) == 1
 		})
@@ -1771,8 +1937,7 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 	// The wave the restart finds is exactly the wakes the stop left waiting: the claims already
 	// launched record a process and are re-adopted, never launched again.
 	again := awaitWave(t, second, len(stillWaiting))
-	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
-	runWave(t, restartClock, restarted, again, 1)
+	assertSpread(t, "the restart's own wave", launchMoments(runWave(t, restartClock, restarted, again, 1)), restartOrigin)
 
 	total := map[claim.Token]int{}
 	for token, count := range launchedFirst {
@@ -1811,7 +1976,7 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	dead := waveClaimsFrom(t, cfg, claim.RoleImplementer, waveSize+1, 1, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, api.DaemonAPIVersion)
+		return liveClaim(i, token, api.DaemonAPIVersion())
 	})[0]
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
@@ -1853,7 +2018,6 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 	if !inWave {
 		t.Fatalf("the restart's wave of %d wakes holds no relaunch of %s, whose death the first daemon recorded", waveLeft, dead)
 	}
-	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
 
 	// The launcher reconnects and reports the death again. The relaunch the boot raised is that
 	// death's relaunch, so the report reserves no second wake and moves no turn. Where the burst
@@ -1865,7 +2029,7 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 		})
 		assertQueueLeft(t, second, "the late report of the recorded death", again)
 	}
-	runWave(t, restartClock, restarted, again, 1)
+	assertSpread(t, "the restart's own wave", launchMoments(runWave(t, restartClock, restarted, again, 1)), restartOrigin)
 
 	for _, token := range append(slices.Clone(tokens), dead) {
 		launches := launchedFirst[token] + restarted.launchesOf(token)
@@ -1944,8 +2108,7 @@ func TestASuspendDecidedWhileTheWakeWaitedSurvivesARestart(t *testing.T) {
 			t.Fatalf("the restart holds a wake for the drained claim, %+v, want none: it is suspended, not an unfinished launch", wake)
 		}
 	}
-	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
-	runWave(t, restartClock, restarted, again, 1)
+	assertSpread(t, "the restart's own wave", launchMoments(runWave(t, restartClock, restarted, again, 1)), restartOrigin)
 
 	total := map[claim.Token]int{}
 	for token, count := range launchedFirst {
@@ -1972,21 +2135,22 @@ func TestASuspendDecidedWhileTheWakeWaitedSurvivesARestart(t *testing.T) {
 	}
 }
 
-// pacedLaneTree is a lane tree whose claims' launches draw on a limiter a wave of forty has
-// already spent, so the next launch this issue raises is held exactly as the fortieth of a roll
-// is: the limiter is the daemon's own, at the shipped pace, and the machines keep the lane's own
-// held clock so a wake's turn is a moment the test fires. The deps are set before any machine
-// exists, which is how the daemon sets them (newSupervisor, then run's own Deps).
-func pacedLaneTree(t *testing.T, log *slog.Logger) (*laneTree, *wakepace.Limiter) {
+// pacedLaneTree is a lane tree whose claims' launches wait in a pacer whose limiter a wave of forty
+// has already spent, so the next launch this issue raises is held exactly as the fortieth of a
+// roll is: the limiter is the daemon's own, at the shipped pace, and the pacer and the machines
+// keep the lane's own held clock so a wake's turn is a moment the test fires. The deps are set
+// before any machine exists, which is how the daemon sets them (newSupervisor, then run's own
+// Deps).
+func pacedLaneTree(t *testing.T, log *slog.Logger) *laneTree {
 	t.Helper()
 	tree := startLaneTree(t, log)
 	limiter := pacedWakes()
 	tree.runner.supervisor.deps.Clock = tree.clock
-	tree.runner.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	tree.runner.supervisor.deps.WakePace = wakePaceOf(limiter, tree.clock)
 	for range waveSize {
 		limiter.Reserve(tree.clock.Now())
 	}
-	return tree, limiter
+	return tree
 }
 
 // waitingWakeOf is the wake the pacing holds over the issue's role, as the machine publishes it.
@@ -2018,7 +2182,7 @@ func waitingWakeOf(t *testing.T, tree *laneTree, role claim.Role) (*supervise.Ma
 func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 	t.Parallel()
 	var logged syncBuffer
-	tree, _ := pacedLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
+	tree := pacedLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
 
 	// Where the clock stands when the start runs is the moment the gate reserves from, so the wait
 	// the wake's timer was armed for is its turn less this.
@@ -2081,10 +2245,12 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 		t.Fatalf("the pacing holds %+v over the suspended claim, want the wake gone with the suspension", *still)
 	}
 
-	// The moment the wake would have had: its timer went with the suspension, so nothing fires at
-	// it and nothing is launched.
-	if fired := tree.clock.fire(wake.At.Sub(reservedAt)); fired != 0 {
-		t.Fatalf("%d timers fired at the turn the dropped wake held, want none: the suspension disarmed it", fired)
+	// The moment the wake would have had: its place went with the suspension, so the turn the
+	// pacer reserved for it comes — the pacer's own timer, the one that fires there, since that
+	// turn's token is drawn — and lets nothing of this claim out: nothing is launched. Before the
+	// place-based pacing the wake's own timer was disarmed and nothing fired at all.
+	if fired := tree.clock.fire(wake.At.Sub(reservedAt)); fired != 1 {
+		t.Fatalf("%d timers fired at the turn the dropped wake held, want the pacer's own turn alone: the suspension gave the wake's place up", fired)
 	}
 	if c := machine.Claim(); c.State != supervise.StateSuspended {
 		t.Fatalf("the suspended claim is %s at the turn its wake held, want it left %s", c.State, supervise.StateSuspended)
@@ -2094,18 +2260,19 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 	}
 }
 
-// A second start of a claim whose wake the pacing already holds takes no second token and starts
-// no second launch: the wake keeps the turn it had, the limiter's next release is one interval
-// after that turn rather than two, and the runtime is asked for nothing. The sweep of a wave
-// re-posts such a start every tick, so a second token each time would charge the whole queue the
-// rate again.
+// A second start of a claim whose wake the pacing already holds takes no second place and starts
+// no second launch: the wake keeps the place it had, a place joined after it is let out one turn
+// after that place rather than two, and the runtime is asked for nothing. The sweep of a wave
+// re-posts such a start every tick, so a second place each time would push the whole queue behind
+// it a turn further out. A waiting place draws no token, so where this test once read the
+// limiter's next reservation it reads the estimate of a probe place joined behind the wake.
 //
 // The negative control is the same wave with the pacing off (the rate at 0): the first start then
 // launches at once, there is no wake for a second start to meet, and
 // TestWithNoPacingTheBootWaveGoesOutInOneTick holds that shape for the launches themselves.
 func TestASecondStartOfAWaitingClaimTakesNoTokenAndStartsNoSecondLaunch(t *testing.T) {
 	t.Parallel()
-	tree, limiter := pacedLaneTree(t, nil)
+	tree := pacedLaneTree(t, nil)
 
 	tree.commit(t, "architect-start", tree.start(t, claim.RoleArchitect))
 	testwait.Eventually(t, "the start row to finish while the wake it raised waits", func() bool {
@@ -2122,12 +2289,13 @@ func TestASecondStartOfAWaitingClaimTakesNoTokenAndStartsNoSecondLaunch(t *testi
 	if _, still := waitingWakeOf(t, tree, claim.RoleArchitect); still.At != wake.At {
 		t.Fatalf("the wake is due at %s after the second start, want the turn it already held, %s", still.At, wake.At)
 	}
-	// The next wake of the whole daemon is one interval past this claim's turn: a second token
-	// would have pushed it a further interval out.
-	next := limiter.Reserve(tree.clock.Now())
-	if gap := next.Sub(wake.At); gap < testWakeInterval || gap >= 2*testWakeInterval {
-		t.Fatalf("the next wake of the daemon is %s past this claim's turn, want at least %s and less than %s: the second start took a token",
-			gap, testWakeInterval, 2*testWakeInterval)
+	// A place joined now waits one turn behind this claim's: a second place would have put it a
+	// further turn out.
+	probe := tree.runner.supervisor.deps.WakePace.Pacer.Join(wakepace.Second)
+	defer probe.Leave()
+	if due := probe.Estimate(); !due.Equal(wake.At.Add(testWakeInterval)) {
+		t.Fatalf("a place joined after the second start is due at %s, %s past this claim's turn, want %s past it: the second start took a place",
+			due, due.Sub(wake.At), testWakeInterval)
 	}
 }
 
@@ -2159,8 +2327,8 @@ func noticeRowOf(t *testing.T, pool *store.Pool, issue string) (noticeRow, bool)
 // the catch-up waits, is published after it and never before it, so the architect is woken once
 // and reads the later notice in the turn that wake starts.
 //
-// The negative control is the pacing reverted for this lane, the engine given no Reserve
-// (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): the catch-up is then due at once, the ready
+// The negative control is the pacing reverted for this lane, the engine given no hold hook
+// (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): the catch-up is due at once, the ready
 // has nothing to leave where it was, and the architect's minute holds the whole wave.
 func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testing.T) {
 	t.Parallel()
@@ -2168,13 +2336,24 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	now := wakeOrigin
+	clock := &waveClock{now: wakeOrigin}
+	// Jitter the first interval only. The pending turn already includes that jitter when the
+	// later notice reads its estimate, so the notice and catch-up are due in the same drain.
+	first := true
+	limiter := wakepace.New(testWakeRate, testWakeBurst, func(interval time.Duration) time.Duration {
+		if first {
+			first = false
+			return interval / 2
+		}
+		return 0
+	})
+	pacing := testCatchUpPacing(t, pool, limiter, clock)
 	publisher := &holderPublisher{}
-	engine := wakeEngine(records, pacedWakes(), func() time.Time { return now })
+	engine := wakeEngine(records, pacing, clock.Now)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
 		notices: publisher, trees: outboxTreeStore(t, pool), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		handlers: []intake.Handler{engine, admit.New(records, engine, 2, "legion", quietLogger())},
-		now:      func() time.Time { return now }}
+		now:      clock.Now, catchUps: pacing}
 
 	for i := 1; i <= waveSize; i++ {
 		key := fmt.Sprintf("LEGION-%d", i)
@@ -2187,8 +2366,10 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 	// An architect from the middle of the queue, whose turn is minutes out.
 	const woken = "LEGION-20"
 	catchUp, ok := noticeRowOf(t, pool, woken)
-	if !ok || !catchUp.paced() || !catchUp.nextAt.After(now.Add(time.Minute)) {
-		t.Fatalf("the catch-up of %s is %+v, want one the pacing holds more than a minute out", woken, catchUp)
+	due := pacing.estimate(catchUp.id)
+	if !ok || !catchUp.pacedAt.Equal(record.CatchUpHeldAt) || !catchUp.nextAt.Equal(record.CatchUpHeldAt) ||
+		!due.After(clock.Now().Add(time.Minute)) {
+		t.Fatalf("the catch-up of %s is %+v (estimate %s), want held with its estimate more than a minute out", woken, catchUp, due)
 	}
 	architect := mustClaimToken(t, woken, claim.RoleArchitect)
 
@@ -2200,15 +2381,19 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 			woken, after.nextAt, catchUp.nextAt)
 	}
 	rows := noticeRows(t, pool)
-	moments := make([]time.Time, 0, len(rows))
-	for _, row := range rows {
-		moments = append(moments, row.nextAt)
+	letOut := make(map[int64]time.Time, len(rows))
+	readLetOuts := func() {
+		for _, row := range noticeRows(t, pool) {
+			if row.paced() && !row.pacedAt.Equal(record.CatchUpHeldAt) {
+				letOut[row.id] = row.pacedAt
+			}
+		}
 	}
-	assertSpread(t, "the queue after the architect's ready", moments, wakeOrigin)
+	readLetOuts()
 
 	// The later notice of that tree, written while the catch-up waits and due at once.
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, woken, record.Notice{Kind: "phase-finished", Role: claim.RoleArchitect,
-		Phase: phase.Planning, Summary: "the planner finished"}, now))
+		Phase: phase.Planning, Summary: "the planner finished"}, clock.Now()))
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("drain the outbox while the catch-up waits: %v", err)
 	}
@@ -2216,13 +2401,21 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 		t.Fatalf("published %v to the architect of %s while its catch-up waits, want nothing: it is woken once, by the catch-up", got, woken)
 	}
 
-	now = catchUp.nextAt
+	letOutCatchUps(t, clock, 19)
+	readLetOuts()
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("drain the outbox at the catch-up's moment: %v", err)
 	}
 	if got := publishedTo(t, publisher, woken); fmt.Sprint(got) != "[catch-up phase-finished]" {
 		t.Fatalf("published %v to the architect of %s, want the catch-up and then the notice written behind it", got, woken)
 	}
+	letOutCatchUps(t, clock, waveSize-20)
+	readLetOuts()
+	moments := make([]time.Time, 0, len(rows))
+	for _, row := range rows {
+		moments = append(moments, letOut[row.id])
+	}
+	assertSpread(t, "the queue after the architect's ready", moments, wakeOrigin)
 }
 
 // publishedTo is the kind of each notice published to the issue's architect, in order.
