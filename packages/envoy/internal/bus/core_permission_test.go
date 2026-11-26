@@ -79,7 +79,7 @@ func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 	if err := client.Publish(roleEnvelope(grantedRole)); err != nil {
 		t.Fatalf("granted publish after a denial returned %v", err)
 	}
-	if _, err := received.NextMsg(5 * time.Second); err != nil {
+	if _, err := received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("granted publish was not delivered: %v", err)
 	}
 }
@@ -168,6 +168,8 @@ func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
 // and logs the denial (cmd/listener), and a probe that waited would spend the send's budget.
 func TestARequestCoreNATSDeniesAnswersTheDenialAtOnce(t *testing.T) {
 	client, _ := grantedClient(t)
+	// The bound under test, not a wait: a denial answers at once, and a probe that waits for an
+	// answer instead runs out these 2 s, which the row reads below.
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	started := time.Now()
