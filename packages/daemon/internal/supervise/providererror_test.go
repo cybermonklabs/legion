@@ -121,7 +121,7 @@ func TestThePromptRetryLadderStopsGrowingAtTenMinutes(t *testing.T) {
 // costs the claim a prompt failure: chargePrompt retires and then fails a claim past
 // Limits.PromptFailures, which would fail every claim of a project at once in a provider outage
 // — and a credential is the fleet's, so a 401 or a 403 reaches every claim of the project at
-// once (holdsTheIssue).
+// once (classifyProviderError).
 func TestAStatusThatClearsChargesNoPromptBudgetHoweverOftenItHappens(t *testing.T) {
 	for _, status := range []int{401, 403, 408, 429, 529} {
 		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
@@ -239,6 +239,58 @@ func TestARefusalThenAMalformedRequestHoldsTheIssue(t *testing.T) {
 	h.wantPrompts(2)
 }
 
+// OpenAI's cyber-policy refusal holds the issue whatever status it came with, under a cause word
+// of its own, and nothing is sent again, however long the claim waits. Each re-send would be a
+// prompt from outside the session, which ends Oh My Pi's own hold, and would send the refused
+// content to OpenAI again. A gateway relays such a refusal as a 503, which on its status alone
+// would climb the ladder, and a request Oh My Pi held after one carries no status at all.
+func TestACyberPolicyRefusalHoldsTheIssueWhateverItsStatus(t *testing.T) {
+	for _, status := range []int{0, 400, 503} {
+		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
+			h := workingClaim(t)
+
+			h.errorTurn(StreamPromptResult{Error: "503 cyber_policy: synthetic refusal text", HTTPStatus: status,
+				Provider: "openai", Model: "gpt-5.5", Code: codeCyberPolicy})
+
+			h.wantHeldForCyberPolicy()
+			if h.claim().Pending == nil {
+				t.Error("the failed claim holds no task; the work is still owed and the architect decides it")
+			}
+			// Past the ladder's top step twice over: the task itself is the one prompt.
+			h.advance(2 * promptRetryMax)
+			h.wantPrompts(1)
+		})
+	}
+}
+
+// A session past Oh My Pi's cost cap is the other class the daemon reads: it can clear when a
+// person raises the cap, and a refused send costs nothing, so the task climbs the ladder as a
+// statusless error does, and the cause is named rather than "a provider error", so the
+// controller's notice says what to raise.
+func TestACostCapClimbsTheLadderAndIsNamed(t *testing.T) {
+	var reasons []string
+	h := workingClaim(t, func(d *Deps) {
+		d.ProviderErrorRunReached = func(_ Claim, reason string) { reasons = append(reasons, reason) }
+	})
+	refusal := "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent."
+
+	sent := 1
+	for turn := range providerErrorRunTold {
+		h.errorTurn(StreamPromptResult{Error: refusal, Code: codeCostCap})
+		message := h.climbs(sent, promptRetryDelay(turn+1))
+		sent++
+		if !strings.Contains(message, "the session's cost cap") {
+			t.Fatalf("send %d is %q, want it to name the session's cost cap", sent, message)
+		}
+	}
+	if state := h.state(); state != StateWorking {
+		t.Fatalf("the claim is %s after %d cost-cap turns, want it working the task it was sent again", state, providerErrorRunTold)
+	}
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "cost_cap") {
+		t.Fatalf("the controller was told %q, want one notice naming cost_cap", reasons)
+	}
+}
+
 // R2: a newer daemon task for the claim replaces the task a provider error took back, and goes at
 // once. Nothing works the owed task, the ladder's next step can be ten minutes away and a run of
 // errors has no end of its own, so a task that waited behind it would wait that long. What the
@@ -295,7 +347,7 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 // that daemon took the ask back unconfirmed, and its wait for the next send was that daemon's
 // timer, which went with it.
 func olderDaemonsLadderStep(d *Delivery) {
-	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(providerErrorCause(529))
+	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(classifyProviderError(529, "").cause)
 }
 
 // A question an older daemon queued as a task and kept on the provider-error ladder is dropped
@@ -666,7 +718,7 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 // The same task at the other end of a claim's life. A failure keeps the pending delivery for
 // whoever decides what happens next, and the task the ladder kept is that delivery. The failure
 // here is the one every provider error can end in: the turn the ladder's own send started ended
-// in a malformed request, which holds the issue (holdsTheIssue).
+// in a malformed request, which holds the issue (classifyProviderError).
 func TestAFailureKeepsTheTaskTheLadderKept(t *testing.T) {
 	h := workingClaim(t)
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})

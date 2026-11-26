@@ -1,6 +1,7 @@
 package pmdoc
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -249,6 +250,60 @@ func TestRepeatedBlockIDJudgesOnlyWhatTheWriteAdds(t *testing.T) {
 			}
 			if want := fmt.Sprintf("block id %q would name two blocks", test.want); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("RepeatedBlockID = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// ParseWrittenAsReplacement is the parse a replacement makes over a live document that holds what
+// its markdown holds. It makes neither refusal such a document relaxes - a block id named on two
+// blocks and an element this build cannot create yet - which ParseWritten over no live document
+// makes, and which ParseWritten over a live document holding the same does not make either. A
+// repeated id stays on its first block and the next is minted another, as any write's ids are
+// (EnsureBlockIDs), and an element this build cannot create is rendered as it is written. Every
+// other refusal of ParseWritten it makes alike: the read-back's among them, which the relaxed
+// refusal no longer comes before.
+func TestParseWrittenAsReplacementMakesNoRefusalALiveDocumentRelaxes(t *testing.T) {
+	restore, err := UseStagedBlockForTest("future", false)
+	if err != nil {
+		t.Fatalf("stage the future block as not creatable: %v", err)
+	}
+	t.Cleanup(restore)
+	const note = ":::callout{#note}\nA note.\n:::\n"
+	const future = ":::future{#future-1}\nBody.\n:::\n"
+	const misread = "2. [^N]:\n       12. *\n       --\n"
+	repeated, err := Parse(note + "\n" + ":::callout{#other}\nA note.\n:::\n")
+	if err != nil {
+		t.Fatalf("parse the live document: %v", err)
+	}
+	repeated.Children[1].Attrs[BlockIDAttr] = "note"
+	held, err := Parse(future)
+	if err != nil {
+		t.Fatalf("parse the live document: %v", err)
+	}
+	for _, test := range []struct {
+		name, markdown, refusal, rendering string
+		live                               *Node
+	}{
+		{name: "a block id named on two blocks", markdown: note + "\n" + note, refusal: `block id "note" would name two blocks`,
+			rendering: ":::callout{#note kind=\"note\" title=\"\"}\nA note.\n:::\n\n:::callout{#b-000002 kind=\"note\" title=\"\"}\nA note.\n:::\n",
+			live:      repeated},
+		{name: "an element this build cannot create yet", markdown: future, refusal: "cannot write it yet", rendering: future, live: held},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, err := ParseWritten(test.markdown, nil); err == nil || !strings.Contains(err.Error(), test.refusal) {
+				t.Fatalf("ParseWritten over no live document = %v, want the refusal a live document relaxes, naming %q", err, test.refusal)
+			}
+			if _, _, err := ParseWritten(test.markdown, test.live); err != nil {
+				t.Fatalf("ParseWritten over a live document holding the same = %v, want it taken", err)
+			}
+			installCounterBlockIDs(t)
+			if _, read, err := ParseWrittenAsReplacement(test.markdown); err != nil || read.Markdown != test.rendering {
+				t.Fatalf("ParseWrittenAsReplacement = %q, %v; want %q", read.Markdown, err, test.rendering)
+			}
+			_, _, err := ParseWrittenAsReplacement(test.markdown + "\n" + misread)
+			if !errors.Is(err, ErrRenderingRefused) || strings.Contains(err.Error(), test.refusal) {
+				t.Fatalf("ParseWrittenAsReplacement beside a rendering no reader reads back = %v, want ErrRenderingRefused", err)
 			}
 		})
 	}

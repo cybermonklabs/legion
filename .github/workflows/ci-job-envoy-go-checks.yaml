@@ -147,6 +147,12 @@ jobs:
       - name: Verdict test for proxy-chain-check.sh (its arguments, call's reading of an s_client-shaped transcript, the clock file, the report; no stack)
         run: ../../.github/scripts/harness-pool.sh start scripts/proxy-chain-check.test.sh bash scripts/proxy-chain-check.test.sh
         working-directory: packages/envoy
+      - name: Count test for airlock-mutants.sh (a fixture tree and a stand-in go; no database or model)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants.test.sh bash scripts/airlock-mutants.test.sh
+        working-directory: packages/envoy
+      - name: Apply test for airlock-mutants.sh's patches (git apply --check of each; no database, model or Lean)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants-apply.test.sh bash scripts/airlock-mutants-apply.test.sh
+        working-directory: packages/envoy
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: ../../.github/scripts/harness-pool.sh start loadtest/run-step.test.sh bash loadtest/run-step.test.sh
         working-directory: packages/envoy

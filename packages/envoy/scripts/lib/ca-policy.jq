@@ -3,4 +3,4 @@
 # file's bound hosts, a "*." pattern as its domain, each once, sorted. dev-airlock.sh applies it
 # before the brokers start and proxy-chain-check.sh before a roll, as a deploy applies the pool's
 # issuance policy before it rolls the brokers.
-{names: ([.profiles[].proxy.hosts[]? | sub("^\\*\\."; "")] | unique)}
+{names: ([.kinds[].hosts[]? | sub("^\\*\\."; "")] | unique)}

@@ -8,6 +8,7 @@
 package requests
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,6 +29,17 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
+
+// AirlockRules is the airlock's rules as the live policy holds them (policy.Set.ProxyRules): the
+// profiles file's kinds, and the binding of each name whose secret's proxy tag names one. A tag
+// changes at runtime, so the proxy reads them on each request rather than once at boot, and the
+// zero Rules answer a Machine with no policy, which holds nothing back.
+func (m *Machine) AirlockRules() proxyrules.Rules {
+	if m.Policy == nil {
+		return proxyrules.Rules{}
+	}
+	return m.Policy.Get().ProxyRules()
+}
 
 // ErrAirlockNoNames is AirlockConnection's refusal of a placeholder whose grant is live and holds
 // no airlock name the session may still have: nobody decided the grant, and every one of its names
@@ -112,8 +124,11 @@ func placeholdersOf(ctx context.Context, q querier, grantID string) (map[string]
 // releases racing on different pods — the loser's insert does nothing and the rows are read again
 // rather than assumed. A pair the grant holds a row for that want no longer names (a key pair
 // that lost its session token) keeps its row: it names no value the proxy can serve, and deleting
-// it would cost a write on every release to save a row the grant's end removes anyway.
-func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires *time.Time, want map[string][]string) (map[string]map[string]string, error) {
+// it would cost a write on every release to save a row the grant's end removes anyway. prefixes
+// is the placeholder prefix of each name whose kind sets one (proxyrules.Kind.PlaceholderPrefix),
+// for a client that checks a key's shape; every other name's placeholder opens with
+// placeholder.Prefix.
+func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires *time.Time, want map[string][]string, prefixes map[string]string) (map[string]map[string]string, error) {
 	held, err := placeholdersOf(ctx, m.Store.Pool, grantID)
 	if err != nil {
 		return nil, err
@@ -124,7 +139,7 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 			if _, minted := held[name][slot]; minted {
 				continue
 			}
-			text, err := placeholder.Mint(placeholder.Prefix)
+			text, err := placeholder.Mint(cmp.Or(prefixes[name], placeholder.Prefix))
 			if err != nil {
 				return nil, err
 			}
@@ -168,7 +183,7 @@ func (m *Machine) AirlockAccessPlaceholder(ctx context.Context, grantID, name, s
 		}
 		return "", err
 	}
-	minted, err := m.mintPlaceholders(ctx, grantID, expires, map[string][]string{name: {slot}})
+	minted, err := m.mintPlaceholders(ctx, grantID, expires, map[string][]string{name: {slot}}, nil)
 	if err != nil {
 		return "", err
 	}
@@ -202,12 +217,12 @@ type AirlockRelease struct {
 }
 
 // AirlockName is one name the airlock holds back: what the command's environment variable of that
-// name holds, the placeholder of each slot that value is built from, and the hosts the entry
-// allows, which the command keeps off its NO_PROXY so they reach the proxy.
+// name holds, the placeholder of each slot that value is built from, and the hosts its kind binds,
+// which the command keeps off its NO_PROXY so they reach the proxy.
 type AirlockName struct {
 	Value string            // what the command's NAME holds
 	Slots map[string]string // slot -> placeholder
-	Hosts []string          // the entry's hosts, which the command keeps off its NO_PROXY
+	Hosts []string          // the hosts of the name's kind, which the command keeps off its NO_PROXY
 }
 
 // airlockSplit is one airlock name's value taken apart, which one walk of that value answers
@@ -245,18 +260,18 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 //     github-app or a github-installations source (policy.ServesGitHubTokens), is released as the
 //     one account's bare token, which is one string too, so it is the value slot's placeholder
 //     alone;
-//   - a stored AWS key pair, which the entry marks kind "aws", is the stored object re-emitted
+//   - a stored AWS key pair, whose way is sign (the aws kind), is the stored object re-emitted
 //     with each of its three credential fields replaced;
 //   - the installations object of a GitHub profile of either source, and an azure-login's minted
 //     identity, are re-emitted with the token fields replaced and every other field as the
 //     release wrote it.
 //
-// The policy type and the profile's value form decide first and the entry's kind only for a
-// stored secret, because they are what says how the broker built the value, where the entry
-// says where that value may go. A value that does not hold what its type releases — no object, a
-// missing or non-string token — is an ErrAirlockValueShape rather than a release, since the one
-// other answer would be to release the real value the rules hold back.
-func airlockSplitOf(entryKind, secretType, gitHubValue, value string) (airlockSplit, error) {
+// The policy type and the profile's value form decide first and the way only for a stored
+// secret, because they are what says how the broker built the value, where the kind says where
+// that value may go. A value that does not hold what its type releases — no object, a missing or
+// non-string token — is an ErrAirlockValueShape rather than a release, since the one other
+// answer would be to release the real value the rules hold back.
+func airlockSplitOf(way, secretType, gitHubValue, value string) (airlockSplit, error) {
 	var split airlockSplit
 	var err error
 	switch {
@@ -266,7 +281,7 @@ func airlockSplitOf(entryKind, secretType, gitHubValue, value string) (airlockSp
 		split, err = githubAppSplit(value)
 	case secretType == policy.TypeAzureLogin:
 		split, err = azureLoginSplit(value)
-	case secretType == "" && entryKind == proxyrules.KindAWS:
+	case secretType == "" && way == proxyrules.WaySign:
 		split, err = objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
 			map[string]string{"session_token": SlotAWSSessionToken})
 	default:
@@ -444,13 +459,19 @@ func marshalObject(doc map[string]json.RawMessage) (string, error) {
 
 // airlockRelease mints each airlock name's placeholders, writes proxy as those names' delivery,
 // and answers what the session is told: where the proxy is, the certificate to trust it by, the
-// password its connections open with, and each name's released value, slots and hosts.
-func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *time.Time, splits map[string]airlockSplit) (*AirlockRelease, error) {
+// password its connections open with, and each name's released value, slots and hosts. rules are
+// the airlock's rules of the policy set the release was checked under, whose kinds give each
+// name its hosts and its placeholder prefix.
+func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *time.Time, splits map[string]airlockSplit, rules proxyrules.Rules) (*AirlockRelease, error) {
 	want := map[string][]string{}
+	prefixes := map[string]string{}
 	for name, split := range splits {
 		want[name] = split.slots()
+		if kind := rules.KindOf(rules.Lookup(name)); kind != nil && kind.PlaceholderPrefix != "" {
+			prefixes[name] = kind.PlaceholderPrefix
+		}
 	}
-	minted, err := m.mintPlaceholders(ctx, grantID, expires, want)
+	minted, err := m.mintPlaceholders(ctx, grantID, expires, want, prefixes)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +488,7 @@ func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *t
 		if err != nil {
 			return nil, fmt.Errorf("release %s behind the airlock: %w", name, err)
 		}
-		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: m.Airlock.Lookup(name).Hosts}
+		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: rules.HostsOf(name)}
 	}
 	released.ProxyPassword = proxyPassword(released.Names)
 	// Which names went out as a placeholder rather than as their value, recorded where the

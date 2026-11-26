@@ -137,17 +137,17 @@ func jobPods(t *testing.T, m *Machine, lists ...string) []jobPod {
 }
 
 // newProjectFixture is newPlaceholderFixture on a broker that checks projects: its loader serves
-// projectSecrets (Loader.ProjectChecks), rules are in force as the proxy blocks of profiles of
-// their own names (rulesProfiles), and Dispatch answers rows. The enrollment is a session of the
+// projectSecrets (Loader.ProjectChecks), each name rules binds is behind its kind as a profile of
+// its own name (rulesProfiles), and Dispatch answers rows. The enrollment is a session of the
 // fixture's operator naming no project.
 func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
 	t.Helper()
-	return newProfiledProjectFixture(t, rulesProfiles(t, rules), rules, team)
+	return newProfiledProjectFixture(t, rulesProfiles(t, rules), team)
 }
 
-// newProfiledProjectFixture is newProjectFixture serving file, a profiles file, with rules, its
-// proxy blocks, in force.
-func newProfiledProjectFixture(t *testing.T, file string, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
+// newProfiledProjectFixture is newProjectFixture serving file, a profiles file, whose kinds and the
+// proxy tags of the secrets it serves put names behind the proxy.
+func newProfiledProjectFixture(t *testing.T, file string, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
 	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(append(fixtureSecrets(), projectSecrets()...)...)
@@ -169,8 +169,8 @@ func newProfiledProjectFixture(t *testing.T, file string, rules proxyrules.Rules
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}
-	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
-	m.Airlock, m.AirlockProxyURL, m.ProxyRoots = rules, testProxyURL, func() string { return testCACertificate }
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
+	m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
 	return m, enrollmentID, key, answerFrom(t, m, dispatchRows(team))
 }
 
@@ -585,7 +585,7 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 		client bool
 	}{{"no project-access client", false}, {"a project-access client", true}} {
 		t.Run(c.name, func(t *testing.T) {
-			m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
+			m, enr, key, _ := newProjectFixture(t, bound(rule("AUTO_TOKEN", "example")), publicTeam)
 			dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 			asked := &askLog{inner: m.Projects}
 			m.Projects = asked
@@ -731,7 +731,7 @@ func (p *lockProbe) States(ctx context.Context, projects []string) (map[string]p
 // airlock connection and an approver's list ask Dispatch is asked while no transaction holds the
 // requesting enrollment's row (lockProbe). The probe must have run, or the test proves nothing.
 func TestNoK3CallRunsInsideATransaction(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("PRIV_KEY", "")}}, publicTeam)
+	m, enr, key, _ := newProjectFixture(t, bound(rule("PRIV_KEY", "example")), publicTeam)
 	nameProjects(t, m, enr, privProject)
 	probe := &lockProbe{inner: m.Projects, t: t, m: m, enrollmentID: enr}
 	m.Projects = probe

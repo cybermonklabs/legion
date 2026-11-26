@@ -689,29 +689,53 @@ what the stand's installation holds left out: `issues`, which the installation h
 `packages/envoy/scripts/dev-airlock.sh` starts the whole airlock, in a stack of its own. It runs
 `dev-broker.sh` first, for Postgres, `dev-oidc-issuer` and the binaries, and then adds what the
 airlock needs: `cmd/dev-proxy-stands`, which serves the stand-in services and records every
-request each one is sent; a profiles file (`BROKER_PROFILES_FILE`), each secret a profile of its
-own name with a proxy block, and a fake secrets file that
-name the same secrets; two broker processes on one database, each with an API port and a proxy
-port of its own, behind one TCP front over both API ports and one over both proxy ports; one
-enrolled pod session, whose key directory the exports name and whose lease an
-`agent-secrets renew` keeps alive for as long as the stack runs, as a Legion worker pod's is; and
-the model judge on both brokers ([let the judge decide a request](#let-the-judge-decide-a-request)).
-Each broker takes its proxy's intermediate from the `ca` stand of `cmd/dev-proxy-stands`, which
-answers the certificate request a pod sends Certificate Authority Service under a test root of its
-own, so every call through the proxy verifies a chain of test root, test intermediate and leaf
-([the proxy's chain](/legion/broker/concepts/#the-proxys-chain)). `AIRLOCK_CA_CERT_FILE` holds that
-test root and the stands' own authority, which is what a client of the stack trusts;
-`PROXY_ROOT_FILE` is the test root alone. The brokers and the `ca` stand read one clock
-file, `PROXY_CLOCK_OFFSET_FILE`, a Go duration they add to the system's clock: `0s` at the
-start, and a check that writes another moves their certificates' days on without a restart.
-Run it in place of `dev-broker.sh`, from `packages/envoy`, and set the same
-`DEV_BROKER_POSTGRES_URL` where you have no Docker. Each bound host listens on port 443 of a
-loopback address of its own (127.0.0.2 and up), so the machine must let this user bind 443, and
-one such stack runs at a time. `scripts/proxy-chain-check.sh` starts a stack of its own
-(`dev-airlock.sh --one-broker`), so stop this one first, and runs the chain's checks on it: the
-renewal at 5 days, the leaf while the pool fails, readiness and a new host (`k27`), a mounted
-intermediate (`k21`), and a client of the release before the chain against a release of two
-roots (`compat`).
+request each one is sent; a profiles file (`BROKER_PROFILES_FILE`) in the kinds form, whose
+`kinds` list declares a test kind for each stand-in and the `anthropic` kind as the deployment
+writes it, and a fake secrets file whose secrets each name their kind in a `proxy` tag; two broker
+processes on one database, each with an API port and a proxy port of its own, behind one TCP front
+over both API ports and one over both proxy ports; one enrolled pod session, whose key directory
+the exports name and whose lease an `agent-secrets renew` keeps alive for as long as the stack
+runs, as a Legion worker pod's is; and the model judge on both brokers
+([let the judge decide a request](#let-the-judge-decide-a-request)). Each broker takes its
+proxy's intermediate from the `ca` stand of `cmd/dev-proxy-stands`, which answers the certificate
+request a pod sends Certificate Authority Service under a test root of its own, so every call
+through the proxy verifies a chain of test root, test intermediate and leaf
+([the proxy's chain](/legion/broker/concepts/#the-proxys-chain)). `AIRLOCK_CA_CERT_FILE` holds
+that test root and the stands' own authority, which is what a client of the stack trusts;
+`PROXY_ROOT_FILE` is the test root alone. The brokers and the `ca` stand read one clock file,
+`PROXY_CLOCK_OFFSET_FILE`, a Go duration they add to the system's clock: `0s` at the start, and a
+check that writes another moves their certificates' days on without a restart. Run it in place of
+`dev-broker.sh`, from `packages/envoy`, and set the same `DEV_BROKER_POSTGRES_URL` where you have
+no Docker. Each bound host listens on port 443 of a loopback address of its own (127.0.0.2 and up),
+so the machine must let this user bind 443, and one such stack runs at a time.
+
+`scripts/proxy-chain-check.sh` starts a stack of its own (`dev-airlock.sh --one-broker`), so stop
+this one first, and runs the chain's checks on it: the renewal at 5 days, the leaf while the pool
+fails, readiness and a new host (`k27`), a mounted intermediate (`k21`), and a client of the
+release before the chain against a release of two roots (`compat`).
+
+The `anthropic` kind's host is Anthropic's own name, `api.anthropic.com`, and
+`BROKER_AIRLOCK_TEST_RESOLVE` sends it to the stack's stand-in of the Admin API on 127.0.0.6, so no
+call of the stack reaches Anthropic. The stack stores two `anthropic-federation` secrets,
+`AIRLOCK_ANTHROPIC_NARROWED`, tagged `proxy-narrowed=true` with one profile of the kind's three
+`allow` rows, and `AIRLOCK_ANTHROPIC_KIND`, with no profile, each bound to a Google account of its
+own in `BROKER_SERVICE_ACCOUNT_SECRETS` and approved by the stack's person. The broker mints their
+tokens at two stand-ins, which two settings of the local stack alone name, and which a production
+start refuses, as it refuses every `BROKER_AIRLOCK_TEST_*` setting:
+
+- `BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL`: the origin where the broker reads a bound account's
+  Google identity token (IAM Service Account Credentials' `generateIdToken`), in place of
+  `https://iamcredentials.googleapis.com`. The stand-in takes only the access token the stack's
+  metadata stand answers as its bearer, and lists each token it minted, with its account and
+  audience, at `AIRLOCK_IAM_TOKENS_URL`.
+- `BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL`: Anthropic's token exchange, in place of
+  `https://api.anthropic.com/v1/oauth/token`. The stand-in takes only an assertion the IAM
+  stand-in minted, answers an `sk-ant-oat01-` token with an `expires_in` of 3600, and lists each
+  token at `AIRLOCK_ANTHROPIC_TOKENS_URL`. A POST of `{"expires_in": <seconds>}` to
+  `AIRLOCK_ANTHROPIC_ANSWER_URL` changes the lifetime every later exchange answers: 3601 makes the
+  broker refuse the token, as it refuses a federation rule's token that outlives its grant's hour.
+
+`packages/envoy/scripts/airlock-check.sh k47` runs the `anthropic` kind's check on this stack.
 
 This run used the same Postgres server as the first section. The lines `dev-broker.sh` prints are
 the ones that section shows, and are cut here:
@@ -748,19 +772,24 @@ dev-airlock: ready.
 ...
   broker 1:            api 127.0.0.1:42527, proxy 127.0.0.1:44571, pid 2858689, log /tmp/agent-secrets-airlock.c0eVnK/broker1.log
   broker 2:            api 127.0.0.1:40315, proxy 127.0.0.1:38701, pid 2858704, log /tmp/agent-secrets-airlock.c0eVnK/broker2.log
-  secrets:             AIRLOCK_DEMO_TOKEN and AIRLOCK_SCOPED_TOKEN (stored, bound to s.airlock.test; AIRLOCK_SCOPED_TOKEN in
-                       authorization and x-key, GET /read alone), AIRLOCK_GITHUB_APP (github-app,
-                       installation 7 on acme-org; AIRLOCK_PLAIN_GITHUB is
-                       its profile with no proxy block, released as its value), AIRLOCK_GOOGLE_LOGIN
-                       (google-login), AIRLOCK_AZURE_LOGIN (kind azure, human tier) and AIRLOCK_AWS_KEY (kind
-                       aws), each a profile of its own name in /tmp/agent-secrets-airlock.c0eVnK/profiles.json
+  secrets:             AIRLOCK_DEMO_TOKEN and AIRLOCK_SCOPED_TOKEN (stored, kinds stest and scoped, bound to
+                       s.airlock.test; AIRLOCK_SCOPED_TOKEN in authorization and x-key, GET /read alone),
+                       AIRLOCK_GITHUB_APP (github-app, kind ghapp, installation 7 on
+                       acme-org; AIRLOCK_PLAIN_GITHUB is a profile of AIRLOCK_PLAIN_GITHUB_APP, the
+                       same App with no proxy tag, released as its value), AIRLOCK_GOOGLE_LOGIN
+                       (google-login, kind glogin), AIRLOCK_AZURE_LOGIN (kind azure, human tier),
+                       AIRLOCK_AWS_KEY (kind aws), and AIRLOCK_ANTHROPIC_NARROWED and AIRLOCK_ANTHROPIC_KIND
+                       (anthropic-federation, kind anthropic, human tier, an administrator's;
+                       AIRLOCK_ANTHROPIC_NARROWED proxy-narrowed with a profile of the kind's three
+                       rows, AIRLOCK_ANTHROPIC_KIND with none), each behind the proxy by its proxy tag;
+                       the kinds are in /tmp/agent-secrets-airlock.c0eVnK/profiles.json
 ...
 ```
 
 Paste these exports into a second shell, as above, and check that `type agent-secrets` names the
-stack's `bin/`. The profiles file binds `AIRLOCK_DEMO_TOKEN` to the stand-in service S,
-`s.airlock.test`, and its proxy block names no headers, so its value travels in `authorization`,
-the one header a proxy block with none takes. The command gets a placeholder of 58 characters in place of the
+stack's `bin/`. `AIRLOCK_DEMO_TOKEN`'s `proxy` tag in the fake secrets file names the kind
+`stest`, which binds the stand-in service S, `s.airlock.test`, and names no headers, so its value
+travels in `authorization`, the one header a kind with none takes. The command gets a placeholder of 58 characters in place of the
 value, and its `HTTPS_PROXY` names the proxy front with that grant's proxy password, so the
 command's call to S goes through the broker:
 
@@ -786,9 +815,9 @@ $ jq -j '.secrets[] | select(.name | endswith("airlock-demo-token")) | "Bearer "
 a2ecdfa9af6567f28055293e907aaec873a545fa2b0ee30c14e8e2a7b27aa149  -
 ```
 
-The profiles file's second profile, `AIRLOCK_SCOPED_TOKEN`, is bound to the same host for `GET /read`
-alone, so the proxy refuses a `POST /write` with it, names the rule that refused, and ends the
-refusal with its answer id:
+`AIRLOCK_SCOPED_TOKEN`'s kind, `scoped`, binds the same host for `GET /read` alone, so the proxy
+refuses a `POST /write` with it, names the rule that refused, and ends the refusal with its answer
+id:
 
 ```console
 $ agent-secrets AIRLOCK_SCOPED_TOKEN --reason 'a path its rule does not allow' -- sh -c 'printf "Authorization: Bearer %s" "$AIRLOCK_SCOPED_TOKEN" | curl -sS -o /dev/stdout -w " (%{http_code})\n" -X POST https://s.airlock.test/write -H @-'
@@ -800,15 +829,16 @@ airlock: not allowed by rule (answer c7f4a80240ca972a4baa9eb47b6648f2)
 Each of those two calls wrote one line in the log of whichever broker the proxy front sent it to
 (`$AIRLOCK_DIR/broker1.log` and `broker2.log`). The call the proxy carried wrote
 `airlock proxy: a call to a bound host`, with its answer id, the enrollment, the grant, the
-secret, the issue its reason named, the host, the method, the path, the answer's status and
-`allowed` `true`. The refused call wrote the refusal's line, `broker: answer refused`, in place of
+secret, the issue its reason named, the host, the method, the path, the answer's status,
+`allowed` `true` and `way`, how its credential went in (`swap` for a stored value). The refused
+call wrote the refusal's line, `broker: answer refused`, in place of
 a call line, with the answer id its text ended with, the code `REQUEST_NOT_ALLOWED`, the caller as
 `<grant>@<enrollment>`, the secret, the host, the path and the reason
 ([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). This run's two
 lines:
 
 ```json
-{"time":"2026-11-20T12:35:17.476637769Z","severity":"INFO","message":"airlock proxy: a call to a bound host","answer_id":"05e5f069e32ac1fa68600ddcee570e28","enrollment":"a93e631d-63db-4a60-8ca8-6000115bcb4c","grant":"c9b297e4-84e9-464f-a82f-804ac2c123b1","secret":"AIRLOCK_DEMO_TOKEN","issue":"","host":"s.airlock.test","method":"GET","path":"/read","status":200,"allowed":true}
+{"time":"2026-11-20T12:35:17.476637769Z","severity":"INFO","message":"airlock proxy: a call to a bound host","answer_id":"05e5f069e32ac1fa68600ddcee570e28","enrollment":"a93e631d-63db-4a60-8ca8-6000115bcb4c","grant":"c9b297e4-84e9-464f-a82f-804ac2c123b1","secret":"AIRLOCK_DEMO_TOKEN","issue":"","host":"s.airlock.test","method":"GET","path":"/read","status":200,"allowed":true,"way":"swap"}
 {"time":"2026-11-20T12:35:17.814965234Z","severity":"WARNING","message":"broker: answer refused","answer_id":"c7f4a80240ca972a4baa9eb47b6648f2","status":403,"code":"REQUEST_NOT_ALLOWED","method":"POST","route":"","caller_class":"airlock","caller":"93e1295a-292f-47b3-82bb-f86f2b453ef6@a93e631d-63db-4a60-8ca8-6000115bcb4c","secrets":["AIRLOCK_SCOPED_TOKEN"],"secrets_count":1,"host":"s.airlock.test","reason":"not allowed by rule","path":"/write","issue":""}
 ```
 
@@ -820,19 +850,21 @@ this script started, drops its database and prints the workdir it kept.
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
 processes. Three more stand-ins of `cmd/dev-proxy-stands` serve it: a model endpoint, a
 Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
-server, where the broker mints the identity token it presents to the model. Its profiles file
-says who decides each human-tier secret, in each profile's proxy block:
+server, where the broker mints the identity token it presents to the model. Its fake store says
+who decides each human-tier secret, in each secret's own tags:
 
-| Secret | Its proxy block and tags | Who decides a request for it |
+| Secret | Its tags | Who decides a request for it |
 | --- | --- | --- |
-| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance. |
-| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 900` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance. |
+| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance, for up to 900 seconds. |
+| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 600` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance, for up to 600 seconds; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance, for the shorter of the two. |
 | `AIRLOCK_SHARED_TOKEN` | `judge: 900`, `owner=shared` | The judge, in the place of anyone who signs in. |
 | `AIRLOCK_ADMIN_TOKEN` | `judge: 900`, `admin: "true"` | `ada@example.com` on the broker page: the judge never decides an administrator's key. |
 | `AIRLOCK_UNJUDGED_TOKEN` | no `judge`, owned by `ada@example.com` | `ada@example.com` on the broker page. |
 
-Every proxy block binds at least one host, so no profile releases its value under a judge: the
-broker refuses a profiles file with a proxy block that names none.
+Each of them is behind the kind `judged`, which binds a host, by its `proxy` tag, so no value the
+judge grants leaves the airlock. To give the judge another key, or change what it may grant, tag the key:
+`agent-secrets secret retag <NAME> --judge 900 --guidance 'grant k14-grant'`, then ask with
+`--ttl 15m`.
 
 `agent-secrets secret show "$AIRLOCK_JUDGED_SECRET"` prints the same: its `decides:` line names the
 judge, and its `guidance:` line the text the judge decides on, `$AIRLOCK_JUDGE_GUIDANCE`. Ask for it
@@ -846,8 +878,10 @@ agent-secrets request "$AIRLOCK_JUDGED_SECRET" --ttl 10m \
 While the judge decides, the request carries `judge_deciding` and no page, and it is on nobody's
 list. `agent-secrets status <request id>` then names the judge as the decider,
 `decided_by: judge:$AIRLOCK_JUDGE_MODEL`, and the broker that decided it logs one line,
-`broker judge: wrote a verdict`, with the verdict, the model's reason and, where a check stopped
-the run, the check that failed. The same verdict is one `request.judged` row in the `audit` table
+`broker judge: wrote a verdict`, with the verdict — what became of the request: `granted`,
+`refused` or `handed to the person` — each key's call (`calls=<key>:granted|denied|failed`), the
+model's reason and, where a check stopped the run, the check that failed. The same verdict is one
+`request.judged` row in the `audit` table
 ([Concepts](/legion/broker/concepts/#the-model-judge)). What the model was sent is at its
 recording route, `$AIRLOCK_MODEL_RECORDS`, and what Dispatch was asked at
 `$AIRLOCK_DISPATCH_RECORDS`: the issue the reason names and the ask it cites, read and never
@@ -895,26 +929,31 @@ how you write a secret here.
 
 The airlock's proxy, its profiles, its decision and its swap are the real ones too, and so is each
 broker process the airlock stack runs. Five more things stand in there. `cmd/dev-proxy-stands`
-plays every host a proxy block binds: S and T, which answer one line and record what they were sent,
+plays every host a kind binds: S and T, which answer one line and record what they were sent,
 the GitHub and Google endpoints a `github-app` and a `google-login` secret mint at, the Microsoft
 token endpoint the `azure` kind exchanges at, which also plays the resource host that token is
-spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
-resolver answers, which `BROKER_AIRLOCK_TEST_RESOLVE` and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point
-at one loopback address each, so the proxy reaches those five and refuses every other private
-address, as it does in production. The judge's own run — its six checks, its one model call and
+spent at, an AWS service that verifies Signature Version 4, and Anthropic's Admin API at
+`api.anthropic.com`. Each of S, T, the Microsoft and AWS stands is a `.test` name no resolver
+answers, and the Admin API stand stands in for Anthropic's own name; `BROKER_AIRLOCK_TEST_RESOLVE`
+and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point each at one loopback address of its own, so the proxy
+reaches those and refuses every other private address, as it does in production. The judge's own
+run — its six checks, its model call for each key and
 what it writes — is real as well, and three more of that command's stands serve it, on loopback
 addresses the broker reaches directly rather than through the proxy: a model endpoint that
 answers whatever was last set for it, a Dispatch holding one open issue, one done one and one
 answered ask on the open one, and a
-metadata server that mints the broker's identity token. The profiles file the script writes stands
-in for the deployment's own, which lives in the deployment's repository. The `ca` stand stands in
-for the pool of Certificate Authority Service a deployment names in `BROKER_PROXY_CA_POOL`: it
-answers the same request, under a policy of 7 days starting 5 minutes before its issue, path
-length 0, `serverAuth` alone, and the names `dev-airlock.sh` gives it from the profiles file before
-the brokers start, and with no credential sent to it. The two brokers behind one TCP front stand
-in for two pods behind a Service, so a call reaches either process. And the pod session the
-script enrols stands in for the Legion daemon's enrollment of a worker pod, which is why
-`agent-secrets self` answers `kind: pod` there.
+metadata server that mints the broker's identity token and answers its access token. Two more,
+also reached directly, are where an `anthropic-federation` secret is minted: IAM's
+generateIdToken and Anthropic's token exchange. The profiles file the script writes stands in for
+the deployment's own, which lives in the deployment's repository. The `ca` stand stands in for the
+pool of Certificate Authority Service a deployment names in `BROKER_PROXY_CA_POOL`: it answers the
+same request, under a policy of 7 days starting 5 minutes before its issue, path length 0,
+`serverAuth` alone, and the names `dev-airlock.sh` gives it from the profiles file before the
+brokers start, and with no credential sent to it. The two brokers behind one TCP front stand in for
+two pods behind a Service, so a call reaches either process. And the pod session the script enrols
+stands in for the Legion daemon's enrollment of a worker pod, which is why `agent-secrets self`
+answers `kind: pod` there.
 The two brokers start as processes outside any cluster even when the script runs in a pod: it
 empties `KUBERNETES_SERVICE_HOST` for them, so neither needs `BROKER_AIRLOCK_CLUSTER_RANGES`,
-which a deployed broker in a cluster whose profiles hold a proxy block refuses to start without.
+which a deployed broker in a cluster whose profiles file declares a kind or holds a dpop block
+refuses to start without.

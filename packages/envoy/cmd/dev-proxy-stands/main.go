@@ -8,9 +8,11 @@
 // at; a stand-in AWS service that verifies Signature Version 4 with the real test key and
 // the real session token; the three the broker's model judge calls - a model endpoint, a
 // Dispatch holding a few issues, and the Compute Engine metadata server the broker mints its
-// own identity token at; and the stand-in of Certificate Authority Service a broker pod asks for
-// its proxy's intermediate. Every one of them is internal/cipher/proxyrules/proxyrulestest's,
-// which is why one implementation answers both.
+// own identity token at; the stand-in of Certificate Authority Service a broker pod asks for its
+// proxy's intermediate; and the three of the anthropic kind - Anthropic's Admin API, a recording
+// HTTPS service like S, and the two an anthropic-federation secret is minted at, IAM's
+// generateIdToken and Anthropic's token exchange (anthropic.go). Every one of them but the last two
+// is internal/cipher/proxyrules/proxyrulestest's, which is why one implementation answers both.
 //
 //	dev-airlock-stands [--dir <path>] [--address <stand>=<host:port> ...] [--host <stand>=<name> ...]
 //	                   [--installation <owner>=<installation id> ...]
@@ -34,11 +36,22 @@
 // (probe.go) and `load` (load.go), which are here so that CI compiles and vets them. With no
 // subcommand it serves the stands, which is what the rest of this comment is about.
 //
-// A stand is named s, t, github, github-tls, google, microsoft, aws, model, dispatch, metadata
-// or ca. Each binds 127.0.0.1 on a port the operating system picks unless --address names
-// one, and each HTTPS stand's certificate names 127.0.0.1 and localhost unless --host adds names
-// of its own - the host a profile's proxy block binds a credential to, which the command's own
-// TLS verification reads out of the certificate.
+// A stand is named s, t, github, github-tls, google, microsoft, aws, model, dispatch, metadata,
+// ca, anthropic, anthropic-token or iam. Each binds 127.0.0.1 on a port the operating system picks
+// unless --address names one, and each HTTPS stand's certificate names 127.0.0.1 and localhost
+// unless --host adds names of its own - the host a kind binds a credential to, which the command's
+// own TLS verification reads out of the certificate.
+//
+// The anthropic-token stand is Anthropic's token exchange, POST /v1/oauth/token: it answers an
+// sk-ant-oat01- token of its own for an assertion the iam stand minted, with the expires_in a
+// check sets while it runs at POST <records URL>/answers/anthropic, whose body is
+// {"expires_in": <seconds>} (anthropic_answer_url; 3600 until a check calls it). The iam stand is
+// generateIdToken, POST /v1/projects/-/serviceAccounts/{account}:generateIdToken, which takes this
+// run's metadata access token as its bearer, the one the metadata stand answers on its
+// access-token path, and answers an identity token for that account and the audience its body
+// names. Each keeps what it minted: GET <records URL>/tokens/iam answers each identity token with
+// its account and audience (iam_tokens_url), and GET <records URL>/tokens/anthropic each token
+// with its expires_in (anthropic_tokens_url).
 //
 // The ca stand answers POST /v1/projects/{project}/locations/{location}/caPools/{pool}/certificates,
 // the request BROKER_PROXY_TEST_CA_URL points a broker pod at, with an intermediate for the
@@ -52,9 +65,10 @@
 // The model stand answers one call at a time and what it answers is set while it runs, since
 // one check drives several cases against one stack: POST <records URL>/answers/model, whose
 // body is {"verdict": "grant"|"deny", "reason": "…"} for a structured reply, {"text": "…"}
-// for a reply that is no such object, and {"delay": "30s"} for an answer held back past the
-// caller's own time bound, beside either. The report names that address (model_answer_url), and
-// until a check calls it the model grants.
+// for a reply that is no such object, {"obey_guidance": true} for a model that obeys every
+// guidance in its prompt (proxyrulestest.ObeyedVerdict), and {"delay": "30s"} for an answer
+// held back past the caller's own time bound, beside any of them. The report names that address
+// (model_answer_url), and until a check calls it the model grants.
 //
 // The GitHub stand answers what each token request's body asked for - the repositories it names
 // and the permissions it names - and serves GET /repos/{owner}/{repo} to a token it minted whose
@@ -133,42 +147,48 @@ import (
 
 const exitUsageError = 2
 
-// The stands this command serves. s and t are the two services a call behind the airlock
+// The stands this command serves. s, t and anthropic are the services a call behind the airlock
 // reaches; github-tls is the GitHub stand as a call behind the airlock reaches it, over TLS
-// under a bound host's name; the other eight stand in for the endpoints the broker itself calls.
+// under a bound host's name; the other twelve stand in for the endpoints the broker itself calls.
 const (
-	standS         = "s"
-	standT         = "t"
-	standGitHub    = "github"
-	standGitHubTLS = "github-tls"
-	standGoogle    = "google"
-	standMicrosoft = "microsoft"
-	standAWS       = "aws"
-	standModel     = "model"
-	standDispatch  = "dispatch"
-	standMetadata  = "metadata"
-	standCA        = "ca"
+	standS              = "s"
+	standT              = "t"
+	standGitHub         = "github"
+	standGitHubTLS      = "github-tls"
+	standGoogle         = "google"
+	standMicrosoft      = "microsoft"
+	standAWS            = "aws"
+	standModel          = "model"
+	standDispatch       = "dispatch"
+	standMetadata       = "metadata"
+	standCA             = "ca"
+	standAnthropic      = "anthropic"
+	standAnthropicToken = "anthropic-token"
+	standIAM            = "iam"
 )
 
 // stands is every stand's name, in the order the JSON lists them.
 var stands = []string{
 	standS, standT, standGitHub, standGitHubTLS, standGoogle, standMicrosoft, standAWS,
-	standModel, standDispatch, standMetadata, standCA,
+	standModel, standDispatch, standMetadata, standCA, standAnthropic, standAnthropicToken, standIAM,
 }
 
-// plainStands are the six served over http rather than https. The broker mints a type's value
+// plainStands are the nine served over http rather than https. The broker mints a type's value
 // with an HTTP client that trusts the host's own roots and nothing else, so a minter endpoint
-// behind TLS would need a root in the pod's trust store, and the three the model judge calls
-// and the certificate authority the proxy asks for its intermediate are reached by that same
+// behind TLS would need a root in the pod's trust store - the GitHub, Google, Anthropic and IAM
+// stands are four such endpoints - and the three the model judge calls and the certificate
+// authority the proxy asks for its intermediate are reached by that same
 // sort of client; the metadata server could be nothing else, since internal/googleidentity asks
 // it over http and no other scheme. Every other stand is reached through the proxy, whose extra
 // roots BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE names. That is why the GitHub stand is two: github,
 // plain, where the broker mints a GitHub profile's token, and github-tls, where a command behind
-// the proxy spends it, since the proxy refuses plain http to a bound host and decrypts nothing
-// but a bound host's port 443.
+// the proxy spends it, since the proxy refuses plain http to a bound host and decrypts nothing but
+// a bound host's port 443. The anthropic kind's are two for the same reason: anthropic-token,
+// plain, where the broker mints, and anthropic, the Admin API a command reaches through the proxy.
 var plainStands = map[string]bool{
 	standGitHub: true, standGoogle: true,
 	standModel: true, standDispatch: true, standMetadata: true, standCA: true,
+	standAnthropicToken: true, standIAM: true,
 }
 
 // upgradePath is the one path S answers a WebSocket upgrade at, and the path a check drives
@@ -219,7 +239,7 @@ const (
 const (
 	standInAnsweredAsk = "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
 	standInAskQuestion = "Let the judge spend the judged token on this issue's own runs?"
-	standInAskAnswer   = "Yes, for the runs this issue names, up to the seconds the rules give the judge."
+	standInAskAnswer   = "Yes, for the runs this issue names, up to the seconds the key's judge tag gives the judge."
 )
 
 // defaultAskAnsweredBy is who answered that ask when no flag names a login. A local stack passes
@@ -235,8 +255,8 @@ granted in the place of the person who decides it today.
 
 ## Requirements
 
-- The judge decides a request for a key the airlock rules give it seconds for, with the key's
-  guidance, and a person decides every other.
+- The judge decides a request for a key whose judge tag gives it seconds of it, with the key's
+  guidance tag, and a person decides every other.
 - The judge grants or denies, and a denial is final; a request it cannot decide goes to its
   person once.
 - Every verdict is recorded against the request, with what the model was asked and answered.
@@ -461,6 +481,13 @@ type report struct {
 	// from then on, POST <records URL>/answers/github, whose body the command's own comment
 	// spells out.
 	GitHubAnswerURL string `json:"github_answer_url"`
+	// AnthropicAnswerURL is where a check sets the expires_in the anthropic-token stand answers
+	// each exchange from then on, POST <records URL>/answers/anthropic. AnthropicTokensURL and
+	// IAMTokensURL are where it reads every token the exchange answered and every identity token
+	// the iam stand minted, with its account and audience.
+	AnthropicAnswerURL string `json:"anthropic_answer_url"`
+	AnthropicTokensURL string `json:"anthropic_tokens_url"`
+	IAMTokensURL       string `json:"iam_tokens_url"`
 	// DispatchOpenIssue and DispatchDoneIssue are the two issues the dispatch stand holds,
 	// which is what a check names in a request's reason: the open one for a reason a judge
 	// may act on, the done one for a reason it must not, and any other key for no issue at
@@ -559,9 +586,9 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		}
 		out.Stands[name] = entry
 	}
-	// S answers an upgrade on one path of its own and its own body everywhere else, and T its
-	// own body and nothing more; the other seven answer as the service they stand in for. Every
-	// one of them records what it was sent, which is what they are all for.
+	// S answers an upgrade on one path of its own and its own body everywhere else, and T and
+	// anthropic their own body and nothing more; the other ten answer as the service they stand in
+	// for. Every one of them records what it was sent, which is what they are all for.
 	services[standS].AnswerWith(proxyrulestest.NewUpgradeStand(proxyrulestest.UpgradeOptions{Path: upgradePath}).Answer)
 	// The GitHub stand answers each token request what its body asked for, with metadata at read
 	// beside it, until a check sets another answer, so a stack driven with no call to its answer
@@ -598,7 +625,20 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	services[standDispatch].AnswerWith(proxyrulestest.NewDispatchStand(proxyrulestest.DispatchOptions{
 		Issues: standInIssues(), Asks: standInAsks(o.askAnsweredBy),
 	}).Answer)
-	services[standMetadata].AnswerWith(proxyrulestest.NewMetadataStand(proxyrulestest.MetadataOptions{}).Answer)
+	// The metadata stand answers the machine's access token too, this run's own, which the iam
+	// stand takes as the one bearer of a generateIdToken call: the broker reads it there and spends
+	// it at IAM to mint an anthropic-federation secret's identity token, as a pod spends its own.
+	access := randomText(32)
+	services[standMetadata].AnswerWith(proxyrulestest.Answers(
+		metadataAccessAnswer(access),
+		proxyrulestest.NewMetadataStand(proxyrulestest.MetadataOptions{}).Answer,
+	))
+	// The exchange answers an hour's token until a check sets another lifetime, so a stack driven
+	// with no call to its answer route mints as a federation rule of an hour does.
+	iam := &iamStand{access: access}
+	exchange := &anthropicExchangeStand{iam: iam, expiresIn: defaultAnthropicLifetime}
+	services[standIAM].AnswerWith(iam.Answer)
+	services[standAnthropicToken].AnswerWith(exchange.Answer)
 	// The ca stand: the certificate request a broker pod sends for its intermediate, answered
 	// under a test root of its own and the policy's names, dated by the brokers' moved clock, and
 	// told to fail and answer again at POST /fail and POST /answer and given other names at POST
@@ -624,7 +664,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	records := &http.Server{Handler: recordsHandler(services, model, github), ReadHeaderTimeout: 30 * time.Second}
+	records := &http.Server{Handler: recordsHandler(services, model, github, iam, exchange), ReadHeaderTimeout: 30 * time.Second}
 	recordsURL, stopRecords, err := serveRecords(records, o.recordsAddress)
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)
@@ -633,6 +673,8 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	defer stopRecords()
 	out.RecordsURL = recordsURL
 	out.ModelAnswerURL, out.GitHubAnswerURL = recordsURL+modelAnswerPath, recordsURL+githubAnswerPath
+	out.AnthropicAnswerURL = recordsURL + anthropicAnswerPath
+	out.AnthropicTokensURL, out.IAMTokensURL = recordsURL+anthropicTokensPath, recordsURL+iamTokensPath
 	for name, entry := range out.Stands {
 		entry.Records = recordsURL + "/records/" + name
 		out.Stands[name] = entry
@@ -662,13 +704,13 @@ func serveRecords(server *http.Server, addr string) (string, func(), error) {
 	return "http://" + listener.Addr().String(), func() { _ = server.Close() }, nil
 }
 
-// recordsHandler is the three things the recording server answers: GET /records/<stand>, the
-// JSON array of every request that stand was sent, each record's method, path, query, host,
-// header and body, which is what a check script reads a result back from; and the model and
-// GitHub stands' answer routes, which are served here because a check that drives one case after
-// another needs one address to set them at and the recording server is the address it already
-// has.
-func recordsHandler(services map[string]*proxyrulestest.Service, model *proxyrulestest.ModelStand, github *proxyrulestest.GitHubStand) http.Handler {
+// recordsHandler is the things the recording server answers: GET /records/<stand>, the JSON
+// array of every request that stand was sent, each record's method, path, query, host, header and
+// body, which is what a check script reads a result back from; the model, GitHub and Anthropic
+// stands' answer routes; and the two lists of what the iam and anthropic-token stands minted. They
+// are served here because a check that drives one case after another needs one address to set
+// and read them at and the recording server is the address it already has.
+func recordsHandler(services map[string]*proxyrulestest.Service, model *proxyrulestest.ModelStand, github *proxyrulestest.GitHubStand, iam *iamStand, exchange *anthropicExchangeStand) http.Handler {
 	mux := http.NewServeMux()
 	for _, name := range slices.Sorted(maps.Keys(services)) {
 		service := services[name]
@@ -681,19 +723,25 @@ func recordsHandler(services map[string]*proxyrulestest.Service, model *proxyrul
 	}
 	mux.HandleFunc("POST "+modelAnswerPath, answerRoute(modelAnswerOf, model.Answers,
 		func(answer proxyrulestest.ModelAnswer) map[string]string {
-			return map[string]string{"text": answer.Text, "delay": answer.Delay.String()}
+			return map[string]string{"text": answer.Text, "delay": answer.Delay.String(), "obey_guidance": strconv.FormatBool(answer.ObeyGuidance)}
 		}))
 	mux.HandleFunc("POST "+githubAnswerPath, answerRoute(githubAnswerOf, github.Answers,
 		func(answer proxyrulestest.GitHubAnswer) map[string]string {
 			return map[string]string{"mode": string(answer.Mode), "repository": answer.Repository}
 		}))
+	mux.HandleFunc("POST "+anthropicAnswerPath, answerRoute(anthropicAnswerOf, exchange.Answers,
+		func(expiresIn int64) map[string]string {
+			return map[string]string{"expires_in": strconv.FormatInt(expiresIn, 10)}
+		}))
+	mux.HandleFunc("GET "+iamTokensPath, tokensRoute(iam.Minted))
+	mux.HandleFunc("GET "+anthropicTokensPath, tokensRoute(exchange.Minted))
 	return mux
 }
 
-// answerRoute is one of those two routes: it reads the request body as a Body, hands it to read,
-// which answers the answer it names or what is wrong with it, sets that answer on its stand and
-// answers the caller what reply makes of it. A body that is no JSON object, and one that names
-// no answer, are each 400 and set nothing, so a check that misspelled an answer reads that
+// answerRoute is one of those three answer routes: it reads the request body as a Body, hands it
+// to read, which answers the answer it names or what is wrong with it, sets that answer on its
+// stand and answers the caller what reply makes of it. A body that is no JSON object, and one that
+// names no answer, are each 400 and set nothing, so a check that misspelled an answer reads that
 // rather than drive the next case against the answer still in place.
 func answerRoute[Body, Answer any](read func(Body) (Answer, error), set func(Answer), reply func(Answer) map[string]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -713,14 +761,19 @@ func answerRoute[Body, Answer any](read func(Body) (Answer, error), set func(Ans
 	}
 }
 
-// modelAnswerPath and githubAnswerPath are where a check sets what the model stand and the
-// GitHub stand answer from there on, and maxAnswerBody what one such request is read of: a reply
-// is a sentence or two and an answer a word and a repository name, so a body past this is a
-// mistake rather than an answer.
+// modelAnswerPath, githubAnswerPath and anthropicAnswerPath are where a check sets what the
+// model stand, the GitHub stand and the anthropic-token stand answer from there on, and
+// maxAnswerBody what one such request is read of: a reply is a sentence or two and an answer a
+// word and a repository name or a number, so a body past this is a mistake rather than an answer.
+// iamTokensPath and anthropicTokensPath are where it reads what the iam and anthropic-token
+// stands minted.
 const (
-	modelAnswerPath  = "/answers/model"
-	githubAnswerPath = "/answers/github"
-	maxAnswerBody    = 1 << 20
+	modelAnswerPath     = "/answers/model"
+	githubAnswerPath    = "/answers/github"
+	anthropicAnswerPath = "/answers/anthropic"
+	iamTokensPath       = "/tokens/iam"
+	anthropicTokensPath = "/tokens/anthropic"
+	maxAnswerBody       = 1 << 20
 )
 
 // githubAnswerRequest is the body POST <records URL>/answers/github takes.
@@ -780,6 +833,10 @@ type modelAnswerRequest struct {
 	// caller's own time bound: "30s" against a caller bounded at 20 seconds is an answer it
 	// never sees, so the text beside it is never read.
 	Delay string `json:"delay"`
+	// ObeyGuidance answers each call as a model that obeys every guidance in its prompt would
+	// (proxyrulestest.ObeyedVerdict), in place of a fixed verdict or text: the stand-in a check
+	// of the judge's per-key isolation runs against.
+	ObeyGuidance bool `json:"obey_guidance"`
 }
 
 // modelAnswerOf is one such request as the answer it sets, and what is wrong with a request
@@ -787,10 +844,14 @@ type modelAnswerRequest struct {
 func modelAnswerOf(body modelAnswerRequest) (proxyrulestest.ModelAnswer, error) {
 	var answer proxyrulestest.ModelAnswer
 	switch {
+	case body.ObeyGuidance && (body.Verdict != "" || body.Text != ""):
+		return answer, errors.New("the answer both obeys guidance and names a verdict or a text, and it is one or the other")
 	case body.Verdict != "" && body.Text != "":
 		return answer, errors.New("the answer names both a verdict and a text, and it is one or the other")
-	case body.Verdict == "" && body.Text == "" && body.Delay == "":
-		return answer, errors.New("the answer names no verdict, no text and no delay")
+	case body.Verdict == "" && body.Text == "" && body.Delay == "" && !body.ObeyGuidance:
+		return answer, errors.New("the answer names no verdict, no text, no delay and no obey_guidance")
+	case body.ObeyGuidance:
+		answer.ObeyGuidance = true
 	case body.Verdict != "":
 		reason := body.Reason
 		if reason == "" {
