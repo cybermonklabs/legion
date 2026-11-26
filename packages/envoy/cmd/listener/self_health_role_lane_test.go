@@ -70,12 +70,7 @@ func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
 	rig.server, rig.uri = testnats.StartConfig(t, rig.granted, []string{"-DV", "-js"}, false)
 	seed := rig.seed
 	lane, _, err := bus.ConnectRoleLane([]string{rig.uri}, roleLaneHealthMachine, func(msg *natsgo.Msg) { rig.received <- msg.Subject },
-		bus.WithEnvironment(func(name string) (string, bool) {
-			if name == bus.NkeySeedEnvVar {
-				return seed, true
-			}
-			return "", false
-		}))
+		bus.WithEnvironment(testnats.SeedOnly(seed)))
 	if err != nil {
 		t.Fatalf("open the role lane: %v", err)
 	}

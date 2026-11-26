@@ -1124,15 +1124,17 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
-// column. 20261119211852 is the last migration that writes outbox_kind_check: it stands above
-// main's 20261119203047 and 20261119003157, which write it too, and main's 20261111090000,
-// 20261111091500 and 20261116144907 write none. The cache trimmer's two, 20261111090000 and
-// 20261111091500, read no column a version of the list adds either, so neither is in the list.
-// The project pause's 20261115194357 is in it as well, though it rewrites no kind list: a
-// database migrated before the pause takes it in the upgrade, over a row of every kind the schema
-// admits, and its held_by_pause column on the outbox must take them all. Any other version left
-// out makes the cases below weaker, never red, which is why the comment says where the list comes
-// from.
+// column. So does one that changes a table a version of the list creates, as the givers of a plan
+// version (20261124033010) add a column to 20261117034837's issue_plans: applied as main's, before
+// that table exists, it fails on the missing table. 20261119211852 is the last migration that
+// writes outbox_kind_check: it stands above main's 20261119203047 and 20261119003157, which write
+// it too, and main's 20261111090000, 20261111091500 and 20261116144907 write none. The cache
+// trimmer's two, 20261111090000 and 20261111091500, read no column a version of the list adds
+// either, so neither is in the list. The project pause's 20261115194357 is in it as well, though
+// it rewrites no kind list: a database migrated before the pause takes it in the upgrade, over a
+// row of every kind the schema admits, and its held_by_pause column on the outbox must take them
+// all. Any other version left out makes the cases below weaker, never red, which is why the
+// comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1143,7 +1145,7 @@ var thisRelease = map[int]bool{
 	20261115121838: true, 20261115194357: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true, 20261119211852: true,
-	20261123212127: true,
+	20261123212127: true, 20261124033010: true,
 }
 
 const idleRelease = 20261101222956

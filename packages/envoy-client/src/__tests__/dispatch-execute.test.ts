@@ -19,6 +19,7 @@ import {
   SEARCH_QUERY_MAX,
   type SearchResult,
   type TablePosition,
+  TEXT_REFUSAL_HEADER,
   zodSchemaApi,
 } from "@legion/contracts";
 import {
@@ -63,16 +64,21 @@ function response(body: unknown, status = 200): Response {
 }
 
 /**
- * The two reads `dispatch artifact` makes before it uploads anything: what the owner already
- * holds, which decides the name-exists refusal, and the markdown the store would hold for inline
- * text, which decides the stored-text refusal. A test that exercises neither refusal answers an
- * owner holding no document and a store that would hold the text as it stands, so the upload
- * itself is what it measures. Undefined for every other request, which the stub answers itself.
+ * The reads `dispatch artifact` makes before it uploads anything: the check of the text, which
+ * asks the markdown the store would hold for inline text, or a markdown file's own round trip for
+ * its refusal, and decides the stored-text refusal; then what the owner already holds, which
+ * decides the name-exists refusal. A test that exercises neither refusal answers a store that
+ * would hold the text as it stands and an owner holding no document, so the upload itself is what
+ * it measures. Undefined for every other request, which the stub answers itself.
  */
 function uploadPreflight(url: RequestInfo | URL, init?: RequestInit): Response | undefined {
   const { pathname } = new URL(String(url));
   if (pathname === "/api/v1/markdown/round-trip") {
     return response({ markdown: JSON.parse(String(init?.body)).markdown });
+  }
+  if (pathname === "/api/v1/markdown/file-round-trip") {
+    const { file } = JSON.parse(String(init?.body)) as { file: string };
+    return response({ markdown: Buffer.from(file, "base64").toString("utf8") });
   }
   if (pathname.endsWith("/artifacts") && (init?.method ?? "GET") === "GET") return response([]);
   return undefined;
@@ -8784,9 +8790,9 @@ describe("executeDispatchTool", () => {
     ).toEqual([]);
   });
 
-  // Only a call whose dry run Dispatch answers is run as one: any other command, a retraction
+  // Only a call whose command answers its dry run is run as one: any other command, a retraction
   // among them, would make its write.
-  test("executeDispatchTool refuses a dry run of a call whose dry run asks Dispatch nothing", async () => {
+  test("executeDispatchTool refuses a dry run of a call whose dry run runs no command", async () => {
     const asked: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       asked.push(new URL(String(url)).pathname);
@@ -8809,7 +8815,7 @@ describe("executeDispatchTool", () => {
           fetchImpl: fetchImpl as typeof fetch,
           dryRun: true,
         })
-      ).rejects.toThrow(`dispatch ${tool}'s dry run asks Dispatch nothing`);
+      ).rejects.toThrow(`dispatch ${tool}'s dry run runs no command`);
     }
     expect(asked).toEqual([]);
   });
@@ -12433,7 +12439,8 @@ describe("executeDispatchTool", () => {
 
   // INFRA-1522 R14: an upload under a name the issue already holds would write that document's
   // next version, over the text it holds, so the command reads what the issue holds and refuses
-  // it before it sends the upload. --force is what asks for the version.
+  // it before it sends the upload. --force is what asks for the version. INFRA-4224: it reads the
+  // name after its check of the text, which passes this text.
   test("refuses an upload under a name the issue already holds, naming --force", async () => {
     const held = {
       id: "artifact-plan",
@@ -12454,6 +12461,8 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([held]);
       }
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       throw new Error(`unexpected request: ${pathname}`);
     };
     const upload = (args: Record<string, unknown>) =>
@@ -12487,8 +12496,13 @@ describe("executeDispatchTool", () => {
     await expect(upload({ issue: "DSP-42", name: "plan-md", content: "# Plan\n" })).rejects.toThrow(
       "already holds plan.md"
     );
-    // Nothing was uploaded, and the round trip was never asked for: the name decided it.
-    expect(requests.every((request) => request.method === "GET")).toBe(true);
+    // Nothing was uploaded: each call checked the text, which passed, and then the name refused it.
+    expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+      "POST /api/v1/markdown/round-trip",
+      "GET /api/v1/issues/DSP-42/artifacts",
+      "POST /api/v1/markdown/round-trip",
+      "GET /api/v1/issues/DSP-42/artifacts",
+    ]);
   });
 
   // INFRA-1334 R10: the command's held-name refusal answers a create that would write the held
@@ -12525,8 +12539,8 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       if (pathname === "/api/v1/markdown/round-trip") {
-        // What the store holds for text that is whitespace alone: nothing at all (storedMarkdown,
-        // packages/envoy/internal/dispatch/api/markdown_round_trip.go).
+        // What the round trip answers for text that is whitespace alone: the empty markdown
+        // (markdownRoundTrip, packages/envoy/internal/dispatch/api/markdown_round_trip.go).
         return response({ markdown: "" });
       }
       if (pathname === "/api/v1/issues/DSP-42/artifacts") {
@@ -12572,8 +12586,9 @@ describe("executeDispatchTool", () => {
   // (goBlankPattern's comment names the pair). So this create writes the held document's next
   // version over the text it holds, and what answers it is the same held-name refusal
   // "refuses an upload under a name the issue already holds, naming --force" reads for
-  // `# Plan\n`. Read with `trim` the create was blank here, skipping both that refusal and the
-  // stored-text check, and the upload stored version 2 with no --force asked for.
+  // `# Plan\n`, after the stored-text check, which this stub's store passes. Read with `trim` the
+  // create was blank here, skipping both that refusal and the stored-text check, and the upload
+  // stored version 2 with no --force asked for.
   test("refuses a create under a name the issue holds whose content is U+FEFF alone", async () => {
     const content = "\uFEFF";
     const held = {
@@ -12592,6 +12607,8 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([held]);
       }
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       throw new Error(`unexpected request: ${pathname}`);
     };
 
@@ -12617,8 +12634,11 @@ describe("executeDispatchTool", () => {
       "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 1, which user alice wrote. " +
         ARTIFACT_NAME_EXISTS_RULE,
     ]);
-    // Nothing was uploaded, and the round trip was never asked for: the name decided it.
-    expect(requests.every((request) => request.method === "GET")).toBe(true);
+    // Nothing was uploaded: the text was checked, and then the name refused it.
+    expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+      "POST /api/v1/markdown/round-trip",
+      "GET /api/v1/issues/DSP-42/artifacts",
+    ]);
   });
 
   test("writes the next version of a name the issue holds with --force", async () => {
@@ -12697,7 +12717,8 @@ describe("executeDispatchTool", () => {
     // notes.md is a Markdown name, which --path parses and renders the same way, so the refusal
     // sends nobody there: the one way out is the text printed above.
     expect(failure.problems[0]).not.toContain("--path");
-    expect(requests).toEqual(["/api/v1/issues/DSP-42/artifacts", "/api/v1/markdown/round-trip"]);
+    // The text was refused before the read of the held name, which the call never made.
+    expect(requests).toEqual(["/api/v1/markdown/round-trip"]);
   });
 
   // A name --path would store as bytes has a second way out, and the refusal names it.
@@ -13351,22 +13372,47 @@ describe("executeDispatchTool", () => {
     expect(failure instanceof Error ? failure.cause : undefined).toBeInstanceOf(Error);
   });
 
-  // A body Dispatch itself refused as too large is the one failure a repeat can never get
-  // through, so the refusal names what to do instead of saying to send the upload again
-  // (review round 3, finding 2). A name whose extension keeps the bytes has --path; a .md
-  // name has not, since --path parses and renders it the same way.
+  // A round trip Dispatch marks as its refusal of the text (TEXT_REFUSAL_HEADER, which Dispatch
+  // values `text`) is the call's refusal, in Dispatch's own words, whatever its status. The route
+  // marks so every refusal of the checks the upload makes of the text alone, at the status the
+  // upload answers it with, a 5xx for a failure of the seed on the text among them, and makes a
+  // new document's checks only for a request that asks for them, as the call does without
+  // --force. So the call refuses the text as its upload would be refused, under every name, asks
+  // nothing again, and uploads nothing.
   test.each([
-    ["notes.md", false],
-    ["Design notes", true],
-  ])("names the bound rather than a retry when Dispatch refuses the round trip's body (%s)", async (name, asBytes) => {
+    [
+      "notes.md",
+      413,
+      "CAP_EXCEEDED",
+      "document too large to store: this write's markdown makes more than 65536 elements",
+    ],
+    [
+      "Design notes",
+      413,
+      "CAP_EXCEEDED",
+      "document too large to store: this write's markdown makes more than 65536 elements",
+    ],
+    ["notes.md", 500, "INTERNAL", "internal server error"],
+    [
+      "notes.md",
+      400,
+      "NUL_CHARACTER",
+      "content holds a NUL character (U+0000) at character 11, which Dispatch cannot store",
+    ],
+  ])("refuses with Dispatch's own refusal when Dispatch marks the round trip's answer as a refusal of the text (%s, %i)", async (name, status, code, error) => {
     const posts: string[] = [];
+    let asked = 0;
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([]);
       }
       if (pathname === "/api/v1/markdown/round-trip") {
-        return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
+        asked += 1;
+        return Response.json(
+          { error, code },
+          { status, headers: { [TEXT_REFUSAL_HEADER]: "text" } }
+        );
       }
       posts.push(pathname);
       return response({
@@ -13390,18 +13436,16 @@ describe("executeDispatchTool", () => {
       (caught: unknown) => caught
     );
 
-    expect(failure).toBeInstanceOf(Error);
-    const message = failure instanceof Error ? failure.message : String(failure);
-    expect(message).toContain("request body exceeds 6292480 bytes");
-    expect(message).toContain("sending the upload again does not change that");
-    expect(message).not.toContain("Send the upload again once that call is answered");
-    // The remedy is a step a writer can take: every text that reaches this refusal is past the
-    // megabyte one document holds, so "a document of its own" would be refused the same way.
-    expect(message).toContain(
-      "a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that"
+    expect(failure).toEqual(
+      expect.objectContaining({
+        name: "DispatchServiceError",
+        code,
+        status,
+        message: error,
+        textRefusal: true,
+      })
     );
-    expect(message).not.toContain("write it to a document of its own");
-    expect(message.includes("Send it as a file with path (--path <file>)")).toBe(asBytes);
+    expect(asked).toBe(1);
     expect(posts).toEqual([]);
   });
 
@@ -13410,6 +13454,9 @@ describe("executeDispatchTool", () => {
   test.each([
     [401, "UNAUTHENTICATED", "the bearer token is not valid"],
     [500, "INTERNAL", "the document service is down"],
+    // The route's own refusal of a body past its bound, which no text within the document's
+    // bytes reaches, is no refusal of the text: it carries no mark.
+    [413, "CAP_EXCEEDED", "request body exceeds 6292480 bytes"],
   ])("refuses the upload when the round trip answers %i, naming what failed", async (status, code, error) => {
     const posts: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -13500,7 +13547,7 @@ describe("executeDispatchTool", () => {
     expect(posts).toEqual([]);
   });
 
-  test("uploads inline content the store would hold as it stands, and asks no round trip for a file", async () => {
+  test("uploads inline content the store would hold as it stands, checking the text before it reads the held name", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
@@ -13527,8 +13574,8 @@ describe("executeDispatchTool", () => {
 
     expect(result.text).toContain("Uploaded notes.md as version 1");
     expect(requests).toEqual([
-      "/api/v1/issues/DSP-42/artifacts",
       "/api/v1/markdown/round-trip",
+      "/api/v1/issues/DSP-42/artifacts",
       "/api/v1/issues/DSP-42/artifacts",
     ]);
   });
