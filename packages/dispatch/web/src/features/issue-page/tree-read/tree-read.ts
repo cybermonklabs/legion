@@ -1,4 +1,6 @@
 import {
+  type DefaultError,
+  type FetchQueryOptions,
   focusManager,
   hashKey,
   matchQuery,
@@ -7,6 +9,7 @@ import {
   type QueryFilters,
   type QueryFunctionContext,
   type QueryKey,
+  QueryObserver,
   queryOptions,
   useQuery,
   useQueryClient,
@@ -451,6 +454,59 @@ export function useStartOutlineRead(key: string): () => void {
     const held = queryClient.getQueryCache().find({ exact: true, queryKey: options.queryKey });
     if (held === undefined || !outlineBegun(held)) void queryClient.prefetchQuery(options);
   }, [key, queryClient]);
+}
+
+/**
+ * Sends, from the handler of a press on the view control of `preset` (`IssuePresets.tsx`), the
+ * reads of issue `key` that view's rows are drawn from - the outline read it holds where its
+ * readers send it (`OutlineChoice.sends`: Graph's in Graph, Conversation's in Conversation and in
+ * each filter but Spec), and the filter's own view read - each before the commit that turns the
+ * view on (R2: the press sends the read, and the page shows that it took the act in that commit).
+ * Its readers sent each only as they subscribed, after that commit.
+ *
+ * It sends exactly what those readers' first look sends, by the tree's own rule (`TREE_FRESH`), so
+ * a press sends no request the page would not: nothing where a read is out already, nor where it
+ * holds an answer no one has asked for again, nor where it was refused and no one has asked for
+ * it since (`mayReadOnMount`), nor while a write of the issue holds it (`mayReadNow`). A read the
+ * cache holds no state of, or one a load reset (`resetViews`), is sent. The readers then find it
+ * out, and send nothing of their own.
+ */
+export function startPressedViewRead(queryClient: QueryClient, key: string, preset: Preset): void {
+  const outline = outlineOf(preset);
+  if (outline !== undefined && preset !== "spec") {
+    sendAsReadersWould(queryClient, outlineQuery(key, outline));
+  }
+  const filter = TREE_FILTERS.find((one) => one === preset);
+  if (filter !== undefined) sendAsReadersWould(queryClient, viewQuery(key, filter));
+}
+
+/**
+ * Sends `read` where a new observer of it would send it by the tree's rule (`TREE_FRESH`): the
+ * cache holds no state of it, or it is not out, no write of the issue holds it, and it is not
+ * begun or is stale where it may be read on a mount (`startPressedViewRead`).
+ *
+ * The read is held by an observer of its own, which reads nothing, until it settles. TanStack
+ * gives up a read in flight whose last observer leaves, where its function took the read's signal,
+ * as `readTree` does: the press's commit takes the view it left off the page, and a reader there
+ * that watched this read - Conversation's body watches Graph's - was its last observer for that
+ * moment, before the view's readers subscribe after the commit. Given up, the read was sent a
+ * second time by those readers. Held, it goes on whatever leaves, and a press on another view
+ * before it answers keeps its answer for its view.
+ */
+function sendAsReadersWould<TKey extends QueryKey>(
+  queryClient: QueryClient,
+  read: FetchQueryOptions<TreeAnswer, DefaultError, TreeAnswer, TKey>
+): void {
+  const held = queryClient.getQueryCache().find({ exact: true, queryKey: read.queryKey });
+  const sends =
+    held === undefined ||
+    (held.state.fetchStatus === "idle" &&
+      mayReadNow(held) &&
+      (!outlineBegun(held) || (held.isStale() && mayReadOnMount(held))));
+  if (!sends) return;
+  const sent = queryClient.prefetchQuery(read);
+  const release = new QueryObserver(queryClient, { ...read, enabled: false }).subscribe(() => {});
+  void sent.finally(release);
 }
 
 /** One role's blocks from the read that holds them (`TreeRead.blocksOf`), answered as the blocks

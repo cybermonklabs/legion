@@ -80,7 +80,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { useMarginSections } from "./useMarginSections";
+import { marginSectionOpen, useMarginSections } from "./useMarginSections";
 import { usePriorityHandOffs } from "./usePriorityHandOffs";
 import { waitingOnReader } from "./waiting";
 
@@ -126,6 +126,49 @@ function issueTitleIn(read: ReferenceTargetsAnswer | undefined, key: string): st
 function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
   return <T,>(before: T | undefined): T | undefined =>
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
+}
+
+/** The names read of the titles of the issues `blockers`, which Details' Blocked by draws beside
+ *  each key, kept fresh by events (`EVENT_FRESH`). The panel reads it, and a press that opens
+ *  Details sends it (`startDetailsReads`). */
+function blockerTitlesRead(blockers: readonly string[]) {
+  return {
+    ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
+    ...EVENT_FRESH,
+  };
+}
+
+/** The read of what waits on issue `reference`: the other direction of `blocked_by`, the
+ *  references of that kind that point at it, under the backlink panels' `["references", "to",
+ *  <reference>]`, kept fresh by events (`EVENT_FRESH`). The panel reads it, and a press that opens
+ *  Details sends it (`startDetailsReads`). */
+function blockingRead(reference: string) {
+  return {
+    queryFn: () => api.getReferences(reference, { kind: "blocked_by" }),
+    queryKey: ["references", "to", reference, "blocked_by"],
+    ...EVENT_FRESH,
+  };
+}
+
+/**
+ * Sends, from the handler of a press that opens Details (the header's Details control,
+ * `IssueIdentityRow.tsx`), the reads the panel makes only while the drawer is open
+ * (`IssueMarginPanel`): the titles of the issues this one waits on and what waits on it, both rows
+ * of Development, while the reader keeps Development open (`marginSectionOpen`). The panel's own
+ * observers sent them only once the commit that opened the drawer had run its effects (R2: a press
+ * sends the read it needs from its handler). Each is sent where the panel would send it: neither
+ * holds an answer no event asked for again (`EVENT_FRESH`), so one held is not sent, and one out is
+ * joined. The titles of what waits on the issue wait on that read's answer, and the panel sends
+ * them then.
+ */
+export function startDetailsReads(queryClient: QueryClient, issue: IssueDetails): void {
+  const login = queryClient.getQueryData(whoAmIQuery().queryKey)?.login;
+  if (!marginSectionOpen(login, "development")) return;
+  const blockers = issue.blocked_by ?? [];
+  if (blockers.length > 0) void queryClient.prefetchQuery(blockerTitlesRead(blockers));
+  void queryClient.prefetchQuery(
+    blockingRead(buildDispatchReference({ key: issue.key, kind: "issue" }))
+  );
 }
 
 /**
@@ -323,12 +366,9 @@ export function IssueMarginPanel({
   // window focus reads one again only while its last read failed (`EVENT_FRESH`). Each draws the
   // answer of the set before while the read of a changed set is out (`keptUntilFailed`).
   const queryClient = useQueryClient();
-  const blockerRead = referenceTargetsQuery(
-    blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))
-  );
+  const blockerRead = blockerTitlesRead(blockers);
   const blockerTitles = useQuery({
     ...blockerRead,
-    ...EVENT_FRESH,
     enabled: readingDevelopment && blockers.length > 0,
     placeholderData: keptUntilFailed(queryClient, blockerRead.queryKey),
   });
@@ -344,12 +384,7 @@ export function IssueMarginPanel({
   // what they are called: the rename of one of them moves no `blocked_by`, and the panel the
   // server names for it (`references_changed`) is read again by its exact key, which is not this
   // one, so the title an edge carries here would stay the old one.
-  const blocking = useQuery({
-    enabled: readingDevelopment,
-    queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
-    queryKey: ["references", "to", issueReference, "blocked_by"],
-    ...EVENT_FRESH,
-  });
+  const blocking = useQuery({ ...blockingRead(issueReference), enabled: readingDevelopment });
   // This Dispatch answers an issue's wait on this one as `needs`, which the read's kind reads, so
   // the row takes an edge of `needs` as well as of the kind it asks for.
   const waiting = (blocking.data?.edges ?? []).flatMap((edge) =>

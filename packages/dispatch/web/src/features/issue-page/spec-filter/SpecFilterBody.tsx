@@ -777,8 +777,14 @@ export function SpecFilterBody({
           one tree, named as the tree every other filter draws, so a reader meets one outline
           on every address (R2, `IssueTree.tsx`). Its items are each statement and each
           decision beside them, which is what the focus moves between (R5's `w`); the layout
-          between them carries no role of its own. */}
+          between them carries no role of its own. It reads busy while the reads its statements
+          come from are out, and not once they hold their answers or one stands refused, whose
+          line says so over it: a press on Spec shows the view loading in the press's commit, and
+          the commit that draws the first screen of statements takes the mark off (R2). */}
       <div
+        aria-busy={
+          (!statementsHeld && !unreadable.some(({ line }) => line === "statements")) || undefined
+        }
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         data-spec-tree=""

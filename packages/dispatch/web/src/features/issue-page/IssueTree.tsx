@@ -1331,6 +1331,11 @@ export function IssueTree({
         </p>
       )}
       <div
+        // Busy until the reads that place the rows have answered and the rows are drawn
+        // (`placed`): a press on Conversation or Graph whose read is out shows the view loading
+        // in the press's commit, and the commit that draws the first screen takes the mark off
+        // (R2).
+        aria-busy={!placed || undefined}
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         onBlur={releaseFocus}

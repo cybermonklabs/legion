@@ -1,4 +1,4 @@
-import { useUserPreference } from "../shell/userPreference";
+import { userPreferenceStorageKey, useUserPreference } from "../shell/userPreference";
 import type { MarginSection } from "./page-structure";
 
 /**
@@ -14,10 +14,18 @@ export interface MarginSections {
   readonly toggle: (section: MarginSection) => void;
 }
 
+/** The preference the sections are kept under. */
+const SECTIONS_PREFERENCE = "issue.margin-sections";
+
+/** The sections the reader closed, from what their browser stores: none where it stores nothing. */
+function readClosed(stored: string | null): readonly string[] {
+  return stored === null ? [] : stored.split(",").filter((name) => name !== "");
+}
+
 export function useMarginSections(): MarginSections {
   const [collapsed, setCollapsed] = useUserPreference<readonly string[]>(
-    "issue.margin-sections",
-    (stored) => (stored === null ? [] : stored.split(",").filter((name) => name !== "")),
+    SECTIONS_PREFERENCE,
+    readClosed,
     (sections) => sections.join(",")
   );
   return {
@@ -29,4 +37,16 @@ export function useMarginSections(): MarginSections {
           : [...collapsed, section]
       ),
   };
+}
+
+/** Whether `section` is open for the reader signed in as `login`, read from what their browser
+ *  stores, as `useMarginSections` reads it as it mounts: what a press's handler reads, which no
+ *  hook's state reaches (`IssueMargin.tsx`'s `startDetailsReads`). With no login known, every
+ *  section is open, as the hook draws it then. */
+export function marginSectionOpen(login: string | undefined, section: MarginSection): boolean {
+  const stored =
+    login === undefined
+      ? null
+      : window.localStorage.getItem(userPreferenceStorageKey(login, SECTIONS_PREFERENCE));
+  return !readClosed(stored).includes(section);
 }

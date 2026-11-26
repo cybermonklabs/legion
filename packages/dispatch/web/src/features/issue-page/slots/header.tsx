@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { issuePriority } from "../../issue/issue-priority";
@@ -6,6 +7,7 @@ import { useIssueDetail } from "../../issue/useIssueDetail";
 import { useIssuePriority } from "../../issue/useIssuePriority";
 import { useOpenDetailsAt } from "../details-rows";
 import { IssueHeader } from "../IssueHeader";
+import { startDetailsReads } from "../IssueMargin";
 import { NoTooltips } from "../NoTooltips";
 import type { SlotProps } from "../slot-props";
 import { useHeaderKeys } from "../useHeaderKeys";
@@ -19,7 +21,9 @@ import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
  * (`useIssueDetail`, `stateForIssue`). The header makes its own set of the issue's writes;
  * Details makes another, and each write goes in the issue's one line of the keyed store
  * (`issue:<key>`), so the two keep their order. The picker, the digits and the palette's Set
- * priority rows share one priority write, so a refusal is said once, here.
+ * priority rows share one priority write, so a refusal is said once, here. A press on its Details
+ * control that opens Details sends the reads Details makes only while it is open, from the press's
+ * handler (`startDetailsReads`).
  */
 export function HeaderSlot({ issue, route }: SlotProps): ReactNode {
   const { primaryArtifact, state } = useIssueDetail(route);
@@ -28,12 +32,14 @@ export function HeaderSlot({ issue, route }: SlotProps): ReactNode {
   const priorityWrite = useIssuePriority(issue.key, issuePriority(issue.priority));
   useHeaderKeys(priorityWrite);
   const openDetailsAt = useOpenDetailsAt();
+  const queryClient = useQueryClient();
   return (
     <NoTooltips>
       <IssueHeader
         documentArtifact={primaryArtifact}
         isClosed={issue.closed_at !== null}
         issue={issue}
+        onOpenDetails={() => startDetailsReads(queryClient, issue)}
         onOpenField={(field) => openDetailsAt(field, true)}
         onOpenLabels={() => openDetailsAt("labels")}
         priorityWrite={priorityWrite}

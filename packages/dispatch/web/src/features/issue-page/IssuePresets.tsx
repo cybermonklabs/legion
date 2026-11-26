@@ -68,11 +68,17 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
 export function IssuePresets({
   active,
   issueKey,
+  onPress,
   outline,
   signals,
 }: {
   active: Preset;
   issueKey: string;
+  /** Called from the handler of a press that moves the row to another view, with the view it
+   *  turns on, before the press moves the address: the row's slot sends that view's read here
+   *  (`tree-read.ts`' `startPressedViewRead`), so the read is out before the commit that turns
+   *  the view on, rather than sent by the view's readers after it. */
+  onPress?: (preset: Preset) => void;
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
@@ -168,9 +174,9 @@ export function IssuePresets({
   // to the issue's own.
   const press = (preset: Preset) => {
     if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
-    navigate(
-      presetPath(issueKey, preset === active && preset !== "conversation" ? "conversation" : preset)
-    );
+    const to = preset === active && preset !== "conversation" ? "conversation" : preset;
+    onPress?.(to);
+    navigate(presetPath(issueKey, to));
   };
   const walk = (event: KeyboardEvent<HTMLElement>, from: Preset) => {
     const at = PRESET_ORDER.indexOf(from);

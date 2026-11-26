@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -15,6 +15,7 @@ import { useOutlineReads } from "../outline-reads";
 import type { Preset } from "../page-words";
 import { type Filter, filterSignals, type PresetSignal } from "../presets";
 import type { SlotProps } from "../slot-props";
+import { startPressedViewRead } from "../tree-read/tree-read";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
@@ -62,6 +63,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);
   useIssueKeymap(issue.key);
+  const queryClient = useQueryClient();
   return (
     <div
       className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
@@ -70,6 +72,9 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
+        // A press sends the read of the view it turns on from its own handler, so the read is out
+        // before the commit that turns the view on (R2).
+        onPress={(preset) => startPressedViewRead(queryClient, issue.key, preset)}
         outline={
           paned || !drawsContents(address.preset) ? undefined : <OutlineSheet slot={props} />
         }

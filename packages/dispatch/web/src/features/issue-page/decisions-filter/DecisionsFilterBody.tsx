@@ -864,6 +864,10 @@ export function DecisionsFilterBody({
           the tab stop, scroll the page to it and open its body. The outline's tree takes no
           focus from a press either (`IssueTree.tsx`). */}
       <div
+        // Busy while the reads that say which questions and decisions there are are out and
+        // neither stands refused, so a press on Decisions during the load shows the view loading
+        // in the press's commit (R2).
+        aria-busy={(!readsHeld && unreadable.length === 0) || undefined}
         aria-label={CONTROL_LABELS.tree}
         aria-owns={footShown && parts.agents.length > 0 ? footRows : undefined}
         className="flex min-w-0 flex-col"

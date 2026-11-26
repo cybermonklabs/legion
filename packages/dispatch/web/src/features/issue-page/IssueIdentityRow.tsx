@@ -23,11 +23,16 @@ import { useShellNavigation } from "./shell-navigation";
 export function IssueIdentityRow({
   actions,
   issueKey,
+  onOpenDetails,
   parent,
   project,
 }: {
   actions: readonly IssueAction[];
   issueKey: string;
+  /** Called from the handler of a press on Details that opens the drawer, before it opens: the
+   *  header sends the reads Details makes only while it is open here (`IssueMargin.tsx`'s
+   *  `startDetailsReads`), so they are out before the commit that opens it (R2). */
+  onOpenDetails?: () => void;
   /** The issue this one sits under, drawn as the way back up to it. */
   parent: string | null;
   project: string;
@@ -118,7 +123,10 @@ export function IssueIdentityRow({
           className={pageHeaderControl}
           data-testid="issue-details-control"
           {...{ [DETAILS_ATTRIBUTE]: "" }}
-          onClick={() => details.setOpen(!details.open)}
+          onClick={() => {
+            if (!details.open) onOpenDetails?.();
+            details.setOpen(!details.open);
+          }}
           onMouseDown={(event) => event.preventDefault()}
           type="button"
           {...pageChrome}
