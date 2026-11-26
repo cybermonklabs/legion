@@ -590,7 +590,7 @@ function referenceOf(node: TreeAnswerNode, lookup: Lookup): string | undefined {
 
 /** The answer's nodes and tuples, each looked up by the read's own ids (`decision-review.ts`'
  *  `firstOfEachId`, `tuplesByFrom`), and the issue's asks by the node each is (`askOfNode`). */
-function lookupOf(answer: TreeAnswer, reads: DecisionReads): Lookup {
+export function lookupOf(answer: TreeAnswer, reads: DecisionReads): Lookup {
   const nodes = firstOfEachId(answer.nodes ?? []);
   const tuples = tuplesByFrom(answer);
   return {

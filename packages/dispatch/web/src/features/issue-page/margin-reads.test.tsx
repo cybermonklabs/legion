@@ -4,10 +4,9 @@ import { render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
-import type { Artifact, Comment } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import { specArtifact } from "../margin/margin-fixture";
 import { type MarginOwner, type MarkPlacement, useMarginItems } from "../margin/useMarginItems";
 import { ReferencedBy } from "../refs/ReferencedBy";
@@ -15,6 +14,7 @@ import { buildDispatchReference } from "../refs/routes";
 import { issueDetails, KEY, SPEC_DOCUMENT } from "./decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { readComment } from "./outline-fixtures";
 import { blockNodeId } from "./tree-drafts";
 import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { issueAskThreadsQuery } from "./useIssueTree";
@@ -233,28 +233,6 @@ test("with no drawer, a focus past 30 s reads Referenced by's list again", async
   }
 });
 
-/** A person's comment on the issue as the comments read answers it, which `extra` anchors. */
-function commentRead(id: string, extra: Partial<Comment> = {}): Comment {
-  return {
-    anchor: null,
-    ...commentDeliveryFields(),
-    ask_id: null,
-    author: { id: "alice", kind: "user" },
-    body: `Words of ${id}.`,
-    created_at: "2026-11-05T00:00:00Z",
-    edited_at: null,
-    id,
-    issue_key: KEY,
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-    ...extra,
-  };
-}
-
 /** The id of each node `id` is drawn under in the tree `root`, one for each of its rows. */
 function parentsOf(root: TreeNode, id: string): string[] {
   const found: string[] = [];
@@ -278,7 +256,8 @@ function parentsOf(root: TreeNode, id: string): string[] {
 // margin draws a thread is INFRA-5706's.
 test("a comment on the words of a decision that restates a person's answer is in the margin with its quote, and one tied to no text hangs under the question", async () => {
   const words = "Keep every address the old page answered.";
-  const onWords = commentRead("c-on-words", {
+  const onWords = {
+    ...readComment("c-on-words", 0),
     anchor: {
       artifact_id: SPEC_DOCUMENT.id,
       block_id: "d-restates",
@@ -287,8 +266,8 @@ test("a comment on the words of a decision that restates a person's answer is in
       quote: words,
       version: 1,
     },
-  });
-  const loose = commentRead("c-loose");
+  };
+  const loose = readComment("c-loose", 0);
   // The read answers a person's decision on the question, as it does on every ask a person
   // answered, and hangs both comments under the decision.
   const tree = treeAnswer([

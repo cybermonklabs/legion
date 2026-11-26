@@ -352,25 +352,9 @@ export function decisionsParts({
       continue;
     }
     const shapes = shapesOf(row, nodeIdOf, placed);
-    const overtaken = row.node.state === "overtaken" ? { overtaken: true as const } : {};
-    if (decidedByPerson(row)) {
-      // A decision a person decided is that person's, as their answered ask is: it stands with
-      // the decisions of that person, by the time its words last changed, in no review list and
-      // never at the agents' foot, and no Change or Keep is an agent's to ask of it, so it stands
-      // only replaced, where it is.
-      const standing = reviewState({ replaced: row.replaced }, false);
-      decidedBy(row.decidedBy).push({
-        ...base,
-        ...timeOf(row.changed_at ?? node.at),
-        ...overtaken,
-        kind: "decision",
-        shapes,
-        ...(standing === undefined ? {} : { standing }),
-      });
-      continue;
-    }
-    const asked = row.replaced ? undefined : changes?.get(row.ref);
-    const standing = reviewState(row, asked !== undefined);
+    const person = decidedByPerson(row);
+    const asked = person || row.replaced ? undefined : changes?.get(row.ref);
+    const standing = reviewState(person ? { replaced: row.replaced } : row, asked !== undefined);
     const keptBy: Actor | undefined =
       standing !== "kept" || row.kept === null ? undefined : { id: row.kept.kept_by, kind: "user" };
     const entry: DecisionEntry = {
@@ -391,12 +375,18 @@ export function decisionsParts({
             },
           }),
       ...(keptBy === undefined ? {} : { keptBy }),
-      ...overtaken,
+      ...(row.node.state === "overtaken" ? { overtaken: true as const } : {}),
       kind: "decision",
       shapes,
       ...(standing === undefined ? {} : { standing }),
     };
-    if (row.replaced) {
+    if (person) {
+      // A decision a person decided is that person's, as their answered ask is: it stands with
+      // the decisions of that person, by the time its words last changed, in no review list and
+      // never at the agents' foot, and no Change or Keep is an agent's to ask of it, so it stands
+      // only replaced, where it is.
+      decidedBy(row.decidedBy).push(entry);
+    } else if (row.replaced) {
       agents.push(entry);
     } else if (asked !== undefined && shapes.length > 0) {
       // A person asked for a change of a decision a statement rests on: it waits on its agent,

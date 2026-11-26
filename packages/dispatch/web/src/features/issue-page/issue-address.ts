@@ -300,22 +300,16 @@ export function pathToTarget(
 ): readonly TreeNode[] | undefined {
   if (target === undefined) return undefined;
   if (target.kind === "children") return pathToNode(root, (node) => node.type === "child_issue");
+  // The node `named` answers, else the question whose `restatedBy` names one it answers.
+  const namedOrRestated = (named: (node: Pick<TreeNode, "id" | "readId">) => boolean) =>
+    pathToNode(root, named) ?? pathToNode(root, (node) => node.restatedBy?.some(named) === true);
   if (target.kind === "block") {
     const exact =
       target.document === undefined ? undefined : blockNodeId(target.document, target.id);
     const suffix = `#b-${target.id}`;
-    const named = (id: string) => (exact === undefined ? id.endsWith(suffix) : id === exact);
-    return (
-      pathToNode(root, (node) => named(node.id)) ??
-      pathToNode(root, (node) => node.restatedBy?.some((one) => named(one.id)) === true)
-    );
+    return namedOrRestated(({ id }) => (exact === undefined ? id.endsWith(suffix) : id === exact));
   }
-  if (target.kind === "node") {
-    return (
-      pathToNode(root, (node) => node.readId === target.id) ??
-      pathToNode(root, (node) => node.restatedBy?.some((one) => one.readId === target.id) === true)
-    );
-  }
+  if (target.kind === "node") return namedOrRestated(({ readId }) => readId === target.id);
   const byId = pathToNode(root, (node) => node.id === target.id);
   if (byId !== undefined) return byId;
   const address = `/${target.id}`;

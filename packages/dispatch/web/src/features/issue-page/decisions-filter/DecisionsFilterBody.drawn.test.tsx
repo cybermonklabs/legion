@@ -48,8 +48,7 @@ import {
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
-import { AppProviders } from "../slots/stage-fixtures";
-import { blockNodeId } from "../tree-drafts";
+import { AppProviders, inDocument } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
 import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import {
@@ -2341,18 +2340,15 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
 // tree is the one the page builds from the read (`buildIssueTree`), and the read answers a
 // person's decision on the question, as it does on every ask a person answered.
 test("a decision that restates a person's answer is no entry, and one under that question with no from_ask tie waits for review", () => {
-  const inSpec = (position: number) => ({
-    document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_DOCUMENT.slug },
-  });
   const made = [
     personDecision("a-answered", { text: "Does the built page work for you?" }),
     treeNode("restates", "decision", "a-answered", {
-      ...inSpec(1),
+      ...inDocument(SPEC_DOCUMENT, 1),
       decision: { asks: ["a-answered"], changed_at: "2026-11-12T12:00:00Z", waiting_review: true },
       text: "Keep the rail, as the person answered.",
     }),
     treeNode("untied", "decision", "a-answered", {
-      ...inSpec(2),
+      ...inDocument(SPEC_DOCUMENT, 2),
       decision: {
         changed_at: "2026-11-12T12:00:00Z",
         links: [shaped(specRef("s1"))],
@@ -2362,7 +2358,13 @@ test("a decision that restates a person's answer is no entry, and one under that
     }),
   ];
   const tree = treeAnswer(
-    [treeNode("s1", "requirement", KEY, { ...inSpec(0), text: "The page draws s1." }), ...made],
+    [
+      treeNode("s1", "requirement", KEY, {
+        ...inDocument(SPEC_DOCUMENT),
+        text: "The page draws s1.",
+      }),
+      ...made,
+    ],
     [treeTuple("shaped", "untied", "s1")]
   );
   const view = renderBody({
@@ -2377,11 +2379,11 @@ test("a decision that restates a person's answer is no entry, and one under that
     named: [],
     open_questions: [],
     others: ["a-answered"],
-    review: [blockNodeId(SPEC_DOCUMENT.slug, "untied")],
+    review: [D("untied")],
     yours: [],
   });
   expect(
-    view.container.querySelector(`[data-node-id="${blockNodeId(SPEC_DOCUMENT.slug, "restates")}"]`),
+    view.container.querySelector(`[data-node-id="${D("restates")}"]`),
     "the view drew the decision that restates the person's answer"
   ).toBeNull();
   expect(view.queryByText("Keep the rail, as the person answered.")).toBeNull();

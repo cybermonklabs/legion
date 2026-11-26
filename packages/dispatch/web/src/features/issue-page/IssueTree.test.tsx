@@ -59,7 +59,7 @@ import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { agentsOnlyIds } from "./agents-only";
-import { issueDetails, SPEC_DOCUMENT } from "./decisions-filter/decisions-fixtures";
+import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import {
   DocumentAdmissionProvider,
   type ReportAdmission,
@@ -10972,16 +10972,16 @@ const RESTATED_QUESTION: readonly TreeAnswerNode[] = [
   }),
   treeNode("d-restates", "decision", "a-answered", {
     decision: { asks: ["a-answered"], waiting_review: true },
-    document: { artifact_id: SPEC_DOCUMENT.id, position: 1, slug: SPEC_DOCUMENT.slug },
+    document: { artifact_id: specDocument.id, position: 1, slug: specDocument.slug },
     text: "Keep every address the old page answered.",
   }),
   treeNode("g-restates", "reading", "d-restates", {
-    document: { artifact_id: SPEC_DOCUMENT.id, position: 2, slug: SPEC_DOCUMENT.slug },
+    document: { artifact_id: specDocument.id, position: 2, slug: specDocument.slug },
     text: "The agent reads the answer so.",
   }),
   treeNode("d-untied", "decision", "a-answered", {
     decision: { waiting_review: true },
-    document: { artifact_id: SPEC_DOCUMENT.id, position: 3, slug: SPEC_DOCUMENT.slug },
+    document: { artifact_id: specDocument.id, position: 3, slug: specDocument.slug },
     text: "Fold to the frontier and not to a depth.",
   }),
 ];
@@ -10991,21 +10991,21 @@ const RESTATED_QUESTION: readonly TreeAnswerNode[] = [
 // row for it. What the read hangs under it stands under the question, its nearest drawn ancestor.
 // The test is the tie, not the place: a decision the read stands under the same question that
 // names no `from_ask` is drawn there as an agent's decision.
-test("the outline draws no row for a decision that restates a person's answer, and one under that question with no from_ask tie", async () => {
+test("the outline draws no row for a decision that restates a person's answer, and draws one under that question with no from_ask tie", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   try {
     const { view } = renderAddressedBody(`/issues/${KEY}#b-d-untied`, [], BodySlot, {
       nodes: RESTATED_QUESTION,
     });
-    const untied = blockNodeId(SPEC_DOCUMENT.slug, "d-untied");
+    const untied = blockNodeId(specDocument.slug, "d-untied");
     await waitFor(() => expect(focusedRow(view.container)).toBe(untied));
     const drawn = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
       (row) => [row.getAttribute("data-node-id"), row.getAttribute("aria-level")]
     );
     expect(drawn).toEqual([
       ["a-answered", "1"],
-      [blockNodeId(SPEC_DOCUMENT.slug, "g-restates"), "2"],
+      [blockNodeId(specDocument.slug, "g-restates"), "2"],
       [untied, "2"],
     ]);
     expect(rowsFor(view.container, untied)[0]?.getAttribute("data-node-type")).toBe("decision");
@@ -11025,14 +11025,17 @@ test("an address naming a decision that restates a person's answer lands on the 
     const { view } = renderAddressedBody(`/issues/${KEY}#b-d-restates`, [], BodySlot, {
       nodes: RESTATED_QUESTION,
     });
-    await waitFor(() =>
-      expect(
-        focusedRow(view.container),
-        `the address landed nowhere; ${view.queryByRole("heading", { name: "No row for this block" }) === null ? "no" : "the"} line that the outline holds no row of the block was drawn`
-      ).toBe("a-answered")
+    await waitFor(
+      () => expect(focusedRow(view.container), "the address landed nowhere").toBe("a-answered"),
+      {
+        onTimeout: () =>
+          new Error(
+            `the address landed nowhere; ${view.queryByRole("heading", { name: "No row for this block" }) === null ? "no" : "the"} line that the outline holds no row of the block was drawn`
+          ),
+      }
     );
     expect(view.queryByRole("heading", { name: "No row for this block" })).toBeNull();
-    expect(rowsFor(view.container, blockNodeId(SPEC_DOCUMENT.slug, "d-restates"))).toEqual([]);
+    expect(rowsFor(view.container, blockNodeId(specDocument.slug, "d-restates"))).toEqual([]);
   } finally {
     names.mockRestore();
   }

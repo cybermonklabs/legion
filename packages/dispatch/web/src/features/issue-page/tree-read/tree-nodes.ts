@@ -706,10 +706,7 @@ function draftDecision(
     stale: stale.has(context.nodeIdOf(chip.ref) ?? chip.ref),
   }));
   const decided = context.decisions.get(node);
-  // Whether a person decided it, by the decision's own `decidedBy`, and for a decision node
-  // `decisionNodes` holds no decision for by the author read above, which is that member read
-  // by the same rule from the same lookup (`deciderMember`).
-  const person = decidedByPerson(decided ?? { decidedBy: decider });
+  const person = decidedByPerson({ decidedBy: decider });
   const change = person ? undefined : context.changes.get(draft.id);
   const changed = change !== undefined;
   draft.state = reviewState(person ? { replaced: decision.replaced } : decision, changed);

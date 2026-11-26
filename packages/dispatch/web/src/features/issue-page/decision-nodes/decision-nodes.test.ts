@@ -14,11 +14,11 @@ import {
 } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import {
-  askOfNode,
   type DecisionNode,
   type DecisionReads,
   decidedByPerson,
   decisionNodes,
+  lookupOf,
   restatesAnswer,
 } from "./decision-nodes";
 
@@ -542,8 +542,7 @@ test("a decision whose from_ask names an answered ask restates it, and one under
     issue: { key: KEY },
   };
   // The answer looked up as every reader of a decision looks it up.
-  const nodes = firstOfEachId(tree.nodes ?? []);
-  const lookup = { askOf: askOfNode(reads), nodeOf: (readId: string) => nodes.get(readId) };
+  const lookup = lookupOf(tree, reads);
 
   expect(
     ["d-restates", "d-untied", "d-restates-b", "d-open"].map((id) => [

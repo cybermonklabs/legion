@@ -4,10 +4,10 @@
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import {
-  askOfNode as askRowOf,
+  lookupOf,
   restatesAnswer,
 } from "../web/src/features/issue-page/decision-nodes/decision-nodes";
-import { decisionNodeChanges, firstOfEachId } from "../web/src/features/issue-page/decision-review";
+import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipName } from "../web/src/features/issue-page/issue-tree";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
@@ -439,15 +439,15 @@ async function readRowOne(
   // Each decision node of the Decisions view's read, but one that restates a person's answer
   // (INFRA-1196's decision 513), which the view draws no row for, by the page's one rule
   // (`restatesAnswer`) over that read.
-  const viewNodes = await viewNodesOf(key, "decisions");
-  const viewHeld = firstOfEachId(viewNodes);
-  const restating = { askOf: askRowOf(reads), nodeOf: (readId: string) => viewHeld.get(readId) };
+  const view = await readTree(key, "decisions");
+  const viewNodes = view.nodes ?? [];
+  const lookup = lookupOf(view, reads);
   const states = Object.fromEntries(
     viewNodes.flatMap((node) =>
       node.supertag === "decision" &&
       node.issue === undefined &&
       node.role !== "context" &&
-      !restatesAnswer(node, restating)
+      !restatesAnswer(node, lookup)
         ? [[decisionRowId(node), reviewWordOf(node)]]
         : []
     )
