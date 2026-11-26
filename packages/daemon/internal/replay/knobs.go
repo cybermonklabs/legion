@@ -180,18 +180,15 @@ func entryTree(iss *IssueTrace) string {
 // root and a ready mark, each of key — but for the Dispatch events the copied issue's workers made
 // and the roots its architect took into its tree, which stay the copied issue's. A clone of a piece
 // under way at the window's start (opensAtSeed) opens as the piece would have opened had it not
-// been: an accepting piece, whose start is the issue's move into accepting, on that move
-// (opensOnPhase), as every other accepting piece opens, and every other on its role's start.
+// been (openingOf): on the move into its phase where that is accepting's or a workerless visit's,
+// and otherwise on its role's start.
 func clonePieces(pieces []*piece, key string) []*piece {
 	clones := make([]*piece, 0, len(pieces))
 	for _, p := range pieces {
 		clone := &piece{issue: key, index: len(clones), visit: p.visit, phase: p.phase, role: p.role, opens: p.opens, start: p.start,
 			end: p.end, ends: p.ends, hold: p.hold, m: p.m, cut: p.cut, drawn: true}
 		if clone.opens == opensAtSeed {
-			clone.opens = opensOnStart
-			if clone.phase == phase.Accepting {
-				clone.opens = opensOnPhase
-			}
+			clone.opens = openingOf(clone.phase, clone.visit)
 		}
 		for _, a := range p.acts {
 			switch a.kind {

@@ -48,8 +48,13 @@ func (d *driver) openSeeded() {
 }
 
 // openOnPhase opens the next piece of key's work that the move into to opens rather than a start
-// row (opensOnPhase): accepting's, whose role is the architect that owns the issue.
+// row (opensOnPhase): accepting's, whose role is the architect that owns the issue, and a
+// workerless visit's. The move into merging of an issue whose conflict waits for merging opens
+// none: the merger's merge forward runs first, and the piece opens when it lands (mergedForward).
 func (d *driver) openOnPhase(key string, to phase.Phase) {
+	if _, waits := d.waiting[key]; waits && to == phase.Merging {
+		return
+	}
 	for _, p := range d.script.pieces[key] {
 		if p.state != pieceWaiting {
 			continue

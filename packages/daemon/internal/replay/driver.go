@@ -613,9 +613,7 @@ func (d *driver) observe() error {
 			if to == phase.Done {
 				delete(d.inFlight, key)
 			}
-			if to == phase.Accepting {
-				d.openOnPhase(key, to)
-			}
+			d.openOnPhase(key, to)
 			d.queueFreshRetries(key, to)
 			if err := d.waitMoves(key, to); err != nil {
 				return err

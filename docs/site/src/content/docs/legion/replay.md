@@ -662,10 +662,17 @@ Each recorded event of an issue changes the replay's copy of Dispatch only in th
 Where the replay applies an event late, the event does not change a field that an event after it in the record set first.
 So an architect's edit of its own issue that enters after a person's later edit of the same field leaves the person's value, as the record does.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
-An operator's retry of a phase's worker with a fresh session, which `legion claims retry --fresh-session` makes of a suspended claim, shows in the record as a launch of the claim and, at the same moment, a held phase released by the operator's retry where no hold stands.
+An operator's retry of a phase's worker with a fresh session, which `legion claims retry --fresh-session` makes of a suspended claim, shows in the record as a launch of the claim and, a fraction of a second after it, a held phase released by the operator's retry where no hold stands.
+The daemon writes the launch first and the release after it, so the replay reads the two by their order in the log and not by their moments.
+The retry's launch is the last launch of the phase's role for the issue before the release line, within the visit that the retry restarts.
+It counts where the claim launched afresh, ended no hold, and no turn of the role began after it, because a plain retry of a stopped worker writes its release before its launch, and the launch before that release is the worker's own start.
 The release `legion-v20.42.5` launched the claim outside the start fence of the outbox and then restarted the phase, and the fence held the start of that restart, for example while the tree's design gate stood closed.
 The replay enters such a retry at its recorded offset from the replay's start of the visit that it retries: the stub launches the claim and opens the worker's next work segment in that phase, and the replay then restarts the phase, whose start the fence holds as recorded.
 Where the replay's issue stands in another phase at that moment, the replay counts the retry as refused.
+A work segment of a visit in which the record shows no launch, no turn and no hold of the phase's role, and which starts at the move into its phase, opens on that move, as an accepting segment does, because no start of the role opened it in the record.
+Its recorded end, a conflict among them, then enters at its recorded offset, and does not wait for a start that the replay holds, as it holds a merger's start while the tree's design gate stands closed.
+A work segment of a visit that shows a launch, a turn or a hold of its role opens on that role's start.
+Where a conflict waits for merging, the issue's segment in merging, whichever way it opens, opens when the merger's merge forward lands, because the merger merges the base forward before the issue's own work in merging.
 Each claim that the replay writes runs the session that the record shows that claim running at that moment.
 A claim runs a fresh session after a fresh start of its agent, so at each launch the claim takes the latest session whose first event comes at or before that moment, or else the first session after it.
 A claim that the record shows no session for runs a session of the replay's own.

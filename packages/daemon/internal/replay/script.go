@@ -37,13 +37,26 @@ const (
 	// opensOnRetry is the rest of a visit after a hold: the start the hold's release writes
 	// (workflow's restart, a resend of the entry) opens it.
 	opensOnRetry
-	// opensOnPhase is a piece no start row opens, its phase's role being the architect that owns
-	// the issue (accepting): the move into its phase opens it (design 10, "the accepting segment").
+	// opensOnPhase is a piece no start row opens: accepting's, its phase's role being the
+	// architect that owns the issue (design 10, "the accepting segment"), and that of a workerless
+	// visit (Visit.Workerless), where the record shows no start of its role. The move into its
+	// phase opens it.
 	opensOnPhase
 	// opensAtSeed is a piece under way at the window's start, which the start state's claims
 	// stand in: it runs at its recorded times.
 	opensAtSeed
 )
+
+// openingOf is how the first piece of the work of a visit to ph opens: on the move into ph where no
+// start row of its role opens it (opensOnPhase), as accepting's and a workerless visit's do, and
+// otherwise on its role's start (opensOnStart). visit is nil for a piece that no visit stands
+// behind. It is the one rule that tells the two apart (issuePieces, clonePieces).
+func openingOf(ph phase.Phase, visit *Visit) pieceOpen {
+	if ph == phase.Accepting || visit != nil && visit.Workerless {
+		return opensOnPhase
+	}
+	return opensOnStart
+}
 
 // pieceEnd is how a piece of work ends.
 type pieceEnd int
@@ -405,10 +418,7 @@ func issuePieces(t Trace, iss *IssueTrace) (reach, kept []*piece) {
 			continue
 		}
 		role := phaseRole(visit.Phase)
-		opens := opensOnStart
-		if visit.Phase == phase.Accepting {
-			opens = opensOnPhase
-		}
+		opens := openingOf(visit.Phase, visit)
 		until := segment.End
 		if until.IsZero() {
 			until = visit.Exit

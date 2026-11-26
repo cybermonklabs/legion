@@ -1639,9 +1639,11 @@ func (d *driver) waitMoves(key string, to phase.Phase) error {
 // mergerMergesForward plays the merger's merge forward of key's conflict that waited for merging
 // (waitingConflict), where the engine has just asked the merger for it on the issue's move into
 // merging (workflow's mergeForwardOnEntry): a merge-forward segment of the merger's in merging, as
-// long as the conflict's round, put before the issue's next work in merging, so the merger's start
-// the move wrote opens it (startPiece). It stands in no recorded visit. Its end lands the merge
-// forward, and that next work opens then (mergedForward).
+// long as the conflict's round, put before the issue's next work in merging (waitsToOpen), which
+// waits for it. The merger's start the move wrote opens the merge forward (startPiece), and that
+// work opens when it lands (mergedForward), whether it waits for the merger's start or, as a
+// workerless visit's does, for the move into merging, which openOnPhase leaves be while the
+// conflict waits. The merge forward stands in no recorded visit.
 func (d *driver) mergerMergesForward(key string) {
 	waiting, waits := d.waiting[key]
 	if !waits {
@@ -1650,7 +1652,7 @@ func (d *driver) mergerMergesForward(key string) {
 	delete(d.waiting, key)
 	d.used[23] = true
 	pieces := d.script.pieces[key]
-	at := slices.IndexFunc(pieces, func(q *piece) bool { return q.waitsForStart(claim.RoleMerger, phase.Merging) })
+	at := slices.IndexFunc(pieces, func(q *piece) bool { return q.waitsToOpen(claim.RoleMerger, phase.Merging) })
 	if at < 0 {
 		at = len(pieces)
 	}
@@ -1666,8 +1668,9 @@ func (d *driver) mergerMergesForward(key string) {
 // conflict loop where the record ended it in a conflict (stretchEnds), and otherwise by its recorded
 // move. The merger's merge forward of a conflict that waited for merging (mergerMergesForward), in
 // another phase than the conflict's, comes after that stretch already went on: the issue's next
-// work in merging, which the merger's start opened this segment in its place, opens now, in the
-// same live stretch, and is not drawn a second time either.
+// work in merging, which the merger's start or, for a workerless visit, the move into merging
+// would have opened, opens now in this segment's place, in the same live stretch, and is not drawn
+// a second time either.
 func (d *driver) mergedForward(forward *piece) error {
 	pr, err := d.pullRequestOf(forward.issue)
 	if err != nil {
@@ -1687,7 +1690,7 @@ func (d *driver) mergedForward(forward *piece) error {
 		pieces := d.script.pieces[forward.issue]
 		if i := forward.index + 1; i < len(pieces) {
 			next := pieces[i]
-			if next.waitsForStart(forward.role, forward.phase) {
+			if next.waitsToOpen(forward.role, forward.phase) {
 				d.openPiece(next, d.clock.Instant(), false)
 			}
 		}
@@ -1838,8 +1841,8 @@ func (d *driver) replacePieces(key string, from, to int, work []*piece) {
 	d.script.pieces[key] = replaced
 }
 
-// waitsForStart says whether q is the next work a start of role's worker in ph opens: a piece of
-// role's in ph that waits for that start (opensOnStart).
-func (q *piece) waitsForStart(role claim.Role, ph phase.Phase) bool {
-	return q.state == pieceWaiting && q.role == role && q.phase == ph && q.opens == opensOnStart
+// waitsToOpen says whether q is the next work of role's worker in ph: a piece of role's in ph that
+// waits for the start of its worker or for the move into ph (opensOnStart, opensOnPhase).
+func (q *piece) waitsToOpen(role claim.Role, ph phase.Phase) bool {
+	return q.state == pieceWaiting && q.role == role && q.phase == ph && (q.opens == opensOnStart || q.opens == opensOnPhase)
 }
