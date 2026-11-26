@@ -1,3 +1,4 @@
+import { itemFromSearch } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -8,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useLocation } from "react-router-dom";
 
 import { TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
@@ -58,7 +60,9 @@ import {
  * On Spec it also sends Conversation's read from 1024 px up, where the Contents pane beside the
  * view reads it (R13): Spec's own readers watch that read and send nothing (`useTreeRead`), since
  * Spec's view read holds the memo and the statements the view draws, and below 1024 px the Outline
- * sheet sends it as it opens (`useStartOutlineRead`). Once sent it is held for the load.
+ * sheet sends it as it opens (`useStartOutlineRead`), or the address does where it names an ask
+ * or a comment beside the view (`?ask=`, `?comment=`): that item is a node of Conversation's
+ * read alone, and the view draws a row for it. Once sent it is held for the load.
  *
  * The page mounts the stage once for each issue it opens (`IssueOutlinePage`'s `key`), so a mount
  * here is a load: it drops whatever view a past load of the issue held, so no load draws a view
@@ -98,10 +102,12 @@ export function ViewReadProvider({
   }, [key, queryClient]);
   useEffect(() => subscribeTreeFreshness(queryClient, key), [key, queryClient]);
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
+  const { search } = useLocation();
+  const namesItem = itemFromSearch(search)?.id !== undefined;
   const startOutline = useStartOutlineRead(key);
   useEffect(() => {
-    if (preset === "spec" && paned) startOutline();
-  }, [paned, preset, startOutline]);
+    if (preset === "spec" && (paned || namesItem)) startOutline();
+  }, [namesItem, paned, preset, startOutline]);
   return (
     <>
       {dropped &&

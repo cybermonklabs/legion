@@ -297,11 +297,11 @@ function Frame({ issue }: { issue: IssueDetails }): ReactNode {
   );
 }
 
-/** The frame (`Frame`) of the fixtures' issue at `preset`'s own address, under what the app
- *  provides above the page. */
-function drawFrame(client: QueryClient, preset: Preset): RenderResult {
+/** The frame (`Frame`) of the fixtures' issue at `preset`'s own address, with `search` after it,
+ *  under what the app provides above the page. */
+function drawFrame(client: QueryClient, preset: Preset, search = ""): RenderResult {
   return render(
-    <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+    <MemoryRouter initialEntries={[`${presetPath(KEY, preset)}${search}`]}>
       <AppProviders client={client}>
         <Frame issue={issueDetails()} />
       </AppProviders>
@@ -509,6 +509,38 @@ test("below 1024 px the Outline sheet sends Conversation's read on Spec as it op
         conversationReadsSent(),
         `Conversation's reads sent once the Outline sheet had opened twice ${where}`
       ).toBe(preset === "graph" ? 0 : 1);
+    } finally {
+      view.unmount();
+      client.clear();
+      for (const spy of restore) spy.mockRestore();
+      restore = [];
+    }
+  }
+});
+
+// R13: a comment the address names beside the view (`?comment=`) is a node of Conversation's read
+// alone, and the view draws a row for it, so on Spec loaded cold below 1024 px the page sends that
+// read with the load; a Spec address that names no item sends it as the Outline sheet opens.
+test("below 1024 px a Spec address that names a comment sends Conversation's read with the load, and one that names none does not", async () => {
+  restoreViewport = stubViewport(PHONE_WIDTH);
+  const loads: readonly { readonly search: string; readonly withLoad: number }[] = [
+    { search: "", withLoad: 0 },
+    { search: "?comment=head-a", withLoad: 1 },
+  ];
+  for (const { search, withLoad } of loads) {
+    const where = `with Spec loaded cold at 390 px at "${search}"`;
+    answerReads();
+    restore.push(
+      spyOn(api, "getComment").mockResolvedValue({ comment: readComment("head-a", 0), replies: [] })
+    );
+    const client = newClient();
+    const view = drawFrame(client, "spec", search);
+    try {
+      await waitFor(() => expect(view.container.querySelector(SLOT_MARKS)).not.toBeNull());
+      await waitInAct(200);
+      expect(conversationReadsSent(), `Conversation's reads sent with the load ${where}`).toBe(
+        withLoad
+      );
     } finally {
       view.unmount();
       client.clear();
