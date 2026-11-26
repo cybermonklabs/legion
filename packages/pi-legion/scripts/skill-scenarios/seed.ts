@@ -88,6 +88,7 @@ import type {
   Handoff,
   HandoffSummary,
 } from "@legion/contracts";
+import { checkedDispatchFetch } from "@legion/envoy-client/private-check";
 import { z } from "zod";
 import {
   answerAsk,
@@ -215,8 +216,8 @@ function sourceEntries(file: string): { kind: string; at: bigint; body: string }
  * opened one for every block: the spec's blocks of type `ask` (`GET …/blocks`, as the agent bearer),
  * then the issue's asks, read again until each such block has its ask. */
 async function specBlockAsks(issue: string, spec: string): Promise<Ask[]> {
-  const response = await fetch(
-    new URL(`/api/v1/artifacts/${encodeURIComponent(spec)}/blocks`, baseUrl),
+  const response = await checkedDispatchFetch(baseUrl)(
+    new URL(`/api/v1/artifacts/${encodeURIComponent(spec)}/blocks`, baseUrl).toString(),
     {
       headers: { Authorization: `Bearer ${e2eAgentToken}` },
     }
@@ -687,9 +688,11 @@ export async function implementHandoff(
   console.log(`seeded ${issue}'s implement handoff, version ${recorded.version} (${recorded.id})`);
 }
 
-/** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */
+/** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's
+ *  answer. Each request this file sends itself goes through the private-project check the
+ *  Dispatch client runs (`checkedDispatchFetch`), as every production request does. */
 async function agentGet<T>(route: string): Promise<T> {
-  const response = await fetch(new URL(route, baseUrl), {
+  const response = await checkedDispatchFetch(baseUrl)(new URL(route, baseUrl).toString(), {
     headers: { Authorization: `Bearer ${e2eAgentToken}` },
   });
   if (!response.ok)
@@ -700,7 +703,7 @@ async function agentGet<T>(route: string): Promise<T> {
 /** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
  * Dispatch's answer. */
 async function agentPost(route: string, input: unknown): Promise<void> {
-  const response = await fetch(new URL(route, baseUrl), {
+  const response = await checkedDispatchFetch(baseUrl)(new URL(route, baseUrl).toString(), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${e2eAgentToken}`,

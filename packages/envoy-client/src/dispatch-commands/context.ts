@@ -13,8 +13,9 @@ import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
 import {
+  checkedDispatchClient,
   DISPATCH_WRITE_RETRY,
-  DispatchClient,
+  type DispatchClient,
   type DispatchClientOptions,
   type DispatchWriteRetry,
 } from "../dispatch-http";
@@ -408,10 +409,11 @@ export function sessionContext(
     linkBase: linkBaseOf(input.config.publicUrl ?? url),
     hostSession: input.sessionId?.trim(),
     newClient: (options = {}) =>
-      new DispatchClient(url, credential, fetchImpl, {
+      checkedDispatchClient(url, credential, fetchImpl, {
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        privateCheck: { env: input.env },
         ...options,
       }),
   };

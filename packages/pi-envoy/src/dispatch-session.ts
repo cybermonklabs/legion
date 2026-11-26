@@ -5,7 +5,7 @@
 // `.envoy/envoy.json` under the directory a gated command runs in — takes effect without a reload.
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { dispatchServerUrls } from "@legion/envoy-client/dispatch-execute";
-import { DispatchClient } from "@legion/envoy-client/dispatch-http";
+import { checkedDispatchClient, type DispatchClient } from "@legion/envoy-client/dispatch-http";
 import {
   type SessionConfigFile,
   sessionDispatchSettings,
@@ -39,7 +39,7 @@ export async function sessionDispatchClient(
   return config === null
     ? undefined
     : {
-        client: new DispatchClient(config.url, config.credential, fetch, limit),
+        client: checkedDispatchClient(config.url, config.credential, fetch, limit),
         serverUrls: dispatchServerUrls(config),
       };
 }

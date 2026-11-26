@@ -2,9 +2,10 @@ import { parseArgs } from "node:util";
 import { SQL } from "bun";
 import { z } from "zod";
 import {
+  checkedDispatchClient,
   DISPATCH_TOOL_DEADLINE_MS,
-  DispatchClient,
 } from "../../packages/envoy-client/src/dispatch-http";
+import { checkedDispatchFetch } from "../../packages/envoy-client/src/private-check";
 import {
   checkBuild,
   type DispatchConfig,
@@ -494,10 +495,11 @@ export async function runChecks(options: Options, deps: CheckDependencies): Prom
 export function liveDispatch(config: DispatchConfig): DispatchReads {
   // `dispatchSettings` already trimmed the URL's trailing slashes.
   // The bearer, or the access token this machine traded its own identity for, with the proof
-  // that goes with it; the coverage read goes around DispatchClient, so it presents it itself.
+  // that goes with it; the coverage read goes around DispatchClient, so it presents it itself,
+  // through the private-project check DispatchClient runs (`checkedDispatchFetch`).
   const credential = config.credential;
   // A client's deadline runs from its construction, so each read gets a client of its own.
-  const client = () => new DispatchClient(config.url, credential);
+  const client = () => checkedDispatchClient(config.url, credential);
   return {
     // Public: it is sent no token.
     healthz: () =>
@@ -511,7 +513,8 @@ export function liveDispatch(config: DispatchConfig): DispatchReads {
         url,
         await credential.headers("GET", url, undefined, deadline),
         (status) => status >= 200 && status < 300,
-        deadline
+        deadline,
+        checkedDispatchFetch(config.url)
       );
     },
   };

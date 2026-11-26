@@ -86,6 +86,10 @@ import { parseArgs } from "node:util";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS } from "../../packages/envoy-client/src/dispatch-http";
 import {
+  checkedDispatchFetch,
+  PrivateProjectRefused,
+} from "../../packages/envoy-client/src/private-check";
+import {
   sessionConfigFile,
   sessionDispatchSettings,
 } from "../../packages/envoy-client/src/session-settings";
@@ -385,9 +389,11 @@ export async function get<T>(
       const url = `${config.url}${path}`;
       // Presented afresh for each attempt, as DispatchClient does: a broker credential proves this
       // process's key per request, and a stale proof is what a retry would otherwise re-send. One
-      // deadline bounds both, the one DispatchClient puts on each of its own requests.
+      // deadline bounds both, the one DispatchClient puts on each of its own requests. The read
+      // goes through the private-project check DispatchClient runs (`checkedDispatchFetch`), whose
+      // failure to get an answer is one more failure this loop asks again on.
       const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
-      const response = await fetch(url, {
+      const response = await checkedDispatchFetch(config.url)(url, {
         headers: await config.credential.headers("GET", url, undefined, deadline),
         signal: deadline,
       });
@@ -396,7 +402,7 @@ export async function get<T>(
       if (response.status < 500) throw new HttpError(response.status, `${response.status} ${body}`);
       last = `${response.status} ${body}`;
     } catch (error) {
-      if (error instanceof HttpError) throw error;
+      if (error instanceof HttpError || error instanceof PrivateProjectRefused) throw error;
       last = String(error);
     }
     await Bun.sleep(Math.min(30_000, 500 * 2 ** attempt));

@@ -85,14 +85,17 @@ export type Health = z.infer<typeof Health>;
 
 /** Parsed JSON from one of the script's own reads, with a status `accept` admits. A body that is
  * not JSON is returned as its text so the schema reports it malformed. `deadline` bounds the read:
- * a caller that presented a credential for it passes the deadline that credential was given. */
+ * a caller that presented a credential for it passes the deadline that credential was given. A
+ * read that presents a credential is sent through `send`, the private-project check of that
+ * Dispatch (`checkedDispatchFetch`); `/healthz`, which is sent none, needs no check. */
 export async function readJson(
   url: string,
   headers: Record<string, string>,
   accept: (status: number) => boolean,
-  deadline: AbortSignal = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS)
+  deadline: AbortSignal = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS),
+  send: (input: string, init: RequestInit) => Promise<Response> = fetch
 ): Promise<unknown> {
-  const response = await fetch(url, {
+  const response = await send(url, {
     headers: { Accept: "application/json", ...headers },
     signal: deadline,
   });

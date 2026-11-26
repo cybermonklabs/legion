@@ -15,7 +15,7 @@
 
 import { rm } from "node:fs/promises"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { checkedDispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { z } from "zod"
@@ -140,7 +140,7 @@ async function sessionStart(raw: unknown): Promise<void> {
   }
   process.stdout.write(`${CODEX_DISPATCH_NOTE}\n\n`)
   try {
-    const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
+    const snapshot = await checkedDispatchClient(dispatch.url, dispatch.credential, fetch, {
       signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
     }).openAsks(input.session_id)
     process.stdout.write(

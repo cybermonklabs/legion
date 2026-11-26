@@ -7,7 +7,9 @@
  *
  * It does not use DispatchClient (@legion/envoy-client/dispatch-http): that client gives all its
  * requests one 60-second deadline from its construction, has no unpaged issue list and no issue
- * message list, and does not try a read again. A labelling run reads for many minutes.
+ * message list, and does not try a read again. A labelling run reads for many minutes. Every read
+ * goes through the private-project check that client runs (`checkedDispatchFetch`): a bearer
+ * naming a private project is refused at once, and a check that got no answer is tried again.
  */
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -24,6 +26,7 @@ import { credentialDeadline, type RequestCredential } from "@legion/envoy-client
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { envoyConfigPath, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import { messageFor } from "@legion/envoy-client/errors";
+import { checkedDispatchFetch, PrivateProjectRefused } from "@legion/envoy-client/private-check";
 
 /** The HTTP call this module and the tools make. The global `fetch` is one. */
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -110,7 +113,7 @@ export class ProductionDispatch {
   constructor(credentials: DispatchCredentials, fetchImpl: Fetch, sleep: Sleep) {
     this.#base = credentials.url.replace(/\/+$/, "");
     this.#credential = credentials.credential;
-    this.#fetch = fetchImpl;
+    this.#fetch = checkedDispatchFetch(this.#base, fetchImpl);
     this.#sleep = sleep;
   }
 
@@ -199,6 +202,7 @@ export class ProductionDispatch {
         });
         text = await response.text();
       } catch (error) {
+        if (error instanceof PrivateProjectRefused) throw error;
         last = `failed: ${messageFor(error)}`;
         continue;
       }

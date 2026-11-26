@@ -21,6 +21,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_REPLAYED_HEADER,
 } from "../../../packages/contracts/src/dispatch-api";
+import { checkedDispatchFetch } from "../../../packages/envoy-client/src/private-check";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-keyed-comment.ts --url <dispatch> --bearer-file <file> --issue <KEY> [--session <id>] [--cli]";
@@ -140,8 +141,13 @@ async function answerOf(response: Response): Promise<Answer> {
 async function postTwice(options: Options, key: string, body: string): Promise<void> {
   const post = async (): Promise<Answer> =>
     answerOf(
-      await fetch(
-        new URL(`/api/v1/issues/${encodeURIComponent(options.issue)}/comments`, options.url),
+      // Through the private-project check the Dispatch client runs, as every request a production
+      // check sends around that client goes.
+      await checkedDispatchFetch(options.url.toString())(
+        new URL(
+          `/api/v1/issues/${encodeURIComponent(options.issue)}/comments`,
+          options.url
+        ).toString(),
         {
           body: JSON.stringify({ actor: { id: options.session, kind: "session" }, body }),
           headers: {
@@ -268,8 +274,8 @@ async function postThroughCli(options: Options, body: string): Promise<void> {
 
 /** How many of the issue's comments carry `body`: the check's, which names its key. */
 async function countComments(options: Options, body: string): Promise<void> {
-  const response = await fetch(
-    new URL(`/api/v1/issues/${encodeURIComponent(options.issue)}/comments`, options.url),
+  const response = await checkedDispatchFetch(options.url.toString())(
+    new URL(`/api/v1/issues/${encodeURIComponent(options.issue)}/comments`, options.url).toString(),
     { headers: { Authorization: `Bearer ${options.bearer}` } }
   );
   if (!response.ok) {

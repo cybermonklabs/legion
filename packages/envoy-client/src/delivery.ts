@@ -39,7 +39,7 @@ import { deletedMark, withEditedMark } from "./actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
-import { DispatchClient } from "./dispatch-http";
+import { checkedDispatchClient, type DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { messageFor } from "./errors";
@@ -163,7 +163,7 @@ export async function postDeliveryReply(
   }
 ): Promise<void> {
   const { followUp, ...reply } = result;
-  const client = new DispatchClient(config.url, config.credential);
+  const client = checkedDispatchClient(config.url, config.credential);
   await client.deliveryReply(
     delivery.resource,
     delivery.id,

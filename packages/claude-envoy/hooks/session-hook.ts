@@ -96,7 +96,7 @@ import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { checkedDispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
@@ -376,7 +376,7 @@ async function openAsks(raw: unknown): Promise<void> {
   for (const warning of warnings) process.stdout.write(`envoy: ${warning}\n`)
   if (dispatch.enabled) {
     try {
-      const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
+      const snapshot = await checkedDispatchClient(dispatch.url, dispatch.credential, fetch, {
         deadlineMs: OPEN_ASKS_TIMEOUT_MS,
       }).openAsks(input.session_id)
       process.stdout.write(

@@ -1,5 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  checkedDispatchFetch,
+  PrivateProjectRefused,
+} from "../../packages/envoy-client/src/private-check";
 import { CannotRunError, pool } from "./corpus-io";
 
 /**
@@ -13,7 +17,9 @@ import { CannotRunError, pool } from "./corpus-io";
  *
  * One retry policy covers every read: a transport error or a 5xx is tried again, four times, with
  * a growing wait, and a 4xx is thrown at once, since the route or the item is not there and
- * another try would not help.
+ * another try would not help. Every read goes through the private-project check the Dispatch
+ * client runs (`checkedDispatchFetch`): a bearer naming a private project is refused at once
+ * (`PrivateProjectRefused`), and a check that got no answer is one more failure tried again.
  */
 
 /** The growing waits between the tries of one read, in units of `retryWaitUnitMs`: four retries
@@ -201,7 +207,7 @@ async function read<T>(
   let lastFailure = "no try was made";
   for (let attempt = 0; ; attempt += 1) {
     try {
-      const answer = await fetch(url, {
+      const answer = await checkedDispatchFetch(resolved.baseUrl)(url, {
         method: "GET",
         headers: { authorization: `Bearer ${resolved.token}` },
       });
@@ -212,7 +218,9 @@ async function read<T>(
       if (answer.ok) return await body(answer);
       lastFailure = `${answer.status} ${(await answer.text()).slice(0, REFUSAL_BODY_CHARS)}`;
     } catch (error) {
-      if (error instanceof DispatchRefusedError) throw error;
+      if (error instanceof DispatchRefusedError || error instanceof PrivateProjectRefused) {
+        throw error;
+      }
       lastFailure = error instanceof Error ? error.message : String(error);
     }
     const wait = RETRY_WAITS[attempt];

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
-import { DispatchClient } from "@legion/envoy-client/dispatch-http";
+import { checkedDispatchClient } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -995,7 +995,7 @@ export default function legionExtension(pi: PiApi): void {
           );
           return config === null
             ? undefined
-            : new DispatchClient(config.url, config.credential, fetch);
+            : checkedDispatchClient(config.url, config.credential, fetch);
         },
       })
     );

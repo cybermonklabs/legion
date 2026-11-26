@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { DISPATCH_KEY_PATTERN, type LegionRole } from "@legion/contracts";
 import type { LegionPhase } from "@legion/contracts/legion-api";
-import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
+import { checkedDispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   type SessionConfigFile,
@@ -166,7 +166,7 @@ export function paneLatestHandoff(
     if (!dispatch.enabled) {
       throw new Error(`Dispatch is off for this pane: ${dispatch.error ?? dispatch.notice}`);
     }
-    return new DispatchClient(dispatch.url, dispatch.credential, fetchImpl).latestHandoff(
+    return checkedDispatchClient(dispatch.url, dispatch.credential, fetchImpl).latestHandoff(
       issue,
       word
     );

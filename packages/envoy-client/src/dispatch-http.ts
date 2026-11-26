@@ -111,6 +111,7 @@ import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { type ApproveRoute, credentialDeadline, type RequestCredential } from "./bearer";
 import { LoggableError, reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
+import { isPrivateCheckFailure, PrivateCheck, type PrivateCheckSettings } from "./private-check";
 import { type WriteEvent, type WriteState, writeStep } from "./write-outcome";
 
 /** What names the Dispatch URL in a text where the URL does not parse (`urlForText`,
@@ -1228,6 +1229,11 @@ export interface DispatchClientOptions {
    *  of its own to a missing route and wants it at once, rather than after the waits of
    *  `NO_ROUTE_RETRY_DELAYS_MS`. */
   readonly retryNoRoute?: boolean | undefined;
+  /** The check that keeps a private project's answers from a bearer that names one
+   *  (`PrivateCheck`, src/private-check.ts), run on every request this client sends; off where
+   *  absent. Only `checkedDispatchClient` and tests make a client, and the factory turns it on;
+   *  its whoami is asked again on `writeRetry`'s pacing where these settings name no retry. */
+  readonly privateCheck?: PrivateCheckSettings | undefined;
 }
 
 /**
@@ -1274,6 +1280,9 @@ export class DispatchClient {
    * notices all read the one text.
    */
   readonly #fetch: typeof fetch;
+  /** The private-project check every request goes through (`#sendOnce`, `#write`), or undefined
+   *  where the client was made without it. */
+  readonly #private: PrivateCheck | undefined;
 
   constructor(
     baseUrl: string,
@@ -1318,6 +1327,18 @@ export class DispatchClient {
     this.#sleep = options.sleep ?? sleep;
     this.#retryNoRoute = options.retryNoRoute ?? true;
     this.#madeAt = this.#now();
+    this.#private =
+      options.privateCheck === undefined
+        ? undefined
+        : new PrivateCheck(this.#baseUrl, this.#fetch, {
+            retry: {
+              pausesMs: this.writeRetry.pausesMs,
+              withinMs: this.writeRetry.withinMs,
+              pause: this.writeRetry.pause ?? pauseFor,
+              now: () => this.#now(),
+            },
+            ...options.privateCheck,
+          });
   }
 
   /** The secret this client presents, which an excerpt of someone else's answer redacts; "" while
@@ -2812,16 +2833,23 @@ export class DispatchClient {
       this.#credentialSignal(limit)
     );
     this.#sent.note(presented);
-    const answer = await this.#fetch(url, {
-      method,
-      headers: {
-        Accept: accept,
-        ...(body === undefined ? {} : { "Content-Type": body.type }),
-        ...presented,
-      },
-      signal: limit,
-      ...(body === undefined ? {} : { body: body.content }),
-    });
+    const send = () =>
+      this.#fetch(url, {
+        method,
+        headers: {
+          Accept: accept,
+          ...(body === undefined ? {} : { "Content-Type": body.type }),
+          ...presented,
+        },
+        signal: limit,
+        ...(body === undefined ? {} : { body: body.content }),
+      });
+    // The private-project check, where this client runs it, judges the answer before it is
+    // handed back, or throws its refusal in the answer's place (`PrivateCheck.request`).
+    const answer =
+      this.#private === undefined
+        ? await send()
+        : await this.#private.request(method, presented, limit, send);
     return { answer, presented };
   }
 
@@ -2939,17 +2967,17 @@ export class DispatchClient {
       const sent = { as: identity, with: presented };
       progress.sent += 1;
       let response: Response;
+      const send = () =>
+        this.#attempt(url, method, { ...headers, ...presented }, body, silenceMs, limit, via?.init);
       try {
-        response = await this.#attempt(
-          url,
-          method,
-          { ...headers, ...presented },
-          body,
-          silenceMs,
-          limit,
-          via?.init
-        );
+        response =
+          this.#private === undefined
+            ? await send()
+            : await this.#private.request(method, presented, limit, send);
       } catch (error) {
+        // The check's own refusal, or its whoami with no answer, ends the write: it is no
+        // attempt's failure, so no retry under the key is made for it.
+        if (isPrivateCheckFailure(error)) throw error;
         return {
           event:
             stoppedEvent(limit, true, error) ??
@@ -3436,4 +3464,24 @@ export class DispatchClient {
       gatewayAdvice(method, response.status)
     );
   }
+}
+
+/**
+ * The one way production code makes a `DispatchClient`: the constructor's arguments, with the
+ * private-project check on (`DispatchClientOptions.privateCheck`, src/private-check.ts). A
+ * bearer whose whoami names a private project gets nothing Dispatch answered, and a check that
+ * gets no answer fails closed; while Dispatch answers `Dispatch-Private-Projects: 0`, the
+ * requests are today's. `dispatch-client-inventory.test.ts` fails on any other construction
+ * outside tests.
+ */
+export function checkedDispatchClient(
+  baseUrl: string,
+  credential: RequestCredential,
+  fetchImpl: typeof fetch = fetch,
+  options: DispatchClientOptions = {}
+): DispatchClient {
+  return new DispatchClient(baseUrl, credential, fetchImpl, {
+    ...options,
+    privateCheck: options.privateCheck ?? {},
+  });
 }

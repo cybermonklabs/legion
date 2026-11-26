@@ -28,7 +28,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import type { ApproveRoute } from "../../../envoy-client/src/bearer";
 import { brokerCredential } from "../../../envoy-client/src/broker-credential";
-import { DispatchClient } from "../../../envoy-client/src/dispatch-http";
+import { checkedDispatchClient } from "../../../envoy-client/src/dispatch-http";
+import { checkedDispatchFetch } from "../../../envoy-client/src/private-check";
 import { answerBody, directURL, env, fail, PUBLIC, setting } from "./dispatch-env";
 
 function say(answer: Record<string, unknown>): void {
@@ -45,6 +46,10 @@ const localFetch = Object.assign(
   },
   { preconnect: () => {} }
 ) as typeof fetch;
+
+/** `localFetch` for a request the session sends itself, through the private-project check every
+ *  request of the client goes through (`checkedDispatchFetch`). */
+const dispatchFetch = checkedDispatchFetch(PUBLIC, localFetch);
 
 const credential = brokerCredential(env);
 
@@ -80,7 +85,7 @@ async function described(answer: Response): Promise<Record<string, unknown>> {
 async function box(method: string, path: string, body?: unknown): Promise<Response> {
   const url = PUBLIC + path;
   const headers = await credential.headers(method, url);
-  return await localFetch(url, {
+  return await dispatchFetch(url, {
     method,
     headers: {
       ...headers,
@@ -119,7 +124,7 @@ async function proxied(
     proxy: proxy.toString(),
     tls: { ca: route.caCertificate },
   };
-  return await fetch(PUBLIC + path, init);
+  return await checkedDispatchFetch(PUBLIC)(PUBLIC + path, init);
 }
 
 async function setup(): Promise<void> {
@@ -156,7 +161,7 @@ async function setup(): Promise<void> {
 
 async function approve(): Promise<void> {
   const { artifact, version } = state();
-  const client = new DispatchClient(PUBLIC, credential, localFetch);
+  const client = checkedDispatchClient(PUBLIC, credential, localFetch);
   try {
     const review = (await client.reviewArtifact(artifact, version, {
       state: "approved",

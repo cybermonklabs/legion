@@ -1,8 +1,8 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import {
+  checkedDispatchClient,
   DISPATCH_TOOL_DEADLINE_MS,
-  DispatchClient,
   DispatchWriteLandedError,
 } from "../../packages/envoy-client/src/dispatch-http";
 import {
@@ -666,7 +666,7 @@ export function liveDispatch(config: DispatchConfig): DispatchWrites {
   // unset one does: pi-envoy leaves it "" while its session has no id.
   const actor = { kind: "session", id: process.env.DISPATCH_SESSION_ID || "unknown" };
   // A client's deadline runs from its construction, so each call gets a client of its own.
-  const client = () => new DispatchClient(config.url, config.credential);
+  const client = () => checkedDispatchClient(config.url, config.credential);
   const insert = (sentence: string) => ({
     actor,
     ops: [{ op: "insert", markdown: sentence, after: "end" }],

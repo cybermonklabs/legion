@@ -36,7 +36,11 @@ import {
   failureNoticeFields,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
+import {
+  checkedDispatchClient,
+  type DispatchClient,
+  DispatchWriteLandedError,
+} from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import {
@@ -544,7 +548,7 @@ export async function userTurnDispatchClient(
   )
   return active === null
     ? undefined
-    : new DispatchClient(active.url, active.credential, fetch, { deadlineMs: ms })
+    : checkedDispatchClient(active.url, active.credential, fetch, { deadlineMs: ms })
 }
 
 /**

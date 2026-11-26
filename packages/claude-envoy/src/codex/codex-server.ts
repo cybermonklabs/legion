@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { DELIVERY_CAPABILITIES } from "@legion/contracts"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { checkedDispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import { messageFor } from "@legion/envoy-client/errors"
@@ -619,7 +619,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
               )
               return active === null
                 ? undefined
-                : new DispatchClient(active.url, active.credential, fetch, {
+                : checkedDispatchClient(active.url, active.credential, fetch, {
                     signal: AbortSignal.timeout(ms),
                   })
             },

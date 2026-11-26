@@ -5,7 +5,7 @@ import { urlForText } from "@legion/contracts/log-text";
 import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
-import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
+import { checkedDispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
@@ -598,7 +598,7 @@ export async function readSessionAnswers(
     // `NO_ROUTE_BACKOFF_MS`), and that 5-minute back-off, not the client's waits, is what carries
     // the request past a release rolling out, within this call's deadline. The deadline is the
     // client's own, so its credential is given the read less the request's reserve.
-    const client = new DispatchClient(url, dispatch.credential, options.fetchImpl ?? fetch, {
+    const client = checkedDispatchClient(url, dispatch.credential, options.fetchImpl ?? fetch, {
       retryNoRoute: false,
       deadlineMs: READ_TIMEOUT_MS,
     });

@@ -37,7 +37,7 @@ import {
   executeDispatchTool,
 } from "./dispatch-execute";
 import { unstorableBytes } from "./dispatch-file-text";
-import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
+import { checkedDispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import {
   SESSION_VARIABLES,
   sessionDirectory,
@@ -56,6 +56,7 @@ import {
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import type { SectionOff } from "./envoy-config";
 import { messageFor } from "./errors";
+import { PrivateProjectRefused } from "./private-check";
 import { nearestAncestorNamed } from "./process-ancestry";
 import { sessionDispatchSettings, sessionEnvoySettings } from "./session-settings";
 import { ToolInputError } from "./tool-input-errors";
@@ -443,7 +444,9 @@ export async function runDispatchCli(
     if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
     const { url, credential } = resolved.config;
     try {
-      const client = new DispatchClient(url, credential, io.fetchImpl ?? fetch);
+      const client = checkedDispatchClient(url, credential, io.fetchImpl ?? fetch, {
+        privateCheck: { env },
+      });
       const result = await sendApiCall(args, env, client);
       if (result.body === undefined) print(result.text);
       else writeBody(result.body);
@@ -454,7 +457,7 @@ export async function runDispatchCli(
         return refuse(error.message, REFUSED, parsed.tool, error.askgate);
       }
       print(messageFor(error));
-      return REFUSED;
+      return error instanceof PrivateProjectRefused ? USAGE : REFUSED;
     }
   }
 
@@ -516,18 +519,23 @@ export async function runDispatchCli(
           }
           // The client stops at the dry run's deadline and asks once within it
           // (askOnceWithinDryRun).
-          return new DispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
+          return checkedDispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
             signal: deadline,
             ...askOnceWithinDryRun(deadlineMs),
+            privateCheck: { env },
           });
         },
       });
       // The call prints what it throws as `messageFor` prints it, and exits 2 on a
-      // `ToolInputError` and 1 on any other error, and so does its dry run.
+      // `ToolInputError` or a bearer refused for naming a private project
+      // (`PrivateProjectRefused`) and 1 on any other error, and so does its dry run.
       if (verdict.kind === "refused") {
         return refuse(
           messageFor(verdict.refusal),
-          verdict.refusal instanceof ToolInputError ? USAGE : REFUSED,
+          verdict.refusal instanceof ToolInputError ||
+            verdict.refusal instanceof PrivateProjectRefused
+            ? USAGE
+            : REFUSED,
           parsed.tool
         );
       }
@@ -577,7 +585,7 @@ export async function runDispatchCli(
     } catch (error) {
       return refuse(
         messageFor(error),
-        error instanceof ToolInputError ? USAGE : REFUSED,
+        error instanceof ToolInputError || error instanceof PrivateProjectRefused ? USAGE : REFUSED,
         parsed.tool
       );
     }
@@ -799,8 +807,11 @@ export async function runDispatchCli(
       // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
       // so the two stay one answer. A refusal the executor makes during the call, such as an id
       // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
-      // Everything else here is Dispatch's own refusal or failure.
-      code = error instanceof ToolInputError ? USAGE : REFUSED;
+      // Everything else here is Dispatch's own refusal or failure, but a bearer the client
+      // refused for naming a private project, which no call with that bearer can get past, and
+      // which exits 2 as a usage error does.
+      code =
+        error instanceof ToolInputError || error instanceof PrivateProjectRefused ? USAGE : REFUSED;
     }
   }
   try {

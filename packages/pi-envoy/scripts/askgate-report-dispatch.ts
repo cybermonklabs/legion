@@ -4,7 +4,7 @@
 // other program, in `askgate-report.ts`, which owns the command line of both; what they count with
 // is in `askgate-report-common.ts`.
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
-import { DispatchClient } from "@legion/envoy-client/dispatch-http";
+import { checkedDispatchClient, type DispatchClient } from "@legion/envoy-client/dispatch-http";
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings";
 import {
   DECISION_DOCUMENT_PREFIX,
@@ -394,5 +394,5 @@ export async function sessionDispatch(): Promise<DispatchClient> {
   if (config === null) {
     throw new Error(`Dispatch is not configured: ${dispatch.enabled ? "" : dispatch.notice}`);
   }
-  return new DispatchClient(config.url, config.credential, fetch);
+  return checkedDispatchClient(config.url, config.credential, fetch);
 }
