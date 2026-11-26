@@ -27,7 +27,7 @@ import (
 // reader finds in it, as a comment's create reads them (commentPartiesOf over text.ExtractAt).
 func partiesNamedBy(t *testing.T, body string) []string {
 	t.Helper()
-	parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(body, testServerURL))
+	parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(body, text.NewOrigins(testServerURL)))
 	if err != nil {
 		t.Fatalf("read the parties %q names: %v", body, err)
 	}

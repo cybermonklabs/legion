@@ -95,7 +95,7 @@ func indexDocumentVersion(t *testing.T, tx pgx.Tx, document string, number int, 
 	`, document, number, markdown, versionAt); err != nil {
 		t.Fatalf("write version %d of %s: %v", number, document, err)
 	}
-	located := NewReader(ctx, tx, model.Actor{}, "artifact", document, refsGrammarServer).Mentions(markdown)
+	located := NewReader(ctx, tx, model.Actor{}, "artifact", document, text.NewOrigins(refsGrammarServer)).Mentions(markdown)
 	if _, _, _, err := IndexBlocks(ctx, tx, document, number, versionAt, markdown, blocks, located, nil, refsGrammarServer); err != nil {
 		t.Fatalf("index the blocks of version %d of %s: %v", number, document, err)
 	}
@@ -261,7 +261,7 @@ func TestAVersionThatLeavesItsBlocksToTheBlockIndexStaysOwed(t *testing.T) {
 	`, document, markdown, versionAt); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	located := NewReader(ctx, tx, model.Actor{}, "artifact", document, refsGrammarServer).Mentions(markdown)
+	located := NewReader(ctx, tx, model.Actor{}, "artifact", document, text.NewOrigins(refsGrammarServer)).Mentions(markdown)
 
 	replaceDocumentVersion(t, tx, document, 1, versionAt, located, nil, false)
 
@@ -286,7 +286,7 @@ func TestAnOlderBuildsAnswerLeavesTheAskOwed(t *testing.T) {
 	insertSecondIssue(t, tx)
 	ask := insertAsk(t, tx, "CORE-1", "Which tab holds it?",
 		model.AskOption{Label: "dispatch://CORE-2/plan"}, model.AskOption{Label: "Neither"})
-	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, time.Now(), true)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(askPartServer)), ask, time.Now(), true)
 	cite := Target{Kind: "issue", ID: "CORE-2"}
 	if got := askPartTargets(t, tx, ask.ID); !slices.Equal(got, []Target{cite}) {
 		t.Fatalf("the ask's parts link %v, want the option's tab address", got)
@@ -308,7 +308,7 @@ func TestAnOlderBuildsAnswerLeavesTheAskOwed(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].ID != ask.ID {
 		t.Fatalf("list what the forms queue owes = %#v (%v), want the ask", listed, err)
 	}
-	if indexed, err := ReindexOwed(ctx, tx, listed[0], askPartServer); err != nil || !indexed {
+	if indexed, err := ReindexOwed(ctx, tx, listed[0], text.NewOrigins(askPartServer)); err != nil || !indexed {
 		t.Fatalf("drain the ask = %v (%v), want it indexed", indexed, err)
 	}
 	if got := askPartTargets(t, tx, ask.ID); !slices.Equal(got, []Target{cite, cite}) {
@@ -337,7 +337,7 @@ func TestABareDeleteFromEachBlockTableLeavesItsOwnerOwed(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/plan.")
 	message := insertIndexedItem(t, tx, ItemMessage, "CORE-1", "See dispatch://CORE-1/plan.")
 	ask := insertAsk(t, tx, "CORE-1", "Is dispatch://CORE-1/plan right?", model.AskOption{Label: "Yes"})
-	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, time.Now(), true)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(askPartServer)), ask, time.Now(), true)
 	if owed := formsOwed(t, tx); len(owed) != 0 {
 		t.Fatalf("the queue holds %v after this build indexed every owner, want it empty", owed)
 	}
@@ -394,7 +394,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	insertSecondIssue(t, tx)
 	ask := insertAsk(t, tx, "CORE-1", "Is dispatch://CORE-2/plan right?",
 		model.AskOption{Label: "dispatch://CORE-2/plan"}, model.AskOption{Label: "No"})
-	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, time.Now(), true)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(askPartServer)), ask, time.Now(), true)
 	if owed := formsOwed(t, tx); len(owed) != 0 {
 		t.Fatalf("the queue holds %v after the ask's first write, want it empty", owed)
 	}
@@ -402,7 +402,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	// An edit that drops the option citing CORE-2: the question keeps its edge, the option's part
 	// loses its own.
 	writeAskOptions(t, tx, &ask, model.AskOption{Label: "No"})
-	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, time.Now(), true)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(askPartServer)), ask, time.Now(), true)
 	cite := Target{Kind: "issue", ID: "CORE-2"}
 	if got := askPartTargets(t, tx, ask.ID); !slices.Equal(got, []Target{cite}) {
 		t.Fatalf("after the edit the ask's parts link %v, want the question's alone", got)
@@ -418,7 +418,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	if owed := formsOwed(t, tx); !slices.Equal(owed, []string{"ask " + ask.ID}) {
 		t.Fatalf("the answer's row write owes %v, want the ask", owed)
 	}
-	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, ask.Answer.At, false)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(askPartServer)), ask, ask.Answer.At, false)
 	if edges := edgesFrom(t, tx, "ask", ask.ID); !slices.Equal(edges, []string{"issue CORE-2"}) {
 		t.Fatalf("after the answer the ask's edges are %v, want its question's alone", edges)
 	}
@@ -440,7 +440,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 			t.Fatalf("leave the ask as an older build's re-index does: %v", err)
 		}
 	}
-	if indexed, err := IndexOwedItemBlocks(ctx, tx, OwedItemBlock{Kind: ItemAsk, ID: ask.ID}, askPartServer); err != nil || !indexed {
+	if indexed, err := IndexOwedItemBlocks(ctx, tx, OwedItemBlock{Kind: ItemAsk, ID: ask.ID}, text.NewOrigins(askPartServer)); err != nil || !indexed {
 		t.Fatalf("block-index the owed ask = %v (%v), want it indexed", indexed, err)
 	}
 	if edges := edgesFrom(t, tx, "ask", ask.ID); !slices.Equal(edges, []string{"issue CORE-2"}) {
@@ -483,7 +483,7 @@ func TestTheFormsQueueDrainReindexesWithThisBuildsGrammar(t *testing.T) {
 		t.Fatalf("owed = %#v, want the comment alone, of the forms queue", listed)
 	}
 
-	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], refsGrammarServer); err != nil || !indexed {
+	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], text.NewOrigins(refsGrammarServer)); err != nil || !indexed {
 		t.Fatalf("re-index the comment = %v (%v), want it indexed", indexed, err)
 	}
 
@@ -507,7 +507,7 @@ func TestTheFormsQueueDrainReindexesWithThisBuildsGrammar(t *testing.T) {
 	`, moved); err != nil {
 		t.Fatalf("move the comment's enqueued_at: %v", err)
 	}
-	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], refsGrammarServer); err != nil || indexed {
+	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], text.NewOrigins(refsGrammarServer)); err != nil || indexed {
 		t.Fatalf("re-index a comment a write moved = %v (%v), want it left owed", indexed, err)
 	}
 	if owed := formsOwed(t, database.Pool); !slices.Equal(owed, []string{"comment " + moved}) {
@@ -584,7 +584,7 @@ func TestTheFormsQueueDrainOfAGoneSourceLeavesNothingOwed(t *testing.T) {
 		t.Fatalf("list what the forms queue owes = %#v (%v), want the gone comment", listed, err)
 	}
 
-	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], refsGrammarServer); err != nil || !indexed {
+	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], text.NewOrigins(refsGrammarServer)); err != nil || !indexed {
 		t.Fatalf("drain the gone comment = %v (%v), want it drained", indexed, err)
 	}
 
@@ -663,7 +663,7 @@ func TestRebuildRefsLeavesEachSourceOwedUntilThisBuildsBlockIndex(t *testing.T) 
 		t.Fatalf("write a stale edge and an orphan: %v", err)
 	}
 
-	report, err := RebuildAll(ctx, database.Pool, refsGrammarServer)
+	report, err := RebuildAll(ctx, database.Pool, text.NewOrigins(refsGrammarServer))
 	if err != nil {
 		t.Fatalf("rebuild-refs: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestRebuildRefsLeavesEachSourceOwedUntilThisBuildsBlockIndex(t *testing.T) 
 		t.Fatalf("the forms queue holds %v after rebuild-refs, want the comment, whose blocks wait for the block index, and nothing gone", owed)
 	}
 
-	if indexed, err := IndexOwedItemBlocks(ctx, database.Pool, OwedItemBlock{Kind: ItemComment, ID: comment}, refsGrammarServer); err != nil || !indexed {
+	if indexed, err := IndexOwedItemBlocks(ctx, database.Pool, OwedItemBlock{Kind: ItemComment, ID: comment}, text.NewOrigins(refsGrammarServer)); err != nil || !indexed {
 		t.Fatalf("block-index the comment = %v (%v), want it indexed", indexed, err)
 	}
 	if edges := blockEdgesOf(t, database.Pool, "comment_block_refs", "comment_id", comment); len(edges) != 1 {

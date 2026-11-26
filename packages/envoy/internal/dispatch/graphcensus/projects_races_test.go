@@ -58,7 +58,7 @@ func TestAStaleCommentBatchDoesNotRestoreARemovedComment(t *testing.T) {
 	`, id, at); err != nil {
 		t.Fatal(err)
 	}
-	ids, causes, _, err := readCommentRows(ctx, database, zeroUUID)
+	ids, causes, _, err := readCommentRows(ctx, database, zeroUUID, backfillBatch)
 	if err != nil || len(ids) != 1 {
 		t.Fatalf("read the unmarked comment: %d row(s), %v; want 1", len(ids), err)
 	}
@@ -114,7 +114,7 @@ func TestTheCommentBatchLeavesTheCallersBatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, causes, _, err := readCommentRows(ctx, database, zeroUUID)
+	ids, causes, _, err := readCommentRows(ctx, database, zeroUUID, backfillBatch)
 	if err != nil || len(ids) != 2 || ids[0] != removed || ids[1] != standing {
 		t.Fatalf("read the two unmarked comments: %v, %v; want %s then %s", ids, err, removed, standing)
 	}

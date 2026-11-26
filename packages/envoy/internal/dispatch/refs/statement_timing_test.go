@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"os"
 	"reflect"
 	"slices"
@@ -469,7 +470,7 @@ func readClosure(t *testing.T, runner *benchtime.Runner, name, issue string, who
 		t.Fatalf("%s: count the link rows into %s and its own content: %v", name, issue, err)
 	}
 	recorder := &statementRecorder{Queryer: runner.Conn()}
-	references, err := Closure(ctx, recorder, who, issue, "")
+	references, err := Closure(ctx, recorder, who, issue, text.NewOrigins(""))
 	if err != nil {
 		t.Fatalf("%s: read %s's references: %v", name, issue, err)
 	}

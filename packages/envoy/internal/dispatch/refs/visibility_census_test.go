@@ -409,7 +409,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, err := Closure(ctx, recorder, who, "CORE-1", "")
+		_, err := Closure(ctx, recorder, who, "CORE-1", text.NewOrigins(""))
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -529,7 +529,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "source", Type: "paragraph", From: 0, To: len(source)},
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
-	located := text.ExtractAt(markdown, "https://dispatch.example")
+	located := text.ExtractAt(markdown, text.NewOrigins("https://dispatch.example"))
 	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, "")
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)

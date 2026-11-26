@@ -93,7 +93,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	body := "see dispatch://CORE/artifact/design-notes and dispatch://OPS-2/artifact/spec and https://example.com"
-	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract(body, "https://dispatch.example"), nil, true); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract(body, text.NewOrigins("https://dispatch.example")), nil, true); err != nil {
 		t.Fatalf("replace references: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -140,7 +140,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 		t.Fatalf("begin clear transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract("", "https://dispatch.example"), nil, true); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract("", text.NewOrigins("https://dispatch.example")), nil, true); err != nil {
 		t.Fatalf("clear references: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -187,7 +187,7 @@ func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(ctx)
-			if _, err := replaceRefs(ctx, tx, "comment", "00000000-0000-4000-8000-000000000000", text.Extract(markdown, server), nil, true); err != nil {
+			if _, err := replaceRefs(ctx, tx, "comment", "00000000-0000-4000-8000-000000000000", text.Extract(markdown, text.NewOrigins(server)), nil, true); err != nil {
 				t.Fatalf("write the reference at the bound from a comment: %v", err)
 			}
 			createReferenceProject(t, tx, "ACME")
@@ -268,7 +268,7 @@ func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "ACME")
 	citer, _ := createReferenceArtifact(t, tx, "", "ACME", "citer")
-	if _, err := replaceRefs(ctx, tx, "artifact", citer, text.Extract(markdown, server), nil, true); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", citer, text.Extract(markdown, text.NewOrigins(server)), nil, true); err != nil {
 		t.Fatalf("write the references at the bound from a document: %v", err)
 	}
 	citingBlock := random(t, text.MaxBlockIDBytes)
@@ -348,7 +348,7 @@ func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
 			if !ok || target.Kind != test.kind || target.ID != test.node {
 				t.Fatalf("%s parsed as %#v (%t), whose target is %#v; want a %s at %q", test.reference, ref, ok, target, test.kind, test.node)
 			}
-			if _, err := replaceRefs(ctx, tx, "comment", from, text.Extract("See "+test.reference+".", server), nil, true); err != nil {
+			if _, err := replaceRefs(ctx, tx, "comment", from, text.Extract("See "+test.reference+".", text.NewOrigins(server)), nil, true); err != nil {
 				t.Fatalf("write the reference: %v", err)
 			}
 			var stored []string
@@ -402,7 +402,7 @@ func replaceAndStamp(t *testing.T, database *store.Store, fromKind, fromID, body
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Extract(body, "https://dispatch.example"), nil, true); err != nil {
+	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Extract(body, text.NewOrigins("https://dispatch.example")), nil, true); err != nil {
 		t.Fatalf("replace references: %v", err)
 	}
 	if err := Stamp(ctx, tx, fromKind, fromID, eventID); err != nil {
@@ -506,7 +506,7 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	references, err := Closure(ctx, database.Pool, serverReader, "CORE-1", "")
+	references, err := Closure(ctx, database.Pool, serverReader, "CORE-1", text.NewOrigins(""))
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}

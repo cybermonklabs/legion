@@ -169,7 +169,7 @@ func TestExtractMatchesTheSharedTextTable(t *testing.T) {
 				}
 				want = append(want, parsed[0])
 			}
-			located := ExtractAt(row.Body, server)
+			located := ExtractAt(row.Body, NewOrigins(server))
 			got := []Ref{}
 			for _, ref := range Refs(located) {
 				if ref.Kind != "url" && !slices.Contains(got, ref) {
@@ -278,7 +278,7 @@ func tableRefs(t *testing.T, written []string, server string) []Ref {
 	t.Helper()
 	refs := []Ref{}
 	for _, ref := range written {
-		parsed := Extract(ref, server)
+		parsed := Extract(ref, NewOrigins(server))
 		if len(parsed) != 1 || parsed[0].Kind == "url" {
 			t.Fatalf("%s is not a reference: %#v", ref, parsed)
 		}
@@ -793,7 +793,7 @@ func TestIsPartyNamesTheThreePartyKinds(t *testing.T) {
 		"dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png": false,
 		"https://example.com/handbook":                                            false,
 	} {
-		found := Extract(reference, server)
+		found := Extract(reference, NewOrigins(server))
 		if len(found) != 1 {
 			t.Fatalf("%s is %d references, want one", reference, len(found))
 		}

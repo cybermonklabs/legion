@@ -284,7 +284,7 @@ func TestCommentPartySetRefusals(t *testing.T) {
 func TestCommentBodyRoleTokensAreTheRouteRoleTokens(t *testing.T) {
 	t.Parallel()
 	for _, token := range []string{"reviewer", "rev-2", "r", "9", "Reviewer", "sre_oncall", "rev.2", ""} {
-		found := text.Extract("Waiting on dispatch://role/"+token+" today.", "")
+		found := text.Extract("Waiting on dispatch://role/"+token+" today.", text.NewOrigins(""))
 		named := len(found) == 1 && found[0].Kind == "role" && found[0].ID == token
 		_, err := model.ParseRoute("role:" + token)
 		if named != (err == nil) {
@@ -455,7 +455,7 @@ func TestCommentPartiesOfNamesThePersonByKind(t *testing.T) {
 		{"an agent address in a code span", "`dispatch://agent/s1` names nobody.", nil, nil, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(tc.body, ""))
+			parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(tc.body, text.NewOrigins("")))
 			if (err != nil) != tc.refused {
 				t.Fatalf("commentPartiesOf(%q) error = %v, want refusal: %v", tc.body, err, tc.refused)
 			}
@@ -478,7 +478,7 @@ func TestCommentPartiesOfKeepsEachPersonsLoginOnceInOrder(t *testing.T) {
 	t.Parallel()
 	body := "[Bob](dispatch://person/bob@example.com), [Alice](dispatch://person/alice@example.com) " +
 		"and [Bob again](dispatch://person/bob@example.com) should see this."
-	parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(body, ""))
+	parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(body, text.NewOrigins("")))
 	if err != nil {
 		t.Fatalf("commentPartiesOf(%q) = %v", body, err)
 	}

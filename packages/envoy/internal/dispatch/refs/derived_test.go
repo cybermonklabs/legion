@@ -30,7 +30,7 @@ func TestDerivedStampSourceSeqIsTheStampingEventsID(t *testing.T) {
 	createReferenceProject(t, tx, "STAMP")
 	createReferenceIssue(t, tx, "STAMP-1", "STAMP")
 	document, _ := createReferenceArtifact(t, tx, "STAMP-1", "STAMP", "spec")
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract(markdown, server), nil, false); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract(markdown, text.NewOrigins(server)), nil, false); err != nil {
 		t.Fatalf("index the document's references: %v", err)
 	}
 	located := text.ExtractAt(markdown, text.NewOrigins(server))

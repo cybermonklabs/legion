@@ -263,11 +263,11 @@ func TestKnownSessionsLongestIDIsTheLongestAReferenceNames(t *testing.T) {
 	t.Parallel()
 	const server = "https://dispatch.test"
 	longest := strings.Repeat("s", knownSessionIDMax)
-	got := text.Extract("dispatch://agent/"+longest, server)
+	got := text.Extract("dispatch://agent/"+longest, text.NewOrigins(server))
 	if len(got) != 1 || got[0].Kind != "session" || got[0].ID != longest {
 		t.Fatalf("the reference to a session id of %d bytes cites %.200v, want that session", len(longest), got)
 	}
-	if got := text.Extract("dispatch://agent/"+longest+"s", server); len(got) != 0 {
+	if got := text.Extract("dispatch://agent/"+longest+"s", text.NewOrigins(server)); len(got) != 0 {
 		t.Fatalf("the reference to a session id of %d bytes cites %.200v, want nothing", len(longest)+1, got)
 	}
 }

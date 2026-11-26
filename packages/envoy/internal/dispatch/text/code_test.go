@@ -11,7 +11,7 @@ import (
 // carries no mark, which is what keeps it a delivering party (api.commentPartiesOf).
 func TestExtractMarksEachOccurrenceOnItsOwn(t *testing.T) {
 	body := "Run `dispatch://role/reviewer` and ask dispatch://role/reviewer about it."
-	located := ExtractAt(body, "https://dispatch.test")
+	located := ExtractAt(body, NewOrigins("https://dispatch.test"))
 	if len(located) != 2 {
 		t.Fatalf("read %#v, want both occurrences", located)
 	}
@@ -27,7 +27,7 @@ func TestMentionsMarksBareCandidatesInCode(t *testing.T) {
 		issues:    map[string]bool{"CORE-1": true},
 		questions: map[string]Ref{"q2": {Kind: "ask", IssueKey: "CORE-1", ID: "a2"}},
 	}
-	located, err := Mentions("`CORE-1` and #q2 and\n\n    CORE-1\n", "https://dispatch.test", resolver)
+	located, err := Mentions("`CORE-1` and #q2 and\n\n    CORE-1\n", NewOrigins("https://dispatch.test"), resolver)
 	if err != nil {
 		t.Fatalf("Mentions() error: %v", err)
 	}

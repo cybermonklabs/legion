@@ -39,7 +39,7 @@ func TestTargetOfStoresRecordsAndNeitherURLsNorParties(t *testing.T) {
 		{reference: "dispatch://CORE/component/dispatch-server", kind: "component", id: "CORE/dispatch-server"},
 	} {
 		t.Run(test.reference, func(t *testing.T) {
-			found := text.Extract(test.reference, targetOfServer)
+			found := text.Extract(test.reference, text.NewOrigins(targetOfServer))
 			if len(found) != 1 {
 				t.Fatalf("%s is %d references, want one", test.reference, len(found))
 			}

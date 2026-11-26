@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"slices"
 	"testing"
 	"time"
@@ -77,7 +78,7 @@ func createIndexedDocument(t *testing.T, database *store.Store, service *Service
 		t.Fatalf("create %s: %v", slug, err)
 	}
 	seedServiceText(t, service, document, markdown)
-	live, _, err := service.TextWithBlocks(ctx, document)
+	live, _, err := service.TextWithBlocks(ctx, model.ServerReader, document)
 	if err != nil {
 		t.Fatalf("read %s: %v", slug, err)
 	}
@@ -388,7 +389,7 @@ func TestTheFormsDrainPassesOverMoreStuckDocumentsThanOnePassTakes(t *testing.T)
 		if err := service.Evict(ctx, stuck[index]); err != nil {
 			t.Fatalf("evict %s: %v", stuck[index], err)
 		}
-		if _, _, err := service.TextWithBlocks(ctx, stuck[index]); !errors.Is(err, ErrDocNewerContent) {
+		if _, _, err := service.TextWithBlocks(ctx, model.ServerReader, stuck[index]); !errors.Is(err, ErrDocNewerContent) {
 			t.Fatalf("read %s: %v, want ErrDocNewerContent", stuck[index], err)
 		}
 	}
@@ -451,7 +452,7 @@ func TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) 
 		}
 		return tick
 	}
-	live, _, err := service.TextWithBlocks(ctx, notes)
+	live, _, err := service.TextWithBlocks(ctx, model.ServerReader, notes)
 	if err != nil {
 		t.Fatalf("read the notes: %v", err)
 	}
@@ -518,7 +519,7 @@ func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
 	}
 	index := func(version int) {
 		t.Helper()
-		live, blocks, err := service.TextWithBlocks(ctx, document)
+		live, blocks, err := service.TextWithBlocks(ctx, model.ServerReader, document)
 		if err != nil {
 			t.Fatalf("read the document: %v", err)
 		}

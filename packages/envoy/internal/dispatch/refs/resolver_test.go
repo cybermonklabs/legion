@@ -148,7 +148,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 	} {
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		located := NewReader(ctx, tx, prefixAuthor, "comment", source, resolverServer).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -225,7 +225,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 	} {
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		located := NewReader(ctx, tx, prefixAuthor, "comment", source, resolverServer).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -295,7 +295,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 		if test.source != anchored {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
-		located := NewReader(ctx, tx, prefixAuthor, "comment", test.source, resolverServer).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", test.source, text.NewOrigins(resolverServer)).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -626,7 +626,7 @@ func loggedErrors(t *testing.T, q Queryer, body string) []error {
 	recorder := &logtest.Recorder{}
 	restore := logtest.Swap(t, recorder)
 	defer restore()
-	NewReader(context.Background(), q, prefixAuthor, "comment", resolverSource(1), resolverServer).Mentions(body)
+	NewReader(context.Background(), q, prefixAuthor, "comment", resolverSource(1), text.NewOrigins(resolverServer)).Mentions(body)
 	var logged []error
 	for _, record := range recorder.Records() {
 		record.Attrs(func(attr slog.Attr) bool {
@@ -683,7 +683,7 @@ func TestAnAmbiguousShortIDReadsAsWrittenAndLogsNothing(t *testing.T) {
 	shared, lone := resolverAmbiguous[:8], resolverAsk[:8]
 	body := "See dispatch://ACME-1/ask/" + shared + ", dispatch://ACME-1/ask/" + lone + " and dispatch://ACME-1/ask/deadbeef."
 	var read []string
-	for _, mention := range NewReader(ctx, tx, prefixAuthor, "comment", resolverSource(1), resolverServer).Mentions(body) {
+	for _, mention := range NewReader(ctx, tx, prefixAuthor, "comment", resolverSource(1), text.NewOrigins(resolverServer)).Mentions(body) {
 		read = append(read, mention.Kind+"/"+mention.ID)
 	}
 	if want := []string{"ask/" + shared, "ask/" + resolverAsk, "ask/deadbeef"}; !slices.Equal(read, want) {

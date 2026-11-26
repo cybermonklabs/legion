@@ -61,7 +61,7 @@ func TestAWriteLeavesNothingOwed(t *testing.T) {
 		t.Fatalf("the comment's own write owes %v, want the comment alone", owed)
 	}
 
-	located := NewReader(ctx, tx, prefixAuthor, "comment", comment, refsGrammarServer).Mentions("Blocked on CORE-1.")
+	located := NewReader(ctx, tx, prefixAuthor, "comment", comment, text.NewOrigins(refsGrammarServer)).Mentions("Blocked on CORE-1.")
 	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil, false); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
