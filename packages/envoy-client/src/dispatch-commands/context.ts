@@ -346,9 +346,9 @@ export interface SessionContext {
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path
    * resolves the origin (a subprocess) before it needs a client. `options` are laid over the
-   * session's own (its signal, its write pacing and its sleep), for a request that runs under a
-   * budget of its own: the call of `dispatch artifact` asks its check of a Markdown file once,
-   * within DRY_RUN_DEADLINE_MS, as its dry run asks it (`askOnceWithinDryRun`).
+   * session's own (its signal, its write pacing, its run-wait notice and its sleep), for a request
+   * that runs under a budget of its own: the call of `dispatch artifact` asks its check of a
+   * Markdown file once, within DRY_RUN_DEADLINE_MS, as its dry run asks it (`askOnceWithinDryRun`).
    */
   newClient(options?: DispatchClientOptions): DispatchClient;
 }

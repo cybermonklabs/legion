@@ -34,19 +34,12 @@ func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) erro
 	slices.Sort(documents)
 	documents = slices.Compact(documents)
 	rows, err := tx.Query(ctx, `
-		select id::text, issue_key from artifacts where id = any($1::uuid[])
+		select issue_key, id::text from artifacts where id = any($1::uuid[])
 	`, documents)
 	if err != nil {
 		return fmt.Errorf("load the owners of a batch's documents: %w", err)
 	}
-	owners, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (store.Owner, error) {
-		var document string
-		var issue *string
-		if err := row.Scan(&document, &issue); err != nil {
-			return store.Owner{}, err
-		}
-		return *store.OwnerOf(issue, &document), nil
-	})
+	owners, err := documentOwners(rows)
 	if err != nil {
 		return fmt.Errorf("load the owners of a batch's documents: %w", err)
 	}
@@ -61,4 +54,19 @@ func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) erro
 		}
 	}
 	return nil
+}
+
+// documentOwners reads rows of (issue key, null for a row no issue owns; document id) as the owner
+// each row stands under (store.OwnerOf): its issue, or for a document no issue owns, the document
+// itself. lockBlockDocuments and lockObjectOwners read their owners through it, so the two name an
+// owner alike.
+func documentOwners(rows pgx.Rows) ([]store.Owner, error) {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (store.Owner, error) {
+		var issue *string
+		var document string
+		if err := row.Scan(&issue, &document); err != nil {
+			return store.Owner{}, err
+		}
+		return *store.OwnerOf(issue, &document), nil
+	})
 }

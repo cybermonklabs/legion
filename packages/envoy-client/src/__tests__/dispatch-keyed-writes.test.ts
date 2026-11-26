@@ -17,6 +17,7 @@ import {
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_IN_PROCESS_DEADLINE_MS,
+  DISPATCH_TOOL_DEADLINE_MS,
   DISPATCH_WRITE_RETRY,
   DispatchAnswerNotKeptError,
   DispatchClient,
@@ -2163,6 +2164,39 @@ describe("DispatchClient's writes", () => {
       expect(sent.at(-1)?.headers["Idempotency-Key"]).toBe(key);
     } finally {
       jest.useRealTimers();
+    }
+  });
+
+  // A call that writes nothing - a conversion, a dry run, a related-item check - has no run of
+  // Dispatch's to wait for: an attempt of it cut off for silence leaves it on the ordinary
+  // schedule, inside the client's own deadline, and tells its maker of no run wait.
+  test("a call that writes nothing whose attempt is cut off for silence ends within the client's deadline and tells onRunWait nothing", async () => {
+    const { retry, pauses, stall, clock, restore } = onFakeTimers();
+    try {
+      const { fetchImpl, sent } = scripted(Array.from({ length: 40 }, () => stall));
+      const waits: DispatchRunWait[] = [];
+      const dispatch = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        fetchImpl,
+        {
+          writeRetry: retry,
+          onRunWait: (wait) => waits.push(wait),
+        }
+      );
+
+      const error = await failure(dispatch.markdownRoundTrip("# Notes\n", false));
+
+      // Asked at 0 s and cut off at 20 s, asked again at 21 s and cut off at 41 s: the schedule's
+      // next pause would start the next ask past its 30 s, so the call ends there.
+      expect(sent).toHaveLength(2);
+      expect(pauses).toEqual([1_000]);
+      expect(clock()).toBe(41_000);
+      expect(clock()).toBeLessThan(DISPATCH_TOOL_DEADLINE_MS);
+      expect(waits).toEqual([]);
+      expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
+    } finally {
+      restore();
     }
   });
 

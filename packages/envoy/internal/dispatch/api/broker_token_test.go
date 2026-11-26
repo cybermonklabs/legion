@@ -1700,8 +1700,10 @@ func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 }
 
 // TestAJobTokenWritesOnlyAsItsOwnSession: a job's token proved one session, and a write whose body
-// names another is refused ACTOR_SESSION_MISMATCH naming the session the token proved, as for
-// every broker token, so a job writes under no session but its own.
+// names another is refused 403 ACTOR_SESSION_MISMATCH, as for every broker token, so a job writes
+// under no session but its own. The refusal names no session and points the caller at
+// GET /api/v1/whoami for the one its token carries, as
+// TestABrokerTokenRefusesABodyActorNamingAnotherSession holds every broker token's.
 func TestAJobTokenWritesOnlyAsItsOwnSession(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -1719,9 +1721,12 @@ func TestAJobTokenWritesOnlyAsItsOwnSession(t *testing.T) {
 			response := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+own.issue+"/comments", row.token, map[string]any{
 				"body": "Written as another session.", "actor": map[string]string{"kind": "session", "id": "ses_someone_else"},
 			}))
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status=%d body=%s, want 403", response.Code, response.Body.String())
+			}
 			refusal := decodeBody[refusalAnswer](t, response)
-			if response.Code != http.StatusForbidden || refusal.Code != "ACTOR_SESSION_MISMATCH" || !strings.Contains(refusal.Error, brokerTestSession) {
-				t.Fatalf("status=%d refusal=%+v, want 403 ACTOR_SESSION_MISMATCH naming %s", response.Code, refusal, brokerTestSession)
+			if refusal.Code != "ACTOR_SESSION_MISMATCH" || !strings.Contains(refusal.Error, "/api/v1/whoami") || strings.Contains(refusal.Error, brokerTestSession) {
+				t.Fatalf("refusal = %+v, want ACTOR_SESSION_MISMATCH pointing at whoami and not naming %s", refusal, brokerTestSession)
 			}
 		})
 	}

@@ -114,7 +114,7 @@ func TestSearchByTwoKindsRanksBothAndNoOther(t *testing.T) {
 	handler := newTestHandler(t)
 	corpus := seedKindSearchCorpus(t, handler, "KIND", "Astrolabe survey")
 
-	body := searchResponseOn(t, handler, "/api/v1/search/results", "q=astrolabe&kind=issue&kind=message")
+	body := searchResponseOn(t, handler, searchResultsPath, "q=astrolabe&kind=issue&kind=message")
 	want := []string{"issue", "message"}
 	if !slices.Equal(resultKinds(body.Results), want) || body.Total != 2 || body.Reachable != 2 {
 		t.Fatalf("kinds=%v total=%d reachable=%d, want %v, 2 and 2",
@@ -234,7 +234,7 @@ func TestSearchRefusesAKindItDoesNotIndex(t *testing.T) {
 		"q=astrolabe&kind=issues",
 	} {
 		t.Run(query, func(t *testing.T) {
-			response := searchRequestOn(t, handler, "/api/v1/search/results", query)
+			response := searchRequestOn(t, handler, searchResultsPath, query)
 			body := decodeBody[struct {
 				Code  string `json:"code"`
 				Error string `json:"error"`

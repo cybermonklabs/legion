@@ -2982,10 +2982,12 @@ export class DispatchClient {
    * (`#proxyRefusal`). An upload (a body of `STREAMED_BODY_MIN` or more, sent as a stream) keeps
    * the schedule alone: it never enters the in-flight asking. Until Dispatch may be running the
    * write, no ask starts later than `writeRetry.inFlightWithinMs` after the client was made. Once
-   * it may be (an attempt cut off for silence, or answered `409 KEY_IN_FLIGHT`), the write keeps
-   * asking until its run window ends (`DispatchWriteRetry`), bounded by the maker's own stop
-   * (`#stop`) and no longer by the client's default deadline, whose place a deadline at the
-   * window's end takes, and tells `onRunWait` once.
+   * it may be (an attempt cut off for silence, or answered `409 KEY_IN_FLIGHT`), a call that writes
+   * (`WriteCall.writes`) keeps asking until its run window ends (`DispatchWriteRetry`), bounded by
+   * the maker's own stop (`#stop`) and no longer by the client's default deadline, whose place a
+   * deadline at the window's end takes, and tells `onRunWait` once. A call that writes nothing
+   * (a conversion, a dry run) has no run to wait for: it keeps the schedule and the client's
+   * deadline, and tells `onRunWait` nothing.
    */
   async #write(
     method: string,
@@ -3187,6 +3189,7 @@ export class DispatchClient {
       const step = writeStep(state, event, write.writes);
       state = step.state;
       if (
+        write.writes &&
         (event === "silence" || event === "in-flight") &&
         !upload &&
         runUntil === undefined &&

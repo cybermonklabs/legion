@@ -714,14 +714,7 @@ func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []str
 	if err != nil {
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
 	}
-	owners, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (store.Owner, error) {
-		var issue *string
-		var document string
-		if err := row.Scan(&issue, &document); err != nil {
-			return store.Owner{}, err
-		}
-		return *store.OwnerOf(issue, &document), nil
-	})
+	owners, err := documentOwners(rows)
 	if err != nil {
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
 	}
