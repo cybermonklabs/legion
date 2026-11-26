@@ -1226,6 +1226,7 @@ const legionP0Bound = z.object({
  * (`api.stateFor`, `withoutP0Start`). */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative().optional(),
+  free: z.number().int().nonnegative(),
   p0Holders: z.number().int().nonnegative().optional(),
   p0Bound: legionP0Bound.optional(),
   active: z.array(nonEmptyString).optional(),
