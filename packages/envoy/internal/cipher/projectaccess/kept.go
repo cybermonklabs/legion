@@ -2,8 +2,9 @@
 // answers from them while Dispatch cannot be asked: a person's member kind (MemberKind, from
 // person_member_kind), whether Dispatch holds a person (KeptHold, from person_standing, for the
 // hold gate) and whether a person may see a project (Access under OrKept, from project_standing).
-// Each answer of the person route is written once, by the call that fetched it, in one write of
-// both its rows (keepPerson).
+// The call that fetches a person answer writes its kind and, where it names held, its standing.
+// A held answer the broker could not write is written again by each read that rests on it
+// (keepHeldAgain).
 package projectaccess
 
 import (

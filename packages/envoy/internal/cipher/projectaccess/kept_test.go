@@ -255,8 +255,9 @@ func TestTheKeptKindSurvivesARestart(t *testing.T) {
 // answers her restricted, at a later as_of, and that answer is written over the full one; once
 // Dispatch stops answering she is refused, counted restricted, and not served on the earlier full.
 //
-// The fault: KeepMemberKind's update leaving member_kind out of what it sets; the demotion's
-// as_of is written with the full kind kept, and her read once Dispatch is down answers full.
+// The fault: KeepPersonAnswer's member-kind update leaves member_kind out of what it sets; the
+// demotion's as_of is written with the full kind kept, and her read once Dispatch is down answers
+// full.
 func TestADemotionDispatchAnswersIsKeptAndRefusedOnceItIsDown(t *testing.T) {
 	st := storetest.Open(t)
 	dispatch := projectaccesstest.NewServer(t, nil, keptKinds())
@@ -297,7 +298,7 @@ func personDispatch(t *testing.T, kind string, asOf time.Time) string {
 // Each answers its own read as Dispatch answered it, and the database keeps the later answer,
 // restricted, so a process whose Dispatch is down refuses her.
 //
-// The fault: KeepMemberKind writing every answer whatever the row holds (its where clause gone);
+// The fault: KeepPersonAnswer writes every answer whatever the row holds (its where clause gone);
 // the older full answer replaces the newer restricted one, and the down process serves her.
 func TestAnOlderAnswerDoesNotReplaceTheKeptKind(t *testing.T) {
 	url := storetest.URL(t)

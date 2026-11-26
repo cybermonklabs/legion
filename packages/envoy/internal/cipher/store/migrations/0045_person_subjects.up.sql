@@ -1,8 +1,9 @@
 -- packages/envoy/internal/cipher/store/migrations/0045_person_subjects.up.sql
--- An address is held by one account of the identity provider at a time, and Dispatch decides
--- which. When another Google account takes an address Dispatch holds for a person, Dispatch
--- names the account it replaced, by its issuer and its `sub` (POST /v1/person-subjects/revoke),
--- and the broker ends every credential that account holds under the address, whenever it was
+-- An address is held by one account of the identity provider at a time, and the broker records
+-- that account on the credentials it made under the address. A Dispatch that records accounts
+-- calls POST /v1/person-subjects/revoke when another Google account takes an address, naming the
+-- replaced account by issuer and `sub`; Dispatch in this tree does not call that route yet. When
+-- called, the broker ends every credential the replaced account holds under the address, whenever
 -- issued, and every session it holds on the broker's own approval page, refuses it any new one,
 -- and leaves the new holder's alone. That needs the broker to know which account made each, which
 -- until now it never recorded: a sign-in on a machine named the address alone, a machine login
@@ -11,18 +12,19 @@
 -- So each of the three a person makes records the account that made it:
 --   - a sign-in on a machine, the issuer and `sub` of the person's own Google identity token the
 --     trade presented (store.RecordPersonSignIn);
---   - a person's machine login, the issuer and `sub` of the account that approved it, which
---     Dispatch's approval relays beside the address (machine.Service.ApplyDecision);
+--   - a person's machine login, the issuer and `sub` of the account its approval names
+--     (machine.Service.ApplyDecision); Dispatch in this tree names neither;
 --   - a session on the broker's own approval page, the issuer and `sub` of the ID token the
 --     page's sign-in verified (store.CreateBrowserSession).
 -- Each is null on every row written before this migration, and on a machine login whose approval
--- an older Dispatch relayed: such a row is read as possibly the replaced account's, and the revoke
--- ends it too. A sign-in row with none recorded is never given one (0046 refuses any change of a
--- recorded account): where the broker asks Dispatch (BROKER_PROJECT_ACCESS_URL), its next trade
--- ends it and writes a row of its own, and elsewhere it goes on recording none
--- (store.RecordPersonSignIn). The two columns of each pair are set together or not at all, and
--- neither is ever empty, so a row either names one account or says plainly that it names none. An
--- issuer is stored as oidc.CanonicalIssuer spells it, which is the spelling Dispatch names it by.
+-- names no account, as every approval Dispatch in this tree relays does: such a row is read as
+-- possibly the replaced account's, and the revoke ends it too. A sign-in row with none recorded is
+-- never given one (0046 refuses any change of a recorded account): where the broker asks Dispatch
+-- (BROKER_PROJECT_ACCESS_URL), its next trade ends it and writes a row of its own, and elsewhere
+-- it goes on recording none (store.RecordPersonSignIn). The two columns of each pair are set
+-- together or not at all, and neither is ever empty, so a row either names one account or says
+-- plainly that it names none. An issuer is stored as oidc.CanonicalIssuer spells it, the form the
+-- broker records and compares.
 --
 -- replaced_person_subjects is what the revoke leaves behind: one row per account an address no
 -- longer belongs to, which every later sign-in trade, machine-login approval and approval-page

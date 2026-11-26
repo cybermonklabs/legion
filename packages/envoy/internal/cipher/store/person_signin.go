@@ -110,10 +110,10 @@ type PersonSignIn struct {
 // credential the deleted row held, and every session enrolled under it, in this transaction too
 // (enroll.RecordPersonSignIn), which is what the answer is for. Without it the trade is that row's,
 // which goes on recording no account: it moves last_used_at and nothing else, and ends nothing.
-// The token this trade mints is
-// written after this returns (oauth.Provider.exchangeGrant's NewAccessResponse), so it is not
-// among those ended. It takes tx rather than the pool because the exchange must write this and the
-// access token it is minting together: a revoke that commits first refuses the trade, and one that
+// The token that this trade mints is written after this returns
+// (oauth.Provider.exchangeGrant's NewAccessResponse), so it is not among those ended. It takes tx
+// rather than the pool because the exchange must write this and the access token it is minting
+// together: a revoke that commits first refuses the trade, and one that
 // commits after it ends the token the trade minted (RevokePersonSignIn).
 //
 // It takes the person's lock first and then reads whether the account is replaced (LockPersonAs),

@@ -14,8 +14,10 @@
 -- an update that would change a recorded account, null to an account included, is refused with
 -- SQLSTATE 23514 (check_violation), and the statement and its transaction roll back. So is one
 -- that would change when the credential was made (each row's created_at, and the
--- credential_created_at a token's trade recorded in its stored request), which a resource server
--- holds a token recording no account to. Each fires only on an update that names one of its
+-- credential_created_at a token's trade recorded in its stored request). No resource server in
+-- this tree reads credential_created_at. A resource server that starts to reject a token recording
+-- no account can hold that token to this time.
+-- Each fires only on an update that names one of its
 -- columns in its SET list (`before update of`), so a write that names none (a sign-in's last use
 -- or revoke, a machine login's new key or expiry, a token's revoke or grace) costs nothing; one
 -- that names a column and leaves it as it was passes, since the trigger's condition compares the

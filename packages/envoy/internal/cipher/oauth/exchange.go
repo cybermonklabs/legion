@@ -1128,11 +1128,12 @@ func approverUnreachable(err error) error {
 // mints every trade naming no project; a login naming no approver asks nothing either, and
 // answers ApproverUnknown, which Machine refuses after its own refusal of the missing approver.
 //
-// While Dispatch cannot be asked the trade is refused temporarily_unavailable, a list naming no
-// project included: this broker cannot tell a restricted member's machine from anyone else's then,
-// and a guess would mint a token acting as its person for one. The broker's own account token not
-// working (refusedByDispatch) and a member kind it does not know (unknownMemberKind) are refused
-// server_error, as every trade that meets them is.
+// While Dispatch cannot be asked, an approver whose last kept member kind is full answers
+// ApproverUnrestricted, so the trade goes on, a list naming no project included. Every other
+// unanswered read is refused temporarily_unavailable: this broker cannot tell a restricted
+// member's machine from anyone else's then, and a guess would mint a token acting as its person
+// for one. The broker's own account token not working (refusedByDispatch) and a member kind it
+// does not know (unknownMemberKind) are refused server_error, as every trade that meets them is.
 func (p *Provider) approverKind(ctx context.Context, approver string) (exchange.ApproverKind, error) {
 	if strings.TrimSpace(approver) == "" {
 		return exchange.ApproverUnknown, nil
@@ -1537,9 +1538,10 @@ func (p *Provider) personSignIn(ctx context.Context, session *oauthstore.Exchang
 	if err != nil {
 		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
-	// The account the sign-in records, and when the sign-in was made, onto the session the token
-	// is stored with, so an introspection answers both from the token's own row and never from
-	// the sign-in's.
+	// Write the account this trade's identity token names, and when the sign-in row was made, onto
+	// the session the token is stored with, so an introspection answers both from the token's own
+	// row and never from the sign-in's. A pre-0045 sign-in can record no account when EndUnrecorded
+	// is false; its newly minted token still records this trade's identity account.
 	session.Extra[ClaimAccountIssuer] = oidc.CanonicalIssuer(issuer)
 	session.Extra[ClaimAccountSubject] = subject
 	createdAt, err := p.store.SignInCreatedAt(ctx, person, thumbprint)

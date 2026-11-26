@@ -7,11 +7,11 @@
 -- (its as_of), and an answer is written unless the row holds one Dispatch gave later.
 --
 -- A table of its own rather than columns of person_standing, ordered by its own as_of: every
--- answer names a kind, while one whose held Dispatch left out (its own read of the hold failed)
--- keeps nothing in person_standing, so the kind of such an answer, a demotion among them, is kept
--- here whatever the hold. The process that fetched an answer writes its kind here and the hold it
--- names to person_standing in one transaction (store.KeepPersonAnswer), so a write that fails keeps
--- neither, and a kept kind is read by its own as_of alone.
+-- answer names a kind, while one whose held field is absent keeps nothing in person_standing, so
+-- the kind of such an answer, a demotion among them, is kept here whatever the hold. The process
+-- that fetched an answer writes its kind here and, where its answer names held, the hold to
+-- person_standing in one transaction (store.KeepPersonAnswer). A failed write keeps neither row
+-- it tried to write, and a kept kind is read by its own as_of alone.
 create table person_member_kind (
   person text primary key check (person <> '' and person = btrim(person) and person !~ '[A-Z]'),
   member_kind text,

@@ -121,11 +121,11 @@ func cutOf(answer Introspection) (time.Time, error) {
 // answer's cut, which sessionCaller read (cutOf): callerOf runs only on an answer sessionCaller
 // accepted, and sessionCaller lets a read-only answer through only with its switch set, which
 // only a verifier that serves one sets, so a Caller marked read-only is one such a verifier
-// accepted. So is held: a held answer is still a live one, kept in the cache as any other for
-// AffirmativeCacheTTL, and each reader refuses a held Caller after its own checks. And so is
-// not_held_until, the deadline of a not-held answer, which the cache keeps the answer no later
-// than (answerCache.remember) and each reader refuses a Caller past (Verifier.Lapsed).
-// LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
+// accepted. A held answer is still live and is kept in the cache for AffirmativeCacheTTL; the
+// Envoy listener refuses a held Caller after its own checks, while Dispatch does not read Held yet.
+// A not-held answer's not_held_until is kept no later than its deadline (answerCache.remember);
+// the Envoy listener refuses a Caller past it (Verifier.Lapsed), while Dispatch does not read it
+// yet. LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
 // shapeOf reads it and with no slice built, since this too runs on every request a verifier
 // decides.
 func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {

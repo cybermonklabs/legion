@@ -783,8 +783,9 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 
 // CredentialAccount is what a token minted from a credential records about it: the Google account
 // it records, issuer then `sub`, empty for none, and when the credential was made, read from the
-// broker database's own clock (the row's created_at, which its insert's default wrote). A resource
-// server holds a token recording no account to that time (oauth.ClaimCredentialCreatedAt).
+// broker database's own clock (the row's created_at, which its insert's default wrote). The
+// exchange writes the time to oauth.ClaimCredentialCreatedAt; no resource server in this tree
+// reads it yet.
 type CredentialAccount struct {
 	Issuer, Subject string
 	CreatedAt       time.Time

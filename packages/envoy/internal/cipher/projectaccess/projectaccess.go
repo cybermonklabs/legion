@@ -152,9 +152,10 @@ var outageCodes = []string{"DATABASE_UNAVAILABLE", "OIDC_ISSUER_UNAVAILABLE"}
 // that fails at once, in a failover or a restart, is that 500, not a 503. A 500 naming it, or
 // naming no code at all (a page in front of Dispatch), is Dispatch not answering now; a 500 naming
 // any other code of Dispatch's, such as IDENTITY_ERROR, is an answer that lasts until somebody
-// fixes it. The cost is that a Dispatch bug that answers 500 INTERNAL reads as an outage while it
-// lasts, which lets only what an outage lets through: a revoke by the person a grant names as its
-// approver, which takes access away.
+// fixes it. The cost is that a Dispatch bug that answers 500 INTERNAL gets the same degraded
+// behavior as an outage: a caller can use an answer it kept. That can serve a full member or a
+// visible project, and the hold can decide from person_standing; a caller without a kept answer it
+// may serve still refuses.
 const internalCode = "INTERNAL"
 
 // Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
