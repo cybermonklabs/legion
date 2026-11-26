@@ -93,7 +93,17 @@ for (const route of scannedRoutes) {
         // all, and the third would report findings about a state no reader sees
         // (`waitForRouteSettled`).
         await waitForRouteSettled(page, route, listedRequests(page));
-        const results = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
+        // Legacy mode runs `axe.run` in this page. By default @axe-core/playwright (4.14.0's
+        // `analyze`) runs `axe.runPartial` here, then opens a blank page in the context, loads
+        // axe-core into it, hands it the partial results as JSON and runs `axe.finishRun` there:
+        // a page opened and closed for every scan, two to a row. The two ways differ only on a
+        // cross-origin frame, which legacy mode does not read, and the dashboard's pages hold no
+        // frame (below). A route whose page gains a cross-origin frame drops legacy mode, or axe
+        // reads nothing inside that frame.
+        const results = await new AxeBuilder({ page })
+          .withTags(AXE_TAGS)
+          .setLegacyMode(true)
+          .analyze();
         await testInfo.attach(`axe ${route.name} ${colorScheme}.json`, {
           body: JSON.stringify(results, null, 2),
           contentType: "application/json",

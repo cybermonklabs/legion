@@ -343,6 +343,13 @@ async function seedCitedIssue(): Promise<string> {
   return cited.key;
 }
 
+/** The project `seedWholeIssue` seeds the whole issue in, under its key and name, and nothing in
+ *  it: for a row that writes every issue it reads itself and reads nothing of the whole issue's -
+ *  its issues, documents, results, sessions or component model - so it does not pay for them. */
+async function seedLayoutProject(): Promise<void> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+}
+
 /** The kinds a row draws no tag for, because they are the conversation's own words rather than
  *  a kind it revealed: one tag where the node has a typed kind. */
 const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
@@ -1510,6 +1517,10 @@ test("an issue opened by a link opens with the focus on its question, or on its 
     const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
     for (const size of [DESKTOP, PHONE]) {
       const at = `${size.width}x${size.height}`;
+      // The page leaves for about:blank before the resize, as `openAt` does, so the issue page
+      // the first size left open is not laid out again at the second just before the Inbox's
+      // load throws it away.
+      await page.goto("about:blank");
       await page.setViewportSize({ height: size.height, width: size.width });
       await page.goto("/");
       const link = page
@@ -1535,8 +1546,7 @@ test("an issue opened by a link opens with the focus on its question, or on its 
     });
     for (const size of [DESKTOP, PHONE]) {
       const at = `${size.width}x${size.height}`;
-      await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.parentKey}`);
+      await openAt(page, size, `/issues/${seeded.parentKey}`, true);
       await expectIssuePageDrawn(page);
       const link = childRow(page, seeded.key).locator(`a[href$="/issues/${seeded.key}"]`).first();
       await expect(
@@ -1566,12 +1576,12 @@ test("an issue opened by a link opens with the focus on its question, or on its 
 // scroll left the caret in its last statement 17,037 px below the top of the window. The seeds'
 // statements sit near their document's top and c-keys' editing row writes no new line, so no row
 // met it.
-// SLOW(>=2s): a whole seeded issue and a long document of its own, a load waited on until the
-// statement takes the focus, then Enter and each line written waited on until the caret settles.
+// SLOW(>=2s): the project and a long document of its own, a load waited on until the statement
+// takes the focus, then Enter and each line written waited on until the caret settles.
 test("the caret Enter puts in a statement deep in its document stays on screen while the reader writes", async ({
   browser,
 }) => {
-  await phase(browser, seedWholeIssue, async (page) => {
+  await phase(browser, seedLayoutProject, async (page) => {
     const deep = await createIssue({
       force: true,
       project: PROJECT,
@@ -1646,12 +1656,12 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
 // the row's body stands under the box, so a long statement the reader moved to and edited made a
 // row of 971 px at 1440 by 900 on a spec of long statements like this one's, and of 927 px at
 // 1440 by 900 and 745 px at 390 by 664 on that real issue, its last lines below the window.
-// SLOW(>=2s): a whole seeded issue and two long specs of its own, a load of each waited on until
-// the statement takes the focus, then Enter waited on until the editor opens and settles.
+// SLOW(>=2s): the project and two long specs of its own, a load of each waited on until the
+// statement takes the focus, then Enter waited on until the editor opens and settles.
 test("a row that edits a statement is no taller than the window, and the page around it stays put", async ({
   browser,
 }) => {
-  await phase(browser, seedWholeIssue, async (page) => {
+  await phase(browser, seedLayoutProject, async (page) => {
     const deep = await createIssue({
       force: true,
       project: PROJECT,
@@ -2058,13 +2068,13 @@ test("zooming back out of a top-level row keeps that row on screen", async ({ br
 // under the band at the top, at -43 px at 1440 by 900 and at -97 px at 390 by 664, and on a real
 // issue of some 160 rows the whole editing row stood above the window. The seeds' documents cite
 // nothing outside the issue's own project above a statement, so no row met it.
-// SLOW(>=2s): a whole seeded issue, sixty issues of another project and a long spec citing them,
-// a load waited on until the focus lands, then End and Enter, waited on until the editor's reads
-// of the names have answered.
+// SLOW(>=2s): the project, sixty issues of another project and a long spec citing them, a load
+// waited on until the focus lands, then End and Enter, waited on until the editor's reads of the
+// names have answered.
 test("the caret Enter puts in a statement stays on screen while the editor draws the names its document cites", async ({
   browser,
 }) => {
-  await phase(browser, seedWholeIssue, async (page) => {
+  await phase(browser, seedLayoutProject, async (page) => {
     // The cited issues are another project's, so nothing the page reads before the editor opens
     // has their names in hand.
     await createProject({ key: "CITED", name: "Cited issues" });
@@ -2154,13 +2164,13 @@ test("the caret Enter puts in a statement stays on screen while the editor draws
 // went from 111 px down the window to 136 px, 443 px and then 597 px, for some 600 ms, until the
 // row's second look at the block (`holdEditorAtBlock`) put it back. The row above reads the caret
 // once, after that second look, so it passed with the property on either element.
-// SLOW(>=2s): a whole seeded issue, sixty issues of another project and a long spec citing them,
-// a load waited on until the focus lands, then End and Enter, and the caret read on every frame
-// for two seconds from the frame it is in the statement.
+// SLOW(>=2s): the project, sixty issues of another project and a long spec citing them, a load
+// waited on until the focus lands, then End and Enter, and the caret read on every frame for two
+// seconds from the frame it is in the statement.
 test("the words the caret Enter puts in a statement stand still while the editor draws the names above them", async ({
   browser,
 }) => {
-  await phase(browser, seedWholeIssue, async (page) => {
+  await phase(browser, seedLayoutProject, async (page) => {
     // The cited issues are another project's, so nothing the page reads before the editor opens
     // has their names in hand, and the editor draws them after the caret is in.
     await createProject({ key: "CITED", name: "Cited issues" });
@@ -2628,8 +2638,12 @@ test("a statement whose words hold an unbroken run keeps the outline inside its 
 }) => {
   await phase(browser, seedUnbrokenWords, async (page, seeded) => {
     for (const width of [320, 390, 1440]) {
-      await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openAt(
+        page,
+        { height: width < 1024 ? PHONE.height : DESKTOP.height, width },
+        `/issues/${seeded.key}`,
+        true
+      );
       await expectIssuePageDrawn(page);
       // The words are on the page before it is measured, so a fit read before the rows draw
       // cannot pass for the fit of a page that holds them.
@@ -2653,8 +2667,12 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
 }) => {
   await phase(browser, seedUnbrokenChildTitle, async (page, seeded) => {
     for (const width of [320, 390, 1440]) {
-      await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openAt(
+        page,
+        { height: width < 1024 ? PHONE.height : DESKTOP.height, width },
+        `/issues/${seeded.key}`,
+        true
+      );
       await expectIssuePageDrawn(page);
       // The title is on the page before it is measured, so a fit read before the rows draw
       // cannot pass for the fit of a page that holds them.
@@ -2755,8 +2773,12 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
       size: { readonly height: number; readonly width: number },
       at: string
     ): Promise<void> => {
-      await page.setViewportSize(size);
-      await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
+      await openAt(
+        page,
+        size,
+        `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`,
+        true
+      );
       await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
@@ -4012,8 +4034,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       leaf
     );
 
-    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.first}`);
+    await openAt(page, PHONE, `/issues/${seeded.key}/comments/${seeded.first}`, true);
     await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })

@@ -557,6 +557,10 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     }
 
     if (drawnAtDesktop !== undefined) {
+      // The page leaves for about:blank first, as `openAt` does: the load below reads nothing of
+      // the page left open at 390 px, which would otherwise be laid out again at 1440 px, and
+      // take in the write below, just before that load throws it away.
+      await page.goto("about:blank");
       await page.setViewportSize(viewportAt(DESKTOP.width));
 
       // At 1440 px, the labels the line drew there of the twenty, which fit beside a count, and
@@ -593,7 +597,10 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       await expect(labelsLeft(page), "labels that fit draw a count").toHaveCount(0);
     }
 
-    // An issue whose labels fit draws them all and no count.
+    // An issue whose labels fit draws them all and no count. The page leaves for about:blank
+    // first here too: on the phone the page left open is at 390 px, and on either project it
+    // would take in the write below just before the load throws it away.
+    await page.goto("about:blank");
     await page.setViewportSize(viewportAt(DESKTOP.width));
     await patchIssue(seeded.key, { labels: ["dispatch"] });
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -958,8 +965,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
           [IPHONE_13.width, "Enter"],
         ]
       : [[IPHONE_13.width, "tap"]]) as readonly (readonly [number, Press])[]) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openAt(page, viewportAt(width), `/issues/${seeded.key}`, true);
       await expectHeaderDrawn(page);
       // Two questions wait on alice, and the count is a button.
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
@@ -1001,8 +1007,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
       title: "Lone",
     });
     await requestApproval(lone.primary_artifact_id ?? "", { summary: "Read it." });
-    await page.setViewportSize(viewportAt(DESKTOP.width));
-    await gotoIssue(page, `/issues/${lone.key}`);
+    await openAt(page, viewportAt(DESKTOP.width), `/issues/${lone.key}`, true);
     await expectHeaderDrawn(page);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
     await press(waitingCount(page), pointer);
@@ -1650,8 +1655,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
  *  is drawn, makes the page 2000 px tall, taller than the window, so that the page scrolls, and
  *  scrolls it to its top. */
 async function openScrollingPage(page: Page, key: string, width: number): Promise<void> {
-  await page.setViewportSize({ height: 420, width });
-  await gotoIssue(page, `/issues/${key}`);
+  await openAt(page, { height: 420, width }, `/issues/${key}`, true);
   await expectHeaderDrawn(page);
   // The outline opens with the focus on the first question that waits on the reader and holds
   // that row on screen until the reader acts or the focus leaves it, so the page's
@@ -1804,8 +1808,7 @@ test("the header draws the words of its two counts as a reader reads them @phone
     const widths =
       test.info().project.name !== "iphone" ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width];
     for (const width of widths) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openAt(page, viewportAt(width), `/issues/${seeded.key}`, true);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText(/^Waiting on you \(\d+\)$/);
       const count = ((await waitingCount(page).textContent()) ?? "").replace(/\s+/g, " ").trim();
@@ -1884,8 +1887,7 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
             await requestApproval(root.primary_artifact_id ?? "", { summary: "Read it." });
           }
           for (const width of widths) {
-            await page.setViewportSize(viewportAt(width));
-            await gotoIssue(page, `/issues/${root.key}`);
+            await openAt(page, viewportAt(width), `/issues/${root.key}`, true);
             await expectHeaderDrawn(page);
             await expect(issueHeader(page).getByTestId("issue-approval-steps")).toBeVisible();
             await expect(issueHeader(page).getByTestId("issue-progress-subtree")).toBeVisible();
@@ -2501,8 +2503,7 @@ test("the header's menu gives the focus back to its control on Escape and after 
       return focused;
     };
     for (const width of [DESKTOP.width, IPHONE_13.width]) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openAt(page, viewportAt(width), `/issues/${seeded.key}`, true);
       await expectHeaderDrawn(page);
       await expectOpeningLanded(page);
       await focusThePage(page);
