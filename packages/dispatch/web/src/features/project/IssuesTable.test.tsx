@@ -2,7 +2,7 @@ import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import type { ComponentProps, ReactNode } from "react";
+import { type ComponentProps, type ReactNode, useRef } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
@@ -18,6 +18,7 @@ import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { useTableLayout } from "../../components/table-layout";
 import { readLayout } from "../../components/table-storage";
+import { useFootInset } from "../../hooks/useFootInset";
 import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/status-change-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { readSelectedIssues } from "../search/bar-scope";
@@ -1586,6 +1587,95 @@ test("Take out of epic lands its focus wholly in the box the List draws once the
   expect(`${focusedName()} at ${landed.top} to ${landed.bottom}`).toBe(
     `${focusedName()} at ${Math.max(40, landed.top)} to ${Math.min(432, landed.bottom)}`
   );
+});
+
+/** A float of the foot's status layer, as Pending changes is (`hooks/useFootInset.ts`), with a box
+ *  48 px tall at the window's foot, given to it as it is drawn since happy-dom lays nothing out:
+ *  while it has a box, a change of the foot's page elements, the bar's going among them, asks for
+ *  the foot's pass at the next frame. */
+function FootFloat(): ReactNode {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useFootInset(ref, true, "status");
+  return (
+    <div
+      data-testid="foot-float"
+      ref={(node) => {
+        ref.current = node;
+        if (node !== null) {
+          node.getBoundingClientRect = () => new DOMRect(600, window.innerHeight - 64, 300, 48);
+        }
+      }}
+    />
+  );
+}
+
+// INFRA-3135, round 31 (the tester's row of `e2e/table-controls.e2e.ts`, "after Take out of epic
+// with the rows marked last far above the view lands, the project List's box keeps the frame it
+// had when the focus landed"): at 1440x900 the List gave its box its height as the bar went, 400
+// px while main still held 100 px of end room for the bar's foot, and the foot's pass then took
+// that room away, so the box's next read made it 430 px, a frame after the landing. The List
+// gives its box its height in the hand-off's own turn after the foot's pass instead, right before
+// the landing (`MarkedList`'s `fit`). Here a float stands at the foot, so the foot's pass is still
+// to come as the bar goes; main holds 100 px of end room while the bar is drawn, and none after
+// the pass that follows its going. The box takes the window's height less that room, as the page
+// lays it out. The landing on the checkbox of the issue marked last is made against the box with
+// no room taken from it, and the box's own read after the landing moves nothing.
+test("with the foot's pass still to come as the bar goes, the List gives its box its height after that pass and lands against it, and the box keeps that height", async () => {
+  const user = userEvent.setup();
+  table(
+    Array.from({ length: 3 }, (_, index) => issue(`CORE-${index + 1}`)),
+    "",
+    { inMain: true }
+  );
+  const mark = await screen.findByRole("checkbox", { name: "Select CORE-2" });
+  const box = tableBox();
+  const main = document.querySelector("main");
+  if (box === null || main === null) throw new Error("The List drew no box in main");
+  const boxPx = () => Number.parseFloat(box.style.height || box.style.maxHeight);
+  const bar = () => screen.queryByRole("toolbar", { name: "Selected issues" });
+  // The foot's pass reads the screen under the float first (`clearScrollers`), and gives main the
+  // end room the bar's foot needs: 100 px while the bar is drawn, none once it has gone. happy-dom
+  // has no hit test, so the case gives main that room there, as the pass would.
+  Object.defineProperty(document, "elementsFromPoint", {
+    configurable: true,
+    value: () => {
+      main.style.paddingBottom = bar() === null ? "" : "100px";
+      return [];
+    },
+  });
+  restores.push(() => Reflect.deleteProperty(document, "elementsFromPoint"));
+  const float = render(<FootFloat />);
+  // Taken away before the List, so no pass is asked for once the case is over.
+  restores.unshift(() => float.unmount());
+  await user.click(mark);
+  await afterFrameAndTasks();
+  expect(main.style.paddingBottom).toBe("100px");
+  // The box as the page lays it out with the bar at the foot, as its own resize read finds it.
+  act(() => window.dispatchEvent(new Event("resize")));
+  expect(boxPx()).toBe(window.innerHeight - 100);
+  // The box's height as the landing finds it.
+  const realFocus = HTMLElement.prototype.focus;
+  let atLanding = Number.NaN;
+  const landing = spyOn(mark, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    atLanding = boxPx();
+    realFocus.call(this, options);
+  });
+  restores.push(() => landing.mockRestore());
+  act(() =>
+    within(bar() as HTMLElement)
+      .getByRole("button", { name: "Clear selection" })
+      .focus()
+  );
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(mark).toHaveFocus());
+  expect(main.style.paddingBottom).toBe("");
+  expect(atLanding).toBe(window.innerHeight);
+  // The box's own read after the landing finds the height it landed against.
+  act(() => window.dispatchEvent(new Event("resize")));
+  expect(boxPx()).toBe(atLanding);
 });
 
 // A table action's bar stays, held, until the list read after its writes has settled, and goes
@@ -3482,6 +3572,148 @@ test("after a partly refused Take out of epic, Clear selection lands on the issu
   document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
   await afterFrameAndTasks();
   expect(focusedName()).toBe("Select CORE-2");
+});
+
+// INFRA-3135, round 31 (the tester's row of `e2e/table-controls.e2e.ts`, "with Take out of epic's
+// writes held and both marks then unticked, the project List leaves the focus on a control of the
+// list, never the page body, once the rows leave"): the List names each issue an action's writes
+// are for as leaving from the reader's press (`useIssueTableActions`'s `leaving`), not from its
+// write's answer. Under the Epic filter the reader marks two rows, the lower first, presses Take
+// out of epic, and unticks both marks while its writes are out, so the bar goes by their own
+// untick. A click that leaves the focus on the mark, as Chromium's and Firefox's do, keeps it the
+// reader's: the bar hands on nothing (`SelectionBar`), and the hand-off owes the landing itself
+// because the focus stands in a row the List names (`useLastMarkedPlace`). A click that leaves the
+// focus where it was, on Take out of epic, as WebKit's does, drops it onto the body with the bar:
+// the bar's hand-off owes the landing and parks the focus on the mark of the row marked last. Each
+// way the focus stands on that mark while the writes are out. Once they are let through, the list
+// read after them takes both rows out of the view, and the focus goes to the checkbox of the row
+// now at their place, never to the page's body. A List that named a row only once its write had
+// answered named neither at the bar's going, so the landing was made at once on the mark, and the
+// row's going then dropped the focus onto the body.
+for (const [how, untick] of [
+  [
+    "a click that leaves the focus on the mark",
+    (user: UserEvent, mark: HTMLElement) => user.click(mark),
+  ],
+  [
+    "a click that leaves the focus where it was, as WebKit's does",
+    async (_user: UserEvent, mark: HTMLElement) =>
+      act(() => {
+        mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        mark.click();
+      }),
+  ],
+] as const) {
+  test(`with Take out of epic's writes held and both marks then unticked by ${how}, the List names the rows from the press and the focus ends on the checkbox of the row now at their place`, async () => {
+    const user = userEvent.setup();
+    const rows = [
+      issue("CORE-1", { labels: ["epic"], title: "Table epic" }),
+      ...Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 2}`, { parent: "CORE-1" })),
+    ];
+    // Each write, by its issue, held until the case lets it through: then the listing holds that
+    // issue out of the epic, and the write answers. The list read after the last answer, which
+    // holds neither issue in the epic, takes the two rows out of the view together.
+    const held = new Map<string, () => void>();
+    const send = spyOn(api, "send").mockImplementation((request) => {
+      const key = request.path.split("/").at(-1) ?? "";
+      const answer = Promise.withResolvers<Issue>();
+      held.set(key, () => {
+        rows.splice(
+          rows.findIndex((row) => row.key === key),
+          1,
+          issue(key)
+        );
+        answer.resolve(savedIssue(key));
+      });
+      return answer.promise as never;
+    });
+    restores.push(() => send.mockRestore());
+    table(rows, `?f.epic=${encodeURIComponent("CORE-1 · Table epic")}`, { inMain: true });
+    await screen.findByRole("checkbox", { name: "Select CORE-21" });
+    // The two rows the reader marks, the upper one last, and the row after them.
+    const order = drawnRows().map((row) => row.getAttribute("data-issue-row") ?? "");
+    const [upper = "", lower = "", next = ""] = order.slice(11, 14);
+    expect([upper, lower, next].includes("CORE-1")).toBe(false);
+    // Each row's checkbox is drawn where its row stands now, 100 px a row, with the tenth row at
+    // the window's top: happy-dom lays nothing out, and the hand-off reads what the reader sees.
+    restores.push(layRowsOut("[data-issue-row]", 9));
+    const marks = [lower, upper].map((key) =>
+      screen.getByRole("checkbox", { name: `Select ${key}` })
+    );
+    for (const mark of marks) await user.click(mark);
+    act(() =>
+      within(screen.getByRole("toolbar", { name: "Selected issues" }))
+        .getByRole("button", { name: "Take out of epic" })
+        .focus()
+    );
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect([...held.keys()].sort()).toEqual([lower, upper].sort()));
+    for (const mark of marks) await untick(user, mark);
+    await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+    expect(focusedName()).toBe(`Select ${upper}`);
+    await act(async () => {
+      for (const answer of held.values()) answer();
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("checkbox", { name: `Select ${upper}` })).toBeNull()
+    );
+    expect(screen.queryByRole("checkbox", { name: `Select ${lower}` })).toBeNull();
+    await waitFor(() => expect(focusedName()).toBe(`Select ${next}`));
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe(`Select ${next}`);
+  });
+}
+
+// INFRA-3135, round 31: the name of an issue a Finish sends a write again for ends at once where
+// that write is refused or stopped again, as a write the action sends itself does (`apply`). Start
+// next over CORE-2 is refused, so it is left to be finished and keeps its selection: the bar stays
+// over CORE-2. Finish sends the refused rank write again and that write is stopped, as the reader's
+// stop in Pending changes ends it; a stopped write may have landed, so the Finish holds through the
+// list read after it, which the case holds. With the focus in the bar, the reader unticks
+// CORE-2 by a click that leaves the focus where it was, as WebKit's does, and the bar goes with it.
+// Nothing is leaving, so the landing is made on CORE-2's checkbox and nothing is owed after it: a
+// wheel of the reader's moves no focus. A name that outlived the stopped write owed that landing
+// instead, and parked the focus meanwhile.
+test("a write Finish sends again that is stopped ends its issue's name at once, so the bar's going lands on the issue marked last and owes nothing", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    issue("CORE-2", { labels: ["legion"], rank: "b" }),
+    issue("CORE-3", { labels: ["legion"], rank: "a" }),
+  ];
+  // The first rank write is refused, and the one Finish sends again is stopped.
+  let patches = 0;
+  answerIssuePatches().mockImplementation(async () => {
+    patches += 1;
+    if (patches === 1) throw new ApiError(400, { code: "REFUSED_ONCE", error: "refused once" });
+    throw new SendStoppedError();
+  });
+  const { listing } = table(rows, "", { inMain: true });
+  const mark = await screen.findByRole("checkbox", { name: "Select CORE-2" });
+  await user.click(mark);
+  const bar = () => screen.queryByRole("toolbar", { name: "Selected issues" });
+  await user.click(within(bar() as HTMLElement).getByRole("button", { name: /^Start next$/ }));
+  await screen.findByRole("alert");
+  await afterFrameAndTasks();
+  // The list read after the Finish, held: the Finish is out until it answers.
+  const reread = Promise.withResolvers<IssueSummary[]>();
+  listing.mockImplementation(() => reread.promise);
+  await pressFinish(user);
+  await waitFor(() => expect(patches).toBe(2));
+  await afterFrameAndTasks();
+  const clear = within(bar() as HTMLElement).getByRole("button", { name: "Clear selection" });
+  expect(clear.getAttribute("aria-disabled")).toBe("true");
+  act(() => clear.focus());
+  act(() => {
+    mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    mark.click();
+  });
+  await afterFrameAndTasks();
+  expect(bar()).toBeNull();
+  expect(focusedName()).toBe("Select CORE-2");
+  document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+  await afterFrameAndTasks();
+  expect(focusedName()).toBe("Select CORE-2");
+  await act(async () => reread.resolve([...rows]));
 });
 
 // A notice's button that takes the notice away hands the focus on, never to the page's body: to

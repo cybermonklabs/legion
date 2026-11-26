@@ -7,6 +7,7 @@ import { disarm } from "../__tests__/armed-press";
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { nextFrame } from "../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
+import { useFootInset } from "../hooks/useFootInset";
 import type { ControlSize } from "./control-names";
 import { ARM_ON_PRESS, holdHandOff } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
@@ -825,6 +826,7 @@ function PlacedList({
   cards = false,
   count,
   drawRow,
+  fit,
   head = null,
   headings = [],
   last,
@@ -836,6 +838,8 @@ function PlacedList({
   count: number;
   /** Draws a listed, undrawn row and lands on its mark once drawn (`MarkedList`'s `drawRow`). */
   drawRow?: (id: string) => () => void;
+  /** Makes the list's layout current before a landing (`MarkedList`'s `fit`). */
+  fit?: () => void;
   head?: Element | null;
   headings?: readonly string[];
   last: string | null;
@@ -849,6 +853,7 @@ function PlacedList({
   const landAtPlace = useLastMarkedPlace({
     control: markOf,
     drawRow,
+    fit,
     head: () => head,
     lastMarked: () => last,
     leaving: (key) => leaving.includes(key),
@@ -1557,6 +1562,77 @@ test("a delayed landing whose row marked last is listed but undrawn asks drawRow
     answered();
     disarm();
     view.unmount();
+    laidOut();
+  }
+});
+
+/** A float of the foot's status layer, as Pending changes is (`hooks/useFootInset.ts`), with a box
+ *  48 px tall at the window's foot, given to it as it is drawn since happy-dom lays nothing out:
+ *  while it has a box, a change of the foot's page elements, the bar's going among them, asks for
+ *  the foot's pass at the next frame. */
+function FootFloat(): ReactNode {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useFootInset(ref, true, "status");
+  return (
+    <div
+      data-testid="foot-float"
+      ref={(node) => {
+        ref.current = node;
+        if (node !== null) {
+          node.getBoundingClientRect = () => new DOMRect(600, window.innerHeight - 64, 300, 48);
+        }
+      }}
+    />
+  );
+}
+
+// INFRA-3135, round 31 (the architect's rule that every landing, the table's own included, is
+// made after the foot's pass and against the height the list's box keeps): a float stands at the
+// foot, so the foot's pass is still to come as the bar goes. The row marked last is listed and
+// the table's window has not drawn it, so the table draws it and lands on it itself (`drawRow`).
+// Nothing is asked of the list at the bar's going; once the pass has run, the list makes its
+// layout current (`fit`) and the table is asked to draw the row, in that order. Asked at the
+// going, the table's landing was made against the box before the pass gave the list its room.
+test("with the foot's pass still to come as the bar goes, the table's own landing waits for it and follows the list's layout made current", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  // The foot's pass reads the screen under the float (`clearScrollers`); happy-dom has no hit
+  // test, and no scroller stands there.
+  Object.defineProperty(document, "elementsFromPoint", { configurable: true, value: () => [] });
+  const asked: string[] = [];
+  const drawRow = (id: string) => {
+    asked.push(`draw ${id}`);
+    return () => undefined;
+  };
+  const fit = () => {
+    asked.push("fit");
+  };
+  const placed = (count: number) => (
+    <PlacedList
+      count={count}
+      drawRow={drawRow}
+      fit={fit}
+      last="CORE-14"
+      listed={PLACED_KEYS}
+      undrawn={["CORE-14"]}
+    />
+  );
+  const view = render(placed(1));
+  const float = render(<FootFloat />);
+  try {
+    await act(nextFrame);
+    pressInBar("Dismiss");
+    view.rerender(placed(0));
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(asked).toEqual([]);
+    await act(nextFrame);
+    expect(asked).toEqual(["fit", "draw CORE-14"]);
+    // The list's own stop holds the focus until the table lands.
+    expect(screen.getByRole("list", { name: "Rows" })).toHaveFocus();
+  } finally {
+    disarm();
+    float.unmount();
+    view.unmount();
+    Reflect.deleteProperty(document, "elementsFromPoint");
     laidOut();
   }
 });

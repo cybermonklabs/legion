@@ -85,6 +85,11 @@ export interface MarkedList {
    *  null), and lands on its mark once drawn. Answers what takes that landing back. A list that
    *  draws every row it holds leaves this out. */
   readonly drawRow?: (id: string) => () => void;
+  /** Makes the list's own layout current against the room the page gives it now: the hand-off
+   *  calls it right before each landing it makes, the table's own through `drawRow` included, and
+   *  after the foot's own pass (`afterFootPass`), so the box the landing is judged against is the
+   *  box the list keeps after it. A list whose layout follows the page by itself leaves this out. */
+  readonly fit?: () => void;
   /** Whether a press of the reader's is taking row `id` away while the page still draws it: from
    *  the press until the row is no longer in `order`, or until the press is refused or undone. The
    *  hand-off owes its landing while any listed row is named here, and the page never keeps a row
@@ -109,7 +114,11 @@ export interface MarkedList {
  * the place yet. Where the going left the focus on the page's body, it is parked with no scroll
  * (`park`): on the mark of the row the reader marked last while the list draws it and the reader
  * can see part of it, else on the list's own stop. A focus the reader holds elsewhere is theirs.
- * Each commit asks again.
+ * The bar asks the hand-off only for a focus its going dropped onto the body (`land`); a going
+ * that leaves the focus in a row the list names as leaving - the reader's own untick of the last
+ * mark while the press's writes are out, by a click that keeps the focus on the mark - is owed by
+ * the hand-off itself, in that commit, and moves nothing then: the row's going would drop the
+ * reader's focus onto the body, and the landing takes it then. Each commit asks again.
  *
  * **Landed.** No listed row is leaving, so the hand-off lands once and then watches nothing. The
  * place is the mark of the row the reader marked last while the list holds it, out of sight or
@@ -119,12 +128,13 @@ export interface MarkedList {
  * head the hand-off is given); else the list's own stop, with no scroll, which is given
  * `tabindex="-1"` where it has none. The mark takes the focus with no scroll of the engine's own,
  * which centres a control it scrolls to, and is shown whole at its nearest edge below that head,
- * the least scroll (`landNearest`). The landing is made once the foot's own pass has given the
+ * the least scroll (`landNearest`). Every landing is made once the foot's own pass has given the
  * list the room the bar's foot had back (`hooks/useFootInset.ts`'s `afterFootPass`), since that
- * pass moves the box the reader sees the rows through. Where the list holds the row marked last
- * and its window has not drawn it, a list with `drawRow` draws the row and lands on it itself,
- * while the hand-off owes that landing and holds what takes it back; a list without `drawRow`
- * answers false from `land` and leaves the landing to the list's own stop.
+ * pass moves the box the reader sees the rows through, and against the list's layout made
+ * current right then (`MarkedList`'s `fit`). Where the list holds the row marked last and its
+ * window has not drawn it, a list with `drawRow` draws the row and lands on it itself, after that
+ * pass too, while the hand-off owes that landing and holds what takes it back; a list without
+ * `drawRow` answers false from `land` and leaves the landing to the list's own stop.
  *
  * **Cancelled.** The reader's own press, key or wheel (`READER_ACTS`) ends whatever is owed, the
  * table's landing on a row it is drawing included. A press the armed press counts as its own - the
@@ -154,6 +164,8 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   const owed = useRef<Owed | null>(null);
   // The mark a park left the focus on while its row is leaving, else null.
   const parked = useRef<HTMLElement | null>(null);
+  // Whether the bar was drawn at the host's last commit, so the commit that takes it away is known.
+  const drawn = useRef(false);
   // What ends, unmade, the read of where the reader's act left the focus (`afterAnswer`) while it
   // is still to come, else null.
   const pending = useRef<(() => void) | null>(null);
@@ -243,24 +255,37 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     },
     [drawLast]
   );
-  /** Makes the owed landing once the foot's pass has given the list its room back. A later commit
-   *  asks again while the same landing is owed, and the first answer settles it. */
+  /** Makes the owed landing once the foot's pass has given the list its room back, against the
+   *  list's layout made current then (`MarkedList`'s `fit`). A later commit asks again while the
+   *  same landing is owed, and the first answer settles it. */
   const landAfterFootPass = useCallback(() => {
     const place = owed.current;
     if (place?.kind !== "place") return;
     afterFootPass(() => {
       if (owed.current !== place) return;
       settle();
-      landNow(latest.current, place.last);
+      const live = latest.current;
+      live.fit?.();
+      landNow(live, place.last);
     });
   }, [landNow, settle]);
   // Each commit of the host asks the hand-off again while a landing is owed: the commit that lets
   // the press's rows go is the one that makes the landing. The page's own landing is its table's,
   // and is made once the focus stands in the list's rows.
   useLayoutEffect(() => {
-    const place = owed.current;
-    if (place === null) return;
     const live = latest.current;
+    const went = drawn.current && !live.shown;
+    drawn.current = live.shown;
+    const place = owed.current;
+    if (place === null) {
+      // The bar gone with the focus in a row the list names as leaving: the reader unticked the
+      // last mark while the press's writes are out, by a click that leaves the focus on the mark,
+      // as Chromium's and Firefox's do. The bar hands on only a focus its going dropped onto the
+      // body (`land`), and this one is the reader's, so nothing moves now. The row's going would
+      // drop it onto the body, so the landing is owed, as after the bar's own hand-off.
+      if (went && focusInLeavingRow(live)) owe({ kind: "place", last: live.lastMarked() });
+      return;
+    }
     if (place.kind === "own") {
       const stop = live.list();
       const focused = document.activeElement;
@@ -282,9 +307,16 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         return true;
       }
       // Nothing is leaving, so the place is the place: Idle goes straight to Landed, after the
-      // foot's pass as every landing does, and nothing is parked meanwhile.
-      if (last !== null && list.order().includes(last) && list.control(last) === null) {
-        return drawLast(list, last);
+      // foot's pass as every landing does, the table's own on a row its window has not drawn
+      // included (`landNow`), and nothing is parked meanwhile. A list that cannot draw that row
+      // leaves its landing to the page.
+      if (
+        list.drawRow === undefined &&
+        last !== null &&
+        list.order().includes(last) &&
+        list.control(last) === null
+      ) {
+        return false;
       }
       owe({ kind: "place", last });
       landAfterFootPass();
@@ -307,6 +339,19 @@ type Owed = OwedFor & { readonly unwatch: () => void };
 function anyLeaving(list: MarkedList): boolean {
   const { leaving } = list;
   return leaving !== undefined && list.order().some((row) => leaving(row));
+}
+
+/** Whether the focus stands in a row the list holds and names as leaving (`MarkedList`'s
+ *  `leaving`): on its mark, or anywhere in the row around it. */
+function focusInLeavingRow(list: MarkedList): boolean {
+  const { leaving } = list;
+  const focused = document.activeElement;
+  if (leaving === undefined || focused === null) return false;
+  return list
+    .order()
+    .some(
+      (row) => leaving(row) && list.control(row)?.closest(ROW_SELECTOR)?.contains(focused) === true
+    );
 }
 
 /** The bar's hand-off, as the hook answers it (`useLastMarkedPlace`). */
