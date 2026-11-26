@@ -635,6 +635,28 @@ func (d *consumerDrop) count() int {
 	return d.dropped
 }
 
+// approvedWithTheEventDropped is the person's approval of the document of key, given with the
+// Dispatch consumer armed to drop its live event, so the daemon never applies it and a later
+// registration's own read of Dispatch is that approval's one carrier. A gate seed still queued
+// would read the approval and apply it, which the consumer's drop does not stop, so the queued
+// rows are waited for first; the event is waited for to the point the consumer took it, and the
+// drop's own count says it was the one dropped.
+func (r *personHandoverRig) approvedWithTheEventDropped(drop *consumerDrop, key, artifactID string) scratchReview {
+	r.t.Helper()
+	r.dispatchRowsDone(key)
+	before := drop.count()
+	drop.arm(func(fact intake.Fact) bool {
+		artifact, ok := fact.(intake.DispatchArtifact)
+		return ok && artifact.ArtifactID == artifactID && artifact.Kind == intake.DispatchArtifactApproved
+	})
+	approved := r.approve(artifactID)
+	r.applied(r.newestEvent(key, "artifact.approved", func(e scratchEvent) bool { return e.version() == approved.Version }))
+	if dropped := drop.count(); dropped != before+1 {
+		r.t.Fatalf("the consumer dropped %d facts, want %d: the person's approval of %s's version %d", dropped, before+1, key, approved.Version)
+	}
+	return approved
+}
+
 // insertParagraph is the edit that appends one paragraph to a document: a new version that changes
 // no block.
 func insertParagraph(text string) map[string]string {
@@ -1107,18 +1129,7 @@ func TestBasisGateRefusals(t *testing.T) {
 
 	// R's own reviews. The person's approval of R's latest version reaches the daemon as an event
 	// it drops, so the step stands on the basis until the registration reads that approval.
-	// A gate seed still queued from the openings above would read that approval and apply it, so
-	// they run first: the live event is then the approval's one carrier before the registration.
-	r.dispatchRowsDone(root.Key)
-	drop.arm(func(fact intake.Fact) bool {
-		artifact, ok := fact.(intake.DispatchArtifact)
-		return ok && artifact.ArtifactID == root.PrimaryArtifactID && artifact.Kind == intake.DispatchArtifactApproved
-	})
-	own := r.approve(root.PrimaryArtifactID)
-	r.applied(r.newestEvent(root.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == own.Version }))
-	if dropped := drop.count(); dropped != 1 {
-		t.Fatalf("the consumer dropped %d facts, want the person's approval of %s's version %d", dropped, root.Key, own.Version)
-	}
+	r.approvedWithTheEventDropped(drop, root.Key, root.PrimaryArtifactID)
 	if gate := r.gates(root.Key)[record.DesignStepSpec]; !gate.OnBasis() {
 		t.Fatalf("after the dropped approval the spec step of %s = %+v, want it still open on the basis: no live event moved it", root.Key, gate)
 	}
@@ -1143,6 +1154,25 @@ func TestBasisGateRefusals(t *testing.T) {
 		kept := gate.ApprovedByPerson()
 		return onBasis(parent.Key, pv, pinned("p2"))(gate) && kept != nil && kept.Version == rv-1
 	})
+	// The same approval, kept by a registration that names no basis: its own read is the only
+	// carrier here too, since the dropped event would be a review of a version below the step's
+	// latest, which changes no gate state (workflow's artifactIgnored).
+	approved := r.approvedWithTheEventDropped(drop, root.Key, root.PrimaryArtifactID)
+	rv = r.editDocument(root.PrimaryArtifactID, insertParagraph("The beacon's lens is cleaned each spring."))
+	ownCall := map[string]any{"grantId": grant(), "issue": root.Key, "artifactId": root.PrimaryArtifactID, "version": rv,
+		"step": string(record.DesignStepSpec)}
+	if status, failure := r.gateCall(ownCall); status != http.StatusOK {
+		t.Fatalf("the registration of %s with no basis = %d %+v, want 200", root.Key, status, failure)
+	}
+	gate := r.gates(root.Key)[record.DesignStepSpec]
+	kept := gate.ApprovedByPerson()
+	if gate.Basis != nil || record.GateOpen(gate) || kept == nil || kept.Version != approved.Version {
+		t.Fatalf("after a registration with no basis at version %d, the spec step of %s = %+v keeping %+v, want it closed with no basis, keeping the person's approval of version %d",
+			rv, root.Key, gate, kept, approved.Version)
+	}
+	t.Logf("a registration with no basis keeps the person's approval of version %d, whose event the consumer dropped", approved.Version)
+	// Back to a basis for the cases below, which each read the step as the basis left it.
+	cases.opens("the step back on P's approval after the registration with no basis", call(), onBasis(parent.Key, pv, pinned("p2")))
 
 	// The chain: R under P under G, where only G is approved and marks requirements.
 	grandparent := r.create(asSession, "Maritime safety initiative", map[string]any{"labels": []string{"legion"}, "spec": requirementsMarkdown("Safety", "g1", "g2")})

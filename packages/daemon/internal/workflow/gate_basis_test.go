@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -495,6 +496,176 @@ func TestARegistrationCarriesThePersonsApprovalNotTheBasisVersion(t *testing.T) 
 	gate = gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
 	if gate.Basis != nil || gate.ApprovedVersion == nil || *gate.ApprovedVersion != 2 || gate.ApprovedMark.Seq != 3 || record.GateOpen(gate) {
 		t.Fatalf("the spec step after registering version 5 = %#v, want it closed, carrying the person's approval of version 2", gate)
+	}
+}
+
+// A person's approval of an earlier version of the root's own document reaches the daemon two
+// ways: its live event, and the read of Dispatch a registration makes after the person's act
+// (intake.GateRegistered.OlderApproval). A registration keeps it whichever came first, and keeps
+// it once with both, on a basis (KeptPerson) and with none (the step's approval of an older
+// version): an event that comes after the registration is a review below the step's latest
+// version and changes nothing (artifactIgnored), so the read is its one carrier then. An approval
+// the read names of the version registered is no earlier version's, and is not kept.
+func TestARegistrationKeepsThePersonsEarlierApprovalWhicheverWayItCameFirst(t *testing.T) {
+	t.Parallel()
+	approved := record.EventMark{Seq: 3, At: basisApprovedAt.Add(-time.Hour)}
+	older := &record.PersonApproval{Version: 2, Mark: approved}
+	for _, basis := range []*record.GateBasis{approvedBasis(), nil} {
+		for _, tc := range []struct {
+			name  string
+			event bool
+			read  *record.PersonApproval
+			want  *record.PersonApproval
+		}{
+			{"the event before the registration", true, nil, older},
+			{"the registration's read, the event after it", false, older, older},
+			{"the read naming the version registered", false, &record.PersonApproval{Version: 4, Mark: approved}, nil},
+		} {
+			t.Run(fmt.Sprintf("%s, on a basis %t", tc.name, basis != nil), func(t *testing.T) {
+				pool := migratedPool(t)
+				engine := testEngine(config.DesignGateRootIssues, nil)
+				apply := applyFacts(t, pool, engine)
+				seedGatedTree(t, pool)
+				seedLiveAncestor(t, pool)
+				seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 2})
+				approval := stepApproval(gatedRoot, gateDoc, 2, approved)
+				if tc.event {
+					apply("approved-v2", approval)
+				}
+				apply("version-4", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 4})
+				registration := onBasis(basis, 6)
+				registration.OlderApproval = tc.read
+				apply("register", registration)
+				if !tc.event {
+					apply("approved-v2-late", approval)
+				}
+				gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
+				if open := basis != nil; gate.OnBasis() != open || record.GateOpen(gate) != open || !reflect.DeepEqual(gate.ApprovedByPerson(), tc.want) {
+					t.Fatalf("the spec step = %#v, keeping %#v; want it at 4 on the basis and open: %t, keeping %#v", gate, gate.ApprovedByPerson(), open, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// A person who requested changes on version 1 and then approved version 2 answered that request:
+// a registration at 3 whose read shows the approval keeps it and drops the told record of the
+// request, as the approval's live event would have cleared it (classify.ApplyDesignGateEvent), so
+// the two never stand together on the gate, whether that event came before the registration or
+// after it.
+func TestARegistrationsKeptApprovalAnswersTheChangesRequestBeforeIt(t *testing.T) {
+	t.Parallel()
+	changed := record.EventMark{Seq: 2, At: basisApprovedAt.Add(-2 * time.Hour)}
+	approved := record.EventMark{Seq: 4, At: basisApprovedAt.Add(-time.Hour)}
+	for _, eventFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "the approval's event before the registration", false: "the approval's event after it"}[eventFirst], func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := applyFacts(t, pool, engine)
+			seedGatedTree(t, pool)
+			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 1})
+			apply("changes-v1", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactChangesRequested, Version: 1,
+				Reason: "name the rollback path", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: changed})
+			if told := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec].ToldChangesVersion; told == nil || *told != 1 {
+				t.Fatalf("the told changes request after the changes event = %v, want version 1", told)
+			}
+			apply("version-2", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
+			approval := stepApproval(gatedRoot, gateDoc, 2, approved)
+			if eventFirst {
+				apply("approved-v2", approval)
+			}
+			apply("version-3", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 3})
+			apply("register-at-3", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 3, DispatchVersion: 3,
+				Since: record.EventMark{Seq: 6}, OlderApproval: &record.PersonApproval{Version: 2, Mark: approved}})
+			if !eventFirst {
+				apply("approved-v2-late", approval)
+			}
+			gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
+			kept := gate.ApprovedByPerson()
+			if record.GateOpen(gate) || kept == nil || kept.Version != 2 || gate.ToldChangesVersion != nil {
+				t.Fatalf("the spec step = %#v, want it closed at 3, keeping the approval of 2 and no told changes request", gate)
+			}
+		})
+	}
+}
+
+// The other order: the person approves version 2, the daemon applies that event, and the person
+// then asks for changes on version 3, whose event the daemon has not applied when the architect
+// registers version 4. The registration's read shows that request as the document's newest review
+// (intake.GateRegistered.OlderChanges), placed after the approval the gate holds, so the step keeps
+// no approval: the request answered it. The request's own event, applied after the registration,
+// is a review below the step's latest version and changes nothing (artifactIgnored), so the read
+// is its one carrier, as it is the approval's in the row above.
+func TestARegistrationsReadOfAChangesRequestDropsTheApprovalItAnswered(t *testing.T) {
+	t.Parallel()
+	approved := record.EventMark{Seq: 3, At: basisApprovedAt.Add(-2 * time.Hour)}
+	changed := record.EventMark{Seq: 5, At: basisApprovedAt.Add(-time.Hour)}
+	for _, tc := range []struct {
+		name string
+		read *record.EventMark
+		want *record.PersonApproval
+	}{
+		{"the read shows the changes request", &changed, nil},
+		{"the read shows nothing newer", nil, &record.PersonApproval{Version: 2, Mark: approved}},
+		{"the read shows a request placed before the approval", &record.EventMark{Seq: 1, At: basisApprovedAt.Add(-3 * time.Hour)}, &record.PersonApproval{Version: 2, Mark: approved}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := applyFacts(t, pool, engine)
+			seedGatedTree(t, pool)
+			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 2})
+			apply("approved-v2", stepApproval(gatedRoot, gateDoc, 2, approved))
+			apply("version-3", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 3})
+			apply("version-4", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 4})
+			apply("register-at-4", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4, DispatchVersion: 4,
+				Since: record.EventMark{Seq: 7}, OlderChanges: tc.read})
+			apply("changes-v3-late", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactChangesRequested, Version: 3,
+				Reason: "name the rollback path", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: changed})
+			gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
+			if record.GateOpen(gate) || !reflect.DeepEqual(gate.ApprovedByPerson(), tc.want) {
+				t.Fatalf("the spec step = %#v, keeping %#v; want it closed at 4, keeping %#v", gate, gate.ApprovedByPerson(), tc.want)
+			}
+		})
+	}
+}
+
+// A person who approved version 3 and then requested changes on version 5, the newest review, has
+// sent the step back. The registration at 5 carries that request and no older approval, and the
+// step stays closed on it with no basis and nothing kept, whether the approval's live event came
+// before the registration or after it. What the row guards is the order inside the registration:
+// the approval the stored gate holds is taken as the step's approval of an older version first,
+// and the changes request then clears it (classify.ApplyDesignGateEvent), so no earlier approval
+// is kept over a later changes request. The refusal of a basis over that request is api's
+// (ROOT_CHANGES_REQUESTED).
+func TestAChangesRequestAfterAnEarlierApprovalKeepsTheStepClosed(t *testing.T) {
+	t.Parallel()
+	approved := record.EventMark{Seq: 3, At: basisApprovedAt.Add(-2 * time.Hour)}
+	changed := record.EventMark{Seq: 5, At: basisApprovedAt.Add(-time.Hour)}
+	for _, eventFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "the approval's event before the registration", false: "the approval's event after it"}[eventFirst], func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := applyFacts(t, pool, engine)
+			seedGatedTree(t, pool)
+			seedLiveAncestor(t, pool)
+			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 3})
+			approval := stepApproval(gatedRoot, gateDoc, 3, approved)
+			if eventFirst {
+				apply("approved-v3", approval)
+			}
+			apply("version-5", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 5})
+			apply("register-at-5", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 5, DispatchVersion: 5,
+				Since: record.EventMark{Seq: 6}, ChangesRequestedVersion: 5, ChangesReason: "name the rollback path", ChangesRequestedMark: changed,
+				ReviewedBy: dispatch.Actor{Kind: "user", ID: "alice"}, ViewOf: basisAncestor})
+			if !eventFirst {
+				apply("approved-v3-late", approval)
+			}
+			gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
+			if record.GateOpen(gate) || gate.Basis != nil || gate.ApprovedByPerson() != nil || gate.ToldChangesVersion == nil || *gate.ToldChangesVersion != 5 {
+				t.Fatalf("the spec step = %#v, keeping %#v; want it closed at 5 on the changes request told, with no basis and no approval kept", gate, gate.ApprovedByPerson())
+			}
+		})
 	}
 }
 

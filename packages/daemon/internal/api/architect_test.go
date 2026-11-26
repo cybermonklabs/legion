@@ -104,6 +104,10 @@ type statusRecorder struct {
 	// artifactFails names the issues whose artifacts read fails with the error given, as Dispatch's
 	// trouble.
 	artifactFails map[string]error
+	// reviewFails names the documents whose review list read fails with the error given, as
+	// Dispatch's trouble; reviewReads counts each document's review list reads, failed ones too.
+	reviewFails map[string]error
+	reviewReads map[string]int
 	// handoffs is each Dispatch handoff record this fake knows, by id; handoffErr, when set, is
 	// every handoff read's answer instead, Dispatch's trouble.
 	handoffs   map[string]dispatch.Handoff
@@ -259,10 +263,18 @@ func (r *statusRecorder) Artifacts(_ context.Context, key string) ([]dispatch.Ar
 }
 
 // Reviews answers a document's review list, newest first: those the case under test gave the
-// document. A document this fake does not know is Dispatch's 404, as its approval read is.
+// document. A document this fake does not know is Dispatch's 404, as its approval read is, and one
+// the case named in reviewFails answers that error. Each read is counted in reviewReads.
 func (r *statusRecorder) Reviews(_ context.Context, artifactID string) ([]dispatch.Review, error) {
+	if r.reviewReads == nil {
+		r.reviewReads = map[string]int{}
+	}
+	r.reviewReads[artifactID]++
 	if _, ok := r.documents[artifactID]; !ok {
 		return nil, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
+	}
+	if err, fails := r.reviewFails[artifactID]; fails {
+		return nil, err
 	}
 	return r.reviews[artifactID], nil
 }
@@ -1139,6 +1151,140 @@ func TestGateRegistrationCarriesAChangesRequestDispatchAlreadyShows(t *testing.T
 	if !reflect.DeepEqual(statuses.reads, wantReads) {
 		t.Fatalf("Dispatch reads = %q, want the issue's sequence read before each approval: %q", statuses.reads, wantReads)
 	}
+}
+
+// A registration with no basis, in a deployment that gates the spec step, carries the person's
+// review of a version below the latest that its read shows as the document's newest review, at that
+// review's place in the issue's log: an approval (intake.GateRegistered.OlderApproval), which
+// Dispatch shows `stale`, and a changes request (OlderChanges), which it shows `changes_requested`;
+// or either one while a request of a later version is open, which Dispatch shows `awaiting`, when
+// the review list's newest review is the person's, of that same version. It carries neither where
+// that newest review in the list is of another version (a review recorded between the two reads,
+// which can only be of the version the open request asks about), where the approval is of the
+// latest version, which is the registration's ApprovedVersion, or where no person gave it.
+func TestGateRegistrationCarriesThePersonsReviewOfAnOlderVersion(t *testing.T) {
+	h, facts, statuses := newArchitectHarnessGating(t, []record.DesignStep{record.DesignStepSpec}, nil, nil)
+	const stale, awaiting, raced, behindChanges, changed, latest, byAgent = "3b5d7f9a-1c2e-4f6a-8b0d-2c4e6a8b0d1f", "6c4e2a0b-8d6f-4b2d-9e0c-7a5b3d1f9e8c",
+		"5f4e3d2c-1b0a-4f9e-8d7c-6b5a4f3e2d1c", "2d4f6a8c-0e1b-4c3d-9f5e-7a9c1e3b5d7f", "8c6a4e2d-0b9f-4d7c-a5e3-1f9d7b5c3a1e",
+		"9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b", "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+	documents := []string{stale, awaiting, raced, behindChanges, changed, latest, byAgent}
+	statuses.documents = map[string]string{}
+	for _, document := range documents {
+		statuses.documents[document] = "LEGION-208"
+	}
+	reviewed := time.Date(2026, 10, 23, 17, 0, 0, 123456000, time.UTC)
+	alice := dispatch.Actor{Kind: "user", ID: "alice"}
+	agent := dispatch.Actor{Kind: "session", ID: "ses_architect_208"}
+	reason := "name the rollback path"
+	open := func(version int) dispatch.Approval {
+		return dispatch.Approval{State: "awaiting", LatestVersion: 4, Version: new(version), At: reviewed, Seq: 5, By: alice, AskID: "ask-4", WaitingOn: "human"}
+	}
+	statuses.approvals = map[string]dispatch.Approval{
+		stale:         {State: "stale", LatestVersion: 4, Version: new(3), At: reviewed, Seq: 5, By: alice},
+		awaiting:      open(3),
+		raced:         open(3),
+		behindChanges: open(3),
+		changed:       {State: "changes_requested", LatestVersion: 4, Version: new(3), Reason: &reason, At: reviewed, Seq: 5, By: alice},
+		latest:        {State: "approved", LatestVersion: 4, Version: new(4), At: reviewed, Seq: 5, By: alice},
+		byAgent:       {State: "stale", LatestVersion: 4, Version: new(3), At: reviewed, Seq: 5, By: agent},
+	}
+	statuses.reviews = map[string][]dispatch.Review{
+		awaiting:      {{Version: 3, State: "approved", Actor: alice}},
+		raced:         {{Version: 4, State: "approved", Actor: alice}, {Version: 3, State: "changes_requested", Actor: alice, Reason: reason}},
+		behindChanges: {{Version: 3, State: "changes_requested", Actor: alice, Reason: reason}, {Version: 3, State: "approved", Actor: alice}},
+	}
+	seedTree(t, h, "LEGION-208")
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	for _, artifact := range documents {
+		if recorder := h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
+			"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": artifact, "version": 4,
+		}, nil); recorder.Code != http.StatusOK {
+			t.Fatalf("gate register %s = %d: %s", artifact, recorder.Code, recorder.Body)
+		}
+	}
+	since, review := record.EventMark{Seq: 7}, record.EventMark{Seq: 5, At: reviewed}
+	older := &record.PersonApproval{Version: 3, Mark: review}
+	registration := func(artifact string) intake.GateRegistered {
+		return intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: artifact, Version: 4, DispatchVersion: 4, Since: since, By: rootArchitect208}
+	}
+	withOlder := func(fact intake.GateRegistered, approval *record.PersonApproval, changes *record.EventMark, ask string) intake.GateRegistered {
+		fact.OlderApproval, fact.OlderChanges, fact.RequestAsk = approval, changes, ask
+		return fact
+	}
+	approvedLatest := registration(latest)
+	approvedLatest.ApprovedVersion, approvedLatest.ApprovedMark, approvedLatest.ReviewedBy = 4, review, alice
+	want := []intake.Fact{
+		withOlder(registration(stale), older, nil, ""),
+		withOlder(registration(awaiting), older, nil, "ask-4"),
+		withOlder(registration(raced), nil, nil, "ask-4"),
+		withOlder(registration(behindChanges), nil, &review, "ask-4"),
+		withOlder(registration(changed), nil, &review, ""),
+		approvedLatest,
+		registration(byAgent),
+	}
+	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("gate facts = %#v, want %#v", got, want)
+	}
+}
+
+// A registration reads the document's review list at most once, and only where it needs it: in a
+// deployment that gates a step, a failed read refuses the call (502 DISPATCH_FAILED) and records
+// nothing; in one that gates no step the review of an older version is no business of the
+// registration's, so it reads no list and records the registration with none; and a registration on
+// a basis whose own approval read is `awaiting` reads the list once, for what it carries and for
+// the basis check both.
+func TestGateRegistrationReadsTheReviewListOnceAndOnlyWhereAStepIsGated(t *testing.T) {
+	const document = "3b5d7f9a-1c2e-4f6a-8b0d-2c4e6a8b0d1f"
+	reviewed := time.Date(2026, 10, 23, 17, 0, 0, 123456000, time.UTC)
+	register := func(t *testing.T, steps []record.DesignStep) (*httptest.ResponseRecorder, *factRecorder, *statusRecorder) {
+		t.Helper()
+		h, facts, statuses := newArchitectHarnessGating(t, steps, nil, nil)
+		statuses.documents = map[string]string{document: "LEGION-208"}
+		statuses.approvals = map[string]dispatch.Approval{document: {State: "awaiting", LatestVersion: 4, Version: new(3), At: reviewed, Seq: 5,
+			By: dispatch.Actor{Kind: "user", ID: "alice"}, AskID: "ask-4", WaitingOn: "human"}}
+		statuses.reviewFails = map[string]error{document: errors.New("connection reset")}
+		seedTree(t, h, "LEGION-208")
+		architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+		return h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
+			"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": document, "version": 4,
+		}, nil), facts, statuses
+	}
+	t.Run("gating the spec step, the failed read refuses", func(t *testing.T) {
+		recorder, facts, statuses := register(t, []record.DesignStep{record.DesignStepSpec})
+		refusal := refused(t, recorder, http.StatusBadGateway, "DISPATCH_FAILED")
+		if !strings.Contains(refusal, "the reviews of "+document) {
+			t.Fatalf("refusal = %q, want it naming the read that failed", refusal)
+		}
+		if got := facts.recorded(); len(got) != 0 || statuses.reviewReads[document] != 1 {
+			t.Fatalf("after the refused registration %d facts are recorded and the list was read %d times, want none and once", len(got), statuses.reviewReads[document])
+		}
+	})
+	t.Run("gating no step, nothing reads the list", func(t *testing.T) {
+		recorder, facts, statuses := register(t, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("gate register with no step gated = %d: %s, want 200", recorder.Code, recorder.Body)
+		}
+		got := facts.recorded()
+		if len(got) != 1 || got[0].(intake.GateRegistered).OlderApproval != nil || statuses.reviewReads[document] != 0 {
+			t.Fatalf("with no step gated the registration recorded %#v and read the list %d times, want one fact with no older approval and no read",
+				got, statuses.reviewReads[document])
+		}
+	})
+	t.Run("on a basis, the list is read once", func(t *testing.T) {
+		h, facts, statuses, architect := basisHarness(t, []record.DesignStep{record.DesignStepSpec})
+		*statuses = basisWorld(320)
+		statuses.approvals[rSpec] = dispatch.Approval{State: "awaiting", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 6, At: basisApprovedAt,
+			AskID: "ask-r4", WaitingOn: "human"}
+		statuses.reviews[rSpec] = []dispatch.Review{{Version: 3, State: "approved", Actor: basisAlice}}
+		if recorder := h.request(http.MethodPost, "/legion/v1/gates/register", basisBody(architect.grant(t)), nil); recorder.Code != http.StatusOK {
+			t.Fatalf("register on the basis = %d: %s", recorder.Code, recorder.Body)
+		}
+		got := facts.recorded()
+		if len(got) != 1 || got[0].(intake.GateRegistered).OlderApproval == nil || got[0].(intake.GateRegistered).Basis == nil || statuses.reviewReads[rSpec] != 1 {
+			t.Fatalf("on the basis the registration recorded %#v and read R's review list %d times, want one fact on the basis carrying the approval of 3, and one read",
+				got, statuses.reviewReads[rSpec])
+		}
+	})
 }
 
 // A read that shows an approval request open names it on the registration, with whose turn it

@@ -180,14 +180,30 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// (record.Store.PutGate).
 	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version,
 		EverOpened: record.TreeGate{Steps: e.cfg.Steps, Rows: gates}.EverOpened()}
-	// An approval of an older version the gate of this document holds is kept, as a version event
-	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.
-	// It is the person's approval the gate holds (ApprovedByPerson), never the version a basis
-	// opened the step at, which no person approved.
+	// An approval of an older version is kept, as a version event keeps it
+	// (classify.ApplyDesignGateEvent): a late changes request it answered stays answered. It is the
+	// newer (classify.NewerApproval) of the person's approval the gate of this document holds
+	// (ApprovedByPerson, never the version a basis opened the step at, which no person approved)
+	// and the one the registration's read found as the document's newest review (OlderApproval),
+	// each below the version registered. The read follows the person's act, so an approval whose
+	// live event the daemon has not applied yet is kept too: that event, applied after this write,
+	// is a review of a version below the step's latest, which changes no gate state
+	// (artifactIgnored), on a step with a basis or with none.
+	var storedApproval *record.PersonApproval
 	if sameDocument {
-		if kept := stored.ApprovedByPerson(); kept != nil && kept.Version < version {
-			gate.ApprovedVersion, gate.ApprovedMark = &kept.Version, kept.Mark
-		}
+		storedApproval = below(stored.ApprovedByPerson(), version)
+	}
+	// A person's changes request the read found as the document's newest review, placed after the
+	// approval the gate holds (OlderChanges), answered that approval, so the step keeps none of it.
+	// That request's own live event clears the approval when it reaches the step at the version it
+	// names (classify.ApplyDesignGateEvent); one the daemon applies after this write reaches the
+	// step below its latest version and changes nothing (artifactIgnored), so the read is the
+	// request's one carrier then.
+	if storedApproval != nil && fact.OlderChanges != nil && fact.OlderChanges.After(storedApproval.Mark) {
+		storedApproval = nil
+	}
+	if kept := classify.NewerApproval(storedApproval, below(fact.OlderApproval, version)); kept != nil {
+		gate.ApprovedVersion, gate.ApprovedMark = &kept.Version, kept.Mark
 	}
 	changesRequested := false
 	// Who reviewed, named on the design-approved notice the registration sends: the person whose
@@ -221,8 +237,11 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	// A registration whose read predates a review the live event already told keeps that record,
 	// whatever version it was told at: it rebuilds the gate from Dispatch, and the gate seed or a
-	// late live event that follows may carry the same review again.
-	if !classify.DesignGateOpen(gate) && sameDocument && stored.ToldChangesVersion != nil {
+	// late live event that follows may carry the same review again. A person's approval the step
+	// keeps that followed that request answered it (classify.ApprovalFollows), as its live event
+	// would have cleared the record (ApplyDesignGateEvent), so the record is not kept beside it.
+	if !classify.DesignGateOpen(gate) && sameDocument && stored.ToldChangesVersion != nil &&
+		!classify.ApprovalFollows(gate, *stored.ToldChangesVersion, stored.ToldChangesMark) {
 		gate = classify.RecordChangesTold(gate, *stored.ToldChangesVersion, stored.ToldChangesReason, stored.ToldChangesMark)
 	}
 	// The changes request the read shows is the review its live event carries, so it meets a root
@@ -304,6 +323,15 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		e.logOnCommit(ctx, "workflow: a registration of a gate already open at its version tells the architect nothing", "issue", issue.Key, "version", gate.LatestVersion)
 	}
 	return intake.Result{}, nil
+}
+
+// below is approval where it is of a version below version, the one a registration records, and
+// nil otherwise: only an approval of an older version is kept beside the version registered.
+func below(approval *record.PersonApproval, version int) *record.PersonApproval {
+	if approval == nil || approval.Version >= version {
+		return nil
+	}
+	return approval
 }
 
 // tellChanges tells key's architect a changes request on artifact at version, once per review: in

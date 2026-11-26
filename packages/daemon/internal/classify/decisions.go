@@ -1766,6 +1766,32 @@ func clearChangesTold(gate record.DesignGate) record.DesignGate {
 	return gate
 }
 
+// NewerApproval is the newer of two person's approvals of one document, nil when both are nil:
+// the approval of the higher version; at one version, one review read twice (record.EventMark.Same)
+// is kept once with the fuller mark (record.EventMark.Merged), as ApplyDesignGateEvent keeps it;
+// otherwise b when Dispatch placed it after a (record.EventMark.After), and a when it did not. A
+// registration keeps it as the person's approval of an older version (workflow's gateRegistered),
+// of the approval its gate holds (a) and the one its read found (b). The value is a copy.
+func NewerApproval(a, b *record.PersonApproval) *record.PersonApproval {
+	switch {
+	case a == nil && b == nil:
+		return nil
+	case a == nil, b != nil && b.Version > a.Version:
+		newer := *b
+		return &newer
+	case b == nil, a.Version > b.Version:
+		newer := *a
+		return &newer
+	case a.Mark.Same(b.Mark):
+		return &record.PersonApproval{Version: a.Version, Mark: a.Mark.Merged(b.Mark)}
+	case b.Mark.After(a.Mark):
+		newer := *b
+		return &newer
+	}
+	newer := *a
+	return &newer
+}
+
 // LatestReview is the review a person gave of the issue's own document that the gate has applied
 // last, and the document version it reviewed: the person's approval it records
 // (record.DesignGate.ApprovedByPerson), else the changes request it records as told. The two never

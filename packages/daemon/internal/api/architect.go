@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -446,12 +447,25 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if fact.ApprovedVersion != 0 {
 		fact.ApprovedMark = review
 	}
+	// Dispatch's review list of the document, read at most once for the call, and only by what
+	// needs it: what this read found of the person's review of a version below the latest
+	// (olderReview) and the basis check (registrationBasis) both take its one answer.
+	reviews := sync.OnceValues(func() ([]dispatch.Review, error) { return s.dispatch.Reviews(r.Context(), artifactID) })
+	// The person's review of an older version, the newest review this read shows, travels with
+	// every registration (OlderApproval, OlderChanges), whether it names a basis or not, for the step
+	// to decide what it keeps. A deployment that gates no step keeps nothing of it, so it reads
+	// nothing for it either.
+	if len(s.steps) > 0 {
+		if fact.OlderApproval, fact.OlderChanges, ok = s.olderReview(w, r, artifactID, approval, reviews); !ok {
+			return
+		}
+	}
 	// A basis is checked against everything Dispatch shows of it and of the root, and recorded with
 	// the registration, or the call is refused and records nothing. Every registration of the spec
 	// step records the view fact (R4): on a basis, the ancestor it rests on, which the basis check
 	// read the root as a view on; otherwise whatever viewFact reads.
 	if req.basisNamed() {
-		if fact.Basis, ok = s.registrationBasis(w, r, grant, req, step, root, artifactID, approval); !ok {
+		if fact.Basis, ok = s.registrationBasis(w, r, grant, req, step, root, artifactID, approval, reviews); !ok {
 			return
 		}
 	}
@@ -499,6 +513,51 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 		s.gateRead(r.Context(), req.Issue)
 	}
 	s.applyFact(w, r, id, fact, GateRegisterResponse{})
+}
+
+// olderReview is what the approval read (approval) shows of a person's review of a version of
+// document below its latest, when that review is the document's newest: an approval, which the
+// step keeps (intake.GateRegistered's OlderApproval), or a changes request, whose place in the
+// issue's log the step weighs against the approval it holds (OlderChanges), at most one of them
+// and neither where the newest review is anything else. The read follows the person's act, so it
+// holds the review whether or not the review's own live event has reached the daemon, which takes
+// that event, applied after the registration, as a review of a version below the step's latest and
+// changes nothing with it (workflow's artifactIgnored).
+//
+// Dispatch's approval state names the newest review's version, author and place whatever state it
+// shows (its reviews route, applyApprovals). It shows `stale` only for an approval below the
+// latest version and `changes_requested` for a changes request at any version, so either read
+// alone is the answer. It shows `awaiting` while an approval request is open, which hides whether
+// that review approved or asked for changes, so the document's review list (reviews, read once for
+// the call) settles it: the review is carried only where the newest review there is a person's, of
+// the same version. A review recorded between the two reads names the version the open request asks
+// about or the latest, so it is no review of the older version, and the registration carries none.
+// A failed read of the list refuses the call and records nothing.
+func (s *server) olderReview(w http.ResponseWriter, r *http.Request, document string, approval dispatch.Approval,
+	reviews func() ([]dispatch.Review, error)) (*record.PersonApproval, *record.EventMark, bool) {
+	if approval.Version == nil || *approval.Version >= approval.LatestVersion || !approval.By.Person() {
+		return nil, nil, true
+	}
+	version, mark := *approval.Version, record.EventMark{Seq: approval.Seq, At: approval.At}
+	state := approval.State
+	if state == "awaiting" {
+		list, err := reviews()
+		if err != nil {
+			s.refuseFailedRead(w, r, &readFailure{what: "the reviews of " + document, err: err})
+			return nil, nil, false
+		}
+		state = ""
+		if len(list) > 0 && list[0].Version == version && list[0].Actor.Person() {
+			state = list[0].State
+		}
+	}
+	switch state {
+	case "stale", "approved":
+		return &record.PersonApproval{Version: version, Mark: mark}, nil, true
+	case "changes_requested":
+		return nil, &mark, true
+	}
+	return nil, nil, true
 }
 
 // stepBasisMoves is how many times the basis of step of issue has moved in its generation, as

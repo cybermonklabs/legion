@@ -1324,8 +1324,22 @@ type GateRegistered struct {
 	RequestAsk              string
 	RequestWaitsOnAgent     bool
 	ReviewedBy              dispatch.Actor
-	Basis                   *record.GateBasis
-	ViewOf                  string
+	// OlderApproval is the person's approval of a version below the latest that the read found as
+	// the document's newest review, at that review's place in the issue's log, and nil where the
+	// newest review is anything else (api's olderReview). Every registration of a deployment that
+	// gates a step carries it, on a basis or with none, and so does a registration on a basis that
+	// the workflow takes with no basis (a root out of the workflow). It is what the read found, not
+	// what the step keeps: the step keeps the newer of it and the approval the stored gate holds,
+	// each below the version registered (classify.NewerApproval), so an approval whose live event
+	// the daemon has not applied yet is kept all the same.
+	OlderApproval *record.PersonApproval
+	// OlderChanges is, the same way, the place in the issue's log of a person's changes request on
+	// a version below the latest that the read found as the document's newest review, and nil
+	// otherwise. An approval the stored gate holds from before it is one that request answered, so
+	// the step keeps no approval of it (workflow's gateRegistered).
+	OlderChanges *record.EventMark
+	Basis        *record.GateBasis
+	ViewOf       string
 	// By and Generation are the architect's register_gate (api's gateRegister): its claim and the
 	// root's generation its route read, which the workflow judges again under the fact lock
 	// (ArchitectRequest). A registration the workflow makes itself carries neither.
