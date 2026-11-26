@@ -95,6 +95,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The unit step runs its go test under .github/scripts/go-test.sh, through database-skips.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-test: the envoy module's test binaries, which the jobs of this file build between
       # them, each its share, and no other job builds, so they keep a family of their own.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -146,7 +148,7 @@ jobs:
       # what xargs got; .github/scripts/ci_job_reads.py's
       # hold_envoy_legs holds the file's `elsewhere` to the jobs those packages' steps are built
       # for, so what the legs leave out and what the other jobs run cannot drift apart.
-      # Each leg's packages run in one `go test -json` through database-skips.sh --count-table,
+      # Each leg's packages run in one go test under gotestsum through database-skips.sh --count-table,
       # which also answers c8's ask that the database broker suites run with
       # BROKER_TEST_DATABASE_URL set and that none skips: go test reports a skip as a pass, so the
       # script counts the skips of the broker's packages among the leg's, ./internal/cipher/...,
@@ -181,6 +183,11 @@ jobs:
         # The refs package's xid window test runs here, so this step judges gaps too.
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+      - name: Upload this leg's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-legs-${{ matrix.leg }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -462,6 +469,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # backend-count.sh and database-skips.sh run their go test under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-test: the envoy module's test binaries, which the jobs of this file build between
       # them, each its share, and no other job builds, so they keep a family of their own.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -524,6 +533,11 @@ jobs:
       - name: Vet agent-secrets' moto run (no moto)
         run: go vet -tags moto ./cmd/cipher/
         working-directory: packages/envoy
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-skips
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

@@ -400,6 +400,24 @@ def install_omp(job, workflow=""):
     )
 
 
+def go_test_runner(job, workflow=""):
+    """What a job reads to run its go test commands under .github/scripts/go-test.sh: the install
+    of the gotestsum it runs, the runner and the jsonfile reader it includes, and the upload of
+    the job's reports. race_memory.py is read where a step passes --race-memory, by that job's
+    gate."""
+    return reads(
+        (".github/actions/install-gotestsum/**", at(job, "./.github/actions/install-gotestsum", workflow)),
+        (".github/ci-tools.yaml", "`.github/actions/install-gotestsum/action.yml#ci_tools_fetch` installs the "
+                                  "tarball of the gotestsum row, or of gotestsum-aarch64 on an arm64 runner"),
+        (".github/scripts/ci-tools.sh", "`.github/actions/install-gotestsum/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` "
+                                        "sources it: ci_tools_fetch reads the row's sources and checks the digest"),
+        (".github/scripts/go-test.sh", f"{at(job, './.github/actions/install-gotestsum', workflow)}: the job's go test "
+                                       "commands run under it"),
+        (".github/scripts/go-test.jq", "`.github/scripts/go-test.sh#no_test_failures` reads each jsonfile with it"),
+        (".github/actions/go-test-upload/**", at(job, "./.github/actions/go-test-upload", workflow)),
+    )
+
+
 def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 

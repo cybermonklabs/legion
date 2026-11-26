@@ -46,11 +46,13 @@
 # the process tree every 5 s, names the tests running at each sample from the jsonfile as it
 # grows, and fails the step when the peak passes RACE_MEM_LIMIT_KB although every test passed.
 #
-# JSONFILE is GO_TEST_JSONFILE where a script that reads it afterwards names it, else
-# REPORTS/<GITHUB_JOB>-<n>.json, n the next number free there, so the steps of one job never
-# share a file. REPORTS is GO_TEST_REPORTS, else $RUNNER_TEMP/go-test-reports on a runner, else
-# ${TMPDIR:-/tmp}/go-test-reports. The jsonfile and the rerun report stay there for the job's
-# last step, .github/actions/go-test-upload, which uploads them for ci-ok.
+# JSONFILE is GO_TEST_JSONFILE where a script that reads it afterwards names it - a bare file name
+# ending in .json goes under REPORTS, a path stays where it says - else REPORTS/<GITHUB_JOB>-<n>.json,
+# n the next number free there, so the steps of one job never share a file. REPORTS is
+# GO_TEST_REPORTS, else $RUNNER_TEMP/go-test-reports on a runner, else
+# ${TMPDIR:-/tmp}/go-test-reports. The jsonfile and the rerun report stay there for the job's last
+# step, .github/actions/go-test-upload, which uploads them for ci-ok. `go-test.sh --path NAME`
+# prints where the bare name NAME goes, for a script that reads the jsonfile after the run.
 #
 # After gotestsum ends it reads the jsonfile (.github/scripts/go-test.jq, no_test_failures) and
 # fails the step on a package that failed in an attempt with no test failing, none left running
@@ -75,9 +77,16 @@ GO_VALUE_FLAGS=" -asmflags -bench -benchtime -blockprofile -blockprofilerate -bu
 GO_VALUE_FLAGS=${GO_VALUE_FLAGS//$'\n'/ }
 
 usage() {
-  echo "go-test.sh: $1 (usage: go-test.sh [--race-memory] go [-C DIR] test [GO TEST ARGUMENT]...)" >&2
+  echo "go-test.sh: $1 (usage: go-test.sh [--race-memory] go [-C DIR] test [GO TEST ARGUMENT]..., or go-test.sh --path NAME)" >&2
   exit 2
 }
+
+if [ "${1:-}" = --path ]; then
+  [ $# -eq 2 ] && [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] ||
+    usage "--path takes one bare file name ending in .json"
+  echo "$reports/$2"
+  exit 0
+fi
 
 race_memory=false
 while [ $# -gt 0 ]; do
@@ -144,7 +153,8 @@ command -v gotestsum >/dev/null 2>&1 ||
 
 if [ -n "${GO_TEST_JSONFILE:-}" ]; then
   jsonfile=$GO_TEST_JSONFILE
-  [[ "$jsonfile" == *.json ]] || usage "GO_TEST_JSONFILE is \"$jsonfile\", not a path ending in .json"
+  [[ "$jsonfile" == *.json ]] || usage "GO_TEST_JSONFILE is \"$jsonfile\", not a file name or path ending in .json"
+  [[ "$jsonfile" == */* ]] || jsonfile="$reports/$jsonfile"
   mkdir -p "$(dirname "$jsonfile")"
 else
   mkdir -p "$reports"

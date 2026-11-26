@@ -4,17 +4,19 @@
 # command's packages split from its flags, the one retry a merge group takes, and the read of the
 # jsonfile after gotestsum ends. Each case runs the real gotestsum and go over the fixture module
 # .github/scripts/testdata/go-test/ (a go.mod of its own, so no module of this repository builds
-# it), copied with go-test.sh, go-test.jq and race_memory.py into a repository laid out as this one
-# is, under a temporary directory. A fixture that fails once keeps its count of attempts in a file
-# under a directory this harness makes fresh for each case (testdata/go-test/state).
+# it), copied with go-test.sh, go-test.jq, race_memory.py, database-skips.sh and backend-count.sh
+# into a repository laid out as this one is, under a temporary directory. A fixture that fails
+# once keeps its count of attempts in a file under a directory this harness makes fresh for each
+# case (testdata/go-test/state).
 #
 # The cases are those of the merge-group retry: a test that fails once and then passes, one that
 # fails twice, a data race, a -timeout panic, 11 failures, a build failure, a line on go test's
 # own standard error (and the compiler's -gcflags=-m output, which is none), three ordered
-# subtests rerun whole, a TestMain that fails a rerun that runs no test, race_memory.py over its
-# limit with every test passing, and no retry on a pull_request event or where a step turns it
-# off. Beside each, where the retry or the read decides it, a copy of the script with that part
-# taken out runs the same case and must fail it. Then the split of the command's words: a flag's
+# subtests rerun whole, a test database-skips.sh runs and one backend-count.sh runs that each fail
+# once, a TestMain that fails a rerun that runs no test, race_memory.py over its limit with every
+# test passing, and no retry on a pull_request event or where a step turns it off. Beside each,
+# where the retry or the read decides it, a copy of the script with that part taken out runs the
+# same case and must fail it. Then the split of the command's words: a flag's
 # value is no package, `go -C <dir>` runs from that directory, and what the script refuses.
 #
 # With GO_TEST_CAPTURE set to a directory, it copies the jsonfiles and rerun reports of the
@@ -45,12 +47,14 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # The repository the cases run in: the scripts under test where this one keeps them, and the
-# fixture module where packages/envoy is.
+# fixture module where packages/envoy is, which is where database-skips.sh and backend-count.sh
+# run their packages from.
 repo="$work/repo"
 module="$repo/packages/envoy"
-mkdir -p "$repo/.github/scripts" "$module"
+mkdir -p "$repo/.github/scripts" "$module/scripts"
 cp "$script_dir/go-test.sh" "$script_dir/go-test.jq" "$script_dir/race_memory.py" "$repo/.github/scripts/"
 cp -R "$script_dir/testdata/go-test/." "$module/"
+cp "$script_dir/../../packages/envoy/scripts/database-skips.sh" "$script_dir/../../packages/envoy/scripts/backend-count.sh" "$module/scripts/"
 go_test="$repo/.github/scripts/go-test.sh"
 fixture=example.com/gotestfixtures
 # The fixture module is its own module: no go.work around the temporary directory takes it in.
@@ -231,6 +235,41 @@ run_case ordered-subtest-only merge_group "$work/variants/subtest-only/go-test.s
 check "a copy that reruns the failed subtest alone passes the step" "$(is "$status" 0)"
 check "a copy that reruns the failed subtest alone leaves the third subtest unrun in the second attempt" \
   "$(is "$(contains "$(ran_in_attempt ordered-subtest-only ordered-subtest-only-1.json 2)" 'TestThreeOrderedSubtests/third')" false)"
+
+# counter_variant <name> <script>: a copy of database-skips.sh or backend-count.sh beside it that
+# reads every attempt's result of a test, as the scripts read go test's one attempt before
+# gotestsum, rather than the last attempt's.
+counter_variant() {
+  sed -E 's/last_attempt_results\(inputs\)/(inputs | select(.Action == "pass" or .Action == "fail" or .Action == "skip"))/g' \
+    "$module/scripts/$2" >"$module/scripts/$1"
+  chmod +x "$module/scripts/$1"
+  check "the copy of $2 that reads every attempt differs from it" \
+    "$(cmp -s "$module/scripts/$1" "$module/scripts/$2" && echo false || echo true)"
+}
+
+echo "case: a test database-skips.sh runs that fails once leaves its step passing"
+run_case dbcount merge_group env FIXTURE_DATABASE_URL=set GITHUB_JOB=fixture \
+  scripts/database-skips.sh --var FIXTURE_DATABASE_URL ./dbcount/
+check "exits 0" "$(is "$status" 0)"
+check "counts no skip" "$(contains "$out" '^database_skips=0$')"
+check "ran the test twice" "$(is "$(attempts dbcount dbcount)" 2)"
+check "leaves its jsonfile under its job's name" \
+  "$(compgen -G "$work/reports/dbcount/fixture-database-skips-*.json" >/dev/null && echo true || echo false)"
+check "runs it under go-test.sh" "$(contains "$out" '^go-test.sh: the retry is on ')"
+counter_variant database-skips-every-attempt.sh database-skips.sh
+run_case dbcount-every merge_group env FIXTURE_DATABASE_URL=set \
+  scripts/database-skips-every-attempt.sh --var FIXTURE_DATABASE_URL ./dbcount/
+check "a copy of database-skips.sh that reads every attempt fails the step" "$(is "$status" 1)"
+
+echo "case: a test backend-count.sh runs that fails once on one store leaves its step passing"
+run_case stores merge_group env GITHUB_JOB=fixture scripts/backend-count.sh ./stores/ -- TestCountsOnEachStore
+check "exits 0" "$(is "$status" 0)"
+check "counts one pass on each store, the last attempt's" "$(contains "$out" '^TestCountsOnEachStore aws=1 gcp=1$')"
+check "ran the gcp subtest twice" "$(is "$(attempts stores gcp)" 2)"
+check "leaves its jsonfile under its job's name" "$([ -s "$work/reports/stores/fixture-backend-count.json" ] && echo true || echo false)"
+counter_variant backend-count-every-attempt.sh backend-count.sh
+run_case stores-every merge_group scripts/backend-count-every-attempt.sh ./stores/ -- TestCountsOnEachStore
+check "a copy of backend-count.sh that fails on any fail event fails the step" "$(is "$status" 1)"
 
 echo "case: a TestMain that fails after its tests ran fails its step, though its rerun runs no test"
 run_case testmain merge_group "$go_test" go test -count=1 ./testmain/

@@ -1,21 +1,21 @@
-{"Time":"2026-11-26T10:37:35.047649883Z","Action":"start","Package":"example.com/gotestfixtures/once"}
-{"Time":"2026-11-26T10:37:35.069843312Z","Action":"run","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses"}
-{"Time":"2026-11-26T10:37:35.069910058Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"=== RUN   TestFailsOnceThenPasses\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.069979093Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"    once_test.go:11: attempt 1 fails, as a flake does\n","OutputType":"error"}
-{"Time":"2026-11-26T10:37:35.070006381Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"--- FAIL: TestFailsOnceThenPasses (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.070009148Z","Action":"fail","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Elapsed":0}
-{"Time":"2026-11-26T10:37:35.070016208Z","Action":"run","Package":"example.com/gotestfixtures/once","Test":"TestPassesEveryTime"}
-{"Time":"2026-11-26T10:37:35.070018711Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestPassesEveryTime","Output":"=== RUN   TestPassesEveryTime\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.070022431Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestPassesEveryTime","Output":"--- PASS: TestPassesEveryTime (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.070024396Z","Action":"pass","Package":"example.com/gotestfixtures/once","Test":"TestPassesEveryTime","Elapsed":0}
-{"Time":"2026-11-26T10:37:35.070026027Z","Action":"output","Package":"example.com/gotestfixtures/once","Output":"FAIL\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.073702327Z","Action":"output","Package":"example.com/gotestfixtures/once","Output":"FAIL\texample.com/gotestfixtures/once\t0.025s\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.073751704Z","Action":"fail","Package":"example.com/gotestfixtures/once","Elapsed":0.026}
-{"Time":"2026-11-26T10:37:35.478662208Z","Action":"start","Package":"example.com/gotestfixtures/once"}
-{"Time":"2026-11-26T10:37:35.502964837Z","Action":"run","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses"}
-{"Time":"2026-11-26T10:37:35.503050221Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"=== RUN   TestFailsOnceThenPasses\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.503175277Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"--- PASS: TestFailsOnceThenPasses (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.503181204Z","Action":"pass","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Elapsed":0}
-{"Time":"2026-11-26T10:37:35.503194294Z","Action":"output","Package":"example.com/gotestfixtures/once","Output":"PASS\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:37:35.507677769Z","Action":"output","Package":"example.com/gotestfixtures/once","Output":"ok  \texample.com/gotestfixtures/once\t0.028s\n"}
-{"Time":"2026-11-26T10:37:35.507711339Z","Action":"pass","Package":"example.com/gotestfixtures/once","Elapsed":0.029}
+{"Time":"2026-11-26T12:19:41.757673202Z","Action":"start","Package":"example.com/gotestfixtures/once"}
+{"Time":"2026-11-26T12:19:41.790515914Z","Action":"run","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses"}
+{"Time":"2026-11-26T12:19:41.790794872Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"=== RUN   TestFailsOnceThenPasses\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:41.790851826Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"attempt 1 fails, as a flake does\n"}
+{"Time":"2026-11-26T12:19:41.790875501Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"--- FAIL: TestFailsOnceThenPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:41.790892294Z","Action":"fail","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Elapsed":0}
+{"Time":"2026-11-26T12:19:41.790903085Z","Action":"run","Package":"example.com/gotestfixtures/once","Test":"TestPassesEveryTime"}
+{"Time":"2026-11-26T12:19:41.790904899Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestPassesEveryTime","Output":"=== RUN   TestPassesEveryTime\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:41.79091915Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestPassesEveryTime","Output":"--- PASS: TestPassesEveryTime (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:41.790921591Z","Action":"pass","Package":"example.com/gotestfixtures/once","Test":"TestPassesEveryTime","Elapsed":0}
+{"Time":"2026-11-26T12:19:41.790924776Z","Action":"output","Package":"example.com/gotestfixtures/once","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:41.795470006Z","Action":"output","Package":"example.com/gotestfixtures/once","Output":"FAIL\texample.com/gotestfixtures/once\t0.037s\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:41.795505946Z","Action":"fail","Package":"example.com/gotestfixtures/once","Elapsed":0.038}
+{"Time":"2026-11-26T12:19:42.19547616Z","Action":"start","Package":"example.com/gotestfixtures/once"}
+{"Time":"2026-11-26T12:19:42.227396463Z","Action":"run","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses"}
+{"Time":"2026-11-26T12:19:42.227506757Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"=== RUN   TestFailsOnceThenPasses\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:42.228318346Z","Action":"output","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Output":"--- PASS: TestFailsOnceThenPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:42.228994248Z","Action":"pass","Package":"example.com/gotestfixtures/once","Test":"TestFailsOnceThenPasses","Elapsed":0}
+{"Time":"2026-11-26T12:19:42.229034597Z","Action":"output","Package":"example.com/gotestfixtures/once","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:19:42.235793754Z","Action":"output","Package":"example.com/gotestfixtures/once","Output":"ok  \texample.com/gotestfixtures/once\t0.035s\n"}
+{"Time":"2026-11-26T12:19:42.235832568Z","Action":"pass","Package":"example.com/gotestfixtures/once","Elapsed":0.04}

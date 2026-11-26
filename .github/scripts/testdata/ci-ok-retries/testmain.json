@@ -1,14 +1,14 @@
-{"Time":"2026-11-26T10:38:00.849426718Z","Action":"start","Package":"example.com/gotestfixtures/testmain"}
-{"Time":"2026-11-26T10:38:00.879120398Z","Action":"run","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState"}
-{"Time":"2026-11-26T10:38:00.879221809Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Output":"=== RUN   TestLeavesState\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:38:00.879275237Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Output":"--- PASS: TestLeavesState (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:38:00.879284793Z","Action":"pass","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Elapsed":0}
-{"Time":"2026-11-26T10:38:00.879292722Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"PASS\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:38:00.879301686Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"TestMain: a test left state behind\n"}
-{"Time":"2026-11-26T10:38:00.882722919Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"FAIL\texample.com/gotestfixtures/testmain\t0.033s\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:38:00.882774278Z","Action":"fail","Package":"example.com/gotestfixtures/testmain","Elapsed":0.033}
-{"Time":"2026-11-26T10:38:01.276163417Z","Action":"start","Package":"example.com/gotestfixtures/testmain"}
-{"Time":"2026-11-26T10:38:01.314314474Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"testing: warning: no tests to run\n"}
-{"Time":"2026-11-26T10:38:01.314429938Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"PASS\n","OutputType":"frame"}
-{"Time":"2026-11-26T10:38:01.316731321Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"ok  \texample.com/gotestfixtures/testmain\t0.040s [no tests to run]\n"}
-{"Time":"2026-11-26T10:38:01.316768424Z","Action":"pass","Package":"example.com/gotestfixtures/testmain","Elapsed":0.041}
+{"Time":"2026-11-26T12:20:10.027871846Z","Action":"start","Package":"example.com/gotestfixtures/testmain"}
+{"Time":"2026-11-26T12:20:10.052318885Z","Action":"run","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState"}
+{"Time":"2026-11-26T12:20:10.052404515Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Output":"=== RUN   TestLeavesState\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:20:10.052443615Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Output":"--- PASS: TestLeavesState (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:20:10.052448596Z","Action":"pass","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Elapsed":0}
+{"Time":"2026-11-26T12:20:10.052457943Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:20:10.052462945Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"TestMain: a test left state behind\n"}
+{"Time":"2026-11-26T12:20:10.05920103Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"FAIL\texample.com/gotestfixtures/testmain\t0.030s\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:20:10.059234775Z","Action":"fail","Package":"example.com/gotestfixtures/testmain","Elapsed":0.031}
+{"Time":"2026-11-26T12:20:10.382702961Z","Action":"start","Package":"example.com/gotestfixtures/testmain"}
+{"Time":"2026-11-26T12:20:10.411265713Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"testing: warning: no tests to run\n"}
+{"Time":"2026-11-26T12:20:10.411419833Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-26T12:20:10.413414497Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"ok  \texample.com/gotestfixtures/testmain\t0.029s [no tests to run]\n"}
+{"Time":"2026-11-26T12:20:10.413465485Z","Action":"pass","Package":"example.com/gotestfixtures/testmain","Elapsed":0.031}

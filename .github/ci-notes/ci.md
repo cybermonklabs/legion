@@ -2996,6 +2996,31 @@ when each passed, so the check-run name `envoy-session-stall / envoy-session-sta
 reading of it are what they were; its error carries the words runner-shutdown.sh reads, so a leg
 the platform killed still reads as a runner shutdown.
 
+## Why a Go test step runs its go test under gotestsum, and a merge group runs a failed test once more
+
+A merge group runs every job its diff selects, and a Go test that fails once in a hundred runs then
+fails a group whose change could not have broken it (dispatch://INFRA-3411/artifact/decisions-md,
+"The Go retry follows R22"). So a Go test step writes its go test command after
+.github/scripts/go-test.sh, as it stands, and the script runs it under gotestsum 1.13.0, which
+.github/actions/install-gotestsum installs from the rows .github/ci-tools.yaml pins: in a merge
+group, with `--rerun-fails=1 --rerun-fails-run-root-test --rerun-fails-abort-on-data-race`, a test
+that failed runs once more from its root test, and a pass then passes the step; on a pull request a
+test that fails once fails its step. gotestsum reruns nothing after a data race, a panic or a
+passed -timeout, a build error, more than 10 failed tests, or an error line of go test's own, and
+go-test.sh fails a package that failed with no test failing whatever a rerun did. A run whose
+expected result is a failure (airlock-mutants.sh against a mutant) or whose -run a rerun of the root
+test would widen (kind's runtime legs) sets GO_TEST_RETRY=off. The command keeps its own words, so
+check-ci-filters.sh, the test-reach search and go-test-step-expansion.py read it with the wrapper
+taken off, as they read a command behind race_memory.py.
+
+Each call writes a gotestsum jsonfile, and a job's last step, .github/actions/go-test-upload,
+uploads its jsonfiles and rerun reports as the artifact go-test-<job>[-<leg>]: the record of each
+test's result that the sibling children's checks of skips read, and that ci-ok reads to name, in
+its summary, each test that passed only on its retry (.github/actions/ci-ok-retries,
+.github/scripts/ci-ok-retries.sh). database-skips.sh and backend-count.sh run their go test under
+the same script and count each test by the last attempt that ran it (.github/scripts/go-test.jq's
+last_attempt_results), so a test that failed once and passed on its rerun is counted as passed.
+
 ## What the ci-filters job holds every filter and every workflow file to
 
 Holds the table every filter is computed from to ci.yaml - every gate a filter the changes job
@@ -3240,8 +3265,13 @@ queue's refs needs no token at all.
 ## The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and
 
 The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-hold.sh, ci-ok-reconcile.sh and
-the gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
-it needs.
+the gh-read.sh and runner-shutdown.sh they source, and the retry report's action, ci-ok-retries.sh
+and the go-test.jq it includes, so the .github cone is the whole checkout it needs.
+
+The retry report, "Name each Go test that passed only on its retry", runs after the verdict and
+before the hold, under `!cancelled()`, with `continue-on-error`: it downloads the go-test-*
+artifacts the Go jobs uploaded and writes the job's summary, and what it reads or fails to read
+changes no verdict.
 
 ## Why a draft pull request is refused in a step
 

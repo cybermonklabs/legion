@@ -158,7 +158,7 @@ except ex.Refused:
 else:
     print("none" if read is None else f"{read.workdir} {read.script}")' "$@"; }
 unit_listing=$(py 'print("packages/envoy set -o pipefail\npython3 ../../.github/scripts/go_legs.py packages/envoy envoy-go "
-      "${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -json -count=1 -skip " + ex.UNIT_SKIP + " -timeout 20m")')
+      "${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -skip " + ex.UNIT_SKIP + " -timeout 20m")')
 check "envoy-go's unit legs pipe go_legs.py's packages into the counter's go test, less the fixture's, the backend count's and the alone rows' tests" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Unit test envoy Go package" "")" "$unit_listing")"
 check "the unit legs' step with one more argument, which the entry's xargs does not list, is refused" \
@@ -166,7 +166,7 @@ check "the unit legs' step with one more argument, which the entry's xargs does 
 # The API's legs pipe their packages and their group's -run into the counter, through the same
 # entry's xargs argument lists, with the -race the counter spells `--race` handed to go_legs.py.
 api_listing=$(py 'print("packages/envoy set -o pipefail\npython3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-api "
-      "${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -json -count=1 -race -timeout 70m")')
+      "${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 70m")')
 check "envoy-go-race-api's legs pipe go_legs.py's group and package into the counter's go test under -race" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" "$api_listing")"
 check "the API legs' step with one more argument, which the entry's xargs does not list, is refused" \

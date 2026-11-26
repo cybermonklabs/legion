@@ -237,43 +237,44 @@ FORCED_ORDER = "go test -tags odatrace -race -count=1 -v -timeout 10m -run '^Tes
 # GOTESTSUM_COMMANDS above or it has an entry here; until then the tests its steps run read as run
 # by no step, and the search fails on each of them.
 AUDITED_SCRIPTS = {
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1` over its packages, then counts the skips in its report. With no package argument it
-    # counts its DEFAULT_PACKAGES, ./internal/cipher/..., ./cmd/cipherd/ and ./internal/holdrecord/,
-    # less the import paths its DEFAULT_EXCEPT takes out of `go list` of them with `grep -Ev`, none
-    # since that pattern is empty, with no -tags, -race, -run or -skip, under -timeout
-    # "${GO_TEST_TIMEOUT:-15m}". A package argument replaces those packages, `--race` adds -race,
-    # `--skip P` adds -skip P, `--timeout D` sets the -timeout, and `--var NAME` decides only
-    # whether it runs at all. `--count-table` runs every package its arguments name, in go list's
-    # order, and counts the table's among them; it changes what is counted, never what runs. With
-    # `--report FILE` it reads a report and runs no test. `-run=^(Name|...)$`, which a leg pipes in
-    # with its package, adds that -run. envoy-go-race-api's legs and envoy-go's unit legs pass an
-    # xargs argument list below, each leg's packages (and group) after it.
+    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -count=1`
+    # over its packages under .github/scripts/go-test.sh, then counts the skips in its jsonfile.
+    # With no package argument it counts its DEFAULT_PACKAGES, ./internal/cipher/...,
+    # ./cmd/cipherd/ and ./internal/holdrecord/, less the import paths its DEFAULT_EXCEPT takes out
+    # of `go list` of them with `grep -Ev`, none since that pattern is empty, with no -tags, -race,
+    # -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces those
+    # packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout, and
+    # `--var NAME` decides only whether it runs at all. `--count-table` runs every package its
+    # arguments name, in go list's order, and counts the table's among them; it changes what is
+    # counted, never what runs. With `--report FILE` it reads a report and runs no test.
+    # `-run=^(Name|...)$`, which a leg pipes in with its package, adds that -run. envoy-go-race-api's
+    # legs and envoy-go's unit legs pass an xargs argument list below, each leg's packages (and
+    # group) after it.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={},
         xargs={
-            f"--timeout 20m --skip {UNIT_SKIP} --count-table": f"go test -json -count=1 -skip {UNIT_SKIP} -timeout 20m",
+            f"--timeout 20m --skip {UNIT_SKIP} --count-table": f"go test -count=1 -skip {UNIT_SKIP} -timeout 20m",
             # envoy-go-race-api's legs: the API package, and the leg's group as `-run=^(Name|...)$`,
             # come from go_legs.py through xargs, so the command carries neither.
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m":
-                "go test -json -count=1 -race -timeout 70m",
+                "go test -count=1 -race -timeout 70m",
         },
-        sha256="1fda7c677b2f277920e8a5f16f9da79ab9613e6ba5c356df7bf3c0606ec24670",
+        sha256="985f8cd69454bf317830538071b747ab91bba7fe25ed183796c76b0c96b5d8bc",
     ),
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
-    # `--`, the -run built from the test names after it, then counts each test's `aws` and `gcp`
-    # passes. GO_TEST_SKIP adds a -skip, which no step sets. envoy-go's count step passes the
-    # argument list below.
+    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -count=1
+    # -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` under .github/scripts/go-test.sh over the
+    # packages before its `--`, the -run built from the test names after it, then counts each
+    # test's `aws` and `gcp` passes in the jsonfile's last attempts. GO_TEST_SKIP adds a -skip,
+    # which no step sets. envoy-go's count step passes the argument list below.
     "packages/envoy/scripts/backend-count.sh": AuditedScript(
         module="packages/envoy",
         commands={
             "./cmd/cipher/ ./internal/cipher/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
-                f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
+                f"go test -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
+        sha256="e8b0c1506f131aa80d4e7f8d2ccd9cc7220ae901e3f41b8bdd72f7fd3b7da8c7",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
     # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
@@ -715,8 +716,8 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
 
 
 def module_packages(module: str) -> list[str]:
-    """The directories of `module` that hold a Go package, as go_legs.py's `go list ./...` finds
-    them, read off the tree with no `go` command: each directory under the module holding a `.go`
+    """The directories of `module` that hold a Go package, as the go list over ./... that LEGS
+    runs finds them, read off the tree with no `go` command: each directory under the module holding a `.go`
     file whose name starts with neither `.` nor `_`, outside a `testdata`, `vendor`, `.`- or
     `_`-named directory and outside a nested module; `.` for the module's own root. A directory
     whose every file a build tag excludes is read as a package here, which errs wide; the tag rule
