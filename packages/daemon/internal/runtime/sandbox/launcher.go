@@ -897,12 +897,16 @@ func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, roles []c
 // deployment defined after it) exists, is the Sandbox's, binds pod by uid, and records its
 // gh bundle's default owner (GitHubDefaultKey, empty for a controller whose project has no GitHub
 // owner), which every role of one pod shares and l takes as its gitHubDefault, every agent's
-// GH_CONFIG_DIR. A running pod an older runtime made (one worker container, no launchers, or one
-// gh directory where a bundle now stands) or one whose binding never landed is replaced rather than
-// trusted. A pod the Agent Sandbox controller recreated outside a launch is bound once one of its
-// launchers says hello with its role's current token (bindAtHello), so a launch after that hello
-// keeps it. Any other failure to read a Secret, such as the client's timeout, or a throttled request
-// or a server error the launch's deadline for it outlasted (resend), proves nothing about the pod:
+// GH_CONFIG_DIR. A template that names no role is one no launcher of this layout wrote, or one
+// this daemon cannot read: it says nothing of the pod's roles, so the pod is judged by the roles of
+// l's pod (l.roles), and a template that cannot be read is named as that where the launch reads
+// it (keptBy, relaunch), not as unbound launchers. A running pod an older runtime made (one worker
+// container, no launchers, or one gh directory where a bundle now stands) or one whose binding
+// never landed is replaced rather than trusted. A pod the Agent Sandbox controller recreated
+// outside a launch is bound once one of its launchers says hello with its role's current token
+// (bindAtHello), so a launch after that hello keeps it. Any other failure to read a Secret, such
+// as the client's timeout, or a throttled request or a server error the launch's deadline for it
+// outlasted (resend), proves nothing about the pod:
 // it is returned, so only the launch that read it fails, and the caller stops that role's previous
 // process (runtime.Runtime's Spawn and Resume); the pod and every other role running in it are left
 // as they are. Each Secret it finds bound to pod, holding a launcher token, is held as its role's
@@ -911,7 +915,7 @@ func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, roles []c
 func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch) (bool, error) {
 	roles := templateRoles(s)
 	if len(roles) == 0 {
-		return false, nil
+		roles = l.roles
 	}
 	for _, role := range roles {
 		name := roleSecretName(s.Name, role)
