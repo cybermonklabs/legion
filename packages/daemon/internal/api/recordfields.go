@@ -182,7 +182,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
 // the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt,
-// TreeStalledToldAt, ViewTask and MembersOwed, for the reason its own entry gives.
+// TreeStalledToldAt, ViewTask, ViewOf, ChildrenWait, ChildrenWaitedAt and MembersOwed, for the
+// reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -231,6 +232,12 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the running steps of the issue's tasks, one for each step whose start was delivered: a task whose step waits for its agent names the running step that agent works (`tasks`, its `waitsFor`), and the role of the first running step at step is served as `stepRole`, which the phase alone does not name"},
 	{Field: "ViewTask", Column: ColumnWithheld,
 		Reason: "the task a copy of the issue is read for while the workflow handles one fact of that task, which no read of the store answers and no record the state is built from carries: each task of the issue is served under `tasks`"},
+	{Field: "ViewOf", Column: ColumnWithheld,
+		Reason: "the ancestor whose requirements the issue's spec is a view on, which reaches the issue's roles as a sentence of each phase task naming that ancestor (workflow's continueLine and checkTask) rather than as a key of the state"},
+	{Field: "ChildrenWait", Column: ColumnWithheld,
+		Reason: "the phase start a parent held when a child of it was open, and the children that held it (`children_wait_children`), which the daemon resumes it with when no open child is left, naming the children that merged during the wait: its own record of what to do at the return, which no surface carries"},
+	{Field: "ChildrenWaitedAt", Column: ColumnWithheld,
+		Reason: "when the parent last waited on its children, which the late-completion guard compares a phase entry against after the return: the daemon's own mark, reaching no surface"},
 	{Field: "MembersOwed", Column: ColumnWithheld,
 		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
 }

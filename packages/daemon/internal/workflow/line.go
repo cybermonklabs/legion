@@ -414,13 +414,15 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, s *TaskScope, to phase
 // the places of the run's tasks are two records of where the issue stands, and WriteIssue refuses
 // a write in which they disagree: a run with plan rows stands where its tasks put it, whatever the
 // plan's count of tasks (derivedStanding: issuePhaseOfTasks, a root that waits on a person before
-// its first step in awaiting_person over admitted, and a hold the release before wrote on the issue
-// alone, where a task runs and none is held or stopped, heldBeforeOver), a hold from the phase its
-// tasks' hold is from. The refusal names the phase the write stands in (a hold by the phase it is
-// from) and the task whose standing decides the issue's (standingOfTasks): its state, its place and
-// the phase that place stands in. It reads the plan in the caller's transaction, after any move of
-// a task (moveTask), so a write that names its phase itself is checked against the store and not
-// against the caller's copy. A run with no plan rows has only its phase, and is written as given.
+// its first step in awaiting_person over admitted, a parent that waits on its open Dispatch
+// children in awaiting_children over the phase of the start it holds, and a hold the release before
+// wrote on the issue alone, where a task runs and none is held or stopped, heldBeforeOver), a hold
+// from the phase its tasks' hold is from. The refusal names the phase the write stands in (a hold
+// by the phase it is from, a wait on children by the start it holds) and the task whose standing
+// decides the issue's (standingOfTasks): its state, its place and the phase that place stands in.
+// It reads the plan in the caller's transaction, after any move of a task (moveTask), so a write
+// that names its phase itself is checked against the store and not against the caller's copy. A
+// run with no plan rows has only its phase, and is written as given.
 func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
@@ -437,13 +439,17 @@ func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 }
 
 // writeRefusal is WriteIssue's refusal of issue, whose phase disagrees with tasks, the walk of each
-// task of its run: the phase issue stands in, held from the phase its hold is from, and the state,
-// the place and the phase of that place of the task whose standing decides the issue's
+// task of its run: the phase issue stands in, held from the phase its hold is from or in
+// awaiting_children holding the start of the phase its wait holds (record.ChildrenWait.Start), and
+// the state, the place and the phase of that place of the task whose standing decides the issue's
 // (standingOfTasks).
 func writeRefusal(issue record.Issue, tasks []Walk) error {
 	at := record.StandsAt(issue)
 	stands := string(at)
-	if at != issue.Phase {
+	switch {
+	case issue.Phase == phase.AwaitingChildren && issue.ChildrenWait != nil:
+		stands = "awaiting_children, holding the start of " + string(issue.ChildrenWait.Start)
+	case at != issue.Phase:
 		stands = "held from " + stands
 	}
 	_, _, decides := standingOfTasks(tasks)

@@ -67,7 +67,7 @@ type roleForReader struct {
 // Engine.startAfterWait, which reads the step a task whose start waited stands
 // at, a step place: a first step whose join ended or is queued again, or a step whose freed agent
 // takes it, since only a step waits for its join or its agent), or reads the retro's own
-// phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
+// phase (retroHeldNotice and Engine.StartHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
 // holds (record.RunningOf, and record.stepOfRow, the one reading of a row of plan rows, which
 // Postgres.AgentWaiter reads too), or reads of the running steps at a phase only whether one is
@@ -76,8 +76,19 @@ type roleForReader struct {
 // only past the refusal of a plan's own hold, which is the one hold an issue at admitted takes
 // (heldStepRole, which Engine.retryOrEscalate reads for the retry of a named claim and
 // Engine.retryPhase for the role it restarts), or never reads admitted at all because a check
-// before it refuses that phase, which is what each named test holds it to. The owner walk reads no role:
-// where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// before it refuses that phase, which is what each named test holds it to. A parent's wait on its
+// open children (awaiting_children.go, dispatch://INFRA-3320) is of the last kind: each of its
+// readers runs only past record.OpenChildHolds, which refuses admitted, or on the start a hold
+// kept, which is never admitted's. Where one reads accepting's architect it starts no phase
+// worker: the return of a parent whose pull request merged during the wait starts what a move
+// into accepting starts, a child's failed architect again and the accepting step's run
+// (ReturnFromChildren, through start and startStandingStep in internal/workflow's effects.go),
+// and the stop holds accepting with no role told (StopForChildren), since the architect's notice
+// tells it. The entry the phase's role stands on is read for R9's exemption of a move out of retro
+// or merging (samePhaseExempt) only past record.OpenChildHolds, by the stop and by the guard on a
+// start of the phase the issue stands in, so it reads accepting's architect at most and never
+// admitted's. The owner walk reads no role: where it starts is its caller's to say
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -120,6 +131,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAnIssueReadsEachOfItsRunningSteps", "TestTheStepThatWaitedLongestForItsAgentIsNext"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
+	// The role the return out of awaiting_children starts: by the held start's phase on an issue
+	// with no plan rows, and by the place of the walk on a task with them.
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.ReturnFromChildren"}: {calls: 2, tests: []string{
+		"TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld", "TestAReturnOnAWalkWithNoTesterStartsTheReviewer"}},
 	{file: "internal/workflow/design_news.go", fn: "memberWords"}: {calls: 1, tests: []string{
 		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"}},
 	// The role of the held step, and of the phase the hold is from where no step stands there.
@@ -147,9 +162,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// tellChecks tells as the issue's owner too.
 	{file: "internal/workflow/review.go", fn: "Engine.checksSteps"}: {calls: 1, tests: []string{
 		"TestASettlementMovesNothingAndTellsTheThreeRoles", "TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase"}},
-	// The role whose step a move ends (Engine.transition, Engine.arrive, Engine.holdBeforeRetro and
-	// endOfTransition read it), read by the place on a task with plan rows and by the phase on an
-	// issue with none.
+	// The role whose step a move ends (Engine.transition, Engine.arrive, Engine.holdBeforeRetro,
+	// endOfTransition and, at the wait on a parent's open children, holdForChildren, StopForChildren
+	// and samePhaseExempt read it), read by the place on a task with plan rows and by the phase on
+	// an issue with none.
 	{file: "internal/workflow/line.go", fn: "Walk.endingRole"}: {calls: 2, tests: []string{
 		"TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}: {calls: 1, tests: []string{
@@ -176,7 +192,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAFreedAgentTakesTheStepThatWaitedLongest", "TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter",
 		"TestTheEndOfAJoinStartsTheStepThatWaits", "TestTheEndOfAJoinWhoseAgentIsBusyWaitsForTheAgent",
 		"TestAJoinThatWaitedAtAReadmissionStartsAgain"}},
-	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
+	{file: "internal/workflow/retro_hold.go", fn: "Engine.StartHeldRetro"}: {calls: 1, tests: []string{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:     {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},

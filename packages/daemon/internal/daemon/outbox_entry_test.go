@@ -127,7 +127,7 @@ func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine
 		if err != nil {
 			return err
 		}
-		if err := engine.StartPromotedWorker(ctx, tx, s, role); err != nil {
+		if _, err := engine.StartPromotedWorker(ctx, tx, s, role, false); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)

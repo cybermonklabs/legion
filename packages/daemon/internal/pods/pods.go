@@ -16,12 +16,12 @@ import (
 
 // Wake kinds, the vocabulary of a recorded resume's kind: the six ways a released pod comes
 // back. WakeDelivery is a delivery the daemon already had for a role of the
-// pod — a phase start, a task, a backward move, a notice, a merge forward's message, a production
-// check's look, a slot resume; WakeChecks is a CI settlement on the head of the issue's pull
-// request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener sees, a message
-// published to a role topic of the pod and one sent to the agent subject of a released session;
-// WakeBackstop is the stored backstop a release armed; WakePause is the launch a project's pause
-// owed a role it stopped, held until the resume (store's PodRecords.TakePodWake).
+// pod — a phase start, a task, a backward move, a notice, a phase-ended message, a merge forward's
+// message, a production check's look, a slot resume; WakeChecks is a CI settlement on the head of
+// the issue's pull request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener
+// sees, a message published to a role topic of the pod and one sent to the agent subject of a
+// released session; WakeBackstop is the stored backstop a release armed; WakePause is the launch
+// a project's pause owed a role it stopped, held until the resume (store's PodRecords.TakePodWake).
 //
 // They are records rather than the rule's own, because the rule that names a wake (workflow) and
 // the store that files it under this word are different packages, and one vocabulary is what
@@ -174,7 +174,11 @@ type RunningRow struct {
 // held whose step's start was delivered (plan_tasks.step_wait is ”), standing at a step its plan
 // rows hold, at its retro, at its merge, or at its parts or its report, where its sub-owner acts,
 // in task id order. A step that waits for its join or its agent is in no row, and neither is a
-// task at no act, waiting, stopped, done or left. DecodeRunning reads it.
+// task at no act, waiting, stopped, done or left. DecodeRunning reads it. The column reads no
+// phase of the issue: a parent waiting in awaiting_children keeps the task whose start its open
+// children held at its place, so the column names it, and record.RunningOf, which every reader of
+// the column reads it through, answers no running step for such a parent, since no worker works it
+// while it waits.
 func RunningColumn(key, generation string) string {
 	return stepsColumn(key, generation, `t.state in ('running', 'held') and t.step_wait = ''`, `t.task`)
 }
@@ -258,11 +262,12 @@ type IdleView struct {
 	Root        IdleRoot
 	Claims      []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
-	// role of its pod. A start queued for news of the approved design alone is not counted: it
-	// wakes the claim a release suspends (store's idleWaitingRow). The rule reads only whether
-	// there is one, so the store reads only that. A start that waits because the pod lacks the slot
-	// of its claim or the role of its step (StartWaitsForPodPrefix) is no such delivery: the pod
-	// cannot run it, so it is counted in StartsWaitingForPod instead.
+	// role of its pod. A start queued for news of the approved design alone is not counted, and
+	// neither is a worker start that waits for an admission slot its issue does not hold: each
+	// wakes the claim a release suspends when it runs (store's idleWaitingRow). The rule reads
+	// only whether there is one, so the store reads only that. A start that waits because the pod
+	// lacks the slot of its claim or the role of its step (StartWaitsForPodPrefix) is no such
+	// delivery either: the pod cannot run it, so it is counted in StartsWaitingForPod instead.
 	Waiting bool
 	// StartsWaitingForPod are the roles of the start rows, distinct and in the order the rows were
 	// queued, that wait because the issue's pod lacks the slot of the start's claim or the role of

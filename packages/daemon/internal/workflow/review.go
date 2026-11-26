@@ -550,7 +550,10 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // of the same head that leaves the same conclusions tells nobody again, and so does a settlement
 // that stands for no head. Linger holds a member of a closed tree where it stood
 // (record.TreeLingers): every claim of the tree is suspended there, so the settlement is recorded
-// and nobody is told.
+// and nobody is told. A parent waiting in awaiting_children is told nothing either, and neither
+// is the architect that owns it: no role works the parent while it waits, and its next testing
+// round runs the checks on its head merged with the base's tip (dispatch://INFRA-3320 R11, R12),
+// so the settlement is recorded and no message goes out.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
@@ -567,7 +570,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		return nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
-	if err != nil || issue == nil {
+	if err != nil || issue == nil || issue.Phase == phase.AwaitingChildren {
 		return err
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -1612,6 +1615,12 @@ func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullR
 // the pass it still raises is the completion key's alone. Everything is written in the move's own
 // transaction, so a move the record holds and a prompt nobody wrote cannot happen, and nothing here
 // holds the move back: the transition starts the next role whatever a hook said.
+//
+// A move whose start is held because a Dispatch child of the issue is open, so the issue goes to
+// awaiting_children instead (dispatch://INFRA-3320 R10), counts the pass and the pair as any move
+// back, and the transition fires no hook on the counts it answers (holdForChildren), since no role
+// of the issue has a phase to put its prompt in front of. The count stands, and the next count a
+// hook reaches fires it.
 func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, from, to phase.Phase, pr *record.PullRequest) (map[string]int, error) {
 	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
@@ -1685,7 +1694,14 @@ func taskSentence(w Walk) string {
 //
 // Nothing here holds the move back: the transition starts the next role whatever the counts read. A write that fails is still an error of the move's transaction, as
 // every other write of that transaction is, and is returned rather than swallowed.
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest) error {
+//
+// waitingOn is the issue's open Dispatch children where they hold the start this request for
+// changes would make, so the issue goes to awaiting_children instead (dispatch://INFRA-3320 R10),
+// and empty otherwise. The round counts as any other, and the cap's message names the issue as
+// waiting on those children rather than as started.
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest,
+	waitingOn []record.OpenChild,
+) error {
 	task := w.Task
 	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
@@ -1709,6 +1725,10 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if tell {
 		message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
 			e.cfg.ReviewRoundCap, counted, counts.ConflictRounds)
+		if len(waitingOn) > 0 {
+			message += fmt.Sprintf(" %s waits on its open Dispatch children in awaiting_children, so no implementing round started: %s.",
+				issue.Key, openChildNames(waitingOn))
+		}
 		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: message + taskSentence(w)}); err != nil {
 			return err
 		}

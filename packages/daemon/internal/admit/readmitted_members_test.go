@@ -521,7 +521,7 @@ func earlierReleasePromotes(t *testing.T, pool *pgxpool.Pool, admission *Admissi
 		if err != nil {
 			return err
 		}
-		if err := admission.startMidPhaseMembers(ctx, tx, root, issues, fixedNow); err != nil {
+		if err := admission.startMidPhaseMembers(ctx, tx, root, issues, nil, false, fixedNow); err != nil {
 			return err
 		}
 		if err := admission.reenterStrandedChildren(ctx, tx, root, issues); err != nil {

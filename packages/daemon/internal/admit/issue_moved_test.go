@@ -668,7 +668,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the scope of %s's implementer: %v", issueKey, err)
 			}
-			if err := engine.StartPromotedWorker(fact, tx, s, claim.RoleImplementer); err != nil {
+			if _, err := engine.StartPromotedWorker(fact, tx, s, claim.RoleImplementer, false); err != nil {
 				t.Fatalf("start the implementer of %s again: %v", issueKey, err)
 			}
 			if err := engine.SettleFact(fact, tx); err != nil {

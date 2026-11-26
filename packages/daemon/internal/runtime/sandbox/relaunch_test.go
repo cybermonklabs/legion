@@ -1979,7 +1979,11 @@ func startSupervisedSandboxRole(
 // pod: the Stop names the issued generation, never the previous one, which is the caller's. The
 // start deadline runs on the rig's fake clock (g.r.clock), which the test moves past it only once
 // the launcher holds the Start: on the wall clock's one second, a loaded CI runner once got the
-// deadline's error without the launcher ever receiving the Start (run 45723523570).
+// deadline's error without the launcher ever receiving the Start (run 45723523570). The waits that
+// stay on the wall clock, the first spawn's and the issued generation's Stop (stopIssuedChild), run
+// under a boot timeout as long as the test binary's deadline allows (withWaitsToTheDeadline): under
+// the one second they had, a Stop whose write a loaded machine held past it failed, the runtime
+// closed the launcher's connection, and the launcher never received the Stop this test is about.
 func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t *testing.T) {
 	t.Parallel()
 	for name, previous := range map[string]bool{
@@ -1987,9 +1991,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 		"on the same pod as its previous locator": true,
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, withOptions(func(o *Options) {
-				o.BootTimeout, o.TerminationGrace = time.Second, 50*time.Millisecond
-			}))
+			g := newRig(t, nil, withWaitsToTheDeadline())
 			spec := workerSpec(t)
 			first := g.spawn(spec)
 			delayed := g.scriptedStartLauncher(spec.Claim, 1, func(shimwire.LauncherStart) *shimwire.LauncherStartResult { return nil })
@@ -2013,11 +2015,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
 			}
 			// The start deadline is the launcher wait's, the boot timeout from the wait's start at
-			// the fake clock's moment, plus the termination grace. It moves only once the runtime has
-			// finished writing the Start (written): an end of the deadline inside the write closes the
-			// connection, as a write the context cuts does, and the Stop that follows would find no
-			// launcher.
-			delayed.written()
+			// the fake clock's moment, plus the termination grace.
 			fc.Advance(g.opts.BootTimeout + g.opts.TerminationGrace)
 			if err := testwait.Receive(t, "the Resume", resumed); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
 				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
@@ -2089,16 +2087,18 @@ type scriptedStartLauncher struct {
 	stops   chan shimwire.LauncherStop
 }
 
-// written returns once the runtime has finished writing the frame the scripted launcher last read
-// and stopped watching that write's context: requestSession holds the session's lock through both,
-// and the launcher reads the frame only while the write holds it.
-func (d *scriptedStartLauncher) written() {
-	d.session.mu.Lock()
-	defer d.session.mu.Unlock()
-}
-
 func (g *rig) scriptedStartLauncher(
 	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult,
+) *scriptedStartLauncher {
+	g.t.Helper()
+	return g.scriptedStartLauncherOver(token, running, answer, nil)
+}
+
+// scriptedStartLauncherOver is scriptedStartLauncher with the daemon's end of the connection
+// handed to the runtime through wrap, when wrap is not nil: the connection the runtime writes its
+// requests to and reads the launcher's frames from.
+func (g *rig) scriptedStartLauncherOver(
+	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult, wrap func(net.Conn) net.Conn,
 ) *scriptedStartLauncher {
 	g.t.Helper()
 	g.r.launchers.mu.Lock()
@@ -2108,6 +2108,9 @@ func (g *rig) scriptedStartLauncher(
 		old.close()
 	}
 	server, client := net.Pipe()
+	if wrap != nil {
+		server = wrap(server)
+	}
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,

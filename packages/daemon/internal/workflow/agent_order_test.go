@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A held retro is released only where its task is the last to finish (lastToFinish, beneathRetro):
+// A held retro is released only where its task is the last to finish (lastToFinish, retroHeld):
 // each other task of its plan is done or left, so no act of another task can hold the retro's
 // agent then, and no step of another task waits for it. The wait of a released retro for its agent
 // has no case the record can hold, and no test here writes one.

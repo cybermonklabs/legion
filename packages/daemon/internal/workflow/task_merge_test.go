@@ -139,7 +139,7 @@ func TestTheMergeOfOneTaskMakesItDoneAndTheIssueGoesOn(t *testing.T) {
 // child. When the child leaves the workflow, b is done at its merge, and the issue is done and its
 // tree lingers: the merge of the issue is b's, its task with a merge still to come. b stands at its
 // retro, not at its first step, at a's merge: a task that passes its last step while a child runs,
-// and is the last to finish, is held before its retro (beneathRetro), so the close wait meets the
+// and is the last to finish, is held before its retro (retroHeld), so the close wait meets the
 // task whose retro ran beside another's, neither of them the last.
 //
 // The faults it catches are the merge of a task that is not the last waiting for the whole tree
@@ -196,7 +196,7 @@ func TestOnlyTheLastMergeWaitsForTheIssuesBeneath(t *testing.T) {
 // with no retro started, and its owner is told once, in a retro-held notice naming the child.
 //
 // The fault it catches is an early task's retro held for a child, so a task that merges by itself
-// waits for the whole tree (its control: beneathRetro with no read of lastToFinish, the revision
+// waits for the whole tree (its control: retroHeld with no read of lastToFinish, the revision
 // before, which holds a).
 func TestOnlyTheLastTasksRetroIsHeldForTheIssuesBeneath(t *testing.T) {
 	pool := migratedPool(t)
@@ -231,7 +231,7 @@ func TestOnlyTheLastTasksRetroIsHeldForTheIssuesBeneath(t *testing.T) {
 		t.Fatalf("the retro of b counts %d starts, want none: it is held", starts)
 	}
 	held := noticesOfKind(t, pool, root.Key, "retro-held")
-	if want := retroHeldNotice(root.Key, []string{heldParentChild}).Reason; len(held) != 1 || held[0].Reason != want {
+	if want := retroHeldNotice(root.Key, acceptanceHold{code: signOffChildInWorkflow, names: heldParentChild}, false).Reason; len(held) != 1 || held[0].Reason != want {
 		t.Fatalf("the retro-held notices of %s = %+v, want one: %q", root.Key, held, want)
 	}
 }

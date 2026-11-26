@@ -445,5 +445,38 @@ func containsPhase(phases []phase.Phase, wanted phase.Phase) bool {
 }
 
 func namedIgnore(current phase.Phase, trigger TriggerKind) string {
+	if current == phase.AwaitingChildren {
+		return awaitingChildrenIgnores[trigger]
+	}
 	return fmt.Sprintf("%s does not advance %s", trigger, current)
+}
+
+// awaitingChildrenIgnores is why each trigger leaves a parent in awaiting_children where it stands
+// (dispatch://INFRA-3320 R9 to R12): the parent goes back to the start it held only at the
+// admission pass that finds no open child under it, so the table has no row out of the phase, and
+// a fact that would move a phase is recorded where it lands and starts nothing.
+var awaitingChildrenIgnores = map[TriggerKind]string{
+	TriggerGateOpened:          "a parent in awaiting_children has started its phases, so no gate's opening starts its first",
+	TriggerPlannerCompleted:    "the planner's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE",
+	TriggerImplementationReady: "the implementer's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE; a push of its moves the head and nothing else",
+	TriggerTesterPassed:        "the tester's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE",
+	TriggerTesterFailed:        "the tester's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE",
+	TriggerReviewApproved:      "a review GitHub records during the wait is recorded and starts no phase",
+	TriggerReviewRejected:      "a review GitHub records during the wait is recorded and starts no phase",
+	TriggerRetroCompleted:      "no retro runs before the parent is accepted, after its children",
+	TriggerPullRequestMerged:   "a merge during the wait is recorded on the pull request and read at the return",
+	TriggerSignOff:             "sign_off on a parent in awaiting_children is refused, WAITING_ON_CHILDREN",
+	TriggerBackward:            "request_backward_move on a parent in awaiting_children is refused, WAITING_ON_CHILDREN",
+}
+
+// Every trigger reaching a parent in awaiting_children is a named ignore: no row of the table
+// leaves the phase, and validateTable (TestEveryLineHasARowForEachPhaseAndTrigger) holds each
+// trigger there to its reason in awaitingChildrenIgnores. The two triggers of one act, a tester's
+// pass and failure or a review's approval and rejection, share one reason.
+func TestEveryTriggerInAwaitingChildrenIsANamedIgnore(t *testing.T) {
+	for _, row := range Table {
+		if row.From == phase.AwaitingChildren {
+			t.Errorf("the table holds a row out of awaiting_children (%s -> %s), want none: only the admission pass's return leaves it", row.Trigger, row.To)
+		}
+	}
 }

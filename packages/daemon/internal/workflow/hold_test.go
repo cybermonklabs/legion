@@ -786,8 +786,8 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 //
 // A todo on a root held for its stopped task is no such release either (planHold), and it takes
 // one of two roads. A task whose work ran starts again at its first step and raises its pass
-// (restartTask; TestATodoOnAStoppedRootStartsItsTaskAtStepOne). A task stopped before its first
-// step went out waits for that step again and raises nothing (waitForFirstStep;
+// (startAtFirstStep; TestATodoOnAStoppedRootStartsItsTaskAtStepOne). A task stopped before its
+// first step went out waits for that step again and raises nothing (waitForFirstStep;
 // TestAStopBeforeTheFirstStepSettlesThePlanAndStopsItsTask reads where it then stands).
 func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t *testing.T) {
 	t.Parallel()

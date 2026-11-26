@@ -211,9 +211,10 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string,
 }
 
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
-// notice, a hook prompt, a merge-queue removal or a merge forward's message that found the role it
-// is for released (internal/daemon's wakeForDelivery). Inside a fact's transaction the workflow
-// takes its wakes through PodRecords.TakePodWake, which is where taking a wake is written out.
+// notice, a phase-ended message, a hook prompt, a merge-queue removal or a merge forward's message
+// that found the role it is for released (internal/daemon's wakeForDelivery). Inside a fact's
+// transaction the workflow takes its wakes through PodRecords.TakePodWake, which is where taking a
+// wake is written out.
 //
 // token is the claim the wake brings back and role the role that claim holds now (claims.role),
 // which the caller has read with the claim: a claim's token names its agent and no role, so it is
@@ -850,6 +851,15 @@ func (p *PodRecords) FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (
 	return tag.RowsAffected() > 0, nil
 }
 
+// CancelPodBackstops drops every open backstop of issue inside the caller's transaction: a
+// parent that moves into awaiting_children has no phase for a backstop to wake any claim of it
+// into, so the move cancels every backstop a release armed before it (workflow's awaitChildren,
+// dispatch://INFRA-3320 R11). It names no claim, as every path that takes the whole released pod
+// over does.
+func (p *PodRecords) CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error {
+	return CancelPodBackstops(ctx, tx, p.project, issue, "", "")
+}
+
 // OpenPodBackstop is whether issue's claim token, which holds role now, has a backstop armed and
 // not yet fired (pod_wake_backstops, `not fired`): one naming the claim, or one the release before
 // 20261122072945 armed for its role, which names none (PodWakeBackstop). The release that suspended
@@ -865,4 +875,31 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 		return false, fmt.Errorf("read the open backstop of %s's claim %s: %w", issue, token, err)
 	}
 	return open, nil
+}
+
+// WaitsForItsSlot is whether issue owes a worker a start that waits for its admission slot while
+// no slot of the issue stands (slotWaitingStart): the issue gave its slot back to wait on another,
+// or had its work come back, and waits in the admission line. The outbox holds that start back
+// until the slot comes, and the start then wakes the worker an idle release suspended. So a
+// backstop of such an issue wakes no one (the workflow's podBackstopDue): a wake would put the
+// worker to its phase's work while the admission cap says the issue may not run.
+//
+// Only a start of the issue's current phase and generation counts. An older one stays in the
+// outbox until admission finishes it without acting (admit's finishFencedStarts), which a pause
+// defers and a dead lane's lease delays, so it brings no worker back; a backstop it silenced
+// would leave the released worker with nothing to wake it once that row goes. Phase and
+// generation are the whole fence here although finishFencedStarts also finishes a row whose
+// issue left the workflow or whose tree lingers, and one a retired claim's stop outlived: the
+// backstop's wake refuses the first two itself (the workflow's wakeReleased reads
+// InWorkflowNotLingering), and a retired claim is never the released claim the backstop wakes.
+func (p *PodRecords) WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	var waits bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`
+		and exists (select 1 from issues i where i.key = outbox.issue
+			and i.phase = outbox.payload->>'phase'
+			and i.generation = coalesce((outbox.payload->>'generation')::bigint, 0)))`,
+		issue).Scan(&waits); err != nil {
+		return false, fmt.Errorf("read whether %s waits for its admission slot: %w", issue, err)
+	}
+	return waits, nil
 }

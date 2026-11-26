@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -71,7 +70,7 @@ func (e *Engine) startReadyNow(ctx context.Context, tx pgx.Tx, key string) error
 // run, as the store holds it in tx, is done or left the workflow (record.TaskLeft). That holds for a
 // plan of one task, and for a run with no plan rows, whose one walk is the issue's own. It is the one
 // statement of "this task's end ends the issue", which two readers ask before they wait for the
-// issues beneath: the close of a merge (closeMerged) and the hold before a retro (beneathRetro).
+// issues beneath: the close of a merge (closeMerged) and the hold before a retro (retroHeld).
 // Every other task's merge, and its retro, waits for nothing beneath.
 func (e *Engine) lastToFinish(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
 	if s.plan == nil {
@@ -134,10 +133,10 @@ func tasksWaitingOn(stored *record.StoredPlan, task string) []string {
 // A move into its first step does what any move into a step does (transition): a first step whose
 // role the deployment no longer defines starts no role, and the task stops where it stands
 // (stopLostRole); a first step of the owner's acceptance starts its step under the agent it names
-// (startNamedStep); and the merge forward follows the start (mergeForwardOnEntry). At the gate's
-// opening (trigger TriggerGateOpened) the run's plan node is written after the first task's
-// status, so the rows read status, node, start for every plan, as the one task of a plan of one
-// always wrote them. The journal names the task only where the plan holds a choice of tasks
+// (Engine.start, startStandingStep); and the merge forward follows the start (mergeForwardOnEntry).
+// At the gate's opening (trigger TriggerGateOpened) the run's plan node is written after the first
+// task's status, so the rows read status, node, start for every plan, as the one task of a plan of
+// one always wrote them. The journal names the task only where the plan holds a choice of tasks
 // (textNamesTask): a plan of one keeps the line of its move out of admitted. It runs at the gate's
 // opening (gateOpened), at each move of a task to done (transition), and, through startReadyNow,
 // once at each other door whose fact may let a task start: a version of the plan taken after the
@@ -235,15 +234,8 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			view := s.issue
 			if err := e.start(ctx, tx, s, role, readPull(pr), func(at Standing) string {
 				return task(view, at, record.PhaseRow{}, "")
-			}, false); err != nil {
+			}, from, false); err != nil {
 				return record.Issue{}, err
-			}
-			if to == phase.Accepting {
-				if step, ok := standingStep(s.walk, s.issue); ok {
-					if err := e.startNamedStep(ctx, tx, s, step); err != nil {
-						return record.Issue{}, err
-					}
-				}
 			}
 			if err := e.mergeForwardOnEntry(ctx, tx, s, pr); err != nil {
 				return record.Issue{}, err

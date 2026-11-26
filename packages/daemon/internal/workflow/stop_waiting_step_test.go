@@ -43,8 +43,8 @@ func startsOfAgent(t *testing.T, key string, agent claim.Agent, starts ...[]reco
 // wait, and no step_stop is queued, since neither step was delivered: k's process goes on with m's
 // step. m's step passes, which frees k: the settle starts nothing of y. The end of d's join, which
 // its stop left behind, changes nothing: d stays stopped and its conflicts are not written. A later
-// version that changes y and d starts each again at its first step (restartTask), each waiting for
-// its join again, and y's step starts under k's claim once its join ends.
+// version that changes y and d starts each again at its first step (startAtFirstStep), each
+// waiting for its join again, and y's step starts under k's claim once its join ends.
 //
 // The fault it catches is a stopped task whose step keeps its wait, and a stop that ends the
 // process of another task's step (its controls: StopTask that keeps the wait, under which y's row

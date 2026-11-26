@@ -34,16 +34,18 @@
 -- 20261121165047 too runs this block before that migration's own. The release before writes each
 -- row with `on conflict (issue)`, which needs the key of one row for each issue, and decodes no
 -- task_pull_requests_close row. So the block deletes each such row first, since the check written
--- again without the kind refuses a row that holds it; then keeps, of each issue, the row on the
--- branch of the task that merges (the one task of its plan at its generation that no task needs,
--- on the branch its row holds or on legion/<KEY> where it holds none) or on legion/<KEY> where the
--- issue has no plan rows there, and deletes the others, which takes the settled heads of each with
--- it; keys pull_requests by the issue again, and pull_request_settled_heads by (issue, kind, head)
--- without its branch, with the foreign key 20261120144241 wrote; and deletes its version row,
--- which is owed to the roll-forward, so that it runs this file again. What the way back costs is
--- the row of each task's pull request but the one that merges, and what it remembered of its
--- settled heads: the record holds it no longer, so a later event of that pull request names no
--- row.
+-- again without the kind refuses a row that holds it, and writes that check keeping main's two basis
+-- seeds (pending_basis_seed and reparent_seed), which this file's own list does not name, since
+-- main's 20261122154643 stays recorded after the way back and a queued row of either stays with
+-- it; then keeps, of each issue, the row on the branch of the task that merges (the one task of
+-- its plan at its generation that no task needs, on the branch its row holds or on legion/<KEY>
+-- where it holds none) or on legion/<KEY> where the issue has no plan rows there, and deletes the
+-- others, which takes the settled heads of each with it; keys pull_requests by the issue again,
+-- and pull_request_settled_heads by (issue, kind, head) without its branch, with the foreign key
+-- 20261120144241 wrote; and deletes its version row, which is owed to the roll-forward, so that it
+-- runs this file again. What the way back costs is the row of each task's pull request but the one
+-- that merges, and what it remembered of its settled heads: the record holds it no longer, so a
+-- later event of that pull request names no row.
 --
 -- begin;
 -- delete from outbox where kind = 'task_pull_requests_close';
@@ -54,7 +56,8 @@
 --   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
 --   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
 --   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
---   'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch'));
+--   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
+--   'task_branch'));
 -- delete from pull_requests pr where pr.branch <> coalesce((select coalesce(nullif(t.branch, ''), 'legion/' || t.issue) from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pr.issue and not exists (select 1 from plan_tasks u where u.issue = t.issue and u.generation = t.generation and t.task = any(u.needs)) order by t.task limit 1), 'legion/' || pr.issue);
 -- alter table pull_request_settled_heads drop constraint pull_request_settled_heads_issue_fkey,
 --   drop constraint pull_request_settled_heads_pkey;

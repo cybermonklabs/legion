@@ -27,13 +27,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -841,31 +841,14 @@ func tasksCopyTools(t *testing.T) map[string]string {
 		}
 		wrapper := filepath.Join(dir, tool)
 		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
-		writeExecutable(t, wrapper, script, 0o700)
+		// execfile.Write keeps every fork of this process out while the wrapper is open for
+		// writing, so a child another test forks then cannot make its exec fail (ETXTBSY).
+		if err := execfile.Write(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatalf("write the %s wrapper %s: %v", tool, wrapper, err)
+		}
 		tools[tool] = wrapper
 	}
 	return tools
-}
-
-// writeExecutable writes body to path, a file of mode that a child of this process then runs.
-// syscall.ForkLock is held for reading while the file is open for writing, as leakguard's
-// writeCopyFile holds it: a child another test forks in that span would hold the write descriptor
-// until its own exec closed it, and the kernel refuses to run a file open for writing (ETXTBSY).
-func writeExecutable(t *testing.T, path, body string, mode os.FileMode) {
-	t.Helper()
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		t.Fatalf("write the executable %s: %v", path, err)
-	}
-	if _, err := file.WriteString(body); err != nil {
-		_ = file.Close()
-		t.Fatalf("write the executable %s: %v", path, err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatalf("write the executable %s: %v", path, err)
-	}
 }
 
 // tasksGitHub is GitHub's REST API over one real repository, liveRepo (githubtest.GitRepository):

@@ -532,6 +532,93 @@ func valueStripCases() map[string]valueStripCase {
 				Detail: "a cache ran out of room", Source: undeclaredValue,
 			}}},
 		},
+		// The two strips of gateBasisContract's values read a mixed pod recording 178 and
+		// gateBasisContract, and no pod reading counts the gateBasisContract claim: podContracts
+		// leaves out a claim at shapedAnswersContract or above, since every build from there states
+		// its contract in the header. So the pod is served as its 178 process alone, on both sides,
+		// and these cases hold each strip to the body that process reads; a strip keyed to the pod's
+		// highest contract is held by the stated callers of awaiting_children_narrow_test.go and
+		// gate_basis_wire_test.go instead, and the strip's own half by the value no row declares
+		// below. Each value arrived after its field, whose arrival is no contract a pod reading can
+		// place above, so no case names a value that arrived with the field.
+		//
+		// A gated step on an ancestor's basis reads `open_on_basis` or `pending_on_basis`, which a
+		// reader from 55 up to the contract below gateBasisContract refuses the whole body for, so
+		// the pod is served neither issue's `gatedSteps`, and every other issue keeps its gated steps
+		// as the body at gateBasisContract serves them. The band of the same contract takes those
+		// lists for the same caller first (shapeIssue runs the bands before the strips), so the strip
+		// finds nothing left to take on this pod.
+		droppedStepStatus: {
+			state: populatedState, low: pauseContract, high: entryNumber(gateBasisContract),
+			carries: func(t *testing.T, body []byte) bool {
+				for _, statuses := range stepStatusesServed(t, body) {
+					if slices.ContainsFunc(statuses, onBasisStatus) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := stepStatusesServed(t, mixed)
+				for key, statuses := range stepStatusesServed(t, whole) {
+					var want []string
+					if !slices.ContainsFunc(statuses, onBasisStatus) {
+						want = statuses
+					}
+					if !reflect.DeepEqual(served[key], want) {
+						t.Errorf("the {%d, %d} pod is served %s's gated steps as %v, want %v: an issue a step of which stands on a basis is served none, and every other issue its own",
+							pauseContract, entryNumber(gateBasisContract), key, served[key], want)
+					}
+				}
+			},
+			// A gated step whose status is a word no row declares.
+			undeclaredIssue: Issue{Key: "LEGION-214", GatedSteps: []GatedStepView{
+				{Step: record.DesignStepSpec, Status: GatedStepStatus(undeclaredValue)},
+			}},
+		},
+		// An issue in `awaiting_children`, and the word at `heldFrom` and at a held task's `phase`,
+		// which no reader below gateBasisContract admits: the pod is served the issue's `phase` as
+		// `admitted` and neither other key where it names the word, and every other phase word as
+		// the body at gateBasisContract serves it.
+		droppedPhase: {
+			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: entryNumber(gateBasisContract),
+			carries: func(t *testing.T, body []byte) bool {
+				for _, word := range phaseWordsServed(t, body) {
+					if word == string(phase.AwaitingChildren) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := phaseWordsServed(t, mixed)
+				for place, word := range phaseWordsServed(t, whole) {
+					got, carried := served[place]
+					// The pod is below deploymentRolesContract too, so a hold from step and a task
+					// queued for step are served as of implementing (shaping.go's
+					// withoutDeploymentRoles), a band that runs before this strip.
+					want := word
+					if word == string(phase.Step) {
+						want = string(phase.Implementing)
+					}
+					switch {
+					case word != string(phase.AwaitingChildren) && got != want:
+						t.Errorf("the {%d, %d} pod is served %s as %q, want %q: the strip takes only the word its process refuses",
+							pauseContract, entryNumber(gateBasisContract), place, got, want)
+					case word == string(phase.AwaitingChildren) && strings.HasSuffix(place, " phase") && got != string(phase.Admitted):
+						t.Errorf("the {%d, %d} pod is served %s as %q, want admitted: the issue's own phase is a key every reader requires",
+							pauseContract, entryNumber(gateBasisContract), place, got)
+					case word == string(phase.AwaitingChildren) && !strings.HasSuffix(place, " phase") && carried:
+						t.Errorf("the {%d, %d} pod is served %s as %q, want the key left off",
+							pauseContract, entryNumber(gateBasisContract), place, got)
+					}
+				}
+			},
+			// An issue whose phase, `heldFrom` and architect's held task each name a word no row
+			// declares.
+			undeclaredIssue: Issue{Key: "LEGION-215", Phase: phase.Phase(undeclaredValue), HeldFrom: undeclaredValue,
+				Architect: &ClaimView{Session: "ses_architect_215", PendingTask: &PendingTaskView{Phase: phase.Phase(undeclaredValue), QueuedAt: answeredAt}}},
+		},
 		// A pod recording the contract before shapedAnswersContract is served every issue held for
 		// `task-stopped` or `children` without its `holdReason`: the two arrived at
 		// OwnerPlanContract, and the pod's process reads the key with `z.literal("escalated")`.
@@ -574,18 +661,20 @@ func valueStripCases() map[string]valueStripCase {
 		// A pod recording the contract before shapedAnswersContract is served each row of
 		// `admission.held` under `children_before_retro` or `task_stopped` as `unclassified` with
 		// no `heldBy`: the two arrived at OwnerPlanContract, after the field, and the pod's process
-		// reads `reason` with a `z.enum` of the eleven words before them. Every other row stays as
-		// it stands. The pod's claim at OwnerPlanContract moves neither half, as above. The
-		// eleven words arrived with the field at heldContract and ride its band, which follows the
-		// pod's highest contract; no pod whose highest reads the new words is a pod at all, so
-		// that half is read on a pod recording the floor and the contract before
+		// reads `reason` with a `z.enum` of the eleven words before them, and a row of the
+		// `awaiting_children` gateBasisContract added as `children_first`, the word that wait took
+		// over, with its `heldBy`, which names what that word names (heldReasonStandIn). Every
+		// other row stays as it stands. The pod's claim at OwnerPlanContract moves neither half,
+		// as above. The eleven words arrived with the field at heldContract and ride its band,
+		// which follows the pod's highest contract; no pod whose highest reads the new words is a
+		// pod at all, so that half is read on a pod recording the floor and the contract before
 		// shapedAnswersContract (TestAnOlderCallerReadsTheNewHeldWordsAsUnclassified) rather than
 		// here.
 		droppedHeldWord: {
-			state: heldWordIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
+			state: heldWordAndWaitIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
 			carries: func(t *testing.T, body []byte) bool {
 				for _, row := range heldRowsServed(t, body) {
-					if row["reason"] == string(record.HeldChildrenBeforeRetro) || row["reason"] == string(record.HeldTaskStopped) {
+					if arrivalsAt("admission.held.*.reason").heldBack(row["reason"].(string), shapedAnswersContract-1) {
 						return true
 					}
 				}
@@ -595,7 +684,10 @@ func valueStripCases() map[string]valueStripCase {
 				served := heldRowsServed(t, mixed)
 				for key, row := range heldRowsServed(t, whole) {
 					want := row
-					if row["reason"] == string(record.HeldChildrenBeforeRetro) || row["reason"] == string(record.HeldTaskStopped) {
+					switch {
+					case row["reason"] == string(record.HeldAwaitingChildren):
+						want = map[string]any{"issue": key, "reason": string(record.HeldChildrenFirst), "heldBy": row["heldBy"]}
+					case arrivalsAt("admission.held.*.reason").heldBack(row["reason"].(string), shapedAnswersContract-1):
 						want = map[string]any{"issue": key, "reason": string(record.HeldUnclassified)}
 					}
 					if !reflect.DeepEqual(served[key], want) {
@@ -688,6 +780,78 @@ func failureCausesServed(t *testing.T, body []byte) map[string]string {
 		}
 	}
 	return causes
+}
+
+// onBasisStatus is whether status is one of the two words a step on an ancestor's basis reads.
+func onBasisStatus(status string) bool {
+	return status == string(GatedStepOpenOnBasis) || status == string(GatedStepPendingOnBasis)
+}
+
+// stepStatusesServed is the `status` of each gated step a served body carries, by the issue that
+// carries them, in their order; an issue served no `gatedSteps` is in no entry.
+func stepStatusesServed(t *testing.T, body []byte) map[string][]string {
+	t.Helper()
+	var state struct {
+		Issues map[string]struct {
+			GatedSteps []struct {
+				Status string `json:"status"`
+			} `json:"gatedSteps"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	served := map[string][]string{}
+	for key, issue := range state.Issues {
+		for _, step := range issue.GatedSteps {
+			served[key] = append(served[key], step.Status)
+		}
+	}
+	return served
+}
+
+// phaseWordsServed is every phase word a served body carries at the three fields that take one:
+// each issue's `phase`, its `heldFrom`, and the `phase` of the task its architect and each of its
+// workers holds, by `<issue> <field>`; a key the body leaves off is in no entry.
+func phaseWordsServed(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+	type task struct {
+		PendingTask *struct {
+			Phase string `json:"phase"`
+		} `json:"pendingTask"`
+	}
+	var state struct {
+		Issues map[string]struct {
+			Phase     string `json:"phase"`
+			HeldFrom  string `json:"heldFrom"`
+			Architect *task  `json:"architect"`
+			Workers   map[string]struct {
+				Claim task `json:"claim"`
+			} `json:"workers"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	served := map[string]string{}
+	carry := func(place, word string) {
+		if word != "" {
+			served[place] = word
+		}
+	}
+	for key, issue := range state.Issues {
+		carry(key+" phase", issue.Phase)
+		carry(key+" heldFrom", issue.HeldFrom)
+		if issue.Architect != nil && issue.Architect.PendingTask != nil {
+			carry(key+" architect.pendingTask.phase", issue.Architect.PendingTask.Phase)
+		}
+		for role, worker := range issue.Workers {
+			if worker.Claim.PendingTask != nil {
+				carry(key+" workers."+role+".pendingTask.phase", worker.Claim.PendingTask.Phase)
+			}
+		}
+	}
+	return served
 }
 
 // eachValueStrip runs read on each row of valueStrips with that row's case, in a subtest named

@@ -166,7 +166,7 @@ func block(id, text string, needs ...string) plan.Task {
 // reason gone. The issue stands in implementing throughout: a runs.
 //
 // The fault it catches is a task that starts again before its needs are done (its control:
-// restartTask starting the stopped task at its first step whatever its needs, which starts d).
+// startAtFirstStep starting the stopped task at its first step whatever its needs, which starts d).
 func TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()

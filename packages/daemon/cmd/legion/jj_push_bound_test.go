@@ -167,14 +167,16 @@ func TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 				f.mutableHistory(rolePushIDsHistory)
 				return []string{"git", "push", option, f.seed + ".." + f.read("legion/K-1").commit}
 			}
-			// jj alone runs no form of Legion's, so one twin stands for both forms.
+			// jj alone runs no form of Legion's, so its twin needs one fixture, the pod's.
 			twin := newRolePushFixture(t, rolePushPod, "")
 			args := setup(twin)
 			if code, _, stderr := trailerRunInput(t, twin.repo, twin.env(twin.setupPath, rolePushImplementer), strings.NewReader(""), twin.real, args...); code != 0 {
 				t.Fatalf("jj alone exited %d:\n%s", code, stderr)
 			}
 			twin.checkIDsHistory(option, rolePushReviewer)
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			// The step's own logic: rolePushStepLogic. The lowered bound's first row below checks the
+			// word bound in both forms.
+			rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushRecords)
 				args := setup(f)
 				divergent := f.divergence()
@@ -255,7 +257,8 @@ func TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 	}
 	ids := func(cs []rolePushChange) string { return strings.Join(rolePushCommitIDs(cs), " | ") }
 	rolePushRunArgs(t, rolePushRecords, []rolePushArgsRow{
-		{name: "-c <C1> | <C2> | <C3>", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+		// The word bound's check that the two forms agree (rolePushArgsRow.bothForms).
+		{name: "-c <C1> | <C2> | <C3>", bothForms: true, setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			cs := work(f, rolePushLowBound)
 			return split(f, "-c", ids(cs), cs, 2, false)
 		}},
@@ -563,6 +566,8 @@ func rolePushSize(words ...string) int {
 func TestAMetaeditPastTheLimitOfACommandRunsInParts(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
+	// The limit of a command's check that the two forms agree: the pod's line carries the
+	// git.executable-path words and each form's environment its own PATH, all of it in the size.
 	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, rolePushMeasuresMetaedit)
 		f.mutableHistory(rolePushPartsHistory)

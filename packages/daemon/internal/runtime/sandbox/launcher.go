@@ -436,9 +436,7 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 	}
 	err := session.conn.SetWriteDeadline(deadline)
 	if err == nil {
-		stopCancel := context.AfterFunc(ctx, func() { _ = session.conn.Close() })
-		err = session.write.WriteFrame(frame)
-		stopCancel()
+		err = d.writeFrame(ctx, session, frame)
 		_ = session.conn.SetWriteDeadline(time.Time{})
 	}
 	session.mu.Unlock()
@@ -450,12 +448,13 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 	if err != nil {
 		session.close()
 		// A write the launcher never took ends at its deadline with the connection's timeout
-		// rather than ctx's error, and when that deadline is ctx's, ctx's own timer, set for the
-		// same instant, may not have ended ctx yet. Such a write ended because ctx did: it is
-		// reported as ctx's end, as the wait for the answer below reports it, so a caller telling
-		// its own bound from another (serveLeakCheck's hop, boundRanOut) reads the same error
-		// whichever of the two the bound caught.
-		if ctxBound && errors.Is(err, os.ErrDeadlineExceeded) {
+		// rather than ctx's error: at ctx's own deadline when that is the write's (ctxBound), whose
+		// timer, set for the same instant, may not have ended ctx yet, or at once when ctx ended
+		// some other way and writeFrame moved the deadline to the present. Such a write ended
+		// because ctx did: it is reported as ctx's end, as the wait for the answer below reports it,
+		// so a caller telling its own bound from another (serveLeakCheck's hop, boundRanOut) reads
+		// the same error whichever of the two the bound caught.
+		if errors.Is(err, os.ErrDeadlineExceeded) && (ctxBound || ctx.Err() != nil) {
 			<-ctx.Done()
 			return nil, nil, fmt.Errorf("%w: %w", ctx.Err(), err)
 		}
@@ -476,6 +475,26 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	}
+}
+
+// writeFrame writes frame to session, cutting the write when ctx ends while the launcher has not
+// taken the whole frame: ctx's end moves the connection's write deadline to the present, which ends
+// a write still in progress with the connection's timeout and leaves alone a write the launcher has
+// taken, so a frame the launcher holds keeps its connection, and the request that follows, the Stop
+// of what the frame may have started among them, reaches the same launcher. A deadline ctx's end
+// has already begun to move is waited for, so requestSession's reset of the deadline comes after it.
+// A cut write's error closes the session (requestSession).
+func (d *launchers) writeFrame(ctx context.Context, session *launcherSession, frame shimwire.Frame) error {
+	cut := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(cut)
+		_ = session.conn.SetWriteDeadline(time.Now())
+	})
+	err := session.write.WriteFrame(frame)
+	if !stop() {
+		<-cut
+	}
+	return err
 }
 
 func (d *launchers) current(session *launcherSession) bool {

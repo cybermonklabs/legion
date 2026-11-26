@@ -141,7 +141,8 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					return engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer)
+					_, err = engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer, false)
+					return err
 				})
 				return pool, resume
 			},

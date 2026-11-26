@@ -103,15 +103,6 @@
         "currentVersion": 4,
         "approvedVersion": 4
       },
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
-          "currentVersion": 4,
-          "approvedVersion": 4,
-          "status": "approved"
-        }
-      ],
       "check": {
         "repo": "acme/widgets",
         "pullRequest": 1239,
@@ -543,13 +534,11 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "workers": {},
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "approvedVersion": null,
-          "status": "unregistered"
-        }
-      ],
+      "designGate": {
+        "artifactId": "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+        "currentVersion": 2,
+        "approvedVersion": null
+      },
       "why": {
         "state": "unlisted",
         "reason": "It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."

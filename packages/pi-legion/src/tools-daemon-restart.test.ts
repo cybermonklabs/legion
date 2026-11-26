@@ -171,8 +171,8 @@ function toolFor(
     },
     handoffReport: async () => ({ handoffId: HANDOFF_ID, handoffVersion: 1, commit: COMMIT }),
     branchHead: async () => "",
-    resolveDocument: async () => {
-      throw new Error("no document lookup expected");
+    dispatch: async () => {
+      throw new Error("no Dispatch read expected");
     },
     restartClock: { now: clock.now, sleep: clock.sleep },
   });

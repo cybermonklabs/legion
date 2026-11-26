@@ -36,7 +36,9 @@
 -- with the daemon stopped, before the earlier image is pinned. It deletes each task_branch row
 -- first, since the check written again without the kind refuses a row that holds it, and the
 -- earlier release decodes no such row; and each task-join-failed notice not yet sent, a kind the
--- earlier release decodes no row of either:
+-- earlier release decodes no row of either. The check it writes again keeps main's two basis seeds
+-- (pending_basis_seed and reparent_seed), which this file's own list does not name: main's
+-- 20261122154643 stays recorded after the way back, and a queued row of either stays with it:
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
@@ -49,7 +51,7 @@
 --     'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
 --     'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
 --     'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
---     'conflict_confirm', 'merge_forward', 'design_changes'));
+--     'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed'));
 --   alter table plan_tasks drop column if exists branch, drop column if exists join_conflicts,
 --     drop column if exists join_unmerged, drop column if exists start_reason;
 --   drop table if exists plan_branches;
