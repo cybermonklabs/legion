@@ -8,8 +8,9 @@ import (
 // Nine sentences of the operator guides each say what the code does, and the sentence each one
 // replaced is gone from its text. Each text is read as prose (proseOf), so a line break or a
 // comment's `#` decides nothing. Each case names the code its sentence states:
-//   - a role's model: a role of `roles` that names a `model` is launched on it, and any other role
-//     on `@default` (daemon's workerSpawnSpec sets SpawnSpec.Model, sandbox's agentArgv);
+//   - a role's model: a role of `roles` or of an issue's plan that names a `model` is launched on
+//     it, and any other role on `@default` (daemon's workerSpawnSpec sets SpawnSpec.Model from the
+//     role's one resolution, resolveClaimRole, sandbox's agentArgv);
 //   - the daemon's controller: `controller: daemon` launches a pane of its own window under tmux
 //     too (runtime/tmux's controllerWindow);
 //   - a review bot's red: a CI settlement moves no phase and tells three roles (workflow's
@@ -47,17 +48,35 @@ func TestTheOperatorGuidesSayWhatTheCodeDoes(t *testing.T) {
 		texts []text
 	}{
 		{
-			name: "a role of roles that names a model runs on it",
+			name: "a role of roles or of a plan that names a model runs on it",
 			texts: []text{
-				{path: runningLegion, want: []string{
-					"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.",
-				}},
-				{path: routeReadme, want: []string{
-					"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.",
-				}},
-				{path: routeOverlay, want: []string{
-					"A role of roles that names a model runs on that model in legion.yaml, in place of the default line.",
-				}},
+				{
+					path: runningLegion,
+					want: []string{
+						"A role whose `roles.<name>.model` or whose plan's role block names a `model` runs on that model, in place of the `default` line.",
+					},
+					gone: []string{
+						"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.",
+					},
+				},
+				{
+					path: routeReadme,
+					want: []string{
+						"A role whose settings or plan block name a `model` runs on that model, named in `legion.yaml` or the issue's plan, in place of the `default` line.",
+					},
+					gone: []string{
+						"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.",
+					},
+				},
+				{
+					path: routeOverlay,
+					want: []string{
+						"a role whose legion.yaml settings (roles.<name>.model) or plan block names a model is launched with --model and that model.",
+					},
+					gone: []string{
+						"A role of roles that names a model runs on that model in legion.yaml, in place of the default line.",
+					},
+				},
 				{
 					path: kubernetes,
 					want: []string{
@@ -91,7 +110,7 @@ func TestTheOperatorGuidesSayWhatTheCodeDoes(t *testing.T) {
 				path: runningLegion,
 				want: []string{
 					"A review bot's red is now CI like any other, and it moves no phase.",
-					"The daemon names it to the implementer, to the worker of the issue's phase and to the architect that owns the issue.",
+					"The daemon names it to the agent of the implementer's step, to the worker of the issue's phase and to the architect that owns the issue.",
 					"Where the task has a review step, the reviewer also answers each bot thread, and a finding it cannot accept becomes its own.",
 				},
 				gone: []string{
@@ -146,10 +165,10 @@ func TestTheOperatorGuidesSayWhatTheCodeDoes(t *testing.T) {
 				{
 					path: routeReadme,
 					want: []string{
-						"An older model can leave all three once no role and no fallback chain names it.",
+						"An older model can leave all three once no role, no plan and no fallback chain names it.",
 						"A resumed session does not need it, since each launch names its model with `--model`.",
 					},
-					gone: []string{"a resumed session restores its own model"},
+					gone: []string{"a resumed session restores its own model", "once no role and no fallback chain names it"},
 				},
 				{
 					path: kubernetes,
