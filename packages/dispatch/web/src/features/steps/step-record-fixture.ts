@@ -8,6 +8,7 @@ export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">)
     agent: "legion-core-core-1-implementer",
     attempt: 1,
     ended_at: "2026-11-16T09:40:00Z",
+    experiment: null,
     generation: 1,
     issue: "CORE-1",
     kind: "step",
@@ -23,6 +24,7 @@ export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">)
     step: 2,
     task: "default",
     type: "implementation",
+    variant: null,
     ...fields,
   };
 }

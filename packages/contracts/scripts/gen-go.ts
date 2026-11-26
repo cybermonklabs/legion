@@ -33,6 +33,7 @@ import {
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
+  KNOWN_SESSIONS_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
@@ -391,6 +392,11 @@ const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = ${KNOWN_SESSIONS_MAX}
 
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
@@ -759,7 +765,8 @@ const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
 // names a session and a service but no person under the project scope person: the machine
-// holding it has signed nobody in.
+// holding it has signed nobody in. A job's token, under named or public, and an exchange account
+// entry's token naming no person, under named, write as their service.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}

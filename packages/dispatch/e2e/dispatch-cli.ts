@@ -5,7 +5,9 @@ import { baseUrl, e2eAgentToken } from "./api";
 
 // The command is the one agents run - `packages/envoy-client/bin/dispatch.ts`, its own process -
 // so a row spawns that entry rather than calling the library behind it.
-const dispatchEntry = fileURLToPath(new URL("../../envoy-client/bin/dispatch.ts", import.meta.url));
+export const dispatchEntry = fileURLToPath(
+  new URL("../../envoy-client/bin/dispatch.ts", import.meta.url)
+);
 
 /** The session the command acts as: the server records it as each write's actor, and a personal
  *  token's act names it (`actingPerson` in `packages/envoy/internal/dispatch/api/server.go`). */

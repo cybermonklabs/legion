@@ -122,6 +122,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
+		MessageMarkAt: at.Add(-90 * time.Second),
 		AwaitsPod: &runtime.Locator{
 			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, 6),
 			Sandbox: &runtime.SandboxLocator{
@@ -130,7 +131,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 			},
 		},
 		RegisteredPods: supervise.RegisteredPods{Pods: []string{podUID}, Unknown: true},
-		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3,
+		PluginContract: DaemonAPIVersion(), PluginRelaunchFor: DaemonAPIVersion() - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",

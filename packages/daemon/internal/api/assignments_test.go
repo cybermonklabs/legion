@@ -42,7 +42,7 @@ func assignmentsOf(t *testing.T, body []byte, key string) []map[string]any {
 // instant, which is how a reader tells a unit settled at no arm from a unit never drawn, which
 // carries no row — and no key at all, since the wire never writes an empty list.
 func TestTheStateShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
-	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 
 	drawn := memoryDrawnAt.Format("2006-01-02T15:04:05Z")
 	planned := planDrawnAt.Format("2006-01-02T15:04:05Z")
@@ -81,7 +81,7 @@ func TestTheStateServedBelowTheAssignmentsContractKeepsTheMemoryFields(t *testin
 		{name: "a pod a contract below the assignments", contract: assignmentsContract - 1, memory: true},
 		{name: "a pod at the memory contract", contract: memoryContract, memory: true},
 		{name: "a pod below the memory contract", contract: memoryContract - 1},
-		{name: "a pod at this contract", contract: DaemonAPIVersion, memory: true, assigns: true},
+		{name: "a pod at this contract", contract: DaemonAPIVersion(), memory: true, assigns: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), statePodAddr+":41000", podClaims(tc.contract))
@@ -113,9 +113,9 @@ func TestTheAssignmentsContractIsTheContractThatAddedTheField(t *testing.T) {
 		t.Fatalf("assignmentsContract = %d, want %d, the contract whose entry in version.go added each issue's experiment assignments",
 			assignmentsContract, addedAssignments)
 	}
-	if assignmentsContract > DaemonAPIVersion {
+	if assignmentsContract > DaemonAPIVersion() {
 		t.Fatalf("assignmentsContract = %d, above DaemonAPIVersion %d: no caller would ever be served the field",
-			assignmentsContract, DaemonAPIVersion)
+			assignmentsContract, DaemonAPIVersion())
 	}
 }
 
@@ -134,7 +134,7 @@ func TestTheStateServedBelowTheGroupContractCarriesNoPlan(t *testing.T) {
 	}{
 		{name: "a caller stating the contract below the group", claims: podClaims(0), stated: assignmentPlanContract - 1},
 		{name: "a pod at the assignments contract", claims: podClaims(assignmentsContract)},
-		{name: "a caller stating this contract", claims: podClaims(0), stated: DaemonAPIVersion, plan: true},
+		{name: "a caller stating this contract", claims: podClaims(0), stated: DaemonAPIVersion(), plan: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateStating(t, stateServer(t, populatedState(t), tc.claims), statePodAddr+":41000", tc.stated)
@@ -163,8 +163,8 @@ func TestTheAssignmentPlanContractIsTheContractThatAddedTheKey(t *testing.T) {
 		t.Fatalf("assignmentPlanContract = %d, want %d, the contract whose entry in version.go added each assignment's plan",
 			assignmentPlanContract, addedPlan)
 	}
-	if assignmentPlanContract > DaemonAPIVersion {
+	if assignmentPlanContract > DaemonAPIVersion() {
 		t.Fatalf("assignmentPlanContract = %d, above DaemonAPIVersion %d: no caller would ever be served the key",
-			assignmentPlanContract, DaemonAPIVersion)
+			assignmentPlanContract, DaemonAPIVersion())
 	}
 }
