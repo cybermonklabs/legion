@@ -57,6 +57,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -131,6 +132,16 @@ type Count struct {
 	WithAuthorization int
 }
 
+// Request is one request the double received: its route, its method and its URL as the client
+// sent it, query included, so that a test reads which object or which list prefix each request
+// named (a Storage JSON API path's object, a list's prefix parameter, an upload's name
+// parameter), and not only how many of a route there were.
+type Request struct {
+	Route  Route
+	Method string
+	URL    url.URL
+}
+
 // Server is the double, an http.Handler. New makes one, and Serve serves it on a listener the
 // caller holds: a test passes a loopback listener from the module's own helper
 // (testnats.ListenLoopback), and cmd/fakegcs one it binds itself.
@@ -138,7 +149,8 @@ type Count struct {
 // Its fault switches are for tests of the cache's and the fetch's own refusals: FailUpload and
 // FailDelete make a later request answer an error, HoldNext stops an upload before its object
 // becomes visible until the test releases it, Corrupt changes an object's stored bytes behind its
-// metadata, and RefuseSigning makes signBlob answer IAM's refusal. Count reads what it received.
+// metadata, and RefuseSigning makes signBlob answer IAM's refusal. Count and Requests read what it
+// received.
 type Server struct {
 	root         string
 	email        string
@@ -156,6 +168,7 @@ type Server struct {
 	lastGeneration int64
 	sessions       map[string]*session
 	counts         map[Route]Count
+	requests       []Request
 	completions    int
 	deletions      int
 	uploadFaults   []fault
@@ -227,6 +240,14 @@ func (s *Server) Count(route Route) Count {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.counts[route]
+}
+
+// Requests is every request the double received so far, refused ones included, in the order it
+// received them.
+func (s *Server) Requests() []Request {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.requests)
 }
 
 // FailUpload makes the n-th upload request from now (n 1 or more) that would complete an object
@@ -322,8 +343,8 @@ func (s *Server) waitAtHold(ctx context.Context, bucket, name string) bool {
 	}
 }
 
-// ServeHTTP counts the request under its route, refuses a Storage or IAM request without the
-// metadata server's token where Options.RequireToken says so, and serves the rest.
+// ServeHTTP counts and records the request under its route, refuses a Storage or IAM request
+// without the metadata server's token where Options.RequireToken says so, and serves the rest.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route, serve := s.route(r)
 	s.mu.Lock()
@@ -333,6 +354,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		count.WithAuthorization++
 	}
 	s.counts[route] = count
+	s.requests = append(s.requests, Request{Route: route, Method: r.Method, URL: *r.URL})
 	s.mu.Unlock()
 	if s.requireToken && route.authenticated() && r.Header.Get("Authorization") != "Bearer "+s.token {
 		if route == RouteSignBlob {

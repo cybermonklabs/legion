@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	cloud.google.com/go/cloudsqlconn v1.27.0
+	cloud.google.com/go/compute/metadata v0.10.0
 	cloud.google.com/go/storage v1.71.0
 	github.com/aws/aws-sdk-go-v2 v1.47.4
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider v1.75.0
@@ -41,7 +42,6 @@ require (
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.24.4 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.1 // indirect
-	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	cloud.google.com/go/iam v1.15.1 // indirect
 	cloud.google.com/go/monitoring v1.32.1 // indirect
 	cloud.google.com/go/secretmanager v1.22.0 // indirect
