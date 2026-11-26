@@ -1724,10 +1724,12 @@ func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *tes
 // refusal of the record, RBAC's 403, charged on each try, the third failing the claim; and a
 // throttle that outlasts the launch's own deadline, charged once per try after each has sent the
 // patch again while the throttle lasted, so a server that stays overloaded fails the claim rather
-// than holding its launch for ever. Every row runs at the rig's boot timeout: a row that shortened
-// it to 300 ms, to end its tries sooner, put its setup's wait for the role launcher under that
-// bound too, and on a loaded runner the wait ran out, or the setup's launch failed once and left
-// the claim a generation ahead of the setup's events.
+// than holding its launch for ever. Every row runs at the explicit two-second boot timeout
+// (withTestBootTimeout): the throttle row's verdict is that the launch gives up at that bound after
+// three tries, so it stays a finite bound rather than the rig's deadline default. A row that
+// shortened it to 300 ms, to end its tries sooner, put its setup's wait for the role launcher under
+// that bound too, and on a loaded runner the wait ran out, or the setup's launch failed once and
+// left the claim a generation ahead of the setup's events.
 func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -1767,7 +1769,7 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil)
+			g := newRig(t, nil, withTestBootTimeout())
 			spec := workerSpec(t)
 			machine, _, _ := supervisedSandboxMachine(t, g, spec)
 			first := startSupervisedSandboxRole(t, g, machine, spec, resumeSession)
