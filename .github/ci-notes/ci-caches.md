@@ -30,8 +30,11 @@ architecture-specific go-licenses binary. The other six put it after the OS.
 On ubuntu-24.04, envoy-go-build and envoy-go-checks restore go-envoy. The cache workflow's
 darwin vet fill also restores it for its module cache. envoy-go-claim-model, the nightly
 browser workflow's re-record job and the two jobs of ci-job-dispatch-two-builds.yaml, whose
-ceiling step and twobuild test step build out of that set, restore go-envoy-test on that runner. The other CI readers
-of these two families run on ubuntu-24.04-arm, so the fill builds on both runner types.
+ceiling step and twobuild test step build out of that set, restore go-envoy-test on that runner.
+dispatch-memory, dispatch-multiprocess, envoy-go-race and envoy-go-race-api restore go-envoy-test
+on ubuntu-24.04-arm: their ceiling step and tests read its modules and, for the two plain ones,
+its objects. The other CI readers of these two families run on ubuntu-24.04-arm too, so the fill
+builds on both runner types.
 
 dispatch-browser.yaml's binaries job, on ubuntu-24.04, restores go-dispatch-browser and not
 go-envoy-test ([its restore's notes](dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser)

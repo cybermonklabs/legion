@@ -1,0 +1,13 @@
+# The five packages the replay installs into IOC_VENV, by name and version, torch at the
+# version of its CPU build. evidence/ioc-venv.lock is their resolution, hashed, compiled from
+# evidence/ioc-venv/pyproject.toml, which holds the same five requirements and adds the one
+# thing this file cannot say, torch's only source; env.sh installs IOC_VENV from the lock
+# alone. The build checks the two equal: env.sh's ioc_env_python_pinned holds each package
+# the lock installed to its line here, so a drift between the two fails ioc_env_python_pinned.
+# pypdf, added on 2026-11-18, is the PDF reader of the rows that print the words of their
+# study PDF.
+sentence-transformers==6.3.0
+torch==2.15.0+cpu
+rdflib==7.6.0
+pyshacl==0.40.2
+pypdf==5.1.0

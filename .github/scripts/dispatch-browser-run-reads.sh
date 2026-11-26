@@ -451,7 +451,7 @@ case "$mode" in
     # above the whole figure and not cancelled is one whose seconds this figure then understates,
     # and this budget is the looser for it by exactly the difference. The same holds for a wait
     # out of a GitHub rate limit: since main's #4893 a read of the jobs API waits for the limit's
-    # reset within the step's 3 minutes and the job's 4, whichever ends first (gh-read.sh's
+    # reset within the step's 4 minutes and the job's 5, whichever ends first (gh-read.sh's
     # gh_wait_reset, with STEP_TIMEOUT_MINUTES on "Reading one, the rows", the step that makes
     # that read, and JOB_TIMEOUT_MINUTES on the merge job). Job 138031009105's log (2,899 lines,
     # read on 2026-11-24) holds no rate-limit line and no `waiting N s`, so no such wait is inside
