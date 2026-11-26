@@ -72,16 +72,18 @@
 // which serves no such route, the run stops there, since every later case records a result too.
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
-// seed, the probe issue, the counter of reads, a phase's fixture, the boundary of one pass) exits
-// 2 naming it. Under VERIFICATION_RESULTS_E2E_ONLY so does a failed case other than the named one:
-// a negative control that stops there never reached its own check (summarise).
+// seed, the delivery intake's bind, the probe issue, the counter of reads, a phase's fixture, the
+// boundary of one pass) exits 2 naming it. Under VERIFICATION_RESULTS_E2E_ONLY so does a failed
+// case other than the named one: a negative control that stops there never reached its own check
+// (summarise).
 //
 // Until stores-agree, the run writes no delivery settings, as a deployment that never configured
 // the delivery timeline holds none: the intake writes a pull request's head row from its envelope
-// all the same, and every head of the cases before the phases reaches Dispatch that way.
-// stores-agree and limit-of-one write the settings their passes need. older-rows writes them
-// through the release before's build, whose intake takes no event without them, on a database the
-// shell empties before the cases.
+// all the same, and every head of the cases before the phases reaches Dispatch that way. Its
+// durable's first bind starts at the stream's next message, so the setup waits for the bind before
+// any case publishes. stores-agree and limit-of-one write the settings their passes need.
+// older-rows writes them through the release before's build, whose intake takes no event without
+// them, on a database the shell empties before the cases.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -137,12 +139,14 @@ const origin = new URL(dispatchUrl).origin;
 
 /** How long after a pull request's event, measured from its publish, the results route may take
  *  to compare a check with the head that event reports: v-head-no-settings says "within 5
- *  seconds of the event". The intake binds its durable at
- *  start, takes the envelope, reads the pull request from GitHub and writes its head row;
- *  nothing else is waited on, since every other answer is computed while the results are read. */
+ *  seconds of the event". The intake, bound before any case publishes (the setup waits for it),
+ *  takes the envelope, reads the pull request from GitHub and writes its head row; nothing else is
+ *  waited on, since every other answer is computed while the results are read. */
 const headAfterEventMs = 5_000;
 /** How long a phase's start pass may take to end: it reads GitHub for each row it takes. */
 const onePassWaitMs = 120_000;
+/** How long the setup waits for the delivery intake to bind its durable after the server answers. */
+const intakeBindWaitMs = 60_000;
 const pollMs = 250;
 
 const person = "alice";
@@ -1493,6 +1497,31 @@ if (defaultRoute === "mapping") {
   note(
     `setup: the server serves no PUT /api/v1/projects/{key}/default-repository (a build before #4457), so each project's default repository is its repository mapping marked default, and ${attributionSecondRepo} is mapped to ${attributionProject}`
   );
+}
+
+// The delivery intake binds its durable at boot, with no delivery settings saved, and its first
+// bind starts at the stream's next message, so an envelope published before that bind is never
+// delivered: the setup waits for the durable to be push-bound before any case publishes one.
+{
+  const manager = await nats.jetstreamManager();
+  const deadline = Date.now() + intakeBindWaitMs;
+  let state = "not read";
+  for (;;) {
+    try {
+      const info = await manager.consumers.info("ENVOY_NOTIFICATIONS", "delivery-events");
+      if (info.push_bound) break;
+      state = "created, not push-bound";
+    } catch (error) {
+      state = error instanceof Error ? error.message : String(error);
+    }
+    if (Date.now() >= deadline) {
+      setupFailed(
+        "the delivery intake's bind",
+        `delivery-events is ${state} after ${intakeBindWaitMs} ms`
+      );
+    }
+    await Bun.sleep(pollMs);
+  }
 }
 
 /** Seeds one issue with a spec that marks one requirement and a Verification document holding

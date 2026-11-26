@@ -109,16 +109,6 @@ func refusalReads(t *testing.T, ctx context.Context, pool *store.Pool) int {
 	return reads
 }
 
-// headRows is how many head rows of repo's pull request number are stored.
-func headRows(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) int {
-	t.Helper()
-	var count int
-	if err := pool.QueryRow(ctx, `select count(*) from pull_request_heads where repo = $1 and number = $2`, repo, number).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	return count
-}
-
 // renameOldcoWidgets records oldco/widgets as renamed to acme/widgets, a repo_projects row as the
 // last release that wrote the pairs left it. A test reads the pair after it, as a boot reads it.
 func renameOldcoWidgets(t *testing.T, ctx context.Context, pool *store.Pool) {
@@ -217,7 +207,7 @@ func TestTheLinkBackfillOwesTheReadOfEachLinkedPullRequestWithNoHead(t *testing.
 	client := fake.newTestClient()
 
 	NewReconcile(pool, client, events.NewBroker(), attributor).runOnce(ctx)
-	if rows := headRows(t, ctx, pool, "acme/widgets", 5063); rows != 0 {
+	if rows := headRowsOf(t, ctx, pool, "acme/widgets", 5063); rows != 0 {
 		t.Fatalf("red: before the backfill a pass stored %d head rows of acme/widgets#5063, which a link written before this release names; want none", rows)
 	}
 
@@ -243,7 +233,7 @@ func TestTheLinkBackfillOwesTheReadOfEachLinkedPullRequestWithNoHead(t *testing.
 	if got.HeadSHA != fakeSHA("6", 5063) || got.State != "merged" {
 		t.Fatalf("green: after the backfill's pass acme/widgets#5063 = head %s state %s, want GitHub's %s merged", got.HeadSHA, got.State, fakeSHA("6", 5063))
 	}
-	if rows := headRows(t, ctx, pool, "acme/widgets", 5067); rows != 1 {
+	if rows := headRowsOf(t, ctx, pool, "acme/widgets", 5067); rows != 1 {
 		t.Fatalf("after the pass acme/widgets#5067, linked by the name before the rename, has %d head rows, want 1", rows)
 	}
 	for _, number := range []int{5063, 5066, 5067, 5068} {

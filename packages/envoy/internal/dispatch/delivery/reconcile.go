@@ -176,11 +176,13 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // RecordDeployedEvents all read a setting (the population, the deploy repository, its workflow
 // paths) or run against the deploy repository's own grants.
 //
-// The intake reads no setting for a head either, for the same reason: it binds its durable
-// whether or not the settings exist and writes the head row of every `pull_request` envelope,
-// leaving a merge of the population and a workflow run to the settings (Intake.Run). This pass
-// re-reads only the rows that exist, so without the intake a pull request that no result's
-// read-through has asked GitHub about is a row nothing writes.
+// The intake's NATS consumer follows the same split: it binds its durable and writes every
+// `pull_request` envelope's head row whatever the settings say, and hands its delivery-timeline
+// work to the settings (Intake.Run, route). Its first bind starts at the stream's next sequence,
+// so turning the intake on hands it none of the stream's 72-hour retained history
+// (heldDurable.takeOver, takeOverStart). This pass re-reads only the rows that exist, so without
+// the intake a pull request that no result's read-through has asked GitHub about is a row nothing
+// writes.
 //
 // Each pass logs one line, `dispatch delivery: reconcile pass`, with `took`: the time from the
 // start of runOnce to its return, at every return. The deferred call writes it, so no step of the

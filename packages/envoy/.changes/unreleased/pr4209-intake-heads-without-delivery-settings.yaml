@@ -9,9 +9,11 @@ body: |-
     envelope: a `labeled` or `edited` event of a closed pull request no longer stores it as open
     again, and an envelope GitHub never sent moves no head. A merge of the delivery population and
     a workflow run still wait for the settings. The first start of a Dispatch whose `delivery-events`
-    durable never existed replays the 72 hours the stream keeps, at one read of each pull request it
-    names, and one more where an event of the second of GitHub's answer comes after that read, at
-    most four at a time.
+    durable never existed begins after the last event the bus holds, as #5525 makes it, so it reads
+    no older event: an open pull request gets its head at its next event, or when a result is
+    recorded at its commit. Events that waited for the intake cost one read of each pull request
+    they name, and one more where an event of the second of GitHub's answer comes after that read,
+    at most four at a time.
 
     No event's head is lost when GitHub does not answer: a delivery whose read of GitHub fails, a
     rate limit included, and GitHub's 404 for a pull request its own event names, record the pull

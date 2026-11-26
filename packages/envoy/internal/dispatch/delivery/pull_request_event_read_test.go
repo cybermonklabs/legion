@@ -321,9 +321,12 @@ func TestAnEnvelopeWritesGitHubsHeadAndStateAndNotItsOwn(t *testing.T) {
 }
 
 // The events of one pull request that waited together cost one read of it, and one more for its
-// events of the second GitHub's answer holds. A first start replays what the stream kept: here 200
-// pull requests, each opened and pushed twice, 600 envelopes, the last push of each at the second
-// of GitHub's answer, and none naming an issue, so the first read of each reads the pull request's
+// events of the second GitHub's answer holds. Events wait together where the intake was stopped:
+// a start after a stop delivers from the durable's ack floor (takeOverStart; a first start begins
+// at the stream's next message and reads no older event, as #5525 makes it, which
+// TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart holds). Here 200 pull
+// requests, each opened and pushed twice, 600 envelopes, the last push of each at the second of
+// GitHub's answer, and none naming an issue, so the first read of each reads the pull request's
 // commit messages too. The first envelope of each reads GitHub, and the row it writes holds
 // GitHub's answer, which answers for the first push, ten minutes older (headReadCovers). The last
 // push is of the answer's own second, which an answer covers no event of, since GitHub's updated_at

@@ -106,18 +106,18 @@ type PushImports interface {
 // branch is one more message it routes (handlePushEnvelope), and it reads no setting, so the
 // importer is handed a push with settings or without.
 //
-// The durable is created with JetStream's DeliverAll (deliveryConsumerConfig), so the first bind
-// in a deployment whose durable never existed is handed all the stream keeps (72 hours,
-// ENVOY_NOTIFICATIONS). That backlog writes the head rows of the pull requests the deployment's
-// earlier releases never stored, each in event order, and a write older than the row it lands on
-// changes nothing (UpsertPullRequestHead). Without settings, no envelope of it reaches the
-// delivery timeline.
+// It binds nothing before the settings cache's first read has answered (SettingsCache.Read),
+// whatever that read found: until then the cache holds nil, and a deployment with settings would
+// route a merge, a workflow run and the event freshness by no settings and drop them. A Run whose
+// ctx ends before that read returns at once, having bound and held nothing. Its first bind starts
+// at the stream's next sequence, so turning the intake on hands it none of the stream's 72-hour
+// retained history (heldDurable.takeOver, takeOverStart).
 //
 // The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
 // setting rebinds it. Each message is routed by the settings the cache holds when its handler
-// runs, so a settings change -- delivery configured for the first time, a different deploy
-// repository or workflow path -- takes effect as soon as the cache has read it, with no restart
-// and no rebind. route does all the filtering, from those settings.
+// runs, so a settings change -- saved settings, a different deploy repository or workflow path --
+// takes effect as soon as the cache has read it, with no restart and no rebind. route does all
+// the filtering, from those settings.
 //
 // Several envoy-dispatch processes run at once during a rolling release, of this build and of the
 // one before it, and exactly one of them delivers from the durable: the one holding its hold
@@ -135,6 +135,11 @@ type PushImports interface {
 // them. Routed rather than ignored because it is the only live-update path for the fork case,
 // which does reach it.
 func (in *Intake) Run(ctx context.Context) {
+	select {
+	case <-in.settings.Read():
+	case <-ctx.Done():
+		return
+	}
 	in.run(ctx)
 }
 
@@ -147,13 +152,17 @@ func (in *Intake) Run(ctx context.Context) {
 // does not handle, is discarded before any GitHub call or write, whatever its other fields hold (a
 // CI settlement's hold arrays, cistore.Summary); only a pull request's, a workflow run's or a
 // push's string fields are read, as the flat string map its handler takes (flatPayload), and every
-// other member is skipped. handled reports whether the kind is one route hands to a handler of the
-// delivery timeline, whatever that handler then decides, so deliver records the event's time for a
-// pull request that was not merged or another repository's run as well. A push is no delivery
-// fact: route hands it to its handler and answers it not handled, with the handler's error, so it
-// records no issue.deployed and does not move the Delivery page's event freshness
-// (RecordEventAt). A payload that is not a JSON object, and a kind that is not a string, are
-// errMalformedPayload.
+// other member is skipped. settings is what the settings cache holds when the envelope arrives,
+// nil while no delivery_settings row is saved: a pull request is handed to its handler either
+// way, since its head row reads no setting, and a workflow run is the delivery timeline's alone,
+// so with no settings it is discarded before any GitHub call (routeWorkflowEnvelope). handled
+// reports whether the kind is one route hands to a handler of the delivery timeline, whatever
+// that handler then decides, so deliver records the event's time for a pull request that was not
+// merged or another repository's run as well; with no settings it is false, since the event
+// freshness is a column of the delivery_settings row (RecordEventAt). A push is no delivery fact:
+// route hands it to its handler and answers it not handled, with the handler's error, so it
+// records no issue.deployed and does not move the Delivery page's event freshness. A payload that
+// is not a JSON object, and a kind that is not a string, are errMalformedPayload.
 //
 // settings is nil where delivery is not configured. A pull request is handled all the same, for
 // its head row, and a workflow run is not handled at all: a run is the delivery timeline's own
@@ -186,7 +195,7 @@ func (in *Intake) route(ctx context.Context, settings *DeliverySettings, raw str
 		if settings == nil {
 			return false, nil
 		}
-		wrote, err = in.routeWorkflowEnvelope(ctx, *settings, flatPayload(fields))
+		wrote, err = in.routeWorkflowEnvelope(ctx, settings, flatPayload(fields))
 	case "push":
 		return false, in.handlePushEnvelope(ctx, flatPayload(fields))
 	default:
@@ -195,7 +204,7 @@ func (in *Intake) route(ctx context.Context, settings *DeliverySettings, raw str
 	if wrote {
 		in.recordDeployed(ctx, *settings)
 	}
-	return true, err
+	return settings != nil, err
 }
 
 // handlePushEnvelope hands a push of a branch to the importer (PushImports): the payload's repo,
@@ -234,18 +243,19 @@ func (in *Intake) recordDeployed(ctx context.Context, settings DeliverySettings)
 // routeWorkflowEnvelope hands a workflow run to handleWorkflowEnvelope as the run kind its file is
 // configured as. The runs this slice records are the deploy repository's own: another repository's
 // run of a file with the same path is not one of them, and routing it would fetch a run this slice
-// never stores. A run of a file neither setting names is not fetched either.
-func (in *Intake) routeWorkflowEnvelope(ctx context.Context, settings DeliverySettings, payload map[string]string) (bool, error) {
-	if payload["repo"] != settings.DeployRepo {
+// never stores. A run of a file neither setting names is not fetched either, and with no settings
+// (nil) no run is.
+func (in *Intake) routeWorkflowEnvelope(ctx context.Context, settings *DeliverySettings, payload map[string]string) (bool, error) {
+	if settings == nil || payload["repo"] != settings.DeployRepo {
 		return false, nil
 	}
 	switch payload["path"] {
 	case settings.DeployWorkflowPath:
-		return in.handleWorkflowEnvelope(ctx, settings, DeliveryRunKindDeploy, payload)
+		return in.handleWorkflowEnvelope(ctx, *settings, DeliveryRunKindDeploy, payload)
 	case settings.PRChecksWorkflowPath:
 		// A pr_checks run is no part of the shipping rule (shippingRunJoin reads deploy runs
 		// alone), so storing one can ship nothing: the envelope ends with no deployed pass.
-		_, err := in.handleWorkflowEnvelope(ctx, settings, DeliveryRunKindPRChecks, payload)
+		_, err := in.handleWorkflowEnvelope(ctx, *settings, DeliveryRunKindPRChecks, payload)
 		return false, err
 	default:
 		return false, nil
@@ -419,6 +429,13 @@ func (t *intakeTuning) ackWait() time.Duration {
 // until a subscriber attaches, so a restart with events waiting loses none of them and none of
 // them count against MaxAckPending in the meantime.
 //
+// It asks for new messages only (DeliverNewPolicy), which a take-over that creates the durable
+// with no start recorded turns into an explicit start at the stream's next sequence (takeOver;
+// takeOverStart says why the start is explicit): the first bind of a deployment that never had the
+// durable must not hand the intake the stream's whole retained history, 72 hours of every GitHub
+// event Envoy relays, none of which it ever processed. Its consumer generation, 2, is the job
+// durable's too (jobConsumerConfig).
+//
 // FilterSubject, AckWait and MaxAckPending keep the values of the build before generations: that
 // build's processes, still running during a rolling release, update a durable whose three differ
 // from theirs in place on every settings poll, so a change to any of them waits until no such
@@ -430,6 +447,7 @@ func deliveryConsumerConfig(tuning *intakeTuning) natsgo.ConsumerConfig {
 		Durable:        bus.DispatchDeliveryDurable,
 		DeliverSubject: natsgo.NewInbox(),
 		FilterSubject:  githubIntakeSubject,
+		DeliverPolicy:  natsgo.DeliverNewPolicy,
 		AckPolicy:      natsgo.AckExplicitPolicy,
 		AckWait:        tuning.ackWait(),
 		MaxAckPending:  tuning.maxAckPending,
@@ -442,7 +460,7 @@ func deliveryConsumerConfig(tuning *intakeTuning) natsgo.ConsumerConfig {
 // consumerGenerationKey metadata. A take-over that finds a durable of a higher generation
 // recreates it with the deployed config rather than this build's (takeOverConfig), so while two
 // builds run, the older one never reverts what the newer one set.
-const consumerConfigGeneration = 1
+const consumerConfigGeneration = 2
 
 // consumerGenerationKey is the consumer metadata key that holds the generation of its config. A
 // durable without it was last created by a build before generations: generation 0.

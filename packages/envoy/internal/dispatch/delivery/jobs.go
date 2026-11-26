@@ -129,8 +129,9 @@ func (j *JobIntake) Run(ctx context.Context) {
 
 // jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
 // name and filter, starting at new messages, since a job event older than the process says nothing
-// the run's end event and the reconcile do not. A take-over recreates it at its ack floor
-// (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
+// the run's end event and the reconcile do not. A take-over creates it at the stream's next
+// sequence when it does not exist, and otherwise right after its ack floor (takeOver,
+// takeOverStart). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
 // deliveryConsumerConfig gives, so it takes none of the intake's tuning.
 func jobConsumerConfig(*intakeTuning) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
