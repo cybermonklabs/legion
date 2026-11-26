@@ -178,7 +178,7 @@ func feedEntryRefusal(name string, dir bool) string {
 // renames the file into place.
 var serverInfoLeftover = regexp.MustCompile(`^(?:info/refs|objects/info/packs)_[A-Za-z0-9]{6}$`)
 
-// cacheConfigKeys are the configuration a repository cache may hold. Git's bare,
+// feedConfigKeys are the configuration a repository cache may hold. Git's bare,
 // single-branch no-tags clone writes remote.origin.url and remote.origin.tagopt. Cache refreshes
 // name their URL and refspec on the command line, so no persistent fetch refspec belongs here.
 var feedConfigKeys = map[string][]string{

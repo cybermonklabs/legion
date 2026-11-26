@@ -40,8 +40,8 @@ const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"
 // read the bound each command was given.
 var newProvisionRunner = workspace.NewRunner
 
-// commandBudget is the slow-command budget of the runners workspace-init's provision, fetch and
-// cache run their commands under: workspace.CommandTimeout, 5 min. It is a variable so that this
+// commandBudget is the slow-command budget of the runners workspace-init's provision and cache
+// run their commands under: workspace.CommandTimeout, 5 min. It is a variable so that this
 // package's tests can give it their own deadline (programbound): a stand-in jj that a loaded machine
 // made slower than the budget would be killed, and the row would read the kill.
 var commandBudget = workspace.CommandTimeout
@@ -83,7 +83,6 @@ func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
 	)
 }
 
-
 func newWorkspaceProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{Use: strings.TrimPrefix(workspaceProvisionUsage, "legion workspace-init "), Short: "fill the issue clone and provision its jj workspace on the pod's disk", Hidden: true, Args: noArguments}
 	issue := cmd.Flags().String("issue", "", "Dispatch issue key, e.g. LEGION-1 (required)")
@@ -108,7 +107,7 @@ func workspaceInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 	return 1
 }
 
-// issuePodInitExit is the exit status of an issue pod's init container, `fetch` or `provision`,
+// issuePodInitExit is the exit status of an issue pod's init container, `provision`,
 // once it has run: workspaceInitExit's, except workspace.InitExitOutsideVolume for a failure whose
 // cause is outside the issue's volume (workspace.ErrOutsideVolume). A new volume does not cure such
 // a cause, so the runtime keeps a kept volume for this exit.

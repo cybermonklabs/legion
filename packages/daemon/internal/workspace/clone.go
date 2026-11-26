@@ -193,6 +193,7 @@ type issuePod struct {
 	clock      Clock
 	log        func(string)
 	fetched    bool
+	defaults   []string
 }
 
 // ForIssuePod reaches GitHub with the mounted provisioning token and, when cacheURL is non-empty,
@@ -457,7 +458,7 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 		}
 	}
 
-	bytes, refs, defaultBranch, err := fetchIssuePod(ctx, run, temporary, source, true)
+	bytes, refs, _, err := fetchIssuePod(ctx, run, temporary, source, true)
 	if err != nil {
 		return err
 	}
@@ -473,19 +474,21 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 	if err := steps.runIn(ctx, run, temporary, []string{"jj", "abandon", "@", "--color=never", "-R", temporary}, nil); err != nil {
 		return err
 	}
-	track, err := onClone(temporary, "bookmark", "track", originRow(defaultBranch))
-	if err != nil {
-		return err
-	}
-	if err := steps.runIn(ctx, run, temporary, track, nil); err != nil {
-		return err
+	for _, ref := range issue.defaults {
+		track, err := onClone(temporary, "bookmark", "track", originRow(strings.TrimPrefix(ref, "refs/heads/")))
+		if err != nil {
+			return err
+		}
+		if err := steps.runIn(ctx, run, temporary, track, nil); err != nil {
+			return err
+		}
 	}
 	issue.fetched = true
 	if issue.cacheURL == "" {
 		issue.log(fmt.Sprintf("no repository cache named: fetched the default branch of %s from GitHub (%s bytes)", issue.repository, groupedBytes(bytes)))
 	} else {
 		issue.log(fmt.Sprintf("%s bytes from the repository cache %s in %s, its history verified in %s; %s bytes from GitHub for the delta (%s)",
-			groupedBytes(stream.Bytes), issue.cacheURL, stream.Duration, stream.VerifyDuration, groupedBytes(bytes), refCount(refs)))
+			groupedBytes(stream.Bytes), issue.cacheURL, stream.Duration.Round(time.Millisecond), stream.VerifyDuration.Round(time.Millisecond), groupedBytes(bytes), refCount(refs)))
 	}
 	return nil
 }
@@ -505,6 +508,7 @@ func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remo
 	if len(defaults) == 0 {
 		return 0, 0, "", fmt.Errorf("GitHub names no default branch for %s", issue.repository)
 	}
+	issue.defaults = defaults
 	defaultBranch := strings.TrimPrefix(defaults[0], "refs/heads/")
 	configured := issuePodRefspecs(defaultBranch, issue.bookmark)
 	fetchRefs := append([]string{}, configured...)
@@ -528,7 +532,7 @@ func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remo
 	if err != nil {
 		return 0, 0, "", err
 	}
-	if err := setIssueHead(ctx, run, gitDir, defaultBranch); err != nil {
+	if err := setIssueHeads(ctx, run, gitDir, defaultBranch, defaults); err != nil {
 		return 0, 0, "", err
 	}
 	if fresh {
@@ -594,16 +598,15 @@ func configureIssueOrigin(ctx context.Context, run Runner, cloneDir string, repo
 	return nil
 }
 
-func setIssueHead(ctx context.Context, run Runner, gitDir, branch string) error {
-	for _, argv := range [][]string{
-		{"update-ref", "refs/heads/" + branch, "refs/remotes/origin/" + branch},
-		{"symbolic-ref", "HEAD", "refs/heads/" + branch},
-	} {
-		if _, err := CacheGit(ctx, run, gitDir, argv...); err != nil {
+func setIssueHeads(ctx context.Context, run Runner, gitDir, current string, defaults []string) error {
+	for _, ref := range defaults {
+		branch := strings.TrimPrefix(ref, "refs/heads/")
+		if _, err := CacheGit(ctx, run, gitDir, "update-ref", "refs/heads/"+branch, "refs/remotes/origin/"+branch); err != nil {
 			return err
 		}
 	}
-	return nil
+	_, err := CacheGit(ctx, run, gitDir, "symbolic-ref", "HEAD", "refs/heads/"+current)
+	return err
 }
 
 func keepIssueRefs(ctx context.Context, run Runner, gitDir, current string, defaults []string, bookmark string) error {
@@ -616,13 +619,11 @@ func keepIssueRefs(ctx context.Context, run Runner, gitDir, current string, defa
 		defaultsByName[strings.TrimPrefix(ref, "refs/heads/")] = true
 	}
 	for ref := range refs {
-		name := strings.TrimPrefix(ref, "refs/remotes/origin/")
 		keep := false
-		switch {
-		case strings.HasPrefix(ref, "refs/heads/"):
-			keep = strings.TrimPrefix(ref, "refs/heads/") == current
-		case strings.HasPrefix(ref, "refs/remotes/origin/"):
-			keep = defaultsByName[name] || (strings.HasPrefix(name, bookmark) && !issueBranchExcluded(name, bookmark))
+		if name, ok := strings.CutPrefix(ref, "refs/remotes/origin/"); ok {
+			keep = defaultsByName[name] || issueBranch(name, bookmark)
+		} else {
+			keep = ref == "refs/heads/"+current
 		}
 		if !keep {
 			if _, err := CacheGit(ctx, run, gitDir, "update-ref", "--no-deref", "-d", ref); err != nil {
@@ -633,11 +634,11 @@ func keepIssueRefs(ctx context.Context, run Runner, gitDir, current string, defa
 	return nil
 }
 
-func issueBranchExcluded(name, bookmark string) bool {
-	if !strings.HasPrefix(name, bookmark) || len(name) == len(bookmark) {
-		return false
-	}
-	return name[len(bookmark)] >= '0' && name[len(bookmark)] <= '9'
+// issueBranch is whether name is one the issue's configured refspecs bring (issuePodRefspecs):
+// bookmark itself or bookmark followed by anything but a digit.
+func issueBranch(name, bookmark string) bool {
+	rest, ok := strings.CutPrefix(name, bookmark)
+	return ok && (rest == "" || rest[0] < '0' || rest[0] > '9')
 }
 
 func groupedBytes(n int64) string {

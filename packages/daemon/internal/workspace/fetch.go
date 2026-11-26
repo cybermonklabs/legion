@@ -65,13 +65,6 @@ type FetchRequest struct {
 	Log           func(line string)
 	Clock         Clock
 	Bound         time.Duration
-	// Feed and the fields below remain only until the removed workspace-fetch tests are deleted.
-	// Production cache callers use Root alone.
-	Feed            string
-	CacheURL        string
-	CacheToken      string
-	RecordedDefault string
-	ReplaceForeign  bool
 }
 
 // CacheStream is the repository-cache input to one issue clone. The cache's bearer token is used
@@ -128,11 +121,7 @@ func StreamCache(ctx context.Context, run Runner, stream CacheStream, gitDir str
 	if stream.Clock == nil {
 		return StreamReport{}, errors.New("workspace repository cache clock is required")
 	}
-	request := FetchRequest{
-		Repo: stream.Repo, CacheURL: stream.URL, CacheToken: stream.Token,
-		Log: stream.Log, Clock: stream.Clock, Bound: stream.bound(),
-	}
-	if err := waitForCache(ctx, request); err != nil {
+	if err := waitForCache(ctx, stream); err != nil {
 		return StreamReport{}, OutsideVolume(err)
 	}
 	exists, err := pathExists(gitDir)
@@ -145,12 +134,12 @@ func StreamCache(ctx context.Context, run Runner, stream CacheStream, gitDir str
 		}
 	}
 	started := stream.Clock.Now()
-	bytes, err := unpackCacheInto(ctx, run, request, gitDir)
+	bytes, err := unpackCacheInto(ctx, run, stream, gitDir)
 	if err != nil {
 		return StreamReport{}, err
 	}
 	verifying := stream.Clock.Now()
-	if err := verifyCache(ctx, run, request, gitDir, verifying.Add(stream.bound())); err != nil {
+	if err := verifyCache(ctx, run, stream, gitDir, verifying.Add(stream.bound())); err != nil {
 		return StreamReport{}, fmt.Errorf("fill the clone from the repository cache %s: %w", stream.URL, err)
 	}
 	return StreamReport{
@@ -207,13 +196,9 @@ func (e outsideVolume) Unwrap() []error { return []error{e.err, ErrOutsideVolume
 // and how much the feed's objects grew across the transfer from GitHub, with how many refs that
 // transfer made, moved or deleted.
 type FetchReport struct {
-	Feed           string
-	Cloned         bool
-	CacheBytes     int64
-	CacheDuration  time.Duration
-	VerifyDuration time.Duration
-	GitHubBytes    int64
-	Refs           int
+	Cloned      bool
+	GitHubBytes int64
+	Refs        int
 }
 
 // Fetch fills the feed with the provisioning token and no configuration but the one-shot
@@ -232,17 +217,9 @@ type FetchReport struct {
 // that does not exist is filled in a temporary sibling, its garbage collection turned off
 // (feedConfiguration), and renamed into place once everything that fills it succeeded, so the
 // feed's repository is whole and current, or absent.
-// With a cache named, it comes from the cache alone: Fetch waits for the cache to be ready
-// (waitForCache), unpacks its tar (unpackCache), verifies it (verifyCache), then fetches from
-// GitHub, by name, the default branch GitHub names and the issue's recorded default, and the
-// Legion issue branches, which is what the issue's clone is made from, after deleting every other
-// branch that is not exactly GitHub's tip
-// (pruneToGitHub, fetchInto); a cache that is not ready within CacheWaitTimeout, or whose tar a
-// feed does not take, fails the fetch, and nothing is cloned from GitHub instead, so the cache's
-// own first clone is the one full download of the repository. With none, the feed is cloned bare
-// from GitHub, or has every branch fetched into it and the ones GitHub deleted pruned: what the
-// cache's own process does. Provision then clones the shared clone from the feed with no
-// credential.
+// It is the repository cache's own process (repocache): a feed that does not exist is cloned bare
+// from GitHub, its default branch alone; one that exists has that branch fetched into it. An issue
+// pod streams the cache's tar into its own clone instead (StreamCache).
 //
 // Each size-following stage of a fetch that holds a clock gets its own bound, FetchTimeout unless
 // the request sets Bound (the repository cache's own first clone), and none starts past the one it
@@ -276,11 +253,7 @@ type FetchReport struct {
 // stream that broke, and a write that failed is the volume's, whatever the stream did. Nor does
 // verifyCache's failure, or any other failure.
 func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, error) {
-	root := request.Root
-	if root == "" {
-		root = request.Feed
-	}
-	cache, err := CacheRepository(root, request.Repo)
+	cache, err := CacheRepository(request.Root, request.Repo)
 	if err != nil {
 		return FetchReport{}, err
 	}
@@ -316,7 +289,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		return FetchReport{}, fmt.Errorf("create cache parent: %w", err)
 	}
 	held := &fetchCredential{remote: credential, env: merge(credential.env, isolatedGitConfig), read: request.Token, held: []string{token}}
-	report := FetchReport{Feed: cache}
+	report := FetchReport{}
 	if present {
 		deadline := request.Clock.Now().Add(request.bound())
 		target, err := remoteHead(ctx, run, request, cache, held, deadline)
@@ -428,83 +401,6 @@ func (r *FetchReport) fromGitHub(ctx context.Context, run Runner, request FetchR
 	return nil
 }
 
-// deltaBranches reads what GitHub holds now, when the feed this fetch fills comes from the
-// repository cache, and answers the branches the delta brings by exact name, as refs, with every
-// branch GitHub has and its tip. The exact branches are the default branch GitHub's HEAD names, and
-// the issue's recorded default (FetchRequest.RecordedDefault) when GitHub still has it under that
-// name and it is another branch: provisioning starts an issue with no branch at the recorded one,
-// so a default GitHub switched since stays current while it exists. It is read with one
-// `git ls-remote --symref <url> HEAD refs/heads/*` under the fetch's credential, retries and
-// deadline, so a recorded default reaches a refspec only as GitHub spells a branch it has. A feed
-// with no cache behind it — the cache's own process — answers none, and takes every branch, pruned,
-// as before; so does a GitHub that names no default branch (nothing pushed yet).
-//
-// The exact branches are what fetchInto narrows the delta to, beside the issue branches: a fetch of
-// every branch pulls whatever anyone pushed to the repository since the cache's last refresh into
-// every issue pod at once, which no pod reads (sjawhar/legion#2235). The branch list is what
-// pruneToGitHub holds the rest of the feed to.
-func deltaBranches(ctx context.Context, run Runner, request FetchRequest, gitDir string, held *fetchCredential, deadline time.Time) ([]string, map[string]string, error) {
-	if request.CacheURL == "" {
-		return nil, nil, nil
-	}
-	target, heads, err := remoteRefs(ctx, run, request, gitDir, held, deadline, "refs/heads/*")
-	if err != nil {
-		return nil, nil, err
-	}
-	if target == "" {
-		return nil, nil, nil
-	}
-	exact := []string{target}
-	if recorded := "refs/heads/" + request.RecordedDefault; request.RecordedDefault != "" && recorded != target {
-		if _, listed := heads[recorded]; listed {
-			exact = append(exact, recorded)
-		}
-	}
-	return exact, heads, nil
-}
-
-// pruneToGitHub deletes from the bare repository gitDir, before the delta, every branch the delta
-// will not bring current and that is not already current: one GitHub no longer lists, and one
-// outside the delta's refspecs (the exact branches, and refs/heads/legion/*) whose tip is not
-// GitHub's (heads, read by deltaBranches). Each removal is logged with its reason. So every branch
-// a feed holds after the fetch is GitHub's as it stood at this fetch, on a fresh feed and a kept
-// one alike, and nothing stale is left to start from. The narrowed delta prunes only within its
-// own refspecs, and a feed a retried fetch finds on the pod's disk is not streamed again, so without
-// this such a feed would keep a branch GitHub deleted, the old name of a default branch GitHub renamed,
-// and the tip it was first streamed at of a branch GitHub moved. A branch created on GitHub after
-// the read is not in heads and is not in the feed either, since nothing the fetch takes is deleted
-// here: only branches the feed held before the delta are candidates.
-func pruneToGitHub(ctx context.Context, run Runner, request FetchRequest, gitDir string, exact []string, heads map[string]string) error {
-	if heads == nil {
-		return nil
-	}
-	held, err := feedRefs(ctx, run, gitDir, true)
-	if err != nil {
-		return err
-	}
-	gone := []string{}
-	for ref, tip := range held {
-		if !strings.HasPrefix(ref, "refs/heads/") || slices.Contains(exact, ref) || strings.HasPrefix(ref, strings.TrimSuffix(issueBranches, "*")) {
-			continue
-		}
-		if heads[ref] != tip {
-			gone = append(gone, ref)
-		}
-	}
-	slices.Sort(gone)
-	for _, ref := range gone {
-		if _, err := CacheGit(ctx, run, gitDir, "update-ref", "--no-deref", "-d", ref); err != nil {
-			return err
-		}
-		why := "GitHub no longer has it"
-		if _, listed := heads[ref]; listed {
-			why = "GitHub has moved it, and this fetch brings only the default branch and the issue branches"
-		}
-		request.Log(fmt.Sprintf("removed %s from the feed: %s", strings.TrimPrefix(ref, "refs/heads/"), why))
-	}
-	return nil
-}
-
 // remoteHead is the ref GitHub's HEAD names, read as remoteRefs reads it; "" when GitHub names
 // none.
 func remoteHead(ctx context.Context, run Runner, request FetchRequest, gitDir string, held *fetchCredential, deadline time.Time) (string, error) {
@@ -544,8 +440,7 @@ func remoteRefs(ctx context.Context, run Runner, request FetchRequest, gitDir st
 // move when there is one. A fetch never moves HEAD, and the cache's own fetch prunes the branches
 // GitHub deleted, so a repository whose default branch GitHub renamed would leave the cache a HEAD
 // naming a branch that is gone: it could publish no head, and an issue's clone would check nothing
-// out. (An issue pod's narrowed fetch
-// removes the old name too, before its delta: see pruneToGitHub.) HEAD moves only to
+// out. HEAD moves only to
 // a branch among fetched, the refs the fetch left: GitHub renaming its branch between the fetch and
 // this read names one the fetch did not bring, so HEAD stays, logged, until a fetch brings it. A
 // clone takes GitHub's HEAD itself. A repository GitHub answers with no default branch (nothing
@@ -654,7 +549,7 @@ const FetchBudget = CacheWaitTimeout + FetchTimeout + FetchTimeout
 // by cacheAsk, and by what remains of the wait, so the wait ends within it. An answer that names
 // another repository (askCache) fails it at once: no wait makes that right. The asks carry no
 // credential (cacheNotReady).
-func waitForCache(ctx context.Context, request FetchRequest) error {
+func waitForCache(ctx context.Context, request CacheStream) error {
 	deadline := request.Clock.Now().Add(CacheWaitTimeout)
 	var logged string
 	var loggedAt time.Time
@@ -668,14 +563,14 @@ func waitForCache(ctx context.Context, request FetchRequest) error {
 		}
 		now := request.Clock.Now()
 		if !now.Add(CachePoll).Before(deadline) {
-			return fmt.Errorf("the repository cache %s was not ready within %s: %s", request.CacheURL, CacheWaitTimeout, why)
+			return fmt.Errorf("the repository cache %s was not ready within %s: %s", request.URL, CacheWaitTimeout, why)
 		}
 		if why != logged || now.Sub(loggedAt) >= time.Minute {
-			request.Log(fmt.Sprintf("waiting for the repository cache %s to be ready: %s", request.CacheURL, why))
+			request.Log(fmt.Sprintf("waiting for the repository cache %s to be ready: %s", request.URL, why))
 			logged, loggedAt = why, now
 		}
 		if err := request.Clock.Sleep(ctx, CachePoll); err != nil {
-			return fmt.Errorf("the wait for the repository cache %s ended: %w", request.CacheURL, err)
+			return fmt.Errorf("the wait for the repository cache %s ended: %w", request.URL, err)
 		}
 	}
 }
@@ -687,7 +582,7 @@ const cacheAsk = 30 * time.Second
 // answers 200 with ready set, within timeout; an answer askCache refuses is the error. The ask
 // carries no credential: the cache answers its health to anyone, and its token goes with the tar
 // alone (unpackCache).
-func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Duration) (string, error) {
+func cacheNotReady(ctx context.Context, request CacheStream, timeout time.Duration) (string, error) {
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	response, err := askCache(bounded, request, "/healthz", false)
@@ -698,7 +593,7 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 	if err != nil {
 		return "", err
 	}
-	cache := strings.TrimSuffix(request.CacheURL, "/")
+	cache := strings.TrimSuffix(request.URL, "/")
 	if response.StatusCode != http.StatusOK {
 		return fmt.Sprintf("GET %s/healthz answered %s", cache, response.Status), nil
 	}
@@ -723,45 +618,34 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 // An answer that refuses the token (401) to a request that carried it, or whose
 // CacheRepositoryHeader is not the request's repository, comes back with the refusal as its error:
 // the caller closes the body and takes nothing it carries.
-func askCache(ctx context.Context, request FetchRequest, path string, withToken bool) (*http.Response, error) {
-	cache := strings.TrimSuffix(request.CacheURL, "/")
+func askCache(ctx context.Context, request CacheStream, path string, withToken bool) (*http.Response, error) {
+	cache := strings.TrimSuffix(request.URL, "/")
 	ask, err := http.NewRequestWithContext(ctx, http.MethodGet, cache+path, nil)
 	if err != nil {
 		return nil, err
 	}
 	if withToken {
-		ask.Header.Set("Authorization", "Bearer "+request.CacheToken)
+		ask.Header.Set("Authorization", "Bearer "+request.Token)
 	}
 	response, err := cacheClient.Do(ask)
 	if err != nil {
 		return nil, err
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
-		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, response.Status)
+		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.URL, cache, path, response.Status)
 	}
 	if named := strings.TrimSpace(response.Header.Get(CacheRepositoryHeader)); !strings.EqualFold(named, request.Repo.String()) {
 		shown := named
 		if shown == "" {
 			shown = `""`
 		}
-		return response, fmt.Errorf("the repository cache %s is the repository cache of %s, not of %s", request.CacheURL, shown, request.Repo)
+		return response, fmt.Errorf("the repository cache %s is the repository cache of %s, not of %s", request.URL, shown, request.Repo)
 	}
 	return response, nil
 }
 
-// unpackCache initializes staging as a bare repository, then unpacks the repository cache tar.
-// The issue clone path uses unpackCacheInto after it has created a normal repository whose .git
-// directory is the tar target.
-func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging string) (int64, error) {
-	if _, err := RunChecked(ctx, run, slices.Concat(feedGit, []string{"init", "--bare", "--quiet", staging}), isolatedGitConfig, filepath.Dir(staging)); err != nil {
-		return 0, err
-	}
-	return unpackCacheInto(ctx, run, request, staging)
-}
-
-// unpackCacheInto streams the cache tar into an existing git directory. CacheStream calls this for
-// a clone's .git; Fetch's cache-only compatibility path calls it through unpackCache.
-func unpackCacheInto(ctx context.Context, run Runner, request FetchRequest, staging string) (int64, error) {
+// unpackCacheInto streams the repository cache's tar into the clone's existing .git directory.
+func unpackCacheInto(ctx context.Context, run Runner, request CacheStream, staging string) (int64, error) {
 	bounded, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stream := &countingReader{window: time.After}
@@ -827,7 +711,7 @@ func unpackCacheInto(ctx context.Context, run Runner, request FetchRequest, stag
 // not whole are refused, naming what failed. Each git command runs within what remains before
 // deadline, the verification's own bound, counted from the stream's end (Fetch); one with nothing
 // left fails the fetch, naming the bound.
-func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging string, deadline time.Time) error {
+func verifyCache(ctx context.Context, run Runner, request CacheStream, staging string, deadline time.Time) error {
 	packs, err := filepath.Glob(filepath.Join(staging, "objects", "pack", "pack-*.pack"))
 	if err != nil {
 		return err
@@ -848,7 +732,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 			}
 			continue
 		}
-		left, err := remaining(request, deadline, "indexing the repository cache's pack "+filepath.Base(pack))
+		left, err := remaining(request.Clock, deadline, "cache stream's", request.bound(), "indexing the repository cache's pack "+filepath.Base(pack))
 		if err != nil {
 			return err
 		}
@@ -856,7 +740,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 			return fmt.Errorf("the repository cache's pack %s, which does not verify: %w", filepath.Base(pack), err)
 		}
 	}
-	left, err := remaining(request, deadline, "checking the repository cache's history is whole")
+	left, err := remaining(request.Clock, deadline, "cache stream's", request.bound(), "checking the repository cache's history is whole")
 	if err != nil {
 		return err
 	}
@@ -956,12 +840,13 @@ func trailingHash(path string, hash func() hash.Hash) ([]byte, error) {
 	return written, nil
 }
 
-// remaining is what is left before deadline, by request's clock, for what runs next, or the
-// fetch's failure naming it and the bound once nothing is.
-func remaining(request FetchRequest, deadline time.Time, what string) (time.Duration, error) {
-	left := deadline.Sub(request.Clock.Now())
+// remaining is what is left before deadline, by clock, for what runs next, or the failure naming
+// it and the bound of the stage (whose) it runs in once nothing is. It takes the clock and bound
+// rather than a request, so a cache stream's checks and a GitHub transfer share it.
+func remaining(clock Clock, deadline time.Time, whose string, bound time.Duration, what string) (time.Duration, error) {
+	left := deadline.Sub(clock.Now())
 	if left <= 0 {
-		return 0, fmt.Errorf("the fetch's %s bound ran out before %s", request.bound(), what)
+		return 0, fmt.Errorf("the %s %s bound ran out before %s", whose, bound, what)
 	}
 	return left, nil
 }
@@ -1079,47 +964,6 @@ type feedTransfer struct {
 	dir         string
 }
 
-// fetchInto is the transfer into a feed repository that exists, with the remote named by its URL
-// in the argv rather than read from the feed's configuration.
-//
-// An issue pod's feed (exact set, read by deltaBranches: the default branch GitHub's HEAD names,
-// and the issue's recorded default while GitHub has it) takes those branches by name and every
-// Legion issue branch, and nothing else: what the issue's clone is made from — feedRemote fetches
-// the recorded default branch and the issue's own bookmark by name and no other. Every other
-// branch the feed holds is GitHub's own tip or absent: before the delta, Fetch deletes each one
-// GitHub no longer lists or has moved (pruneToGitHub), on a fresh feed and a kept one alike, since
-// this fetch's prune reaches only its own refspecs and a feed a retried fetch finds on the pod's disk
-// is not streamed again. An agent that wants one of those branches as GitHub has it now fetches it from GitHub
-// through its clone's origin. A branch outside the delta is then never pulled into every issue pod
-// at once: one deployment's issue pods each fetched 1.27 GB of one upstream-sync branch pushed
-// five minutes before they launched, which with the cache's stream and verification left nine of
-// fourteen pods over FetchTimeout, each restarting the whole fetch (sjawhar/legion#2235). The issue
-// branches' refspec is a pattern, so a fetch brings whichever exist and never fails on an issue
-// whose branch is not pushed yet. The fetch prunes, and with refspecs on its command line git
-// prunes only the refs those refspecs write: an issue branch GitHub deleted leaves the feed, as
-// provisioning relies on (a bookmark with no row on the feed starts at the default branch, and the
-// refusals that tell an operator to delete a branch on GitHub promise the next provisioning drops
-// its row). A recorded default GitHub no longer has is not in exact, and pruneToGitHub deletes it
-// before the delta, so provisioning refuses an issue with no branch whose recorded default is gone
-// (baseCommit) rather than starting it from an old tip.
-//
-// The repository cache's own process (exact empty) takes every branch instead, pruned of those
-// GitHub deleted: what it holds is what every issue pod of its repository starts from.
-func fetchInto(feed string, repo ghrepo.Repository, exact []string) feedTransfer {
-	argv := slices.Concat(feedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir=" + feed, "fetch", "--prune", "--quiet", GitHubURL(repo)})
-	if len(exact) == 0 {
-		return feedTransfer{verb: "fetch", argv: append(argv, "+refs/heads/*:refs/heads/*"), dir: feed}
-	}
-	for _, ref := range exact {
-		argv = append(argv, "+"+ref+":"+ref)
-	}
-	return feedTransfer{verb: "fetch", argv: append(argv, "+"+issueBranches+":"+issueBranches), dir: feed}
-}
-
-// issueBranches is the pattern every Legion issue branch of a repository matches: Bookmark names
-// an issue's branch `legion/<KEY>`.
-const issueBranches = "refs/heads/legion/*"
-
 // stageBeside is the temporary sibling of feed a feed that lacks the repository is filled in. A
 // sibling an earlier Fetch left — killed before it renamed or removed it — is removed first and
 // logged: only Fetch writes beside the feed's repository, and a killed clone of a large repository
@@ -1184,7 +1028,7 @@ func CacheGitWithin(ctx context.Context, run Runner, gitDir string, timeout time
 // that succeeded.
 func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, transfer feedTransfer, held *fetchCredential, deadline time.Time) (Result, error) {
 	now := request.Clock.Now()
-	if _, err := remaining(request, deadline, "the "+transfer.verb+" from GitHub"); err != nil {
+	if _, err := remaining(request.Clock, deadline, "fetch's", request.bound(), "the "+transfer.verb+" from GitHub"); err != nil {
 		return Result{}, err
 	}
 	for attempt := 1; ; attempt++ {
