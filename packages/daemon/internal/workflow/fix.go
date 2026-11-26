@@ -1300,9 +1300,7 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 			fix.GotReport = true
 			// A fix that still reads its job has raised no entry, so no message can name it: the
 			// report waits on the fix's row, and the task of its start speaks it (fixTask).
-			if fix.State == record.FixReading {
-				fix.Reports += " " + reportSentence(step, handoff, stepStart.PushBranch)
-			}
+			_ = stepStart
 		} else {
 			fix.ReturnTo = earlierReturn(fix.ReturnTo, *end.ReturnedTo)
 		}
