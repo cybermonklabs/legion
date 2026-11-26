@@ -10,10 +10,10 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
 
 /**
  * What a Legion role does when OpenAI refuses its turn under `cyber_policy`, before anything
- * reaches the daemon (dispatch://INFRA-3199/comment/00866212-c6b4-4a5c-93db-ebcf149389de: "just
- * retry. Retry with a message appended. Compacted retry. And then ... fall back to a weaker model
- * that's in the configured fallback chain. That's from the same family."). A content filter is
- * often stochastic, so the same request can pass a second time.
+ * reaches the daemon. The operator asked for a retry ladder before a hold: a plain retry, a retry
+ * with a message appended, a compacted retry, and then a weaker model of the same family from the
+ * configured fallback chain, never another family. A content filter is often stochastic, so the
+ * same request can pass a second time.
  *
  * One pass of four rungs, one try each, each after its own wait:
  *
