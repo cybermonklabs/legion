@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // startWaitsForPod queues a start of role on the rig's issue as a try of the outbox leaves it when
@@ -48,10 +49,10 @@ func podWaitHeldNotices(t *testing.T, r *idleRig) []string {
 	return reasons
 }
 
-// An operator's suspension that holds a pod a role's start waits for is a wait nothing ends until
-// the operator acts: main's rule keeps the pod for the suspension. The
-// controller is told once for each streak of that hold, with what holds the pod, and told again
-// only when a later streak begins.
+// A suspension the operator or the controller holds over a pod a role's start waits for is a
+// wait nothing ends until the one who suspended the claim acts: main's rule keeps the pod for the
+// suspension. The controller is told once for each streak of that hold, with what holds the pod
+// and who suspended the claim, and told again only when a later streak begins.
 func TestAnOperatorsSuspensionThatHoldsAWaitingPodIsToldOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -66,10 +67,13 @@ func TestAnOperatorsSuspensionThatHoldsAWaitingPodIsToldOnce(t *testing.T) {
 		if len(notices) != 1 {
 			t.Fatalf("the first pass queued %d pod-wait-held notices, want one", len(notices))
 		}
-		for _, want := range []string{"checker", rig.issue.Key, "implementer (suspended)"} {
+		for _, want := range []string{"checker", rig.issue.Key, "The operator suspended implementer (suspended)."} {
 			if !strings.Contains(notices[0], want) {
 				t.Errorf("the notice's reason %q does not name %q", notices[0], want)
 			}
+		}
+		if strings.Contains(notices[0], "The controller suspended") {
+			t.Errorf("the notice's reason %q names the controller, want the operator alone", notices[0])
 		}
 		if holds := rig.records(t).Holds; len(holds) != 1 {
 			t.Errorf("holds recorded = %+v, want the pass's one hold", holds)
@@ -86,6 +90,21 @@ func TestAnOperatorsSuspensionThatHoldsAWaitingPodIsToldOnce(t *testing.T) {
 		rig.w.releaseUnownedPods(ctx)
 		if notices := podWaitHeldNotices(t, rig); len(notices) != 2 {
 			t.Errorf("after the streak ended and the hold read again the outbox holds %d pod-wait-held notices, want two", len(notices))
+		}
+	})
+	t.Run("the controller's suspension holds the pod", func(t *testing.T) {
+		rig := newIdleRig(t)
+		rig.w.records = rig.issues
+		rig.suspendedAs(t, supervise.SuspendedByController)
+		rig.startWaitsForPod(t, "checker")
+
+		rig.w.releaseUnownedPods(ctx)
+		notices := podWaitHeldNotices(t, rig)
+		if len(notices) != 1 {
+			t.Fatalf("the pass queued %d pod-wait-held notices, want one", len(notices))
+		}
+		if !strings.Contains(notices[0], "The controller suspended implementer (suspended).") || strings.Contains(notices[0], "The operator suspended") {
+			t.Errorf("the notice's reason %q, want it to name the controller's suspension of the implementer and no operator", notices[0])
 		}
 	})
 	t.Run("no start waits", func(t *testing.T) {
