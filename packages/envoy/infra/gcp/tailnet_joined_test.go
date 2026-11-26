@@ -15,9 +15,11 @@ import (
 // tailnetJoined is the script the golden writes to /etc/envoy/tailnet-joined, run here by /bin/sh
 // with jq from this machine, and docker and sleep stubbed first on PATH: docker answers each
 // `docker exec tailscaled tailscale status --json` with the next of the states it is given, and
-// fails for the state "down", as it does while the container is not up yet. Before it answers it
-// writes what the data disk holds at that moment to EFFECTS_LOG, the marker and the key file, so
-// a test reads when the script acted on them and not only where it left them.
+// fails for the state "down", as it does while the container is not up yet. Two states are answers
+// no reader can take as one JSON value: "two-values", a Running value with a second value after
+// it, and "text-after", a Running value with text after it. Before it answers it writes what the
+// data disk holds at that moment to EFFECTS_LOG, the marker and the key file, so a test reads when
+// the script acted on them and not only where it left them.
 const dockerStub = `#!/bin/sh
 printf '%s\n' "$*" >>"$DOCKER_LOG"
 marker=absent
@@ -27,8 +29,12 @@ key=unreadable
 printf '%s key=%s\n' "$marker" "$key" >>"$EFFECTS_LOG"
 n=$(wc -l <"$DOCKER_LOG")
 state=$(printf '%s\n' $STATES | sed -n "${n}p")
-[ "$state" = down ] && exit 1
-printf '{"BackendState":"%s","Self":{}}\n' "$state"
+case "$state" in
+down) exit 1 ;;
+two-values) printf '{"BackendState":"Running","Self":{}}{"Self":{}}\n' ;;
+text-after) printf '{"BackendState":"Running","Self":{}} not-json\n' ;;
+*) printf '{"BackendState":"%s","Self":{}}\n' "$state" ;;
+esac
 `
 
 // joinedUntouched is one status call's reading of the data disk while the script has done
@@ -132,7 +138,8 @@ func yamlUnmarshalGolden(t *testing.T, doc *gcp.CloudConfig) error {
 // on the VM no longer than the first login needs, and no later boot fetches it. The data disk is
 // read at each status call as well as at the end, so a script that emptied the key or wrote the
 // marker before the node ran would fail here: where it left the two files cannot say when it
-// acted on them.
+// acted on them. An answer that is not one JSON value is not Running either, though it holds a
+// Running value: the script asks again after it, and acts only on the whole Running answer.
 func TestTailnetJoinedWaitsForTheNodeToRunThenDropsTheKey(t *testing.T) {
 	run := runJoined(t, "down", "NeedsLogin", "Starting", "Running")
 	require.Equal(t, []string{"5", "5", "5"}, run.sleeps, "it asks again every 5 seconds")
@@ -148,6 +155,22 @@ func TestTailnetJoinedWaitsForTheNodeToRunThenDropsTheKey(t *testing.T) {
 	key, err := os.ReadFile(run.key)
 	require.NoError(t, err, "the key file stays, for tailscaled's bind mount")
 	require.Empty(t, key, "the key is dropped")
+	for _, row := range []struct{ name, answer string }{
+		{"two values, the first Running", "two-values"},
+		{"a Running value with text after it", "text-after"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			run := runJoined(t, row.answer, "Running")
+			require.Equal(t, []string{"5"}, run.sleeps, "it asks again after an answer it cannot take whole")
+			require.Equal(t, []string{joinedUntouched, joinedUntouched}, run.effects,
+				"no marker and the whole key until the whole Running answer")
+			_, err := os.Stat(run.marker)
+			require.NoError(t, err, "the marker is written")
+			key, err := os.ReadFile(run.key)
+			require.NoError(t, err)
+			require.Empty(t, key, "the key is dropped")
+		})
+	}
 }
 
 func TestTailnetJoinedAtOnceWhenTheNodeRuns(t *testing.T) {

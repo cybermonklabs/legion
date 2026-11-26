@@ -310,12 +310,13 @@ func (v vm) fetchKeyUnit() string {
 // and exits non-zero: its unit runs the script again, and every later boot fetches and drops the
 // key again until a drop succeeds. tailscaled writes its state file before it logs in (tailscale
 // v1.104.1 ipn/ipnlocal/local.go:3185-3190, 4496-4526), so the file's existence does not mean the
-// node has joined: hence the marker. jq reads the whole answer as one array (-s) and asks the
-// first value of it, so the wait ends only on one well-formed JSON value saying Running: every
-// other answer makes the predicate exit non-zero, and any non-zero status keeps the loop
-// waiting, whatever reads the JSON. No answer at all, which docker exec gives while the
-// container is not up, is the empty array and false: exit 1 under jq 1.6, 1.7.1 and 1.8.2 and
-// under jaq 3.1.1. An answer the reader cannot take whole, a value with text after it among
+// node has joined: hence the marker. jq reads every JSON value of the answer into one array
+// (-s), and the predicate is true only when that array holds exactly one value and that value's
+// BackendState is Running. Every other answer makes it exit non-zero, and any non-zero status
+// keeps the loop waiting, whatever reads the JSON. No answer at all, which docker exec gives while
+// the container is not up, is the empty array; two or more values, the first Running among them,
+// are an array of two or more: both are false, exit 1 under jq 1.6, 1.7.1 and 1.8.2 and under
+// jaq 3.1.1. An answer that is not JSON throughout, a Running value with text after it among
 // them, is a parse error: exit 4 under jq 1.6, 5 under jq 1.7.1, jq 1.8.2 and jaq 3.1.1. `jq -e`
 // on the value alone would end the wait on no answer at all under jq 1.6, which exits 0 there,
 // and would take a Running value with text after it, which this one refuses.
@@ -332,7 +333,7 @@ key=$2
 command -v jq >/dev/null 2>&1 ||
   { echo 'tailnet-joined: no jq on this machine, so the node status cannot be read' >&2; exit 1; }
 until docker exec tailscaled tailscale --socket=/tmp/tailscaled.sock status --json 2>/dev/null |
-  jq -es '.[0].BackendState == "Running"' >/dev/null 2>&1; do
+  jq -es 'length == 1 and .[0].BackendState == "Running"' >/dev/null 2>&1; do
   sleep 5
 done
 : >"$key" && touch "$marker"

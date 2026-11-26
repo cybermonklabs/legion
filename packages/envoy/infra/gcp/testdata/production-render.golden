@@ -9229,7 +9229,7 @@
                     "      command -v jq >/dev/null 2>&1 ||",
                     "        { echo 'tailnet-joined: no jq on this machine, so the node status cannot be read' >&2; exit 1; }",
                     "      until docker exec tailscaled tailscale --socket=/tmp/tailscaled.sock status --json 2>/dev/null |",
-                    "        jq -es '.[0].BackendState == \"Running\"' >/dev/null 2>&1; do",
+                    "        jq -es 'length == 1 and .[0].BackendState == \"Running\"' >/dev/null 2>&1; do",
                     "        sleep 5",
                     "      done",
                     "      : >\"$key\" && touch \"$marker\"",
