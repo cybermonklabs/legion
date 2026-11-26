@@ -1375,14 +1375,27 @@ func (s *server) storeArtifact(
 		// only it decides - is set over them once Commit has returned, with no statement, so a
 		// carry that answered the request reports nothing and a dropped one reports the moved
 		// request. A new document carries no request either.
-		superseded = s.supersededApprovalAdvice(r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number)
-		movedRead = s.movedApprovalRequestAdvice(r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID)
+		// A report whose savepoint could not be rolled back left tx aborted: the route answers
+		// that failure, rather than sending its write phase on tx (adviceTxError).
+		var err error
+		if superseded, err = s.supersededApprovalAdvice(r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if movedRead, err = s.movedApprovalRequestAdvice(r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	var advice *writeAdvice
 	if target.IssueKey != nil && issueStatus != nil {
-		advice = s.writeAdvice(
+		var err error
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, adviceAsks{}, *issueStatus, "", false,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
@@ -2300,8 +2313,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		// answers, which the write phase keeps or drops as only it decides (a restore's carry),
 		// are set over them once Commit has returned, with no statement, so an edit whose carry
 		// answered the request leaves it with the person and reports nothing.
-		superseded = s.supersededApprovalAdvice(r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number)
-		movedRead = s.movedApprovalRequestAdvice(r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID)
+		// A report whose savepoint could not be rolled back left tx aborted: the route answers
+		// that failure, rather than sending its write phase on tx (adviceTxError).
+		var err error
+		if superseded, err = s.supersededApprovalAdvice(r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if movedRead, err = s.movedApprovalRequestAdvice(r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// An edit hears about the asks of this issue a person declined to answer only where it added
 	// an ask block, which is the write R6 asks the reminder for: "an edit of one of the issue's
@@ -2309,9 +2331,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// such read.
 	var advice *writeAdvice
 	if artifact.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
+		var err error
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, adviceAsks{}, *status, "", len(edit.AddedAskBlocks) > 0,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

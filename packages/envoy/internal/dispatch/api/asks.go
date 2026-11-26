@@ -224,11 +224,16 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
 	// a question, so it hears about the asks of this issue a person declined to answer, and the
 	// same question is not put to them again.
+	// An advice savepoint that could not be rolled back left tx aborted: the route answers that
+	// failure, rather than sending its write phase on tx (adviceTxError).
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
 	if err != nil {
@@ -385,7 +390,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// failed carries nothing to hang it on; both report no review.
 	var standing standingSpecRead
 	if advice != nil && owner.IssueKey != nil {
-		standing = s.standingReviewAdvice(r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey)
+		if standing, err = s.standingReviewAdvice(r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

@@ -747,10 +747,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if labelsAfter != nil {
 		afterRow.labels = *labelsAfter
 	}
-	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
+	// An advice savepoint that could not be rolled back left tx aborted: the write answers that
+	// failure, rather than sending its write phase on tx (adviceTxError).
+	advice, err := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks.asks),
 		opened:   askIDs(reopened.asks),
 	})
+	if err != nil {
+		return issueWriteResult{}, err
+	}
 	// What the issue's waits stand at, read here in the read phase, under the owner lock, for the
 	// write below to move (readIssueNeeds).
 	var heldNeeds heldIssueNeeds

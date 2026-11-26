@@ -537,11 +537,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		parentRef = &parentKey
 	}
 	// A new issue is in triage (the column's default), and its row - its labels and its parent -
-	// is not written yet (writeAdviceBefore).
-	advice := s.writeAdviceBefore(
+	// is not written yet (writeAdviceBefore). An advice savepoint that could not be rolled back left
+	// tx aborted: the route answers that failure, rather than sending its write phase on tx
+	// (adviceTxError).
+	advice, err := s.writeAdviceBefore(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
 		adviceIssueRow{project: input.Project, parent: parentRef, labels: labels}, adviceAsks{},
 	)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 
 	// The write phase: the statements from here on run back to back.
 	var written int
@@ -995,9 +1001,13 @@ func (s *server) respondWithExistingExternalIssue(
 		s.writeHandlerError(w, err)
 		return
 	}
-	advice := s.writeAdvice(
+	advice, err := s.writeAdvice(
 		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, adviceAsks{}, existingStatus, "", false,
 	)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := adviceReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
