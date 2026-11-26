@@ -2,6 +2,7 @@ package architecture
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -231,11 +232,11 @@ func TestEachLeasedImportPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 // the client leaves to its caller and notes nothing of -- a 404 on the installation lookup, a
 // missing Contents permission, a 422 for the branch's head, the directory or a file -- so in each
 // failed row only the sync's own note can make the record say so, and its cause names what
-// failed. A directory GitHub answers 404 for is an empty model (Dir), and notes that do not parse
-// and a note over notes.MaxFileSize, which DirFiles refuses by its listed size before any blob
-// read, are the source's content, which last_error records: none is a read of GitHub that failed,
-// and each records succeeded, the pass having sent the installation, token, head and directory
-// reads.
+// failed. A directory GitHub answers 404 for is an empty model (Dir), and notes that do not parse,
+// a note over notes.MaxFileSize and a listing over notes.MaxFiles, which DirFiles refuses by the
+// listing before any blob read, are the source's content, which last_error records: none is a
+// read of GitHub that failed, and each records succeeded, the pass having sent the installation,
+// token, head and directory reads.
 func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -247,6 +248,8 @@ func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 		// lastError is whether the sync records a failure on the source row: every row but the
 		// empty directory's, since notes that do not parse fail the sync without failing a read.
 		lastError bool
+		// lastErrorHas is what a recorded last_error must name, where the row names one.
+		lastErrorHas string
 	}{{
 		name: "a source whose repository the App is not installed on",
 		// GitHub answers the installation lookup of a repository the App is not installed on 404.
@@ -284,6 +287,16 @@ func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 		succeeded: true,
 		lastError: true,
 	}, {
+		name: "a source whose listing names more notes than a set holds",
+		arrange: func(fake *fakeSource) {
+			for i := range notes.MaxFiles {
+				fake.files[fmt.Sprintf("extra-%04d.md", i)] = "# Extra\n"
+			}
+		},
+		succeeded:    true,
+		lastError:    true,
+		lastErrorHas: notes.ErrSetTooLarge.Error(),
+	}, {
 		name: "a source whose notes do not parse",
 		arrange: func(fake *fakeSource) {
 			fake.files = map[string]string{"api.md": "x\n", "API.md": "duplicate\n"}
@@ -306,6 +319,9 @@ func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 			}
 			if (lastError != "") != row.lastError {
 				t.Fatalf("the source's last_error after the pass = %q, want one recorded: %t", lastError, row.lastError)
+			}
+			if !strings.Contains(lastError, row.lastErrorHas) {
+				t.Fatalf("the source's last_error after the pass = %q, want it to name %q", lastError, row.lastErrorHas)
 			}
 			got := reads.take()
 			if len(got) != 1 || got[0].read != githubreads.ArchitectureImport {

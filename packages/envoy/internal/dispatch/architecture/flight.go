@@ -304,11 +304,14 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	}
 	files, importErr := i.github.DirFiles(ctx, token, owner, name, listing)
 	if importErr != nil {
-		// The client refuses a note over notes.MaxFileSize at two points, both
-		// notes.ErrFileTooLarge (notes.CheckSize): by its listed size before any blob read, and by
-		// a blob's decoded size after the read GitHub answered. Either is the source's content
-		// and no failure of GitHub's, so the attempt does not note it.
-		if !errors.Is(importErr, notes.ErrFileTooLarge) {
+		// The client refuses the source's content at two bounds before any blob read, by the
+		// listing: a set over notes.MaxFiles or notes.MaxSetSize is notes.ErrSetTooLarge
+		// (notes.CheckSet), and a note over notes.MaxFileSize is notes.ErrFileTooLarge
+		// (notes.CheckSize), which a blob's decoded size after the read GitHub answered can be too.
+		// Each is the source's content and no failure of GitHub's, so the attempt does not note it,
+		// and the source records it (failed), as the results route reads the same two bounds
+		// (specFilesAt).
+		if !errors.Is(importErr, notes.ErrFileTooLarge) && !errors.Is(importErr, notes.ErrSetTooLarge) {
 			githubreads.NoteFailure(ctx, importErr)
 		}
 		return i.failed(ctx, parent, source, importErr)
