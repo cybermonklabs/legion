@@ -125,12 +125,12 @@ func newAdmissionDrawing(t *testing.T, project string, cap int, steps []record.D
 // architectStart is the task admission queues with the start of a root architect
 // (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: what
 // workflow.ArchitectStartOf reads of the root as it stands now — whether a hand-over carried it in,
-// the design gate rows it holds and the run its architect claim last served — under the gate
-// steps its own admission runs, and what its tree is owed where a person decided something on it
-// while nobody in the tree could hear them (decided). A test about what admission writes names the
-// task through this helper; which shape each root gets, and the whole text of each shape, are
-// pinned in internal/workflow (TestTheArchitectTaskOfEachShape, TestTheArchitectTaskShapeRule)
-// and the delivery to a launched architect in internal/daemon
+// the design gate rows it holds, the run its architect claim last served and the roots that rest
+// on its approval — under the gate steps its own admission runs, and what its tree is owed where a
+// person decided something on it while nobody in the tree could hear them (decided). A test about
+// what admission writes names the task through this helper; which shape each root gets, and the
+// whole text of each shape, are pinned in internal/workflow (TestTheArchitectTaskOfEachShape,
+// TestTheArchitectTaskShapeRule) and the delivery to a launched architect in internal/daemon
 // (TestAFreshAdmissionGivesItsArchitectItsStartTask).
 func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
 	t.Helper()
