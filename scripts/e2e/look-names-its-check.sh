@@ -5,9 +5,10 @@
 # under production_check: tester, and takes look 1 in the tester's session. It runs these checks:
 #   control-client-look-unnamed: a report without check_opened_at gets 409
 #     CHECK_LOOK_NOT_SERVED; legion state --json still shows look 1 open;
-#   client-look-named: the time comes from the task the fake runtime received. A pending
-#     carrying that check_opened_at and wake_at answers {}, and legion state --json shows the
-#     check still open, lookOpen false, and nextWakeAt equal to the time the report named.
+#   client-look-named: the time comes from the text the tester's take of the look's task was
+#     answered with. A pending carrying that check_opened_at and wake_at answers {}, and legion
+#     state --json shows the check still open, lookOpen false, and nextWakeAt equal to the time
+#     the report named.
 # Run on Linux with go, git, jj, bun after bun install, awk, python3 and a loopback
 # LEGION_TEST_PG_DSN: bash scripts/e2e/look-names-its-check.sh.
 # LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR keeps the proof's own log and evidence directory.

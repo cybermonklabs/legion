@@ -2,8 +2,8 @@
 
 // The production look's report goes through executePhaseOp and its real daemon client under
 // bun, against a whole booted daemon and a real Dispatch of this checkout. The check identity
-// comes from the task the fake runtime took, never from the store. Both outcomes are read
-// through the operator's own `legion state --json` command.
+// comes from the text the tester's take of the look's task was answered with, never from the
+// store. Both outcomes are read through the operator's own `legion state --json` command.
 package daemon
 
 import (
