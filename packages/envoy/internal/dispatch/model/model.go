@@ -2164,8 +2164,9 @@ type OwedDocument struct {
 
 // RequirementCoverage is one `requirement` block of an issue's spec and what serves it: the
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
-// any status, that name it in `serves`, but for a block at node state proposed, which is a
-// question still open and serves nothing yet. Gaps is this requirement's own gap lines, the ones
+// any status, that name it in `serves`, but for a block at node state proposed, a question still
+// open, or overtaken: each serves nothing. A live check counts whatever state a node above it
+// holds. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
 // parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
 // are: the words with no link or reference, and the block's whole content as a tree. State is
