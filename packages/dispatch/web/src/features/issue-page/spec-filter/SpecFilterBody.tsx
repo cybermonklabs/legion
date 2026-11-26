@@ -23,6 +23,7 @@ import {
   pageHairBorder,
   pageInkText,
   pageKindBullet,
+  pageKindTag,
   pageLineBorder,
   pageMutedText,
   pagePaperBg,
@@ -938,6 +939,10 @@ function Group({
   report?: { readonly line: string; readonly row: string };
   tabStop: string | undefined;
 }): ReactNode {
+  // A criterion draws no mark: no check serves what a person wants to be able to do, so its row
+  // says nothing of checks, and no "No check" (R1). The run's `marked` stands for every other row.
+  const markOf = (statement: SpecStatement): { readonly marked?: boolean } =>
+    statement.node.type === "criterion" ? { marked: false } : {};
   return (
     <section
       className="mt-[18px] min-w-0"
@@ -971,6 +976,7 @@ function Group({
                 focused={focused === statement.node.id}
                 key={statement.node.id}
                 marked={marked}
+                {...markOf(statement)}
                 onFocus={(row) => onFocus(row, statement.node)}
                 {...(report?.row === statement.node.id ? { report: report.line } : {})}
                 statement={statement}
@@ -1218,6 +1224,11 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
  * its own box rather than `CutWords`, so its chips stand after its last word while the words
  * are whole, and beside "more" while they are cut, which `CutWords`, drawing its words and
  * nothing after them, cannot.
+ *
+ * A criterion of the view is drawn as a statement is, in the statements' bullet colour, with a
+ * line over its words that names its kind as its tag, who wrote it and when, as a group's
+ * heading names its parent: what a person wants to be able to do is theirs, and no statement of
+ * the spec (R1). It carries no mark (`Group`).
  */
 function Statement({
   context,
@@ -1301,6 +1312,33 @@ function Statement({
         />
       </span>
       <div className="flex min-w-0 flex-col">
+        {node.type === "criterion" ? (
+          <p
+            className={`min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
+            data-spec-criterion=""
+          >
+            {dotted([
+              {
+                key: "kind",
+                part: (
+                  <span
+                    className={`font-semibold ${pageKindTag.statement}`}
+                    data-node-tag=""
+                    {...pageChrome}
+                  >
+                    {NODE_TYPE_NAMES.criterion}
+                  </span>
+                ),
+              },
+              {
+                drawn: node.author !== undefined,
+                key: "author",
+                part: <Author actor={node.author} />,
+              },
+              { key: "day", part: node.at === undefined ? null : <Day at={node.at} /> },
+            ])}
+          </p>
+        ) : null}
         <div
           className={`relative text-[15px] leading-6 ${context ? pageQuietText : pageWordsText} ${
             clamped ? "overflow-clip" : ""

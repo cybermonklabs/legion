@@ -610,6 +610,79 @@ test("a row the filter kept that is no statement is in no run", () => {
   expect(read.others.map((one) => one.id)).toEqual(["comment-1"]);
 });
 
+/** A criterion the reader wrote under a comment of theirs, with a statement written under it:
+ *  the tree the Spec view's criterion cases read, a statement of the spec before and after. */
+function criterionTree(): TreeNode {
+  return issueTree([
+    statement("r1"),
+    node({
+      author: READER_ACTOR,
+      children: [
+        node({
+          at: "2026-11-15T10:00:00Z",
+          author: READER_ACTOR,
+          children: [statement("r2")],
+          id: "criterion-1",
+          text: "A person reads the whole spec on a phone.",
+          type: "criterion",
+        }),
+      ],
+      id: "comment-1",
+      text: "Can I read the spec on my phone?",
+      type: "comment",
+    }),
+    statement("r3"),
+  ]);
+}
+
+// R1: a criterion of the view is a row of the statements' list, in the view's order, in the
+// group of the comment it was written under, and no row of `others`.
+test("a criterion is a row of the statements' list, in the view's order", () => {
+  const tree = criterionTree();
+  const read = specDecidedBy({
+    asksHeld: true,
+    checks: [],
+    decisions: decisionsRead([]),
+    nameOf: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+  });
+  expect(
+    read.groups.flatMap((group) =>
+      group.runs.flatMap((run) => run.statements.map((one) => one.node.id))
+    )
+  ).toEqual(["spec#b-r1", "criterion-1", "spec#b-r2", "spec#b-r3"]);
+  expect(read.groups[1]?.parent).toMatchObject({ id: "comment-1", type: "comment" });
+  expect(read.others).toEqual([]);
+});
+
+// R1, R2: a statement written under a criterion hangs under it, so the criterion is the
+// statement's parent line, which heads its group with its words and who wrote it, as a comment
+// heads the statements written under it.
+test("a statement under a criterion carries that criterion as its parent line", () => {
+  const groups = bodyOf(criterionTree());
+  expect(
+    groups.map((group) => [
+      group.parent?.id,
+      group.runs.flatMap((run) => run.statements.map((one) => one.node.id)).join(" "),
+    ])
+  ).toEqual([
+    [undefined, "spec#b-r1"],
+    ["comment-1", "criterion-1"],
+    ["criterion-1", "spec#b-r2"],
+    [undefined, "spec#b-r3"],
+  ]);
+  expect(groups[2]?.parent).toEqual({
+    at: "2026-11-15T10:00:00Z",
+    by: READER_ACTOR,
+    id: "criterion-1",
+    line: "A person reads the whole spec on a phone.",
+    type: "criterion",
+  });
+});
+
 // R2: a statement's parent is no row of the Spec filter, so it heads the group its statements
 // stand in, with who made it and when.
 test("statements under different parents stand in groups of their own", () => {

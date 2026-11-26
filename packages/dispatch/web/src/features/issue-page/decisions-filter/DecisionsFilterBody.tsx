@@ -1,5 +1,6 @@
 import {
   type FocusEvent,
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
@@ -59,7 +60,9 @@ import {
   DECISIONS_PART_ORDER,
   type DecisionsEntry,
   type DecisionsPart,
+  isReadingEntry,
   type NamedEntry,
+  type ReadingEntry,
   waitingOrder,
 } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
@@ -280,7 +283,7 @@ export function DecisionsFilterBody({
 
   // The rows in the order the page draws them, which is the order the outline's keys walk: the
   // node the address names first, then the parts, then the foot's rows while it is unfolded.
-  const drawn = useMemo<readonly (DecisionsEntry | NamedEntry)[]>(
+  const listed = useMemo<readonly (DecisionsEntry | NamedEntry)[]>(
     () => [
       ...parts.named,
       ...parts.open_questions,
@@ -290,6 +293,9 @@ export function DecisionsFilterBody({
     ],
     [footShown, parts]
   );
+  // The same rows with each agent decision's readings right after its row, each a row of its own
+  // (R3): the rows the page draws and the keys walk.
+  const drawn = useMemo(() => listed.flatMap((entry) => [entry, ...readingsOf(entry)]), [listed]);
   // The rows as the outline's keys read them: the nth is the nth row drawn. Each sits at the
   // list's one level, under the root the keys are given, which is the view (`keyOrder`), so Left
   // on a row of the parts finds no row above it and says so, as on a top-level row of the
@@ -398,6 +404,11 @@ export function DecisionsFilterBody({
   const partOf = useMemo(() => {
     const parted = new Map<string, DecisionsPart>();
     for (const part of DECISIONS_PART_ORDER) {
+      // Each entry and each reading under it, in the order the page draws them: a reading stands
+      // in its decision's part, right after it.
+      for (const entry of parts[part]) {
+        for (const held of [entry, ...readingsOf(entry)]) parted.set(held.node.id, part);
+      }
       for (const entry of parts[part]) parted.set(entry.node.id, part);
     }
     return parted;
@@ -773,11 +784,26 @@ export function DecisionsFilterBody({
   const tabStop =
     stop !== undefined && drawn.some((entry) => entry.node.id === stop) ? stop : first;
   const rowFor = (entry: DecisionsEntry | NamedEntry, part: DecisionsPart): ReactNode => {
+    // A decision's readings stand right after its row, each a level under it (R3).
+    if (entry.kind === "decision" && entry.readings !== undefined) {
+      const { readings, ...decision } = entry;
+      return (
+        <Fragment key={entry.node.id}>
+          {rowFor(decision, part)}
+          {readings.map((reading) => rowFor(reading, part))}
+        </Fragment>
+      );
+    }
     const node = entry.node;
     const id = node.id;
     const place = documentOfNode(id, artifacts);
     const mark = threads.get(id);
     const key = rowKeyOf(drawnRowOf(entry, view.id));
+    // A reading stands a level under the decision it reads, and is no entry of the review list
+    // that decision may stand in, so it draws no Keep and no Change.
+    const reading: { readonly level?: number; readonly review?: boolean } = isReadingEntry(entry)
+      ? { level: part === "agents" ? 3 : 2, review: false }
+      : {};
     return (
       <DecisionsRow
         body={focused === id || pinned.has(id) || everything}
@@ -803,6 +829,7 @@ export function DecisionsFilterBody({
         reader={reader}
         {...(report !== undefined && (report.row ?? tabStop) === id ? { report: report.line } : {})}
         review={part === "review"}
+        {...reading}
         rowKey={key}
         statementNames={statementNames}
         tabStop={tabStop === id}
@@ -1026,6 +1053,12 @@ function rowOf(container: HTMLElement | null, id: string): HTMLElement | null {
  *  the key (`rowKeyOf`) the row's own `data-row-key` carries and the editing finds the row by. */
 function drawnRowOf(entry: DecisionsEntry | NamedEntry, viewId: string): DrawnRow {
   return { kind: "node", level: 1, node: entry.node, trail: [viewId] };
+}
+
+/** The readings the list draws right after `entry`'s row, each a row of its own: an agent
+ *  decision's (`DecisionEntry.readings`), and none for any other entry. */
+function readingsOf(entry: DecisionsEntry | NamedEntry): readonly ReadingEntry[] {
+  return entry.kind === "decision" ? (entry.readings ?? []) : [];
 }
 
 /** The entry that stood after `id` in `part` as `before` drew the list, else the one before

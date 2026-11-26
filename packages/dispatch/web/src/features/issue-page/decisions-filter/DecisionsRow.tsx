@@ -49,6 +49,7 @@ import {
 import { RowText } from "../RowText";
 import { pressAsksCaret } from "../useNodeEditing";
 import type { AskDeclined, DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
+import { isReadingEntry } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
@@ -98,6 +99,12 @@ interface RowPerson {
  * message alone (`TreeNode.deletedAt`, `editedAt`), so no other kind of node carries either
  * mark on its own row. A decision's row draws two marks of other nodes: its parent's, on the
  * parent line, and its Change's ` · edited`, after the Change's words.
+ *
+ * A reading of an agent's decision is drawn as a row under the decision's (`ReadingEntry`), as
+ * the outline draws one (`NodeRow.tsx`): in the agents' grey, its kind as its tag and its agent
+ * by its role's word, since it is the agent's account of what the decision means and never the
+ * decision itself (R3). It is no entry of the list and no context, so it draws no state, no
+ * Keep and no Change.
  *
  * The focus opens the row's body, for a decision as for an ask: who made the node where the
  * margin does not say it whole, and the control that keeps the body open.
@@ -221,11 +228,17 @@ export function DecisionsRow({
     const name = statementNames.get(shape.id) ?? "";
     return name === "" ? [] : [{ name, shape }];
   });
+  // A reading under its decision is drawn for itself, and no node drawn for its context, as the
+  // node an address names is: its row takes that mark off.
+  const drawnFor: { readonly "data-node-context"?: undefined } = isReadingEntry(entry)
+    ? { "data-node-context": undefined }
+    : {};
   return (
     <div
       aria-level={level}
       className="relative my-0.5 min-w-0 outline-none"
       data-node-context={entry.kind === "named" ? "" : undefined}
+      {...drawnFor}
       data-node-id={node.id}
       data-node-row=""
       data-node-state={standing?.token}
@@ -444,6 +457,8 @@ const KEEP = rowActionSelector("keep");
 /** A question's colour and a decision's; and for the node an address names, which is no entry
  *  of the list, the grey G's outline gives a node it draws for its context (`NodeRow.tsx`). */
 function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
+  // A reading is the agent's words, in the agents' grey (`NodeRow.tsx`'s `toneOf`).
+  if (isReadingEntry(entry)) return "agent";
   switch (entry.kind) {
     case "ask":
       return "question";

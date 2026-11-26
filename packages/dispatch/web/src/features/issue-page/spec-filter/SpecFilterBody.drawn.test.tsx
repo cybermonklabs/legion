@@ -1254,6 +1254,60 @@ test("a row the address named that is no statement is drawn by its kind, with no
   }
 });
 
+// R1: a criterion of the view is a row of the statements' list, where the view's order puts it:
+// its bullet in the statements' colour, a line over its words naming its kind as its tag and
+// who wrote it, its words, and no mark, "No check" least of all, since no check serves what a
+// person wants to be able to do. A statement written under it draws it as its group's heading.
+test("a criterion is a row of the statements' list, with its tag, its words and its author, and no mark", () => {
+  const words = "A person reads the whole spec on a phone.";
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1", { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check"] }),
+      node({
+        children: [
+          node({
+            at: "2026-11-15T10:00:00Z",
+            author: { id: READER, kind: "user" },
+            children: [statement("r2")],
+            id: "criterion-1",
+            text: words,
+            type: "criterion",
+          }),
+        ],
+        id: "comment-1",
+        text: "Can I read the spec on my phone?",
+        type: "comment",
+      }),
+    ])
+  );
+  try {
+    expect(
+      [...view.container.querySelectorAll("[data-spec-statement]")].map((row) =>
+        row.getAttribute("data-node-id")
+      )
+    ).toEqual(["spec#b-r1", "criterion-1", "spec#b-r2"]);
+    expect(view.container.querySelector("[data-spec-other]")).toBeNull();
+    const row = rowOf(view, "criterion-1");
+    const bulletOf = (one: HTMLElement) => one.querySelector(":scope > span > i")?.className;
+    expect(row.getAttribute("data-node-type")).toBe("criterion");
+    expect(row.querySelector("[data-node-tag]")?.textContent).toBe(NODE_TYPE_NAMES.criterion);
+    expect(row.querySelector("[data-spec-author]")?.textContent).toBe(READER);
+    expect(row.querySelector("[data-node-words]")?.textContent).toBe(words);
+    expect(bulletOf(row)).toBe(bulletOf(rowOf(view, "spec#b-r1")));
+    // The statement beside it carries its mark, here that no check serves it; the criterion
+    // carries none.
+    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("no_check");
+    expect(row.hasAttribute("data-spec-mark")).toBe(false);
+    expect(row.querySelector(":scope > svg[data-glyph]")).toBeNull();
+    const group = rowOf(view, "spec#b-r2").closest<HTMLElement>("[data-spec-group]");
+    expect(group?.getAttribute("data-parent-id")).toBe("criterion-1");
+    expect(group?.querySelector("[data-spec-group-heading]")?.textContent).toContain(words);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // An issue whose spec holds no statement says so, in the words the outline says it in.
 test("an issue with no statements says so in the page's own line", () => {
   const { read, view } = drawBody(issueTree([]));

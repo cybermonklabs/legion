@@ -20,6 +20,7 @@ import type {
 import {
   pageFocusedRow,
   pageInkText,
+  pageKindBullet,
   pageOwnWordsRule,
   pageStateText,
 } from "../../../theme/classes";
@@ -2037,6 +2038,68 @@ test("Enter on a reading edits it in its document's room, and on an answered que
   expect(page.asked.mock.calls.at(-1)?.[0]).toBeUndefined();
   await waitFor(() => expect(document.activeElement).toBe(rowOf(view, D("first"))));
   expect(words(wordsOf(D("first")))).toContain("The decision first.");
+});
+
+// R3: an agent decision's reading is the agent's account of what the decision means, drawn as
+// the row right after the decision's own, a level under it, in its part: in the agents' grey,
+// its kind as its tag, its agent by its role's word, and no Keep and no Change. It is no entry
+// of the part, whose count stays the decisions', and the keys walk it after the decision. An
+// answered question's reading is drawn nowhere.
+test("an agent decision's reading is the row right after it, a level under it, and an answered question's reading draws no row", async () => {
+  const user = userEvent.setup();
+  const reading = decisionNode("note", {
+    author: AGENT,
+    text: "The agent reads it as one rail for every width.",
+    type: "reading",
+  });
+  const view = renderBody({
+    children: [
+      statement("s1"),
+      decisionNode("first", { children: [reading] }),
+      decisionNode("second"),
+      answeredAsk(
+        "a-answered",
+        { at: "2026-11-14T09:00:00Z", text: STORED },
+        { children: [READING], text: "Does the built page work for you?" }
+      ),
+    ],
+    made: [
+      personDecision("a-answered"),
+      decision("first", { links: [shaped(specRef("s1"))] }),
+      decision("second", { links: [shaped(specRef("s1"))] }),
+    ],
+  });
+  const ids = [...view.container.querySelectorAll("[data-node-row]")].map((row) =>
+    row.getAttribute("data-node-id")
+  );
+  expect(ids[ids.indexOf(D("first")) + 1]).toBe(reading.id);
+  expect(ids).not.toContain(READING.id);
+  expect(rowsOfPart(view, "review")).toContain(reading.id);
+  expect(rowOf(view, D("first")).getAttribute("aria-level")).toBe("1");
+  expect(rowOf(view, reading.id).getAttribute("aria-level")).toBe("2");
+  expect(
+    words(view.container.querySelector('[data-decisions-part="review"] [data-decisions-count]'))
+  ).toBe("2");
+
+  const row = rowOf(view, reading.id);
+  expect(row.hasAttribute("data-node-context")).toBe(false);
+  expect(row.querySelector("[data-node-bullet] i")?.classList.contains(pageKindBullet.agent)).toBe(
+    true
+  );
+  expect(words(row.querySelector("[data-node-tag]"))).toBe(NODE_TYPE_NAMES.reading);
+  expect(words(row.querySelector("[data-node-margin] [data-node-author] [data-author-text]"))).toBe(
+    "Architect"
+  );
+  expect(words(row.querySelector("[data-node-words]"))).toBe(reading.text);
+  expect(row.querySelectorAll("button[data-row-action]").length).toBe(0);
+
+  // The keys walk the reading right after its decision, and act on the reading itself: `o`
+  // keeps its body open.
+  await act(async () => rowOf(view, D("first")).focus());
+  await user.keyboard("j");
+  expect(focusedRow(view)).toBe(reading.id);
+  await user.keyboard("o");
+  expect(rowOf(view, reading.id).querySelector("[data-node-body][data-pinned]")).not.toBeNull();
 });
 
 // R14, R19: the Contents pane's list, which asks the outline to go to a node, and an address

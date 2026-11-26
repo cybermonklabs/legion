@@ -8,6 +8,7 @@ import {
   firstSentenceLength,
   isStatement,
   lineWordsRaw,
+  parentLineOf,
   type TreeNode,
 } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
@@ -60,6 +61,12 @@ import { statementStandings } from "../verification-filter/statement-state";
  * (`lineWordsRaw` and `firstBlockWordsRaw`, not `lineWords`, which writes one as its short
  * form), so that `referenceStandIns` names it by the page's name wherever the page knows one,
  * and by its short form only where it does not.
+ *
+ * A criterion of the view - what a person wants to be able to do, written under the question,
+ * comment or message that asked for it - is a row of the statements' list too, in the view's
+ * order (R1), drawn as a statement is by its kind, its words and its author, and with no mark,
+ * since no check serves it. A statement written under a criterion hangs under it: the criterion
+ * is that statement's parent line, and heads the group it stands in.
  *
  * Whether a statement's words changed after the decision beside it is the model's to say, and
  * the model says nothing of it yet, so the view draws nothing of it.
@@ -133,6 +140,8 @@ export interface SpecDecision {
 export interface SpecStatement {
   /** Every other decision that shaped it, beyond the one its run is headed by (R5). */
   readonly alsoShapedBy: readonly SpecDecision[];
+  /** How its checks stand (R17); the row of a criterion draws none, since no check serves what a
+   *  person wants to be able to do (`SpecFilterBody.tsx`'s `Group`). */
   readonly mark: SpecMark;
   /** The node as the filter's view left it, whose words the row draws. */
   readonly node: TreeNode;
@@ -225,6 +234,22 @@ export function specDecidedBy({
   /** The tree as the Spec filter leaves it. */
   readonly view: TreeNode;
 }): SpecReading {
+  // A row the view draws under a criterion carries that criterion as its parent's line, as a row
+  // whose parent the view draws as no row carries its own (`withCriterionLines`), so a statement
+  // written under a criterion stands in the group that criterion heads.
+  const lined = withCriterionLines(view);
+  if (lined !== view) {
+    return specDecidedBy({
+      asksHeld,
+      checks,
+      decisions,
+      nameOf,
+      nodeIdOf,
+      reader,
+      root,
+      view: lined,
+    });
+  }
   const nodes = nodesById(root);
   const asks = asksById(nodes);
   const shaped = shapedBy({ asks, asksHeld, decisions, nameOf, nodeIdOf, nodes, reader });
@@ -235,6 +260,10 @@ export function specDecidedBy({
   }[] = [];
   // The key of the last run built, which the next statement's head is matched against.
   let runKey: string | undefined;
+  // A criterion of the view is a row of the statements' list as well, in the view's order: what
+  // a person wants to be able to do, drawn as a statement is (`SpecFilterBody.tsx`'s
+  // `Statement`). So here a statement is every row `isListed` names.
+  const isStatement = isListed;
   // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
   // A statement is a requirement of the issue's own spec (`isStatement`).
   const rows = nodesInOrder(view).slice(1);
@@ -294,6 +323,32 @@ export function firstSentenceOf(text: string): string {
   const whole = text.replace(/\s+/gu, " ").trim();
   const length = firstSentenceLength(whole);
   return length === undefined ? whole : whole.slice(0, length);
+}
+
+/** Whether `node` is a row of the Spec filter's statements' list: a statement of the spec
+ *  (`isStatement`), or a criterion, what a person wants to be able to do, which the list draws
+ *  as it draws a statement (R1). */
+function isListed(node: TreeNode): boolean {
+  return isStatement(node) || node.type === "criterion";
+}
+
+/** `view` with each row it draws under a criterion carrying that criterion as its parent's line
+ *  (`parentLineOf`), as the view gives that line to a row whose parent it draws as no row
+ *  (`presets.ts`' `liftPast`): the list draws no row under another, so a statement written under
+ *  a criterion stands in the group the criterion heads. `view` itself where every such row
+ *  carries that line already. */
+function withCriterionLines(view: TreeNode): TreeNode {
+  let changed = false;
+  const children = view.children.map((child) => {
+    const drawn = withCriterionLines(child);
+    const lined =
+      view.type === "criterion" && drawn.parentLine?.id !== view.id
+        ? { ...drawn, parentLine: parentLineOf(view) }
+        : drawn;
+    if (lined !== child) changed = true;
+    return lined;
+  });
+  return changed ? { ...view, children } : view;
 }
 
 /** Every node of the tree by its id, at its first placement, which is where a node drawn under

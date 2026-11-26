@@ -291,6 +291,34 @@ test("a person's decision is the answered ask's entry with its ties, and a readi
   }
 });
 
+// R3: an agent decision's reading is the agent's account of what the decision means: a row
+// under the decision's entry (`DecisionEntry.readings`) and no entry of any part, whether the
+// model is handed the whole tree or the Decisions filter's own view of it.
+test("an agent decision's reading stands under the decision's entry, and is no entry of any part", () => {
+  const reading = node({
+    author: AGENT,
+    id: `${SPEC_SLUG}#b-g1`,
+    reference: specRef("g1"),
+    text: "The planner reads the decision as one rail for every width.",
+    type: "reading",
+  });
+  const children = [statement("s1"), decisionNode("d1", { children: [reading] })];
+  const made = [decision("d1", { links: [shaped(specRef("s1"))] })];
+  const views = [
+    undefined,
+    presetView(issueTree(children), "decisions", "", new Set<string>()).root,
+  ];
+
+  for (const view of views) {
+    const parts = partsOf(children, made, [], view);
+    expect(Object.values(idsOf(parts)).flat()).not.toContain(reading.id);
+    expect(idsOf(parts).review).toEqual([D("d1")]);
+    expect(parts.review[0]?.readings?.map((one) => [one.node.id, one.reads])).toEqual([
+      [reading.id, D("d1")],
+    ]);
+  }
+});
+
 // R2: the third part is the reader's own decisions. What another person answered, declined or
 // kept is theirs, and so is a question its asker took back: each is still an entry of the
 // filter, under the heading that says it is not the reader's.

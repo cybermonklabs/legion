@@ -59,6 +59,12 @@ import { type DecisionState, isReader } from "../page-words";
  * filter's view keeps the asks and the decisions alone (`presets.ts`), so a reading is an entry
  * only where the address names it, as any other node the address names is.
  *
+ * A reading of an agent's decision is the agent's account of what that decision means, which
+ * the view keeps under the decision (`presets.ts`): it is a row under the decision's entry
+ * (`DecisionEntry.readings`), drawn in the agents' grey by its author, and no entry of any part
+ * (R3). A reading whose decision the view leaves out, under words the decision does not hold,
+ * stays a row of its own kind before the parts, as a node the address names does.
+ *
  * This module is pure. It holds no React and makes no request, so the body
  * (`DecisionsFilterBody.tsx`) and the unit tests read one model.
  *
@@ -170,6 +176,9 @@ export interface DecisionEntry extends EntryBase {
   /** The person who kept it (`DecisionKeep.kept_by`), where it stands kept. */
   readonly keptBy?: Actor;
   readonly kind: "decision";
+  /** The readings of it the view keeps, in reading order, each a row under the decision's own
+   *  (R3); absent where it has none. */
+  readonly readings?: readonly ReadingEntry[];
   /** How it stands, where the model gives it a state (`NODE_STATE_WORDS.decision`). */
   readonly standing?: DecisionState;
 }
@@ -178,6 +187,20 @@ export interface DecisionEntry extends EntryBase {
  *  kind by its words. */
 export interface NamedEntry extends EntryBase {
   readonly kind: "named";
+}
+
+/** A reading of an agent's decision, drawn as a row under the decision's entry (R3): the agent's
+ *  account of what the decision means, in the agents' grey and by its author. It is no entry of
+ *  any part, so it is drawn as a node of its own kind is (`NamedEntry`), with no parent line,
+ *  since it stands under the node it hangs under. */
+export interface ReadingEntry extends NamedEntry {
+  /** The node id of the decision it reads. */
+  readonly reads: string;
+}
+
+/** Whether `entry` is a reading the list draws under its decision's entry (`ReadingEntry`). */
+export function isReadingEntry(entry: DecisionsEntry | NamedEntry): entry is ReadingEntry {
+  return "reads" in entry;
 }
 
 /** One entry of the filter. */
@@ -280,12 +303,27 @@ export function decisionsParts({
   // with what others decided otherwise, a decision nobody is recorded for included.
   const decidedBy = (by: Actor | undefined): DecisionsEntry[] =>
     isReader(by, reader) ? yours : others;
+  // Each reading of an agent's decision, by the decision's node id, in reading order, which the
+  // list draws under the decision's entry and as no entry of any part (R3): a reading the view
+  // keeps of a decision the view keeps.
+  const readings = new Map<string, ReadingEntry[]>();
+  for (const { node, parent } of placed.values()) {
+    if (node.type !== "reading" || parent?.type !== "decision") continue;
+    if (kept !== undefined && (!kept.has(node.id) || !kept.has(parent.id))) continue;
+    const held = readings.get(parent.id) ?? [];
+    held.push({ kind: "named", node, ...pathOf(node), reads: parent.id, shapes: [] });
+    readings.set(parent.id, held);
+  }
   for (const { node, parent } of placed.values()) {
     if (kept !== undefined && !kept.has(node.id)) continue;
+    // A reading of a decision the list draws is a row under that decision's entry (`readings`).
+    if (node.type === "reading" && parent !== undefined && readings.has(parent.id)) continue;
+    const read = readings.get(node.id);
     const base = {
       node,
       ...(parent === undefined ? {} : { parent }),
       ...pathOf(node),
+      ...(read === undefined ? {} : { readings: read }),
     };
     if (node.type === "ask") {
       const askId = askIdOf(node) ?? "";
