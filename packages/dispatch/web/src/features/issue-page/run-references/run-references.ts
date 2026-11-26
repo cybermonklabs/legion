@@ -13,6 +13,7 @@ import { UNSAFE_LocationContext, useInRouterContext } from "react-router-dom";
 
 import { referenceTargetsQuery } from "../../../api/queries";
 import type { GraphEdge, IssueDetails } from "../../../api/types";
+import { useAgentText } from "../../refs/AgentName";
 import { isPartyRoute } from "../../refs/party-references";
 import { useReferenceNames } from "../../refs/plain-text";
 import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
@@ -33,10 +34,10 @@ import { wordsOf } from "../../refs/tree-fragment";
 import { retryRead } from "../details-error";
 import { targetNaming } from "../issue-tree";
 import { newPageIssue } from "../new-page-parameter";
-import { referenceStandIns } from "../one-line";
+import { type LineNames, referenceStandIns } from "../one-line";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
 import { withoutDirectiveLines } from "../RowText";
-import { rowReferences } from "../row-references";
+import { knownIssueKeys, rowReferences } from "../row-references";
 import { storedReading } from "../stored-reading";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -106,38 +107,27 @@ function runRow(run: TreeAnswerNode, newPage: boolean): ExtraReferenceRow {
   };
 }
 
-/** How a run's one-line place names a reference it cites (`referenceStandIns`), which writes an
- *  issue as its key and asks this for every other reference. A target that is no party is named
- *  by the page's name for it once the one batch has named it (`useRunTargets`), and by the words
- *  its author wrote until then, and wherever the batch answered that nothing answers to the
- *  target now, that the reader may not see it, that it is ambiguous or that it has no words to
- *  name it by (decision 350); it is never read on its own. A party (a person, a role or an
- *  agent's session), which the batch does not ask for, is named by a read of its own
- *  (`useReferenceNames`, decision 340), and by the words its author wrote until that read answers
- *  and wherever it names nothing, as a row of the issue page names one (`row-references.ts`'s
- *  `rowReferenceWords`). No reference is drawn by its short form. */
-type RunNameOf = (reference: string) => string | undefined;
-
 /** The references a run's one-line places cite (`namedReferences`), each once, in the order the
- *  texts cite them. */
+ *  texts cite them. Each is named by the rule every plain line of the page names a reference by
+ *  (`one-line.ts`'s `referenceStandIns`), from the names `RunReferenceNames` hands it, and is
+ *  drawn as the words its author wrote until it has a name and wherever it has none. */
 interface RunReferences {
   /** Each target the one batch may ask for (`useRunTargets`), by the route `rowReferences`
-   *  parsed it to: every reference but an issue and a party. */
+   *  parsed it to: every reference but a party, an issue among them, since the rule names an
+   *  issue by its key and its title only where the page published that title. */
   readonly batched: ReadonlyMap<string, DispatchReferenceRoute>;
   /** Each party, which the batch does not ask for and a read of its own names
    *  (`useReferenceNames`). */
   readonly parties: readonly string[];
-  /** The words its author wrote for each reference of either, which it is drawn as until it has
-   *  a name and wherever it has none. */
-  readonly written: ReadonlyMap<string, string>;
 }
 
 /** The references that `texts` name by the page's name, as a one-line place reads them: the
- *  addresses `referenceStandIns` asks a name for, found as its `standIn` finds them, by
- *  `rowReferences` in each text without a typed block's source lines, with no bare key. That
- *  leaves out an issue, which is named by its key, and a reference on a typed block's own line,
- *  which no line draws. Each is sorted here, once, by the route that reader parsed it to: a party
- *  (`isPartyRoute`) to a read of its own, and every other target to the one batch.
+ *  addresses `referenceStandIns` names, found as its `standIn` finds them, by `rowReferences` in
+ *  each text without a typed block's source lines. No bare key is among them: the rule names a
+ *  bare key only where the page already published its issue's title (`knownIssueKeys`), so it
+ *  needs no read. A reference on a typed block's own line is left out, since no line draws it.
+ *  Each is sorted here, once, by the route that reader parsed it to: a party (`isPartyRoute`) to
+ *  a read of its own, and every other target, an issue among them, to the one batch.
  *
  *  The set holds every reference of the whole texts, so it holds more than a line draws where a
  *  caller cuts its line from a text, as the run's page cuts a changed node's first line
@@ -152,20 +142,14 @@ interface RunReferences {
  *  out a round after the rest. */
 function namedReferences(texts: readonly string[]): RunReferences {
   const batched = new Map<string, DispatchReferenceRoute>();
-  const parties: string[] = [];
-  const written = new Map<string, string>();
+  const parties = new Set<string>();
   for (const text of texts) {
     for (const one of rowReferences(withoutDirectiveLines(text), [])) {
-      // One reference written in two forms - a `dispatch://` address and a dashboard address of
-      // the same target, say - is drawn by the first form the texts hold, in their order, since
-      // one `RunNameOf` names it in every line they draw.
-      if (one.route.kind === "issue" || written.has(one.reference)) continue;
-      written.set(one.reference, one.written);
-      if (isPartyRoute(one.route)) parties.push(one.reference);
+      if (isPartyRoute(one.route)) parties.add(one.reference);
       else batched.set(one.reference, one.route);
     }
   }
-  return { batched, parties, written };
+  return { batched, parties: [...parties] };
 }
 
 /** The names of the `batched` targets that the page has not published or asked for, read in one
@@ -266,48 +250,65 @@ function useLastAnswered(asked: ReadonlySet<string>, answered: boolean): Readonl
   return last.current;
 }
 
-/** Draws a run's one-line places (`draw`) with each reference they cite named as `RunNameOf`
- *  says: a target by the page's name for it, read in one batch (`useRunTargets`), a party by a
- *  read of its own, and each by the words its author wrote where it has no name. `issue` is the
- *  issue the page shows, whose own documents are named by the issue read; the run's page shows
- *  none. The batch's references are handed to the lines as asked for from the first render,
- *  before the store holds them, so no line mounts a read of its own while the batch is out. */
+/** Draws a run's one-line places (`draw`) with what each reference they cite is named by
+ *  (`LineNames`), as every plain line of the page names one (`referenceStandIns`): the names the
+ *  page published, which hold each target the one batch named (`useRunTargets`), and each
+ *  party's name from a read of its own. `issue` is the issue the page shows: the rule tells a
+ *  whole document of it by it (`documentWord`), and the batch asks no title for its own spec,
+ *  which the issue read names. The run's page shows none. The batch's references are handed to
+ *  what `draw` draws as asked for from the first render, before the store holds them, so no
+ *  surface it draws mounts a read of its own for one while the batch is out. */
 export function RunReferenceNames({
   draw,
   issue,
   texts,
 }: {
-  draw: (nameOf: RunNameOf) => ReactNode;
+  draw: (lineNames: LineNames) => ReactNode;
   issue?: IssueDetails;
   texts: readonly string[];
 }): ReactNode {
   const references = useMemo(() => namedReferences(texts), [texts]);
   const published = useRunTargets(references.batched, issue);
-  const { parties, written } = references;
-  const props = { children: createElement(RunNameReader, { draw, parties, written }), published };
+  const reader = { draw, issue: issue?.key, parties: references.parties };
+  const props = { children: createElement(RunNameReader, reader), published };
   return createElement(PublishedReferenceNames, props);
 }
 
+/** The names a run's one-line places are drawn with, read as `RowText.tsx`'s `useRowNames` reads
+ *  a row's: the page's published names, its rule for an author and the issue keys it named. */
 function RunNameReader({
   draw,
+  issue,
   parties,
-  written,
 }: {
-  draw: (nameOf: RunNameOf) => ReactNode;
+  draw: (lineNames: LineNames) => ReactNode;
+  issue: string | undefined;
   parties: RunReferences["parties"];
-  written: RunReferences["written"];
 }): ReactNode {
-  // A target the batch may ask for is named by the page's name for it, and is never read on its
-  // own: that read would be the read per target that decision 515 removes. The lookup answers it
-  // from the store alone (`plain-text.tsx`'s `publishedAnswer`), since it mounts a read only for
-  // `parties`. Only a party is read here, as every line reads one, since the batch does not ask
-  // for it; the read answers it no name while it is out and where Dispatch knows no such party.
-  const { names, reads } = useReferenceNames(parties, undefined);
-  const nameOf = useMemo<RunNameOf>(
-    () => (reference) => names.get(reference)?.name || written.get(reference),
-    [names, written]
+  const { ambiguous, deleted, edited, lines, names: published } = useKnownReferences();
+  const { author } = useAgentText();
+  const issues = useMemo(() => knownIssueKeys(published), [published]);
+  // A target the batch may ask for is named by the page's name for it alone, and is never read on
+  // its own: that read would be the read per target that decision 515 removes. Only a party is
+  // read here, since the batch does not ask for it; the read answers it no name while it is out
+  // and where Dispatch knows no such party, so it stays out of the names and the rule draws it as
+  // the words its author wrote (decision 340).
+  const { names: read, reads } = useReferenceNames(parties, undefined);
+  const names = useMemo(() => {
+    let named: Map<string, string> | undefined;
+    for (const party of parties) {
+      const name = read.get(party)?.name;
+      if (name === undefined || name === "") continue;
+      named ??= new Map(published);
+      named.set(party, name);
+    }
+    return named ?? published;
+  }, [parties, published, read]);
+  const lineNames = useMemo<LineNames>(
+    () => ({ ambiguous, author, deleted, edited, issue, issues, lines, names }),
+    [ambiguous, author, deleted, edited, issue, issues, lines, names]
   );
-  return createElement(Fragment, null, reads, draw(nameOf));
+  return createElement(Fragment, null, reads, draw(lineNames));
 }
 
 /** Draws Details' run rows (`draw`) with each question's references named, mounted only while
@@ -327,7 +328,7 @@ export function NamedRunRows({
     [rows]
   );
   return createElement(RunReferenceNames, {
-    draw: (nameOf) => createElement(RunExcerpts, { draw, nameOf, rows }),
+    draw: (lineNames) => createElement(RunExcerpts, { draw, lineNames, rows }),
     issue,
     texts,
   });
@@ -335,11 +336,11 @@ export function NamedRunRows({
 
 function RunExcerpts({
   draw,
-  nameOf,
+  lineNames,
   rows,
 }: {
   draw: (rows: readonly ExtraReferenceRow[]) => ReactNode;
-  nameOf: RunNameOf;
+  lineNames: LineNames;
   rows: readonly ExtraReferenceRow[];
 }): ReactNode {
   // The rows are named anew whenever the names change, and `draw` reads them as it draws.
@@ -347,10 +348,10 @@ function RunExcerpts({
     () =>
       rows.map((row) => {
         if (row.excerpt === undefined) return row;
-        const references = referenceStandIns(nameOf);
+        const references = referenceStandIns(lineNames);
         return { ...row, excerpt: references.named(references.standIn(row.excerpt)) };
       }),
-    [nameOf, rows]
+    [lineNames, rows]
   );
   return draw(named);
 }

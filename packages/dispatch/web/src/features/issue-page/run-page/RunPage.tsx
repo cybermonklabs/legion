@@ -9,9 +9,9 @@ import { Timestamp } from "../../refs/Timestamp";
 import { NotFoundPage } from "../../shell/NotFoundPage";
 import { useDocumentTitle } from "../../shell/useDocumentTitle";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "../details-error";
-import { drawnLine, firstLineOf } from "../issue-tree";
+import { drawnLine, firstLineOf } from "../first-line";
 import { NoTooltips } from "../NoTooltips";
-import { referenceStandIns } from "../one-line";
+import { type LineNames, referenceStandIns } from "../one-line";
 import { authorText, pageChrome } from "../page-structure";
 import {
   ANSWER_LINES,
@@ -146,49 +146,50 @@ function RunAnswer({
 
 /** Cut the first line before substituting reference names, so no cut falls inside a name.
  *  Twin of `spec-filter/spec-decided-by.ts`'s `namedFirstLine`. */
-function namedFirstLine(words: string, nameOf: (reference: string) => string | undefined): string {
-  const references = referenceStandIns(nameOf);
+function namedFirstLine(words: string, lineNames: LineNames): string {
+  const references = referenceStandIns(lineNames);
   return references.named(drawnLine(firstLineOf(references.standIn(words))));
 }
 
 /**
  * The nodes the run changed (`RunChange`), each by its first line, beside its kind's word where
  * the page has one, as a link to the page it opens where it opens one. The line is cut by R1's
- * first-line rule (`namedFirstLine`), and each reference in it is named as
- * `run-references.ts`'s `RunNameOf` says. The naming is handed each node's whole words
- * (`RunChange.words`), not its cut line, since which references the cut line holds waits on
- * their names (`run-references.ts`'s `namedReferences`): so the one batch may ask for each target
- * the whole words cite, and each party they cite gets its read, past the cut or not.
+ * first-line rule (`namedFirstLine`), and each reference in it is named by the rule every plain
+ * line of the page names one by (`one-line.ts`'s `referenceStandIns`), from the names
+ * `run-references.ts`'s `RunReferenceNames` hands it. The naming is handed each node's whole
+ * words (`RunChange.words`), not its cut line, since which references the cut line holds waits
+ * on their names (`run-references.ts`'s `namedReferences`): so the one batch may ask for each
+ * target the whole words cite, and each party they cite gets its read, past the cut or not.
  */
 function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode {
   const words = useMemo(() => changed.map((node) => node.words), [changed]);
   return (
     <RunReferenceNames
-      draw={(nameOf) => <ChangedNodeList changed={changed} nameOf={nameOf} />}
+      draw={(lineNames) => <ChangedNodeList changed={changed} lineNames={lineNames} />}
       texts={words}
     />
   );
 }
 
-/** Draws each changed node's line, its references named by `nameOf`, beside its kind's word. A
+/** Draws each changed node's line, its references named by `lineNames`, beside its kind's word. A
  *  node whose words hold none is named by its kind's word alone, which is then its link, and a
  *  node that has neither is left out. */
 function ChangedNodeList({
   changed,
-  nameOf,
+  lineNames,
 }: {
   changed: readonly RunChange[];
-  nameOf: (reference: string) => string | undefined;
+  lineNames: LineNames;
 }): ReactNode {
   const entries = useMemo(
     () =>
       changed.flatMap((node) => {
         // The node's first line: the reading list's `run-page-changed-line`.
-        const first = namedFirstLine(node.words, nameOf);
+        const first = namedFirstLine(node.words, lineNames);
         const line = first || node.kind;
         return line === "" ? [] : [{ named: first !== "", node, line }];
       }),
-    [changed, nameOf]
+    [changed, lineNames]
   );
   if (entries.length === 0) {
     return (

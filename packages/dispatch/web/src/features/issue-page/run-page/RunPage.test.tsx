@@ -644,10 +644,12 @@ test("a changed node's line reads three comment names in one batch", async () =>
 });
 
 // A changed node's line is a one-line place (the reading list's `run-page-changed-line`): each
-// reference it cites is named as decision 350 names one there - an issue by its key, any other
-// target by the page's name for it once the page's batched read has named it, and as its author
-// wrote it until then - and never by its short form.
+// reference it cites is named as every plain line of the page names one (`referenceStandIns`) -
+// an issue by its key, a space and its title, and any other target by the page's name for it,
+// once the page's batched read has named it, and as its author wrote it until then - and never by
+// its short form.
 test("a changed node's line names each reference by its name once read, and as its author wrote it until then", async () => {
+  const issue = "dispatch://CORE-2";
   const named = "dispatch://CORE-1/comment/7d1e4c2a-9b3f-4e8d-a6c5-2f0b1d9e7a34";
   // A block's address, which the line holds whole within R1's 100 characters once the comment is
   // named: a comment's address, with its whole id, would be cut off.
@@ -655,14 +657,18 @@ test("a changed node's line names each reference by its name once read, and as i
   const route = parseNodeReference(unnamed);
   if (route === undefined) throw new Error(`${unnamed} names no node`);
   const changed = changedIssue({
-    text: `Close dispatch://CORE-2 once ${named} and ${unnamed} land. Then rest.`,
+    text: `Close ${issue} once ${named} and ${unnamed} land. Then rest.`,
   });
   // The page's batched read names the comment, and has been asked for the block and holds no
-  // answer for it.
+  // answer for it. No page has named the issue, so the run's one batch asks for it.
   const published = publishedNames(new Map([[named, "Warm the cache first"]]), {
     asked: [unnamed],
   });
+  const runAddress = `dispatch://interaction/${RUN}`;
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(answerOf([], [changed]));
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const batch = spyOn(api, "getReferenceTargets").mockReturnValue(answer.promise);
+  const perTarget = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
   const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
   const view = render(
     <QueryClientProvider client={client}>
@@ -678,15 +684,35 @@ test("a changed node's line names each reference by its name once read, and as i
   );
   restore = () => {
     getReferences.mockRestore();
+    batch.mockRestore();
+    perTarget.mockRestore();
     view.unmount();
     client.clear();
   };
   await screen.findByRole("heading", { level: 1, name: RUN_WORD });
   const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
+  // While the batch is out, the issue reads as its author wrote it.
   expect(
     await within(what).findByRole("link", {
-      name: `Close CORE-2 once Warm the cache first and ${unnamed} land.`,
+      name: `Close ${issue} once Warm the cache first and ${unnamed} land.`,
+    })
+  ).toHaveAttribute("href", "/issues/CORE-1");
+  expect(batch.mock.calls).toEqual([[[issue]]]);
+  await act(async () =>
+    answer.resolve({
+      targets: [{ gone: false, kind: "issue", name: "Pin the release date", ref: issue }],
+    })
+  );
+  expect(
+    await within(what).findByRole("link", {
+      name: `Close CORE-2 Pin the release date once Warm the cache first and ${unnamed} land.`,
     })
   ).toHaveAttribute("href", "/issues/CORE-1");
   expect(what.textContent).not.toContain(shortForm(route));
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(perTarget, "a comment read of its own").toHaveBeenCalledTimes(0);
+  expect(
+    getReferences.mock.calls.filter(([to]) => to !== runAddress),
+    "a block read of its own"
+  ).toEqual([]);
 });

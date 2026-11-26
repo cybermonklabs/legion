@@ -219,24 +219,44 @@ function shortFormOf(reference: string): string {
 }
 
 // A run's question is a one-line place (the reading list's `referenced-by-run-question`): each
-// reference it cites is named as decision 350 names one there - an issue by its key, any other
-// target by the page's name for it once the page's batched read has named it, and as its asker
-// wrote it until then - and never by its short form.
+// reference it cites is named as every plain line of the page names one (`referenceStandIns`) -
+// an issue by its key, a space and its title, and any other target by the page's name for it,
+// once the page's batched read has named it, and as its asker wrote it until then - and never by
+// its short form.
 test("a run's row names each reference in its question by its name once read, and as its asker wrote it until then", async () => {
+  const issue = "dispatch://CORE-2";
   const named = `dispatch://${KEY}/comment/${COMMENT}`;
   const unnamed = `dispatch://${KEY}/comment/${SECOND_COMMENT}`;
-  const question = `Does dispatch://CORE-2 wait on ${named} or on ${unnamed}?`;
+  const question = `Does ${issue} wait on ${named} or on ${unnamed}?`;
   // The page's batched read names the first comment, and has been asked for the second and
-  // holds no answer for it.
+  // holds no answer for it. No page has named the issue, so the run's one batch asks for it.
   const published = publishedNames(new Map([[named, "Warm the cache first"]]), {
     asked: [unnamed],
   });
-  const view = drawQuestions([runNode(RUN, ASKED_AT, question)], { published });
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const view = drawQuestions([runNode(RUN, ASKED_AT, question)], {
+    batch: () => answer.promise,
+    published,
+  });
   try {
-    const expected = `Does CORE-2 wait on Warm the cache first or on ${unnamed}?`;
+    // While the batch is out, the issue reads as its asker wrote it.
+    const unread = `Does ${issue} wait on Warm the cache first or on ${unnamed}?`;
+    await screen.findByText(unread);
+    expect(view.drawn()).toEqual([unread]);
+    expect(view.batch.mock.calls).toEqual([[[issue]]]);
+    const titled = [
+      { gone: false, kind: "issue", name: "Pin the release date", ref: issue },
+    ] satisfies ReferenceTarget[];
+    await act(async () => answer.resolve({ targets: titled }));
+    const expected = `Does CORE-2 Pin the release date wait on Warm the cache first or on ${unnamed}?`;
     await screen.findByText(expected);
     expect(view.drawn()).toEqual([expected]);
     expect(view.drawn()[0]).not.toContain(shortFormOf(unnamed));
+    expect(view.batch).toHaveBeenCalledTimes(1);
+    expect(
+      view.comments.mock.calls.length + view.blocks.mock.calls.length,
+      "a read of one target of its own"
+    ).toBe(0);
   } finally {
     view.close();
   }
