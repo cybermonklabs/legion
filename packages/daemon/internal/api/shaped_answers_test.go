@@ -596,7 +596,87 @@ func valueStripCases() map[string]valueStripCase {
 			// A row of the held list whose word no row of the table declares.
 			undeclaredState: State{Admission: Admission{Held: []HeldIssue{{Issue: "SHAPES-4", Reason: record.HeldReason(undeclaredValue)}}}},
 		},
+		// A pod recording the contract before shapedAnswersContract and the cyber-policy entry's
+		// number is served every claim view whose failure cause or pending cause is `cyber_policy`
+		// with `provider_error` in its place: the word arrived at that entry, after the field, and
+		// the pod's older process reads both with a `z.enum` of the seven words before it. The
+		// failure record's other keys stay, its `detail` naming cyber_policy among them, and so
+		// does every view naming another word. The pod's claim at the entry's number states its
+		// own contract and is in no pod's reckoning (podContracts), so the pod alone at it is
+		// served this daemon's own body. The field is older than the floor's records of it only
+		// through recordFieldsContract's band, which the low contract is above, so the case names
+		// no value that arrived with it.
+		droppedFailureCause: {
+			state: stateCarryingEveryDeclaredValue, low: shapedAnswersContract - 1, high: entryNumber(cyberPolicyContract),
+			carries: func(t *testing.T, body []byte) bool {
+				for _, cause := range failureCausesServed(t, body) {
+					if cause == string(supervise.CauseCyberPolicy) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := failureCausesServed(t, mixed)
+				for at, cause := range failureCausesServed(t, whole) {
+					want := cause
+					if cause == string(supervise.CauseCyberPolicy) {
+						want = string(supervise.CauseProviderError)
+					}
+					if served[at] != want {
+						t.Errorf("the {%d, %d} pod is served %s as %q, want %q: the strip rewrites the word the pod's %d process refuses and nothing else",
+							shapedAnswersContract-1, entryNumber(cyberPolicyContract), at, served[at], want, shapedAnswersContract-1)
+					}
+				}
+			},
+			// A failed architect whose failure cause and pending cause are a word no row declares.
+			undeclaredIssue: Issue{Key: "SHAPES-5", Architect: &ClaimView{
+				Session: "ses_architect_shapes_5", State: "failed", PendingCause: undeclaredValue,
+				Failure: &ClaimFailureView{Cause: undeclaredValue, Detail: "a cause no row declares"},
+			}},
+		},
 	}
+}
+
+// failureCausesServed is every failure cause and pending cause a served body's claim views carry,
+// keyed by the issue, the view (the architect's or a worker's role) and the field.
+func failureCausesServed(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+	type view struct {
+		Failure *struct {
+			Cause string `json:"cause"`
+		} `json:"failure"`
+		PendingCause string `json:"pendingCause"`
+	}
+	var state struct {
+		Issues map[string]struct {
+			Architect *view `json:"architect"`
+			Workers   map[string]struct {
+				Claim view `json:"claim"`
+			} `json:"workers"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	causes := map[string]string{}
+	add := func(at string, v view) {
+		if v.Failure != nil {
+			causes[at+" failure.cause"] = v.Failure.Cause
+		}
+		if v.PendingCause != "" {
+			causes[at+" pendingCause"] = v.PendingCause
+		}
+	}
+	for key, issue := range state.Issues {
+		if issue.Architect != nil {
+			add(key+" architect", *issue.Architect)
+		}
+		for role, worker := range issue.Workers {
+			add(key+" "+role, worker.Claim)
+		}
+	}
+	return causes
 }
 
 // eachValueStrip runs read on each row of valueStrips with that row's case, in a subtest named

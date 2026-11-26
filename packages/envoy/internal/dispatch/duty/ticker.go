@@ -124,14 +124,14 @@ func RunLeased(ctx context.Context, leases Leases, name string, interval time.Du
 	if first == TickAtStart {
 		// Read after the ticker started, so the ticker's first tick is no more than one interval
 		// after this one: in the next period, or in this one and refused, but never one beyond.
-		Exclusive(ctx, leases, name, time.Now(), interval, pass)
+		Exclusive(ctx, nil, leases, name, time.Now(), interval, pass)
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case due := <-ticker.C:
-			Exclusive(ctx, leases, name, due, interval, pass)
+			Exclusive(ctx, nil, leases, name, due, interval, pass)
 		}
 	}
 }
@@ -159,7 +159,7 @@ func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, int
 	due := time.Now()
 	for {
 		wait := interval
-		Exclusive(ctx, leases, name, due, period, func(ctx context.Context) {
+		Exclusive(ctx, nil, leases, name, due, period, func(ctx context.Context) {
 			wait = pass(ctx, period)
 		})
 		period = wait

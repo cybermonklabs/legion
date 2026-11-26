@@ -839,7 +839,9 @@ cd packages/envoy
 It prints the `DATABASE_URL` to use for development and tests.
 Run again, it starts or reuses the same `dispatch-pg` container, which runs its pinned image:
 pgvector on PostgreSQL 18, whose `vector` extension the migrations need.
-It refuses a `dispatch-pg` on any other image or major and prints the commands that dump that container's databases and restore them into a new container on the pinned image.
+The migrations also need `btree_gin`, a contrib extension that PostgreSQL includes.
+A migration creates each of the two extensions.
+The script refuses a `dispatch-pg` on any other image or major and prints the commands that dump that container's databases and restore them into a new container on the pinned image.
 The database retains the migrated schema; tests only truncate rows they create.
 
 ## A large test database
@@ -2769,6 +2771,39 @@ The rolling deploy keeps that correct — the release before this one serves eve
 — and the operator follow-up is that wait:
 a pod of this release takes the fill's time (about 35 s on production's shape) to become ready on the first boot after the deploy, and the boot logs each batch and the total.
 
+Migration `20261117100008_session_titles` creates `session_titles`, one row for each session that ever stamped a title: `session_id`, the primary key; `title`, the title its newest titled event stamped, which a check holds to a non-empty string; and `titled_at`, that event's `created_at`.
+`delivery.ResolveSessionTitles` reads it by primary key, one `session_id = any($1)` read of `session_titles_pkey` for a page's whole list, where it read `events` on every page read: the `distinct on` read before #3517 cost 42 to 133 ms of a Delivery answer over three projects and 812,386 events, and #3517's ordered read a session of `events_session_actor_created_at_idx` still read `events` each time.
+A session with no row is named by its id, as one with no titled event was.
+The table is new and declares no foreign key, so the migration locks only it and commits in milliseconds; the release before it neither reads nor writes it, and its census answers `0`.
+
+Migration `20261117100010_issues_unowned_p0` builds `issues_open_p0` on `issues (project_key) where priority = 0 and status <> 'done'`, the open P0 issues alone (161 rows in production on 2026-11-23, of 13,279 issues).
+`delivery.ListUnownedP0`, `delivery.CountUnownedP0` and `delivery.OpenP0Keys`, the live hub's set of open P0 keys, repeat the predicate, so the planner reads the index and no other row of `issues`: the whole index for every project's read, one range of `project_key` for one project's.
+No index of `issues` held `priority` before it, so the read of every project, `ListUnownedP0`'s and `OpenP0Keys`', scanned every issue of every project.
+A read of one project, which this change adds, would without it read every issue of that project, through `issues_project_key_number_key`, the unique key on `(project_key, number)`.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because every issue write, claim, route and status change writes `issues`:
+a concurrent build takes `SHARE UPDATE EXCLUSIVE`, which no read or write of an issue waits for.
+A failed build leaves an INVALID index of that name on `issues`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
+Its census answers `0`: an ordinary index refuses and rewrites no row.
+
+Migration `20261117100015_events_session_titles` creates `events_session_title`, the function and the constraint trigger `after insert on events`, `deferrable initially deferred`, that writes each titled event of a session actor into `20261117100008`'s table under `on conflict (session_id) do update … where excluded.titled_at > session_titles.titled_at`.
+So the newest titled event keeps the title, and an event that carries no title takes none away.
+Every event of one transaction has the transaction's start as its `created_at`, and of two titled events of one session in one transaction the one inserted first keeps the title, which is the order the read it replaces took.
+Two transactions of one session that start in the same microsecond also give their events one `created_at`: the one that commits first keeps the title, where the read it replaces could name the other, and a later titled event of the session replaces either.
+The row is written in the event's own transaction, at its commit: a reader sees the new title exactly when it sees the event, and the title row is locked after every lock the transaction's statements took.
+It is a trigger rather than a write in `events.Broker.Append` because a process of an earlier release over this schema, and every test that seeds events with a bare insert, write events without that code.
+A function and a trigger are the migration's only two statements, which exempts it from the census's table-size limit (`internal/pgmigrate/exempt.go`): neither reads a row of `events`.
+`create trigger` takes `SHARE ROW EXCLUSIVE` on `events`, which waits for every transaction that has inserted an event and holds new inserts back while it waits, under `pgmigrate.LockTimeout`'s five seconds a try.
+Its census answers `0`: a trigger runs only on later inserts and rewrites no row already stored.
+
+Migration `20261117100016_session_titles_backfill` creates `session_titles_backfill`, the one row that stands for the fill of `20261117100008`'s table for the events stored before `20261117100015`'s trigger: `session_id`, the keyset cursor, `''` before the first batch.
+It writes no `session_titles` row and reads no other table, so it locks only the table it creates; its census answers `0`.
+The fill is `store.FillSessionTitles`, which the boot runs after `store.FillDocumentSearch` and before the server listens (`cmd/dispatch/main.go`), not a migration, for `20261101182501`'s reason: one statement would read every session's events in one transaction while the trigger is live, and a write of a session the statement had already written would wait for the whole statement at its commit.
+Each batch is instead one short transaction that takes the next `store.SessionTitlesFillBatch` (1,000) sessions above the cursor, writes each one's newest title under the trigger's own guard, so a row the trigger wrote meanwhile is never replaced by an older one, moves the cursor and commits.
+The batch that takes no further session deletes the row, so a boot after the pass has finished reads one empty table and stops, and a database emptied of its rows owes no fill.
+A failure stops the boot (`slog.Error`, then exit 1): this release reads titles from `session_titles` alone, so a process serving with the table unfilled would name every earlier session by its id.
+Production runs one replica under `strategy: Recreate`, so no process serves while the migrations and the fill run, and the operator follow-up is that wait on the first boot of this release:
+`packages/envoy/scripts/session-titles-scale.sh` times the four migrations and the fill together on 1.5 million titled session events, more than 1.25 times production's newest event id on 2026-11-24, and they end inside the 60 s that leaves the compose deployer's 90 s room for the rest of the boot.
+
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
 with this table it applies what changed and counts a project again only where no pass of this build has counted it.
@@ -2924,7 +2959,7 @@ The constant default rewrites no row, so the statement holds `artifact_reviews` 
 
 Migration `20261102122200_check_results` creates `check_results`, one row per result recorded against a `check` block of an issue's Verification document (`dispatch result`).
 A row names the issue the result was recorded on, the check's own issue, document, block id, that block's `changed_version` and `text_sha256` when the result was recorded, the `role` that ran it, the `surface`, `run`, `observed`, `commit_sha`, `negative_control`, the `failed`, `skipped` and `excluded` counts, the `verdict`, the `screenshots`, the session and actor, and the `event_seq` of the `result.recorded` event on the check's issue.
-The stored digest is what says the check's words moved after a result was recorded: a read compares it with the block's digest now.
+The stored digest and changed version are what say the check's words moved after a result was recorded: a read compares them with the block's digest and changed version now, and the words moved where both differ.
 Nothing updates a row — another run is another row — and a table check refuses a `pass` that counts a failed, skipped or excluded case.
 `check_results_check` serves the Verification tab's read of one check's results newest first, and `check_results_issue` an issue's own reads.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
@@ -5693,7 +5728,8 @@ Each item below names a path with its method and identity, then its purpose.
     A result whose commit is taken to be of a repository the issue links a pull request in (`check_results.commit_repo`) is decided by that repository: a `before_merge` one is `unknown` where Dispatch cannot read it and `other_commit` where no compared head is its commit, and a branch check's walks that repository's branches.
     Such an `other_commit` or `unknown` answer carries that repository as `repo` (`owner/name`), so a reader names it rather than the issue's own repository; an answer about the issue's own repository carries none, and an `at_basis` answer names a linked repository in its `basis`.
 
-  - `check_words_moved` is whether the check's words changed after the result was recorded, which the digest the result kept decides against the block's digest now.
+  - `check_words_moved` is whether the check's words changed after the result was recorded, which the digest and the changed version the result kept decide against the block's own now: the words moved where both differ.
+    A block whose recorded text another renderer version spelled, and which reads as its text now, keeps its changed version under a new digest (`refs.BlockIndexing.KeepRespelled`), so its words read as not moved.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
 
   - `pass_stands` is `{answer, roles}` for the check as a whole: `yes`, with the roles of the passes that stand, while a result of it passed, stands at one of the compared commits, kept the check's words and carries no retraction;
@@ -6007,7 +6043,7 @@ Each item below names a path with its method and identity, then its purpose.
   a first request carries no `approved` key.
   One open approval row follows every document version in place, rewording its question and emitting `ask.edited`;
   while its `requested_version` is below the new version it waits on the agent.
-  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one;
+  A row waiting on the human keeps its turn, quietly, at a settlement's version that holds the text of the named one, byte for byte or, for a named version another renderer version stored or none stamped, as Dispatch renders that text now;
   a version a route writes (a named version, an upload, an edit) moves it to the agent whatever its bytes.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.

@@ -95,7 +95,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	}
 	home := t.TempDir()
 	bin := t.TempDir()
-	if err := execfile.Write(filepath.Join(bin, "legion"), []byte("#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "legion"), []byte("#!/bin/sh\n"+testMainEnv+"=1 exec '"+legionCopy(t)+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The pane's `gh` wrapper, first on PATH, as the runtimes install it.
@@ -222,7 +222,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	check := func(dir string, env, args []string, owner, refuse string) {
 		t.Helper()
 		what := "legion gh " + strings.Join(args, " ")
-		code, out := runIn(dir, append(append([]string{}, ghEnv...), env...), os.Args[0], append([]string{"gh"}, args...)...)
+		code, out := runIn(dir, append(append([]string{}, ghEnv...), env...), legionCopy(t), append([]string{"gh"}, args...)...)
 		if refuse != "" {
 			if code != 2 || !slices.ContainsFunc(strings.Split(refuse, "||"), func(text string) bool { return strings.Contains(out, text) }) {
 				t.Errorf("%s = exit %d, %q; want exit 2 containing %q", what, code, out, refuse)
@@ -343,7 +343,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{"HTTPS_PROXY=" + induced.url, "https_proxy=" + induced.url, "SSL_CERT_FILE=", "SSL_CERT_DIR=" + inducedDir},
 	} {
 		what := fmt.Sprintf("legion gh api repos/acme/widgets under %q", env)
-		if code, out := runIn(home, append(append([]string{}, ghEnv...), env...), os.Args[0], "gh", "api", "repos/acme/widgets"); code == 0 {
+		if code, out := runIn(home, append(append([]string{}, ghEnv...), env...), legionCopy(t), "gh", "api", "repos/acme/widgets"); code == 0 {
 			t.Errorf("%s exit 0 through a proxy whose CA gh does not trust: %s", what, out)
 		}
 		connects := induced.takeConnects()
@@ -406,7 +406,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{[]string{"preview", "prompter", "markdown-editor"}, 0},
 	} {
 		what := "legion gh " + strings.Join(tc.args, " ")
-		cmd := exec.Command(os.Args[0], append([]string{"gh"}, tc.args...)...)
+		cmd := exec.Command(legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		cmd.Env = append(append(append([]string{}, base...), ghEnv...), editors...)
 		cmd.Dir, cmd.Stdin = home, strings.NewReader("e\ne\ne\n")
 		out, err := cmd.CombinedOutput()
@@ -467,7 +467,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 1<<60, 30*time.Second))
-		cmd := exec.CommandContext(ctx, os.Args[0], "gh", "api", "repos/acme/widgets")
+		cmd := exec.CommandContext(ctx, legionCopy(t), "gh", "api", "repos/acme/widgets")
 		cmd.Env, cmd.Dir = append(append([]string{}, base...), ghEnv...), home
 		out, err := cmd.CombinedOutput()
 		cancel()
@@ -728,7 +728,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{marked, nil, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, "acme", "octocat"},
 	} {
 		what := "legion gh " + strings.Join(tc.args, " ")
-		code, out := runIn(tc.dir, slices.Concat(ghEnv, proven, tc.env), os.Args[0], append([]string{"gh"}, tc.args...)...)
+		code, out := runIn(tc.dir, slices.Concat(ghEnv, proven, tc.env), legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		requests := proxy.take()
 		if len(requests) == 0 {
 			t.Errorf("%s = exit %d, %q, and sent GitHub nothing; want its requests sent with %s's token", what, code, out, tc.owner)
@@ -777,7 +777,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	guardsRead := capturedRequest{host: "api.github.com", path: "/repos/acme/widgets", owner: "acme", auth: "token " + tokens["acme"]}
 	for _, option := range []string{"--view", "-v"} {
 		what := "legion gh repo set-default " + option
-		if code, out := runIn(marked, ghEnv, os.Args[0], "gh", "repo", "set-default", option); code != 0 || !strings.Contains(out, "acme/widgets") {
+		if code, out := runIn(marked, ghEnv, legionCopy(t), "gh", "repo", "set-default", option); code != 0 || !strings.Contains(out, "acme/widgets") {
 			t.Errorf("%s = exit %d, %q; want exit 0 naming acme/widgets", what, code, out)
 		}
 		if sent := proxy.take(); !slices.Equal(sent, []capturedRequest{guardsRead}) {
@@ -827,7 +827,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			proxy.answer(key, body)
 		}
 		recordedPath := "PATH=" + bin + ":" + recorder + ":" + filepath.Dir(git) + ":/usr/bin:/bin"
-		code, out := runIn(tc.dir, append(append([]string{}, ghEnv...), recordedPath), os.Args[0], append([]string{"gh"}, tc.args...)...)
+		code, out := runIn(tc.dir, append(append([]string{}, ghEnv...), recordedPath), legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		proxy.clearAnswers()
 		for _, r := range proxy.take() {
 			if r.auth != "" && r.auth != "token "+tokens["acme"] && r.auth != "Basic "+base64.StdEncoding.EncodeToString([]byte(ghconfig.GitUser+":"+tokens["acme"])) {
@@ -901,7 +901,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		}
 		induced.take()
 		induced.takeConnects()
-		code, out := runIn(t.TempDir(), ghEnv, os.Args[0], append([]string{"gh"}, tc.args...)...)
+		code, out := runIn(t.TempDir(), ghEnv, legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		proxy.clearAnswers()
 		if code != 2 || !strings.Contains(out, `hands "-c" to git clone`) {
 			t.Errorf("%s with -c flags after -- = exit %d, %q; want exit 2 naming -c", tc.name, code, out)
@@ -915,7 +915,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	}
 	// gh's own help, its topics and its version still answer, exit 0, and send nothing.
 	for _, args := range [][]string{{"help"}, {"help", "pr", "view"}, {"help", "environment"}, {"pr", "view", "--help"}, {"--version"}} {
-		code, out := run(ghEnv, os.Args[0], append([]string{"gh"}, args...)...)
+		code, out := run(ghEnv, legionCopy(t), append([]string{"gh"}, args...)...)
 		if code != 0 || out == "" {
 			t.Errorf("legion gh %s = exit %d, %q; want gh's help, exit 0", strings.Join(args, " "), code, out)
 		}

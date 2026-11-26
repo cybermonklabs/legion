@@ -29,6 +29,10 @@ Treat the numbers as order-of-magnitude figures.
 - The peak reading is the most sends the outbox held outstanding at any one moment over the
   drain, counted by a wrapper around every window its batches publish through
   (`outstandingSends`).
+- Every reading below was taken one case at a time. The test's cases now run beside each other
+  and beside the package's other tests (`outboxTestParallelism`), so a reading to compare with
+  these comes from the test run alone, one case at a time:
+  `go test -run TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency -parallel 1`.
 
 ## Results
 

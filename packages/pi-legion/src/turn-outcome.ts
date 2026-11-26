@@ -24,6 +24,19 @@ import { turnGoesOn } from "./turn-end";
  * issue, and any other refusal counts in the claim's run of provider-error turns. No status is
  * ever read out of the refusal's words.
  *
+ * A refused turn the host classes as OpenAI's cyber-policy refusal carries `code: "cyber_policy"`.
+ * The class is the host's own: its `isCyberPolicyRefusal` (`@oh-my-pi/pi-ai/error`), handed the
+ * assistant message that ended the turn, as the host hands it the same message to set a
+ * `prompt_result`'s `code`; this plugin reads none of the provider's words itself. The status says
+ * nothing the daemon can act on there — a gateway relays the refusal as a 503, and a request the
+ * host held after one has none — so the class is what fails the claim, under its own cause, before
+ * the daemon's next prompt, input from outside the session, ends the host's hold and sends the
+ * refused content to OpenAI again. A report and the stream's end of its turn reach the daemon in no
+ * fixed order, so one prompt can still go before this report lands; that prompt's own result then
+ * names the class and fails the claim, so the race costs one send at most
+ * (`packages/daemon/internal/supervise/providererror.go`'s codeCyberPolicy). A prompt's turn
+ * carries the class too, and the daemon reads it there not at all: that prompt's result judges it.
+ *
  * Which turns a prompt ran is read the way the host decides which run a `prompt_result` reports
  * (`RpcPromptResults`, `packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:164-169` at the
  * pinned tag): a prompt the daemon sent arrives as `input` with `source: "rpc"` — the daemon is
@@ -65,6 +78,10 @@ export interface TurnOutcomeReporterDeps {
    * instance of its own and registers nothing. */
   readonly claim: (sessionID: string) => ClaimCapability | undefined;
   readonly log: TurnOutcomeLog;
+  /** The host's own cyber-policy classifier (`isCyberPolicyRefusal` of `@oh-my-pi/pi-ai/error`),
+   * asked about the assistant message that ended a refused turn. The entry reads the host's module
+   * lazily, so the answer is a promise, and a failure to read it is this reporter's to absorb. */
+  readonly cyberPolicyRefusal: (message: unknown) => Promise<boolean>;
 }
 
 export interface TurnOutcomeReporter {
@@ -89,6 +106,22 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
   let promptOwed = false;
   /** The run going now is a prompt's, up to the end that prompt's result reports. */
   let prompted = false;
+  /** Whether the host classes `message`, the last of a refused turn, as OpenAI's cyber-policy
+   * refusal. A host that cannot answer — its module unread, a pin without the classifier — classes
+   * it as none: the turn is still reported, with no code, and the pane says why. */
+  const classify = async (message: unknown): Promise<boolean> => {
+    try {
+      return await deps.cyberPolicyRefusal(message);
+    } catch (error) {
+      deps.log.warn(
+        "legion: the host could not class a refused turn; it is reported with no code",
+        {
+          error: messageFor(error),
+        }
+      );
+      return false;
+    }
+  };
 
   return {
     inputArrived: (sessionID, event) => {
@@ -141,6 +174,9 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         recorded <= 599
           ? recorded
           : undefined;
+      // The host's class of the refusal, read after the number is taken: the classifier may wait
+      // on the host's module, and the turns' order is fixed above.
+      const cyberPolicy = refusal !== undefined && (await classify(last));
       const request = {
         claimToken: claim.claimToken,
         sessionId: claim.sessionID,
@@ -151,6 +187,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         ...(refusal === undefined ? {} : { message: refusal }),
         ...(status === undefined ? {} : { httpStatus: status }),
         ...(unprompted ? { unprompted: true } : {}),
+        ...(cyberPolicy ? { code: "cyber_policy" as const } : {}),
       };
       try {
         // A send that fails on nothing but a restarting daemon is retried until it lands: the
@@ -169,6 +206,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
           sequence: mine,
           outcome: request.outcome,
           httpStatus: status,
+          code: request.code,
           unprompted,
           refusedRun: outcome.refusedRun,
           failed: outcome.failed,
