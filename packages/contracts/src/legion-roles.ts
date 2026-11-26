@@ -66,10 +66,10 @@ export function isLegionRole(role: string): role is LegionRole {
 /**
  * The role that works a phase, the TypeScript mirror of the daemon's own table
  * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
- * `awaiting_person`, `done`, `held`, `unrecorded` — has none, and so has any value that is not
- * a phase; `admitted` and `accepting` are the architect's, and `retro` is the implementer's
- * second turn on the issue it developed. The one reader here, the phase reminder, runs for a
- * phase worker alone, so the architect's two phases never remind anyone.
+ * `awaiting_person`, `awaiting_children`, `done`, `held`, `unrecorded` — has none, and so has any
+ * value that is not a phase; `admitted` and `accepting` are the architect's, and `retro` is the
+ * implementer's second turn on the issue it developed. The one reader here, the phase reminder,
+ * runs for a phase worker alone, so the architect's two phases never remind anyone.
  */
 export function roleForPhase(phase: string): LegionRole | undefined {
   switch (phase) {

@@ -56,6 +56,7 @@ import {
   type NodeType,
   PRESET_NAMES,
 } from "./page-words";
+import { titleReading } from "./statement-rules";
 import { storedReading } from "./stored-reading";
 
 /**
@@ -253,7 +254,7 @@ export function deletedPostLine(deleted: PostDeletion): string {
  * the page publishes each reading and the shared reader projects it (`refs/reference-names.tsx`),
  * as a title drawn over one record, so no word of a name is written by a reader of this page's
  * own, and markup is never a word of one (R21). The name is the one a link to the target reads
- * (R8), and a chip cuts it again where it draws it (`issue-tree.ts`'s `chipName`).
+ * (R8), and a chip cuts it again where it draws it (`first-line.ts`'s `chipName`).
  *
  * - **A target nothing answers to now** by nothing, which the chip draws as gone. A short
  *   reference two or more targets carry the id of is such a target, which the read answers
@@ -497,19 +498,6 @@ export function blockWords(name: string): string {
   return lines.join("\n").trim();
 }
 
-/** A title as the page reads it: a reading of one paragraph holding the title as one text run,
- *  so nothing in it is parsed, since a title is no markdown: a parse would read
- *  `1. Migrate the table` as a list item with no label, and leave out the marks of
- *  ``Add `x` flag``. The line of the issue and of a child issue is projected from it
- *  (`issue-tree.ts`'s `lineReading`), and so is the name of a chip naming an issue
- *  (`treeContext`), so a row and a chip read one title by one rule. */
-export function titleReading(title: string): DisplayTree {
-  return {
-    content: [{ content: [{ text: title, type: "text" }], type: "paragraph" }],
-    type: "doc",
-  };
-}
-
 /**
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
@@ -677,7 +665,9 @@ function stableDecisionContent(decision: DecisionEntry): DecisionContent {
  * (`DecisionEntry.shaped`), since that edge places nothing, and each whole document its words
  * cite (`addDocumentChips`). It draws the decision's own content as the read answers it
  * (`decisionContent`), whose references resolve against the document its block stands in
- * (`decisionDocumentId`), and its author is the decider its entry names (`deciderOf`).
+ * (`decisionDocumentId`), and its author is the decider its entry names, a person or an agent
+ * (`deciderOf`), and none where no entry names a decider, so its row says nobody was recorded
+ * (R9).
  *
  * Its Change is a comment of the issue whose quote its words hold, where they are the first
  * decision's words to hold it, with no block of its document read

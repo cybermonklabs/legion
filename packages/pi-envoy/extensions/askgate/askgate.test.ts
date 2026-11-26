@@ -2631,7 +2631,7 @@ console.log(JSON.stringify(args, null, 2));
     // And each one is marked, so the CLI posts it as it posts a reviewed comment.
     expect(markersIn(g.store)).toHaveLength(4);
   }, 30_000);
-  test("a command the agent already runs with --dry-run or --help sends nothing and is not reviewed", async () => {
+  test("a command the agent already runs with --dry-run or --help stores nothing and is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
     await g.bash("a", "dispatch ask --dry-run --issue X-1 --question q");
     await g.bash("b", "dispatch message --help");
@@ -3267,9 +3267,9 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     ]);
     expect(g.entries[0].reason).toContain("unknown flag --fail");
   });
-  // A dry run contacts no Dispatch server, so only a busy machine makes it slow: the gate runs a
-  // cut run once more within half the call's deadline, and the review keeps the rest. The clock
-  // here moves only as each stand-in run spends its whole limit.
+  // The gate's dry run contacts no Dispatch server, so only a busy machine makes it slow: the gate
+  // runs a cut run once more within half the call's deadline, and the review keeps the rest. The
+  // clock here moves only as each stand-in run spends its whole limit.
   test("a dry-run cut at its limit runs once more within half the deadline, and the call is reviewed", async () => {
     let clock = 1_000_000;
     let runs = 0;
@@ -6059,8 +6059,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   const CHANGED = "a file this write posts changed after AskGate read it";
   const LATER = "send this call again in a later message";
 
-  /** Posts `command` with the real CLI, as the session whose live record names `store`. */
-  async function post(command: string, store: string) {
+  /** Makes the CLI ask for a marker from `store`, as the record of a session that chose block. */
+  function holdRecord(store: string) {
     // This test process stands in for Oh My Pi, whose record makes the CLI ask for a marker.
     openStore(store);
     // The session chose block (gateEnv), so the CLI refuses a write that spends no marker.
@@ -6069,6 +6069,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       { pid: process.pid, start: processStart(process.pid), ns: pidNamespace(), store },
       "block"
     );
+  }
+
+  /** Posts `command` with the real CLI, as the session whose live record names `store`. */
+  async function post(command: string, store: string) {
+    holdRecord(store);
     const sent: Array<{ path: string; body: unknown }> = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
       const request =
@@ -6078,6 +6083,12 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       // no document here, so the upload below writes a first version.
       if (route.endsWith("/artifacts") && request.method === "GET") {
         return Response.json([]);
+      }
+      // The file round trip a markdown upload asks before it uploads, for a refusal of the file's
+      // bytes: the bytes as given let it through.
+      if (route === "/api/v1/markdown/file-round-trip") {
+        const { file } = (await request.json()) as { file: string };
+        return Response.json({ markdown: Buffer.from(file, "base64").toString("utf8") });
       }
       if (route.endsWith("/artifacts")) {
         const file = (await request.formData()).get("file") as Blob;
@@ -6119,6 +6130,85 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
     // The marker is spent: the same call again is refused.
     expect((await post(command, g.store)).code).toBe(1);
+  }, 30_000);
+
+  // INFRA-4224: the CLI's own `dispatch artifact --dry-run` asks Dispatch how it would store inline
+  // text (POST /api/v1/markdown/round-trip). The gate reads the arguments alone, and the call
+  // refuses a text Dispatch would store under another spelling itself, so the gate's dry run asks
+  // Dispatch nothing and the call it lets run makes the round trip. The call runs as Oh My Pi runs
+  // it: under bash, in the call's directory, with the environment the gate was given. The fake
+  // Dispatch keeps every request it takes, the dry run's and the call's alike, each a process of
+  // its own, so no `fetch` another test file installs in this process reaches them.
+  test("the gate's read of an inline upload asks Dispatch nothing, and the call it lets run makes the round trip", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> = [];
+    const dispatch = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(request) {
+        const route = new URL(request.url).pathname;
+        const text = await request.text();
+        const body: unknown = text === "" ? undefined : JSON.parse(text);
+        requests.push({ method: request.method, path: route, ...(text === "" ? {} : { body }) });
+        // The upload asks the store's round trip of its text, then reads the issue's documents, to
+        // refuse a name the issue holds: the text as given and an empty list let it through.
+        if (request.method === "GET" && route === "/api/v1/issues/DSP-1/artifacts") {
+          return Response.json([]);
+        }
+        if (request.method === "POST" && route === "/api/v1/markdown/round-trip") {
+          const markdown =
+            typeof body === "object" && body !== null && "markdown" in body ? body.markdown : null;
+          return Response.json({ markdown });
+        }
+        if (request.method === "POST" && route === "/api/v1/issues/DSP-1/artifacts") {
+          return Response.json({
+            artifact: { id: "artifact-1", issue_key: "DSP-1", name: "brief.md", slug: "brief-md" },
+            version: { number: 1 },
+          });
+        }
+        return new Response("unavailable", { status: 503 });
+      },
+    });
+    try {
+      const sessionEnv = { ...gateEnv, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };
+      const command = `dispatch artifact --issue DSP-1 --name brief.md --content '${BRIEF}'`;
+      const g = bind({ env: sessionEnv, cwd: work });
+      expect(await g.bash("inline", command)).toBeUndefined();
+      // The model reviewed the text the real CLI's dry run printed, and that dry run asked nothing.
+      expect(g.entries).toMatchObject([
+        { tool: "dispatch_artifact", outcome: "verdict", decision: "allow" },
+      ]);
+      expect(g.calls[0]?.user).toContain(`"content": ${JSON.stringify(BRIEF)}`);
+      expect(requests).toEqual([]);
+
+      holdRecord(g.store);
+      const call = Bun.spawn(["bash", "-c", command], {
+        cwd: work,
+        env: sessionEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr] = await Promise.all([
+        new Response(call.stdout).text(),
+        new Response(call.stderr).text(),
+      ]);
+      expect({ code: await call.exited, stderr }).toEqual({ code: 0, stderr: "" });
+      expect(stdout).toStartWith("Uploaded brief.md as version 1");
+      expect(requests).toEqual([
+        {
+          method: "POST",
+          path: "/api/v1/markdown/round-trip",
+          body: { markdown: BRIEF, new_document: true },
+        },
+        { method: "GET", path: "/api/v1/issues/DSP-1/artifacts" },
+        {
+          method: "POST",
+          path: "/api/v1/issues/DSP-1/artifacts",
+          body: expect.objectContaining({ name: "brief.md", content: BRIEF }),
+        },
+      ]);
+    } finally {
+      dispatch.stop(true);
+    }
   }, 30_000);
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the

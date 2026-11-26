@@ -2,12 +2,12 @@ import AxeBuilder from "@axe-core/playwright";
 import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 import type { IssueTreeRead } from "../web/src/api/types";
 import { blockIdOfNode, decisionContent } from "../web/src/features/issue-page/decision-review";
+import { firstLineOf } from "../web/src/features/issue-page/first-line";
 import {
   FOOT_HEIGHT_PROPERTY,
   IDENTITY_HEIGHT_PROPERTY,
 } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import { KEY_REPORTS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
@@ -3843,11 +3843,17 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
     // before-merge pass alone, and this check runs after the merge, so the page names nothing it
     // lacks.
     const coverage = await getIssueCoverage(seeded.key);
+    // A statement's gaps are those R10 names, in the order the page draws them: no check where
+    // the coverage read counts none, and, since the seed's plan holds tasks, no plan task where
+    // it counts none serving it (`tree-read/tree-nodes.ts`' `draftRequirement`).
+    const planned = seeded.planTasks.length > 0;
     const wanted = new Map<string, string[]>();
     for (const requirement of coverage.requirements ?? []) {
-      if (requirement.checks === 0) {
-        wanted.set(blockNodeId(specSlug, requirement.block_id), ["no_check"]);
-      }
+      const gaps = [
+        ...(requirement.checks === 0 ? ["no_check"] : []),
+        ...(planned && requirement.plan_tasks === 0 ? ["no_plan_task"] : []),
+      ];
+      if (gaps.length > 0) wanted.set(blockNodeId(specSlug, requirement.block_id), gaps);
     }
     const nobodyAsked = blockNodeId(planSlug, planTaskBlockId(seeded.planTasks.length));
     const uncontrolled = (await getIssueResults(seeded.key)).checks?.find(
@@ -3907,7 +3913,9 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
       (await drawnRows(page))
         .filter((row) => row.type === "requirement" || row.type === "decision")
         .flatMap((row) => row.gapKinds)
-        .filter((kind) => kind !== "no_check"),
+        // A missing check and a missing plan task tell a statement apart by what serves it, and
+        // the poll above holds each statement to them, so neither is a gap of its whole kind.
+        .filter((kind) => kind !== "no_check" && kind !== "no_plan_task"),
       "a requirement or a decision draws a gap its whole kind carries"
     ).toEqual([]);
     for (const words of ["No source given", "Not confirmed in Dispatch", "No author in Dispatch"]) {

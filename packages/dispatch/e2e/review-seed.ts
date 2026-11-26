@@ -786,10 +786,17 @@ Each page is read once it is drawn.
   // The decision's words cite the block it shaped as well as its `shaped` attribute tying them:
   // a decision card draws its words, so the card beside the spec draws that block's own words,
   // which `e2e/review-routes.ts`'s `issue-spec` row waits on to know the reference graph answered.
-  await createIssueArtifact(issue, {
-    content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n:::\n`,
-    name: "choices.md",
-  });
+  // The agent writes it, so its `decided_by` names the seed's session and it waits for alice's
+  // review, under "Waiting for your review", where the `issue-decisions` row reads it: a decision
+  // alice wrote would be hers, which waits for nobody's review.
+  await createIssueArtifact(
+    issue,
+    {
+      content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n:::\n`,
+      name: "choices.md",
+    },
+    { as: "agent" }
+  );
 
   // The workflow issue's header reads as a working issue's does: the decision its spec asks
   // waits on alice, the signed-in reader, so the header carries "Waiting on you"; it carries two

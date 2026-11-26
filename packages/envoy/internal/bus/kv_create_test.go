@@ -109,7 +109,7 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 	}
 
 	t.Run("a connection that has not connected", func(t *testing.T) {
-		client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(seedLookup("")), WithConnectInBackground())
+		client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(testnats.SeedOnly("")), WithConnectInBackground())
 		if err != nil {
 			t.Fatalf("connect in the background: %v", err)
 		}

@@ -1039,8 +1039,9 @@ func mustJSON(t *testing.T, value any) string {
 
 // scanForTheDeletedWriters parses the source of the docs and pmdoc packages and fails where either
 // declares setAskServerAttributes or IsAnswerAttribute. It allows rollWindowAskAttributes, the
-// roll-window helper, where its fleet guard returns nothing on a fleet of one build, and prints
-// that finding and the one of restoresApprovedText, which stays.
+// roll-window helper, where the one write that chooses by the fleet (askStateWrite) hands that
+// helper's write out only while another build serves and the form a version keeps otherwise, and
+// prints that finding and the one of restoresApprovedText, which stays.
 func scanForTheDeletedWriters(t *testing.T) {
 	t.Helper()
 	declared := map[string]string{}
@@ -1059,7 +1060,7 @@ func scanForTheDeletedWriters(t *testing.T) {
 						continue
 					}
 					declared[function.Name.Name] = filepath.Base(name) + ":" + strconv.Itoa(files.Position(function.Pos()).Line)
-					if function.Name.Name == "rollWindowAskAttributes" {
+					if function.Name.Name == "askStateWrite" {
 						guard = fleetGuard(function)
 					}
 				}
@@ -1073,9 +1074,9 @@ func scanForTheDeletedWriters(t *testing.T) {
 	}
 	at, found := declared["rollWindowAskAttributes"]
 	if !found || guard == "" {
-		t.Errorf("the scan finds rollWindowAskAttributes at %q with fleet guard %q, want the roll-window helper returning nothing on a fleet of one build", at, guard)
+		t.Errorf("the scan finds rollWindowAskAttributes at %q with the fleet guard of askStateWrite %q, want the roll-window helper's write handed out only while another build serves", at, guard)
 	}
-	t.Logf("scan: allowed rollWindowAskAttributes at %s, which keeps the copy in step with the asks row while two builds serve and %s", at, guard)
+	t.Logf("scan: allowed rollWindowAskAttributes at %s, which keeps the copy in step with the asks row while two builds serve: askStateWrite %s", at, guard)
 	if at, found := declared["restoresApprovedText"]; found {
 		t.Logf("scan: restoresApprovedText stays, at %s", at)
 	} else {
@@ -1083,30 +1084,34 @@ func scanForTheDeletedWriters(t *testing.T) {
 	}
 }
 
-// fleetGuard describes the fleet guard function opens with - `if !twoBuilds { return nil }` - or is
-// "" where it opens with none.
+// fleetGuard describes the fleet guard askStateWrite opens with - `if twoBuilds { return
+// rollWindowAskAttributes(…) }`, then `return keptAskState(…)` - or is "" for any other body,
+// so a write that handed the roll window's attributes out on a fleet of one build fails.
 func fleetGuard(function *ast.FuncDecl) string {
-	if function.Body == nil || len(function.Body.List) == 0 {
+	if function.Body == nil || len(function.Body.List) != 2 {
 		return ""
 	}
 	guard, ok := function.Body.List[0].(*ast.IfStmt)
-	if !ok || len(guard.Body.List) != 1 {
+	if !ok || guard.Else != nil || len(guard.Body.List) != 1 {
 		return ""
 	}
-	not, ok := guard.Cond.(*ast.UnaryExpr)
-	if !ok || not.Op != token.NOT {
+	fleet, ok := guard.Cond.(*ast.Ident)
+	if !ok || !returnsCallOf(guard.Body.List[0], "rollWindowAskAttributes") || !returnsCallOf(function.Body.List[1], "keptAskState") {
 		return ""
 	}
-	fleet, ok := not.X.(*ast.Ident)
-	if !ok {
-		return ""
-	}
-	returned, ok := guard.Body.List[0].(*ast.ReturnStmt)
+	return "returns rollWindowAskAttributes's write only while " + fleet.Name + ", and keptAskState's otherwise"
+}
+
+// returnsCallOf is whether statement is `return name(…)`.
+func returnsCallOf(statement ast.Stmt, name string) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
 	if !ok || len(returned.Results) != 1 {
-		return ""
+		return false
 	}
-	if nothing, ok := returned.Results[0].(*ast.Ident); !ok || nothing.Name != "nil" {
-		return ""
+	call, ok := returned.Results[0].(*ast.CallExpr)
+	if !ok {
+		return false
 	}
-	return "returns nil while !" + fleet.Name
+	called, ok := call.Fun.(*ast.Ident)
+	return ok && called.Name == name
 }

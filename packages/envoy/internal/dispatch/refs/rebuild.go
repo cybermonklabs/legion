@@ -210,6 +210,9 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("delete orphan references: %w", err)
 	}
+	// Each queue's delete names its table: the census of item-row writers and the projection
+	// scan read the table a statement writes from its text, and a name built at runtime is one
+	// they cannot read.
 	if _, err := tx.Exec(ctx, `
 		delete from refs_forms_owed o
 		where not exists (

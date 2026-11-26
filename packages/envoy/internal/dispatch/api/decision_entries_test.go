@@ -633,6 +633,66 @@ func TestTheDecisionsReadNamesASessionDeciderByTheTitleItStamped(t *testing.T) {
 	}
 }
 
+// A decision whose decided_by names a person is that person's and waits for nobody's review
+// (spec R4: the author the read answers is the one its decided_by tuple holds), and an agent's,
+// whose decided_by names its session, waits until a person keeps it. Both are `decision` blocks
+// nobody kept, so no Keep tells them apart: the person's is the spec's p1, which alice's
+// credential wrote, and the agent's the a1 the agent's session uploaded. Each stays an entry of
+// kind `agent`, the node's shape. The members are read as the response holds them, so an answer
+// that left waiting_review out fails as neither value.
+func TestADecisionAPersonDecidedWaitsForNoReviewAndAnAgentsDoes(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", ":::decision{#p1}\nAlice's spec decides.\n:::\n")
+	agentUploadAs(t, handler, issue.Key, "agent.md", ":::decision{#a1}\nThe agent decides.\n:::\n", nil)
+
+	person := readDecisionDocument(t, database, issue.Key, "spec").address("p1")
+	agent := readDecisionDocument(t, database, issue.Key, "agent-md").address("a1")
+	requireDecidedBy(t, database, "the person's decision", person, "alice")
+	requireDecidedByNode(t, database, "the agent's decision", agent, graphstore.KindSession, decidingSession)
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/decisions", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/issues/%s/decisions: status=%d body=%s", issue.Key, response.Code, response.Body.String())
+	}
+	type readEntry struct {
+		Node          decisionEntryNode `json:"node"`
+		Kind          string            `json:"kind"`
+		DecidedBy     map[string]any    `json:"decided_by"`
+		Kept          map[string]any    `json:"kept"`
+		WaitingReview *bool             `json:"waiting_review"`
+	}
+	read := decodeBody[struct {
+		Entries []readEntry `json:"entries"`
+	}](t, response)
+	byNode := map[string]readEntry{}
+	for _, entry := range read.Entries {
+		if entry.Node.Kind == refs.BlockNodeKind {
+			byNode[entry.Node.ID] = entry
+		}
+	}
+	for _, want := range []struct {
+		what, node string
+		decider    map[string]any
+		waiting    bool
+	}{
+		{"the person's decision", person, map[string]any{"kind": graphstore.KindPerson, "id": "alice"}, false},
+		{"the agent's decision", agent, map[string]any{"kind": graphstore.KindSession, "id": decidingSession}, true},
+	} {
+		entry, found := byNode[want.node]
+		switch {
+		case !found:
+			t.Errorf("%s (%s): the read answers no entry for it", want.what, want.node)
+		case entry.Kind != "agent" || entry.Kept != nil || !reflect.DeepEqual(entry.DecidedBy, want.decider):
+			t.Errorf("%s (%s): the entry reads %s, want kind agent, the node's shape, no Keep and the decided_by %v",
+				want.what, want.node, entryJSON(t, entry), want.decider)
+		case entry.WaitingReview == nil || *entry.WaitingReview != want.waiting:
+			t.Errorf("%s (%s): the entry reads %s, want waiting_review %t", want.what, want.node, entryJSON(t, entry), want.waiting)
+		}
+	}
+}
+
 // A reading's state of the store: the reading g2 is inserted by SQL, outside the server's write
 // path, with its part_of and no authored_by.
 func insertBareReading(t *testing.T, database *store.Store, address, parent string) {

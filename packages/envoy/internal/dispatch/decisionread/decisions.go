@@ -75,13 +75,16 @@ func TextSum(text string) string {
 //     document owes its block index is read off the document's newest version, whose markdown
 //     holds it as it stands (walker.changed). A person's words are the ask's question, from its
 //     row: the answer is the ask node's, and no other field restates it.
-//   - Kind, `person` for an ask and `agent` for a decision; Heading, the ask's question or the
-//     decision's first paragraph; Ref, the node's own address; Asks, the ask an agent's decision
-//     settles (from_ask) or the ask itself; Unsure, true where its uncertainty is `high`.
+//   - Kind, `person` for an ask and `agent` for a `decision` block, the node's shape whoever
+//     decided it; Heading, the ask's question or the decision's first paragraph; Ref, the node's
+//     own address; Asks, the ask an agent's decision settles (from_ask) or the ask itself; Unsure,
+//     true where its uncertainty is `high`.
 //   - Replaced, Kept and WaitingReview from the node: the newest kept_by tuple and the
-//     kept_text_sum value, beside decision_keeps' changed_version,
-//     and waiting_review true for an agent's decision unless it is replaced or the kept sum is its
-//     sum as it stands.
+//     kept_text_sum value, beside decision_keeps' changed_version, and the newest decided_by
+//     tuple. waiting_review is true for an agent's decision - a `decision` block whose decided_by
+//     names a session, or names nobody - unless it is replaced or the kept sum is its sum as it
+//     stands. A block whose decided_by names a person is that person's decision (spec R4), which
+//     waits for no review whatever its Keep, as an ask never does.
 //   - ChangedVersion, the version that last changed the decision's own words (refs.DecisionWords),
 //     which a reading added, changed or removed under it does not move: the block's
 //     document_blocks.changed_version, walked back over its
@@ -429,8 +432,9 @@ type fact struct {
 	seq                int64
 }
 
-// factKinds are the relations and values of a decision node the read takes beside its links.
-var factKinds = []string{refs.TupleFromAsk, refs.TupleKeptBy, refs.ValueKeptTextSum, refs.ValueReplaced, refs.ValueUncertainty}
+// factKinds are the relations and values of a decision node the read takes beside its links,
+// decided_by among them: who decided a `decision` block says whether it waits for review.
+var factKinds = []string{graphstore.TupleDecidedBy, refs.TupleFromAsk, refs.TupleKeptBy, refs.ValueKeptTextSum, refs.ValueReplaced, refs.ValueUncertainty}
 
 // readFacts reads, for each node, the relations and values of factKinds it holds now, in one
 // statement: the newest tuple of each relation (kind and far end) and of each value (kind alone),
@@ -658,13 +662,17 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 		basis.words, basis.held = changed.words, changed.block != nil
 	}
 	decision.TextSHA256 = TextSum(decision.Text)
-	var kept *fact
+	var kept, decider *fact
 	keptSum, keptSumHeld := "", false
 	for index, held := range facts {
 		switch held.kind {
 		case refs.TupleFromAsk:
 			if held.toKind == graphstore.KindAsk {
 				decision.Asks = append(decision.Asks, held.toID)
+			}
+		case graphstore.TupleDecidedBy:
+			if decider == nil || held.seq > decider.seq {
+				decider = &facts[index]
 			}
 		case refs.TupleKeptBy:
 			if kept == nil || held.seq > kept.seq {
@@ -698,7 +706,10 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 			decision.Kept.ChangedVersion = *node.keptVersion
 		}
 	}
-	decision.WaitingReview = decision.Kind == "agent" && !decision.Replaced &&
+	// A block a person decided is theirs and waits for nobody's review, whatever its Keep; one a
+	// session decided, or that no decided_by names, is an agent's. Kind stays the node's shape.
+	decidedByPerson := decider != nil && decider.toKind == graphstore.KindPerson
+	decision.WaitingReview = decision.Kind == "agent" && !decidedByPerson && !decision.Replaced &&
 		(decision.Kept == nil || decision.Kept.TextSHA256 != decision.TextSHA256)
 	return decision, basis, nil
 }

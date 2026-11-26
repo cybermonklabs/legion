@@ -119,12 +119,13 @@ func (tree IssueTree) question(node TreeNode) bool {
 // TreeNode is one node of an issue's tree as a walk takes it: its kind and its id, as the store
 // keys it; the node it stands under in the walk; its type (refs.TreeNodeType: its supertag, or for
 // a block the typed block its text opens), which a query takes it by; its rank, and whether it
-// holds one; when it was made, which orders it among its unranked siblings; whether it stands in
-// the walk's second part, under a node of an issue above or in such a node's subtree; and its
-// supertag and whether the walk read its row (Row). The walk reads the row of each node it takes
-// off a children read (refs.TreeChild), so Supertag and MadeAt are then what refs.TreeNodeRows
-// answers of it - the empty supertag and the zero time where the store holds no row; it reads no
-// row of the issue's node, nor of its conversation's items and their blocks.
+// holds one; when it was made, which orders it among its siblings of the conversation and among
+// those that hold no rank (refs.CompareSiblings); whether it stands in the walk's second part,
+// under a node of an issue above or in such a node's subtree; and its supertag and whether the
+// walk read its row (Row). The walk reads the row of each node it takes off a children read
+// (refs.TreeChild), so Supertag and MadeAt are then what refs.TreeNodeRows answers of it - the
+// empty supertag and the zero time where the store holds no row; it reads no row of the issue's
+// node, nor of its conversation's items and their blocks.
 type TreeNode struct {
 	Kind, ID string
 	Parent   refs.Target
@@ -188,13 +189,16 @@ type IssueTree struct {
 // untyped block among them, or the lens, finding, risk, constraint or result it quotes; where that
 // node is no node of the walk, under the node the moved_to tuples carry its address to (the node in
 // a converted issue's room). A comment enters the walk through the conversation alone, never as a
-// part_of child (takeLevels). Every other item hangs under the issue. Under a
-// conversation item, its own blocks come first, in their position order. Then, under every node,
-// the ranked children by increasing rank and the unranked ones - an ask, a comment, a message, a
-// lens, a risk, a result - by when each was made, an item whose row has no node yet by its row's
-// created_at, each tie by the lower address. A rank and an address compare byte for byte. The walk
-// does not enter an issue under the issue, nor a node of another issue, so a parent's record holds
-// no node of a child.
+// part_of child (takeLevels). Every other item hangs under the issue. Under a conversation item,
+// its own blocks come first, in their position order. Then, under every node, its children in the
+// tree's order of siblings (this issue's spec R8, refs.CompareSiblings): the conversation nodes -
+// an ask, a comment, a message, a lens, a risk - by when each was made, an item whose row has no
+// node yet by its row's created_at; then the ranked children by increasing rank; then the rest - a
+// block that holds no rank yet, new in a deferred version, or a result - by when each was made;
+// each tie by the lower address (R14 at spec v247). Under the issue's node the memo stands first,
+// before the conversation (memoFirst). A rank and an address compare byte for byte. The walk does
+// not enter an issue under the issue, nor a node of another issue, so a parent's record holds no
+// node of a child.
 //
 // The second part takes each node of the issue whose parent is a node of an issue above
 // (refs.IssueAncestors, refs.TreePlacedAbove), by the parent's address, then rank, then its own
@@ -314,8 +318,8 @@ func walkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 
 // treeWalk is what a walk has read of the issue's tree: its root, the issue's node, and the owner
 // every address of the issue's own nodes begins with, the issue's key (refs.TreeOwns); every node it
-// took, by its address; the part_of children of each node, ranked first, in the order the children
-// read answers them; every row its reads of the subtrees answered, by the parent (IssueTree's
+// took, by its address; the part_of children of each node, in the order the children read answers
+// them; every row its reads of the subtrees answered, by the parent (IssueTree's
 // Children); the conversation's items and their blocks, in the order the conversation read
 // answers them, the items alone, the blocks of each item, the parent each item's loader names and
 // each node as its loader answered it (IssueTree's Conversation); and the items that hang under
@@ -804,24 +808,41 @@ func (w *treeWalk) hang(item, parent refs.Target) {
 }
 
 // ordered is the children of parent in the walk's order: a conversation item's own blocks first,
-// in their position order; then its ranked children, in the order the children read answered them,
-// by rank and then address; then every unranked child and every item that hangs under it, by when
-// each was made and then by address.
+// in their position order; then every part_of child and every item that hangs under it, in the
+// tree's order of siblings (refs.CompareSiblings): the conversation nodes by when each was made,
+// then the ranked ones by rank, then the rest by when each was made, each tie by the lower
+// address. Under the issue's node the memo stands first (memoFirst).
 func (w *treeWalk) ordered(parent refs.Target) []refs.Target {
-	children := slices.Clone(w.blocks[parent])
-	var unranked []refs.Target
-	for _, child := range w.children[parent] {
-		if w.nodes[child].Ranked {
-			children = append(children, child)
-			continue
-		}
-		unranked = append(unranked, child)
+	blocks := w.blocks[parent]
+	children := make([]refs.Target, 0, len(blocks)+len(w.children[parent])+len(w.hanging[parent]))
+	children = append(append(append(children, blocks...), w.children[parent]...), w.hanging[parent]...)
+	siblings := children[len(blocks):]
+	slices.SortFunc(siblings, func(a, b refs.Target) int { return refs.CompareSiblings(w.sibling(a), w.sibling(b)) })
+	if parent == w.issue {
+		w.memoFirst(siblings)
 	}
-	unranked = append(unranked, w.hanging[parent]...)
-	slices.SortStableFunc(unranked, func(a, b refs.Target) int {
-		return cmp.Or(w.nodes[a].MadeAt.Compare(w.nodes[b].MadeAt), refs.CompareAddresses(a, b))
-	})
-	return append(children, unranked...)
+	return children
+}
+
+// sibling is node as the tree's order of siblings reads it (refs.CompareSiblings).
+func (w *treeWalk) sibling(node refs.Target) refs.TreeChild {
+	held := w.nodes[node]
+	return refs.TreeChild{Node: node, Rank: held.Rank, Ranked: held.Ranked, MadeAt: held.MadeAt}
+}
+
+// memoFirst moves the memo to the front of siblings, the issue's children in the tree's order of
+// siblings: the first of them that is no conversation node, where that child is a callout. The
+// read answers the memo first, before any conversation node, because the owner put the memo at
+// the top of the spec (this issue's spec R8), so the memo stays the issue's first child, which the
+// spec query takes as its memo (R14).
+func (w *treeWalk) memoFirst(siblings []refs.Target) {
+	at := slices.IndexFunc(siblings, func(child refs.Target) bool { return !refs.OrderedAsConversation(child.Kind) })
+	if at <= 0 || w.nodes[siblings[at]].Type != memoType {
+		return
+	}
+	memo := siblings[at]
+	copy(siblings[1:at+1], siblings[:at])
+	siblings[0] = memo
 }
 
 // take appends node and its subtree to tree in the walk's order, each node once.
