@@ -73,9 +73,12 @@ func TestTheCalloutClusterSendsUnknownClientsToTheServiceFromEveryMember(t *test
 	static, err := testnats.ConnectSeed(t, cluster.URL(), staticSeed)
 	require.NoError(t, err)
 	defer static.Close()
+	// The context's 30 s is the step of AwaitSettledStream's reads, each of which awaitInfo sends
+	// again when the step cuts it. The create is sent once and a cut fails the row, so it waits to
+	// the test's deadline (testnats.MaxWait, which overrides the context's wait for this call).
 	js, err := static.JetStream(natsgo.MaxWait(30 * time.Second))
 	require.NoError(t, err)
-	_, err = js.AddStream(&natsgo.StreamConfig{Name: "THREE", Subjects: []string{"example.three"}, Replicas: 3})
+	_, err = js.AddStream(&natsgo.StreamConfig{Name: "THREE", Subjects: []string{"example.three"}, Replicas: 3}, testnats.MaxWait(t))
 	require.NoError(t, err)
 	info := testnats.AwaitSettledStream(t, js, "THREE")
 	require.Equal(t, 3, testnats.Copies(info.Cluster))

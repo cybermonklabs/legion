@@ -22,6 +22,7 @@ const claimPodEndVersion = 20261111091500
 // through a fresh read, which is exactly what a boot's replay does with a failed claim before it
 // tells the workflow (workflowRuntime.replayTerminal).
 func TestTheClaimsPodEndArrivesWith20261111091500(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, claimPodEndVersion-1)

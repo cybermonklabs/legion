@@ -23,4 +23,4 @@ GATE = gate("envoy_client", "envoy-client", reads=reads(
     (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
     ("docs/site/src/content/docs/dispatch/for-agents.md", "`packages/envoy-client/src/__tests__/plans-command.test.ts#the guide for agents' Plans row states the contract's scale` and `packages/envoy-client/src/__tests__/plans-command.test.ts#REPO_ROOT` reads it: the guide for agents' Plans row, held to the contract's rating scale"),
     (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "`packages/envoy-client/src/__tests__/stream-topics.test.ts#a topic reaching a private stream subject is the listener's rule, case for case` and `packages/envoy-client/src/__tests__/stream-topics.test.ts#SHARED_CASES` reads the listener's own cases by relative path, which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
-) + bun_job("envoy-client"))
+) + dispatch_api_types(at("envoy-client", "Typecheck Envoy client")) + bun_job("envoy-client"))

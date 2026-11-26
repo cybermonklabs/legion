@@ -4,9 +4,10 @@
 # operator-token-minters.sh, whose header says what each step checks.
 # --- What a run prints and reports. Each finding and each UNKNOWN is printed once, its fields with
 # tabs and line breaks turned to spaces, the form every report field takes, so a refusal's
-# multi-line text stays one line and one field. ---
+# multi-line text stays one line and one field. The broker's pod fence adds CREDITS and RESIDUALS
+# (broker-fence.sh's credit), which the report lists too. ---
 
-FINDINGS=() UNKNOWNS=()
+FINDINGS=() UNKNOWNS=() CREDITS=() RESIDUALS=()
 declare -A RECORDED=()
 first_line() { sed -n '1{s/[[:cntrl:]]/ /g;p;}' "$1"; }
 # last_line: a command's refusal where it prints lines before it, as agent-secrets prints the
@@ -34,18 +35,25 @@ unknown() {
   echo "UNKNOWN $step: $reason"
 }
 pass() { echo "PASS $1: $2"; }
-# write_report: --report, when it is named, from the findings, the UNKNOWNs so far and the run's
-# allowances (allowances_json, in operator-token-minters.sh). A report it cannot write is named by
-# its flag, never its file.
+# write_report: --report, when it is named, from the findings, the credits and their residuals, the
+# UNKNOWNs so far and the run's allowances (allowances_json, in operator-token-minters.sh). A report
+# it cannot write is named by its flag, never its file.
 write_report() {
   [ -n "$REPORT" ] || return 0
   printf '%s\n' ${FINDINGS[@]+"${FINDINGS[@]}"} >"$WORK/findings"
+  printf '%s\n' ${CREDITS[@]+"${CREDITS[@]}"} >"$WORK/credits"
+  printf '%s\n' ${RESIDUALS[@]+"${RESIDUALS[@]}"} >"$WORK/residuals"
   printf '%s\n' ${UNKNOWNS[@]+"${UNKNOWNS[@]}"} >"$WORK/unknown"
-  jq -n --arg run_at "$RUN_AT" --rawfile findings "$WORK/findings" --rawfile unknown "$WORK/unknown" --argjson allowances "$(allowances_json)" '{
+  jq -n --arg run_at "$RUN_AT" --rawfile findings "$WORK/findings" --rawfile credits "$WORK/credits" \
+    --rawfile residuals "$WORK/residuals" --rawfile unknown "$WORK/unknown" --argjson allowances "$(allowances_json)" '{
     run_at: $run_at,
     findings: [$findings | split("\n")[] | select(length > 0) | split("\t")
       | {principal: .[0], right: .[1], role: .[2], resource: .[3],
          permissions: ((.[4] // "") | split("\u001f") | map(select(length > 0))), granted_at: (.[5] // "")}],
+    credited: [$credits | split("\n")[] | select(length > 0) | split("\t")
+      | {principal: .[0], right: .[1], resource: .[2], granted_at: .[3], policy: .[4], declared: .[5], live: .[6]}],
+    residuals: [$residuals | split("\n")[] | select(length > 0) | split("\t")
+      | {principal: .[0], right: .[1], resource: .[2], granted_at: .[3], residual: .[4], tracked_by: .[5]}],
     unknown: [$unknown | split("\n")[] | select(length > 0) | split("\t") | {step: .[0], reason: .[1]}],
     allowances: $allowances}' >"$WORK/report.json"
   cp "$WORK/report.json" "$REPORT" 2>/dev/null || { echo "operator-token-minters: --report cannot be written" >&2; return 1; }
@@ -57,9 +65,12 @@ crash_report() {
   echo "operator-token-minters: stopped before its end, ${#UNKNOWNS[@]} unknown: exit 2"
 }
 # mark, then unchanged: whether a step recorded no finding and no UNKNOWN since its mark, so it
-# prints PASS only then.
-mark() { MARK_F="${#FINDINGS[@]}" MARK_U="${#UNKNOWNS[@]}"; }
+# prints PASS only then; credited and allowed, how many credits and residual ALLOWANCEs it recorded
+# since, which its PASS names.
+mark() { MARK_F="${#FINDINGS[@]}" MARK_U="${#UNKNOWNS[@]}" MARK_C="${#CREDITS[@]}" MARK_A="${#RESIDUALS[@]}"; }
 unchanged() { [ "${#FINDINGS[@]}" -eq "$MARK_F" ] && [ "${#UNKNOWNS[@]}" -eq "$MARK_U" ]; }
+credited() { echo "$((${#CREDITS[@]} - MARK_C))"; }
+allowed() { echo "$((${#RESIDUALS[@]} - MARK_A))"; }
 have() { command -v "$1" >/dev/null; }
 # The unit separator joins a record's fields; rec.jq says why. JQ_REC, prepended to a small inline
 # jq program, defines rec there as `include "rec";` does in the .jq files.
