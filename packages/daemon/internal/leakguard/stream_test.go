@@ -500,9 +500,11 @@ func TestAReadThatFindsFewerBytesThanItCountedFails(t *testing.T) {
 // other git at once and, for the diff, marks that it started, runs the real git and then stays in
 // its foreground until the bound stops it. The escaped process holds standard output alone: one
 // that held standard error too would keep exec's copy of it running. The bound is due 4 s after
-// the call and passes then, but not before the diff has started (deadlinePassedOnceStarted): on a
-// loaded machine the shared check and the gits before the diff can take longer than 4 s, and a
-// bound that passed then stopped one of them, whose refusal names the bound too.
+// the call, and the guard must have started the diff by then (startedBeforeDue), as a bound of 4 s
+// requires of the guard's own work before it, the shared check and the gits before the diff among
+// it. It passes when due, but not before the diff has started (deadlinePassedOnceStarted): a diff
+// the guard started in time may, on a loaded machine, mark its start later, and a bound that
+// passed then stopped one of the gits before it, whose refusal names the bound too.
 func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
 		t.Skip("no setsid on this machine")
@@ -521,6 +523,7 @@ func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.
 		t.Fatalf("the push's diff never started (%v), so its bound stopped no diff: %v", statErr, err)
 	}
 	says(t, setupFailure(t, err), "was stopped by its bound")
+	startedBeforeDue(t, ctx, err, "git")
 }
 
 // A file renamed to a path the rules refuse is read as its new path, which is the path the

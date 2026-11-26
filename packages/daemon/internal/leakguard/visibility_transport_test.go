@@ -3,9 +3,11 @@ package leakguard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -89,18 +91,20 @@ var curlHeardThenFailed = printsResponse("HTTP/2 200", []string{"content-type: a
 	printsToStderr("curl: (56) Recv failure: Connection reset by peer") + "exit 56\n"
 
 // transportRig is one guard whose gh, curl and git are stand-ins, the directory they are in, the
-// files they record to, and the sources the guard reported.
+// files they record to, and the sources the guard reported. ghStarts and curlStarts hold the start
+// mark (startMark) of each gh and each curl that ran, in the order they ran.
 type transportRig struct {
 	guard                           *Guard
 	sources                         []VisibilitySource
 	bin                             string
 	reads, graphql, credential, git string
 	curl, curlStdin                 string
+	ghStarts, curlStarts            string
 }
 
 // newTransportRig is a transportRig whose gh REST read does what rest says, whose GraphQL read
 // what graphql says (given the file it records to), whose curl what curl says, and whose git what
-// git says, with extra on top of the guard's environment.
+// git says, with extra on top of the guard's environment. gh and curl mark their start first.
 func newTransportRig(t *testing.T, rest string, graphql func(record string) string, curl, git string, extra ...string) *transportRig {
 	t.Helper()
 	bin, records := t.TempDir(), t.TempDir()
@@ -112,9 +116,11 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 		git:        filepath.Join(records, "git"),
 		curl:       filepath.Join(records, "curl"),
 		curlStdin:  filepath.Join(records, "curl-stdin"),
+		ghStarts:   filepath.Join(records, "gh-starts"),
+		curlStarts: filepath.Join(records, "curl-starts"),
 	}
-	writeProgram(t, bin, "gh", transportGh(rig.reads, rest, graphql(rig.graphql), rig.credential, theToken))
-	writeProgram(t, bin, "curl", curlStandIn(rig.curl, rig.curlStdin, curl))
+	writeProgram(t, bin, "gh", startMark(rig.ghStarts)+transportGh(rig.reads, rest, graphql(rig.graphql), rig.credential, theToken))
+	writeProgram(t, bin, "curl", startMark(rig.curlStarts)+curlStandIn(rig.curl, rig.curlStdin, curl))
 	writeProgram(t, bin, "git", recordsItsCall(rig.git)+git)
 	rig.guard = New(Options{
 		OnVisibility: func(source VisibilitySource) { rig.sources = append(rig.sources, source) },
@@ -123,6 +129,65 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 	// The guard's curl is the stand-in, where the guard would otherwise run curlProgram.
 	rig.guard.curl = filepath.Join(bin, "curl")
 	return rig
+}
+
+// startMark is a line of sh that appends to marks the moment it runs and the moment the kernel
+// started the process that runs it: the first field of /proc/uptime, and the fields of
+// /proc/self/stat after the program's name, whose twentieth is its start, both counted from the
+// machine's boot. The shell's own read reads both, so the line starts no program of its own. As
+// the first line of a stand-in, the gap between the two is how long the stand-in took to start
+// once the guard had started it (starts): a loaded machine can make it long, and the guard cannot.
+func startMark(marks string) string {
+	return `read -r stat < /proc/self/stat; read -r up _ < /proc/uptime; printf '%s %s\n' "$up" "${stat##*) }" >> ` + shQuote(marks) + "\n"
+}
+
+// clockTick is the unit of a process's start in /proc/self/stat: USER_HZ, which Linux fixes at
+// 100 a second.
+const clockTick = 10 * time.Millisecond
+
+// slowStart is how long a stand-in may take to start (starts) before a transport row takes the
+// read again rather than judge it: a stand-in that slow spends the bound under test on the load
+// of the machine, which says nothing of the guard.
+const slowStart = 500 * time.Millisecond
+
+// starts is how long each stand-in that marked its start to the file marks (startMark) took to
+// start, in the order they started, and none where none did. A mark it cannot read fails the
+// test, since it says nothing of when the stand-in started.
+func starts(t *testing.T, marks string) []time.Duration {
+	t.Helper()
+	content, err := os.ReadFile(marks)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var took []time.Duration
+	for _, line := range strings.Split(strings.TrimSuffix(string(content), "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 21 {
+			t.Fatalf("the start mark %q in %s does not say when the stand-in started", line, marks)
+		}
+		at, atErr := time.ParseDuration(fields[0] + "s")
+		began, beganErr := strconv.ParseInt(fields[20], 10, 64)
+		if atErr != nil || beganErr != nil {
+			t.Fatalf("the start mark %q in %s does not say when the stand-in started", line, marks)
+		}
+		took = append(took, at-time.Duration(began)*clockTick)
+	}
+	return took
+}
+
+// slowStarts names each of took, the starts of stand-ins of program, that took slowStart or
+// longer, and is empty where none did.
+func slowStarts(program string, took []time.Duration) []string {
+	var slow []string
+	for i, d := range took {
+		if d >= slowStart {
+			slow = append(slow, fmt.Sprintf("%s %d of %d took %s to start", program, i+1, len(took), d))
+		}
+	}
+	return slow
 }
 
 // runs is how many times each stand-in ran: gh's REST read, gh's GraphQL read, curl and git.
@@ -599,16 +664,19 @@ func shorten(t *testing.T, bound *time.Duration, d time.Duration) {
 // A gh REST read that hangs, as gh did for about 42 s in the busy one-CPU pod, is stopped by the
 // guard's own bound, which leaves the rest of the caller's bound to curl: curl answers private
 // within the caller's bound, and gets what is left of it as its --max-time. The guard's bound is
-// ghReadBound inside a caller's bound, here shortened to 1 s inside 15 s; or the caller's deadline
-// less curlReserve where that is sooner, here a deadline of 9 s and a reserve of 6 s, which stops gh
-// at 3 s, sooner than ghReadBound (8 s). Both callers leave curl less than curlBound (20 s), so the
-// caller's deadline is what bounds curl: a curl whose --max-time ignored it would run with nearly
-// 20 s, past what the caller has left. A gh bounded by ghReadBound alone would run to 8 s inside
-// the 9 s caller and leave curl too little to run (errNoTimeForCurl). Curl still gets 13.5 s and
-// 5.5 s, far from a stand-in curl's own answer on a loaded machine. The guard's bound is counted
-// from before gh starts, and a loaded machine can spend it before gh has logged its read: that run
-// shows nothing of a hanging gh, so the row reads again until a read in which gh logged itself
-// before the bound stopped it, within a minute.
+// ghReadBound inside a caller's 15 s (the bound `legion gh` gives the shared check's own read),
+// here shortened to 1 s; or the caller's deadline less curlReserve where that is sooner: a deadline
+// of 6 s and a reserve of 3 s, and a deadline of 9 s, past ghReadBound (8 s), and a reserve of 6 s,
+// each of which stops gh at 3 s. A gh bounded by ghReadBound alone, or by the reserve only where
+// the caller's deadline is sooner than ghReadBound, would run to 8 s inside the 9 s caller and
+// leave curl too little to run (errNoTimeForCurl). Each caller leaves curl less than curlBound
+// (20 s), so the caller's deadline is what bounds curl: a curl whose --max-time ignored it would
+// run with nearly 20 s, past what the caller has left.
+//
+// Every read is judged but one in which gh or curl took slowStart or longer to start (startMark):
+// that time is the load's, spent out of the bounds the row holds the guard to, so the row takes
+// such a read again, within a minute, and says so in its log. A read in which gh's REST read never
+// logged itself fails at once: the guard made no REST read, or stopped gh before its first line.
 func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -617,7 +685,8 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 		caller, ghBound, reserve, stoppedAt time.Duration
 	}{
 		{name: "the read's own cap", caller: 15 * time.Second, ghBound: time.Second, reserve: curlReserve, stoppedAt: time.Second},
-		{name: "the caller's deadline less the reserve", caller: 9 * time.Second, ghBound: ghReadBound, reserve: 6 * time.Second, stoppedAt: 3 * time.Second},
+		{name: "the caller's deadline less the reserve", caller: 6 * time.Second, ghBound: ghReadBound, reserve: 3 * time.Second, stoppedAt: 3 * time.Second},
+		{name: "a deadline past ghReadBound less the reserve", caller: 9 * time.Second, ghBound: ghReadBound, reserve: 6 * time.Second, stoppedAt: 3 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			shorten(t, &ghReadBound, tc.ghBound)
@@ -633,10 +702,14 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 				cancel()
 				rest, graphql, curl, git := rig.runs(t)
 				if rest == 0 {
+					t.Fatalf("read %d: gh's REST read never logged itself, so the guard made none or stopped gh before its first line (read %q, %v)", reads, visibility, err)
+				}
+				if slow := append(slowStarts("gh", starts(t, rig.ghStarts)), slowStarts("curl", starts(t, rig.curlStarts))...); len(slow) > 0 {
 					if time.Now().Before(until) {
+						t.Logf("read %d is taken again, not judged: %s", reads, strings.Join(slow, ", "))
 						continue
 					}
-					t.Fatalf("no read of %d over %s in which gh logged itself before the guard's bound stopped it (read %q, %v)", reads, within, visibility, err)
+					t.Fatalf("no read of %d over %s in which gh and curl each started within %s; in the last, %s", reads, within, slowStart, strings.Join(slow, ", "))
 				}
 				if took >= tc.caller {
 					t.Errorf("read %d: the call answered after %s, want within the caller's %s", reads, took.Round(time.Millisecond), tc.caller)
@@ -673,26 +746,30 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 // A gh REST read that heard GitHub's status line and then hung is no transport failure when the
 // guard's own bound stops it: GitHub answered, so the call is refused as gh's stop, and neither
 // curl nor git runs. The guard's bound is shortened to 1 s inside the caller's minute, and is
-// counted from before gh starts: a loaded machine can spend it before gh has printed the line, and
-// such a read is a gh that heard nothing, which goes on to curl and shows nothing of this. The row
-// reads again until a read in which gh printed the line, which it marks after, before the bound
-// stopped it, within a minute.
+// counted from before gh starts. Every read is judged but one in which gh took slowStart or longer
+// to start (startMark), whose bound the load spent before gh could print the line: the row takes
+// such a read again, within a minute, and says so in its log. A read in which gh's REST read never
+// logged itself fails at once: the guard made no REST read, or stopped gh before its first line.
 func TestTransportBoundRefusesAGhThatHeardGitHub(t *testing.T) {
 	shorten(t, &ghReadBound, time.Second)
 	within := testwait.Bounded(t, time.Minute, procgroup.StopGrace+procgroup.WaitDelay+time.Second)
 	until := time.Now().Add(within)
 	for reads := 1; ; reads++ {
-		heard := filepath.Join(t.TempDir(), "heard")
-		rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\n: > "+shQuote(heard)+"\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+		rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
 		ctx := bound(t)
 		var visibility Visibility
 		var err error
 		answered(t, "the visibility read whose gh heard GitHub and then hung", func() { visibility, err = rig.guard.Visibility(ctx, theRepo) })
-		if _, statErr := os.Stat(heard); statErr != nil {
+		rest, graphql, curl, git := rig.runs(t)
+		if rest == 0 {
+			t.Fatalf("read %d: gh's REST read never logged itself, so the guard made none or stopped gh before its first line (read %q, %v)", reads, visibility, err)
+		}
+		if slow := slowStarts("gh", starts(t, rig.ghStarts)); len(slow) > 0 {
 			if time.Now().Before(until) {
+				t.Logf("read %d is taken again, not judged: %s", reads, strings.Join(slow, ", "))
 				continue
 			}
-			t.Fatalf("no read of %d over %s in which gh printed GitHub's status line before the guard's bound stopped it (read %q, %v)", reads, within, visibility, err)
+			t.Fatalf("no read of %d over %s in which gh started within %s; in the last, %s", reads, within, slowStart, strings.Join(slow, ", "))
 		}
 		if err == nil {
 			t.Fatalf("read %d: read %q, want the call refused", reads, visibility)
@@ -700,7 +777,7 @@ func TestTransportBoundRefusesAGhThatHeardGitHub(t *testing.T) {
 		if got := stopBound(t, err); got > 1 {
 			t.Errorf("read %d: gh was stopped by a bound of %d s, want the guard's own 1 s", reads, got)
 		}
-		if _, graphql, curl, git := rig.runs(t); curl != 0 || graphql != 0 || git != 0 {
+		if curl != 0 || graphql != 0 || git != 0 {
 			t.Errorf("read %d: curl ran %d times, GraphQL %d and git %d, want none", reads, curl, graphql, git)
 		}
 		return

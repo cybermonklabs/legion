@@ -633,10 +633,12 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 // The bound is what was left of the caller's deadline when the child started (Guard.run), so the
 // row reads the figures the guard made, never a count of seconds the test supposes. The caller's
-// deadline is 2 s after the call and passes there, but not before the stand-in program has
-// started (deadlinePassedOnceStarted): on a loaded machine the guard's own work before the child,
-// the shared check above all, can take longer than 2 s, and a deadline that passed then stopped
-// the check, not the program. The line is held to the stop beneath it, and the stop to the
+// deadline is due 2 s after the call, and the guard must have started the program by then
+// (startedBeforeDue), as a deadline of 2 s requires of the guard's own work before the child, the
+// shared check among it. The deadline passes when due, but not before the stand-in program has
+// started (deadlinePassedOnceStarted): a program the guard started in time may, on a loaded
+// machine, run its first line later, and a guard that started it late is named as one rather than
+// read as a stop of something else. The line is held to the stop beneath it, and the stop to the
 // caller's deadline (stopSaid), never to the two seconds whole.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	// neverAnswers is the PATH entry of a directory whose one program is name, which marks started
@@ -662,6 +664,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 			err = guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		})
 		says(t, setupFailure(t, err), "could not be read: "+stopSaid(t, ctx, err, "gh", began))
+		startedBeforeDue(t, ctx, err, "gh")
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
 		started := filepath.Join(t.TempDir(), "started")
@@ -680,6 +683,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		began := time.Now()
 		answered(t, "the push whose git read never answers", func() { err = guard.Push(ctx, req) })
 		says(t, setupFailure(t, err), "the push's commits could not be read: "+stopSaid(t, ctx, err, "git", began))
+		startedBeforeDue(t, ctx, err, "git")
 	})
 }
 
@@ -689,7 +693,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 // context.DeadlineExceeded). Its Deadline is the moment it is due until it passes, and the moment
 // it passed from then on, so a program that started after the due moment still reads a bound
 // that is what was left of the deadline when it started.
-func deadlinePassedOnceStarted(t *testing.T, bound time.Duration, started string) context.Context {
+func deadlinePassedOnceStarted(t *testing.T, bound time.Duration, started string) dueDeadline {
 	t.Helper()
 	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
 	t.Cleanup(cancel)
@@ -699,6 +703,24 @@ func deadlinePassedOnceStarted(t *testing.T, bound time.Duration, started string
 		pass(context.DeadlineExceeded)
 	})
 	return dueDeadline{Context: ctx, due: due}
+}
+
+// startedBeforeDue fails the test unless the stop beneath err is of program and the guard started
+// program before ctx's deadline was due: the bound a deadline that passes when due sets on the
+// guard's own work before its child, which deadlinePassedOnceStarted, passing no sooner than the
+// child's first line, does not set by itself. The start is the one the guard counted (Guard.run),
+// as stopSaid reads it: the deadline the guard read, less the bound it gave program.
+func startedBeforeDue(t *testing.T, ctx dueDeadline, err error, program string) {
+	t.Helper()
+	var stopped *stoppedError
+	if !errors.As(err, &stopped) || stopped.program != program {
+		t.Fatalf("%v carries no stop of %s beneath it", err, program)
+	}
+	deadline, _ := ctx.Deadline()
+	if began := deadline.Add(-stopped.bound); !began.Before(ctx.due) {
+		t.Errorf("the guard started %s %s after the caller's deadline was due, want it started before: its own work before %s took longer than the bound",
+			program, began.Sub(ctx.due).Round(time.Millisecond), program)
+	}
 }
 
 // dueDeadline is a context whose deadline reads as due until the context it wraps has a deadline
