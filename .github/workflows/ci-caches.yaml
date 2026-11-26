@@ -25,8 +25,10 @@ name: CI caches
 # .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
 # dispatch-browser-pr jobs call: those three build the Dispatch server and the real broker's
 # commands, whose packages the go-envoy entry's build of the listener and natsd alone does not
-# hold, and the two jobs of .github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step
-# and twobuild test step build out of that same set), go-envoy-darwin-vet (envoy-go-build's
+# hold, the two jobs of .github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step
+# and twobuild test step build out of that same set, and dispatch-memory, dispatch-multiprocess,
+# envoy-go-race and envoy-go-race-api, whose ceiling step and tests read its modules and, for the
+# two plain ones, its objects), go-envoy-darwin-vet (envoy-go-build's
 # darwin vet, whose build cache is a directory of its own, the GOCACHE of that step's env) and
 # go-envoy-infra (envoy-infra-build and envoy-infra-go, and the build job of
 # release-envoy-infra.yaml).
@@ -63,9 +65,10 @@ name: CI caches
 # carries the readers' key itself any more, so GitHub's matching gives a reader the newest entry
 # whose key starts with it: the last fill's.
 # why: .github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family
-# Each fill keeps in the build cache only what its own build used
+# Each fill keeps in the build cache only what its own build used, and saves no module zip
 # (.github/scripts/go-cache-working-set.sh).
 # why: .github/ci-notes/ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used
+# why: .github/ci-notes/ci-caches.md#why-the-fills-delete-the-module-zips
 #
 # go-envoy-infra and elan are still looked up first (`lookup-only`, and no `restore-keys`: the
 # question is whether that exact key exists, and the answer downloads nothing), and only a miss
@@ -230,7 +233,7 @@ jobs:
           ci_log_guard go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
 
-      - name: Delete the build cache's entries the builds did not use
+      - name: Delete the build cache's entries the builds did not use, and the module zips
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-daemon-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -305,7 +308,7 @@ jobs:
       - name: Write every Go release archive's third-party notices and cross-build the commands
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
 
-      - name: Delete the build cache's entries the builds did not use
+      - name: Delete the build cache's entries the builds did not use, and the module zips
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-notices-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -386,7 +389,7 @@ jobs:
       # This fill runs no go vet, on purpose (PR #5289): with one, full or -stdmethods alike, the
       # saved x64 entry was 475 MB against 202 MB without, so a go-envoy reader that vets reruns cgo
       # for net, os/user and runtime/cgo, and that is the chosen cost.
-      - name: Delete the build cache's entries the go-envoy build did not use
+      - name: Delete the build cache's entries the go-envoy build did not use, and the module zips
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -471,16 +474,8 @@ jobs:
           ci_log_guard go test -count=1 -run '^$' -tags natslive ./internal/testnats/ ./internal/bus/ ./internal/cipher/natscallout/ ./natsgrant/ ./cmd/listener/
         working-directory: packages/envoy
 
-      - name: Delete the build cache's entries neither envoy build used
+      - name: Delete the build cache's entries neither envoy build used, and the module zips
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-test-working-set"
-
-      # No reader extracts a module again, so none reads a zip. A `!` path line would not exclude
-      # them: the save archives each directory it lists whole.
-      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-deletes-the-module-zips
-      - name: Delete the module zips, which no job that restores this entry reads
-        run: |
-          find "$(go env GOMODCACHE)/cache/download" -type f -name '*.zip' -printf '%s\n' -delete |
-          awk '{ n++; b += $1 } END { printf "deleted %d module zips, %d bytes\n", n, b }'
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -792,6 +787,11 @@ jobs:
           fi
           ci_log_guard go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
         working-directory: packages/envoy/infra
+
+      # This fill builds from nothing, so it runs no `begin`/`end` pair, only the zips half of `end`.
+      - name: Delete the module zips
+        if: steps.go-envoy-infra.outputs.cache-hit != 'true'
+        run: .github/scripts/go-cache-working-set.sh zips
 
       # Under the key the lookup computed, not a hashFiles() taken again: the build above can add
       # checksums to the module files that key hashes (the header says what that cost).

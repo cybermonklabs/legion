@@ -544,10 +544,10 @@ jobs:
     # why: .github/ci-notes/dispatch-browser.md#why-the-merge-job-runs-on-arm64
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
-    # 180 + 37 = 217 s, which is 3 min 37 s, so 4 min.
-    timeout-minutes: 4
+    # 240 + 37 = 277 s, which is 4 min 37 s, so 5 min.
+    timeout-minutes: 5
     env:
-      JOB_TIMEOUT_MINUTES: 4 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -586,11 +586,11 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-each-reading-goes-to-the-step-summary-and-to-the-log
       - name: Reading one, the rows
         if: always()
-        # 120 + 4 x 1.15 = 124.6 s -> 3 min.
-        timeout-minutes: 3
+        # 3 x (30 + 30) + 10 + 20 = 210 s, + (4 + 1) x 1.15 = 215.75 s -> 4 min.
+        timeout-minutes: 4
         env:
           GH_TOKEN: ${{ github.token }}
-          STEP_TIMEOUT_MINUTES: 3 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+          STEP_TIMEOUT_MINUTES: 4 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ steps.select-blobs.conclusion }}" "${{ inputs.job }}"
       # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
       # that failed and passed on its retry, which only the report of the whole run holds.
