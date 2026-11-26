@@ -214,6 +214,7 @@ func skills(context.Context, Image) (string, bool) {
 // --json` answers `{"available": true}`, or `{"available": false, …}` and exit 1 when it is not.
 // The JSON is the verdict, not the exit code, so the detail says what Oh My Pi said.
 func evalPython(ctx context.Context, img Image) (string, bool) {
+	time.Sleep(3 * time.Second) // CONTROL ONLY: the eval-python check answers 3 s late
 	r := img.launch(ctx, "setup python --check --json")
 	if r.err != nil {
 		return "omp setup python --check --json: " + r.err.Error(), false
