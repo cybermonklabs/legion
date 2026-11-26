@@ -88,7 +88,7 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 		}
 	}
 
-	stop(t, previous)
+	stopProcess(t, previous)
 	waitForThePreviousBuildToLeaveTheFleet(t, builds)
 
 	// The agent's one-word change of prose, the spec's first accepted write on one build.
@@ -217,7 +217,7 @@ func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatch
 			ship, answeredVersion, answered.Attrs["state"], answered.Attrs["answered_by"], answered.Attrs["answered_at"], answeredMarkdown)
 	}
 
-	stop(t, previous)
+	stopProcess(t, previous)
 	waitForThePreviousBuildToLeaveTheFleet(t, builds)
 	// Beside a build that states no answer on an ask's node, the window: the held step has stated
 	// no answer on it. Beside one that states answers, the node holds the answer it recorded: state

@@ -2752,8 +2752,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	default:
 	}
 
-	waiting.Terminate(t)
-	waiting.WaitExit(t, "SIGTERM")
+	stopProcess(t, waiting)
 	stopped := time.Now()
 	if code := waiting.Cmd.ProcessState.ExitCode(); code != 0 {
 		t.Fatalf("a process stopped while waiting for admission exited %d, want 0:\n%s", code, waiting.Output.String())
@@ -4069,8 +4068,7 @@ func waitForPassBehind(
 // waits behind (pg_blocking_pids) and the first 400 bytes of its statement. A wait for a pass
 // that never reached its gate fails with it, since the processes' output names no statement: it
 // says where the pass that holds the lease stands instead.
-func databaseSessions(t *testing.T, database *store.Store) string {
-	t.Helper()
+func databaseSessions(database *store.Store) string {
 	rows, err := database.Pool.Query(context.Background(), `
 		select format('pid=%s app=%s state=%s wait=%s/%s blocked_by=%s query=%s',
 		              pid, application_name, state, wait_event_type, wait_event,
@@ -4170,7 +4168,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 
 	if !waitForPassBehind(t, pair.database, gate, referenceExcerptPassStatement, 60*time.Second) {
 		t.Fatalf("no reference-excerpt pass reached the refs lock, so neither process took the lease:\nsessions:\n%s\nA:\n%s\nB:\n%s",
-			databaseSessions(t, pair.database), pair.a.Output.String(), pair.b.Output.String())
+			databaseSessions(pair.database), pair.a.Output.String(), pair.b.Output.String())
 	}
 	waitForLease(t, pair, leaseSkipped, "reference-excerpts", 60*time.Second)
 	if ran := countLease(pair.a, leaseRan, "reference-excerpts") + countLease(pair.b, leaseRan, "reference-excerpts"); ran != 0 {
@@ -4183,7 +4181,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 
 	if !waitForPassBehind(t, pair.database, blockGate, blockIndexPassStatement, 60*time.Second) {
 		t.Fatalf("no block-index pass reached the document_block_versions lock, so neither process took the lease:\nsessions:\n%s\nA:\n%s\nB:\n%s",
-			databaseSessions(t, pair.database), pair.a.Output.String(), pair.b.Output.String())
+			databaseSessions(pair.database), pair.a.Output.String(), pair.b.Output.String())
 	}
 	waitForLease(t, pair, leaseSkipped, "block-index", 60*time.Second)
 	if ran := countLease(pair.a, leaseRan, "block-index") + countLease(pair.b, leaseRan, "block-index"); ran != 0 {
@@ -8658,8 +8656,7 @@ func TestDashboardRestartOnTheSameBuildWritesNoAssetBytes(t *testing.T) {
 		return at
 	}
 	rowsBefore, startedBefore := assetRows(), lastStarted()
-	first.Terminate(t)
-	first.WaitExit(t, "SIGTERM")
+	stopProcess(t, first)
 
 	restarted := startOnBuild(t, database, build)
 
@@ -8716,8 +8713,7 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 		}
 	}
 
-	b.Terminate(t)
-	b.WaitExit(t, "SIGTERM")
+	stopProcess(t, b)
 	if serving, live := dashboardBuildsOf(t, a); serving != entryA || !slices.Equal(live, []string{entryA}) {
 		t.Fatalf("after B shut down: serving %q, live %q; want %q alone", serving, live, entryA)
 	}

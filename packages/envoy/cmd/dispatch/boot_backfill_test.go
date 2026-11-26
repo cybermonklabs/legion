@@ -91,7 +91,7 @@ func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
 	}
 	other := errors.New("read the comments that name no node: connection reset by peer")
 	recorded := func(context.Context) error { return nil }
-	returned := func(outcome bootBackfillOutcome) {
+	doneGoesWithFollow := func(outcome bootBackfillOutcome) {
 		t.Helper()
 		if done := len(outcome.holding(bootBackfillDoneMatch)) == 1; outcome.followed != done {
 			t.Errorf("the boot backfill called what follows a done line %v, and logged a done line %v: the two go together", outcome.followed, done)
@@ -99,13 +99,13 @@ func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
 	}
 
 	succeeded := callBootBackfill(t, recorded, nil)
-	returned(succeeded)
+	doneGoesWithFollow(succeeded)
 	if !succeeded.ran || len(succeeded.holding(bootBackfillDoneMatch)) != 1 {
 		t.Errorf("the boot backfill logged no done line after a run that succeeded")
 	}
 
 	movedRows := callBootBackfill(t, recorded, errors.Join(moved(1), moved(2)))
-	returned(movedRows)
+	doneGoesWithFollow(movedRows)
 	if done := movedRows.holding(bootBackfillDoneMatch); len(done) != 1 {
 		t.Errorf("the boot backfill logged no done line after a run that left 2 project-moved rows")
 	} else if count := projectMovedCount.FindStringSubmatch(done[0]); count == nil || count[1] != "2" {
@@ -117,7 +117,7 @@ func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
 	}
 
 	failed := callBootBackfill(t, recorded, other)
-	returned(failed)
+	doneGoesWithFollow(failed)
 	if len(failed.holding(bootBackfillDoneMatch)) != 0 {
 		t.Errorf("the boot backfill logged a done line after a run that failed")
 	}
@@ -126,7 +126,7 @@ func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
 	}
 
 	failedBeside := callBootBackfill(t, recorded, errors.Join(errors.Join(moved(1), moved(2)), other))
-	returned(failedBeside)
+	doneGoesWithFollow(failedBeside)
 	if len(failedBeside.holding(bootBackfillDoneMatch)) != 0 {
 		t.Errorf("the boot backfill logged a done line after a run that failed beside 2 project-moved rows")
 	}
@@ -136,7 +136,7 @@ func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
 
 	refused := errors.New("record the event log's horizon the backfill began at: connection refused")
 	unrecorded := callBootBackfill(t, func(context.Context) error { return refused }, nil)
-	returned(unrecorded)
+	doneGoesWithFollow(unrecorded)
 	if unrecorded.ran {
 		t.Errorf("the boot backfill ran its passes after its record of the horizon failed")
 	}
@@ -152,7 +152,7 @@ func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
 		t.Fatalf("the record's error at its bound, %v, wraps no context.DeadlineExceeded, so this call proves nothing", bound)
 	}
 	skipped := callBootBackfill(t, func(context.Context) error { return bound }, nil)
-	returned(skipped)
+	doneGoesWithFollow(skipped)
 	if skip := skipped.holding(bootBackfillSkippedMatch); len(skip) != 1 || !strings.Contains(skip[0], " pid=4242 ") || !strings.Contains(skip[0], " age=31s") {
 		t.Errorf("the boot backfill logged no skip after its record of the horizon reached its bound")
 	}

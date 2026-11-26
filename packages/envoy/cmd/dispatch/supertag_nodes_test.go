@@ -116,14 +116,21 @@ const releasedThroughTheBackfill = 290
 // is this tree's (graphcensus.Backfill), which refuses to run without them.
 func openAtTheBackfill(t *testing.T) *store.Store {
 	t.Helper()
-	return storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (openAtTheBackfill)", backfillVersion), func(databaseURL string) error {
+	return openMigratedThrough(t, fmt.Sprintf("this tree's runner through %d (openAtTheBackfill)", backfillVersion), backfillVersion)
+}
+
+// openMigratedThrough is a store this tree's runner migrated through version and no further: a
+// clone of the template storetest.OpenFrom makes once under key in the test binary.
+func openMigratedThrough(t *testing.T, key string, version int) *store.Store {
+	t.Helper()
+	return storetest.OpenFrom(t, key, func(databaseURL string) error {
 		ctx := context.Background()
 		database, err := store.Open(ctx, databaseURL)
 		if err != nil {
 			return fmt.Errorf("open the database: %w", err)
 		}
 		defer database.Pool.Close()
-		return database.MigrateThrough(ctx, backfillVersion)
+		return database.MigrateThrough(ctx, version)
 	})
 }
 

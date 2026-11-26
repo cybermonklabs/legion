@@ -182,7 +182,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("read the registry: %v", err)
 		}
 		t.Logf("the registry holds %q", commits)
-		stop(t, previous)
+		stopProcess(t, previous)
 		if writesNodes {
 			if lines := incompleteLines(runTwoBuildStoreCensus(t, builds)); len(lines) > 0 {
 				t.Errorf("once the %s, which writes document nodes, stopped, the census names %q, want nothing: no order beside it leaves this build a row to cure",
