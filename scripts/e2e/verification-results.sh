@@ -66,10 +66,21 @@
 # (one_pass_phase --store-every-2s), so a negative control's build that stores another way stores
 # them that way.
 #
+# first-start-tip runs last (first_start_tip), on a NATS of its own and an emptied database: R3 of
+# the results lookup, the first start after a deploy. A server with no GitHub App, so no delivery
+# intake, makes the stream; the driver publishes the events of two pull requests while no server
+# runs; the server starts with the App, and the driver holds that its intake read none of those
+# events, that a push after the start writes its head within 5 seconds and the results route
+# compares with it, and, after the server starts a second time, that the intake reads no event
+# again and the start calls GitHub for nothing but the facts its reconcile pass owes (the driver's
+# section "first-start-tip"). A last start, with the durable made again at the stream's first
+# message, shows that the driver's reading of where a start binds sees a start that reads again.
+#
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] \
 #     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
 #     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
+#     [VERIFICATION_RESULTS_E2E_TIP_CONTROL=1] \
 #     [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE=<commit>] \
 #     [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=<envoy-dispatch of that commit>] \
 #     bash scripts/e2e/verification-results.sh
@@ -101,6 +112,11 @@
 # boundary of one pass does not count that line. Under the first, a run exits 1 (`FAIL <case>`)
 # only when the named case failed; a run that stopped before that case's check exits 2, and its
 # lines read `UNKNOWN <case>`: it shows nothing of the check, as a control or as a pass.
+# VERIFICATION_RESULTS_E2E_ONLY=first-start-tip runs first-start-tip alone: no case, no phase and
+# no older-rows. VERIFICATION_RESULTS_E2E_TIP_CONTROL=1, which the run refuses without it, is
+# first-start-tip's negative control: before the first start the driver creates the intake's
+# durable to deliver from the stream's first message, so that start reads each older event and
+# writes its head, and first-start-tip fails.
 # VERIFICATION_RESULTS_E2E_RELEASE_BEFORE names the commit of the release before this change, whose
 # build writes older-rows' database. Unset, it is the newest commit of main without this change,
 # read from git at each run (release_before_of_head): on a branch that has not merged, main at the
@@ -165,6 +181,11 @@ release_before_bin=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN:-}
 # other VERIFICATION_RESULTS_E2E_ONLY), and only then is the release before built.
 older_rows=''
 case "${VERIFICATION_RESULTS_E2E_ONLY:-}" in '' | older-rows) older_rows=1 ;; esac
+# first-start-tip runs in a whole run, last, and alone in its own negative control; under any
+# other VERIFICATION_RESULTS_E2E_ONLY it does not run.
+first_start_tip=''
+case "${VERIFICATION_RESULTS_E2E_ONLY:-}" in '' | first-start-tip) first_start_tip=1 ;; esac
+tip_control=${VERIFICATION_RESULTS_E2E_TIP_CONTROL:-}
 # A negative control's run (VERIFICATION_RESULTS_E2E_ONLY) shows something of its check only when
 # that check failed: the driver's status 1, which under that setting is a failed case of the named
 # check alone (case_failed). Any other stop (a prerequisite, a build, a start, a server that exited,
@@ -212,7 +233,8 @@ cleanup() {
       rm -rf "$work"
     else
       rm -rf "${work:?}/bin" "${work:?}/nats-store" "${work:?}/older-rows-nats-store" \
-        "${work:?}/release-before" "${work:?}/release-before.git" "${work:?}/main-history.git"
+        "${work:?}/first-start-tip-nats-store" "${work:?}/release-before" \
+        "${work:?}/release-before.git" "${work:?}/main-history.git"
     fi
   fi
   if [ -n "$only_case" ] && [ -z "$case_failed" ] && ! run_passed "$rc"; then
@@ -254,6 +276,11 @@ if [ -n "$older_rows" ]; then
       command -v "$tool" >/dev/null || fail "$tool is not on PATH: older-rows takes the release before's tree with git archive"
     done
   fi
+fi
+if [ -n "$tip_control" ]; then
+  [ "$tip_control" = 1 ] || fail "VERIFICATION_RESULTS_E2E_TIP_CONTROL=$tip_control is not 1"
+  [ "$only_case" = first-start-tip ] ||
+    fail "VERIFICATION_RESULTS_E2E_TIP_CONTROL=1 is first-start-tip's negative control, and needs VERIFICATION_RESULTS_E2E_ONLY=first-start-tip"
 fi
 for port in "$dispatch_port" "$envoy_port" "$github_port"; do
   if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
@@ -427,12 +454,18 @@ begin identity
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
-# start_dispatch INTERVAL [AT_START [BINARY]] starts envoy-dispatch with the delivery reconcile
-# ticking every INTERVAL and, unless AT_START is given empty, its first pass as it starts, and waits
-# for it to answer /healthz. BINARY is this checkout's build unless it names another, which only
-# older_rows_upgrade does, for the release before's. Each start appends to
-# $work/logs/dispatch.log, which the driver reads (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
+# start_dispatch INTERVAL [AT_START [BINARY [APP]]] starts envoy-dispatch with the delivery
+# reconcile ticking every INTERVAL and, unless AT_START is given empty, its first pass as it
+# starts, and waits for it to answer /healthz. BINARY is this checkout's build unless it names
+# another, which only older_rows_upgrade does, for the release before's. APP given empty starts it
+# with no GitHub App, so it runs no delivery intake: first_start_tip's start that makes the stream
+# alone does. dispatch_settings adds settings of the test hooks to the environment; only
+# first_start_tip sets it. Each start appends to $work/logs/dispatch.log, which the driver reads
+# (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
+dispatch_settings=()
 start_dispatch() {
+  local app=(DISPATCH_APP_CLIENT_ID=Iv1.e2efake DISPATCH_APP_PEM_B64="$app_pem")
+  [ -n "${4-1}" ] || app=()
   start_process dispatch env -i \
     PATH="$PATH" \
     TMPDIR="$work" \
@@ -442,8 +475,7 @@ start_dispatch() {
     XDG_DATA_HOME=/nonexistent \
     DATABASE_URL="$database_url" \
     DISPATCH_AGENT_TOKEN="$agent_token" \
-    DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
-    DISPATCH_APP_PEM_B64="$app_pem" \
+    "${app[@]}" \
     DISPATCH_DEV_SIGNIN=1 \
     DISPATCH_GITHUB_API_BASE="$github_url" \
     DISPATCH_IDENTITY=cookie \
@@ -457,6 +489,7 @@ start_dispatch() {
     DISPATCH_WEB_DIST="$work/web-dist" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" \
     NATS_URLS="$nats_url" \
+    "${dispatch_settings[@]}" \
     "${3:-$dispatch_bin}"
   await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
     curl -fsS --max-time 2 "$dispatch_url/healthz"
@@ -579,29 +612,80 @@ older_rows_upgrade() {
   pass
 }
 
-[ -z "$older_rows" ] || older_rows_upgrade
+# first_start_tip runs first-start-tip (the driver's section "first-start-tip"), each start of it
+# with the next pass of its delivery reconcile an hour away. It stops the server of the step
+# before, if any, and the NATS, empties the database and starts a NATS of its own, with no stream.
+# A server with no GitHub App, and so no delivery intake, starts and makes the stream, as a
+# deployment's stream stands before the first start that runs an intake, and stops. The driver
+# publishes the events of two pull requests while no server runs (backlog). The server starts
+# with the App and a pass at its start, and the driver holds that start and a push after it
+# (first-start). It stops; the driver reads where the durable stands and empties the fake's log of
+# calls (stopped); it starts again, and the driver holds that second start (second-start). Last,
+# with the server stopped, the driver creates the durable again to deliver from the stream's first
+# message (control-durable), and one more start must bind at or below where the second start
+# found it (control-start). Each start with the App runs the CI reconcile and the webhook
+# redelivery sweep an hour apart, so the first pass of each, at a random moment within its hour,
+# falls in the window of calls the driver reads only once in more than a thousand runs.
+first_start_tip() {
+  begin first-start-tip
+  stop_dispatch
+  stop_pid "$nats_pid"
+  nats_pid=''
+  rm -rf "$work/nats-store"
+  mv "$work/logs/nats.log" "$work/logs/nats-before-first-start-tip.log"
+  empty_public_schema "$database_url" || fail "could not empty the database's public schema"
+  rm -f "$work/driver-state.json"
+  start_nats "$work/first-start-tip-nats-store"
+  dispatch_settings=(DISPATCH_TEST_CI_RECONCILE_INTERVAL=1h DISPATCH_TEST_REDELIVERY_INTERVAL=1h)
+  start_dispatch 1h '' '' ''
+  note "envoy-dispatch started with no GitHub App, so no delivery intake, and made the stream on $nats_url"
+  stop_dispatch
+  driver --phase first-start-tip-backlog
+  start_dispatch 1h
+  note "envoy-dispatch started with the App, its first start after the events"
+  driver --phase first-start-tip-first-start
+  stop_dispatch
+  driver --phase first-start-tip-stopped
+  start_dispatch 1h
+  note "envoy-dispatch started again"
+  driver --phase first-start-tip-second-start
+  stop_dispatch
+  driver --phase first-start-tip-control-durable
+  start_dispatch 1h
+  note "envoy-dispatch started once more, its durable made again at the stream's first message"
+  driver --phase first-start-tip-control-start
+  stop_dispatch
+  dispatch_settings=()
+  pass
+}
 
-begin dispatch
-start_dispatch 2s
-note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"
-pass
+# Under VERIFICATION_RESULTS_E2E_ONLY=first-start-tip, first-start-tip runs alone.
+if [ "$only_case" != first-start-tip ]; then
+  [ -z "$older_rows" ] || older_rows_upgrade
 
-check=cases
-driver
-one_pass_phase boundary
-one_pass_phase k-attribution
-# The seven checks of the attribution (the driver's section "the seven checks"), in the order the
-# driver's cases need: each phase that wants no read of GitHub runs before stores-agree writes
-# the delivery settings, since a pass with settings reads GitHub for its other steps. older-rows
-# ran before the cases (older_rows_upgrade).
-one_pass_phase rule-reaches-each-row
-one_pass_phase rule-reaches-each-row-link
-one_pass_phase rule-reaches-each-row-move
-one_pass_phase rule-reaches-each-row-new-issue
-one_pass_phase key-reading-changes --store-every-2s
-one_pass_phase facts-only
-one_pass_phase read-compares
-one_pass_phase stores-agree --read-before-the-pass
-one_pass_phase stores-agree-link
-one_pass_phase limit-of-one
+  begin dispatch
+  start_dispatch 2s
+  note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"
+  pass
+
+  check=cases
+  driver
+  one_pass_phase boundary
+  one_pass_phase k-attribution
+  # The seven checks of the attribution (the driver's section "the seven checks"), in the order the
+  # driver's cases need: each phase that wants no read of GitHub runs before stores-agree writes
+  # the delivery settings, since a pass with settings reads GitHub for its other steps. older-rows
+  # ran before the cases (older_rows_upgrade).
+  one_pass_phase rule-reaches-each-row
+  one_pass_phase rule-reaches-each-row-link
+  one_pass_phase rule-reaches-each-row-move
+  one_pass_phase rule-reaches-each-row-new-issue
+  one_pass_phase key-reading-changes --store-every-2s
+  one_pass_phase facts-only
+  one_pass_phase read-compares
+  one_pass_phase stores-agree --read-before-the-pass
+  one_pass_phase stores-agree-link
+  one_pass_phase limit-of-one
+fi
+[ -z "$first_start_tip" ] || first_start_tip
 run_end

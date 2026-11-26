@@ -16,8 +16,8 @@ import { harnessPorts } from "./harness-ports";
 // does once its installation's budget is spent.
 // Tests seed per-repository state through /__fixture/repos and read it back there,
 // and read how many times the server asked for each commit's check runs and for each
-// repository's pull requests through /__fixture/requests; the server reaches this via
-// DISPATCH_GITHUB_API_BASE.
+// repository's pull requests, and each call it made, through /__fixture/requests; the
+// server reaches this via DISPATCH_GITHUB_API_BASE.
 
 const ARCHITECTURE_DIR = ".dispatch/architecture";
 
@@ -452,6 +452,42 @@ function countCheckRunRead(repo: string, sha: string): void {
   checkRunReads.set(repo, commits);
 }
 
+/** One call the server made, as the fake log keeps it: the method and the path with each
+ *  repository, number and commit written as a name (`GET /repos/{owner}/{repo}/pulls/{n}`), the
+ *  repository the path names, and, for a GraphQL query, what it asks for: each pull request it
+ *  asks by number (`acme/tools#22`), with `(absence)` where it asks the count of the repository's
+ *  pull requests too, or `search` for a query that asks for no pull request by number. */
+interface Call {
+  readonly route: string;
+  readonly repo?: string;
+  readonly asks?: string;
+}
+
+/** The most calls the log keeps; later ones are counted in `callsDropped` alone. */
+const callLogBound = 1_000;
+
+// Each call the server made since the counts were last emptied, in the order the fake took them.
+// GET /__fixture/requests answers it as `calls`, with `calls_dropped`, and DELETE
+// /__fixture/requests empties both. A seed keeps them, as it keeps the counts of pull requests.
+// The fixture routes and /healthz are no calls of the server's.
+let calls: Call[] = [];
+let callsDropped = 0;
+
+function logCall(call: Call): void {
+  if (calls.length < callLogBound) calls.push(call);
+  else callsDropped++;
+}
+
+/** The call of `method` at `pathname`, its repository, numbers and commits written as names. */
+function callOf(method: string, pathname: string): Call {
+  const named = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/);
+  const path = named === null ? pathname : `/repos/{owner}/{repo}${named[3] ?? ""}`;
+  const route = path.replace(/\/[0-9a-f]{40}(?=\/|$)/g, "/{sha}").replace(/\/\d+(?=\/|$)/g, "/{n}");
+  return named === null
+    ? { route: `${method} ${route}` }
+    : { repo: `${named[1]}/${named[2]}`, route: `${method} ${route}` };
+}
+
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
 const server = Bun.serve({
@@ -474,6 +510,8 @@ const server = Bun.serve({
 
     if (request.method === "GET" && url.pathname === "/__fixture/requests") {
       return Response.json({
+        calls,
+        calls_dropped: callsDropped,
         check_runs: Object.fromEntries(
           [...checkRunReads].map(([repo, commits]) => [repo, Object.fromEntries(commits)])
         ),
@@ -484,7 +522,15 @@ const server = Bun.serve({
     if (request.method === "DELETE" && url.pathname === "/__fixture/requests") {
       checkRunReads = new Map();
       pullReads = new Map();
+      calls = [];
+      callsDropped = 0;
       return Response.json({ ok: true });
+    }
+
+    if (url.pathname === "/healthz") return Response.json({ ok: true });
+    // A GraphQL query is logged where its body is read, below, with what it asks for.
+    if (!(request.method === "POST" && url.pathname === "/graphql")) {
+      logCall(callOf(request.method, url.pathname));
     }
 
     const installation = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/installation$/);
@@ -572,6 +618,20 @@ const server = Bun.serve({
       for (const repository of asked) {
         countPullRead(repository.fullName, "graphql_pulls", repository.pulls.length);
       }
+      logCall({
+        asks:
+          asked.length === 0
+            ? "search"
+            : asked
+                .flatMap((repository) =>
+                  repository.pulls.map(
+                    (pull) =>
+                      `${repository.fullName}#${pull.number}${repository.counted ? " (absence)" : ""}`
+                  )
+                )
+                .join(", "),
+        route: "POST /graphql",
+      });
       const installationId = tokenInstallation(request);
       if (installationId !== undefined && installationLimited(installationId)) {
         return Response.json(
@@ -914,7 +974,6 @@ const server = Bun.serve({
       });
     }
 
-    if (url.pathname === "/healthz") return Response.json({ ok: true });
     return new Response("not found", { status: 404 });
   },
 });

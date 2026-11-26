@@ -34,14 +34,20 @@
 //                          request.
 //   limit-of-one           the rate limit of one installation ends no step for another.
 //
+// first-start-tip, R3 of the results lookup (v-first-start-tip), runs last, in six halves of its
+// own on a NATS of its own and an emptied database (the section "first-start-tip"): the first start
+// after a deploy reads no event the bus held, a push after it writes its head, and a second start
+// reads no event again.
+//
 //   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
 //     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> \
 //     VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<the server's log> \
 //     VERIFICATION_RESULTS_E2E_STATE=<a JSON file> \
 //     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
 //     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
+//     [VERIFICATION_RESULTS_E2E_TIP_CONTROL=1] \
 //     bun scripts/e2e/verification-results.ts \
-//       [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass] \
+//       [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass|first-start-tip-<half>] \
 //       <dispatch-url> <nats-url> <fake-github-url>
 //
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
@@ -49,8 +55,10 @@
 // The log is the file every start of the server writes to, which attributionLines reads. The state
 // file holds what one process of the driver leaves for a later one: the issues a case seeded, and
 // the length of the log at each phase's fixture. Only a negative control's command sets the last
-// two variables: VERIFICATION_RESULTS_E2E_ONLY runs one case of the seven checks alone, and
-// VERIFICATION_RESULTS_E2E_OLD_BUILD=1 names a server built before the attribution line of a pass.
+// three variables: VERIFICATION_RESULTS_E2E_ONLY runs one case of the seven checks, or
+// first-start-tip, alone; VERIFICATION_RESULTS_E2E_OLD_BUILD=1 names a server built before the
+// attribution line of a pass; and VERIFICATION_RESULTS_E2E_TIP_CONTROL=1 is first-start-tip's
+// negative control.
 //
 // The database URL is the run's own, which the shell script resets before the server migrates it.
 // The driver writes SQL for the fixtures that no route of Dispatch can write: stored pull request
@@ -95,7 +103,14 @@ import type {
   HeadNotRead,
   IssueSummaryPage,
 } from "@legion/contracts";
-import { connect, StringCodec } from "nats";
+import {
+  AckPolicy,
+  type ConsumerInfo,
+  connect,
+  createInbox,
+  DeliverPolicy,
+  StringCodec,
+} from "nats";
 // By path: the root package does not depend on @legion/contracts, so bun resolves no value from
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
@@ -311,6 +326,27 @@ const sevenCommits = {
   /** read-compares: the head of the pull request whose answer is not known. */
   notKnownHead: "b3".repeat(20),
 };
+
+// --- first-start-tip: names and commits ------------------------------------------------------------
+//
+// first-start-tip (the section "first-start-tip") runs in a project of its own, TIP, whose default
+// repository is on an installation of its own, so the fake's log of calls names its calls alone.
+
+const tipProject = "TIP";
+const tipRepo = "acme/first-start";
+const tipInstallation = 260;
+/** The heads of first-start-tip's two pull requests: #21 opened at `firstOpened` and pushed to
+ *  `firstPushed`, and #22 opened at `secondOpened`, while no server ran; then #22's push after the
+ *  first start, to `secondPushed`, which a pass of the case's check is recorded at. */
+const tipCommits = {
+  firstOpened: "d0".repeat(20),
+  firstPushed: "d1".repeat(20),
+  secondOpened: "d2".repeat(20),
+  secondPushed: "d3".repeat(20),
+} as const;
+/** first-start-tip's negative control (VERIFICATION_RESULTS_E2E_TIP_CONTROL=1): the durable made
+ *  before the first start, to deliver from the stream's first message. */
+const tipControl = process.env.VERIFICATION_RESULTS_E2E_TIP_CONTROL === "1";
 
 type Json = Record<string, unknown>;
 
@@ -541,30 +577,38 @@ async function publishPullRequest(payload: Record<string, string>): Promise<Publ
   return publishEnvelope(payload);
 }
 
+/** The `pull_request` envelope of `payload`, issued at `at`, and the subject it goes on:
+ *  `notifications.github.<owner>.<repo>.pr.<number>`, with each segment's dots written `_`. */
+function envelopeOf(
+  payload: Record<string, string>,
+  at: number
+): { readonly data: Uint8Array; readonly subject: string } {
+  const [owner, name] = String(payload.repo).split("/");
+  const subject = `notifications.github.${String(owner).replaceAll(".", "_")}.${String(name).replaceAll(".", "_")}.pr.${payload.number}`;
+  const eventID = `verification-results-pr-${payload.number}-${payload.action}-${payload.head_sha.slice(0, 7)}`;
+  const data = codec.encode(
+    JSON.stringify({
+      dedupe_key: eventID,
+      event_id: eventID,
+      issued_at: at,
+      payload: JSON.stringify(payload),
+      payload_summary: subject,
+      source: "github",
+      source_event_id: eventID,
+      topic: subject,
+      trace_id: eventID,
+    })
+  );
+  return { data, subject };
+}
+
 /** Publishes the envelope of `payload` on the subject of its repository and number, as
  *  publishPullRequest does, with no seed of the fake: a case that sends an envelope that differs
  *  from GitHub's answer seeds that answer itself. */
 async function publishEnvelope(payload: Record<string, string>): Promise<Published> {
-  const [owner, name] = String(payload.repo).split("/");
-  const subject = `notifications.github.${String(owner).replaceAll(".", "_")}.${String(name).replaceAll(".", "_")}.pr.${payload.number}`;
-  const eventID = `verification-results-pr-${payload.number}-${payload.action}-${payload.head_sha.slice(0, 7)}`;
   const at = Date.now();
-  nats.publish(
-    subject,
-    codec.encode(
-      JSON.stringify({
-        dedupe_key: eventID,
-        event_id: eventID,
-        issued_at: at,
-        payload: JSON.stringify(payload),
-        payload_summary: subject,
-        source: "github",
-        source_event_id: eventID,
-        topic: subject,
-        trace_id: eventID,
-      })
-    )
-  );
+  const { data, subject } = envelopeOf(payload, at);
+  nats.publish(subject, data);
   await nats.flush();
   return { at, subject };
 }
@@ -1212,6 +1256,12 @@ async function seedAttribution(
   const seeded = attributionRepositories[name];
   if (seeded === undefined) throw new Error(`the fake holds no seed of ${name}`);
   await seedRepositories({}, { [name]: change(seeded) });
+}
+
+// One half of first-start-tip (the section "first-start-tip"), which the shell runs after every
+// other case and phase, or alone. Each half ends the process.
+if (phaseArg?.startsWith("first-start-tip-")) {
+  await firstStartTipHalf(phaseArg.slice("first-start-tip-".length));
 }
 
 // One half of a one-pass phase (OnePassPhase). The process first takes the repositories the fake
@@ -4352,6 +4402,564 @@ async function limitAfterOnePass(pass: string): Promise<string | undefined> {
   if (row15 !== "false")
     failures.push(row15 === "" ? "#15 is missing" : `#15 reads partial ${row15}, want false`);
   return failures.length === 0 ? undefined : failures.join("; ");
+}
+
+// --- first-start-tip -------------------------------------------------------------------------------
+//
+// v-first-start-tip, R3 of the results lookup: the first start after a deploy begins after the last
+// event the bus holds, so it reads no older event; an open pull request then gets its head at its
+// next event; and a later start reads no event again. The shell's first_start_tip runs it last, on a
+// NATS of its own and an emptied database, in the project TIP and the repository acme/first-start,
+// in six halves, each a process of its own (firstStartTipHalf):
+//   backlog          while no server runs, after a server with no GitHub App made the stream: no
+//                    durable of the intake exists; the fake answers #21 at firstPushed and #22 at
+//                    secondOpened, and the driver publishes #21's opened and synchronize events and
+//                    #22's opened event to the stream. Under VERIFICATION_RESULTS_E2E_TIP_CONTROL=1,
+//                    the check's negative control, it then creates the intake's durable to deliver
+//                    from the stream's first message.
+//   first-start      after the first start with the App, once its intake bound, its durable holds
+//                    nothing pending and its start pass ended. T1: no head row of #21 or #22, the
+//                    bind at the stream's next sequence, and no read of either pull request from
+//                    GitHub. T2: a pass of the case's check recorded at secondPushed, then #22's push
+//                    there, with its body naming the issue: #22's row is open at secondPushed within
+//                    5 seconds of the push, #21 has none, and `dispatch results` compares the check
+//                    with #22 at secondPushed.
+//   stopped          while no server runs: where the durable stands, and the fake's log emptied.
+//   second-start     after a second start, the same three facts. T3: the bind right after the ack
+//                    floor the first start left, no event redelivered, no head row of #21, no read
+//                    of a pull request by the REST routes the intake reads with, and no call to
+//                    GitHub but those of the reconcile pass's facts line (tipCallOfTheFactsLine).
+//   control-durable  while no server runs: the durable deleted and created again at the stream's
+//                    first message.
+//   control-start    after one more start: it binds at or below the floor the second start found,
+//                    and reads a pull request from GitHub, so T3's reading of the bind and its
+//                    reading of the calls can each see a start that reads an event again.
+
+/** What one half of first-start-tip leaves a later one, in the state file under its name: the
+ *  stream's last sequence before the first start, the durable's ack floor before the second, and
+ *  the length of the server's log and its count of attribution lines before the start to come. */
+interface TipState {
+  readonly floor?: number;
+  readonly lastSeq?: number;
+  readonly linesBefore?: number;
+  readonly logOffset?: number;
+}
+
+function writeTipState(change: TipState): void {
+  writeFileSync(
+    statePath,
+    JSON.stringify({
+      ...readState(),
+      "first-start-tip": { ...(readState()["first-start-tip"] as TipState | undefined), ...change },
+    })
+  );
+}
+
+/** The length in bytes of the server's log, every start of it. */
+function logLength(): number {
+  return readFileSync(dispatchLog).length;
+}
+
+/** The line `dispatch delivery: NATS consumer bound` of the durable delivery-events, the first the
+ *  server wrote after the byte `offset` of its log, and the stream sequence it names (`start_seq`):
+ *  where the start's intake bound. It waits for the line as the setup waits for the bind, and fails
+ *  the step when none comes. */
+async function bindSince(
+  offset: number,
+  step: string
+): Promise<{ readonly line: string; readonly seq: number }> {
+  const deadline = Date.now() + intakeBindWaitMs;
+  for (;;) {
+    const line = readFileSync(dispatchLog)
+      .subarray(offset)
+      .toString("utf8")
+      .split("\n")
+      .find((text) =>
+        text.includes('msg="dispatch delivery: NATS consumer bound" name=delivery-events ')
+      );
+    if (line !== undefined) {
+      return { line, seq: Number(/ start_seq=(\d+)/.exec(line)?.[1] ?? Number.NaN) };
+    }
+    if (Date.now() >= deadline) {
+      setupFailed(step, `the server logged no bind of delivery-events in ${intakeBindWaitMs} ms`);
+    }
+    await Bun.sleep(pollMs);
+  }
+}
+
+/** The intake's durable, delivery-events, as the server reports it, or undefined where the stream
+ *  holds no such consumer. */
+async function tipDurable(): Promise<ConsumerInfo | undefined> {
+  const manager = await nats.jetstreamManager();
+  try {
+    return await manager.consumers.info("ENVOY_NOTIFICATIONS", "delivery-events");
+  } catch (error) {
+    if (/consumer not found/i.test(String(error))) return undefined;
+    throw error;
+  }
+}
+
+/** Where a durable stands, in the words a half prints. */
+function durableText(info: ConsumerInfo | undefined): string {
+  if (info === undefined) return "no durable delivery-events";
+  return `delivered stream seq ${info.delivered.stream_seq}, ack floor stream seq ${info.ack_floor.stream_seq}, pending ${info.num_pending}, ack pending ${info.num_ack_pending}, redelivered ${info.num_redelivered}, deliver policy ${info.config.deliver_policy}, start seq ${info.config.opt_start_seq ?? "none"}`;
+}
+
+/** Waits, as the setup waits for the bind, for the durable to hold nothing pending and nothing
+ *  unacknowledged: the start's intake has taken every event delivered to it. */
+async function tipDurableSettled(step: string): Promise<ConsumerInfo> {
+  const deadline = Date.now() + intakeBindWaitMs;
+  for (;;) {
+    const info = await tipDurable();
+    if (info !== undefined && info.num_pending === 0 && info.num_ack_pending === 0) return info;
+    if (Date.now() >= deadline) {
+      setupFailed(step, `after ${intakeBindWaitMs} ms the durable is: ${durableText(info)}`);
+    }
+    await Bun.sleep(pollMs);
+  }
+}
+
+/** One pull request of acme/first-start as GitHub answers it: open, on its own branch. */
+function tipPull(number: number, head: string, body: string, updatedAt: string): FakePullRequest {
+  return {
+    base_ref: "main",
+    body,
+    head_ref: `feature/change-${number}`,
+    head_repo: tipRepo,
+    head_sha: head,
+    merged: false,
+    state: "open",
+    title: `Change ${number}`,
+    updated_at: updatedAt,
+  };
+}
+
+/** The `pull_request` envelope's payload of `pull`, number `number`, for the event `action`. */
+function tipPayload(number: number, action: string, pull: FakePullRequest): Record<string, string> {
+  return {
+    action,
+    base_ref: pull.base_ref ?? "main",
+    body: pull.body ?? "",
+    head_ref: pull.head_ref ?? "",
+    head_repo: pull.head_repo,
+    head_sha: pull.head_sha,
+    kind: "pr",
+    merged: "false",
+    number: String(number),
+    repo: tipRepo,
+    title: pull.title,
+    updated_at: pull.updated_at ?? "",
+    url: `https://github.com/${tipRepo}/pull/${number}`,
+  };
+}
+
+/** Seeds the fake with acme/first-start alone, answering `pulls`: every repository an earlier case
+ *  seeded goes. It holds each of the case's commits, so the record route takes a result at any. */
+async function seedTip(pulls: Record<string, FakePullRequest>): Promise<void> {
+  const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
+    body: JSON.stringify({
+      [tipRepo]: {
+        commits: Object.values(tipCommits),
+        contents: "read",
+        default_branch: "main",
+        installation_id: tipInstallation,
+        pull_requests: "read",
+        pulls,
+      } satisfies FakeRepository,
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!seeded.ok) throw new Error(`the seed answered ${seeded.status} ${await seeded.text()}`);
+}
+
+/** Publishes the envelope of `payload` to the stream, and answers the sequence the stream stored
+ *  it at and the moment it was published. */
+async function publishToStream(
+  payload: Record<string, string>
+): Promise<{ readonly at: number; readonly seq: number }> {
+  const at = Date.now();
+  const { data, subject } = envelopeOf(payload, at);
+  const ack = await nats.jetstream().publish(subject, data);
+  return { at, seq: ack.seq };
+}
+
+/** Each head row of acme/first-start, one line each: `#<number> <state> at <head>`. */
+async function tipRows(): Promise<string[]> {
+  const rows = await sql(
+    `select '#' || number || ' ' || state || ' at ' || left(head_sha, 12) from pull_request_heads
+     where repo = '${tipRepo}' order by number`
+  );
+  return rows === "" ? [] : rows.split("\n");
+}
+
+/** One call the fake took, as its log keeps it (fake-github.ts's `Call`). */
+interface FakeCall {
+  readonly asks?: string;
+  readonly repo?: string;
+  readonly route: string;
+}
+
+/** Every call the fake took since its counts were last emptied (resetPullReads), oldest first. A
+ *  fake that keeps no log, or a log that dropped calls past its bound, fails the read. */
+async function fakeCalls(): Promise<readonly FakeCall[]> {
+  const response = await fetch(new URL("/__fixture/requests", githubUrl));
+  if (!response.ok) {
+    throw new Error(`GET /__fixture/requests: ${response.status} ${await response.text()}`);
+  }
+  const { calls, calls_dropped } = (await response.json()) as {
+    calls?: FakeCall[];
+    calls_dropped?: number;
+  };
+  if (calls === undefined) throw new Error("the fake GitHub keeps no log of calls");
+  if ((calls_dropped ?? 0) > 0) throw new Error(`the fake's log dropped ${calls_dropped} call(s)`);
+  return calls;
+}
+
+/** One call in the words a half prints. */
+function callText(call: FakeCall): string {
+  const repository = call.repo === undefined ? "" : ` (${call.repo})`;
+  return `${call.route}${repository}${call.asks === undefined ? "" : ` asking ${call.asks}`}`;
+}
+
+/** Whether `call` reads a pull request by the REST routes the intake reads one with: the pull
+ *  request, its commits, and the pull requests of a commit. */
+function restPullRead(call: FakeCall): boolean {
+  return /^GET \/repos\/\{owner\}\/\{repo\}\/(pulls\/\{n\}(\/commits)?|commits\/\{sha\}\/pulls)$/.test(
+    call.route
+  );
+}
+
+/** Whether `call` reads a pull request of acme/first-start from GitHub, by REST or by GraphQL. */
+function readsATipPull(call: FakeCall): boolean {
+  return (
+    (call.repo === tipRepo && restPullRead(call)) ||
+    (call.route === "POST /graphql" && (call.asks ?? "").includes(`${tipRepo}#`))
+  );
+}
+
+/** Whether `call` is one of the reconcile pass's read of #22's facts, the facts line's read of a
+ *  pull request whose commit messages no read stored (Reconcile.readFactsLine): the installation
+ *  lookup of acme/first-start and the token it mints, and the one GraphQL query that asks for #22
+ *  alone. The intake's read of #22's push read its title, its body and its branch, and, its body
+ *  naming the case's issue, not its commit messages (storePullRequestFacts), and every pass reads
+ *  the messages a read did not store, so a later change of how Dispatch reads a key needs no read
+ *  of GitHub. */
+function tipCallOfTheFactsLine(call: FakeCall): boolean {
+  return (
+    (call.route === "GET /repos/{owner}/{repo}/installation" && call.repo === tipRepo) ||
+    call.route === "POST /app/installations/{n}/access_tokens" ||
+    (call.route === "POST /graphql" && call.asks === `${tipRepo}#22`)
+  );
+}
+
+/** Runs one half of first-start-tip, and ends the process. */
+async function firstStartTipHalf(half: string): Promise<never> {
+  const state = (readState()["first-start-tip"] ?? {}) as TipState;
+  switch (half) {
+    case "backlog":
+      await tipBacklog().catch((error: unknown) => setupFailed("first-start-tip's events", error));
+      break;
+    case "first-start": {
+      const { lastSeq, linesBefore, logOffset } = state;
+      if (lastSeq === undefined || linesBefore === undefined || logOffset === undefined) {
+        setupFailed("first-start-tip", "the state file holds no backlog: run its half first");
+      }
+      const pass = await awaitOnePass(linesBefore);
+      const bind = await bindSince(logOffset, "the first start's bind");
+      const settled = await tipDurableSettled("the first start's durable");
+      await runCase("first-start-tip", () => tipFirstStart(lastSeq, pass, bind, settled));
+      return summarise();
+    }
+    case "stopped":
+      await tipStopped().catch((error: unknown) =>
+        setupFailed("first-start-tip's read of the durable", error)
+      );
+      break;
+    case "second-start": {
+      const { floor, linesBefore, logOffset } = state;
+      if (floor === undefined || linesBefore === undefined || logOffset === undefined) {
+        setupFailed(
+          "first-start-tip",
+          "the state file holds no durable's floor: run stopped first"
+        );
+      }
+      const pass = await awaitOnePass(linesBefore);
+      const bind = await bindSince(logOffset, "the second start's bind");
+      const settled = await tipDurableSettled("the second start's durable");
+      await runCase("first-start-tip", () => tipSecondStart(floor, pass, bind, settled));
+      return summarise();
+    }
+    case "control-durable":
+      await tipControlDurable().catch((error: unknown) =>
+        setupFailed("first-start-tip's control durable", error)
+      );
+      break;
+    case "control-start": {
+      const { floor, logOffset } = state;
+      if (floor === undefined || logOffset === undefined) {
+        setupFailed("first-start-tip", "the state file holds no control durable: run it first");
+      }
+      const bind = await bindSince(logOffset, "the control's bind");
+      await runCase("first-start-tip", () => tipControlStart(floor, bind));
+      return summarise();
+    }
+    default:
+      setupFailed(
+        `phase first-start-tip-${half}`,
+        "first-start-tip's halves are backlog, first-start, stopped, second-start, control-durable and control-start"
+      );
+  }
+  void nats.close();
+  process.exit(0);
+}
+
+/** first-start-tip's backlog, while no server runs (the section "first-start-tip"). Before the
+ *  events, its self-check: one read of a pull request made here, not by Dispatch, is the one call
+ *  in the fake's log, so a log that cannot see a call fails here and not as a pass of T1 or T3. */
+async function tipBacklog(): Promise<void> {
+  const manager = await nats.jetstreamManager();
+  const stream = await manager.streams.info("ENVOY_NOTIFICATIONS");
+  const before = await tipDurable();
+  if (before !== undefined) {
+    throw new Error(`the intake's durable exists before the first start: ${durableText(before)}`);
+  }
+  note(
+    `the stream a server with no GitHub App made holds ${stream.state.messages} message(s), last sequence ${stream.state.last_seq}; ${durableText(before)}`
+  );
+  const earlier = (minutes: number) =>
+    new Date(Date.now() - minutes * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const opened = tipPull(21, tipCommits.firstOpened, "A change.", earlier(30));
+  const first = tipPull(21, tipCommits.firstPushed, "A change.", earlier(20));
+  const second = tipPull(22, tipCommits.secondOpened, "Another change.", earlier(10));
+  await seedTip({ "21": first, "22": second });
+  await resetPullReads();
+  const probe = await fetch(new URL(`/repos/${tipRepo}/pulls/21`, githubUrl));
+  const probed = await fakeCalls();
+  const wanted = `GET /repos/{owner}/{repo}/pulls/{n} (${tipRepo})`;
+  if (!probe.ok || probed.length !== 1 || callText(probed[0] as FakeCall) !== wanted) {
+    throw new Error(
+      `one GET /repos/${tipRepo}/pulls/21 answered ${probe.status} and the fake's log holds ${probed.map(callText).join("; ") || "nothing"}, want 200 and ${wanted} alone`
+    );
+  }
+  await resetPullReads();
+  let lastSeq = 0;
+  for (const [number, action, pull] of [
+    [21, "opened", opened],
+    [21, "synchronize", first],
+    [22, "opened", second],
+  ] as const) {
+    lastSeq = (await publishToStream(tipPayload(number, action, pull))).seq;
+    note(
+      `published #${number}'s ${action} at ${pull.head_sha.slice(0, 12)}, stream sequence ${lastSeq}`
+    );
+  }
+  if (tipControl) {
+    const made = await manager.consumers.add("ENVOY_NOTIFICATIONS", {
+      ack_policy: AckPolicy.Explicit,
+      deliver_policy: DeliverPolicy.StartSequence,
+      deliver_subject: createInbox(),
+      durable_name: "delivery-events",
+      filter_subject: "notifications.github.>",
+      opt_start_seq: 1,
+    });
+    note(
+      `negative control (VERIFICATION_RESULTS_E2E_TIP_CONTROL=1): made the durable before the first start, ${durableText(made)}`
+    );
+  }
+  const fixtureAt = await prepareOnePass();
+  writeTipState({ lastSeq, linesBefore: attributionLines().length, logOffset: logLength() });
+  note(`first-start-tip's backlog is written, and no pass is recorded, at ${fixtureAt}`);
+}
+
+/** T1 and T2, after the first start (the section "first-start-tip"). */
+async function tipFirstStart(
+  lastSeq: number,
+  pass: string,
+  bind: { readonly line: string; readonly seq: number },
+  settled: ConsumerInfo
+): Promise<string | undefined> {
+  const failures: string[] = [];
+  note(pass);
+  note(`bind: ${bind.line}`);
+  note(`durable: ${durableText(settled)}`);
+  const rows = await tipRows();
+  const calls = await fakeCalls();
+  note(`T1 head rows of ${tipRepo}: ${rows.join("; ") || "none"}`);
+  note(`T1 calls of GitHub since the events: ${calls.map(callText).join("; ") || "none"}`);
+  if (rows.length > 0) {
+    failures.push(
+      `T1: the first start wrote heads from the events the bus held: ${rows.join("; ")}`
+    );
+  }
+  if (bind.seq !== lastSeq + 1) {
+    failures.push(
+      `T1: the first start's intake bound at stream sequence ${bind.seq}, want ${lastSeq + 1}, the one after the last event the bus held`
+    );
+  }
+  const reads = calls.filter(readsATipPull);
+  if (reads.length > 0) {
+    failures.push(
+      `T1: the first start read the pull requests of the events the bus held from GitHub: ${reads.map(callText).join("; ")}`
+    );
+  }
+
+  await asPerson("POST", "/api/v1/projects", { key: tipProject, name: "First start" });
+  await setDefaultRepository(tipProject, tipRepo);
+  const issue = await seedIssue(
+    tipProject,
+    "A push after the first start moves the head",
+    checkFor("tip", "A result at the pushed head stands.")
+  );
+  await record(issue, {
+    check: "tip",
+    commit: tipCommits.secondPushed,
+    observed: "recorded at the head of the push after the first start",
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+  const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  const pushed = tipPull(22, tipCommits.secondPushed, `Dispatch: ${issue}\n\nAnother change.`, now);
+  const kept = tipPull(21, tipCommits.firstPushed, "A change.", now);
+  await seedTip({ "21": kept, "22": pushed });
+  const published = await publishToStream(tipPayload(22, "synchronize", pushed));
+  const want = `#22 open at ${tipCommits.secondPushed.slice(0, 12)}`;
+  const by = published.at + headAfterEventMs;
+  let after = await tipRows();
+  while (!after.includes(want) && Date.now() < by) {
+    await Bun.sleep(pollMs);
+    after = await tipRows();
+  }
+  const took = Date.now() - published.at;
+  note(
+    `T2 ${issue}; #22's push at stream sequence ${published.seq}; rows ${took} ms after it: ${after.join("; ") || "none"}`
+  );
+  if (!after.includes(want) || took > headAfterEventMs) {
+    failures.push(
+      `T2: ${want} is not stored within ${headAfterEventMs} ms of the push (${took} ms): ${after.join("; ") || "no row"}`
+    );
+  }
+  if (after.some((row) => row.startsWith("#21 "))) {
+    failures.push("T2: #21, which got no event after the first start, has a head row");
+  }
+  const printed = await resultsCommand(issue);
+  const lines = commandHeadLines(printed);
+  note(`T2 dispatch results --issue ${issue}: ${lines.join(" | ")}`);
+  if (!lines.some((line) => line.includes(`pull request #22 at ${tipCommits.secondPushed}`))) {
+    failures.push(
+      `T2: dispatch results --issue ${issue} does not compare its check with #22 at ${tipCommits.secondPushed}: ${JSON.stringify(printed)}`
+    );
+  }
+  return failures.length === 0 ? undefined : failures.join("\n   ");
+}
+
+/** first-start-tip's read while no server runs after the first start: where the durable stands,
+ *  which the second start must bind right after, and the fake's log emptied. */
+async function tipStopped(): Promise<void> {
+  const info = await tipDurable();
+  if (info === undefined) throw new Error("the first start left no durable");
+  await resetPullReads();
+  const fixtureAt = await prepareOnePass();
+  writeTipState({
+    floor: info.ack_floor.stream_seq,
+    linesBefore: attributionLines().length,
+    logOffset: logLength(),
+  });
+  note(`after the first start: ${durableText(info)}; no pass is recorded, at ${fixtureAt}`);
+}
+
+/** T3, after the second start (the section "first-start-tip"). */
+async function tipSecondStart(
+  floor: number,
+  pass: string,
+  bind: { readonly line: string; readonly seq: number },
+  settled: ConsumerInfo
+): Promise<string | undefined> {
+  const failures: string[] = [];
+  note(pass);
+  note(`bind: ${bind.line}`);
+  note(`durable: ${durableText(settled)}`);
+  const rows = await tipRows();
+  const calls = await fakeCalls();
+  note(`T3 head rows of ${tipRepo}: ${rows.join("; ") || "none"}`);
+  note(`T3 calls of GitHub since the second start: ${calls.map(callText).join("; ") || "none"}`);
+  if (bind.seq !== floor + 1) {
+    failures.push(
+      `T3: the second start's intake bound at stream sequence ${bind.seq}, want ${floor + 1}, the one after the ack floor ${floor} the first start left`
+    );
+  }
+  if (settled.num_redelivered !== 0) {
+    failures.push(`T3: the durable redelivered ${settled.num_redelivered} event(s)`);
+  }
+  if (rows.some((row) => row.startsWith("#21 "))) {
+    failures.push(`T3: #21 has a head row, from an event the bus held: ${rows.join("; ")}`);
+  }
+  const eventReads = calls.filter(restPullRead);
+  if (eventReads.length > 0) {
+    failures.push(
+      `T3: the second start read pull requests as the intake reads an event's: ${eventReads.map(callText).join("; ")}`
+    );
+  }
+  // The webhook redelivery sweep's read (GET /app/hook/deliveries) is the App's own duty, and no
+  // read of an event.
+  const others = calls.filter(
+    (call) => call.route !== "GET /app/hook/deliveries" && !tipCallOfTheFactsLine(call)
+  );
+  if (others.length > 0) {
+    failures.push(
+      `T3: the second start called GitHub for more than the facts line's read of #22: ${others.map(callText).join("; ")}`
+    );
+  }
+  return failures.length === 0 ? undefined : failures.join("\n   ");
+}
+
+/** The control of T3, while no server runs: the durable deleted and made again to deliver from
+ *  the stream's first message, and the fake's log emptied. */
+async function tipControlDurable(): Promise<void> {
+  const manager = await nats.jetstreamManager();
+  await manager.consumers.delete("ENVOY_NOTIFICATIONS", "delivery-events");
+  const made = await manager.consumers.add("ENVOY_NOTIFICATIONS", {
+    ack_policy: AckPolicy.Explicit,
+    deliver_policy: DeliverPolicy.StartSequence,
+    deliver_subject: createInbox(),
+    durable_name: "delivery-events",
+    filter_subject: "notifications.github.>",
+    opt_start_seq: 1,
+  });
+  await resetPullReads();
+  writeTipState({ logOffset: logLength() });
+  note(`T3's control: the durable made again, ${durableText(made)}`);
+}
+
+/** The control of T3, after one more start: it binds at or below the floor the second start
+ *  found, and reads a pull request of acme/first-start from GitHub within the 5 seconds of an
+ *  event, so the readings of T3 see a start that reads an event again. */
+async function tipControlStart(
+  floor: number,
+  bind: { readonly line: string; readonly seq: number }
+): Promise<string | undefined> {
+  const failures: string[] = [];
+  note(`bind: ${bind.line}`);
+  if (!(bind.seq <= floor)) {
+    failures.push(
+      `T3's control: with the durable made at the stream's first message the start bound at stream sequence ${bind.seq}, not at or below the floor ${floor}, so T3's reading of the bind cannot see a start that reads again`
+    );
+  }
+  const by = Date.now() + headAfterEventMs;
+  let calls = await fakeCalls();
+  while (!calls.some((call) => readsATipPull(call) && restPullRead(call)) && Date.now() < by) {
+    await Bun.sleep(pollMs);
+    calls = await fakeCalls();
+  }
+  note(
+    `T3's control: calls of GitHub since its start: ${calls.map(callText).join("; ") || "none"}`
+  );
+  if (!calls.some((call) => readsATipPull(call) && restPullRead(call))) {
+    failures.push(
+      "T3's control: the start that reads the events again read no pull request from GitHub, so T3's reading of the calls cannot see it"
+    );
+  }
+  return failures.length === 0 ? undefined : failures.join("\n   ");
 }
 
 // --- a bare `-` given to a text flag -----------------------------------------------------------
