@@ -24,6 +24,7 @@
         "admission.slots.issue",
         "admission.slots.issue.count",
         "admission.slots.line",
+        "admission.slots.p0",
         "admission.slots.person",
         "admission.slots.person.count",
         "admission.slots.person.oldest",

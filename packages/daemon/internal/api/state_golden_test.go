@@ -321,8 +321,10 @@ func populatedState(t *testing.T) State {
 	// No returned member of the line is without a slot, and the one issue of the starting part,
 	// LEGION-211, stands in `blocked`, so no issue waits for a slot. The line is the one sentence
 	// record.SlotsLine writes of the reading.
+	// LEGION-212 is the one P0 holder (`p0Holders` below counts it), so the reading's `p0` is 1
+	// and the line says so after the slots in use.
 	testerStoppedAt := time.Date(2026, 9, 22, 8, 52, 0, 0, time.UTC)
-	slotsReading := record.SlotsReading{InUse: 5, Cap: 5,
+	slotsReading := record.SlotsReading{InUse: 5, Cap: 5, P0: 1,
 		Working: record.StateCount{Count: 1, Oldest: &implementerStep.TurnStartedAt},
 		Stopped: record.StateCount{Count: 2, Oldest: &implementerFailedAt},
 		Idle:    record.StateCount{Count: 2, Oldest: &stuckApprovedAt},

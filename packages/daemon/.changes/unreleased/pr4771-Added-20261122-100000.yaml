@@ -90,16 +90,21 @@ body: |-
     under `--token-limit` where the record holds no limit. A directory of runs written before them
     is refused, and `compare` gives each run's signals at their limits.
 
-    `legion state` prints a `slots:` line under its admission line. It says what each holder of a
+    `legion state` prints a `slots:` line under its admission line. It gives the slots in use
+    beside the cap, and after them how many of those holders are P0, as `(<n> P0)`, `(0 P0)` among
+    them. Every holder counts as a slot in use, a P0 holder too, so the slots in use can be more
+    than the cap, and the five states add up to all the holders. The P0 count is the number
+    `admission.p0Holders` gives: a holder is P0 where Dispatch resolves its priority to P0, else
+    where its own priority is. The line says what each holder of a
     slot does now (`working`, `stopped`, `person`, `issue` or `idle`, each with the oldest time in
     it), how many started issues wait for a slot, in two readings, and how many holders rank below
     the first issue that waits for one in the line's own order, which puts priority first. The
     second reading, `in all`, also counts each started parent in `awaiting_children` that holds no
     slot. With
     daemon API entry `20261125162112` (`slots-reading`), `legion state --json` carries the same
-    reading as `admission.slots`, each slot carries its holder's `state` and `since`, and
-    each issue carries its `rank` and `rootRank`. A caller of an older contract gets the state
-    without them. The controller's tick notice carries the reading as `slots`.
+    reading as `admission.slots`, with the P0 count as `p0`, each slot carries its holder's `state`
+    and `since`, and each issue carries its `rank` and `rootRank`. A caller of an older contract
+    gets the state without them. The controller's tick notice carries the reading as `slots`.
 
     The daemon writes one `admission: a pass moved slots` line for each admission pass that gives
     out or takes back a slot. The line gives the slots in use, the cap, each slot given out or taken

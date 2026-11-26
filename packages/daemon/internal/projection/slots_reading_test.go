@@ -198,14 +198,20 @@ func stateCounts(reading record.SlotsReading) map[record.HolderState]record.Stat
 
 // R6's first sentence: every slot in use is counted under exactly one of the five holder states,
 // so the five numbers add up to the slots in use, which is every issue `admission.active` names,
-// beside the cap. Three projects: one holder in each state with a slot left free, every holder
-// at work under a full cap, and no holder at all while a root waits.
+// beside the cap, and a P0 holder is one of them, so the slots in use can be more than the cap.
+// The reading also gives how many of those holders are P0, the number `admission.p0Holders`
+// gives (record.SlotHolders.Add, which reads record.Issue.StartsNow), so the two are one count.
+// Five projects: one holder in each state with a slot left free, every holder at work under a
+// full cap, no holder at all while a root waits, P0 holders within the cap (one by its own
+// priority, one by the priority Dispatch resolves, and a child of a P0 tree root that Dispatch
+// resolves to nothing, which is no P0), and P0 holders that put the slots in use above the cap.
 func TestTheFiveStatesAddUpToTheSlotsInUse(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		build func(t *testing.T, f *slotsFixture)
-		cap   int
-		want  map[record.HolderState]int
+		name   string
+		build  func(t *testing.T, f *slotsFixture)
+		cap    int
+		wantP0 int
+		want   map[record.HolderState]int
 	}{
 		{
 			name: "one holder in each state, a slot left free",
@@ -250,6 +256,61 @@ func TestTheFiveStatesAddUpToTheSlotsInUse(t *testing.T) {
 			},
 			want: map[record.HolderState]int{},
 		},
+		{
+			name:   "P0 holders within the cap, and a child of a P0 root that is no P0",
+			cap:    5,
+			wantP0: 2,
+			build: func(t *testing.T, f *slotsFixture) {
+				// A root that is P0 by its own priority, at work.
+				ownP0 := slotsRoot("ACME-31", "in_progress", phase.Implementing, "a")
+				ownP0.Priority = record.P0
+				f.hold(ownP0, slotsBefore(180))
+				f.claim(t, "ACME-31", "ACME-31", claim.RoleImplementer, supervise.StateWorking, func(c *supervise.Claim) {
+					c.LastTurnStart = slotsBefore(30)
+				})
+				// A root with no priority of its own that Dispatch resolves to P0 from another issue.
+				resolvedP0 := slotsRoot("ACME-32", "in_progress", phase.Implementing, "b")
+				resolvedP0.Resolved = record.Resolved{Priority: record.P0, From: "OTHER-9", Known: true}
+				f.hold(resolvedP0, slotsBefore(180))
+				// A child of the P0 root with no priority that Dispatch resolves to nothing: the
+				// line places it by its root's P0, and the start never does (record.PriorityOf).
+				f.hold(slotsChild("ACME-33", "ACME-31", "in_progress", phase.Implementing, "c"), slotsBefore(180))
+			},
+			want: map[record.HolderState]int{record.HolderWorking: 1, record.HolderIdle: 2},
+		},
+		{
+			name:   "P0 holders put the slots in use above the cap",
+			cap:    2,
+			wantP0: 3,
+			build: func(t *testing.T, f *slotsFixture) {
+				// Two holders that the cap counts, which fill it.
+				f.hold(slotsRoot("ACME-41", "in_progress", phase.Implementing, "a"), slotsBefore(180))
+				f.claim(t, "ACME-41", "ACME-41", claim.RoleImplementer, supervise.StateWorking, func(c *supervise.Claim) {
+					c.LastTurnStart = slotsBefore(40)
+				})
+				held := slotsRoot("ACME-42", "in_progress", phase.Held, "b")
+				held.Hold = &record.Hold{From: phase.Implementing}
+				f.hold(held, slotsBefore(180))
+				// Three P0 holders outside it: an own P0 at work, an own P0 that Dispatch resolves
+				// to P0 too, which waits on a person, and one resolved from another issue.
+				ownP0 := slotsRoot("ACME-43", "in_progress", phase.Implementing, "c")
+				ownP0.Priority = record.P0
+				f.hold(ownP0, slotsBefore(180))
+				f.claim(t, "ACME-43", "ACME-43", claim.RoleImplementer, supervise.StateWorking, func(c *supervise.Claim) {
+					c.LastTurnStart = slotsBefore(20)
+				})
+				asking := slotsRoot("ACME-44", "in_progress", phase.AwaitingPerson, "d")
+				asking.Priority = record.P0
+				asking.Resolved = record.Resolved{Priority: record.P0, Known: true}
+				asking.Awaiting = &record.Awaiting{Ask: "ask-44", Since: record.EventMark{Seq: 5, At: slotsBefore(90)}}
+				f.hold(asking, slotsBefore(180))
+				resolvedP0 := slotsRoot("ACME-45", "in_progress", phase.Implementing, "e")
+				resolvedP0.Resolved = record.Resolved{Priority: record.P0, From: "OTHER-9", Known: true}
+				f.hold(resolvedP0, slotsBefore(180))
+			},
+			want: map[record.HolderState]int{record.HolderWorking: 2, record.HolderStopped: 1, record.HolderPerson: 1,
+				record.HolderIdle: 1},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &slotsFixture{rule: linkWaitKeepsTheSlot(), cap: tc.cap}
@@ -267,6 +328,18 @@ func TestTheFiveStatesAddUpToTheSlotsInUse(t *testing.T) {
 			if reading.InUse != len(state.Admission.Active) || reading.Cap != tc.cap {
 				t.Errorf("the reading says %d of %d in use, want %d of %d: every issue admission.active names, of the cap",
 					reading.InUse, reading.Cap, len(state.Admission.Active), tc.cap)
+			}
+			if reading.P0 != tc.wantP0 {
+				t.Errorf("the reading says %d P0 holders, want %d: the holders admission treats as P0 (record.Issue.StartsNow)",
+					reading.P0, tc.wantP0)
+			}
+			if held := state.Admission.P0Holders; held == nil {
+				t.Errorf("admission.p0Holders is absent, want the reading's %d P0 holders beside it", reading.P0)
+			} else if reading.P0 != *held {
+				t.Errorf("the reading says %d P0 holders and admission.p0Holders says %d: one count of one record", reading.P0, *held)
+			}
+			if want := fmt.Sprintf("slots: %d of %d in use (%d P0): ", holders, tc.cap, tc.wantP0); !strings.HasPrefix(reading.Line, want) {
+				t.Errorf("the reading's line is %q, want it to open %q", reading.Line, want)
 			}
 			sum := 0
 			counts := stateCounts(reading)

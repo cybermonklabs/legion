@@ -73,6 +73,7 @@
     "slots": {
       "inUse": 5,
       "cap": 5,
+      "p0": 1,
       "working": {
         "count": 1,
         "oldest": "2026-09-22T09:16:30Z"
@@ -100,7 +101,7 @@
       "belowFirstWaiting": {
         "count": 0
       },
-      "line": "slots: 5 of 5 in use: 1 working (oldest 2026-09-22T09:16Z), 2 stopped (oldest 2026-09-22T08:47Z), 0 person, 0 issue, 2 idle (oldest 2026-09-20T16:42Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+      "line": "slots: 5 of 5 in use (1 P0): 1 working (oldest 2026-09-22T09:16Z), 2 stopped (oldest 2026-09-22T08:47Z), 0 person, 0 issue, 2 idle (oldest 2026-09-20T16:42Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
     }
   },
   "issues": {

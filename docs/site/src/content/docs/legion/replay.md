@@ -2136,7 +2136,7 @@ So the pass in which a hold begins or ends gives its slots by the rank that the 
 `legion state` says what each holder of a slot does now, in one line under its admission line:
 
 ```text
-slots: 4 of 4 in use: 2 working (oldest 2026-10-05T10:12Z), 0 stopped, 1 person (oldest 2026-10-05T08:20Z), 0 issue, 1 idle (oldest 2026-10-05T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-05T09:58Z), 2 in all (oldest 2026-10-05T07:41Z). 2 holders rank below ACME-14, which waits for a slot.
+slots: 4 of 4 in use (0 P0): 2 working (oldest 2026-10-05T10:12Z), 0 stopped, 1 person (oldest 2026-10-05T08:20Z), 0 issue, 1 idle (oldest 2026-10-05T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-05T09:58Z), 2 in all (oldest 2026-10-05T07:41Z). 2 holders rank below ACME-14, which waits for a slot.
 ```
 
 [Running Legion](/legion/legion/running-legion/#observe) says what each state and each count of that line means, and what `legion state --json` carries of it.
