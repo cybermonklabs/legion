@@ -1,6 +1,7 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
 // callers it answers share: the clients they present, the scope a machine login asks for, the one
-// a read token holds and the one a Legion daemon's token holds, the names the token exchange
+// a read token holds, the one a Legion daemon's token holds and the one an approve-only token
+// holds (ScopeApprove), the names the token exchange
 // knows a subject token by, the header of a read trade's holder proof, the fields the broker adds
 // to a token answer, the session prefix a Legion daemon's own entry fixes, and the one grammar of
 // a token's list of projects. It imports nothing of the broker — only the standard library and
@@ -384,10 +385,10 @@ type Introspection struct {
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and
 	// then ScopePerson beside it ("read person") for a ProjectScopeReadPerson token that names
-	// its person; the token the broker mints for a person's approve grant holds ScopeApprove alone;
-	// ScopeLegionStatus when a Legion daemon's own entry minted it and its trade did not ask for
-	// ScopeRead; every other exchanged token holds no scope, and a machine login's own token holds
-	// Scope.
+	// its person; it holds ScopeLegionStatus when a Legion daemon's own entry minted it and its
+	// trade did not ask for ScopeRead. The token the broker mints for a person's approve grant
+	// holds ScopeApprove alone. Every other exchanged token holds no scope, and a machine login's
+	// own token holds Scope.
 	Scope string `json:"scope,omitempty"`
 	// AsOf is the token's cut: the past time a narrowed token reads at, which its trade asked for
 	// (FormAsOf), in UTC to the microsecond (2006-01-02T15:04:05.000000Z). Only a token of one of

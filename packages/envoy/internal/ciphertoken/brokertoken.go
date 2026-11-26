@@ -169,9 +169,9 @@ var proofAlgorithmNames = func() []string {
 	return names
 }()
 
-// Caller is who a verified token names, whether that token only reads, and whether it holds the
-// scope legion-status: what a writer is recorded under, and nothing else the broker's answer
-// carries. It never carries the token.
+// Caller is who a verified token names, whether that token only reads, whether it is an
+// approve-only token (ApproveOnly), and whether it holds the scope legion-status: what a writer
+// is recorded under, and nothing else the broker's answer carries. It never carries the token.
 type Caller struct {
 	// Session is the session the writes are recorded as, which a Caller always names: an answer
 	// naming none is ErrNotASession and never reaches one.

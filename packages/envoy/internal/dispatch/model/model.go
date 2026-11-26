@@ -32,10 +32,11 @@ const (
 // (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
 // Dispatch reads it from the broker's answer (brokerTokenActor).
 //
-// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
-// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
-// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
-// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check,
+// a new token's default scopes and the approve-only token's scopes (brokerTokenActor) all read
+// Scopes, and none of them may hold this scope: it is the daemon's broker token's alone. A
+// person-scoped broker token holds ScopePerson alone (brokerPersonScopes), and the approve-only
+// token both of Scopes, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
