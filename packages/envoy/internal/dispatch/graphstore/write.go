@@ -27,24 +27,15 @@ import (
 
 // LatestEvent is the cause of a write whose event its write phase appends right before the
 // write's own statements: no Go code reads that event's id before the batch is sent, so the
-// statements name it as the events id sequence left it (latestEventValue), and nothing between
+// statements name it as the events id sequence left it (store.LatestEventID), and nothing between
 // the event's insert and them may append another event. A node or a tuple given it as its
 // SourceEvent, or as its LegacySourceSeq, is written with that id.
 const LatestEvent int64 = -1
 
-// latestEventValue is the events id sequence's currval, which store.LatestEventID wraps in a
-// scalar subquery so that a statement comparing a key with it reads one row through an index.
-// Here it is a value written into a column, never compared with one, so the wrapper buys nothing,
-// and BlockIndexMarkingRule 2's digest records the bare call (docs:
-// TestTheMarkingRuleNamesTheStatementsItMarksWith, through refs.CommentWrite.Queue's node write):
-// the same id either way, since nothing in a graph write draws from the sequence, so the rule
-// stands and no document is marked again.
-const latestEventValue = `currval(pg_get_serial_sequence('events', 'id'))`
-
 // causeOf is the SQL a source_event or legacy_source_seq column is written through: the column's
 // own value, or the latest event's id for LatestEvent.
 func causeOf(column string) string {
-	return `(case when ` + column + ` = ` + strconv.FormatInt(LatestEvent, 10) + ` then ` + latestEventValue + ` else ` + column + ` end)`
+	return `(case when ` + column + ` = ` + strconv.FormatInt(LatestEvent, 10) + ` then ` + store.LatestEventID + ` else ` + column + ` end)`
 }
 
 // Write writes every node and appends every tuple inside the caller's transaction, at once: its
