@@ -198,9 +198,10 @@ type roleScanSeams struct {
 	// runs' watches.
 	watch func(bus.KeyValue) bus.KeyValue
 	// run is called as each run starts, with the run's number, the first run's 1, and the scan's
-	// deadline (roleClaimScan.deadline), so a test measures the scan's bounds from the one clock
-	// read the scan took for them rather than from a read of its own, which comes later.
-	run func(n int, deadline time.Time)
+	// start (roleClaimScan.started), the one clock read its deadline is roleClaimScanDeadline
+	// after, so a test measures the scan's bounds from that read rather than from a read of its
+	// own, which comes later.
+	run func(n int, started time.Time)
 	// handed is called on a run's own goroutine after each claim the run is handed, with the run's
 	// number and how many claims it has been handed, so a test acts at a point of a run. A run the
 	// scan ended can still call it while its teardown finishes (roleClaimScan.run).
@@ -293,7 +294,8 @@ func scanRoleClaims(conn *nats.Conn, kv bus.KeyValue, idle time.Duration, log *s
 	defer close(stop)
 	scan := &roleClaimScan{kv: kv, idle: idle, log: log, seams: seams, readings: readConn(conn, stop), changes: changes}
 	before := <-scan.readings
-	scan.deadline = time.Now().Add(roleClaimScanDeadline)
+	scan.started = time.Now()
+	scan.deadline = scan.started.Add(roleClaimScanDeadline)
 	for n := 1; ; n++ {
 		run, err := scan.run(n, before)
 		if err != nil {
@@ -348,7 +350,9 @@ type roleClaimScan struct {
 	readings <-chan connReading
 	// changes is what the connection's own notices of its status have said (followConn).
 	changes *connChanges
-	// deadline is roleClaimScanDeadline after the first run's start.
+	// started is the first run's start: the scan's one clock read for its bounds.
+	started time.Time
+	// deadline is roleClaimScanDeadline after started.
 	deadline time.Time
 }
 
@@ -373,7 +377,7 @@ type roleClaimRun struct {
 // reconnect that ends that state can raise the count before the run starts.
 func (s *roleClaimScan) run(n int, before connReading) (roleClaimRun, error) {
 	if s.seams.run != nil {
-		s.seams.run(n, s.deadline)
+		s.seams.run(n, s.started)
 	}
 	var handed func(int)
 	if s.seams.handed != nil {
