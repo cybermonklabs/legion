@@ -28,6 +28,7 @@ import { MenuMark } from "./IssuePresets";
 import { isCheck, isStatement, lineWordsRaw, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { type LineNames, oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
+import { useOutlineRequest } from "./outline-request";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -156,8 +157,9 @@ const MARK_TEXT_REM = 0.75;
  * pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It is one tab
  * stop, as the outline is: the arrow keys move inside it, the right and left arrows unfold and
  * fold an entry, and Enter or a press goes to that node in the outline. The entry the reader is
- * in - the one holding the node the focus is on, or last was on - is marked by a rule and a
- * ground of its own.
+ * in - the one holding the node the focus is on, or last was on, else the entry the list last
+ * took the outline to - is marked by a rule and a ground of its own, and is the branch Focus
+ * branch draws.
  */
 export function ContentsList({
   focusBranch,
@@ -197,7 +199,14 @@ export function ContentsList({
   }, [entries]);
   // The entry the reader is in: the nearest entry at or above the node the focus is on. The
   // focus leaving the outline - for this list, say - leaves the entry the reader was last in.
+  // A list drawn again has seen no focus of its own: the Outline sheet draws a new one each time
+  // it opens, after the focus left the outline for the Outline control. Where the focus is in no
+  // entry and was in none the list saw, the reader is in the entry the list last took the outline
+  // to, which the page keeps across the sheet's openings (`useOutlineRequest`). The last two hold
+  // only while they are entries the list draws, so Focus branch draws no branch the words filter
+  // left out, or one that is gone.
   const focused = useFocusedNode()?.id;
+  const requested = useOutlineRequest()?.id;
   const [lastIn, setLastIn] = useState<string | undefined>(undefined);
   const inEntry = useMemo(
     () => nearestAtOrAbove(root, focused, (id) => entryIds.has(id)),
@@ -206,7 +215,10 @@ export function ContentsList({
   useEffect(() => {
     if (inEntry !== undefined) setLastIn(inEntry);
   }, [inEntry]);
-  const current = inEntry ?? (lastIn !== undefined && entryIds.has(lastIn) ? lastIn : undefined);
+  const current =
+    inEntry ??
+    (lastIn !== undefined && entryIds.has(lastIn) ? lastIn : undefined) ??
+    (requested !== undefined && entryIds.has(requested) ? requested : undefined);
 
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const rows = useMemo(() => {

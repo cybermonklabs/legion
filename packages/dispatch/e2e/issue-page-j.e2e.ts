@@ -127,6 +127,7 @@ import { IPHONE_13 } from "./issue-page-p";
 import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { verificationCheck } from "./issue-page-v";
 import { settledScrollTop } from "./mermaid-helpers";
+import { settledValue } from "./settled";
 import { expect, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
@@ -608,9 +609,11 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
 
 // Enter or a press on a Contents entry goes to its node in the outline and marks the entry.
 // Focus branch draws that branch alone, then the whole outline again. Below 1024 px choosing an
-// entry in the Outline sheet closes it. The reader's message is drawn in the outline but has no
-// entry: no node was placed under it. Spec has a count, but Conversation does not.
-// SLOW(>=2s): the whole seeded issue, two loads of the page, and six moves of the focus and the
+// entry in the Outline sheet closes it, and in the sheet opened again Focus branch draws the
+// chosen entry's branch alone, then the outline it stood on again. The reader's message is drawn
+// in the outline but has no entry: no node was placed under it. Spec has a count, but
+// Conversation does not.
+// SLOW(>=2s): the whole seeded issue, two loads of the page, and eight moves of the focus and the
 // toggle, each waited on until the outline redraws.
 test("a Contents entry goes to its node, and Focus branch draws that branch alone @phone", async ({
   browser,
@@ -726,6 +729,40 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
         message: "a choice in the Outline sheet by Enter went to no node",
       })
       .toBe(question);
+
+    // The sheet opened again after that choice, whose list is drawn anew with the focus gone
+    // from the outline to the Outline control: Focus branch there draws the chosen entry's
+    // branch alone, and turned off, the outline the choice left again, which below 1024 px is
+    // rooted at the node's parent (`goToNode`).
+    await outlineControl(page).click();
+    await expect(
+      chosen,
+      "the Outline sheet opened after a choice does not list the chosen entry"
+    ).toHaveCount(1);
+    await expect(
+      chosen,
+      "the reopened Outline sheet did not keep the chosen entry marked"
+    ).toHaveAttribute("aria-selected", "true");
+    const crumbs = issuePage(page).locator("[data-crumb]");
+    const parentDepth = await settledValue("the outline the choice left", () => crumbs.count());
+    const sheetBranch = focusBranchControl(outlineSheet(page));
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "false");
+    await sheetBranch.click();
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "true");
+    await expect
+      .poll(branch, {
+        message:
+          "Focus branch in the Outline sheet opened after a choice did not draw the chosen entry's branch alone",
+      })
+      .toEqual({ first: question, outside: [] });
+    await expect(crumbs, "Focus branch did not zoom from the parent into the entry").toHaveCount(
+      parentDepth + 1
+    );
+    await sheetBranch.click();
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "false");
+    await expect(crumbs, "Focus branch turned off did not return to the parent").toHaveCount(
+      parentDepth
+    );
   });
 });
 
