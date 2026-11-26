@@ -143,15 +143,33 @@ export async function awaitSeededCheckStates(
   }
 }
 
-/** The id of the open ask the server indexed from a document's `ask` block. The document service
- *  settles the document after the write has answered, so the ask exists a moment later. */
+/** The id of the open ask the server indexed from a document's `ask` block (`awaitBlockAsks`). */
 export async function awaitBlockAsk(issueKey: string, block: string): Promise<string> {
+  const [id] = await awaitBlockAsks(issueKey, [block]);
+  return id;
+}
+
+/** The ids of the open asks the server indexed from a document's `ask` blocks `blocks`, in the
+ *  order of `blocks`, read from one read of the issue per try. The document service settles the
+ *  document after the write has answered, so each ask exists a moment later. */
+export async function awaitBlockAsks(
+  issueKey: string,
+  blocks: readonly string[]
+): Promise<string[]> {
   const deadline = Date.now() + 20_000;
   for (;;) {
-    const ask = ((await getIssue(issueKey)).open_asks ?? []).find((row) => row.block_id === block);
-    if (ask !== undefined) return ask.id;
+    const open = (await getIssue(issueKey)).open_asks ?? [];
+    const ids: string[] = [];
+    const missing: string[] = [];
+    for (const block of blocks) {
+      const ask = open.find((row) => row.block_id === block);
+      if (ask === undefined) missing.push(block);
+      else ids.push(ask.id);
+    }
+    if (missing.length === 0) return ids;
     if (Date.now() > deadline) {
-      throw new Error(`${issueKey}'s ${block} ask was not indexed within 20 s`);
+      const asks = missing.length === 1 ? "ask was" : "asks were";
+      throw new Error(`${issueKey}'s ${missing.join(", ")} ${asks} not indexed within 20 s`);
     }
     await pause(100);
   }

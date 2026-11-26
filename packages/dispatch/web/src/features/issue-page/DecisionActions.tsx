@@ -1,5 +1,5 @@
 import { dispatchWritingBox } from "@legion/contracts";
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   type ReactNode,
@@ -9,7 +9,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { refreshQueries } from "../../api/query-refresh";
@@ -32,7 +31,6 @@ import {
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
-import { parseIssuePath } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
@@ -41,16 +39,13 @@ import {
   decidedByPerson,
   decisionsOfAnswer,
 } from "./decision-nodes/decision-nodes";
-import { presetOf } from "./issue-address";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { treeRead } from "./spec-filter/tree-read";
 import {
   dropViews,
   outlineTargets,
   type TreeAnswer,
-  useOutlineAnswer,
-  viewQuery,
+  useDecisionReads,
 } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
@@ -178,9 +173,9 @@ function decisionIn(
  * `heading` (`decision-nodes.ts`). The decision is a node of a read the page already holds, found
  * by its address among that answer's decisions (`decisionIn`): first in the read its row is
  * drawn from - on the Decisions view the decisions view read (`?view=decisions`), which holds
- * every decision of the issue, and in every other view the outline read the address chooses
- * (`useOutlineAnswer`) - and, where that read does not hold it, in the other. The outline read
- * is paged (R15), so a decision past the pages of it held so far is found in the decisions view
+ * every decision of the issue, and in every other view the outline read the address chooses -
+ * and, where that read does not hold it, in the other (`useDecisionReads`). The outline read is
+ * paged (R15), so a decision past the pages of it held so far is found in the decisions view
  * wherever the page holds that read; and the page reads the decisions view only once the
  * Decisions filter is on (`ViewReadProvider`), so until then a decision is found in the outline
  * read. Both are watched and never sent, so the node makes no read of its own to draw its
@@ -213,14 +208,7 @@ export function DecisionActions({
   // without them. A decision a person decided is never one, whatever the read's
   // `waiting_review` says (`decidedByPerson`, INFRA-1196's decision 516): the person's own
   // decision is not an agent's to keep or change, so neither control is drawn on it.
-  const outline = useOutlineAnswer(issueKey);
-  const decisionsView = useQuery(treeRead(viewQuery(issueKey, "decisions"))).data;
-  const { pathname, search } = useLocation();
-  const route = parseIssuePath(pathname, search);
-  const reads =
-    route !== undefined && presetOf(route) === "decisions"
-      ? [decisionsView, outline]
-      : [outline, decisionsView];
+  const reads = useDecisionReads(issueKey);
   const decision =
     nodeReference === undefined ? undefined : decisionIn(reads, issueKey, nodeReference);
   const documentId = decision?.document;
