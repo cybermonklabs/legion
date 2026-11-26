@@ -1353,12 +1353,11 @@ export interface LongRowsSeed {
 /**
  * One issue whose spec opens with one long statement the planner wrote, which a check of its
  * Verification document serves and no result proves, and whose conversation is the reader's
- * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, which a
- * row cuts at six lines at either width and draws whole shorter than a phone's screen, with a
- * run of `OWN_ROWS` replies of the reader's own of the same words after the first
- * `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they make a page many screens tall,
- * so a jump into it lands on rows no batch measured. The statement is the body's first row, and
- * the check nothing proves keeps it open in an outline folded to what is open.
+ * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, each drawn
+ * whole and shorter than a phone's screen, with a run of `OWN_ROWS` replies of the reader's own
+ * of the same words after the first `ROWS_ABOVE_OWN`. Drawn whole they make a page many screens
+ * tall, so a jump into it lands on rows no frame has laid out yet. The statement is the body's
+ * first row.
  */
 export async function seedLongRows(): Promise<LongRowsSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1384,7 +1383,7 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
   const specSlug =
     ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
   // A question that waits on the reader, which an outline that opens with the focus on such a
-  // question focuses in place of its first row, so the statement keeps its cut.
+  // question focuses in place of its first row, so the statement is no row the opening focuses.
   await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
   const head = await createComment(key, { body: "Each reply under this one is long." });
   const rows: string[] = [];
