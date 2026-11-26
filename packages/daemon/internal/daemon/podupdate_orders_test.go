@@ -1159,13 +1159,13 @@ var (
 // (wokenDelayed, delayPace): ten minutes into the round, before its bound.
 var delayedWakeLetOut = podUpdateStart.Add(10 * time.Minute)
 
-// delayPace is a wake pacing that lets every paced launch out at once until delay, and from then
-// on lets the next out at delayedWakeLetOut: the tester's wakes before the round run as each is
-// raised, and the woken implementer's launch waits in the pacing with no process and no pod, as a
-// wave of wakes leaves it. It is a pacer on the rig's clock over a limiter whose burst holds every
-// launch before the delay (delayBurst); delay spends what is left of the burst and spreads the
-// release after it to that moment. A fixed-moment Reserve, which these tests once handed the
-// machines, has no pacer equal.
+// delayPace is a wake pacing that lets every paced launch out at once until delay is called, and
+// from then on lets the next out at delayedWakeLetOut: the tester's wakes before the round run as
+// each is raised, and the woken implementer's launch waits in the pacing with no process and no
+// pod, as a wave of wakes leaves it. It is a pacer on the rig's clock over a limiter whose burst
+// holds every launch before the delay (delayBurst); delay spends what is left of the burst and
+// spreads the release after it to that moment. A fixed-moment Reserve, which these tests once
+// handed the machines, has no pacer equal.
 type delayPace struct {
 	clock   supervise.Clock
 	limiter *wakepace.Limiter

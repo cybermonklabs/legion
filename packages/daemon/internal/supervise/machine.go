@@ -4365,11 +4365,11 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 // let the process go with the hold (letGo), and the claim would run where it should be suspended.
 // The place such a replay carries is given up as the decision ends (Machine.handle), the turn it
 // would have taken going to the wake behind it — but for a relaunch a report delayed to a later
-// place than that one, which moves to it (takeEarlierPlace): a report that came after the boot's
-// pass placed the relaunch delays it to a place of its own behind every place the pass took in its
-// queue, and the relaunch would otherwise lose its owed place. Moving a wake that already waits
-// launches nothing a hold would forbid that the wake would not launch at its own let-out, so the
-// move asks nothing of a hold.
+// place than that one, which moves to it (takeEarlierPlace): when a report comes after the boot's
+// pass placed the relaunch, it delays the relaunch to a place of its own behind every place the
+// pass took in its queue, and the relaunch would otherwise lose its owed place. Moving a wake that
+// already waits launches nothing a hold would forbid that the wake would not launch at its own
+// let-out, so the move asks nothing of a hold.
 //
 // It writes one line for each claim whose relaunch it raises or moves, which is what the boot's
 // count of recorded deaths is read against.
