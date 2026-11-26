@@ -108,9 +108,11 @@ the result as one comment), `OUTSIDE_LEGION_CHECKOUT` and `OUTSIDE_ALLOW_HTTP`.
 0600 alone, with the origin's own `Origin` on every call, which Dispatch asks of a cookie's write.
 No broker token approves, so the positive controls of T3 and P7 read with it. The sweep's GitHub
 proxy reads use it where it is given, and else the full member's token
-(`OUTSIDE_SWEEP_FULL_TOKEN_FILE`): a build of Dispatch whose proxy reads a browser's person alone
-refuses that token (401 `NO_IDENTITY`, 403 `OAUTH_SCOPE_REQUIRED`), and the sweep row then reads
-UNKNOWN naming the refusal.
+(`OUTSIDE_SWEEP_FULL_TOKEN_FILE`). A build of Dispatch before cybermonklabs/legion#5079 reads the
+proxy as a browser's person alone and refuses that token 401 `NO_IDENTITY`; a build from it on
+refuses it 403 where it holds no person scope (`OAUTH_SCOPE_REQUIRED`), is read-only
+(`READ_ONLY_TOKEN`) or is a restricted member's (`RESTRICTED_MEMBER`). Either way the sweep row then
+reads UNKNOWN naming the refusal and its cause.
 
 The tailnet leg does these steps, in this order:
 
@@ -149,9 +151,10 @@ The tailnet leg does these steps, in this order:
    `SWEEP_FULL_TOKEN`, with which it makes its reads, its writer's comment and direct message and
    the agent view, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as `SWEEP_MEMBER`, and the
    full member's cookie as `SWEEP_FULL_COOKIE`, with which it reads the GitHub proxy where it is
-   given, and with the token where it is not; a build of Dispatch whose proxy reads a browser's
-   person alone refuses the token, and its fills then hold no `can_fail` line, its proxy control
-   names that refusal and its row reads UNKNOWN), and starts its writer. Every 15 s until the public leg
+   given, and with the token where it is not; a build of Dispatch that refuses the token, one
+   before cybermonklabs/legion#5079 or one from it on given a token that holds no person scope, is
+   read-only or is a restricted member's, leaves its fills with no `can_fail` line, its proxy
+   control names that refusal and its row reads UNKNOWN), and starts its writer. Every 15 s until the public leg
    ends, when the leg stops it, the
    writer comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` and sends a direct message to
    the fills' session of that project, and prints `write <began> <ended> <comment id> <message id>
@@ -548,8 +551,9 @@ off holds T5 at UNKNOWN; `OUTSIDE_PUBLIC_COMMAND` starts no run; a skipped windo
 removal; a cookie's 401 a minute after the removal fails T5; a check's exit 1 fails its row and the
 public row; a check with no `.code` reads UNKNOWN; a limit row's FAIL, or no limit row, holds
 limits; with no `OUTSIDE_FULL_COOKIE_FILE` the sweep's proxy reads use the full member's token and
-every row passes, while a build that refuses the token holds the sweep row and the gate at UNKNOWN,
-naming the refusal, its fills going to the workflow with no `can_fail` line (the tailnet leg's own
+every row passes, while a build that refuses the token, 401 before cybermonklabs/legion#5079 or 403
+for a token without the person scope, holds the sweep row and the gate at UNKNOWN, naming the
+refusal and its cause, its fills going to the workflow with no `can_fail` line (the tailnet leg's own
 row holds the same in both legs' gate); either driver row's FAIL fails grants, with or without its
 control, and an empty control, no grant with no approver and no operator (no `grants_probe_id` is
 sent), the driver's own guard and no `outside-edge-grants.tsv` each read UNKNOWN; with no owner

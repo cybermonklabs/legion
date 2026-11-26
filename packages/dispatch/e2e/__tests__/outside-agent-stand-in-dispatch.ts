@@ -14,8 +14,9 @@
  *  `invalid request origin`, as Dispatch's router does; it answers the full member's personal
  *  token (`Authorization: Bearer <fullToken>`) on whoami, the credential-grants list
  *  (`<state>/full-grants.json`) and the GitHub proxy's read, which `<state>/proxy-refuses-token`
- *  makes 403 OAUTH_SCOPE_REQUIRED; and 401 to anything else. Its access list names the test person
- *  until `POST /_remove`, the owner's removal; in a browser gate's run (`<state>/browser`) the list
+ *  makes the refusal its one line names (`<status> <code>`); and 401 to anything else. Its access
+ *  list names the test person until `POST /_remove`, the owner's removal; in a browser gate's run
+ *  (`<state>/browser`) the list
  *  is `<state>/listed`, which the owner's routes by cookie change: PUT and DELETE
  *  `/api/v1/projects/EXAMPLE/access/people/<address>` (DELETE leaves `<state>/removed`) and POST
  *  `.../invitations`, which makes a link (kept in `<state>/links`) for an address the list names
@@ -83,9 +84,12 @@ const server = Bun.serve({
         });
       }
       if (route === proxyRuns) {
-        return existsSync(join(settings.state, "proxy-refuses-token"))
-          ? Response.json({ code: "OAUTH_SCOPE_REQUIRED" }, { status: 403 })
-          : Response.json({ total_count: 0, workflow_runs: [] });
+        const refusal = existsSync(join(settings.state, "proxy-refuses-token"))
+          ? readFileSync(join(settings.state, "proxy-refuses-token"), "utf8").trim().split(" ")
+          : undefined;
+        return refusal === undefined
+          ? Response.json({ total_count: 0, workflow_runs: [] })
+          : Response.json({ code: refusal[1] }, { status: Number(refusal[0]) });
       }
       return Response.json({ code: "UNAUTHENTICATED" }, { status: 401 });
     }

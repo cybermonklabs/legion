@@ -802,18 +802,24 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "without the full member's cookie the sweep's proxy reads use their token: PASS where Dispatch takes it, UNKNOWN naming the refusal where a build reads the proxy as a browser's person alone, and UNKNOWN with fills that lack a proxy read's line",
+      "without the full member's cookie the sweep's proxy reads use their token: PASS where Dispatch takes it, UNKNOWN naming the refusal and its cause where a build before #5079 refuses it 401 or a build from it on refuses a token without the person scope 403, and UNKNOWN with fills that lack a proxy read's line",
       async () => {
-        const [noCookie, refused, gap] = await runStandIns(
+        const [noCookie, beforeBuild, scopeless, gap] = await runStandIns(
           { ...passingControls, cookie: "absent" },
-          { ...passingControls, cookie: "absent", proxyRefusesToken: true },
+          { ...passingControls, cookie: "absent", proxyRefusesToken: "no-identity" },
+          { ...passingControls, cookie: "absent", proxyRefusesToken: "no-person-scope" },
           {
             ...passingControls,
             fillsLeaveOut: "GET /api/v1/github/app-installation/{owner}/{repo}",
           }
         );
-        if (noCookie === undefined || refused === undefined || gap === undefined) {
-          throw new Error("three runs, want three");
+        if (
+          noCookie === undefined ||
+          beforeBuild === undefined ||
+          scopeless === undefined ||
+          gap === undefined
+        ) {
+          throw new Error("four runs, want four");
         }
         // Without the cookie the sweep runs on the full member's token, its fills' proxy reads
         // and the box's proxy control among them, and passes where Dispatch takes the token; P7
@@ -827,15 +833,26 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(existsSync(join(noCookie.state, "fills-read-the-cookie"))).toBe(false);
         expect(existsSync(join(noCookie.state, "fills-read-the-token"))).toBe(true);
         expect(existsSync(join(noCookie.state, "writer-stopped"))).toBe(true);
-        // A build whose proxy reads a browser's person alone refuses the token: the fills hold no
-        // proxy read's line, and the row reads UNKNOWN naming that refusal.
-        expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
-          verdicts: { sweep: "UNKNOWN" },
-        });
-        expect(rowsOf(refused.stdout).get("sweep")?.got).toContain(
-          "was refused 403 OAUTH_SCOPE_REQUIRED: this build of Dispatch reads the proxy as a browser's person alone"
-        );
-        expect(existsSync(join(refused.state, "fills-without-cookie"))).toBe(true);
+        // A build before #5079 reads the proxy as a browser's person alone and refuses the token
+        // 401, and a build from it on refuses a token without the person scope 403: either way
+        // the fills hold no proxy read's line, and the row reads UNKNOWN naming the refusal and
+        // its cause.
+        for (const [refused, cause] of [
+          [
+            beforeBuild,
+            "was refused 401 NO_IDENTITY: a build of Dispatch before cybermonklabs/legion#5079 reads the proxy as a browser's person alone",
+          ],
+          [
+            scopeless,
+            "was refused 403 OAUTH_SCOPE_REQUIRED: the full member's token holds no person scope",
+          ],
+        ] as const) {
+          expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(refused.stdout).get("sweep")?.got).toContain(cause);
+          expect(existsSync(join(refused.state, "fills-without-cookie"))).toBe(true);
+        }
         // Fills that lack a proxy read's full-member answer hold the sweep, and only the sweep.
         expect({ verdicts: verdictsOf(gap.stdout), stdout: gap.stdout }).toMatchObject({
           verdicts: { sweep: "UNKNOWN", P7: "PASS" },
@@ -844,8 +861,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the sweep's fills hold no full member's answer that can fail for GET /api/v1/github/app-installation/{owner}/{repo}"
         );
       },
-      // The three runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short"] })
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
     );
 
     test(
@@ -1547,13 +1564,16 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "with no full member's cookie the sweep's proxy reads use the full member's token, and only a build that refuses it holds the sweep row, while the owner's rows pass on their commands",
+      "with no full member's cookie the sweep's proxy reads use the full member's token, and only a build that refuses it, 401 before #5079 or 403 for a token without the person scope, holds the sweep row, naming the cause, while the owner's rows pass on their commands",
       async () => {
-        const [noCookie, refused] = await runStandIns(
+        const [noCookie, beforeBuild, scopeless] = await runStandIns(
           { ...browserRun({}), cookie: "absent" },
-          { ...browserRun({}), cookie: "absent", proxyRefusesToken: true }
+          { ...browserRun({}), cookie: "absent", proxyRefusesToken: "no-identity" },
+          { ...browserRun({}), cookie: "absent", proxyRefusesToken: "no-person-scope" }
         );
-        if (noCookie === undefined || refused === undefined) throw new Error("two runs, want two");
+        if (noCookie === undefined || beforeBuild === undefined || scopeless === undefined) {
+          throw new Error("three runs, want three");
+        }
         // Where Dispatch takes the token on its GitHub proxy, no cookie is needed: the fills and
         // the box's proxy control read with the token, and every row passes.
         expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
@@ -1561,31 +1581,41 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         });
         expect(existsSync(join(noCookie.state, "fills-read-the-token"))).toBe(true);
         expect(noCookie.code).toBe(0);
-        // A build whose proxy reads a browser's person alone refuses the token: the fills go to
-        // the workflow with no proxy read's line, and the sweep row, and so the gate, reads
-        // UNKNOWN naming that refusal, never PASS.
-        expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
-          verdicts: { sweep: "UNKNOWN", unlisted: "PASS", T5: "PASS", gate: "UNKNOWN" },
-        });
-        expect(rowsOf(refused.stdout).get("sweep")?.got).toContain(
-          "refused 403 OAUTH_SCOPE_REQUIRED: this build of Dispatch reads the proxy as a browser's person alone"
-        );
-        expect(existsSync(join(refused.state, "fills-without-cookie"))).toBe(true);
-        expect(existsSync(join(refused.state, "writer-stopped"))).toBe(true);
-        const fills = (
-          JSON.parse(readFileSync(join(refused.state, "workflow-inputs.json"), "utf8")) as Record<
-            string,
-            string
-          >
-        ).sweep_fills;
-        expect(Buffer.from(fills ?? "", "base64").toString()).toContain(
-          `proxy_repo\t${proxyRepository}`
-        );
-        expect(Buffer.from(fills ?? "", "base64").toString()).not.toContain("can_fail");
-        expect(refused.code).toBe(2);
+        // A build that refuses the token, one before #5079 (401) or one from it on given a token
+        // without the person scope (403): the fills go to the workflow with no proxy read's line,
+        // and the sweep row, and so the gate, reads UNKNOWN naming the refusal and its cause,
+        // never PASS.
+        for (const [refused, cause] of [
+          [
+            beforeBuild,
+            "refused 401 NO_IDENTITY: a build of Dispatch before cybermonklabs/legion#5079 reads the proxy as a browser's person alone",
+          ],
+          [
+            scopeless,
+            "refused 403 OAUTH_SCOPE_REQUIRED: the full member's token holds no person scope",
+          ],
+        ] as const) {
+          expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN", unlisted: "PASS", T5: "PASS", gate: "UNKNOWN" },
+          });
+          expect(rowsOf(refused.stdout).get("sweep")?.got).toContain(cause);
+          expect(existsSync(join(refused.state, "fills-without-cookie"))).toBe(true);
+          expect(existsSync(join(refused.state, "writer-stopped"))).toBe(true);
+          const fills = (
+            JSON.parse(readFileSync(join(refused.state, "workflow-inputs.json"), "utf8")) as Record<
+              string,
+              string
+            >
+          ).sweep_fills;
+          expect(Buffer.from(fills ?? "", "base64").toString()).toContain(
+            `proxy_repo\t${proxyRepository}`
+          );
+          expect(Buffer.from(fills ?? "", "base64").toString()).not.toContain("can_fail");
+          expect(refused.code).toBe(2);
+        }
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
     );
 
     test(

@@ -169,10 +169,12 @@
 #                            GitHub proxy reads alone, which it makes in SWEEP_FULL_TOKEN's place.
 #                            Without it the proxy reads are SWEEP_FULL_TOKEN's, which a build from
 #                            cybermonklabs/legion#5079 on reads; a build before it reads the proxy as
-#                            the browser's person alone and refuses the token (401, or 403
-#                            OAUTH_SCOPE_REQUIRED), and each proxy read is then UNKNOWN, never PASS
+#                            the browser's person alone and refuses the token 401, and a build from
+#                            it on refuses 403 a token that holds no person scope, a read-only one
+#                            and a restricted member's. Each proxy read is then UNKNOWN, never PASS
 #                            (in fills mode it is kept with no `can_fail` line, which a runner reads
-#                            UNKNOWN), naming the build and this input, while every other row runs.
+#                            UNKNOWN), naming the refusal's cause and this input, while every other
+#                            row runs.
 #   SWEEP_WRITE_ISSUE        [one run, writer] the issue of SWEEP_PROJECT the full member comments
 #                            on while the feeds are open. A comment, a direct message and the
 #                            question are the full member's writes, and the member's own direct

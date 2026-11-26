@@ -117,10 +117,12 @@ export interface StandIns {
   /** Whether OUTSIDE_FULL_COOKIE_FILE is given, and the proxy read the fills leave out, if any. */
   readonly cookie?: "given" | "absent";
   readonly fillsLeaveOut?: string;
-  /** The stand-in Dispatch's GitHub proxy refuses the full member's token, 403
-   *  OAUTH_SCOPE_REQUIRED, as a build whose proxy reads a browser's person alone does; fills mode
-   *  with no cookie then writes no `can_fail` line. */
-  readonly proxyRefusesToken?: boolean;
+  /** The stand-in Dispatch's GitHub proxy refuses the full member's token: `no-identity` 401
+   *  NO_IDENTITY, as a build before cybermonklabs/legion#5079 answers every token, its proxy
+   *  reading a browser's person alone; `no-person-scope` 403 OAUTH_SCOPE_REQUIRED, as a build from
+   *  #5079 on answers a token that holds no person scope. Fills mode with no cookie then writes no
+   *  `can_fail` line. */
+  readonly proxyRefusesToken?: "no-identity" | "no-person-scope";
   /** A change made to the copy of the leg, as a plant of its own text. */
   readonly legChange?: (text: string) => string;
   /** Whether the public leg approves the scratch login; a login nobody approves ends `expired`. */
@@ -781,7 +783,12 @@ export async function prepareStandIn(
   const repo = checkout(scratch);
   const inputs = scratch("inputs");
   const leg = copyLeg(scratch, tailnetLeg, standIns.legChange);
-  if (standIns.proxyRefusesToken === true) writeFileSync(join(state, "proxy-refuses-token"), "");
+  if (standIns.proxyRefusesToken !== undefined) {
+    writeFileSync(
+      join(state, "proxy-refuses-token"),
+      standIns.proxyRefusesToken === "no-identity" ? "401 NO_IDENTITY" : "403 OAUTH_SCOPE_REQUIRED"
+    );
+  }
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   if (standIns.window !== undefined) {
     writeFileSync(join(legDir, "outside-agent-probe.ts"), standInPeerProbe(standIns.peerAheadMs));
@@ -799,8 +806,9 @@ export async function prepareStandIn(
 case $SWEEP_MODE in
   fills)
     ${standIns.sweep?.fillsRefused === true ? "echo 'UNKNOWN: fills mode writes no file that lacks a fill: dm_session'; exit 2" : ""}
-    # With no cookie the fills' proxy reads are the token's, which a build whose proxy reads a
-    # browser's person alone refuses: those fills hold no can_fail line.
+    # With no cookie the fills' proxy reads are the token's, which a build before #5079 refuses 401
+    # and a build from it on refuses 403 for a token without the person scope: those fills hold no
+    # can_fail line.
     if [ -n "\${SWEEP_FULL_COOKIE:-}" ]; then
       : >'${state}/fills-read-the-cookie'
       cat '${state}/fills' >"$SWEEP_FILLS_FILE"

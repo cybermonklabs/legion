@@ -149,15 +149,17 @@ export interface FeedShape {
  *  cybermonklabs/legion#5079 does, as the browser's person alone, so the full member's token is
  *  answered there 401 NO_IDENTITY; without it the proxy reads a token too, as a build from #5079
  *  on does, and answers a token without the person scope (`tokenScope` none) 403
- *  OAUTH_SCOPE_REQUIRED; `notInstalled` answers that the App is installed on no repository, TGT's
+ *  OAUTH_SCOPE_REQUIRED and a restricted member's (`tokenScope` restricted) 403
+ *  RESTRICTED_MEMBER; `notInstalled` answers that the App is installed on no repository, TGT's
  *  included; `sharedRepo` puts TGT's first issue and OWN's on one repository the App is installed
  *  on, which both callers may see; `full` plants answers for the full member's requests;
  *  `createdAt` is when OWN was created, which GET /api/v1/projects answers either caller, so
  *  fills made at one fake and a runner at another whose OWN was created otherwise stand for two
  *  deployments; null lists OWN with no creation time. `tokenScope` answers the full member's
- *  token, never their cookie, at the direct message and the agent view as the server answers a
- *  token without the person scope (`none`: 403 OAUTH_SCOPE_REQUIRED, an `error` frame) or a
- *  restricted member's (`restricted`: 404 SESSION_NOT_FOUND, no one answers). */
+ *  token, never their cookie, at the direct message, the agent view and the GitHub proxy as the
+ *  server answers a token without the person scope (`none`: 403 OAUTH_SCOPE_REQUIRED, an `error`
+ *  frame) or a restricted member's (`restricted`: 404 SESSION_NOT_FOUND, no one answers, and the
+ *  proxy's 403 RESTRICTED_MEMBER). */
 export interface FakeShape {
   readonly omit?: ReadonlySet<string>;
   readonly issues?: number;
@@ -498,6 +500,16 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
             {
               code: "OAUTH_SCOPE_REQUIRED",
               error: "this request's credential does not hold the person scope",
+            },
+            { status: 403 }
+          );
+        }
+        if (bearer && fake.tokenScope === "restricted") {
+          return Response.json(
+            {
+              code: "RESTRICTED_MEMBER",
+              error:
+                "a restricted member's token reads nothing through the GitHub proxy, whatever scopes it holds",
             },
             { status: 403 }
           );

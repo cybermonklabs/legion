@@ -500,18 +500,18 @@ proxy_answer() { is_judgeable "$1" || not_installed "$1" "$2"; }
 # GitHub's own status through, and GitHub answers 403 to an App that lacks a permission: the
 # member, on a build with no read check, is answered that 403 too, which their half takes as a
 # refusal, so a full member's 403 is no read that could fail. The full member reads as
-# SWEEP_FULL_COOKIE's person, or as SWEEP_FULL_TOKEN where no cookie is given (proxy_by). A build
-# before cybermonklabs/legion#5079 reads the proxy as the browser's person alone and refuses a
-# token, 401 or 403 OAUTH_SCOPE_REQUIRED: that read could not fail, and names the build
-# (proxy_refused), never a FAIL or a PASS.
+# SWEEP_FULL_COOKIE's person, or as SWEEP_FULL_TOKEN where no cookie is given (proxy_by). The
+# proxy can refuse that token, and then the read could not fail, and names the refusal's cause
+# (proxy_refused, proxy_token_refusal), never a FAIL or a PASS.
 proxy_full() {
-  local fm code
+  local fm code refusal=''
   call "$full_browser" "$2" "$work/ft"
   ft=$status
   code=$(jq -r 'if type == "object" then .code // empty else empty end' "$work/ft" 2>/dev/null)
-  if [ "$proxy_by" = token ] && { [ "$ft" = 401 ] || { [ "$ft" = 403 ] && [ "$code" = OAUTH_SCOPE_REQUIRED ]; }; }; then
+  [ "$proxy_by" != token ] || refusal=$(proxy_token_refusal "$ft" "$code")
+  if [ -n "$refusal" ]; then
     proxy_refused=1
-    why="the proxy refused the full member's token ($ft ${code:-no code}): a build before cybermonklabs/legion#5079 reads the proxy as the browser's person alone; give SWEEP_FULL_COOKIE"
+    why="the proxy refused the full member's token ($ft ${code:-no code}): $refusal"
     return
   fi
   call "$full_browser" "$3" "$work/fm"
@@ -527,6 +527,21 @@ proxy_full() {
   else
     can=1
   fi
+}
+# proxy_token_refusal STATUS CODE: why the GitHub proxy refused the full member's token with
+# STATUS and CODE, and what to give instead, or nothing for an answer that is no such refusal. A
+# build before cybermonklabs/legion#5079 reads the proxy as the browser's person alone and answers
+# every token 401 NO_IDENTITY. A build from it on reads a token and refuses it 403: one that holds
+# no person scope (OAUTH_SCOPE_REQUIRED), a read-only one (READ_ONLY_TOKEN) and a restricted
+# member's (RESTRICTED_MEMBER).
+proxy_token_refusal() {
+  local instead="give SWEEP_FULL_TOKEN a full member's personal token that holds the person scope, or SWEEP_FULL_COOKIE"
+  case $1:$2 in
+    401:*) printf '%s' "a build before cybermonklabs/legion#5079 reads the proxy as the browser's person alone; give SWEEP_FULL_COOKIE" ;;
+    403:OAUTH_SCOPE_REQUIRED) printf '%s' "the token holds no person scope; $instead" ;;
+    403:READ_ONLY_TOKEN) printf '%s' "the token is read-only; $instead" ;;
+    403:RESTRICTED_MEMBER) printf '%s' "the token is a restricted member's; $instead" ;;
+  esac
 }
 proxy_member() {
   local label=$1 name=$4 rt rm marker
