@@ -397,11 +397,15 @@ export default function legionExtension(pi: PiApi): void {
   // Reports every turn this pane's claim ends to the daemon, refused or not (`src/turn-outcome.ts`).
   // It runs for an architect's claim as well as a phase worker's: a provider that refuses turn
   // after turn ends either of them the same way, and a `task` subagent, whose instance registers
-  // no claim of its own, reports nothing.
+  // no claim of its own, reports nothing. A refused turn is classed with the host's own
+  // classifier, read as a string-literal import when the first refusal comes, since the module
+  // exists only inside Oh My Pi and `bun test` has no loader for it.
   const turnOutcomes = createTurnOutcomeReporter({
     daemon: roleDaemon,
     claim: (sessionID) => claimSession.capability(sessionID),
     log: logger,
+    cyberPolicyRefusal: async (message) =>
+      (await import("@oh-my-pi/pi-ai/error")).isCyberPolicyRefusal(message),
   });
 
   // A root architect's or phase worker's claim, and the operator-launched controller's.

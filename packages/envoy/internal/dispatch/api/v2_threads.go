@@ -1209,12 +1209,14 @@ func (s *server) putCommentStateV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // issueCommentsV2ETag is commentListETag for one page of an issue's /api/v2 comment list: the
-// issue, the artifact= scope, the list's watermark and the issue's event sequence, and the page,
-// under a line naming the version, so no validator one version gave matches the other's answer.
-func (s *server) issueCommentsV2ETag(key, artifactFilter string, watermark, lastSeq int64, query pageQuery, trees bool) string {
+// issue, its created_at (so an issue key recycled across resets never shares a validator with the
+// issue that held it before, as commentListETag hashes it), the artifact= scope, the list's
+// watermark and the issue's event sequence, and the page, under a line naming the version, so no
+// validator one version gave matches the other's answer.
+func (s *server) issueCommentsV2ETag(key, artifactFilter string, basis commentListBasis, query pageQuery, trees bool) string {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "version=v2\nissue=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\nlimit=%d\noffset=%d\n",
-		key, artifactFilter, watermark, lastSeq, query.Limit, query.Offset)
+	_, _ = fmt.Fprintf(hash, "version=v2\nissue=%s\ncreated=%d\nfilter=%s\nwatermark=%d\nlast_seq=%d\nlimit=%d\noffset=%d\n",
+		key, basis.createdAt.UnixMicro(), artifactFilter, basis.watermark, basis.lastSeq, query.Limit, query.Offset)
 	return s.listETag(hash, trees)
 }
 
@@ -1222,7 +1224,7 @@ func (s *server) issueCommentsV2ETag(key, artifactFilter string, watermark, last
 // /api/v1/issues/{key}/comments answers (answerCommentList), its validator read first, under a
 // validator of its own and kept under the /api/v2 route's own key (commentListV2Route), so a v1
 // read and a v2 read of one issue's comments each answer their own version's body. The validator's
-// own statement says whether the issue is there (commentListWatermark), as an issue's event log
+// own statement says whether the issue is there (readCommentListBasis), as an issue's event log
 // reads it (listIssueEventsV2), and only the page it answers is hydrated.
 func (s *server) listIssueCommentsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -1232,17 +1234,17 @@ func (s *server) listIssueCommentsV2(w http.ResponseWriter, r *http.Request) {
 	query := v2Query[issueCommentsV2Query](r)
 	artifact := strings.TrimSpace(query.Artifact)
 	owner := issueOwner(key)
-	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
+	basis, err := s.readCommentListBasis(r.Context(), owner)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if !ownerHeld {
+	if !basis.ownerHeld {
 		s.writeHandlerError(w, r, errorf(apicode.IssueNotFound, "no issue %s", key))
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	etag := s.issueCommentsV2ETag(key, artifact, watermark, lastSeq, query.pageQuery, trees)
+	etag := s.issueCommentsV2ETag(key, artifact, basis, query.pageQuery, trees)
 	if answerNotModified(w, r, etag) {
 		return
 	}
@@ -1265,7 +1267,7 @@ func (s *server) listIssueCommentsV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.writeListAnswer(w, kept, encoded, ownerHeld)
+	s.writeListAnswer(w, kept, encoded, basis.ownerHeld)
 }
 
 // commentPageV2 is the page query asks for of owner's comments, oldest first, artifactFilter

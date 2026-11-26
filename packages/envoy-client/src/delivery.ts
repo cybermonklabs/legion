@@ -981,17 +981,20 @@ const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
  * change is the news.
  *
  * A field repeats the card when the card already says it: `issue_key` is the card's `owner`,
- * `author` the card's `actor` when each of its fields is the actor's, and `created_at` the card's
- * `at` when it is less than a second from `issuedAt`: the two differ by milliseconds, often across
- * a second's edge. On a comment, `thread_root_id` always names the comment `reply_to` names, and
- * `answers` names it on a reply to a thread's root.
+ * `author` or `actor` the card's `actor` when each of its fields is the event's actor's (whole,
+ * before the card cuts a session actor's `origin` to its title), `created_at` the card's `at`
+ * when it is less than a second from `issuedAt` (the two differ by milliseconds, often across a
+ * second's edge), and a `target` that names this session the card's `to:`, which
+ * `toReader` says the card prints. On a comment, `thread_root_id` always names the comment
+ * `reply_to` names, and `answers` names it on a reply to a thread's root.
  *
- * A `target` that names this session reads `you (<target>)`.
+ * A `target` that names this session on a card with no `to:` reads `you (<target>)`.
  */
 function dispatchPayloadForReader(
   event: DispatchEvent,
   sessionID: string,
-  issuedAt: number | undefined
+  issuedAt: number | undefined,
+  toReader: boolean
 ): unknown {
   const whole = dispatchPayload(event);
   const changed =
@@ -1012,6 +1015,7 @@ function dispatchPayloadForReader(
       case "issue_key":
         return value === event.issue_key;
       case "author":
+      case "actor":
         return (
           isObject(value) &&
           Object.entries(value).every(([field, held]) => isDeepStrictEqual(held, actor[field]))
@@ -1024,6 +1028,8 @@ function dispatchPayloadForReader(
       case "thread_root_id":
       case "answers":
         return typeof replyTo === "string" && value === replyTo;
+      case "target":
+        return toReader && value === `session:${sessionID}`;
       default:
         return DISPATCH_BOOKKEEPING.has(key);
     }
@@ -1330,6 +1336,11 @@ export function renderInbound(
   // Text that follows the card's TOON block: a person's edit's diff as a fenced `diff` block.
   let trailer = "";
   const at = inboundTimestamp(envelope.issued_at);
+  // The session's inbox in either form, the session alone or under a project, names it the
+  // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
+  const toReader =
+    envelope.topic !== undefined &&
+    topicForms(envelope.topic).includes(legacyAgentSubject(sessionID));
   const dispatchRendered = envelope.source === "dispatch" && envelope.payload !== undefined;
   if (envelope.source === "dispatch") {
     const topic = subject ?? envelope.topic;
@@ -1489,7 +1500,7 @@ export function renderInbound(
                 };
         const payload =
           compactRecord === undefined
-            ? dispatchPayloadForReader(frame.event, sessionID, envelope.issued_at)
+            ? dispatchPayloadForReader(frame.event, sessionID, envelope.issued_at, toReader)
             : undefined;
         // A session's `origin` says where it runs (its host, machine, directory and tmux pane),
         // which a person finding the session reads and an agent does not: the card keeps the
@@ -1503,8 +1514,11 @@ export function renderInbound(
               ? { ...rest, origin: { session_title: title } }
               : rest;
         }
+        // An event on no issue and no document, as a direct message to this session is, has no
+        // owner to name (`dispatchOwner` answers `unknown`), so the card names none.
+        const owner = dispatchOwner(frame.event, topic);
         dispatchEvent = {
-          owner: dispatchOwner(frame.event, topic),
+          ...(owner === "unknown" ? {} : { owner }),
           type: frame.event.type,
           actor,
           ...(relation === undefined ? {} : { relation }),
@@ -1592,12 +1606,7 @@ export function renderInbound(
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
   const rendered = {
-    // The session's inbox in either form, the session alone or under a project, names it the
-    // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
-    ...(envelope.topic !== undefined &&
-    topicForms(envelope.topic).includes(legacyAgentSubject(sessionID))
-      ? { to: `you (${sessionID})` }
-      : {}),
+    ...(toReader ? { to: `you (${sessionID})` } : {}),
     from: senderLabel(envelope),
     at,
     id: envelope.event_id ?? "unknown",

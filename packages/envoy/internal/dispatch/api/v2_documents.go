@@ -1229,10 +1229,10 @@ const artifactCommentsV2Route = http.MethodGet + " /api/v2/artifacts/{id}/commen
 // artifactCommentsV2ETag is commentListETag for one page of a document's /api/v2 comment list: the
 // document, the list's watermark and the document's event sequence, and the page, under a line
 // naming the version, so no validator one version gave matches the other's answer.
-func (s *server) artifactCommentsV2ETag(artifactID string, watermark, lastSeq int64, query pageQuery, trees bool) string {
+func (s *server) artifactCommentsV2ETag(artifactID string, basis commentListBasis, query pageQuery, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "version=v2\nartifact=%s\nwatermark=%d\nlast_seq=%d\nlimit=%d\noffset=%d\n",
-		artifactID, watermark, lastSeq, query.Limit, query.Offset)
+		artifactID, basis.watermark, basis.lastSeq, query.Limit, query.Offset)
 	return s.listETag(hash, trees)
 }
 
@@ -1249,13 +1249,13 @@ func (s *server) listArtifactCommentsV2(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	query := v2Query[artifactCommentsV2Query](r).pageQuery
-	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
+	basis, err := s.readCommentListBasis(r.Context(), owner)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	etag := s.artifactCommentsV2ETag(artifact.ID, watermark, lastSeq, query, trees)
+	etag := s.artifactCommentsV2ETag(artifact.ID, basis, query, trees)
 	if answerNotModified(w, r, etag) {
 		return
 	}
@@ -1276,7 +1276,7 @@ func (s *server) listArtifactCommentsV2(w http.ResponseWriter, r *http.Request) 
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.writeListAnswer(w, kept, encoded, ownerHeld)
+	s.writeListAnswer(w, kept, encoded, basis.ownerHeld)
 }
 
 // createArtifactCommentV2 answers POST /api/v2/artifacts/{id}/comments: the comment POST
