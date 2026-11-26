@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A stored-message read returns the first message at or after its sequence on a subject its filter
@@ -36,8 +37,8 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	publish("notifications.dispatch.issue.KEY-1.ask.opened", `{"n":1}`)
 	publish("notifications.agent.ses_a", `{"n":2}`)
 	third := publish("notifications.dispatch.issue.KEY-1.ask.answered", `{"n":3}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	stored, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", 2)
 	if err != nil {
@@ -89,6 +90,7 @@ func requestCoreClient(t *testing.T) (*Client, *nats.Conn) {
 // out the caller's deadline and returns ctx's error. These are the three answers the send route
 // reads a session's connection from: connected, stopped and connected.
 func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
+	t.Parallel()
 	client, responder := requestCoreClient(t)
 	heard := make(chan *nats.Msg, 1)
 	if _, err := responder.Subscribe(DeliverSubject("ses_answers"), func(msg *nats.Msg) {
@@ -104,8 +106,8 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	reply := SessionReplySubject(nats.NewInbox(), "ses_answers")
 	if _, err := client.RequestCore(ctx, DeliverSubject("ses_answers"), reply, probeHeader); err != nil {
 		t.Fatalf("request to a subscriber that answers = %v, want its reply", err)
@@ -148,8 +150,8 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 	const requests = 64
 	perRequest := func(request func(ctx context.Context) error) uint64 {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		if err := request(ctx); err != nil {
 			t.Fatalf("warm-up request: %v", err)
 		}
@@ -182,6 +184,7 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 }
 
 func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		pattern, subject string
 		want             bool
@@ -210,6 +213,7 @@ func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
 }
 
 func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
+	t.Parallel()
 	for subject, refused := range map[string]bool{
 		"notifications.dispatch.issue.KEY-1.>": false,
 		"notifications.*.ses_a":                false,
@@ -234,6 +238,7 @@ func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
 // side by side. Only a literal lane of the family pairs: a wildcard, a bare prefix, an issue
 // notice and a longer subject name no role.
 func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
+	t.Parallel()
 	for topic, want := range map[string]string{
 		"notifications.legion.ACME.controller":      "legion-ACME-controller",
 		"notifications.legion.omp.controller":       "legion-omp-controller",
@@ -267,6 +272,7 @@ func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
 // by both on the next test run and neither can drift from a hand copy. Each case is a session id,
 // a topic, the roles that session holds and the answer.
 func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "private-stream-subjects.json"))
 	if err != nil {
 		t.Fatalf("read the shared cases: %v", err)

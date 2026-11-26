@@ -175,6 +175,9 @@ type PodStarts struct {
 	// clock is the machines' clock (Deps.Clock): it stamps each ask, each load's start and its
 	// registration, and it arms each load's bound and settle.
 	clock Clock
+	// post runs a grant's notify on a goroutine of its own, outside the gate's lock (grant):
+	// `go notify()`, which NewPodStarts sets. The package's test harness replaces it (podHarness).
+	post func(notify func())
 
 	// mu guards pods, and every field of every hold a queue holds: the machines of every pod
 	// reach the gate, and the bound and the settle fire on a goroutine of the clock's own.
@@ -220,9 +223,9 @@ type podHold struct {
 	// asked is when the start asked; its place in the order asked is its place in its queue's
 	// waiting.
 	asked time.Time
-	// notify tells the start's machine of its grant (askPod), nil for a start granted where it
-	// asked. The gate calls it under its own lock at the grant (grant), so it neither blocks nor
-	// takes a lock: it posts the machine its event from a goroutine of its own (Machine.fire).
+	// notify tells the start's machine of its grant (askPod, Machine.fire), nil for a start
+	// granted where it asked. The gate posts it at the grant (grant, post), on a goroutine of its
+	// own, so it runs outside the gate's lock and holding no machine's.
 	notify func()
 
 	// grantedAt is the grant's moment; waited is whether the start waited for it, and waitedFor
@@ -313,7 +316,7 @@ type podAsk struct {
 // NewPodStarts builds the gate of a daemon whose roles run in issue pods, on the machines' clock
 // (internal/daemon's openSupervision, under the Kubernetes runtime alone).
 func NewPodStarts(clock Clock) *PodStarts {
-	return &PodStarts{clock: clock, pods: map[string]*podQueue{}}
+	return &PodStarts{clock: clock, post: func(notify func()) { go notify() }, pods: map[string]*podQueue{}}
 }
 
 // ask asks for the pod's start of one try of a launch, and never waits: it answers the hold, and
@@ -530,7 +533,7 @@ func (g *PodStarts) grant(q *podQueue, after bool) {
 		h.waitedFor = q.lastEnd
 	}
 	if h.notify != nil {
-		h.notify()
+		g.post(h.notify)
 	}
 }
 
@@ -596,11 +599,11 @@ func (m *Machine) adoptPodLoad() {
 // the gate first (endPodPark), so a claim asks for one start at a time. The phase is read only for
 // a start no request raised, since the order reads it of no other (podQueue.next).
 //
-// A try that waits stops the process its launch let go before it parks (stopPrevious), as a try
-// whose start failed stops it: that process is let go and still running (letGo, previous), and
-// what replaces it in the runtime is the grant's start, so a park that something ends before its
-// grant — a suspension, a retirement, a relaunch — would leave it running with no claim recording
-// it, and while the park lasts it would hold what the other role's load needs. A stop the runtime
+// A try that waits stops the process its launch let go as it parks (stopLetGo), as a try whose
+// start failed stops it: that process is let go and still running (letGo, previous), and what
+// replaces it in the runtime is the grant's start, so a park that something ends before its grant
+// — a suspension, a retirement, a relaunch — would leave it running with no claim recording it,
+// and while the park lasts it would hold what the other role's load needs. A stop the runtime
 // refuses, or that the try's own context cuts short, leaves the try parked all the same, as every
 // caller of stopPrevious goes on: the refusal is recorded (stopUnconfirmed) and logged at Warn,
 // and launchTries returns no error at the park. The launch has not failed — it waits at the gate
@@ -611,33 +614,33 @@ func (m *Machine) adoptPodLoad() {
 // worker.
 //
 // A parked try is a wake whose turn is the grant rather than a moment of the pacing's (wake.park):
-// it waits on the machine as a wake the pacing parks over no process does (parkWake), holding the
+// it waits on the machine as a paced wake over no process does (waitOnMachine), holding the
 // rest of the launch from that grant on (launchTries with the grant), and the decision ends where
 // launchTries returns at the park, so nothing waits under the machine's lock. The claim is written
 // launching at this try's generation with no process already: the try wrote it before its backoff
 // (writeTry), and the launch let its process go before its first try (launchNow). The grant
-// reaches the machine as a timer's firing does: the gate calls notify under its own lock, which
-// posts the machine a Timer of TimerPodStart from a goroutine of its own (fire), outside the
-// gate's lock and holding no machine's, and that event's decision runs the launch on
+// reaches the machine as a timer's firing does: the gate posts notify at the grant on a goroutine
+// of its own (PodStarts.post), outside the gate's lock and holding no machine's, and notify hands
+// the machine a Timer of TimerPodStart (fire), whose decision runs the launch on
 // (podStartDue). The timer's entry is the arming that event is fenced by. The machine records the
 // hold (Machine.podPark), so whatever drops the wake takes the start out of the gate at the end of
 // its decision (endPodPark). The daemon's stop leaves the start where it is, since the gate ends
 // with the daemon, and a grant that reaches the machine after that stop starts nothing
 // (podStartDue).
 //
-// The wake's run is the launch from that grant on while the wake carries the hold, and a fresh try
-// of the same launch, asked of the gate anew, once it carries none: the pause's gate holds the
-// wake in the park's place where the project is paused at the grant (podStartDue), and its let-out
-// after the pause runs it (letOutHeldLaunch, runWake), without a second token or wake line, since
-// the launch passed the wake gate before it parked (wake.ran). Its again is the launch raised anew
-// from the top, which only that let-out's lifecycle recheck reads (relaunchRefused), as
-// relaunchAtProbe raises it. Its state is the claim's as the park leaves it, launching, which a
-// request that does not wait restores once the pause's gate holds the wake (dropWakeFor).
+// The wake is a held try's (heldTryWake) with the park's hold: its run is the launch from that
+// grant on while the wake carries the hold, and a fresh try of the same launch, asked of the gate
+// anew, once it carries none: the pause's gate holds the wake in the park's place where the
+// project is paused at the grant (podStartDue), and its let-out after the pause runs it
+// (letOutHeldLaunch, runWake), without a second place in the pacing or a second wake line, since
+// the launch passed the wake gate before it parked (wake.paid, wake.ran). Its state is the claim's
+// as the park leaves it, launching, which a request that does not wait restores once the pause's
+// gate holds the wake (dropWakeFor).
 //
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes
 // it launch_uncertain, and relaunchUnfinished, once the boot's reconciliation has proved that no
-// process of it runs, releases it to queued and spawns it again (launchUnfinishedClaim), which
+// process of it runs, releases it to queued and spawns it again (launchUnfinished), which
 // asks the new daemon's empty gate.
 func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHold, bool) {
 	if !m.gated() {
@@ -651,26 +654,17 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 		requested: l.requested, phaseWorker: !l.requested && m.phaseWorker(ctx)}
 	m.seq++
 	granted := Timer{Claim: m.claim.Token, Kind: TimerPodStart, Generation: m.claim.Generation, Seq: m.seq}
-	hold, now := m.deps.PodStarts.ask(ask, func() { go m.fire(granted) })
+	hold, now := m.deps.PodStarts.ask(ask, func() { m.fire(granted) })
 	if now {
 		return hold, false
 	}
-	stopped := m.stopPrevious(ctx)
 	m.timers[TimerPodStart] = armed{seq: granted.Seq}
-	parked := &wake{kind: WakeLaunch, state: m.claim.State, ran: true, park: hold, again: m.launchFromTop(l)}
-	parked.run = func(ctx context.Context) error {
-		if parked.park == nil {
-			return m.launchTries(ctx, l, nil)
-		}
-		return m.launchTries(ctx, l, &podGrant{token: token, hold: parked.park})
-	}
+	parked := m.heldTryWake(l, token)
+	parked.park = hold
 	m.wake, m.podPark = parked, hold
 	m.log.Info("supervise: the launch waits for its issue pod's start while another role of the pod starts or loads its session",
 		"generation", m.claim.Generation, "pod", m.claim.Issue)
-	if stopped != nil {
-		m.log.Warn("supervise: the runtime did not confirm the stop of the process this launch let go; the launch waits for its issue pod's start all the same",
-			"generation", m.claim.Generation, "error", stopped)
-	}
+	m.stopLetGo(ctx, "its issue pod's start")
 	return hold, true
 }
 

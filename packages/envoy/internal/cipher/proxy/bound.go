@@ -277,7 +277,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// all the same, so a connection that ever reached here on another port carries no
 		// value off it.
 		ConnectPort: info.port,
-		// The three names the decision compares are ASCII lower-cased, as the entry's hosts
+		// The three names the decision compares are ASCII lower-cased, as a kind's hosts
 		// are: host names are case-insensitive and the model compares them exactly, so a
 		// client that wrote "API.example.com" in one of the three is not a mismatch. The fold
 		// is fold.ASCII, ASCII-only for the reason the proxyrules package gives.
@@ -285,8 +285,11 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		HostHeader: fold.ASCII(hostHeaderOf(r.Host)),
 		Method:     r.Method,
 		Path:       r.URL.Path,
-		Headers:    headersOf(r.Header),
-		Query:      r.URL.RawQuery,
+		// The path as the command sent it, percent-encoding kept, which is the one form that
+		// tells an encoded "/" the decision refuses from a "/".
+		RawPath: r.URL.EscapedPath(),
+		Headers: headersOf(r.Header),
+		Query:   r.URL.RawQuery,
 		// The decision never reads the body. The airlock swaps headers alone, so nothing it
 		// decides depends on the body; reading one would mean holding every upload a command
 		// makes in the broker's memory before it could be forwarded, and the proxy streams
@@ -294,11 +297,14 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// below reads, bounded, to tell which Slack channel it posts to.
 		Body: "",
 	}
-
+	// The airlock's rules once for this request, from the live policy: a secret's proxy tag can
+	// change between two requests of one connection, as a name can be withheld, and the
+	// candidates and the decision below read this one copy, so they decide under one policy.
+	rules := s.grants.AirlockRules()
 	// The (name, slot) pairs this request may be handled for, from the grant as it is now: a
 	// name the operator has withheld since the CONNECT is not among them, and its placeholder
 	// stops at this request while the grant's other names go on.
-	candidates := s.candidates(info.grant, info.host, info.port)
+	candidates := candidates(rules, info.grant, info.host, info.port)
 	if len(candidates) == 0 {
 		// The host was bound for this connection and no name of the grant binds it now: every
 		// name that did has been withheld or has ended since the CONNECT. Refused rather than
@@ -308,21 +314,46 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chosen, holdsPlaceholder := choosePair(candidates, info.grant, request)
-	// The entry's kind is what the value behind this name is: "" a string a header carries,
-	// which the swap below puts there; "aws" a key pair the call itself has to be signed with
-	// (aws.go); "azure" a federated token that has to be exchanged at a token endpoint for an
-	// access token (azure.go). Validate allows no other kind, so an entry this reads nothing
-	// for is a header swap. It is the kind candidates already read for this name, carried on
-	// the pair rather than looked up again.
-	kind := chosen.kind
-	if s.noKind {
-		// Options.NoKind: the entry's kind is read as none, so an azure or aws entry takes
+	// The binding's way is how the value behind this name goes into the call: swap and mint, a
+	// string a header carries, which the swap below puts there; sign, a key pair the call itself
+	// has to be signed with (aws.go); exchange, a federated token that has to be exchanged at a
+	// token endpoint for an access token (azure.go); dpop, a token the broker minted for a
+	// minted capability's grant, which the swap puts in and mintedTransport signs a DPoP proof of
+	// the pod's key for (dpop.go). It is the way candidates already read for this name, carried
+	// on the pair rather than looked up again.
+	way := chosen.way
+	if s.noKind && way != proxyrules.WayDPoP {
+		// Options.NoKind: the binding's way is read as a swap, so an exchange or a sign takes
 		// the plain header swap below, and the federated token's refusal below holds as it does
-		// under every kind. It is the negative control of the check those two kinds belong to,
-		// and is refused on a production start.
-		kind = ""
+		// under every way. It is the negative control of the check those two ways belong to,
+		// and is refused on a production start. A dpop binding keeps its way: read as a swap,
+		// it would send the grant's token on with no proof and with the command's forwarding
+		// headers.
+		way = proxyrules.WaySwap
 	}
-	exchange := kind == proxyrules.KindAzure && isTokenRequest(r)
+	if way == proxyrules.WayDPoP {
+		// A minted capability (requests.MintedKind, AirlockConnection for its grant's placeholder):
+		// two rules hold every request to its host, each refused before any value is minted or
+		// any dial is made. An upgrade is refused, since the bytes after its answer are no request
+		// the airlock reads; and the request carries the grant's placeholder as its one
+		// Authorization header, which the swap below replaces with the grant's token, so nothing
+		// else a command sends there - its own token, a second header beside the placeholder -
+		// goes on to the service.
+		if len(r.Header.Values("Upgrade")) != 0 {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeProtocolSwitch, "a request to this host is never an upgrade: the airlock reads each request it carries there")
+			return
+		}
+		authorization := r.Header.Values("Authorization")
+		if !holdsPlaceholder || len(authorization) != 1 || authorization[0] != "DPoP "+info.grant.Names[chosen.name].Slots[chosen.slot] {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoPlaceholder, "a request to this host carries the grant's placeholder as its one Authorization header, DPoP <placeholder>; this one does not, so nothing was sent")
+			return
+		}
+		if s.dpopKey == nil {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker holds no DPoP key for "+chosen.name+", so no proof can be made for this request and nothing was sent")
+			return
+		}
+	}
+	exchange := way == proxyrules.WayExchange && isTokenRequest(r)
 	if exchange {
 		// A token request carries the grant's placeholder in its form rather than in a header,
 		// so what it is handled for is the federated slot whatever choosePair read of its
@@ -332,11 +363,11 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// The federated token leaves the broker inside an exchange at the token authority and
 		// nowhere else (exchangeToken, azureBound): Entra takes it as the assertion of every
 		// application federated with the broker, so the header swap below would hand the host
-		// this request goes to - the authority or any other host the entry binds - the
-		// assertion of each of them. The refusal follows the slot rather than the entry's kind:
-		// an azure-login name's value fills this slot whatever the kind of the entry that binds
-		// it (requests.airlockSplitOf reads the policy kind first), so under an entry of no kind
-		// or of another, where no exchange is made, it is the same token. A request that
+		// this request goes to - the authority or any other host the kind binds - the
+		// assertion of each of them. The refusal follows the slot rather than the way: an
+		// azure-login name's value fills this slot whatever way its binding takes
+		// (requests.airlockSplitOf reads the policy type first), so under another way, where no
+		// exchange is made, it is the same token. A request that
 		// carries no placeholder of the grant is still handled for this slot while the grant
 		// holds no access slot, and goes on with nothing swapped into it: az reads the tenant's
 		// OpenID configuration that way before its first token request.
@@ -377,11 +408,11 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if secret.Limited && kind != "" {
-		// A Limited name is spent only on a Slack post, which is a header swap. An entry of
-		// another kind signs or exchanges what it carries, which slackPostAllowed has no
+	if secret.Limited && way != proxyrules.WaySwap {
+		// A Limited name is spent only on a Slack post, which is a header swap. A binding of
+		// another way mints, signs or exchanges what it carries, which slackPostAllowed has no
 		// reading of, so it carries nothing rather than go out unchecked.
-		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelNotAllowed+": the entry of this secret is of kind "+kind+", not a header swap")
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelNotAllowed+": this secret's way is "+way+", not a header swap")
 		return
 	}
 
@@ -390,7 +421,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// reason and the status are proxyrules.Decide's own, as they were when every path through
 	// this function asked it first.
 	refused := func() bool {
-		allowed, why := proxyrules.Decide(s.rules, grant, value, request)
+		allowed, why := proxyrules.Decide(rules, grant, value, request)
 		if !allowed {
 			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNotAllowed, why)
 		}
@@ -408,13 +439,16 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// What the request leaves with: its headers and its query. A header swap changes the
-	// headers the entry names and nothing else; the AWS path replaces the signature, which is
-	// the Authorization header, the date, the session token and the canonical query.
+	// headers the kind names, and removes Cipher-Repository, and nothing else; the AWS path
+	// replaces the signature, which is the Authorization header, the date, the session token and
+	// the canonical query, after it removes Cipher-Repository itself, as the swap would, so that
+	// header never reaches the service and the signature never covers it.
 	header, rawQuery := http.Header(nil), r.URL.RawQuery
-	if kind == proxyrules.KindAWS {
+	if way == proxyrules.WaySign {
 		if refused() {
 			return
 		}
+		r.Header.Del(proxyrules.CipherRepositoryHeader)
 		signed, signedQuery, release, why := s.signAWS(r.Context(), r, hostHeaderOf(info.target), info.grant.Names[chosen.name].Slots, secret.Slots)
 		if why != "" {
 			// A refusal gave back whatever of the hashing budget it took, so there is no
@@ -434,7 +468,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// an allowed swap - the commonest request the proxy serves - one decision rather than
 		// two, and leaves the refusal, the order its reasons are reported in and the 403
 		// exactly as they were.
-		rewritten := proxyrules.Rewrite(s.rules, grant, value, request)
+		rewritten := proxyrules.Rewrite(rules, grant, value, request)
 		if rewritten == nil {
 			if refused() {
 				return
@@ -460,7 +494,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Headers of the proxy itself, which belong to this connection and not to the service. The
-	// swap and the signature have already run, so a header the entry names keeps its value and
+	// swap and the signature have already run, so a header the kind names keeps its value and
 	// the signature covers neither of these.
 	header.Del("Proxy-Authorization")
 	header.Del("Proxy-Connection")
@@ -475,13 +509,15 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// service, and ServeHTTP's return cancels it too, which stops the watcher.
 	carried, cut := context.WithCancelCause(r.Context())
 	defer cut(nil)
-	// What ReverseProxy is handed: this request with the swap's headers and that context.
+	// What ReverseProxy is handed: this request with the swap's headers and that context, and the
+	// trace that marks the moment it may leave for the service (leaving), which is what the
+	// ErrorHandler's answers below say of it.
 	// ReverseProxy drops the hop-by-hop headers of what it is handed - the Connection header
 	// and every header it names, Keep-Alive, Te, Upgrade and the rest - before it builds what
 	// leaves, and sets back the ones an upgrade or trailers need, so the swap's headers go to it
 	// as the request's own rather than over what it built: a Connection header the command sent
 	// would otherwise reach the service, and fail every call to one that speaks HTTP/2.
-	out := r.WithContext(carried)
+	out := leaving(w, r.WithContext(carried))
 	out.Header = header
 	served := &statusWriter{ResponseWriter: w}
 	// The command's side of the call, which the watcher ends too: the cancel above ends the
@@ -502,8 +538,27 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// refusedByCut is whether the watcher ended the call before its service answered, which
 	// ErrorHandler answers as a refusal; ErrorHandler runs inside ServeHTTP, on this goroutine.
 	refusedByCut := false
+	// Where the request goes: the CONNECT target over TLS on the proxy's own transport, which
+	// checks and dials the target's addresses (dialChecked); or, for a private destination's
+	// bound host, that destination URL's scheme and host on that destination's own transport,
+	// which checks and dials its addresses (dialUpstream). Every other host keeps the proxy's own
+	// transport, so each destination takes the requests of its one host and no other.
+	var transport http.RoundTripper = s.upstream
+	scheme, upstreamHost := "https", info.target
+	if d := s.destinationOf(info.host); d != nil {
+		transport, scheme, upstreamHost = d.transport, d.upstream.URL.Scheme, d.upstream.URL.Host
+		// A call the destination did not answer is answered without the transport's error,
+		// which names the destination's in-cluster address (destinationUnreachable).
+		upstreamFailed = s.destinationUnreachable(info.host, r.URL.Path)
+	}
+	if way == proxyrules.WayDPoP {
+		// The swap put the grant's token in; mintedTransport signs its proof with the pod's key,
+		// for the bound host's origin whatever address the request is sent to, and hands it to
+		// the transport above.
+		transport = &mintedTransport{key: s.dpopKey, origin: "https://" + info.host, base: transport}
+	}
 	proxy := &httputil.ReverseProxy{
-		Transport: s.upstream,
+		Transport: transport,
 		// httputil's own lines - a body copy that failed, which quotes what the service sent -
 		// go through this package's log rather than the standard logger (Server.errorLog).
 		ErrorLog: s.errorLog,
@@ -514,19 +569,32 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = &url.URL{
-				Scheme:   "https",
-				Host:     info.target,
+				Scheme:   scheme,
+				Host:     upstreamHost,
 				Path:     r.URL.Path,
 				RawPath:  r.URL.RawPath,
 				RawQuery: rawQuery,
 			}
+			// The bound host, wherever the request is sent: the service reads the request as one
+			// to its public name, which a dpop binding's proof names too.
 			pr.Out.Host = hostHeaderOf(info.target)
+			if way == proxyrules.WayDPoP {
+				// A minted capability's request goes on without any forwarding header the command
+				// sent, so Dispatch reads the broker's address and never one the command wrote:
+				// ReverseProxy has dropped Forwarded and X-Forwarded-*, which are not set back
+				// here, and dpopDroppedHeaders are the two it leaves.
+				for _, name := range dpopDroppedHeaders {
+					pr.Out.Header.Del(name)
+				}
+				return
+			}
 			// ReverseProxy drops the command's own Forwarded and X-Forwarded-* headers before
 			// Rewrite runs, for a proxy that writes its own; this one writes none and changes
-			// no header the entry does not name, so they go on as the command sent them, and
-			// as an AWS signature covered them - all but one the command's Connection header
-			// names, which belongs to its connection to the proxy as every header named there
-			// does, and which ReverseProxy dropped for that reason.
+			// no header but the ones the kind names and Cipher-Repository, which it removes, so
+			// they go on as the command sent them, and as an AWS signature covered them - all but
+			// one the command's Connection header names, which belongs to its connection to the
+			// proxy as every header named there does, and which ReverseProxy dropped for that
+			// reason.
 			for _, name := range forwardedHeaders {
 				values, sent := pr.In.Header[name]
 				if sent && !httpguts.HeaderValuesContainsToken(r.Header["Connection"], name) {
@@ -535,9 +603,11 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			}
 		},
 		// The one thing read of an answer is whether it has a body at all (statusWriter.whole).
-		// It is streamed back as it came otherwise: nothing of it is read, buffered,
-		// decompressed or changed, because this design changes no answer from an API service -
-		// what it guards is what leaves, not what comes back.
+		// It is streamed back as it came otherwise: nothing of it is read, buffered or
+		// decompressed, because this design changes no answer from an API service - what it
+		// guards is what leaves, not what comes back. The one change is the two headers that
+		// say the answer is the service's and not the proxy's own (ownAnswer): the service's own
+		// Cipher-Proxy-Code goes, so a service cannot pass for the proxy.
 		ModifyResponse: func(answer *http.Response) error {
 			if !toCommand.start() {
 				// The watcher ended the call between the service's answer and here, so
@@ -545,6 +615,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 				// service had not answered (ErrorHandler).
 				return context.Cause(carried)
 			}
+			answer.Header.Set(forwardedHeader, "true")
+			answer.Header.Del(codeHeader)
 			served.whole.Store(answer.ContentLength == 0)
 			return nil
 		},
@@ -557,7 +629,10 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			// The watcher ended this call before its service's answer reached the command, so
 			// the answer is the refusal every call of this grant now gets, rather than a 502
 			// that would read as a service out of reach. Its record is the call's one line, as
-			// every refusal's is.
+			// every refusal's is. The call may have reached the service before the cut - it can
+			// hold a whole write and not have answered, or have answered on the way back - so the
+			// answer says Cipher-Proxy-Forwarded: unknown once the transport held a connection for it
+			// (leaving, ownAnswer).
 			refusedByCut = true
 			s.refuse(w, r, info.callFor(chosen), why.status, why.code, why.why)
 		},
@@ -647,6 +722,13 @@ func (c *commandSide) finish() {
 // Rewrite runs, which serveBound sets back as the command sent them, each that the command's
 // Connection header does not name.
 var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
+
+// dpopDroppedHeaders are the forwarding headers ReverseProxy leaves on a request, which a request
+// to a host a dpop binding binds loses in Rewrite: with the four ReverseProxy drops and
+// serveBound does not set back for that kind, they are the six that Dispatch reads a caller's
+// address from (internal/dispatch/routes's forwardingHeaders), so a minted capability's request
+// reaches Dispatch with the broker's address and none the command wrote.
+var dpopDroppedHeaders = []string{"X-Real-IP", "Via"}
 
 // upgrading reports whether a request asks to leave HTTP behind: a Connection header naming the
 // Upgrade token and an Upgrade header naming a protocol, which is how net/http and
@@ -821,9 +903,12 @@ func (info connInfo) callFor(chosen pair) call {
 }
 
 // refuse answers a call the airlock will not carry, and it is the one writer of this port's
-// refusals, refuseCredential's 407 among them. Nothing reaches the service: the answer is written
-// here, on the connection the proxy opened. c is what is known of the call, code names the
-// refusal, and reason is the broker's own words for it.
+// refusals, refuseCredential's 407 among them. The answer is written here, on the connection the
+// proxy opened, and nothing more of the request reaches the service: every caller but one refuses
+// before it hands the request to a transport, and the one that refuses after, serveBound's
+// ErrorHandler for a call its grant watcher cut, answers with Cipher-Proxy-Forwarded: unknown when the
+// request may already have reached the service (ownAnswer). c is what is known of the call, code
+// names the refusal, and reason is the broker's own words for it.
 //
 // A refusal (answer.Refused: a status from 400 to 499 but a 429) is one line under
 // answer.RefusalMessage at WARN (refusalFields), and then the answer, whose text body ends with
@@ -835,6 +920,7 @@ func (info connInfo) callFor(chosen pair) call {
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status int, code, reason string) {
 	rec := answerOf(w)
 	rec.note(code)
+	ownAnswer(w, code)
 	if !answer.Refused(status, code) {
 		s.log.Info(callMessage, s.callFields(rec.ID(), c, r, status, reason)...)
 		http.Error(w, "airlock: "+reason, status)
@@ -903,6 +989,11 @@ func (s *Server) callFields(id string, c call, r *http.Request, status int, reas
 	if slot := c.chosen.namedSlot(); slot != "" {
 		fields = append(fields, "slot", slot)
 	}
+	// The way the name's credential went in, or would have: swap, mint, sign, exchange or dpop.
+	// A line of no name (a refusal before one was chosen) names none.
+	if c.chosen.way != "" {
+		fields = append(fields, "way", c.chosen.way)
+	}
 	if reason != "" {
 		fields = append(fields, "reason", reason)
 	}
@@ -912,9 +1003,9 @@ func (s *Server) callFields(id string, c call, r *http.Request, status int, reas
 // pair is one (name, slot) of a grant: which secret a request may be handled for, and which of
 // that secret's values. A github-app name has one slot per installation and no value slot, so
 // the pair rather than the name is what says which token a request's placeholder stands for.
-// kind is the entry's own kind, read when the pair was made, so that the request this pair is
+// way is the binding's own way, read when the pair was made, so that the request this pair is
 // chosen for needs no second Lookup of the name.
-type pair struct{ name, slot, kind string }
+type pair struct{ name, slot, way string }
 
 // namedSlot is the slot a line names: which of the name's values the call used, where the name
 // has more than one. A github-app secret holds one token per installation, and an operator
@@ -928,33 +1019,35 @@ func (p pair) namedSlot() string {
 	return p.slot
 }
 
-// candidates is every (name, slot) pair of the grant whose name's entry binds the CONNECT host
-// on the port the CONNECT named, sorted by name and then by slot. Sorted because the choice
-// below takes the first of them, and a map's order would make which value a request is handled
-// for depend on the run.
+// candidates is every (name, slot) pair of the grant whose name's kind binds the CONNECT host on
+// the port the CONNECT named, sorted by name and then by slot. Sorted because the choice below
+// takes the first of them, and a map's order would make which value a request is handled for
+// depend on the run.
 //
-// The port is read here because the entry's hosts carry no port, so an entry binds a name on
-// 443 and nowhere else, and another port of that name is another service, which no name of
-// this grant is a candidate for. An empty answer is therefore also what says a CONNECT is a
-// tunnel rather than a connection the proxy reads (serveConnect): one function decides what is
-// bound, and nothing beside it repeats that walk.
+// The port is read here because a kind's hosts carry no port, so a kind binds a name on 443 and
+// nowhere else, and another port of that name is another service, which no name of this grant
+// is a candidate for. An empty answer is therefore also what says a CONNECT is a tunnel rather
+// than a connection the proxy reads (serveConnect): one function decides what is bound, and
+// nothing beside it repeats that walk.
 //
-// It is a pure function of the grant, the host, the port and the rules, and it runs once per
-// request on a bound connection, over the grant that request read for itself: the grant is what
-// changes between two requests of one connection - a name withheld, a name ended - and a list
-// built once at the CONNECT would answer for the grant as it was then.
-func (s *Server) candidates(grant requests.AirlockConnection, host string, port uint16) []pair {
+// It is a pure function of the rules, the grant, the host and the port, and it runs once per
+// request on a bound connection, over the grant that request read for itself and the rules the
+// live policy held then: the grant and a secret's proxy tag are what change between two requests
+// of one connection - a name withheld, a name ended, a kind retagged - and a list built once at
+// the CONNECT would answer for them as they were then.
+func candidates(rules proxyrules.Rules, grant requests.AirlockConnection, host string, port uint16) []pair {
 	if port != 443 {
 		return nil
 	}
 	var pairs []pair
 	for name, held := range grant.Names {
-		entry := s.rules.Lookup(name)
-		if entry == nil || !proxyrules.HostBound(entry.Hosts, host) {
+		binding := rules.Lookup(name)
+		kind := rules.KindOf(binding)
+		if kind == nil || !proxyrules.HostBound(kind.Hosts, host) {
 			continue
 		}
 		for slot := range held.Slots {
-			pairs = append(pairs, pair{name: name, slot: slot, kind: entry.Kind})
+			pairs = append(pairs, pair{name: name, slot: slot, way: binding.Way})
 		}
 	}
 	slices.SortFunc(pairs, func(a, b pair) int {
@@ -978,8 +1071,8 @@ func (s *Server) candidates(grant requests.AirlockConnection, host string, port 
 // function the model calls carries).
 //
 // A request that carries no placeholder of any candidate is still decided, for the first
-// candidate: the entry's hosts, method and path rules apply to it, and it is forwarded with
-// nothing swapped. That is what makes an entry's allow list a bound on the whole connection
+// candidate: its kind's hosts, method and path rules and its profile's apply to it, and it is
+// forwarded with nothing swapped. That is what makes an allow list a bound on the whole connection
 // rather than on the requests that happen to ask for a swap.
 func choosePair(candidates []pair, grant requests.AirlockConnection, request *proxyrules.Request) (chosen pair, holdsPlaceholder bool) {
 	for _, candidate := range candidates {
@@ -1035,6 +1128,12 @@ func headerOf(headers [][2]string) http.Header {
 // statusWriter records the status the service answered, which the call's log line names. It
 // unwraps, so every http.ResponseController call but a flush reaches the real writer, and the
 // flush that streams each write (FlushInterval -1) reaches it through FlushError.
+//
+// An informational answer (1xx, but 101, which ends the exchange) is not the status the call
+// ended with, and goes to the command without the two headers that say whose answer it is
+// (ownAnswer): ReverseProxy copies a 1xx answer's headers to the command as the service sent
+// them, and ModifyResponse, which sets Cipher-Proxy-Forwarded and removes the service's Cipher-Proxy-Code,
+// sees only the final answer, so a service could otherwise pass for the proxy in a 1xx.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -1059,6 +1158,12 @@ func (w *statusWriter) FlushError() error {
 }
 
 func (w *statusWriter) WriteHeader(status int) {
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		w.Header().Del(forwardedHeader)
+		w.Header().Del(codeHeader)
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
 	if w.status == 0 {
 		w.status = status
 	}

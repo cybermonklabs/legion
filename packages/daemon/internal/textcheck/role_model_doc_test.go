@@ -1,5 +1,10 @@
 package textcheck
 
+//ci:reads deploy/kubernetes/operator-route/README.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestEachGuideThatChangesAModelNamesHowOneRoleGetsItsOwn (each of roleModelGuides)
+//ci:reads deploy/kubernetes/operator-route/overlay.yml `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestEachGuideThatChangesAModelNamesHowOneRoleGetsItsOwn (each of roleModelGuides)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestEachGuideThatChangesAModelNamesHowOneRoleGetsItsOwn (each of roleModelGuides)
+//ci:reads docs/site/src/content/docs/legion/running-legion.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestEachGuideThatChangesAModelNamesHowOneRoleGetsItsOwn (each of roleModelGuides)
+
 import (
 	"regexp"
 	"strings"

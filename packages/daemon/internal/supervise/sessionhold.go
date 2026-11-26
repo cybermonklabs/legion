@@ -78,16 +78,39 @@ const (
 	CheckedNothing = "it held no name to free, so no broker was asked"
 )
 
-// ErrCarryUnanswered is a release the secrets broker did not answer: the release frees nothing,
-// since nothing else can say that no grant follows a name it would free. A run again can change
-// it.
+// ErrCarryUnanswered is a release the secrets broker did not answer, or answered with an outage
+// (a 5xx, a 408 or a 429) or another refusal a retry can change: the release frees nothing, since
+// nothing else can say that no grant follows a name it would free. A run again can change it.
 var ErrCarryUnanswered = errors.New("the secrets broker did not answer which of the names it still carries")
 
 // ErrCarryRefused is a release whose question the secrets broker refused for good (a
-// PermanentError, a 4xx): the release frees nothing, and a run again answers the same until the
-// refusal is fixed, but for a broker from before the question, which answers it 404 or 405 and
-// may be one replica of several while the broker rolls.
+// PermanentError, a 4xx other than a 408 or a 429): the release frees nothing, and a run again
+// answers the same until the refusal is fixed, but for a broker from before the question, which
+// answers it 404 or 405 and may be one replica of several while the broker rolls.
 var ErrCarryRefused = errors.New("the secrets broker refused the question of which of the names it still carries")
+
+// ErrReleaseUnanswered is a release the secrets broker did not answer that it released the claim's
+// session names (Registrar.ReleasePodSessions) at any attempt: no answer, a 5xx, a 408, a 429, or a
+// 404 or 405 from a broker of a build before the release route, which may be one replica of several
+// while the broker rolls. The release frees nothing, since a registration of this daemon's may
+// still admit its pod's trade under a name it frees. A run again can change it.
+var ErrReleaseUnanswered = errors.New("the secrets broker did not answer that it released the claim's session names")
+
+// ErrReleaseRefused is a release whose session names the secrets broker refused for good to
+// release (a PermanentError that is no RouteUnservedError: any 4xx but a 404, a 405, a 408 and a
+// 429): the release frees nothing, and a run again answers the same until the refusal is fixed.
+var ErrReleaseRefused = errors.New("the secrets broker refused to release the claim's session names")
+
+// RouteUnservedError is a broker answer that it serves no such route (cipher's
+// APIError.RouteUnserved, a 404 or a 405): a broker of a build before the route, which may be one
+// replica of several while the broker rolls, so a release reads it as no answer, never as a
+// refusal for good.
+type RouteUnservedError interface{ RouteUnserved() bool }
+
+// releaseAttempts is how many times a release asks the secrets broker to release the claim's
+// session names (releaseSessions) before it refuses: the second a second after the first, the
+// third two after the second, all inside the release's RPC bound.
+const releaseAttempts = 3
 
 // UnlistedCarryError is an answer of the secrets broker's too long for the daemon to read whole
 // (cipher's CarriedAnswerTooLargeError): the broker answered, and an answer that long names
@@ -140,19 +163,32 @@ func (e *NamesCarriedError) Error() string {
 // it would free name an enrollment of this daemon's that is live or still carries something
 // (Enroller.Carried), and any answer refuses the whole release with a RefusedError holding a
 // NamesCarriedError, naming each enrollment and when its lease or its carry ends, or saying the
-// answer was too long to list (UnlistedCarryError); a broker that does not answer refuses it with
-// ErrCarryUnanswered, and one that refuses the question for good with ErrCarryRefused. Nothing is
-// freed in any of them. The broker's own rows answer every case a time window only estimated: a
-// revoke the daemon missed, a lease a broker outage held live, a sweep that ran late or kept
-// failing, a longer BROKER_SESSION_CARRY_SECONDS.
+// answer was too long to list (UnlistedCarryError); a broker that does not answer, or answers with
+// an outage, refuses it with ErrCarryUnanswered, and one that refuses the question for good with
+// ErrCarryRefused. Nothing is freed in any of them. The broker's own rows answer every case a
+// time window only estimated: a revoke the daemon missed, a lease a broker outage held live, a
+// sweep that ran late or kept failing, a longer BROKER_SESSION_CARRY_SECONDS.
 //
-// A daemon with no broker configured (Deps.Secrets nil) asks none, frees with no check, and says
-// so (CheckedNoBroker). That is safe only for a daemon that never enrolled a pod with a broker. A
-// pod enrolled while agent_secrets was on keeps an enrollment its own shim renews for as long as
-// it runs, which no daemon revokes once the block is off (RevokeEnrollment leaves it to its lease),
-// and a stopped one carries its grants for BROKER_SESSION_CARRY_SECONDS from its lease's lapse. No
-// bound an operator can work out covers a pod that still runs, so such a daemon's names are
-// released only with agent_secrets on (docs/kubernetes.md; review of #4355).
+// Nor can a pod trade under a name it frees. The broker honours a pod-session registration of this
+// daemon's (Deps.Registrar, exchange_audience) for a day past its last write, whether or not its
+// renewal has stopped, so a pod still holding a token for its old session could trade under a name
+// another claim then registers. So a daemon with a registrar has the broker release the session
+// names among those it frees, after the carry check and before the commit (releaseSessions):
+// nothing is freed until the broker answers that every one is released, and a broker that answers
+// so at no attempt refuses the release with ErrReleaseUnanswered, or with ErrReleaseRefused when
+// its last answer is a refusal for good. No renewal writes such a name by then, which would make
+// its registration live again: the live registration's session is current and kept, an earlier
+// registration's renewal was stopped when the claim moved off it or let its process go
+// (ensureRegistered, stopRegistration), and that stop waited for its write in flight. Without a
+// registrar no registration exists to release, and none is asked.
+//
+// A daemon with no broker configured (Deps.Secrets nil) asks none about a carry, frees with no
+// check, and says so (CheckedNoBroker). That is safe only for a daemon that never enrolled a pod
+// with a broker. A pod enrolled while agent_secrets was on keeps an enrollment its own shim renews
+// for as long as it runs, which no daemon revokes once the block is off (RevokeEnrollment leaves
+// it to its lease), and a stopped one carries its grants for BROKER_SESSION_CARRY_SECONDS from its
+// lease's lapse. No bound an operator can work out covers a pod that still runs, so such a
+// daemon's names are released only with agent_secrets on (docs/kubernetes.md; review of #4355).
 //
 // A release with no name to free asks no broker (CheckedNothing), and still marks an abandoned
 // session the record does not yet mark released. Every name of that session is freed or is a name
@@ -184,10 +220,11 @@ func (e *NamesCarriedError) Error() string {
 // The broker is asked before that transaction, outside it, and never after it. No transaction
 // or row lock is held while the broker answers, so a slow broker holds only this claim's lock, as
 // every other call the machine makes to the broker does (Enroll, Revoke). And no failure of the
-// broker can follow a commit: a broker that fails or still carries something leaves nothing
-// committed, and a commit that fails after the broker's answer may or may not have freed the
-// names, which the operator's next run, asking the broker again, settles either way. The commit
-// is the release's last step, so a release that committed is whole.
+// broker can follow a commit: a broker that fails, still carries something or releases nothing
+// leaves nothing committed, and a commit that fails after the broker's answers may or may not
+// have freed the names, which the operator's next run, asking the broker again, settles either
+// way; a release of names the broker already released answers the same again. The commit is the
+// release's last step, so a release that committed is whole.
 //
 // A claim that never switched sessions and needs a new one is given one by forget-session, and
 // this then frees the forgotten session's names once the broker's carry of it ends: no second
@@ -195,9 +232,9 @@ func (e *NamesCarriedError) Error() string {
 func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	m.mu.Lock()
 	defer m.unlock()
-	// The read is bounded as a claim write is, as HoldsItsSession bounds its own, so a database
-	// that has stopped answering does not hold the machine's lock for the outage.
-	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	// The read is bounded as a claim write is (bounded), as HoldsItsSession bounds its own, so a
+	// database that has stopped answering does not hold the machine's lock for the outage.
+	reading, cancel := m.bounded(ctx)
 	holds, err := m.deps.Store.ClaimHolds(reading, m.claim.Project, m.claim.Token)
 	cancel()
 	if err != nil {
@@ -249,15 +286,21 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 		}
 		released.Checked = CheckedByBroker
 	}
+	if m.deps.Registrar != nil {
+		if err := m.releaseSessions(ctx, free); err != nil {
+			return ReleasedNames{}, err
+		}
+	}
 	c := m.stored()
 	if mark {
 		c.Abandoned.Released, released.Abandoned = m.deps.Clock.Now(), a.Session
 	}
-	err = m.write(ctx, func(ctx context.Context) error {
-		var err error
-		released.Freed, err = m.deps.Store.ReleaseHolds(ctx, c, free)
-		return err
-	})
+	// The exception to write's retry (Machine.write): made once under its bound, since a second try
+	// after a cut whose first try freed the names would free none and answer an empty Freed as a
+	// success, losing the names the first try freed.
+	releasing, cancel := m.bounded(ctx)
+	released.Freed, err = m.deps.Store.ReleaseHolds(releasing, c, free)
+	cancel()
 	// The names leave the cache whatever the write answered (the doc above).
 	for _, h := range free {
 		delete(m.heldNames, h)
@@ -281,6 +324,45 @@ func (m *Machine) refuseCarried(refusal *NamesCarriedError, names int) error {
 	m.log.Warn("supervise: refused a release of a claim's names: the secrets broker still carries some of them",
 		"names", names, "carried", len(refusal.Carried), "error", refusal.Error())
 	return &RefusedError{State: m.claim.State, Request: "release-names", Err: refusal}
+}
+
+// releaseSessions has the secrets broker release the session names among free
+// (Registrar.ReleasePodSessions) before the release frees any name (ReleaseNames): names of kind
+// HoldSessionID alone, the one kind a pod-session registration names, and none when free holds
+// none. A broker that releases every name answers nil. The call is tried releaseAttempts times, a
+// second and then two apart, all inside one RPC bound, and each failure is logged at Warn with the
+// claim, the names' count, the attempt and the broker's reason. After the last failure it answers
+// ErrReleaseRefused for a refusal a retry cannot change (a PermanentError that is no
+// RouteUnservedError) and ErrReleaseUnanswered for any other, each wrapping that failure.
+func (m *Machine) releaseSessions(ctx context.Context, free []Hold) error {
+	var names []string
+	for _, h := range free {
+		if h.Kind == HoldSessionID {
+			names = append(names, h.Name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	releasing, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
+	defer cancel()
+	var err error
+	for attempt := 1; ; attempt++ {
+		if err = m.deps.Registrar.ReleasePodSessions(releasing, names); err == nil {
+			return nil
+		}
+		m.log.Warn("supervise: the secrets broker did not release a claim's session names; they stay held",
+			"names", len(names), "attempt", attempt, "error", err)
+		if attempt == releaseAttempts || m.deps.Clock.Sleep(releasing, time.Duration(attempt)*time.Second) != nil {
+			break
+		}
+	}
+	var permanent PermanentError
+	var unserved RouteUnservedError
+	if errors.As(err, &permanent) && permanent.Permanent() && !(errors.As(err, &unserved) && unserved.RouteUnserved()) {
+		return fmt.Errorf("release the names of %s: %w: %w", m.claim.Token, ErrReleaseRefused, err)
+	}
+	return fmt.Errorf("release the names of %s: %w: %w", m.claim.Token, ErrReleaseUnanswered, err)
 }
 
 // releasable is every one of holds that is not a name of the session a claim records, session and
@@ -316,20 +398,25 @@ type HoldKind string
 
 const (
 	// HoldSessionID is a session id: the one an agent registers, which the secrets broker enrolls
-	// as its wake address (ensureEnrolled), and the one a Claude Code launch resumes, `--resume
-	// <id>`, read from its transcript's name (claudelaunch.ResumeSession).
+	// as its wake address (ensureEnrolled), the one a Claude Code launch resumes, `--resume <id>`,
+	// read from its transcript's name (claudelaunch.ResumeSession), and the one an Oh My Pi launch
+	// resumes the claim's recorded session by (runtime/sandbox's ompSessionOf and agentArgv): the
+	// one word `--resume=<id>`, in any pod, where the claim records no file of the session, and
+	// `--resume <id>` beside a recorded file, in a pod that trades an exchange identity.
 	HoldSessionID HoldKind = "session"
 	// HoldFileName is a session file's base name (filepath.Base). It is every key a resume finds
-	// a session by its file with: an Oh My Pi launch resumes the recorded path (`--resume=<file>`,
-	// runtime/sandbox's agentArgv and the tmux runtime's launcher), the launcher finds the
-	// session's row in the session table by that path (launcher's resumable and claudeKeeper), and
-	// where the path is missing the tmux runtime resumes a file of the same name one folder below a
-	// sessions directory (sessionFileOf). Two paths that are one have one name, so holding the name
-	// holds the path too: no hold of the path alone is kept, since it could refuse nothing the
-	// name's hold does not.
+	// a session by its file with: an Oh My Pi launch that names no id resumes the recorded path
+	// (`--resume=<file>`, runtime/sandbox's agentArgv and the tmux runtime's launcher), the launcher
+	// finds the session's row in the session table by that path (launcher's resumable and
+	// claudeKeeper), and where the path is missing the tmux runtime resumes a file of the same name
+	// one folder below a sessions directory (sessionFileOf). Two paths that are one have one name,
+	// so holding the name holds the path too: no hold of the path alone is kept, since it could
+	// refuse nothing the name's hold does not.
 	HoldFileName HoldKind = "file-name"
 	// HoldFileID is the session id an Oh My Pi file name `<timestamp>_<id>.jsonl` gives, the part
-	// after its first `_`: the tmux runtime also resumes any `*_<id>.jsonl` there (newestSession).
+	// after its first `_`: the tmux runtime also resumes any `*_<id>.jsonl` there (newestSession),
+	// and an Oh My Pi launch in a pod that trades resumes that id, `--resume <id>`, for a claim that
+	// recorded no session id (runtime/sandbox's ompSessionOf, which reads it through RecordedHolds).
 	HoldFileID HoldKind = "file-id"
 )
 
@@ -593,6 +680,19 @@ type heldElsewhereError struct {
 func (e *heldElsewhereError) Error() string { return e.err.Error() }
 func (e *heldElsewhereError) Unwrap() error { return e.err }
 
+// IsSessionHeldElsewhere is whether err, anywhere in its chain, is holdRecorded's refusal of a
+// name held for another claim or for none (claim.SessionHeldRefusal, carried by
+// heldElsewhereError), whichever of the session's names was refused: its id, its file's name, or
+// an id the file's name gives. It matches the refusal by its kind, not by its value or its status:
+// the two other refusals of a hold, claim.SessionNameUnheldRefusal and claim.HeldNamesCapRefusal,
+// are 409s of the same claim.Refusal type, and neither is this. The controller keeper reads it to
+// ask for a new session when a retry's resume of the recorded session is refused for that alone
+// (internal/daemon's controllerKeeper.keep).
+func IsSessionHeldElsewhere(err error) bool {
+	var held *heldElsewhereError
+	return errors.As(err, &held)
+}
+
 // mayForget is nil when the claim may clear the session it records (forgetSession, retry's fresh
 // session), and otherwise why not. A claim holding its session, or recording none, forgets as
 // before and asks nothing more (R9).
@@ -744,7 +844,7 @@ func (m *Machine) HoldsItsSession(ctx context.Context) error {
 	}
 	holds := RecordedHolds(c.Session, c.SessionFile)
 	if len(holds) > 0 {
-		asking, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+		asking, cancel := m.bounded(ctx)
 		holders, err := m.deps.Store.HoldSessions(asking, c.Project, c.Token, holds)
 		cancel()
 		switch {

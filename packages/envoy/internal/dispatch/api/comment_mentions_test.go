@@ -10,10 +10,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -62,27 +62,44 @@ func decodeMentionedComment(t *testing.T, response *httptest.ResponseRecorder) m
 // settles each after the create has answered - and returns its attempts by target and attempt.
 func settledCommentDeliveries(t *testing.T, database *store.Store, commentID string) []model.CommentDelivery {
 	t.Helper()
+	return waitForCommentDeliveries(t, database, commentID, "no attempt pending", attemptsSettled)
+}
+
+// settledCommentDeliveriesOn is settledCommentDeliveries for a server on a fake clock whose
+// stand-in listener holds calls it never answers: each pass of the wait first moves that clock
+// through the waits the sender is in - each held call's window, and the take-over's backoff
+// between two tries - so the attempts settle without any of it costing wall clock.
+func settledCommentDeliveriesOn(
+	t *testing.T, database *store.Store, commentID string, fake *clocktest.Fake, calls *listenerCalls,
+) []model.CommentDelivery {
+	t.Helper()
 	return waitForCommentDeliveries(t, database, commentID, "no attempt pending", func(attempts []model.CommentDelivery) bool {
-		for _, attempt := range attempts {
-			if attempt.State == "pending" {
-				return false
-			}
-		}
-		return len(attempts) > 0
+		stepListenerWaits(fake, calls)
+		return attemptsSettled(attempts)
 	})
 }
 
+// attemptsSettled reports whether the comment has attempts and none of them is pending.
+func attemptsSettled(attempts []model.CommentDelivery) bool {
+	for _, attempt := range attempts {
+		if attempt.State == "pending" {
+			return false
+		}
+	}
+	return len(attempts) > 0
+}
+
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
-// them; want says what done waits for. Its patience covers a whole take-over window and ten
-// seconds past it, because a send on the mention sender's lanes may wait one out after the
-// comment's response - a mention of an ended session does, under a server running the production
-// window (listenerTakeoverWindow) - before its attempt settles.
+// them; want says what done waits for. A send on the mention sender's lanes may wait a take-over
+// window out after the comment's response - a mention of an ended session does, under a server
+// running the production window (listenerTakeoverWindow) - before its attempt settles, so the wait
+// has no bound of its own: it ends on the attempts, and its one bound is the test binary's deadline
+// (testwait.Until), whose failure prints the attempts it last read.
 func waitForCommentDeliveries(
 	t *testing.T, database *store.Store, commentID, want string, done func([]model.CommentDelivery) bool,
 ) []model.CommentDelivery {
 	t.Helper()
-	deadline := time.Now().Add(listenerTakeoverWindow + 10*time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("comment %s's attempts to be %s", commentID, want), func() ([]model.CommentDelivery, bool) {
 		rows, err := database.Pool.Query(context.Background(), `
 			select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt
 		`, commentID)
@@ -95,14 +112,8 @@ func waitForCommentDeliveries(
 		if err != nil {
 			t.Fatalf("read comment %s attempts: %v", commentID, err)
 		}
-		if done(attempts) {
-			return attempts
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("comment %s attempts = %#v, want %s", commentID, attempts, want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return attempts, done(attempts)
+	})
 }
 
 func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
@@ -277,7 +288,12 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The role's lookup must count as answered to pin s1: its bound and the listener client's
+	// window are past any run, so a loaded machine cannot end it before the listener's answer is
+	// read (job 137748743708 did, at 250 ms).
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun, mentionLookupBound: lookupBoundPastAnyRun,
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "Pinned mention", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -606,7 +622,11 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// One lookup, answered: its bound and the listener client's window are past any run, so a
+	// loaded machine cannot leave it unanswered and have the sender look the role up a second time.
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, envoyTimeout: pastAnyRun, mentionLookupBound: lookupBoundPastAnyRun,
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "Missing role holder", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -711,10 +731,11 @@ func TestCallbackReplyUnderAnAskJoinsTheAskThread(t *testing.T) {
 // in a transaction of the test's own on the test's context, committed only once the comment's
 // write waits behind that lock (storetest.WaitForQueuedBehind, on the one connection the comment
 // runs on). So the comment resolved the route before the move and reads it after the move however
-// slow the machine is. The listener only answers. A move it made itself, inside the lookup, ran
-// on that lookup's request context, which ends when Dispatch stops waiting for the lookup
-// (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that started
-// later than that raced the comment's locked read.
+// slow the machine is. The listener only answers. A move it made itself, inside the lookup, would
+// run on that lookup's request context, which in production ends when Dispatch stops waiting for
+// the lookup (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that
+// started later than that raced the comment's locked read. So the moves are made outside the
+// lookup.
 func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -747,7 +768,14 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// A clock whose timers never fire: each route lookup is answered as the listener answers it,
+	// however slow the machine, and is never cut short by its bound (mentionLookupTimeout), which
+	// failed a lookup the listener answered late. The comments are posted through
+	// oneConnectionHandler, a server of its own built from deps, so a bound set on this test's
+	// server (mentionLookupBound) does not reach them; the clock in deps does. It freezes the
+	// take-over's backoff and the related-item check's allowance too, so a retryable failure here
+	// would wait to the binary's deadline, where testwait ends it by name.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 		"route": "role:reviewer",
@@ -774,10 +802,10 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	}
 	// queuedBehind returns once the comment's backend waits behind the route change, and fails the
 	// row when the comment answers first: it never read the route under its lock after the move.
+	// Its one bound is the test binary's deadline (storetest.WaitForQueuedBehind).
 	queuedBehind := func(change pgx.Tx, callPID uint32, answered <-chan *httptest.ResponseRecorder, what string) {
 		t.Helper()
-		within := testwait.Bounded(t, 24*time.Hour, 30*time.Second)
-		if response, early := storetest.WaitForQueuedBehind(t, change, callPID, answered, within); early {
+		if response, early := storetest.WaitForQueuedBehind(t, change, callPID, answered); early {
 			t.Fatalf("%s answered %d before its write waited behind the route change: %s", what, response.Code, response.Body.String())
 		}
 	}

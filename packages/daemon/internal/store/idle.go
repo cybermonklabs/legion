@@ -52,13 +52,13 @@ var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_as
 const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
-// in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
-// then one role stop per live claim, then the teardown. The store writes them rather than
+// in the order the issue's lifecycle lane runs them: the check of the workspace for unpushed
+// work, then one role stop per live claim, then the teardown. The store writes them rather than
 // record's Enqueue because the boundary row's id must be read back under the same transaction.
 //
 // Boundary marks the one row whose id is the release's boundary: the stop of the first role
 // process of the pod, which is what every later decision about this release reads
-// (IssueRelease). The save before it is not the boundary — it stops nothing, so a delivery
+// (IssueRelease). The check before it is not the boundary — it stops nothing, so a delivery
 // queued while it runs still cancels the whole release.
 type IdleReleaseRow struct {
 	Kind     string
@@ -67,11 +67,13 @@ type IdleReleaseRow struct {
 }
 
 // IdleReleaseMark is what a decision to release writes: the rows above and the role whose shim
-// the bundle is asked of. Rows empty means the pod is not released, and nothing is written.
+// the workspace is read through, which is also the role told when the read finds unpushed work.
+// Rows empty means the pod is not released, and nothing is written.
 //
 // SuspendsNoRole is the release of a pod no role can use (workflow.UnownedPodRelease), whose
-// every claim is already failed, retired or suspended: it suspends no role and saves no bundle,
-// so it names no role and queues the teardown alone. The mark records which of the two rules
+// every claim is already failed, retired or suspended: it suspends no role, so it names no role,
+// and queues the teardown, behind the workspace check its pod's launcher reads where the release
+// deletes the disk (record.IssueWorkspaceCheck.Launcher). The mark records which of the two rules
 // wrote it (issue_releases.kind), because what a release did is what its teardown and its
 // cancel must read: a release that suspended nothing has nothing to resume and no roles to
 // record. A mark that suspends a role names it, and one that suspends none leaves Role empty.
@@ -79,8 +81,19 @@ type IdleReleaseMark struct {
 	Generation     uint64
 	Role           claim.Role
 	SuspendsNoRole bool
-	Rows           []IdleReleaseRow
+	// Close is no release: it is the close of an issue the workflow has taken out
+	// (workflow.LeftPodClose), whose rows are the stop of each live role and the issue's Sandbox
+	// suspension. They are written with no mark, because no release is under way and every row of
+	// a close is fenced on the issue's own record (the outbox's supervise executor,
+	// IssueSuspension) rather than on a mark. Role and SuspendsNoRole say nothing of it.
+	Close bool
+	Rows  []IdleReleaseRow
 }
+
+// IdleReleaseDecide is what ReleaseIdleIssue hands the view it reads to: a rule's decision as the
+// rows it writes (IdleReleaseMark), none where the rule writes nothing. It is an alias, so a caller
+// that names it and one that spells the func type out name one type.
+type IdleReleaseDecide = func(pods.IdleView) (IdleReleaseMark, error)
 
 // releaseKindIdle and releaseKindUnowned are the two release rules as issue_releases.kind spells
 // them: the release of a pod whose roles are all quiet, and the release of a pod no role can use
@@ -93,7 +106,7 @@ const (
 
 // IdlePods is every issue of project whose pod has a live claim — one neither failed, retired nor
 // already suspended — in key order: the issues the idle tick decides. An issue whose claims are
-// all stopped has no role to ask for a bundle and no claim to suspend, so there is nothing for a
+// all stopped has no role to read the workspace through and no claim to suspend, so there is nothing for a
 // release to do with it.
 func (s *Store) IdlePods(ctx context.Context, project string) ([]string, error) {
 	what := "list the pods of " + project
@@ -138,8 +151,8 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 // — no live claim, that is — and whose own row and whose tree root's row both still stand in
 // the workflow. It is the candidate list of the second release rule
 // (workflow.UnownedPodRelease), beside IdlePods, which answers the other half: the pods a live
-// claim still holds. Such a pod stands with 3 CPU and 19 GiB reserved and no role that can take
-// a turn in it, which is what the rule releases.
+// claim still holds. Such a pod holds its reservation (2 CPU and 8 GiB at the defaults) with no
+// role that can take a turn in it, which is what the rule releases.
 //
 // The project is spelled two ways, and the two are not the same string, so this read takes
 // both. project is the issue record's own project (issues.project, the Dispatch project key
@@ -195,9 +208,47 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 	return issues, nil
 }
 
+// LeftPods is every child issue of project that has left the workflow while its tree runs on —
+// its phase done and its status one outOfWorkflow names, under a tree root that is in the
+// workflow and does not linger — and whose claims have all stopped, in key order: the candidates
+// of the close of such a pod (workflow.LeftPodClose), beside IdlePods and UnownedPods, which
+// answer the pods with a live claim and the pods of issues still in the workflow. Its arguments
+// are UnownedPods's, spelled as that method says.
+//
+// Such an issue's own departure was its one close, and nothing of its running tree closes it
+// again, so a pod of it that still stands — one an operator's resume, task or retry, or the
+// controller's fresh session, built again after that close and whose roles have stopped since —
+// is a pod no other rule takes. Nearly every issue this answers has no pod at all, because its
+// close deleted it; the caller asks the runtime before it opens a transaction for one.
+func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outOfWorkflow []string) ([]string, error) {
+	what := "list the pods of " + project + " whose issue left the workflow under a running tree"
+	var issues []string
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
+			where i.project = $1 and i.key <> i.tree
+			and i.phase = 'done' and i.status = any($2) and i.linger_until is null
+			and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
+			and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
+			and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
+				and c.state not in ('failed', 'retired', 'suspended'))
+			order by i.key`, project, outOfWorkflow, claimProject)
+		if err != nil {
+			return err
+		}
+		issues, err = issueKeys(rows)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	return issues, nil
+}
+
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
 // decide, and when decide answers rows it writes them and the release's mark together, so the
-// view the decision rests on and the mark that records it are one atomic act.
+// view the decision rests on and the mark that records it are one atomic act. It is the close's
+// one transaction too, for the pod of an issue the workflow has taken out
+// (IdleReleaseMark.Close): the rows that close writes rest on the same view, and nothing else.
 //
 // The mark records the ids the rows were given: first_row and last_row are the release's own
 // first and last, which is how a row of this release is told from a row of one that is over
@@ -205,19 +256,20 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // the stop of the first role process of the pod — which is where a delivery that reached the
 // pod after the mark cancels the release.
 //
-// It answers whether a release was marked. decide answering no rows writes nothing, which is the
-// ordinary case: nearly every tick finds a pod that is working, or one whose idle period has not
-// passed.
+// It answers whether it wrote the decision's rows: a release's with its mark, or a close's
+// (IdleReleaseMark.Close), which carries none. decide answering no rows writes nothing, which is
+// the ordinary case: nearly every tick finds a pod that is working, or one whose idle period has
+// not passed.
 //
-// A project that is paused is marked no release, whatever decide answers: the pause starts no
-// release (decision 12 of dispatch://INFRA-3759). decide is still handed the view, which carries
-// the pause (pods.IdleView.Paused), so its caller can record what kept the pod. The view is read
-// under treelifecycle.Serialize, which the pause's transaction takes too, so a pause and a mark
-// commit one after the other.
+// A project that is paused is marked no release and written no close, whatever decide answers:
+// the pause starts no release (#4115's project pause). decide is still handed the
+// view, which carries the pause (pods.IdleView.Paused), so its caller can record what kept the
+// pod. The view is read under treelifecycle.Serialize, which the pause's transaction takes too,
+// so a pause and a mark commit one after the other.
 //
 // A mark that names no role and does not say it suspends none is refused before anything is
-// written, as a fault of the rule that decided it rather than of the database: the save of the
-// workspace is asked of the role the mark names, so a release without one and without the
+// written, as a fault of the rule that decided it rather than of the database: the check of the
+// workspace is read through the role the mark names, so a release without one and without the
 // second rule's kind is a release nobody can carry out.
 func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
 	if project == "" || issue == "" {
@@ -235,6 +287,18 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		mark, err := decide(view)
 		if err != nil || len(mark.Rows) == 0 {
 			return err
+		}
+		if mark.Close {
+			if view.Releasing || view.Paused {
+				return nil
+			}
+			for _, row := range mark.Rows {
+				if _, err := insertOutboxRow(ctx, tx, project, issue, row); err != nil {
+					return err
+				}
+			}
+			marked = true
+			return nil
 		}
 		if mark.Role == "" && !mark.SuspendsNoRole {
 			return fmt.Errorf("the release of %s names no role and is not a release that suspends none", issue)
@@ -259,9 +323,17 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		if boundary == 0 {
 			return fmt.Errorf("the release of %s named no boundary row", issue)
 		}
+		// The newest start row and the newest turn of the pod's claims (pods.IdleView.NewestTurnStart):
+		// a start row above the one or a turn after the other is the pod given work since this mark
+		// (releaseOvertaken). The turn is the supervisor's own stamp (claims.last_turn_start), so the
+		// two compare on one clock; null where no claim has had a turn.
 		var started int64
 		for _, c := range view.Claims {
 			started = max(started, c.LastStartRow)
+		}
+		var turned *time.Time
+		if newest := view.NewestTurnStart(); !newest.IsZero() {
+			turned = &newest
 		}
 		// The newest wake this pod has had: a wake recorded above it is one this release never
 		// saw, and cancels it (releaseOvertaken).
@@ -271,16 +343,19 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			return fmt.Errorf("read the newest wake of %s: %w", issue, err)
 		}
 		// The kind is the rule that decided this release, and the role is the one whose shim the
-		// save is asked of: a release that suspends no role has none, and leaves the column
+		// check reads the workspace through: a release that suspends no role has none, and leaves the column
 		// empty, which is the one spelling the table's check takes beside that kind.
 		kind, role := releaseKindIdle, string(mark.Role)
 		if mark.SuspendsNoRole {
 			kind, role = releaseKindUnowned, ""
 		}
+		// The mark starts with no teardown noted (TeardownNotReached), written here because the
+		// column's default is TeardownReached, the note of every mark an earlier release writes.
 		if _, err := tx.Exec(ctx, `insert into issue_releases
-			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, kind, marked_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())`,
-			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind); err != nil {
+			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, kind, marked_at, turn_start, teardown)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11, $12)`,
+			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind, turned,
+			string(TeardownNotReached)); err != nil {
 			return fmt.Errorf("mark the release of %s: %w", issue, err)
 		}
 		// The pod this release stops is gone, so a resume of it still open — a wake whose pod
@@ -345,18 +420,15 @@ func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row 
 // is record's to encode, as every row of a release is (IdleReleaseRow).
 type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, error)
 
-// CancelIssueRelease ends a release that did not finish, in one transaction: the bundle that
-// release saved is deleted, the resume of each claim this release suspended and still holds is
-// queued, and the mark goes with them. The three are one act because any of them alone is a
-// wrong state of the pod: a mark deleted before the resumes are durable leaves those roles
-// `released` in a pod that still stands, with no backstop — a release arms one only once its
-// pod is gone — and nothing left to read that says they are owed a process, since the next row
-// of the release reads the release as over and the next idle tick sees a pod whose claims are
-// suspended; and a bundle left behind is a copy of work the pod the roles resume in holds on
-// its own disk, waiting for some later pod of the issue to restore it over whatever those roles
-// push in the meantime. Queueing the resumes rather than relaunching here is what makes them
-// durable: the row is the daemon's own record of what the pod is owed, and its lane retries it
-// until the role has it back.
+// CancelIssueRelease ends a release that did not finish, in one transaction: the resume of each
+// claim this release suspended and still holds is queued, and the mark goes with it. The two are
+// one act because either alone is a wrong state of the pod: a mark deleted before the resumes are
+// durable leaves those roles `released` in a pod that still stands, with no backstop — a release
+// arms one only once its pod is gone — and nothing left to read that says they are owed a
+// process, since the next row of the release reads the release as over and the next idle tick
+// sees a pod whose claims are suspended. Queueing the resumes rather than relaunching here is what
+// makes them durable: the row is the daemon's own record of what the pod is owed, and its lane
+// retries it until the role has it back.
 //
 // It answers the roles it queued a resume for (ReleaseCancelled.Resumed): the claims this release
 // suspended that are still suspended as `released`. A claim another path took over — a close, a
@@ -405,6 +477,324 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // after reads the issue as left and queues nothing.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, resume ReleaseResumeRow,
 	outOfWorkflow func(status string) bool, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+	return s.cancelIssueRelease(ctx, project, issue, resume, outOfWorkflow, paused, nil)
+}
+
+// IdleReleaseDecline is what the workspace check found when it declines a release, or the close of
+// a left pod (DeclineIssueRelease, DeclineLeftPodClose). At is the moment of the check, by the
+// caller's clock, which the rules compare a later turn's start with (pods.IdleDecline.Stands).
+// Role is the role the workspace was read through, and Reason is one of pods.DeclineUnpushedWork
+// and pods.DeclineWorkspaceUnread. Head, Commits and Changed are what the read found: the
+// working-copy commit, how many commits on a working copy or a local bookmark no branch or tag on
+// origin holds, and whether the working copy holds a change; a read that failed found none of
+// them. PodUID is the pod the read was made in, "" where the runtime could not say. Message is the
+// one row that tells the role the release waits for its push; nil sends none.
+//
+// Kept is the decline of a pod in which no role process runs, whose launcher made the read (R6 of
+// #5285): the release of a pod no claim owns or the close of a left pod with no live
+// claim. Its Role is the issue's architect and its Message the architect's workspace-kept notice,
+// which recordDecline queues once for each pod, whether the read found work or failed.
+type IdleReleaseDecline struct {
+	At      time.Time
+	Role    claim.Role
+	Reason  string
+	Head    string
+	Commits int
+	Changed bool
+	PodUID  string
+	Message *IdleReleaseRow
+	Kept    bool
+}
+
+// check refuses a decline the rules could not read.
+func (d IdleReleaseDecline) check(issue string) error {
+	if d.At.IsZero() || d.Role == "" ||
+		(d.Reason != pods.DeclineUnpushedWork && d.Reason != pods.DeclineWorkspaceUnread) || d.Commits < 0 {
+		return fmt.Errorf("the decline of %s's release needs its moment, its role and a reason the idle rule reads (%q)", issue, d.Reason)
+	}
+	return nil
+}
+
+// DeclineIssueRelease cancels a release whose check declined it, as CancelIssueRelease does, and in
+// the same transaction records the decline (recordDecline). The decline is written only where the
+// cancel found the release's mark: a check of a release that is over records nothing and tells
+// nobody, so a check its lane runs again after the decline committed writes no second row and no
+// second message. ReleaseCancelled.Declined says whether it was written, and Told whether its
+// message was queued.
+func (s *Store) DeclineIssueRelease(ctx context.Context, project, issue string, decline IdleReleaseDecline, resume ReleaseResumeRow,
+	outOfWorkflow func(status string) bool, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+	if err := decline.check(issue); err != nil {
+		return ReleaseCancelled{}, err
+	}
+	var told bool
+	cancelled, err := s.cancelIssueRelease(ctx, project, issue, resume, outOfWorkflow, paused, func(tx pgx.Tx) (err error) {
+		told, err = recordDecline(ctx, tx, project, issue, decline)
+		return err
+	})
+	cancelled.Told = told && cancelled.Declined
+	return cancelled, err
+}
+
+// DeclineLeftPodClose records the decline of a left pod's close, whose workspace check found work
+// that origin does not hold or could not read the workspace (internal/daemon's
+// checkLeftPodWorkspace), under the shared serializer as every writer of the issue's lifecycle
+// takes it. That close marked no release, so there is nothing to cancel: the check queued no stop,
+// and the pod stays with its roles as they are. It answers whether the decline's message was
+// queued (recordDecline).
+func (s *Store) DeclineLeftPodClose(ctx context.Context, project, issue string, decline IdleReleaseDecline) (bool, error) {
+	return s.declinePodDelete(ctx, project, issue, decline, "decline the close of")
+}
+
+// DeclinePodReplacement records an update round's keep of issue's pod, whose read of the workspace
+// before the round's replacement found work that origin does not hold or could not be made, over a
+// drift the pod's roles can keep working under (R7 of #5285, internal/daemon's
+// keepPodForRound), and each later read of that pod that finds the same or other work. The round
+// records this as a release's decline is recorded (recordDecline), under the shared serializer:
+// the pod (PodUID), the work, the moment, and the role told. The idle rule reads the same row
+// (pods.IdleDecline), and the round opens no new round over that pod while it stands
+// (PodKeepOf). It answers whether the decline's message was queued.
+func (s *Store) DeclinePodReplacement(ctx context.Context, project, issue string, decline IdleReleaseDecline) (bool, error) {
+	return s.declinePodDelete(ctx, project, issue, decline, "record the update round's keep of")
+}
+
+// declinePodDelete records decline (recordDecline) under the lifecycle serializer for a delete of
+// issue's pod that marked no release: a left pod's close or an update round's replacement. what
+// begins the error's words, which go on with the issue's pod.
+func (s *Store) declinePodDelete(ctx context.Context, project, issue string, decline IdleReleaseDecline, what string) (bool, error) {
+	if project == "" || issue == "" {
+		return false, errors.New("the decline of a pod's delete needs its project and its issue")
+	}
+	if err := decline.check(issue); err != nil {
+		return false, err
+	}
+	var told bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+			return err
+		}
+		told, err = recordDecline(ctx, tx, project, issue, decline)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("%s %s's pod: %w", what, issue, err)
+	}
+	return told, nil
+}
+
+// PodKeep is what an update round reads of an issue's pod before it opens a round over it (R7 of
+// #5285, internal/daemon's podKeptForWork): the decline on record, read as the
+// idle view reads it (the zero decline where none stands), and the issue's phase, whose open
+// phase's worker is the role an update round's keep tells where it runs in the pod ("" where the
+// store holds no such issue).
+type PodKeep struct {
+	Decline pods.IdleDecline
+	Phase   phase.Phase
+}
+
+// PodKeepOf reads issue's PodKeep.
+func (s *Store) PodKeepOf(ctx context.Context, project, issue string) (PodKeep, error) {
+	var keep PodKeep
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
+		if keep.Decline, err = readIdleDecline(ctx, tx, project, issue); err != nil {
+			return err
+		}
+		var issuePhase string
+		err = tx.QueryRow(ctx, `select phase from issues where key = $1 and lower(project) = $2`, issue, project).Scan(&issuePhase)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		keep.Phase = phase.Phase(issuePhase)
+		return nil
+	})
+	if err != nil {
+		return PodKeep{}, fmt.Errorf("read the kept pod of %s: %w", issue, err)
+	}
+	return keep, nil
+}
+
+// readIdleDecline is the release the daemon last declined for issue (idle_release_declines), read
+// through tx, and the zero pods.IdleDecline where none stands: the one read of that row both of its
+// readers make, the idle view (readIdleView) and an update round's read of a kept pod (PodKeepOf).
+func readIdleDecline(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleDecline, error) {
+	var declined pods.IdleDecline
+	err := tx.QueryRow(ctx, `select declined_at, checked_at, reason, started_row, pod_uid, commits > 0 or changed
+		from idle_release_declines where project = $1 and issue = $2`, project, issue).Scan(&declined.At,
+		&declined.CheckedAt, &declined.Reason, &declined.StartedRow, &declined.PodUID, &declined.Work)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return pods.IdleDecline{}, err
+	}
+	return declined, nil
+}
+
+// LeftPodTurned is whether a claim of issue went on working after turnStart, the newest turn start
+// of the pass that queued a left pod's close check (record.IssueWorkspaceCheck's TurnStart): it
+// started a turn since, or is in a turn now, starting, or of a launch not yet known, by the one
+// condition a release's mark is overtaken on (claimWorkedSince). A read that such a turn ran beside
+// is no word of the disk: the turn can have pushed the work the read found, or made more, so
+// internal/daemon's checkLeftPodWorkspace records no decline from it (the Legion reviewer's point
+// 2 on R6 of #5285). It joins the caller's transaction, under the lifecycle
+// serializer the caller holds.
+func (s *Store) LeftPodTurned(ctx context.Context, project, issue string, turnStart time.Time) (bool, error) {
+	var turned bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, leftPodTurnedQuery, project, issue, turnStart).Scan(&turned)
+	})
+	if err != nil {
+		return false, fmt.Errorf("read whether a claim of %s turned since its close was queued: %w", issue, err)
+	}
+	return turned, nil
+}
+
+// leftPodTurnedQuery is LeftPodTurned's read, built once: $3 is the close's turn start.
+var leftPodTurnedQuery = `select exists (select 1 from claims where project = $1 and issue = $2
+	and ` + claimWorkedSince(`$3`) + `)`
+
+// recordDecline writes the decline of issue's release (idle_release_declines, one row per issue)
+// and queues its message, through the caller's transaction, and answers whether it queued the
+// message. The row's started_row is the newest start row of the issue's claims, read in this
+// transaction, so a role process started after it ends the decline (pods.IdleDecline.Stands).
+//
+// A decline that finds the same work as the decline on record, read through the same role — the
+// same working-copy commit, the same count of commits, the same change and the same role — is a
+// read that role was already told of: it moves checked_at, started_row and pod_uid, sets the
+// reason, keeps declined_at, and queues no message. That is what ends the loop a message would
+// otherwise start. The message starts a turn in the role's session, the turn ends the decline (it
+// can change the workspace), the next read finds the same work, and a second message would start
+// the next turn. The role is part of the key because the row names the role that was told: a role
+// that takes over, the next phase's worker, is told of the work once, as its own.
+//
+// A decline whose read failed (pods.DeclineWorkspaceUnread) says nothing of the work, so it keeps
+// what the last read that could read found, and the role that read told: on a row that stands it
+// moves the reason, checked_at, started_row and pod_uid alone. The next read that finds the same
+// work through the same role then tells nobody, and the pod's disk is still read as holding that
+// work where no role runs to read it again (pods.IdleDecline.Work). A failed read made in another
+// pod than the row's keeps no work, since the work was found on a disk that pod replaced. On no
+// row, it writes a row that holds no work. Any other decline replaces the row whole, at its own
+// moment, and queues its message.
+//
+// A Kept decline, the read of a pod's launcher where no role process runs (R6 of
+// #5285), tells the issue's architect once for each pod, and whether the architect
+// was told of a pod is a fact of the row of its own (told_pod), apart from the work the read found
+// and the role the row names: its message is queued unless told_pod names this pod, or either the
+// row's told pod or this decline's is one the runtime could not name ("") while a notice was
+// queued. So a new pod whose disk holds the same work tells again, and a read through a role,
+// whose role message says nothing to the architect and which keeps told_pod, neither tells the
+// architect nor makes a later launcher decline of the same pod tell again. A told pod the runtime
+// could not name takes the uid of the first decline that names one. A failed read that tells moves
+// the row's role to the architect and its declined_at to the read's moment, the telling's own.
+func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, decline IdleReleaseDecline) (bool, error) {
+	const startedRow = `(select coalesce(max(last_start_row), 0) from claims where project = $1 and issue = $2)`
+	// told is a Kept decline whose pod the architect was already told of (told_pod).
+	var told bool
+	if decline.Kept {
+		err := tx.QueryRow(ctx, `select told_pod is not null and (told_pod = $3 or told_pod = '' or $3 = '')
+			from idle_release_declines where project = $1 and issue = $2 for update`,
+			project, issue, decline.PodUID).Scan(&told)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
+		}
+	}
+	unread := decline.Reason == pods.DeclineWorkspaceUnread
+	// same is a read that could read and found the work the row names, through the role it names.
+	var same bool
+	if !unread {
+		err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6
+			from idle_release_declines where project = $1 and issue = $2 for update`,
+			project, issue, decline.Head, decline.Commits, decline.Changed, string(decline.Role)).Scan(&same)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
+		}
+	}
+	// tells is whether the decline queues its message, decided once: a Kept decline tells unless
+	// the architect was told of its pod (told), and any other tells only where it replaces the row
+	// whole, since its role was told of the work the row names and a failed read tells a role
+	// nothing.
+	tells := decline.Message != nil && !told && (decline.Kept || (!unread && !same))
+	switch {
+	case unread:
+		// The row's pod and the failed read's are both named and differ: the pod was made again.
+		const otherPod = `idle_release_declines.pod_uid <> '' and excluded.pod_uid <> ''
+			and idle_release_declines.pod_uid <> excluded.pod_uid`
+		if _, err := tx.Exec(ctx, `insert into idle_release_declines
+			(project, issue, declined_at, checked_at, role, reason, started_row, pod_uid)
+			values ($1, $2, $3, $3, $4, $5, `+startedRow+`, $6)
+			on conflict (project, issue) do update set reason = excluded.reason,
+				checked_at = greatest(idle_release_declines.declined_at, excluded.checked_at),
+				head = case when `+otherPod+` then '' else idle_release_declines.head end,
+				commits = case when `+otherPod+` then 0 else idle_release_declines.commits end,
+				changed = case when `+otherPod+` then false else idle_release_declines.changed end,
+				started_row = excluded.started_row, pod_uid = excluded.pod_uid`,
+			project, issue, decline.At, string(decline.Role), decline.Reason, decline.PodUID); err != nil {
+			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
+		}
+		if tells {
+			if _, err := tx.Exec(ctx, `update idle_release_declines set role = $3, declined_at = $4
+				where project = $1 and issue = $2`, project, issue, string(decline.Role), decline.At); err != nil {
+				return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
+			}
+		}
+	case same:
+		if _, err := tx.Exec(ctx, `update idle_release_declines set checked_at = greatest(declined_at, $3),
+			reason = $4, started_row = `+startedRow+`, pod_uid = $5 where project = $1 and issue = $2`,
+			project, issue, decline.At, decline.Reason, decline.PodUID); err != nil {
+			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
+		}
+	default:
+		if _, err := tx.Exec(ctx, `insert into idle_release_declines
+			(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid)
+			values ($1, $2, $3, $3, $4, $5, $6, $7, $8, `+startedRow+`, $9)
+			on conflict (project, issue) do update set declined_at = excluded.declined_at,
+				checked_at = excluded.checked_at, role = excluded.role, reason = excluded.reason,
+				head = excluded.head, commits = excluded.commits, changed = excluded.changed,
+				started_row = excluded.started_row, pod_uid = excluded.pod_uid`,
+			project, issue, decline.At, string(decline.Role), decline.Reason, decline.Head, decline.Commits, decline.Changed,
+			decline.PodUID); err != nil {
+			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
+		}
+	}
+	if decline.Kept {
+		if _, err := tx.Exec(ctx, `update idle_release_declines
+			set told_pod = case when $3 then $4 when told_pod = '' and $4 <> '' then $4 else told_pod end
+			where project = $1 and issue = $2`, project, issue, tells, decline.PodUID); err != nil {
+			return false, fmt.Errorf("record whom the decline of %s's release told: %w", issue, err)
+		}
+	}
+	if !tells {
+		return false, nil
+	}
+	if _, err := insertOutboxRow(ctx, tx, project, issue, *decline.Message); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ForgetIdleDecline deletes the decline of issue's release, if one stands: the issue is done or
+// its tree is closing, so no idle release of its pod is coming, or a workspace check has just read
+// the workspace and found nothing that origin does not hold, so the work the decline named is gone
+// and no rule may keep the pod for it. A decline the table does not hold is success, so a retried
+// delete finishes.
+//
+// It takes no serializer of its own. A caller that joins it to a transaction that also writes the
+// issue's lifecycle takes the lifecycle serializer (treelifecycle.Serialize) first, before this
+// delete, as every writer of the decline row does (recordDecline's callers): a delete of the row
+// ahead of the serializer would hold the row while waiting for the serializer, and a writer that
+// holds the serializer and writes the row would wait for it, a deadlock
+// (checkLeftPodWorkspace in internal/daemon).
+func (s *Store) ForgetIdleDecline(ctx context.Context, project, issue string) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `delete from idle_release_declines where project = $1 and issue = $2`, project, issue)
+		return err
+	}); err != nil {
+		return fmt.Errorf("forget the declined release of %s: %w", issue, err)
+	}
+	return nil
+}
+
+// cancelIssueRelease is CancelIssueRelease, and DeclineIssueRelease where declined is not nil:
+// declined runs in the cancel's transaction once the mark is read, before the mark is deleted, and
+// only where a mark stood.
+func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, resume ReleaseResumeRow,
+	outOfWorkflow func(status string) bool, paused ReleaseCancelPause, declined func(pgx.Tx) error) (ReleaseCancelled, error) {
 	if project == "" || issue == "" || resume == nil || outOfWorkflow == nil {
 		return ReleaseCancelled{}, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
 	}
@@ -417,11 +807,10 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			return err
 		}
 		cancelled = ReleaseCancelled{}
-		var release int64
 		var suspended []string
 		var kind string
-		err := tx.QueryRow(ctx, `select id, suspended, kind from issue_releases where project = $1 and issue = $2`,
-			project, issue).Scan(&release, &suspended, &kind)
+		err := tx.QueryRow(ctx, `select suspended, kind from issue_releases where project = $1 and issue = $2`,
+			project, issue).Scan(&suspended, &kind)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -429,16 +818,11 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			return err
 		}
 		cancelled.SuspendsNoRole = kind == releaseKindUnowned
-		// The bundle this release saved goes with the mark, in this transaction. The pod it was
-		// taken off is the pod the roles resume in, with that work in its own workspace, so the
-		// row holds a copy of work a live disk has; left behind it would hold the issue's pod
-		// (workflow.IdleHoldBundleUnrestored) and wait for a pod created after the save — an
-		// eviction's, an update round's, a park and unpark's — which would restore it over
-		// however much its roles had pushed since. A delete that fails fails the cancel, which
-		// its row's lane runs again; a cancel that left the bundle behind and went on was that
-		// sequence's first step.
-		if _, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release); err != nil {
-			return err
+		if declined != nil {
+			if err := declined(tx); err != nil {
+				return err
+			}
+			cancelled.Declined = true
 		}
 		roles, err := stillReleasedRoles(ctx, tx, project, issue, suspended)
 		if err != nil {
@@ -509,12 +893,16 @@ type ReleaseCancelPause struct {
 // Stopped are the roles it recorded stopped by the project's open pause in place of resuming
 // them, and Pause that pause; Pause is 0 where the cancel recorded no role stopped: while the
 // project runs, and while it is paused where the cancel found no role to resume. A cancel that
-// met a pause resumes none.
+// met a pause resumes none. Declined is whether a decline found the release's mark and recorded
+// the decline (DeclineIssueRelease), and Told whether it queued the decline's message, which a
+// decline that found the work on record does not; a cancel answers false for both.
 type ReleaseCancelled struct {
 	Resumed        []claim.Role
 	SuspendsNoRole bool
 	Pause          int64
 	Stopped        []claim.Role
+	Declined       bool
+	Told           bool
 }
 
 // stopReleasedForPause records, for a cancel made while held is open, each role the release had
@@ -631,6 +1019,20 @@ func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string) er
 	return nil
 }
 
+// NoteReleaseTeardown notes on the mark of release, issue's release, whether an attempt of its
+// teardown came to the runtime's first write (ReleaseTeardown). A mark that is gone, or that
+// belongs to another release, takes nothing: that release is over, and its teardown reads it so.
+func (s *Store) NoteReleaseTeardown(ctx context.Context, project, issue string, release int64, teardown ReleaseTeardown) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update issue_releases set teardown = $4 where project = $1 and issue = $2 and id = $3`,
+			project, issue, release, string(teardown))
+		return err
+	}); err != nil {
+		return fmt.Errorf("note the teardown of the release of %s: %w", issue, err)
+	}
+	return nil
+}
+
 // deleteIssueRelease forgets the mark of issue's release in the caller's transaction. One mark,
 // one delete, whichever runs it.
 func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) error {
@@ -676,7 +1078,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
-		greatest(d.delivered_at, d.confirmed_at)
+		greatest(d.delivered_at, d.confirmed_at), c.last_turn_start
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token
 		where c.project = $1 and c.issue = $2 order by c.token`, project, issue)
 	if err != nil {
@@ -687,16 +1089,17 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		var c pods.IdleClaim
 		var role, state, kinds, suspendedBy string
 		var servingGeneration int64
-		var activityAt, reminder, lastTurn *time.Time
+		var activityAt, reminder, lastTurn, lastTurnStart *time.Time
 		if err := claims.Scan(&role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
 			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt,
-			&c.HasProcess, &suspendedBy, &lastTurn); err != nil {
+			&c.HasProcess, &suspendedBy, &lastTurn, &lastTurnStart); err != nil {
 			return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 		}
 		c.Role, c.State = claim.Role(role), supervise.ClaimState(state)
 		c.SuspendedBy = supervise.SuspendSource(suspendedBy)
 		c.ServingGeneration = uint64(servingGeneration)
 		c.ActivityAt, c.ActivityNextReminderAt, c.LastTurnAt = orZero(activityAt), orZero(reminder), orZero(lastTurn)
+		c.LastTurnStart = orZero(lastTurnStart)
 		if kinds != "" {
 			c.ActivityKinds = strings.Split(kinds, ",")
 		}
@@ -706,19 +1109,34 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
 
-	if err := tx.QueryRow(ctx, `select exists (
-		select 1 from outbox where issue = $1 and `+idleWaitingRow+`)`, issue, idleWaitingKinds).Scan(&view.Waiting); err != nil {
+	// The rows of a close are read with the rows that wait for a role, in the one statement:
+	// a role stop of the issue (each supervise op a close, a linger's close or an idle release
+	// stops a role with), the issue's Sandbox suspension, the bound row of an open look of its
+	// production check, whose end is a close of its own, and a workspace check, which a left
+	// pod's close queues before any stop (the outbox kind keeps the name of the release's save,
+	// record.OutboxKindIssueBundle).
+	if err := tx.QueryRow(ctx, `select
+		exists (select 1 from outbox where issue = $1 and `+idleWaitingRow+`),
+		exists (select 1 from outbox where issue = $1 and kind = 'supervise'
+			and payload->>'op' in ('suspend', 'issue_close', 'tree_close', 'release')),
+		exists (select 1 from outbox where issue = $1 and kind = 'issue_suspend'),
+		exists (select 1 from outbox where issue = $1 and kind = 'check_look'),
+		exists (select 1 from outbox where issue = $1 and kind = 'issue_bundle')`,
+		issue, idleWaitingKinds).Scan(&view.Waiting, &view.RoleStopQueued, &view.IssueSuspendQueued,
+		&view.CheckLookOpen, &view.WorkspaceCheckQueued); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the queued rows of %s for its idle view: %w", issue, err)
 	}
 	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_releases where project = $1 and issue = $2)`,
 		project, issue).Scan(&view.Releasing); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read whether %s is being released: %w", issue, err)
 	}
-	unrestored, err := workspaceBundleUnrestored(ctx, tx, issue)
+	// The release the daemon last declined for the issue, which holds the pod while it stands
+	// (pods.IdleDecline). A view with no such row reads the zero decline. The pod the runtime holds
+	// now is no fact of this store's: the daemon's pass sets it (pods.IdleView.PodUID).
+	view.Declined, err = readIdleDecline(ctx, tx, project, issue)
 	if err != nil {
-		return pods.IdleView{}, err
+		return pods.IdleView{}, fmt.Errorf("read the declined release of %s: %w", issue, err)
 	}
-	view.BundleUnrestored = unrestored
 	// The pause's two facts, read by the view's project token as readOpenPauseByToken reads a
 	// pause (which says why): project_pauses and the pod holds carry its Dispatch key, which
 	// project, the token (claim.ProjectToken), lowercases for every key project_pauses admits.

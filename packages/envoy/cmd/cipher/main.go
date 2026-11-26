@@ -220,11 +220,12 @@ AGENT_SECRETS_MACHINE_* / AGENT_SECRETS_POOL_* settings reads them from
                              exchange, which a person's sign-in presents as the actor token:
                              metadata (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (that, with
                              AGENT_SECRETS_MACHINE_TOKEN_FILE, AGENT_SECRETS_POOL_AUDIENCE and
-                             AGENT_SECRETS_POOL_ACCOUNT); kubernetes is refused, since the broker
-                             mints no launcher credential for it; unset, it is found from the
-                             Google exchange audience the broker names: an external_account file
-                             GOOGLE_APPLICATION_CREDENTIALS names, or the Google metadata
-                             server, and kept in $XDG_STATE_HOME/agent-secrets/machine
+                             AGENT_SECRETS_POOL_ACCOUNT); kubernetes and github-actions are
+                             refused, since the broker mints no launcher credential for either;
+                             unset, it is found from the Google exchange audience the broker
+                             names: an external_account file GOOGLE_APPLICATION_CREDENTIALS
+                             names, or the Google metadata server, and kept in
+                             $XDG_STATE_HOME/agent-secrets/machine
   AGENT_SECRETS_MACHINE_TOKEN_FILE
                              the projected service-account token pool federates
   AGENT_SECRETS_MACHINE_AUDIENCE
@@ -762,6 +763,13 @@ func nextBackoff(cur time.Duration) time.Duration {
 	return min(2*cur, 10*time.Second)
 }
 
+// pollBackoff is the exec form's sleep before its next status read, after one that came back
+// undecided before the wait it asked had run out (its backoff). Nothing in this program replaces
+// it: exec_wait_test.go builds agent-secrets with one more file that does, recording each sleep
+// the loop asks for, so a row can tell a loop that sleeps after a held answer by that sleep
+// itself, whatever the machine's load.
+var pollBackoff = time.Sleep
+
 // ---------------------------------------------------------------------------
 // keygen
 // ---------------------------------------------------------------------------
@@ -1286,7 +1294,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
-				time.Sleep(min(backoff, time.Until(deadline)))
+				pollBackoff(min(backoff, time.Until(deadline)))
 				backoff = nextBackoff(backoff)
 			}
 		}

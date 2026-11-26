@@ -306,8 +306,15 @@ func TestAliveIsFalseForAProcessWhosePathMerelyContainsLegion(t *testing.T) {
 
 // startProbe runs a long-lived process at exactly the path given — a copy of `sleep`, because
 // what Alive reads is argv[0], and a `#!/bin/sh` script's argv[0] is the shell, not the script.
-// It returns the pid once /proc shows the exec has happened: os/exec hands back a pid before
-// the child has finished exec'ing, and a process mid-exec has no command line yet.
+// It returns the pid once the probe's own command line shows: argv[0] is path. A command line
+// that is merely not empty is not that fact. os/exec starts the child with CLONE_VFORK|CLONE_VM,
+// so until its exec replaces the child's memory, /proc/<pid>/cmdline reads this test binary's
+// command line; and Start returns once the child's close-on-exec status pipe closes. Since Linux
+// commit e780259b54e6 ("exec: do_close_on_exec() before taking exec_update_lock"; in 6.12.113
+// and Ubuntu's 7.0.0-1020 too) the kernel closes that pipe before exec_mmap switches the memory,
+// so a reading right after Start can be the parent's. A probe returned then is no legion yet:
+// Alive reads it as dead until the exec ends, so a second contender can take the team over it,
+// the likeliest cause of the two winners of round 0 the contention row saw in CI on such a kernel.
 func startProbe(t *testing.T, path string) int {
 	t.Helper()
 	sleep, err := exec.LookPath("sleep")
@@ -334,13 +341,58 @@ func startProbe(t *testing.T, path string) int {
 		_, _ = probe.Process.Wait()
 	})
 
-	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool {
-		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(probe.Process.Pid) + "/cmdline")
-		return err == nil && len(cmdline) > 0
-	}) {
-		t.Fatalf("the probe at %s never exec'd", path)
-	}
+	testwait.Eventually(t, "the probe at "+path+" to exec", func() bool {
+		cmdline, err := procCmdline(probe.Process.Pid)
+		argv0, _, _ := strings.Cut(string(cmdline), "\x00")
+		return err == nil && argv0 == path
+	})
 	return probe.Process.Pid
+}
+
+// procCmdline reads a process's command line as /proc shows it. It is startProbe's reading,
+// a variable only so TestAProbeIsStartedOnlyOnceItsCommandLineIsItsOwn can hand the wait the
+// readings a kernel gives during an exec.
+var procCmdline = func(pid int) ([]byte, error) {
+	return os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+}
+
+// A probe is a legion only once its exec has happened, and the readings a kernel gives right
+// after Start can be, in order, this test binary's own command line (the vfork child still on
+// its parent's memory), an empty one (the exec under way) and the probe's. startProbe must not
+// hand back the pid at either of the first two.
+func TestAProbeIsStartedOnlyOnceItsCommandLineIsItsOwn(t *testing.T) {
+	parent, err := os.ReadFile("/proc/self/cmdline")
+	if err != nil {
+		t.Fatalf("read this test binary's command line: %v", err)
+	}
+	read := procCmdline
+	t.Cleanup(func() { procCmdline = read })
+	var last []byte
+	readings := 0
+	procCmdline = func(pid int) ([]byte, error) {
+		readings++
+		switch readings {
+		case 1:
+			last = parent
+		case 2:
+			last = nil
+		default:
+			cmdline, err := read(pid)
+			if err != nil {
+				return nil, err
+			}
+			last = cmdline
+		}
+		return last, nil
+	}
+
+	path := filepath.Join(t.TempDir(), "legion")
+	startProbe(t, path)
+
+	if argv0, _, _ := strings.Cut(string(last), "\x00"); argv0 != path {
+		t.Fatalf("startProbe returned the probe while its command line's argv[0] was %q, not the probe's %s (reading %d)",
+			argv0, path, readings)
+	}
 }
 
 // The claim is one critical section or it is nothing. Two starts released together both read an

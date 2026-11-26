@@ -36,15 +36,17 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// The grant every row but the two-name one is served by: one secret, bound to one host, whose
-// value may travel in Authorization alone and only on /v1/.
+// The grant every row but the two-name one is served by: one secret, bound to one host by its
+// kind, whose value may travel in Authorization alone and only on /v1/.
 const (
 	boundHost    = "example.com"
 	tunnelHost   = "tunnel.example.net"
@@ -61,7 +63,7 @@ const (
 
 // workerPlaceholder is a placeholder in the shape the broker mints them, so a row that asserts a
 // body never names the placeholder is asserting about the real thing.
-var workerPlaceholder = requests.PlaceholderPrefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
+var workerPlaceholder = placeholder.Prefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
 
 // The two protocols a command's client may speak to a bound host, by their ALPN names:
 // HTTP/1.1, which every client that offers it is answered in, and HTTP/2, which a client that
@@ -81,26 +83,63 @@ var suiteProtocol = protocolHTTP1
 // request handling whichever framing carried the request. A row that speaks to the proxy on a
 // socket of its own - a CONNECT written by hand, an upgrade, a frame written by hand - runs the
 // same bytes in both runs. The banner before each run names the protocol of the run below it.
+// Both runs go through storetest.Run, which drops the test binary's own database the rows'
+// schemas are made in once both have ended.
 func TestMain(m *testing.M) {
-	code := 0
-	for _, protocol := range []string{protocolHTTP1, protocolH2} {
-		suiteProtocol = protocol
-		fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
-		if run := m.Run(); run != 0 {
-			code = run
+	os.Exit(storetest.Run(func() int {
+		code := 0
+		for _, protocol := range []string{protocolHTTP1, protocolH2} {
+			suiteProtocol = protocol
+			fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
+			if run := m.Run(); run != 0 {
+				code = run
+			}
 		}
-	}
-	os.Exit(code)
+		return code
+	}))
 }
 
-// testRules is the rules file every row but the two-name one runs under.
+// workerKind is the kind of the profiles file the rig's one name is served behind: its proxy tag
+// names it.
+const workerKind = "worker"
+
+// testRules is the airlock's rules every row but the two-name one runs under: one kind on the
+// bound host, whose credential travels in Authorization on GET and POST under /v1/, and the rig's
+// one name bound to it, a stored value swapped in with no allow of a profile's own.
 func testRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name:    workerName,
-		Hosts:   []string{boundHost},
-		Headers: []string{"authorization"},
-		Allow:   []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}, {Method: http.MethodPost, PathPrefix: "/v1/"}},
-	}}}
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{{
+			Name:    workerKind,
+			Hosts:   []string{boundHost},
+			Headers: []string{"authorization"},
+			Ways:    []string{proxyrules.WaySwap},
+			Allow:   []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}, {Method: http.MethodPost, PathPrefix: "/v1/"}},
+		}},
+		Names: []proxyrules.Binding{{Name: workerName, Kind: workerKind, Way: proxyrules.WaySwap}},
+	}
+}
+
+// swapKind is a kind of its own for a row's name: the hosts and headers it names, every method and
+// path, and a stored value swapped in. A row with two names on one host gives each a kind of its
+// own, since the headers a credential travels in are its kind's.
+func swapKind(name string, hosts []string, headers ...string) proxyrules.Kind {
+	return proxyrules.Kind{Name: name, Hosts: hosts, Headers: headers, Ways: []string{proxyrules.WaySwap}}
+}
+
+// swapBinding binds name to kind as a stored value swapped in, with no allow of a profile's own.
+func swapBinding(name, kind string) proxyrules.Binding {
+	return proxyrules.Binding{Name: name, Kind: kind, Way: proxyrules.WaySwap}
+}
+
+// twoNameRules is the airlock's rules of a grant of two stored values on the one bound host: alpha
+// travels in Authorization under the kind alpha, and beta in X-Beta under the kind beta, each kind
+// allowing every method and path, so a row reads which name a request was handled for by the
+// header its value went into.
+func twoNameRules(alpha, beta string) proxyrules.Rules {
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{swapKind("alpha", []string{boundHost}, "authorization"), swapKind("beta", []string{boundHost}, "x-beta")},
+		Names: []proxyrules.Binding{swapBinding(alpha, "alpha"), swapBinding(beta, "beta")},
+	}
 }
 
 // testConnection is what the fake answers for the proxy's password: one live grant holding the
@@ -126,7 +165,7 @@ func storedValues(name, value string) map[string]requests.AirlockSecret {
 const (
 	githubAcmeSlot  = requests.SlotGitHubPrefix + "acme"
 	githubZedSlot   = requests.SlotGitHubPrefix + "zed"
-	githubZedHolder = requests.PlaceholderPrefix + "zedzedzedzedzedzedzedzedzedzed02"
+	githubZedHolder = placeholder.Prefix + "zedzedzedzedzedzedzedzedzedzed02"
 	githubAcmeToken = "ghs_the-real-acme-installation-token"
 	githubZedToken  = "ghs_the-real-zed-installation-token"
 )
@@ -182,6 +221,10 @@ type fakeGrants struct {
 	// broker's own table holds it: minted once and answered again after.
 	access      map[string]string
 	accessCalls int
+	// rules is the airlock's rules the fake answers (AirlockRules), as the broker's live policy
+	// holds them: testRules unless the row's rig was built with others (newRuledRig), or the row
+	// changes them (setRules) to play a retag the broker read.
+	rules proxyrules.Rules
 }
 
 func newFakeGrants() *fakeGrants {
@@ -192,7 +235,23 @@ func newFakeGrants() *fakeGrants {
 		valueCalls:  map[string]int{},
 		version:     "policy-v1",
 		access:      map[string]string{},
+		rules:       testRules(),
 	}
+}
+
+// AirlockRules is the rules the fake holds now, read under the lock as every other read is, since
+// a row can change them while a connection's request reads them.
+func (f *fakeGrants) AirlockRules() proxyrules.Rules {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rules
+}
+
+// setRules replaces the rules every later request and CONNECT reads.
+func (f *fakeGrants) setRules(rules proxyrules.Rules) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rules = rules
 }
 
 func (f *fakeGrants) AirlockConnection(_ context.Context, placeholder string) (requests.AirlockConnection, error) {
@@ -293,10 +352,10 @@ func (f *fakeGrants) AirlockAccessPlaceholder(_ context.Context, grantID, name, 
 	defer f.mu.Unlock()
 	f.accessCalls++
 	key := grantID + "\x00" + name + "\x00" + slot
-	placeholder, minted := f.access[key]
+	mint, minted := f.access[key]
 	if !minted {
-		placeholder = fmt.Sprintf("%saccessToken%021d", requests.PlaceholderPrefix, len(f.access))
-		f.access[key] = placeholder
+		mint = fmt.Sprintf("%saccessToken%021d", placeholder.Prefix, len(f.access))
+		f.access[key] = mint
 	}
 	for password, conn := range f.connections {
 		held, carries := conn.Names[name]
@@ -306,13 +365,13 @@ func (f *fakeGrants) AirlockAccessPlaceholder(_ context.Context, grantID, name, 
 		// Copied rather than written to: a connection already open is reading the map it was
 		// handed, and the row this mints reaches it only on its next connection.
 		slots := maps.Clone(held.Slots)
-		slots[slot] = placeholder
+		slots[slot] = mint
 		names := maps.Clone(conn.Names)
 		names[name] = requests.AirlockGrantName{Slots: slots, Type: held.Type}
 		conn.Names = names
 		f.connections[password] = conn
 	}
-	return placeholder, nil
+	return mint, nil
 }
 
 // accessMints is how many exchanges asked the broker for a placeholder.
@@ -530,17 +589,34 @@ func (l *wrapListener) Accept() (net.Conn, error) {
 	return conn, nil
 }
 
-// newRig builds the whole world. Everything of o the caller leaves zero is filled in, and each
-// wrap, where a row gives one, is applied in order to every connection the proxy port's
-// listener accepts.
+// newRig builds the whole world under testRules. Everything of o the caller leaves zero is filled
+// in, and each wrap, where a row gives one, is applied in order to every connection the proxy
+// port's listener accepts.
 func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	t.Helper()
+	return newRuledRig(t, testRules(), o, wrap...)
+}
+
+// newRuledRig is newRig with rules as the fake grants' airlock rules, the rules the proxy reads on
+// each request (GrantSource.AirlockRules). A row that gives a grant source of its own (o.Grants)
+// has that source's rules read instead, and rules go to a fake nothing reads.
+func newRuledRig(t *testing.T, rules proxyrules.Rules, o Options, wrap ...func(net.Conn) net.Conn) *rig {
+	t.Helper()
+	return newServedRig(t, nil, rules, o, wrap...)
+}
+
+// newServedRig is newRuledRig with the stand-in service answering as each host of also, beside
+// the bound host: each resolves to a public address of its own, wired to that one service, so a
+// row whose rules bind a real service's name (api.anthropic.com) reaches the same stand-in.
+func newServedRig(t *testing.T, also []string, rules proxyrules.Rules, o Options, wrap ...func(net.Conn) net.Conn) *rig {
+	t.Helper()
 	r := &rig{t: t, grants: newFakeGrants(), logs: newLogCapture(), trust: x509.NewCertPool(), protocol: suiteProtocol}
+	r.grants.rules = rules
 
 	// The stand-in service behind the bound host, with a certificate of its own naming that
 	// host and an authority of the rig's own behind it, which is the only thing the proxy
 	// trusts upstream.
-	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Hosts: []string{boundHost}})
+	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Hosts: append([]string{boundHost}, also...)})
 	if err != nil {
 		t.Fatalf("the stand-in service: %v", err)
 	}
@@ -572,10 +648,11 @@ func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 		net.JoinHostPort(tunnelHost, "443"): tunnelAddr,
 		net.JoinHostPort(echoHost, "443"):   echoAddr,
 	}
-
-	if o.Rules.Secrets == nil {
-		o.Rules = testRules()
+	for i, host := range also {
+		r.addresses[host] = []netip.Addr{netip.AddrFrom4([4]byte{93, 184, 216, byte(50 + i)})}
+		r.dialTo[net.JoinHostPort(host, "443")] = r.service.Addr()
 	}
+
 	// The fake grants, unless the row gives a grant source of its own: a real broker's
 	// requests.Machine (profile_test.go, and slack_test.go's newSlackBroker), whose reads no map a
 	// row writes stands in for. r.grants is then a fake nothing reads.

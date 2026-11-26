@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A `dispatch://` address written as a link''s or a picture''s address ends at the link''s own closing parenthesis, where the page shows the link ending. A word typed straight after the link was read as more of the address: `[@Bob](dispatch://agent/abc)hello` named an agent `abc)hello`, who does not exist, so the comment reached nobody, and `[see](dispatch://CORE-1)word` named nothing at all. They name the agent `abc` and the issue CORE-1, and the comment is delivered to that agent. A pair of parentheses inside the address stays part of it, and an address written on its own is read as before. Where such an address stands after a bracket that opens no link, such as an escaped `\[`, an email address typed straight after its closing parenthesis is a link of its own. Display tree version 5 reads every stored display tree again, and renderer version 3 renders every stored rendering again. The re-index queue this release seeds (`refs_forms_owed`) reads every stored comment, ask, issue message and document again, so the references of text written before the deploy are read by the same rule.'
+time: 2026-11-25T12:00:00Z
+custom:
+    Issue: pr3125

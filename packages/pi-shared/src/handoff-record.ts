@@ -66,10 +66,10 @@ import { staleGitLockNote } from "./git-lock";
  * daemon would not read, and the daemon never records a sibling's `@-` as the role's handoff
  * commit.
  *
- * Every other completion — retro, the merger's, the architect's, which leaves no phase — reports
- * the commit the workspace stands on, `@-`, and no record. The implementer's report on its closed
- * issue's production check resolves neither: `legion-phase-ops.ts` never asks this module for
- * one.
+ * Every other phase completion — retro, the merger's, the architect's, which leaves no phase —
+ * reports the commit the workspace stands on, `@-`, and no record. A report with
+ * `check_opened_at` resolves neither: `legion-phase-ops.ts` bypasses this module for it. Without
+ * that field, even a call on a done issue follows the phase path and asks this module.
  *
  * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push
@@ -162,7 +162,7 @@ export function paneLatestHandoff(
   fetchImpl: typeof fetch = fetch
 ): LatestHandoff {
   return async (issue, word) => {
-    const { dispatch } = sessionDispatchSettings(file, env, { cwd, session });
+    const { dispatch } = await sessionDispatchSettings(file, env, { cwd, session });
     if (!dispatch.enabled) {
       throw new Error(`Dispatch is off for this pane: ${dispatch.error ?? dispatch.notice}`);
     }
@@ -228,7 +228,7 @@ const STANDING = ["log", "-r", "@-", "--no-graph", "-T", "commit_id"] as const;
 
 /** A commit as a handoff record names it: 40 lower-case hexadecimal characters, the shape every
  * role's prompt asks for and the one the daemon compares a completion's head against. */
-const RECORD_HEAD = /^[0-9a-f]{40}$/;
+export const RECORD_HEAD = /^[0-9a-f]{40}$/;
 
 /** The head a handoff record's `body` names, the commit the work that record reports was done
  * against, or `undefined` when the body is no JSON object, carries no `head`, or carries one of

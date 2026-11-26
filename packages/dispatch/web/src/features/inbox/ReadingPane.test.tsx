@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a file pasted, which user-event has no form for
@@ -7,14 +7,17 @@ import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
   Anchor,
   Artifact,
   ArtifactVersionText,
+  AskAnchorArtifact,
   AskSnooze,
   Comment,
   DisplayTree,
@@ -35,6 +38,12 @@ import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 installInboxApiMocks();
 
@@ -91,6 +100,17 @@ function document(overrides: Partial<Artifact> = {}): Artifact {
     versions: [],
     ...overrides,
   };
+}
+
+/** The issue's second document, beside its spec (`document()`). */
+function talkDocument(): Artifact {
+  return document({
+    id: "artifact-2",
+    name: "talk.md",
+    primary: false,
+    ref_key: "CORE-1/talk-md",
+    slug: "talk-md",
+  });
 }
 
 function createQueryClient(): QueryClient {
@@ -228,6 +248,31 @@ function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
   };
 }
 
+/** The decision block `ship_it` under the heading `rollout`, as the editor draws them. */
+const SHIP_IT_UNDER_ROLLOUT =
+  '<h2 data-block-id="rollout">Rollout</h2>' +
+  '<section data-block-id="ship_it">Ship behind a flag?</section>';
+
+/** The decision block `ship_it` before any heading, as the editor draws it. */
+const SHIP_IT_BEFORE_ANY_HEADING =
+  '<p data-block-id="context">How it goes out.</p>' +
+  '<section data-block-id="ship_it">Ship behind a flag?</section>' +
+  '<h2 data-block-id="rollout">Rollout</h2>';
+
+/** The fake's runtime, with its editor wrapped in `createEditor` where a row gives one. */
+function runtimeWith(
+  fake: FakeDocumentRuntime,
+  createEditor: ((inner: CreateEditor) => CreateEditor) | undefined
+) {
+  return {
+    ...fake.runtime,
+    createEditor:
+      createEditor === undefined
+        ? fake.runtime.createEditor
+        : createEditor(fake.runtime.createEditor),
+  };
+}
+
 function renderPane({
   ask,
   createEditor,
@@ -241,11 +286,7 @@ function renderPane({
   /** Each document the column opened a room for, in the order it opened them. */
   const opened: string[] = [];
   const runtime = {
-    ...fake.runtime,
-    createEditor:
-      createEditor === undefined
-        ? fake.runtime.createEditor
-        : createEditor(fake.runtime.createEditor),
+    ...runtimeWith(fake, createEditor),
     loadTransport: async () => {
       const connect = await fake.runtime.loadTransport();
       return (artifactId: string, callbacks: Parameters<typeof connect>[1]) => {
@@ -372,11 +413,7 @@ test("a decision block's column marks the section from its heading down to the b
 test("a decision block before any heading sits in no section, so no bar is drawn", async () => {
   const { runtime, view } = renderPane({
     ask: decisionAsk(),
-    createEditor: drawBlocks(
-      '<p data-block-id="context">How it goes out.</p>' +
-        '<section data-block-id="ship_it">Ship behind a flag?</section>' +
-        '<h2 data-block-id="rollout">Rollout</h2>'
-    ),
+    createEditor: drawBlocks(SHIP_IT_BEFORE_ANY_HEADING),
     seed: (client) => seedDocument(client, document()),
   });
 
@@ -1065,10 +1102,7 @@ test("a project document's head names the project and the document, and opens it
       issue: undefined,
       issue_key: null,
     }),
-    createEditor: drawBlocks(
-      '<h2 data-block-id="rollout">Rollout</h2>' +
-        '<section data-block-id="ship_it">Ship behind a flag?</section>'
-    ),
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
     seed: (client) =>
       seedDocument(
         client,
@@ -1091,6 +1125,578 @@ test("a project document's head names the project and the document, and opens it
     );
   } finally {
     view.unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Where the head's Open page goes: one row for each kind of question the column draws, and for
+// each kind of Reply thread.
+// ---------------------------------------------------------------------------------------------
+
+/** The head's **Open page**, in the column. */
+function openPage(): HTMLElement {
+  return within(screen.getByTestId("inbox-pane")).getByRole("link", { name: "Open page" });
+}
+
+/** `talk.md` as an ask row names the document its quote or its approval is of. */
+const TALK_NAMED: AskAnchorArtifact = {
+  name: "talk.md",
+  primary: false,
+  project: "CORE",
+  slug: "talk-md",
+};
+
+/** The project document `design-notes` as an ask row names it. */
+const DESIGN_NOTES_NAMED: AskAnchorArtifact = {
+  name: "Design notes",
+  primary: false,
+  project: "CORE",
+  slug: "design-notes",
+};
+
+/** A question in the project document `design-notes`: it has no issue, and `askIssueKey` reads
+ *  `issue` before `issue_key`, so both go. */
+const IN_DESIGN_NOTES: Partial<InboxRow> = {
+  document: { name: "Design notes", project: "CORE", slug: "design-notes" },
+  issue: undefined,
+  issue_key: null,
+};
+
+/** The decision block `ship_it` in `talk.md`. */
+function talkDecisionAsk(): InboxRow {
+  return decisionAsk({ block_artifact: { id: "artifact-2", primary: false, slug: "talk-md" } });
+}
+
+/** An approval request for the document `artifactId` at version 4: `approval` and
+ *  `approval_artifact` name the same document, as the server sends them. */
+function documentApprovalAsk(
+  artifactId: string,
+  named: AskAnchorArtifact,
+  overrides: Partial<InboxRow> = {}
+): InboxRow {
+  return approvalAsk(undefined, {
+    approval: {
+      artifact_id: artifactId,
+      documents: null,
+      name: named.name,
+      requested_version: 4,
+      version: 4,
+    },
+    approval_artifact: named,
+    ...overrides,
+  });
+}
+
+/** The Reply row of `ask`'s thread on `CORE-1`. */
+function askThread(ask: InboxRow): MyReplyThreadRow {
+  return threadRow({
+    issue: { key: "CORE-1", title: "Fix the thing" },
+    kind: "ask",
+    ref: `/issues/CORE-1/asks/${ask.id}`,
+    thread_id: ask.id,
+  });
+}
+
+/** Syncs the room the column opened and waits for the editor to draw `blockId` in it. */
+async function drawnAt(runtime: FakeDocumentRuntime, blockId: string): Promise<void> {
+  await waitFor(() => expect(runtime.connections).toHaveLength(1));
+  runtime.sync();
+  await waitFor(() =>
+    expect(
+      screen.getByTestId("inbox-pane").querySelector(`[data-block-id="${blockId}"]`)
+    ).not.toBeNull()
+  );
+}
+
+test("Open page of a decision block in a second document opens that document at its section heading", async () => {
+  const { runtime, view } = renderPane({
+    ask: talkDecisionAsk(),
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
+    seed: (client) => seedDocument(client, talkDocument()),
+  });
+
+  try {
+    await drawnAt(runtime, "ship_it");
+    await waitFor(() =>
+      expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-rollout")
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a decision block in a second document opens that document at the block while the editor has drawn nothing", async () => {
+  const { runtime, view } = renderPane({
+    ask: talkDecisionAsk(),
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
+    seed: (client) => seedDocument(client, talkDocument()),
+  });
+
+  try {
+    // The document is read and its room is open; the room has not synced, so the editor has
+    // drawn no block and the heading above `ship_it` is not found yet.
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-ship%5Fit");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a decision block in a second document opens that document at the block before the column settles on it", () => {
+  const { opened, view } = renderPane({
+    ask: talkDecisionAsk(),
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
+    seed: (client) => seedDocument(client, talkDocument()),
+  });
+
+  try {
+    // The first draw, before the settle: the column has opened no room yet.
+    expect(opened).toEqual([]);
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-ship%5Fit");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a decision block in the spec opens the spec at its section heading", async () => {
+  const { runtime, view } = renderPane({
+    ask: decisionAsk(),
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
+    seed: (client) => seedDocument(client, document()),
+  });
+
+  try {
+    await drawnAt(runtime, "ship_it");
+    await waitFor(() =>
+      expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/spec#b-rollout")
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a decision block with no heading above it in a second document opens that document at the block", async () => {
+  const { runtime, view } = renderPane({
+    ask: talkDecisionAsk(),
+    createEditor: drawBlocks(SHIP_IT_BEFORE_ANY_HEADING),
+    seed: (client) => seedDocument(client, talkDocument()),
+  });
+
+  try {
+    await drawnAt(runtime, "ship_it");
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-ship%5Fit");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a decision block in a second document the column cannot read opens that document at the block", async () => {
+  getArtifact.mockRejectedValue(new Error("DOCUMENT_UNLOADABLE"));
+  const { view } = renderPane({ ask: talkDecisionAsk() });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-ship%5Fit");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of an approval request for a second document opens that document, with no fragment", async () => {
+  const { view } = renderPane({ ask: documentApprovalAsk("artifact-2", TALK_NAMED) });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of an approval request for the spec opens the spec, with no fragment", async () => {
+  const { view } = renderPane({ ask: approvalAsk() });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/spec");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a question on text quoted from a second document opens that document at the quote's block", async () => {
+  const { view } = renderPane({
+    ask: issueAsk({
+      anchor: anchor({ artifact_id: "artifact-2", block_id: "quoted" }),
+      anchor_artifact: TALK_NAMED,
+    }),
+  });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-quoted");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a question on text quoted from the spec opens the spec at the quote's block", async () => {
+  const { view } = renderPane({
+    ask: issueAsk({
+      anchor: anchor({ block_id: "quoted" }),
+      anchor_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
+    }),
+  });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/spec#b-quoted");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a question on a quote that names no block opens the quoted document, with no fragment", async () => {
+  const { view } = renderPane({
+    ask: issueAsk({
+      anchor: anchor({ artifact_id: "artifact-2", block_id: null }),
+      anchor_artifact: TALK_NAMED,
+    }),
+  });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a question in no document opens the issue page", async () => {
+  const { view } = renderPane({ ask: issueAsk() });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a decision block whose row names no document opens the issue page", async () => {
+  const { view } = renderPane({ ask: issueAsk({ block_id: "ship_it" }) });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a question on quoted text whose row names no document opens the issue page", async () => {
+  const { view } = renderPane({ ask: issueAsk({ anchor: anchor({ block_id: "quoted" }) }) });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of an approval request whose row names no document opens the issue page", async () => {
+  const { view } = renderPane({ ask: approvalAsk(undefined, { approval_artifact: undefined }) });
+
+  try {
+    // `getArtifact` is refused by default, so the column falls back to the card.
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of an approval request for a project document opens the document, with no fragment", async () => {
+  const { view } = renderPane({
+    ask: documentApprovalAsk("artifact-1", DESIGN_NOTES_NAMED, IN_DESIGN_NOTES),
+  });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(openPage()).toHaveAttribute("href", "/projects/CORE/documents/design-notes");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a question on text quoted from a project document opens the document at the quote's block", async () => {
+  const { view } = renderPane({
+    ask: issueAsk({
+      ...IN_DESIGN_NOTES,
+      anchor: anchor({ block_id: "quoted" }),
+      anchor_artifact: DESIGN_NOTES_NAMED,
+    }),
+  });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/projects/CORE/documents/design-notes#b-quoted");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a question in a project document with no block and no quote opens the document", async () => {
+  const { view } = renderPane({ ask: issueAsk({ ...IN_DESIGN_NOTES, artifact_id: "artifact-1" }) });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(openPage()).toHaveAttribute("href", "/projects/CORE/documents/design-notes");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Open page of a decision block's Reply thread in a second document opens that document at its section heading, as o does", async () => {
+  const ask = talkDecisionAsk();
+  const getAsk = mockAskReads([ask]);
+  const { runtime, view } = renderThread(askThread(ask), {
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
+    seed: (client) => seedDocument(client, talkDocument()),
+  });
+
+  try {
+    await drawnAt(runtime, "ship_it");
+    await waitFor(() =>
+      expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-rollout")
+    );
+    // The link `o` follows on a thread row (`Inbox.tsx`).
+    expect(openPage()).toHaveAttribute("data-inbox-owner");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of a decision block's Reply thread in the spec opens the spec at its section heading", async () => {
+  const ask = decisionAsk();
+  const getAsk = mockAskReads([ask]);
+  const { runtime, view } = renderThread(askThread(ask), {
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
+    seed: (client) => seedDocument(client, document()),
+  });
+
+  try {
+    await drawnAt(runtime, "ship_it");
+    await waitFor(() =>
+      expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/spec#b-rollout")
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of a decision block's Reply thread with no heading above it in a second document opens that document at the block", async () => {
+  const ask = talkDecisionAsk();
+  const getAsk = mockAskReads([ask]);
+  const { runtime, view } = renderThread(askThread(ask), {
+    createEditor: drawBlocks(SHIP_IT_BEFORE_ANY_HEADING),
+    seed: (client) => seedDocument(client, talkDocument()),
+  });
+
+  try {
+    await drawnAt(runtime, "ship_it");
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-ship%5Fit");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of a decision block's Reply thread opens its document at the block once the document is read and before the editor draws it", async () => {
+  const ask = talkDecisionAsk();
+  const getAsk = mockAskReads([ask]);
+  const { runtime, view } = renderThread(askThread(ask), {
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
+    seed: (client) => seedDocument(client, talkDocument()),
+  });
+
+  try {
+    // The room is open and has not synced, so the editor has drawn no block.
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/artifacts/talk-md#b-ship%5Fit");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of a decision block's Reply thread whose document cannot be read opens the thread's own page", async () => {
+  getArtifact.mockRejectedValue(new Error("DOCUMENT_UNLOADABLE"));
+  const ask = talkDecisionAsk();
+  const getAsk = mockAskReads([ask]);
+  const { view } = renderThread(askThread(ask));
+
+  try {
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("inbox-pane").querySelector("[data-inbox-pane-fallback]")
+      ).not.toBeNull()
+    );
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/asks/ask-a");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of a decision block's Reply thread opens the thread's own page while its document is being read", async () => {
+  getArtifact.mockImplementation(() => new Promise(() => {}));
+  const ask = talkDecisionAsk();
+  const getAsk = mockAskReads([ask]);
+  const { view } = renderThread(askThread(ask));
+
+  try {
+    await waitFor(() => expect(getArtifact).toHaveBeenCalledWith("artifact-2"));
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/asks/ask-a");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of a decision block's Reply thread opens the thread's own page while its ask is being read", async () => {
+  const getAsk = spyOn(api, "getAsk").mockImplementation(() => new Promise(() => {}));
+  const { view } = renderThread(askThread(talkDecisionAsk()));
+
+  try {
+    await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-a"));
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/asks/ask-a");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of a decision block's Reply thread in a project document opens the thread's own page at its section heading", async () => {
+  const notes = document({
+    issue_key: null,
+    name: "Design notes",
+    primary: false,
+    slug: "design-notes",
+  });
+  const ask = decisionAsk({
+    ...IN_DESIGN_NOTES,
+    block_artifact: { id: notes.id, primary: false, slug: "design-notes" },
+  });
+  const getAsk = mockAskReads([ask]);
+  const thread = threadRow({
+    document: { name: "Design notes", project: "CORE", slug: "design-notes" },
+    kind: "ask",
+    ref: "/projects/CORE/documents/design-notes?ask=ask-a",
+    thread_id: "ask-a",
+  });
+  const { runtime, view } = renderThread(thread, {
+    createEditor: drawBlocks(SHIP_IT_UNDER_ROLLOUT),
+    seed: (client) => {
+      seedDocument(client, notes);
+      // The thread's own body reads a thread in a project document under the document's id,
+      // which it finds by `project/slug`.
+      client.setQueryData(["artifact-ref", "CORE/design-notes"], notes);
+    },
+  });
+
+  try {
+    await drawnAt(runtime, "ship_it");
+    await waitFor(() =>
+      expect(openPage()).toHaveAttribute(
+        "href",
+        "/projects/CORE/documents/design-notes?ask=ask-a#b-rollout"
+      )
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of an approval request's Reply thread opens the thread's own page", async () => {
+  const ask = approvalAsk();
+  const getAsk = mockAskReads([ask]);
+  const { view } = renderThread(askThread(ask));
+
+  try {
+    await waitFor(() => expect(screen.getByTestId("ask-ask-a")).toBeTruthy());
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/asks/ask-a");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of the Reply thread of a question on quoted text opens the thread's own page", async () => {
+  const ask = issueAsk({
+    anchor: anchor({ artifact_id: "artifact-2", block_id: "quoted" }),
+    anchor_artifact: TALK_NAMED,
+  });
+  const getAsk = mockAskReads([ask]);
+  const { view } = renderThread(askThread(ask));
+
+  try {
+    await waitFor(() => expect(screen.getByTestId("ask-ask-a")).toBeTruthy());
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/asks/ask-a");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of the Reply thread of a question in no document opens the thread's own page", async () => {
+  const ask = issueAsk();
+  const getAsk = mockAskReads([ask]);
+  const { view } = renderThread(askThread(ask));
+
+  try {
+    await waitFor(() => expect(screen.getByTestId("ask-ask-a")).toBeTruthy());
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1/asks/ask-a");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("Open page of a comment thread anchored in a project document opens the thread's own page at its section heading", async () => {
+  const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue([]);
+  const thread = threadRow({
+    anchor: anchor(),
+    document: { name: "spec.md", project: "CORE", slug: "spec" },
+    ref: "/projects/CORE/documents/spec?comment=comment-1",
+  });
+  const { runtime, view } = renderThread(thread, {
+    // The fake editor's view has no schema to install the thread's anchored block views over
+    // (`installTypedBlocks`), and it draws the blocks as HTML rather than through node views, so
+    // it is built without the anchored block.
+    createEditor: (inner) =>
+      drawBlocks(
+        '<h2 data-block-id="rollout">Rollout</h2>' +
+          '<p data-block-id="b-1">Three attempts, then stop.</p>'
+      )((root, options) => inner(root, { ...options, anchoredBlock: undefined })),
+    seed: (client) => seedDocument(client, document({ issue_key: null, versions: [version(1)] })),
+  });
+
+  try {
+    await drawnAt(runtime, "b-1");
+    await waitFor(() =>
+      expect(openPage()).toHaveAttribute(
+        "href",
+        "/projects/CORE/documents/spec?comment=comment-1#b-rollout"
+      )
+    );
+  } finally {
+    view.unmount();
+    listArtifactComments.mockRestore();
   }
 });
 
@@ -1208,15 +1814,25 @@ function anchor(overrides: Partial<Anchor> = {}): Anchor {
   };
 }
 
-function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = () => {}) {
+function renderThread(
+  thread: MyReplyRow,
+  {
+    createEditor,
+    seed = () => {},
+  }: {
+    createEditor?: (inner: CreateEditor) => CreateEditor;
+    seed?: (client: QueryClient) => void;
+  } = {}
+) {
   const fake = fakeDocumentRuntime({ text: "The live document" });
+  const runtime = runtimeWith(fake, createEditor);
   const client = createQueryClient();
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   seed(client);
   const tree = (row: MyReplyRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <DocumentRuntime.Provider value={fake.runtime}>
+        <DocumentRuntime.Provider value={runtime}>
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
@@ -1267,6 +1883,40 @@ test("a comment thread on an issue shows the issue and the thread, with no docum
   }
 });
 
+// The column's subject line prints the thread's root in one line: a root its author deleted has
+// no subject left and reads as the deleted line, an edited one carries ` · edited`, and one that
+// stands unedited carries neither.
+test("a thread's subject line reads as deleted for a deleted root and marks an edited one", async () => {
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const subject = async (overrides: Partial<MyReplyThreadRow>) => {
+    const { view } = renderThread(
+      threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, ...overrides })
+    );
+    try {
+      const body = await paneBody();
+      return body.querySelector("[data-inbox-thread-subject]")?.textContent;
+    } finally {
+      view.unmount();
+    }
+  };
+  try {
+    expect(await subject({ edited_at: "2026-10-12T00:20:00Z" })).toBe("The retry budget · edited");
+    expect(await subject({})).toBe("The retry budget");
+    // The deleted root was edited first, so ` · edited` can be drawn, and only the column's own
+    // reading of the delete keeps it off.
+    const deleted = await subject({
+      deleted_at: "2026-10-12T00:40:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      edited_at: "2026-10-12T00:20:00Z",
+      subject: "",
+    });
+    expect(deleted).toContain("Deleted by alice");
+    expect(deleted).not.toContain("edited");
+  } finally {
+    listComments.mockRestore();
+  }
+});
+
 test("an issue message conversation reads the issue's messages", async () => {
   const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
   const { view } = renderThread(
@@ -1278,6 +1928,7 @@ test("an issue message conversation reads the issue's messages", async () => {
   );
   try {
     expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "issue");
+    expect(openPage()).toHaveAttribute("href", "/issues/CORE-1?comment=comment-1");
     await waitFor(() => expect(listIssueMessages).toHaveBeenCalledWith("CORE-1"));
   } finally {
     view.unmount();
@@ -1335,8 +1986,8 @@ test("a comment thread in a document opens that document at its block", async ()
     document: { name: "spec.md", project: "CORE", slug: "spec" },
     ref: "/projects/CORE/documents/spec?comment=comment-1",
   });
-  const { runtime, view } = renderThread(thread, (client) => {
-    seedDocument(client, document({ issue_key: null, versions: [version(1)] }));
+  const { runtime, view } = renderThread(thread, {
+    seed: (client) => seedDocument(client, document({ issue_key: null, versions: [version(1)] })),
   });
   try {
     expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "document");
@@ -1359,14 +2010,15 @@ test("an orphaned anchor falls back to the thread alone, with its quote", async 
     document: { name: "spec.md", project: "CORE", slug: "spec" },
     ref: "/projects/CORE/documents/spec?comment=comment-1",
   });
-  const { runtime, view } = renderThread(thread, (client) => {
-    seedDocument(client, document({ issue_key: null, versions: [version(1)] }));
+  const { runtime, view } = renderThread(thread, {
+    seed: (client) => seedDocument(client, document({ issue_key: null, versions: [version(1)] })),
   });
   try {
     const body = await paneBody();
     expect(body).toHaveAttribute("data-inbox-pane-body", "document");
     expect(body.hasAttribute("data-inbox-pane-fallback")).toBe(true);
     expect(body.querySelector("[data-inbox-thread-quote]")?.textContent).toBe("three attempts");
+    expect(openPage()).toHaveAttribute("href", "/projects/CORE/documents/spec?comment=comment-1");
     // Nothing opened the document: an anchor nothing can be placed at opens no room.
     await tick(SETTLE_MS * 2);
     expect(runtime.connections).toHaveLength(0);
@@ -1407,9 +2059,11 @@ test("the next ask's card shows no answer refused on the ask before it, and its 
       thread_id: "ask-x",
       unread: false,
     }),
-    // The second ask's thread is read already, as it is once the reader has been on its row, so
-    // the column draws its card at once, with no skeleton between the two.
-    (client) => client.setQueryData(["ask-thread", next.id], { ask: next, ...next.thread })
+    {
+      // The second ask's thread is read already, as it is once the reader has been on its row,
+      // so the column draws its card at once, with no skeleton between the two.
+      seed: (client) => client.setQueryData(["ask-thread", next.id], { ask: next, ...next.thread }),
+    }
   );
   try {
     const card = await screen.findByTestId("ask-ask-x");
@@ -1448,19 +2102,15 @@ test("the next ask's card shows no answer refused on the ask before it, and its 
 /** A thread's root comment on `issueKey`, as the issue's comments read answers it. */
 function rootComment(id: string, issueKey: string): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
-    answers: null,
-    artifact_id: null,
     ask_id: null,
     author: { id: "bob", kind: "user" },
     body: "The retry budget is too small.",
     created_at: "2026-10-12T00:00:00Z",
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: issueKey,
-    mentions: [],
-    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -1484,11 +2134,13 @@ test("the next thread's reply box shows no upload refused in the thread before i
   );
   const { rerender, view } = renderThread(
     threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, unread: false }),
-    (client) => {
-      client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
-      // The second thread's comments are read already, as they are once the reader has been on
-      // its row, so the column draws its box at once, with no skeleton between the two.
-      client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+    {
+      seed: (client) => {
+        client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
+        // The second thread's comments are read already, as they are once the reader has been
+        // on its row, so the column draws its box at once, with no skeleton between the two.
+        client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+      },
     }
   );
   try {
@@ -1533,11 +2185,13 @@ test("the next thread's reply box shows no upload refused in the thread before i
 test("text typed and not sent in a thread's reply box waits there for the reader's return, and never shows in another thread's", async () => {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const first = threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, unread: false });
-  const { rerender, view } = renderThread(first, (client) => {
-    client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
-    // The second thread's comments are read already, as they are once the reader has been on
-    // its row, so the column draws its box at once, with no skeleton between the two.
-    client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+  const { rerender, view } = renderThread(first, {
+    seed: (client) => {
+      client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
+      // The second thread's comments are read already, as they are once the reader has been on
+      // its row, so the column draws its box at once, with no skeleton between the two.
+      client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+    },
   });
   try {
     const user = userEvent.setup();
@@ -1592,6 +2246,7 @@ function plannerExchange(id: string, reply: string): MessageRead {
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,

@@ -1,5 +1,10 @@
 package textcheck
 
+// This test reads internal/config's key table as source text rather than importing the
+// package, so the table is a read of its own beside the guide.
+//ci:reads packages/daemon/internal/config/keytable.go `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestThePlanGuidanceRollbackSectionNamesTheKeyTheTableDeclares (planGuidanceKeyTable)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestThePlanGuidanceRollbackSectionNamesTheKeyTheTableDeclares (wayBackGuide)
+
 import (
 	"fmt"
 	"regexp"

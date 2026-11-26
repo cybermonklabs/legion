@@ -21,12 +21,18 @@ export interface HostModel {
 
 /** The host's `ModelRegistry`, as far as this package reads it: the two members a retry fallback
  * chain's resolution needs as its `RetryFallbackModelLookup`
- * (`packages/coding-agent/src/session/retry-fallback-chains.ts:37-41` at the pinned tag), and the
+ * (`packages/coding-agent/src/session/retry-fallback-chains.ts:38-42` at the pinned tag), and the
  * suppression the host's own turn recovery reads before it picks a fallback, by the entry's own
- * selector and by the key of the model it resolves to (`isRetryFallbackEntrySuppressed`,
- * `session/turn-recovery.ts:2194-2199` at the pinned tag), so an extension stepping down the same
- * chain can skip what the host skips. Each is a method of the live registry, which reads private
- * state of its own, so a caller calls it on the registry rather than handing it over detached. */
+ * selector and by the key of the model it resolves to, so an extension stepping down the same
+ * chain can skip the entries the host suppresses. The host also passes over a route the OpenAI
+ * `cyber_policy` closure holds closed until a person's next prompt (`isRetryFallbackEntrySuppressed`,
+ * `session/turn-recovery.ts:2487-2496` at the pinned tag), and this registry does not expose that
+ * closure: such an extension can pick a closed route. Before the next model call the host moves
+ * the session off it to an open fallback where its chain has one, and holds the call otherwise
+ * (`#leaveClosedRoute` and `installCyberPolicyGuard`, `session/agent-session.ts:3966-3972` and
+ * `:4628-4631`).
+ * Each is a method of the live registry, which reads private state of its own, so a caller calls
+ * it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
   /** The model one provider and id name, or undefined when this deployment disables the provider
    * or holds no such model. */
@@ -50,7 +56,7 @@ export interface SessionContext {
   readonly taskDepth?: number;
   /** Which runner the event belongs to: the top-level session's is `main`, a `task` subagent's
    * `sub`. `id` is the host's agent registry id for that runner (`ExtensionAgentIdentity`,
-   * `extensibility/extensions/types.ts:608-625` at the pinned tag). */
+   * `extensibility/extensions/types.ts:613-630` at the pinned tag). */
   readonly agent?: { readonly kind: "main" | "sub"; readonly id?: string };
   readonly sessionManager: {
     readonly getSessionId: () => string;
@@ -136,7 +142,7 @@ export interface SessionContext {
   readonly hasPendingMessages?: () => boolean;
   /** The models the host holds, the one the session runs now, and what one selector such as
    * `anthropic/claude-opus-4-5` resolves to (`ExtensionModelQuery`,
-   * `extensibility/extensions/types.ts:579-597` at the pinned tag). */
+   * `extensibility/extensions/types.ts:584-602` at the pinned tag). */
   readonly models?: {
     readonly list: () => readonly HostModel[];
     readonly current: () => HostModel | undefined;
@@ -175,7 +181,7 @@ export interface SessionContext {
 }
 
 /** The branch entry a model change leaves, as `sessionManager.getBranch()` hands it
- * (`packages/coding-agent/src/session/session-entries.ts:153-161` at the pinned tag).
+ * (`packages/coding-agent/src/session/session-entries.ts:154-162` at the pinned tag).
  * `resolvedModelIsFallback` marks a change the host's own fallback walk made. */
 export interface ModelChangeEntry {
   readonly type: "model_change";
@@ -186,7 +192,7 @@ export interface ModelChangeEntry {
   readonly resolvedModelIsFallback?: boolean;
 }
 
-/** The branch entry a thinking-level change leaves (`session/session-entries.ts:142-151` at the
+/** The branch entry a thinking-level change leaves (`session/session-entries.ts:143-152` at the
  * pinned tag). */
 export interface ThinkingLevelChangeEntry {
   readonly type: "thinking_level_change";
@@ -254,7 +260,7 @@ export interface AsyncJobDelivery {
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
- * build (18.18.6-sami.20261122-091943, `.omp-pin`) answers undefined only before its runner is
+ * build (18.18.6-sami.20261125-164517, `.omp-pin`) answers undefined only before its runner is
  * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
  * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
@@ -322,7 +328,7 @@ export interface AgentEndMessage {
    * provider failure, `length` a truncation. */
   readonly stopReason?: string;
   /** What the provider said about an `error` stop, when it said anything: Oh My Pi carries
-   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1492-1500`,
+   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1499-1507`,
    * `StopDetails` at `packages/ai/src/providers/anthropic-wire.ts:481-487`, at the pinned tag). */
   readonly stopDetails?: {
     readonly type?: string | null;
@@ -330,9 +336,16 @@ export interface AgentEndMessage {
     readonly explanation?: string | null;
   } | null;
   /** The error text of an `error` stop, which each provider writes its own way (`AssistantMessage`,
-   * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
+   * `packages/ai/src/types.ts:1499-1507` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
+  /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
+   * one (`AssistantMessage.errorStatus`, `packages/ai/src/types.ts:1524-1525` of
+   * cybermonklabs/oh-my-pi at the pinned tag `v18.18.6-sami.20261125-164517`). The host copies this
+   * field into its `prompt_result`'s `httpStatus`
+   * (`packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:236` at that tag), and the
+   * turn-outcome report carries it as its own `httpStatus` (`packages/pi-legion/src/turn-outcome.ts`). */
+  readonly errorStatus?: number;
 }
 
 /**
@@ -349,7 +362,7 @@ export interface AgentEndEvent {
    * does not set it, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
-   * be delivered (`agent-session.ts:6012-6015` at the pinned tag), which OMP reaches only after
+   * be delivered (`agent-session.ts:6454-6457` at the pinned tag), which OMP reaches only after
    * each of its retries and continuations has declined the turn: the pane is idle until the job's
    * result starts the next run. */
   readonly awaitingAsyncWork?: boolean;
@@ -721,7 +734,16 @@ export interface PiApi {
    */
   readonly sendUserMessage: (
     content: string | readonly ContentBlock[],
-    options?: { readonly deliverAs: "aside" | "followUp" }
+    options?: {
+      readonly deliverAs?: "aside" | "followUp";
+      /** `"outside"` when the text is a person's own turn the extension relays: the host's
+       *  `sendUserMessage` then ends the session's cyber-policy hold, as a prompt typed at its
+       *  terminal does (`session/agent-session.ts:12979`, the option at
+       *  `session/agent-session-types.ts:693-694`, at v18.18.6-sami.20261125-164517). Unset, the
+       *  text counts as made inside the session and the hold stays; a host without the option
+       *  ignores it. */
+      readonly origin?: "outside" | "inside";
+    }
   ) => void;
   /**
    * Runs text as if typed at the session's own terminal: a built-in its host can run headless, an
@@ -733,7 +755,18 @@ export interface PiApi {
    */
   readonly sendUserInput?: (
     text: string,
-    options?: { readonly deliverAs?: "aside"; readonly tag?: string }
+    options?: {
+      readonly deliverAs?: "aside";
+      readonly tag?: string;
+      /** `"outside"` when the text is a person's own turn the extension relays, a bridge's typed
+       *  Send: the host hands it on to the prompt, skill or built-in the input runs, and a prompt
+       *  or skill so marked ends the session's cyber-policy hold as a prompt typed at the terminal
+       *  does (`extensibility/extensions/send-user-input-handler.ts:89-142` and
+       *  `SendUserInputOptions` at `extensibility/extensions/types.ts:2503-2508`, at
+       *  v18.18.6-sami.20261125-164517). Unset, the input counts as made inside the session and the
+       *  hold stays. */
+      readonly origin?: "outside" | "inside";
+    }
   ) => Promise<UserInputResult>;
   /** The session's extension, custom and skill slash commands (`skill:<name>`), never its
    *  built-ins. Every Oh My Pi build has it; Legion's own test hosts leave it out. */
@@ -749,7 +782,7 @@ export interface PiApi {
   readonly setActiveTools: (tools: string[]) => Promise<void>;
   /**
    * Switches the session's model, as `/model` does; false when no API key for that model is
-   * available (`ExtensionAPI`, `extensibility/extensions/types.ts:2253-2260` at the pinned tag).
+   * available (`ExtensionAPI`, `extensibility/extensions/types.ts:2274-2281` at the pinned tag).
    */
   readonly setModel?: (model: HostModel) => Promise<boolean>;
   /** The session's thinking level, and a setter for it (same `ExtensionAPI` block at the pinned

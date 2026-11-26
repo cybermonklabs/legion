@@ -338,7 +338,11 @@ func roleList() string {
 // The project's controller is refused whatever state it is in: its keeper starts it, as that
 // keeper alone is told when it must (supervise's operatorRetry refuses the controller's retry
 // for the same reason), and the controller's own door cannot name it at all, since `controller`
-// is no role a claim token is built from (claimFreshSession).
+// is no role a claim token is built from (claimFreshSession). A controller held for OpenAI's
+// cyber-policy refusal is the exception, by the one rule the keeper and the machine read too
+// (supervise.Claim.KeeperRetries): its keeper retries it no more, so the operator's `legion
+// claims retry`, with or without --fresh-session, is how it comes back, in a new session either
+// way (supervise's freshSession), and the machine admits that retry (operatorRetry).
 //
 // A claim stored working is in a turn, under a launch the wake pacing parks, being compacted,
 // or over no process at all, and one order tells them apart at both doors
@@ -357,7 +361,7 @@ func roleList() string {
 // launch the pause holds (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, started, ok bool) {
 	c := m.Claim()
-	if c.Role == claim.RoleController {
+	if c.KeeperRetries() {
 		// The keeper's resume is the rule's, which an operator's suspension holds against (the
 		// daemon's controllerKeeper, supervise.Claim.RuleHolds), so the sentence names the
 		// suspension that keeper does lift: the daemon's own. It is the one place the keeper is
@@ -705,7 +709,7 @@ func relaunchWaits(view supervise.ClaimView) bool {
 // the suspended claim, the retry for a failed or retired one, which a resume is refused for
 // (supervise's onResume and onOperatorRetry rows) — and freshSession picks between the two.
 func startsAgain(state supervise.ClaimState) bool {
-	return state == supervise.StateSuspended || failedOrRetired(state)
+	return state == supervise.StateSuspended || supervise.FailedOrRetired(state)
 }
 
 // agentRunning is whether a claim runs an agent that is in no turn: one registered, ready or
@@ -876,7 +880,7 @@ func (s *server) refusedAfterTheStop(w http.ResponseWriter, r *http.Request, m *
 	}
 	s.operatorFailure(w, r, step.request, token, err)
 	s.log.Info(servedTheStopAsAFailure, "caller", r.RemoteAddr, "pod", at.pod,
-		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion, "follows", followsRestore,
+		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion(), "follows", followsRestore,
 		"claim", token, "request", step.request, "served", servedTheRefusedStep)
 	return 0, "", false, false
 }

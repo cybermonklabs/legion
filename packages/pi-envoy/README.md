@@ -335,7 +335,7 @@ From this directory:
 ```sh
 bun run test
 bun test extensions/envoy.test.ts -t "<name>"   # one test
-bunx tsc --noEmit
+bun run typecheck   # renders the Dispatch API types from the document first, then tsc --noEmit
 bun run lint
 bun run build
 ```
@@ -549,6 +549,10 @@ reviews these calls:
 
 - `dispatch ask`, `dispatch message`, `dispatch edit-ask`, `dispatch comment`, `dispatch doc-edit`
   and `dispatch request-approval`
+- the four corrections of a post the gate already reviewed: `dispatch edit-comment`,
+  `dispatch delete-comment`, `dispatch edit-message` and `dispatch delete-message`. An edit's new
+  body is the text under review, as the `comment` or `message` that posted it was; a delete
+  carries no body, so what is under review is the call itself, which names the post it takes down
 - `dispatch issue` with `--spec` or `--spec-file`
 - `dispatch artifact` when it uploads a markdown document: inline text (`--content`,
   `--content-file`), a `--path` file whose name ends in `.md` or `.markdown`, or a `--name` that
@@ -557,8 +561,15 @@ reviews these calls:
 Every other Dispatch command is outside the gate, and its text posts unreviewed: among them
 `dispatch issue-update --reason`, `dispatch resolve-ask --reason` and `dispatch suggest`.
 
-The gate reads the arguments from the command's own `--dry-run`. The dry run sends nothing and
-contacts no Dispatch server, so a slow one most likely means a busy machine. The reads, the dry
+The gate reads the arguments from the command's own `--dry-run`. It runs the dry run with
+`DISPATCH_DRY_RUN_LOCAL=1`, and the CLI then checks the arguments alone. Without that variable,
+`dispatch artifact --dry-run` asks Dispatch to check the text as the call does: how it would store
+text given inline, read from `--content-file` or from stdin, or what it refuses of a Markdown
+`--path` file's bytes. The call itself runs without
+the variable. It asks Dispatch the same questions and refuses a text that Dispatch would store
+under another spelling, or that an upload refuses for the text alone. So the gate's dry run stores
+nothing and contacts no Dispatch server, and
+a slow one most likely means a busy machine. The reads, the dry
 run and the `cd`'s `pwd -P` probe, take at most half the call's deadline: the first run of each
 is cut at 20 s, or sooner when that half ends sooner, and a run cut there is run once more with
 what is left of that half (25 s at the 90 s default), when at least 2 s of it is left. The
@@ -697,7 +708,7 @@ gated write only when it consumes one, so a write sent any other way is refused 
   ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
-`@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
+`@legion/envoy-client/askgate-marker`): the ten commands above, an `issue` with a spec and an
 `artifact` that uploads a markdown document. `--help`, `--dry-run` and every other command need no
 marker. So a pipe to a program other than one trailing `head` or `tail`, a loop, a variable,
 `xargs`, an alias, a script, `python3 -c`, `node -e`, or a process an eval cell starts runs, and
@@ -1005,7 +1016,9 @@ CLI outside the form the gate reads and carried an ask for a person (`outcome: "
   send the recorder back to the read and then to the append. Each append carries a key of its own,
   the sha256 of the session and the record's id, so an append Dispatch ran late is replayed to its
   next attempt rather than written twice; the same record sent again with another time in its body
-  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. Keys
+  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. An append Dispatch made
+  and gave no copy of its answer for (`409 KEY_COMMITTED`, or a replay of an answer it kept none
+  of) is in the document, so the record is written and counted nowhere as not confirmed. Keys
   belong to the login that sent them, and every Legion pod writes under the shared agent token,
   which is one login for all of them (`requestKeyLogin`,
   `packages/envoy/internal/dispatch/api/request_keys.go`); Dispatch keeps a key 24 h

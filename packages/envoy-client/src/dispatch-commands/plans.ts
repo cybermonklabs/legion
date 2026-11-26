@@ -43,6 +43,9 @@ function timeText(seconds: number | null): string {
   return `time ${Math.floor(minutes / 60)}h${minutes % 60}m`;
 }
 
+/** One finished issue: its close, plan, ratings, time and failed steps, and last the experiment a
+ *  draw put it in with the variant drawn, where its newest run's records name one. A Dispatch
+ *  older than the two fields answers an issue without them, which names none either. */
 function issueLine(issue: FinishedIssue): string {
   return [
     issue.issue,
@@ -53,14 +56,17 @@ function issueLine(issue: FinishedIssue): string {
     timeText(issue.duration_seconds),
     "failed steps",
     issue.failed_steps,
+    ...(issue.experiment == null || issue.variant == null
+      ? []
+      : [`variant ${issue.experiment}/${issue.variant}`]),
   ].join(" ");
 }
 
-/** `dispatch plans`: finished issues of a project with their plan, their ratings, their time and
- *  their count of failed steps, newest close first, as Dispatch lists them. With no `since`, the
- *  newest DISPATCH_PLANS_DEFAULT_COUNT that have a plan or a rating, which Dispatch keeps and counts
- *  (`planned_or_rated` and `limit`), under a header that counts them and every finished issue;
- *  with `since`, every finished issue of the window, so that read sends neither. */
+/** `dispatch plans`: finished issues of a project with their plan, their ratings, their time, their
+ *  count of failed steps and their variant, newest close first, as Dispatch lists them. With no
+ *  `since`, the newest DISPATCH_PLANS_DEFAULT_COUNT that have a plan or a rating, which Dispatch
+ *  keeps and counts (`planned_or_rated` and `limit`), under a header that counts them and every
+ *  finished issue; with `since`, every finished issue of the window, so that read sends neither. */
 export async function plansCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
   const project = stringArg(args, "project");

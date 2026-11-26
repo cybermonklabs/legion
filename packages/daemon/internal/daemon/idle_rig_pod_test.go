@@ -12,11 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // idleRigPods runs the processes of every pod the rig's Kubernetes stand-in reports Ready: one
@@ -62,6 +65,15 @@ type idleRigPods struct {
 	dirMu   sync.Mutex
 	dirRoot string
 	dirNext int
+
+	// workspace is the issue workspace every launcher of the rig reads when the daemon asks
+	// (launcher.Config.Workspace): a jj workspace holding no work, of a shared clone, both where
+	// provisioning lays them out (workspace.Location), since the launcher's read runs the
+	// workspace guards, which derive the clone from that layout (workspace.GuardJJ). It is made once
+	// in newIdleRigPods, so the release of a pod no claim owns reads it clean through the pod's
+	// launcher (R6). The launcher's own working directory is the test package's, which is no jj
+	// workspace.
+	workspace string
 }
 
 // idleRigPodProcesses is one pod's launchers and what runs beside them (run): the worker stream
@@ -99,9 +111,21 @@ func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect strin
 	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
 	// that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
+	located, err := workspace.Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "legion-208")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Dir(located.Clone), filepath.Dir(located.Dir)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jj := fixturegit.Isolated(t, t.TempDir())
+	jj.Run(filepath.Dir(located.Clone), fixturegit.JJInit(located.Clone, false)...)
+	jj.Run(located.Clone, "jj", "workspace", "add", located.Dir, "--name", "legion-208", "-R", located.Clone)
 	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},
-		dirRoot: root}
+		dirRoot: root, workspace: located.Dir}
 	t.Cleanup(p.stopAll)
 	return p
 }
@@ -136,7 +160,7 @@ func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, reco
 		cfg := launcher.Config{
 			Connect: connect, MicroVM: microVM, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
 			Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
-			SessionDatabase: p.session, SessionDialer: p.dial,
+			SessionDatabase: p.session, SessionDialer: p.dial, Workspace: p.workspace,
 		}
 		processes.run(func(ctx context.Context) {
 			if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
@@ -241,16 +265,18 @@ func idleRigSessionFile(issue, role string) string {
 // fakeOmp. The role process the real launcher starts in a pod is `legion worker-shim … -- <omp
 // argv>`; this stand-in is that whole process, Oh My Pi included: it speaks the worker stream's
 // frames, registers with the daemon, reports ready, claims its role on the Envoy listener, and
-// records every message it is given.
-func idleRigLegionTool(t *testing.T, dir string) string {
+// records every message it is given. The script names the rig that process serves, rigURL, in
+// idleRigURLVariable itself, so the rig's own test process never sets it: each rig writes its own
+// stand-in (toolsDir), and the rigs run beside each other, which a t.Setenv refuses.
+func idleRigLegionTool(t *testing.T, dir, rigURL string) string {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "legion")
-	script := "#!/bin/sh\nexec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' " +
-		"-test.timeout=0 -test.count=1 \"$@\"\n"
+	script := "#!/bin/sh\n" + idleRigURLVariable + "=" + shellQuote(rigURL) + "\nexport " + idleRigURLVariable + "\n" +
+		"exec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' -test.timeout=0 -test.count=1 \"$@\"\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the rig's legion stand-in: %v", err)
 	}

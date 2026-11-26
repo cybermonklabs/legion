@@ -34,12 +34,33 @@ block with recognized routing and delivery fields. The renderer includes `to` on
 message to the reader, formats sender identity and reply metadata, renders structured payloads
 once as `message`, and marks unknown sources or fields with `unrecognised`.
 
+A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`
+(or `dispatch`): one nested deeper than the encoder's recursion reaches, and one whose layout
+passes the card's bound, as an array chain 1,400 levels deep does from a 3 KB frame. The bound is
+`INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
+(its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
+still lays out whole. The result's `payloadShownAsText` says which. Each host logs that once,
+with the message id, and takes the frame: a throw out of the renderer would fail every delivery
+of it. A payload that is text already is never held to the bound; its frame bounds it.
+
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
-parsed event under `dispatch: { issue_key, type, actor, payload }` with `payload` typed per event
-type; a payload whose shape disagrees with its event type's schema is preserved as its raw parsed
-value under `dispatch`, never dropped or reduced to prose. A dispatch envelope with no payload at
+parsed event under `dispatch: { owner, type, actor, payload }` with `payload` typed per event
+type. The card's `payload` leaves out each field that states nothing (`null`, `""`, `false`,
+`[]`, or an object left empty; a list keeps every item), each field that repeats the card
+(`issue_key`, an `author` or `actor` each of whose fields is the event's `actor`'s, a `target`
+naming this session on a card whose `to:` names it, a `created_at` less than a second from the
+time Envoy issued the card, whose `at` is that time cut to the second, and a comment's
+`thread_root_id` and `answers` equal to its `reply_to`), and Dispatch's own outbox and client
+bookkeeping (`deliveries`, `thread_logins`, `references_changed*`, `mentions_decide_routes`,
+`suppress*`, an issue's board `rank`). A field whose value is the fact even when empty stays as
+written: each field an update's `changed` names, a present `suggestion`, and a present `forced`.
+A session actor's `origin` keeps only its `session_title`, and an event on no issue and no
+document, as a direct message is, prints no `owner`. A payload whose shape disagrees with
+its event type's schema keeps its raw parsed fields under the same rules, and a frame that is no
+Dispatch event is shown as its raw parsed value under `dispatch`; neither is dropped or reduced
+to prose. A dispatch envelope with no payload at
 all falls back to the same `summary` field every other source gets and marks `unrecognised:
 payload`. On a `notifications.dispatch.*` topic, which carries every event of its owner, the
 renderer skips the events Dispatch marks `quiet` — a delivery receipt, an anchor refresh,
@@ -391,7 +412,14 @@ attempt was refused: the message may or may not have arrived. The error names it
 (`agent.<target>.<key>`) is one a repeat is recognised by (`MINTED_DEDUPE_KEY_PATTERN`); when it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
-still sees it twice). A send
+still sees it twice). One 5xx is not such an attempt: the listener's `503` whose `error` opens
+with `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`), which says the message bus refused the
+message before anything went out, because the deployed stream does not capture its topic for
+now, as during a hub move. It is sent again like any 5xx, under the same key, and a send or a
+publish that gets it on every attempt throws that `EnvoyApiError`, whose `notSent` is true and
+whose message is the listener's: nothing was stored, so the message may be sent again later.
+After an earlier attempt that got no answer or another 5xx, a send is unconfirmed as above, and a
+publish's error says that attempt may have stored the message, with `notSent` false. A send
 refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
 listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
 and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
@@ -533,7 +561,10 @@ runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CON
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
 
 `readEnvoyConfig(path, env, { cwd })` reads that file and a checkout's `<cwd>/.envoy/envoy.json`
-as written, running no command. Each section is strict: an unknown key is refused naming it, and
+as written, running no command, and resolves to the result: every file it reads or looks for is
+read through `fs/promises`, so a read waiting on a loaded disk holds the read alone and never the
+process's event loop, as do `askgateSetting` and the files the `*_FILE` variables name
+(`readSecretFile`). Each section is strict: an unknown key is refused naming it, and
 so is a top-level `natsUrls`, which belongs in `envoy.natsUrls`. JSON that does not parse is
 refused at its line and column, never with the parser's message, which quotes the text it stopped
 at. A missing chosen file contributes nothing and sets `missing`: each section is then on only when
@@ -607,18 +638,30 @@ A `token` or `natsSeed` value starting with `!` is a command (`fileValue`): it r
 `/bin/sh -c` in the directory of the envoy.json that names it, never the session's working
 directory, so `./bin/token` or a directory-configured shim (mise, direnv) resolves against that
 file and not whatever repository the session started in. It runs in its own process group for at
-most 10 s, and its trimmed stdout is the value. Its
-exit status decides: a command that exited 0 has printed its value even when a process it left
-running holds stdout open; a timeout kills the whole group. It runs only when its section's
-resolver is about to use the value (the section on, no variable overriding the field). Its value
+most 10 s, and its trimmed stdout is the value. The read waits for it without holding the process:
+every resolver that can run one (`fileValue`, `fileBearer`, `dispatchSettings`, `envoySettings`,
+`sessionSettings`, `sessionDispatchSettings`, `sessionEnvoySettings`) returns a Promise, so the
+session's timers, deliveries and NATS pings are served while it runs, and `sessionSettings` runs
+the two sections' commands at once. The command's exit status decides: a command that exited 0
+has printed its value even when a process it left running holds stdout open; a timeout kills the
+whole group. The group also ends with the process however the process ends: its own exit, a
+signal it handles through `process.reallyExit` (as Oh My Pi's SIGINT, SIGTERM, SIGHUP and
+fatal-error handlers do), or a SIGKILL. A watch in the group (`spawnWatched` in
+`src/process-group.ts`) reads a pipe the process holds and kills the group once the kernel has
+closed it. The command's stdout goes to a file whose name is removed before the command starts,
+so no exit leaves the value on disk under a name. It runs only when its section's resolver is
+about to use the value (the section on, no variable overriding the field). Its value
 is kept for the process, shared across module instances (one map on `globalThis` under
 `Symbol.for("legion.envoy-config.commands.v1")`, since Oh My Pi loads each extension instance, a
 `task` subagent's included, as a fresh module, and pi-envoy and pi-legion, released separately,
 each bundle this module; a change to an entry's shape takes a new key), and keyed by the command,
-its file and its working directory. A command that ran out of time is kept as failed for the life
-of the process: a hanging
-command never runs again in that process, since each run would block it for the whole 10 s. A
-failure that ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
+its file and its working directory. A read that starts while the same command runs, in any of
+those instances at or after this change, waits for that run rather than starting another (a second
+map, of the runs under way, under `Symbol.for("legion.envoy-config.command-runs.v1")`); a bundle
+from before it keeps no such map, so a read in it starts a run of its own. A command that ran out
+of time is kept as failed for the life of the process: a hanging command never runs again in that
+process, since each run would hold every read waiting on it for the whole 10 s. A failure that
+ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
 and then the command runs again, so a cause that clears (a keyring unlocked after the session
 started) needs no restart. The `dispatch` command is one process per call, and each Claude Code
 hook one per event, so a `!` token runs once for each. A non-zero
@@ -700,19 +743,19 @@ server is named (below), or a section's own error (`Dispatch is off: <error>`,
 that an Envoy that is on takes no inbound messages: `Envoy's inbound messages are off:
 <inbound.off>; the Envoy tools still work`. Otherwise a file that turns a section off, or holds no
 section for it, says nothing.
-`askgateSetting(file)` reads the session file's top-level `askgate` section now, on its own, so a
-section that does not parse never fails the Dispatch or Envoy read: `{"askgate":{"enabled":false}}`
-turns AskGate off (`{ enabled: false, error: null }`); no file, no section or `enabled: true`
-leaves it on. A section that does not parse, or a file that cannot be read or is not JSON, leaves
-it on with an `error` naming the file and `askgate.enabled` and ending `AskGate stays on`. A
-checkout's `.envoy/envoy.json` cannot set it.
+`askgateSetting(file)` resolves to the session file's top-level `askgate` section, read now, on
+its own, so a section that does not parse never fails the Dispatch or Envoy read:
+`{"askgate":{"enabled":false}}` turns AskGate off (`{ enabled: false, error: null }`); no file, no
+section or `enabled: true` leaves it on. A section that does not parse, or a file that cannot be
+read or is not JSON, leaves it on with an `error` naming the file and `askgate.enabled` and ending
+`AskGate stays on`. A checkout's `.envoy/envoy.json` cannot set it.
 `sessionDispatchSettings(file, env, { cwd })` reads
 Dispatch alone, now: `{ dispatch, warnings, missing }`, Dispatch's resolution beside the files the
 read found and did not read and the missing-file record, for a command, which says the `warnings`
 itself, and for a plugin whose Dispatch calls follow a file that changes. `activeDispatchSettings`
 turns its `dispatch` into the configuration a caller uses, null when nothing configures Dispatch,
-or a `dispatch config: <reason>` throw. `sessionDispatchUrl(file, env, { cwd })` is the URL alone
-(`dispatchUrl`), resolved without reading the token, so no `!` command runs, or undefined when
+or a `dispatch config: <reason>` throw. `sessionDispatchUrl(file, env, { cwd })` resolves to the
+URL alone (`dispatchUrl`), without the token's value, so no `!` command runs, or undefined when
 Dispatch is off before its token is read: what a caller on a deadline names to
 `readSessionAnswers` as `dispatchUrl` while a kept resolution is off with an error, so only the list
 read from that URL stands in. `sessionEnvoySettings(file, env, { cwd, nats })` reads
@@ -733,13 +776,14 @@ them, covers the issue; with Envoy off or no answer from the listener it names n
 `dispatch-first.ts` reads the `dispatch-first` skill from a plugin's staged `skills/` and wraps it in
 `DISPATCH_FIRST_MARKER`, the text pi-envoy and claude-envoy inject into a session with Dispatch.
 
-Every write `DispatchClient` makes carries one key. Each JSON and multipart call mints a
+Every `POST` and `PATCH` of `DispatchClient` carries one key. Each JSON and multipart call mints a
 `crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call, once (`#writeCall`), and sends
 it on every attempt: the write's own attempts, the re-send after `401 BROKER_TOKEN_NOT_ACTIVE`,
 and each retry after an old build's answer of no route. So Dispatch runs the write once however
-many attempts reach it and answers a repeat with the first answer
-(`packages/envoy/cmd/dispatch/README.md`, "Keyed writes"); a `GET`, `PUT` or `DELETE` carries none
-and is sent once. No Dispatch request follows a redirect (`redirect: "manual"`): Dispatch's API
+many attempts reach it and answers a repeat from that run without running it again
+(`packages/envoy/cmd/dispatch/README.md`, "Keyed writes", says with what); a `GET`, `PUT` or
+`DELETE` carries none and is sent once, the `DELETE` of `deleteComment` and `deleteMessage`
+included. No Dispatch request follows a redirect (`redirect: "manual"`): Dispatch's API
 answers none, and followed, a 301, 302 or 303 turns a write's `POST` into a `GET` whose 2xx would
 read as the write's answer, while a 307 or 308 sends it again to another origin without its
 credential. The body is encoded once
@@ -751,12 +795,20 @@ pace: at most five attempts, 1, 2, 4 and 8 s apart, a longer `Retry-After` waite
 attempt started more than 30 s after the first. An attempt that goes 20 s without progress before
 its answer begins (`silenceMs`) is cut off and asked again the same way, so a write Dispatch is
 slow to finish is answered `409 KEY_IN_FLIGHT` and then replayed rather than waited on for the
-whole deadline. Progress is the connection taking the body: a body of a megabyte or more goes out
-as a stream read 64 KiB at a time, with its `Content-Length`, and each read restarts the bound, so
-an upload on a slow line is never cut off while it is still going out; a smaller body leaves in
-one write. Once an attempt was cut off for silence or answered `409 KEY_IN_FLIGHT`, Dispatch may
-still be running the write, and its keyed layer finishes that run whatever the client does, so the
-write keeps asking every 3 s at most (`inFlightPauseMs`; a longer `Retry-After` is still waited),
+whole deadline. Progress is a read of the body: a body of a megabyte or more goes out as a stream
+read 64 KiB at a time, with its `Content-Length`, and each read restarts the bound; a smaller body
+leaves in one write. The bound counts those reads, not the bytes that leave. Bun's fetch reads the
+next 64 KiB only once the connection's buffers have room for it, and they hold megabytes, so on a
+slow line the reads come seconds apart and the last read comes while megabytes are still to go.
+An attempt is cut off when its next read takes longer than `silenceMs`, or when the rest of its
+bytes and Dispatch's answer after its last read take longer together, and either can happen while
+the upload is still going out. Measured in build pods
+against a stand-in Dispatch that reads at a fixed rate, with the 20 s bound: at 128 KiB/s an
+upload was cut off 20 s after its last read, 0.88 MiB of its 12 MiB short of the stand-in, and at
+64 KiB/s 20 s after a read part way through, 9.88 MiB short. Once an attempt was cut off for
+silence or answered `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed
+layer finishes that run whatever the client does, so the write keeps asking every 3 s at most
+(`inFlightPauseMs`; a longer `Retry-After` is still waited),
 with no attempt started more than 55 s after the first (`inFlightWithinMs`), until the run's stored
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
@@ -784,7 +836,7 @@ refusal settles the write. A final refusal is one of these:
   pattern, its path values, the query, the content type less its boundary, and the body
   (`writeRequestFields`), so a key held under another digest was claimed by no attempt of this
   call. That needs the client never to send one key for two different writes: `#writeCall`
-  (`src/dispatch-http.ts:2080`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
+  (`src/dispatch-http.ts:2176`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
   Idempotency-Key per write call") shows five writes going under five keys, and
   `dispatch-write-outcomes.test.ts` fails any run whose attempts carried two keys. A caller that
   names its own key (`projectArtifact`, `docEdit`) names one intent with it: AskGate's decision
@@ -883,7 +935,16 @@ Dispatch's own rule reads it) or not JSON, but for a bodiless 204 or 205: every 
 reads as JSON answers JSON (`WriteJSON`), so such a read is a `DispatchGatewayError` too, naming
 the body the same way, and a retry may succeed, since a proxy or a captive portal in the way can
 be got past. Before, its text was handed back as the route's answer, and `dispatch open-asks` read a
-portal's page as no asks at all.
+portal's page as no asks at all. Such a 2xx reaches that advice only for a read, a `PUT` or a
+`DELETE`: a keyed write's 2xx, a `POST`'s or a `PATCH`'s, is read by its own table
+(`write-outcome.ts`), which says the write may have landed.
+`readRoute` and `sendRoute`, which send the route `dispatch api`'s caller wrote, give every 2xx
+but Dispatch's JSON back as the bytes that came, with its Content-Type (`RouteAnswer`): a file
+version's bytes and a document version's Markdown download are such answers, and an answer that
+carries `Content-Disposition: attachment` is stored content whatever its type, JSON included, so it
+is never parsed. A 2xx whose body holds a credential the request presented, a token or its DPoP
+proof, is refused instead (`DispatchCredentialEchoError`, code `CREDENTIAL_ECHOED`), since no
+route of Dispatch's answers the caller's own credential.
 
 `DispatchWriteUnsettledError` is deliberately not a `DispatchServiceError`, since a caller reads
 one as a refusal Dispatch decided: its message is the last answer or failure, the number of
@@ -897,16 +958,29 @@ deadline ended it"). A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page). It is no refusal and no
-`DispatchServiceError`, and it is never asked again. Its message is the one line the session
-reads: the method and URL were made, why the answer is gone, and to read what it made back with
-`dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
-`landed_without_answer: <code>` in its ledger entry. A step before the
+answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or a success that holds a
+comment or a message that was deleted, or a document version name a delete replaced
+(`answerNotKept`, shared with the page; `IDEMPOTENCY_ANSWER_NOT_KEPT` in `@legion/contracts`). It
+is no refusal and no `DispatchServiceError`, and it is never asked again. Its message is the one
+line the session reads: the method and URL were made, why the answer is gone, and to read what it
+made back with `dispatch read` or the matching list. The `dispatch` command exits 0 on one and
+records `landed_without_answer: <code>` in its ledger entry. A step before the
 command's own write that lands this way fails the command (exit 1) with that line and what it
 means: a picture upload (nothing else was written: run the call again, which uploads it as its
 next version), or the closing reason of `issue-update --status done` (the close was not sent: read
 the issue's messages for the reason, then close with one that points at it). The close's own
-`PATCH` landing this way is the command's write, and exits 0.
+`PATCH` landing this way is the command's write, and exits 0. A `POST` that writes nothing
+(`markdownRoundTrip`, `fileRoundTrip`, `related`, `dryRunResult`) made nothing either, so that
+replayed 2xx is no landing: the client asks the call once more under a new key, which runs it
+afresh, and a second such answer is a `DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`,
+`status`), no `DispatchServiceError`. Its message says the call wrote nothing, that Dispatch kept
+no copy of its answer, and to run the command again, which asks under a new key: `dispatch related`
+and a `dispatch result --dry-run` exit 1 on one. `dispatch artifact` refuses an upload of text
+that is not blank, given inline, read from `--content-file` or from stdin, when the check of that
+text got such an answer, saying to send it again; blank text given any of those ways and a
+Markdown `--path` file go up unchecked when their check gets no answer, as
+the account of the dry run further down says. A replayed refusal is the refusal Dispatch first
+gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
@@ -956,7 +1030,7 @@ With no bearer configured at all, the session's credential is traded at the secr
 instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
-behaves exactly as it did. The machine's identity is one of four (`machineIdentity` in
+behaves exactly as it did. The machine's identity is one of five (`machineIdentity` in
 `@legion/cipher-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
@@ -964,6 +1038,15 @@ a Google identity token through a workload identity pool, as the Go client's `Po
 does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
+`github-actions` asks GitHub for a GitHub Actions run's OIDC token, as the Go client's
+`GitHubActionsIdentity` does (`github-actions-identity.ts`), from `ACTIONS_ID_TOKEN_REQUEST_URL`,
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN` and `AGENT_SECRETS_MACHINE_AUDIENCE`, read in that order. GitHub
+sets the first two in a job that holds `id-token: write`. The client adds `audience` to the
+request URL's own query and sends the request token as its bearer, follows no redirect, and reads
+the answer's `value`; it refuses a request URL that is not https, except on this machine's
+loopback, and no refusal names the URL or the token. It asks for a new token at every trade,
+since the broker takes each GitHub token once, and the broker answers it from the workflow's
+entry. `AGENT_SECRETS_MACHINE_AUDIENCE` must equal the broker's `BROKER_EXCHANGE_GITHUB_AUDIENCE`.
 An identity with one of its variables missing is an error that names the variable.
 
 `device-login` is the identity of a machine that has none of its own, such as a person's laptop
@@ -972,16 +1055,17 @@ An identity with one of its variables missing is an error that names the variabl
 `AGENT_SECRETS_DEVICE_LOGIN_FILE` names, else `~/.config/legion/device-login.json`, mode 0600:
 the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credential_id` and
 `expires_at`, its `refresh_token`, the `broker` it was made at, and the last `access_token` with
-its `access_expires_at`. The file is refused when its group or anyone else may read it, when its
-directory lets them write to it, or when another user owns either. A trade presents that access
-token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with
-no actor, and every proof is signed with the login's key. A login made at another broker than
-`AGENT_SECRETS_URL` names is refused, and so is a broker on `http` off this machine's loopback:
-the login's tokens cross that connection. It names the projects `AGENT_SECRETS_PROJECTS` lists,
-and its session is the caller's own, else `AGENT_SECRETS_SESSION`, else
-`device-login-<thumbprint>`, the first 12 characters of the key's thumbprint. The login is the
-person's own credential, so no `agent-secrets login` sign-in on the machine is read beside it, and
-a process with `PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is
+its `access_expires_at` and `access_life_seconds`, the life in whole seconds that token had when it
+landed. The file is refused when its group or anyone else may read it, when its directory lets
+them write to it, or when another user owns either. A trade presents that access token as the
+subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with no actor, and
+every trade's DPoP proof is signed with the login's key; a read trade adds a holder proof (below).
+A login made at another broker than `AGENT_SECRETS_URL` names is refused, and so is a broker on
+`http` off this machine's loopback: the login's tokens cross that connection. It names the projects
+`AGENT_SECRETS_PROJECTS` lists, and its session is the caller's own, else `AGENT_SECRETS_SESSION`,
+else `device-login-<thumbprint>`, the first 12 characters of the key's thumbprint. The login is the
+person's own credential, so no `agent-secrets login` sign-in on the machine is read beside it, and a
+process with `PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is
 refused it, since the broker mints its trade as that person. Only this client trades a device
 login. The Go tools that read `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper,
 `legion controller start`) refuse `device-login`, naming it as the TypeScript client's alone, so a
@@ -997,13 +1081,21 @@ looks at the lock again just before it replaces the file, and a trade of it the 
 traded again. Under the lock a process reads the file again, refreshes when the access token kept
 there has less than a minute left, or when the broker refuses it as a token it no longer honours
 ("Token is not valid or has expired", or the login ended: a revoke ends a login before its token
-lapses), keeps the rotated login, and trades. A refusal of the trade's session or projects is
-not refreshed: a refresh cures none of those. A refresh the broker did not answer is sent once
-more at once: the broker redeems the spent refresh token again within its five-minute grace, and
-past it the login ends. The broker's `invalid_grant` to a refresh is final (`DeviceLoginEndedError`
-in `token-errors.ts`): the login was revoked or ran out, and only a new `dispatch login --device`
-cures it. A trade whose time ran out while another process of the machine held the lock says so
-(`LockHeldError`), and not that the broker did not answer.
+lapses), keeps the rotated login, and trades. A read trade refreshes first while the access token
+has less than the client's renewal window and a second left, capped at half the life the last
+refresh gave it (`access_life_seconds`) and never under the minute: a token fresh from a refresh
+meets it wherever that life is over a minute, and the next refresh comes no sooner than half a life
+later wherever that half is over the minute. A file with no `access_life_seconds`, as an older
+build writes it, keeps the minute alone until the next refresh. A refusal of the trade's session or
+projects is not refreshed: a refresh cures none of those. A refresh the broker did not answer is
+sent once more at once: the broker redeems the spent refresh token again within its five-minute
+grace, and past it the login ends. The broker's 400 or 401 `invalid_grant` to a refresh is final
+(`DeviceLoginEndedError` in `token-errors.ts`, decided by `endsGrant` in `oauth-refusal.ts`): the
+login was revoked or ran out, and only a new `dispatch login --device` cures it. An
+`invalid_grant` at another status, a 403 or a 429, is a refusal like any other
+(`BrokerRefusedError`), and a later refresh gets past a 429. A trade whose time ran out while
+another process of the machine held the lock says so (`LockHeldError`), and not that the broker
+did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1028,7 +1120,7 @@ next one:
 |---|---|
 | a token | answers every caller, and both schedules start over |
 | a pod session not registered yet | trades again 2 s later, doubling to 30 s, so the trade after a registration lands is at most 30 s away; that trade has its own 30 s |
-| no answer within 30 s, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
+| no answer within 30 s, no connection, a 5xx, a 408 or a 429, a DPoP refusal, a 4xx naming no OAuth error, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
 | a refusal no trade cures | ends; a call before the next slot is told the same refusal with no trade |
 
 The loop logs through `console.warn`, as the Go client does: a pod session not registered yet
@@ -1039,16 +1131,20 @@ registration at that deadline fails with `RegistrationPendingError`, which names
 Once a renewal has failed, a call made while the token in hand is live goes on with that token.
 
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
-no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
-one this process makes, and the session name is the caller's own session, else
-`AGENT_SECRETS_SESSION`. Where a person ran `agent-secrets login` on the machine, the client
-trades that person, as the Go client does:
+no sign-in, the client trades the machine. The machine's identity is the subject, and the session
+name is the caller's own session, else `AGENT_SECRETS_SESSION`. In a pod, where
+`AGENT_SECRETS_MACHINE_IDENTITY` is `kubernetes` and `AGENT_SECRETS_KEY_DIR` names the role's own
+directory, the DPoP key is the role's own agent-secrets key, the `key.pem` that
+`agent-secrets keygen` wrote there, which the broker holds the pod session's trade to; when that
+file cannot be read, the call fails naming the path. Everywhere else the DPoP key is one this
+process makes. Where a person ran `agent-secrets login` on the machine, the client trades that
+person, as the Go client does:
 
 - The subject is the person's Google identity token. The client renews it at every trade, from
   the refresh token the sign-in keeps, at the sign-in issuer (`person-identity.ts`).
 - The actor is the machine's identity token. The broker takes only a Google identity token as
   the actor, so the machine's identity is `metadata` or `pool`. The broker refuses a `kubernetes`
-  actor in its own words.
+  or `github-actions` actor in its own words.
 - The DPoP key is the sign-in's box key. So the broker records one sign-in for the box, and a
   revoke of that sign-in stops the session's trades.
 - The session name is the caller's own session, else `signin-<person>-<thumbprint>`, where
@@ -1064,7 +1160,8 @@ trades that person, as the Go client does:
 Dispatch gives the token that names a person the `person` scope, so the session writes as that
 person. It never gives a broker token `approve`: a review, an answer to an approval request, a
 machine login's decision and a personal token's mint need the person's browser, or a personal
-token (`DISPATCH_TOKEN`) the person gave `approve`.
+token (`DISPATCH_TOKEN`) the person gave `approve`. A read trade's token
+(`DISPATCH_TOKEN_BROKER_READ`, below) holds `person` too, and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -1110,13 +1207,17 @@ presentation was dead (`stale(session, presented)`), presents the credential aga
 request one more time. The credential drops that dead token alone, from the client that presented
 it: a session the host moved to in between keeps its live token, and a token the client traded
 since is kept; the next presentation uses the token the client holds now, trading at the broker
-where it holds none. A write goes again under the same `Idempotency-Key`. A read does this once
-for each send, and a write once for the call: a second such answer is a refusal Dispatch's auth
-made before its keyed layer ran, so it is the write's refusal while nothing may have landed and
-the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`). If the
-broker refuses the new trade, the call fails in the broker's words, unless an attempt of the
-write may have landed: then the write asks again on its pacing, and with no ask left it is
-`DispatchWriteUnsettledError`.
+where it holds none. A keyed write, a named command's (`#write`), goes again under the same
+`Idempotency-Key`. A read does this once for each send, and a keyed write once for the call: a
+second such answer is a refusal Dispatch's auth made before its keyed layer ran, so it is the
+write's refusal while nothing may have landed and the write is `DispatchWriteUnsettledError` once
+something may have (`write-outcome.ts`). If the broker refuses the new trade, the call fails in
+the broker's words, unless an attempt of a keyed write may have landed: then that write asks again
+on its pacing, and with no ask left it is `DispatchWriteUnsettledError`. `dispatch api`'s request,
+its GET or its write, goes through one `#send`: one resend after `401 BROKER_TOKEN_NOT_ACTIVE`,
+never on a pacing, and never `DispatchWriteUnsettledError`. Dispatch's answer of no route does not
+repeat it, and the command prints a refusal, the broker's refusal of the trade among them, as it
+came.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -1126,13 +1227,15 @@ one that traded at the broker as the machine. A session that used a bearer did n
 broker, so you can resume it.
 
 Each person's trade costs one refresh at the issuer and one `launcher_credential.token_login`
-audit row at the broker. The broker writes that row for every person's trade, and it lets no
-person's trade decline the launcher credential (`personDeclinesNothing`). The client also reads
-the issuer's discovery document once. A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS`
-(900 seconds by default), and the client trades again five minutes before the token lapses
-(`DEFAULT_RENEW_BEFORE_MS`). So with the broker's default, a long-lived session that keeps
-calling trades about every ten minutes. Every `dispatch` command, Claude Code hook and
-`envoy-send` is a process of its own, so each one trades once.
+audit row at the broker. The broker writes that row for every person's ordinary trade, and it lets
+no such trade decline the launcher credential (`personDeclinesNothing`). A person's read trade
+declines it and writes no such row. The client also reads the issuer's discovery document once.
+A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS` (900 seconds by default), and the client
+trades again five minutes before the token lapses (`DEFAULT_RENEW_BEFORE_MS`), and never before
+half the life the token had when it landed (`renewalAt`, the Go client's rule too), so a token of
+less than ten minutes is traded again at its half life. So with the broker's default, a long-lived
+session that keeps calling trades about every ten minutes. Every `dispatch` command, Claude Code
+hook and `envoy-send` is a process of its own, so each one trades once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
 refused with words that name `agent-secrets login`. Dispatch gives the sign-in's tokens no
@@ -1153,6 +1256,36 @@ naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also 
 `PERSON_SIGNIN_TRADE=off` for the controller, so its broker route trades the machine and never
 the operator's sign-in (above).
 
+`DISPATCH_TOKEN_BROKER_READ=1` narrows the trade of Dispatch's credential to reading. The trade
+asks the broker for the scope `read`, and the token keeps the identity the same trade would have
+had and writes nothing. `DISPATCH_TOKEN_BROKER_AS_OF=<an RFC 3339 time>` beside it adds a cut
+(`as_of`), the past time the token reads at. Either setting takes the broker route as
+`DISPATCH_TOKEN_BROKER=1` does and reads no bearer, so a shell that also holds `DISPATCH_TOKEN`
+never writes with it. `DISPATCH_TOKEN_BROKER_READ` takes `1` alone. A cut without
+`DISPATCH_TOKEN_BROKER_READ=1`, a cut that is not an RFC 3339 time with at most six fractional
+digits, and a cut at the zero time (`0001-01-01T00:00:00Z`, under any offset), which the broker
+refuses since it would read as no cut, turn Dispatch off with an error that names the setting. No
+such error quotes the value.
+
+The two settings narrow the Dispatch trade alone (`brokerCredential`'s `read`). The Dispatch
+credential gets a broker client of its own, keyed by the session, the broker variables and the two
+settings. The Envoy listener and NATS keep the session's shared client, which asks for no scope,
+since both refuse a read-only token and a session's inbound messages must keep working. A
+person's read trade sends no `launcher_credential`, which the broker reads as declined. It makes a
+P-256 key of its own for the process and sends it as the holder key (`DPoP-Holder`) beside the box
+key's DPoP proof. That key signs every proof Dispatch sees, so the box key signs the trade alone.
+A device login's read trade also sends a holder key of its own beside the login key's DPoP proof,
+because the login's key signs the machine login's launcher proofs and a key that signs launcher
+proofs is bound to no read token.
+The machine's own trade already proves a key the process made, which holds no launcher credential,
+so it sends no holder key. A person's read trade is refused once the sign-in's launcher credential
+lapses, until one ordinary trade renews it (the token files, below).
+
+Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
+`dispatch whoami` says that the credential may only read, and names its cut where it has one.
+Under a cut, every other read prints `AS_OF_TOKEN_NOT_SERVED: …` and exits 1, because Dispatch
+serves no read at a past time yet.
+
 ### The `dispatch` command
 
 Agents reach Dispatch through one command, `dispatch <command> [flags]`, which each host plugin
@@ -1165,17 +1298,153 @@ hyphens for underscores (`issue-update`), one flag per field
 singular flag for a list (`--label a --label b`, `--option "Label: what it costs"`, split at the
 first `: `; a label holding `: ` goes in `--options-json`, which the generated command line uses
 for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
-stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
+stdin. The command reads each file and stdin as bytes and decodes them as UTF-8, keeping a byte
+order mark as U+FEFF (`readFileText`, `dispatch-file-text.ts`, which `bin/dispatch.ts` hands
+`runDispatchCli`). Bytes that are not UTF-8, which it once stored as U+FFFD, refuse the command,
+for every field and every command, with exit 1, before anything is sent. A field that holds no
+document's text, every field but one, is refused for them alone, in Dispatch's own refusal of the
+first U+0000 or byte that is not UTF-8 among them, whichever comes first, as Dispatch reads them
+(`unstorableBytes`): `NUL_CHARACTER: <field> holds a NUL character (U+0000) at character N,
+which Dispatch cannot store` or `INVALID_UTF8: <field> holds a byte that is not UTF-8 (0xFF) at
+character N, which Dispatch cannot store`, where `<field>` is the argument the flag sets (`body`
+for `--body-file`) and N is where the character stands, counted from 1 in UTF-16 units, as
+Dispatch counts it. UTF-8 holding a U+0000 is not refused there: `dispatch comment --body-file`
+sends it to Dispatch, which answers it. The one field the command checks as a Markdown document's
+bytes is `dispatch artifact`'s `content`, which the command's entry in the command table names
+(`DispatchCommand.documentFields`, `dispatch-commands/table.ts`). Read from `--content-file`
+or stdin, its bytes are refused whether or not they are UTF-8, as a Markdown `--path` file of the
+same bytes is, in that upload's order and words (`documentBytesRefusal`) under `content`: text
+past 1 MiB with `CAP_EXCEEDED` first, then the first U+0000 or byte that is not UTF-8. Text the
+strict read decoded is UTF-8, and so is text given inline, so only its size or a U+0000 can
+refuse it, and only such text is checked again in its UTF-8 (`documentFieldRefusal`). A value
+given inline in argv holds no U+0000 on any kernel, and Bun hands the command its argv already
+decoded, each byte that is not UTF-8 written as U+FFFD. Linux holds one argument to
+`MAX_ARG_STRLEN`, 32 pages, which is 128 KiB on 4 KiB pages and 2 MiB on 64 KiB pages
+(`include/uapi/linux/binfmts.h`), so with 4 KiB pages argv carries no text past 1 MiB, and with
+64 KiB pages it can. A program that calls `runDispatchCli` itself can hand it either on any
+kernel. The check runs on inline text however it is given, so such text is refused as the same
+text read from `--content-file` is, whatever the page size.
+For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
 names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
-them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
-so it runs with Dispatch off too, and a call it passed can still stop on either. The one exception
-is a `dispatch result` record: its dry run needs Dispatch on, as the record does, and after the
-arguments prints the pull-request body line Dispatch answers on `POST …/results/dry-run`, recording
-nothing. A retraction's dry run sends nothing.
+them (an issue from LEGION_ISSUE or the ref). It stores nothing, and reads no state of this session
+but what a `dispatch result` record's dry run reads (below). Each refusal of a file's, stdin's or
+inline text's bytes above, and of a Markdown `--path` file's (below), comes before that check,
+once the flags are read and before anything that needs Dispatch (its configuration, the refusal
+of a Dispatch that is off, any client), by the dry run as by the call, with the same refusal line
+and exit 1, with Dispatch on or off, so `dispatch artifact` refuses such a text without asking
+Dispatch.
+A command whose call asks Dispatch something before it writes asks it in its dry run too, through
+its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
+such step is `dispatch artifact`'s: for text given inline, read from `--content-file` or from
+stdin, it makes the call's own stored-text check
+(`storedTextCheck`), and refuses with the call's refusal and exit code a text the call refuses: one
+Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for every
+text but the empty string), or one the call refuses for the text alone. A text whose typed
+blocks' attributes differ from Dispatch's only in their order is no such text: the call uploads it
+in Dispatch's order (`storedUpload`, `dispatch-commands/stored-spelling.ts`), so the dry run passes
+it. The check is the one place that decides what blank text (what Go's `strings.TrimSpace` empties, `goBlankPattern`) is
+asked: a refusal alone, never its spelling, and a check of it that gets no answer leaves the upload
+to make its own refusal. Text past the 1 MiB of UTF-8 one document holds is refused with
+`CAP_EXCEEDED` and exit 1 without asking Dispatch anything (`documentTooLarge`): the call refuses
+it before it reads whether the owner holds the name, so the two answer alike under a held name
+too, and the dry run builds no client for it, so it refuses it with no Dispatch configured too. A
+round trip answer Dispatch marks as its refusal of the text (the `Dispatch-Text-Refusal` header,
+`TEXT_REFUSAL_HEADER`, which the client reads for its presence alone), at any status, is refused
+with Dispatch's own refusal (`<CODE>: <message>`) and exit 1, as the call refuses it. The route
+makes, in the order, status, code and words of an upload, every check that upload makes of the
+text alone, and marks each refusal. Every upload makes some of them, a replacement included (a
+JSON upload of blank content over a held document is refused as blank before its text is parsed):
+a NUL character (`NUL_CHARACTER`), a byte that is not UTF-8 (`INVALID_UTF8`), the bytes, and the
+parse's own refusals - its element budget (`CAP_EXCEEDED`), markdown it refuses or that reads
+back otherwise (`INVALID_MARKDOWN`), and an ask that breaks its content rule in markdown whose
+rendering does not read back, which that refusal names instead (`INVALID_ASK_BLOCK`). Only a new
+document's seed makes the rest, which a replacement relaxes: a block id written twice and an
+element this build cannot create yet (`INVALID_MARKDOWN`), an ask block that breaks its content
+rule (`INVALID_ASK_BLOCK`), a rendering past the bytes or the elements (`CAP_EXCEEDED`), and a
+check proved by CI that breaks the rules its attributes keep (`INVALID_CI_CHECK`). The route
+makes those only for a request that asks for them (`new_document: true`). It answers any other
+as the most permissive replacement takes the text,
+one over a document already holding what the text holds: with the rendering that replacement
+stores, or with a refusal every replacement makes, the parse's own, the ask refusal it names
+instead and a render that fails. The check asks for them where the call makes a new document,
+without `--force`; with `--force` the upload may replace a document, judged by those looser
+rules, so the check asks for none of them and compares the rendering Dispatch answers as for any
+text, and every marked refusal it gets is the call's. So its dry run passes, with no warning, a
+text the call's upload can then refuse for one of a new document's checks: under a name the owner
+does not hold, because `--force` uploads a new document; under a name the owner holds, because a
+replacement holds those rules for the blocks it adds or changes, and refuses a rendering that
+grows past the bytes one document holds over the version it replaces. A check Dispatch adds to
+the upload reaches the dry run with no change here. An unmarked answer says nothing of the text,
+whatever its status. A
+`--path` file Dispatch stores as a Markdown document (a path ending in .md or .markdown, which the
+upload carries as `text/markdown`) is held to the same checks, in the same place: once the flags
+are read, before the argument check and before anything that needs Dispatch, the command reads it
+once, as its upload reads it (`documentFileRead`; the command table names the field,
+`DispatchCommand.documentPathField`), and refuses a file past 1 MiB by its size before it reads
+it and then by the bytes it read, and then the first U+0000 or byte that is not UTF-8 in those
+bytes, in the upload's words, which name the field `file` (`documentBytesRefusal`). All of this
+comes before AskGate's gate of the call too. The command hands the bytes it read to the dry run's
+step, which checks those bytes and does not read the file again, and to the call. Where AskGate
+reviews the call, its check reads the file a second time for its digest, and the call checks and
+sends the bytes that read took in place of the command's; otherwise the call checks and sends the
+command's bytes and does not read the file again. A file the command cannot read (missing, not
+readable, a directory) is no refusal of its text: the argument check comes first, and then the
+dry run's step, where it runs, and the call read the file and answer with the read's own error.
+A file that is neither a regular file nor a directory (a FIFO, a device, a socket), whose read can
+wait forever, the command does not read, nor does the dry run's step, which asks Dispatch nothing
+about it: the call uploads it unchecked, and Dispatch's upload judges it. The call and its dry run
+then send the bytes they checked to their own round trip (`POST /api/v1/markdown/file-round-trip`,
+`file` in base64, with `new_document` as for inline text), which Dispatch checks as it checks an
+upload's file part, and take only its refusal (`storedFileCheck`), never a spelling, since the call
+stores a Markdown file as the store spells it. The call throws that refusal before it uploads, so
+the two print the same refusal and exit alike; on any other answer, a spelling or none (no answer
+in time, a failure, or a Dispatch without the route, which answers 404 or 405), the call uploads
+the file, and its upload makes its own refusal. Since the file goes up whatever the round trip
+failed with, the call asks it with the dry run's own client options (`askOnceWithinDryRun`):
+once, within the same 5 s, with no wait before asking a route again. A file Dispatch stores as
+its bytes, or a FIFO, a device or a socket, is asked nothing, by the call as by the dry run. What
+only the call checks, since it needs more than the
+text, stays the call's: whether the owner holds the name, the token of a replacement, a
+replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded
+result, and the issue's state. The call checks the text, however it is given, before it reads
+whether the owner holds the name, so a text the check refuses gets the same refusal from the call
+and its dry run under a held name too. A text that is not blank, given inline, read from
+`--content-file` or from stdin, whose check got no answer from a Dispatch that has the route, the
+call refuses there too, before it reads the name (`storedTextCheckFailed`), while its dry run
+passes it with the warning below. A text the check passes, the call without `--force` still
+refuses under a held name, and the dry run, which cannot know the name, passes it. With no
+Dispatch configured, the dry run and the call alike still refuse, with exit 1, once the flags are
+read and before the argument check (above), a document's text past 1 MiB, and one holding a
+U+0000 or a byte that is not UTF-8, whether it is given inline, read from `--content-file` or from
+stdin, or in a Markdown `--path` file. Any other text that is not empty, given inline, read from
+`--content-file` or from stdin, and any other Markdown file the command reads, the dry run passes
+with a warning that the call is refused for the same reason; the empty string, which it asks
+Dispatch nothing about, it passes with no warning; and the call is refused for Dispatch being off,
+exit 2. The
+step waits at most 5 s. For a text it asks about (each but an empty text given inline, read from
+`--content-file` or from stdin) and does not refuse before it asks, when it gets no answer (no
+Dispatch configured, any other failure, no answer in time, or a Dispatch without the route), the
+dry run passes, and one `dispatch: warning:` line on stderr says why and what the call does then,
+as the check's kind says it: text given inline, read from `--content-file` or from stdin, that a
+Dispatch without
+the route cannot check, and blank text whose check got no answer, the call uploads unchecked; a
+file the call asks about once more, and uploads unchecked if that gets no answer either; any other
+text the call refuses until Dispatch answers.
+The JSON stays alone on stdout. With
+`DISPATCH_DRY_RUN_LOCAL=1` an upload's dry run asks Dispatch nothing, for a caller that reads the
+arguments alone: it still refuses, once the flags are read, a text given inline, read from
+`--content-file` or from stdin, or in a Markdown `--path` file, for its bytes. The variable does
+not change a
+`dispatch result` record's dry run. That dry run asks Dispatch through
+the call itself (`dryRunAsksDispatch`): it needs Dispatch on, as the record does, reads what the
+record reads (this session's title among it), and after the arguments prints the pull-request body
+line Dispatch answers on `POST …/results/dry-run`, recording nothing. A retraction's dry run sends
+nothing. Every other dry run reads no Dispatch, so it runs with Dispatch off too. A call that a dry
+run passed can still stop on what Dispatch answers or on this session's state.
 
 `dispatch login --device [--person <address>]` logs the machine in at the secrets broker
 (`dispatch-commands/login.ts`). It is the one command that is no Dispatch call. A person runs
@@ -1192,11 +1461,12 @@ and others cannot write to, it exits 2 before any request, so no person approves
 machine could not keep there. It exits 2 too, before any request, for a file setting that names
 something other than a regular file, a link to one included: a directory, which no save can
 replace, a named pipe, which a read waits on until a process writes to it, a socket, a device or a
-loop of links. It reads the login a new one replaces, and every login it trades, only from a
-regular file of at most 64 KiB, in a directory it checks before it opens the file; where the
-setting names a link, it checks the directory of each link on the way and of the file at its
-end as well. Every directory on the way to those but the ones above the home directory, which
-hold the home directory itself, must be one that this user or root owns, the directory each
+loop of links. Asked for anything but its `--help`, it exits 2, before any request, while either of
+the command's token files is set (below). It reads the login a new one replaces, and every login it
+trades, only from a regular file of at most 64 KiB, in a directory it checks before it opens the
+file; where the setting names a link, it checks the directory of each link on the way and of the
+file at its end as well. Every directory on the way to those but the ones above the home directory,
+which hold the home directory itself, must be one that this user or root owns, the directory each
 link on the way sits in included, and that others may not write to unless it has the sticky
 bit, as /tmp has. Its group may write to it only where that group is this user's private group:
 /etc/passwd and /etc/group name this user in it and no other member, as a Legion pod's /legion,
@@ -1214,13 +1484,25 @@ exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ub
 not upstream OpenSSH, which refuses every directory its group may write to. The rest is this
 command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each link
 on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
-the broker refuses the login, the person denies it, its code expires, or the broker answers a
-poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
-naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
-broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s),
-and 5 s where it names none. It then writes no file. It exits 1 too when a login that was approved
-cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
-it in Machine logins on the page the code was typed into. Where it wrote a copy of the login whole,
+the broker refuses the login, the person denies it, its code expires, the broker answers a code
+that would lapse before its first poll (refused before the code is printed, naming the broker's
+interval and its codes' lifetime, or the hour this machine polls a code at most, and what must
+change at the broker), or the broker answers a poll with any other 4xx, with another OAuth error
+or without one (a proxy's page, a bare challenge), naming its status. The status decides first
+(`oauth-refusal.ts` in `@legion/cipher-client`): a poll the broker did not answer, a 408, its 429
+and a 5xx are polled again, whatever OAuth error they name, and only in another
+4xx does a deciding error count: `access_denied`, which the broker answers 403, is the denial,
+`expired_token` and `invalid_grant` the expiry, and `authorization_pending` and `slow_down` poll
+again. It polls at the broker's interval, 1 s at least, and 5 s where it names none; each
+`slow_down` adds 5 s, at whatever status it comes, and so does each poll the broker did not answer
+or answered 408, 429 or 5xx, once for a poll that is both, as RFC 8628 has it. Such an answer's
+`Retry-After`, in seconds or as a date, is waited before the next poll where it asks longer,
+though never past the code's lifetime, which no wait passes and which is kept on the monotonic
+clock, so a step of the system clock does not move it; a code that lapses after such polls says
+how many came in a row before it. It then writes no file. It
+exits 1 too when a login that was approved cannot be kept: it names the login's credential, which
+the broker holds live, and says to revoke it in Machine logins on the page the code was typed
+into. Where it wrote a copy of the login whole,
 the copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message
 names that suffix, whatever fails after it, letting go of the lock included: moved over the file,
 the copy is the login and its credential needs no revoke; unused, the person deletes it, since it
@@ -1238,6 +1520,95 @@ typed into. The earlier login is the one the file holds just before the save, re
 the save holds, so of two logins made at once the one kept second names the other. On a machine
 whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
 
+`dispatch api --path <route> [--method POST|PUT|PATCH|DELETE] [--body-file <file>|-]` sends one
+request of a route under `/api/v1` that no other command sends (`apiCommand`,
+`src/dispatch-commands/api.ts`), with the session's own credential as every command presents it
+(a set bearer, the token files' broker token, else a token traded at the secrets broker, with a
+new DPoP proof for the request), and prints the answer's body: Dispatch's JSON, indented as every
+command prints it, for `jq`; any other 2xx body as it came. It is the contract's spec
+`dispatch_api`. With no `--method` it sends a GET (`DispatchClient.readRoute`); `--method` sends
+`POST`, `PUT`, `PATCH` or `DELETE` in its place (`DispatchClient.sendRoute`), and `GET` is no
+value of it. A write that a named command
+makes goes through that command (`dispatch --help` lists them): `dispatch api` is for a route no
+command sends, and it is how a script or a job writes, since a broker token is bound to a key and
+no script can send it as a bearer. `--body-file <file>` sends the file's text, `--body-file -`
+standard input, and `--body` its value, as the request's JSON body
+(`Content-Type: application/json`), and only beside `--method`: a GET sends no body, and a write
+given none sends no body and no `Content-Type`. Standard input is read only with
+`--body-file -`. `<route>` is `/api/v1`, which lists every route, or a route under it, with its
+query after `?`. The spec refuses, before anything is sent, a path that does not begin `/api/v1`
+(a URL among them), one that holds a space, a backslash, a `#` or a character outside printable
+ASCII, one that holds `"`, `<`, `>`, `^`, `` ` ``, `{` or `}` before its query, which a URL parser
+would send percent-encoded, and one with a `.` or `..` segment, plain or percent-encoded, since a
+URL parser would resolve any of those out of `/api/v1`; each refusal names the path, so the
+credential goes to no other server and no other route. It sends the request once, and once more
+only after Dispatch answers that the token it presented is not live (Dispatch authenticated
+nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. On a 2xx answer it
+exits 0 and prints Dispatch's JSON, indented as every command prints it; any other 2xx body as it
+came, byte for byte, with nothing added and nothing else on standard output: a bodiless 204 as
+nothing, a body typed JSON that is empty or does not parse, and stored content, such as a file
+version's bytes (`GET /api/v1/artifacts/{id}/versions/{number}`) or a document version's Markdown
+(`?download=true`). An answer that carries `Content-Disposition: attachment` is stored content
+whatever its type, so a file stored as JSON prints as it was stored and is never parsed. Under a
+host, the session's ledger records a body printed as it came by its Content-Type and size, never
+its bytes. A 2xx whose body holds a credential the command presented (its token, or the DPoP
+proof of its request) is not printed: something in Dispatch's place echoed the request, so the
+command exits 1 with `CREDENTIAL_ECHOED`, naming the status, saying that a write may have been
+made and to check whether it took effect before sending it again, and naming nothing of the
+body. Any other answer exits 1 with its code: a refusal is Dispatch's error with its code and,
+where Dispatch gives one, its hint
+(`NOT_FOUND: no route for GET /api/v1/x; GET /api/v1 lists every route`), and an answer that is
+neither a 2xx nor Dispatch's JSON, such as a proxy's page or a redirect, is named by its status. A
+usage error, such as a path outside `/api/v1` or a body with no method, exits 2. Under Claude
+Code, a JSON answer longer than the output limit is written to a file the output names; a body
+printed as it came is written whole.
+
+Under a host it acts as that host's session, as every command does, and refuses a missing
+session id with the usage error they give. Where no host is found (`commandHost`), as in a
+GitHub Actions job, it runs all the same, like `dispatch login`: it reads Dispatch from the
+environment alone and no envoy.json (`unhostedDispatch`): `DISPATCH_URL`, and `DISPATCH_TOKEN`,
+`DISPATCH_TOKEN_FILE`, the token files (below) or the broker's `AGENT_SECRETS_URL` and
+`AGENT_SECRETS_MACHINE_IDENTITY`, with `DISPATCH_TOKEN_BROKER` read as every command reads it.
+Its trade names the session `DISPATCH_SESSION_ID` holds, else `AGENT_SECRETS_SESSION`'s, else no
+session, which the fixed session of the job's broker entry answers; with none, the broker refuses
+the trade and the command exits 1 naming the refusal. With no Dispatch or no credential set it
+exits 2, naming those variables. It keeps no session's state there, since no session runs it:
+only a refusal made before a credential is resolved, a usage error or AskGate's refusal of a
+write, goes to the ledger of the session the environment names, if any, and a failure of the
+credential, the broker's refusal of the trade among them, or of the request records nothing. For
+a write, the AskGate record of every session the environment names
+(`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is read,
+host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
+every other method before any request with exit 1, naming the `dispatch` command that makes that
+write (`WRITE_ROUTES`), which AskGate reviews; the gate sits in the command itself, under a host
+and with none, and the refusal's ledger line carries AskGate's mark, so pi-envoy counts it. For a
+write, a variable that holds no valid session id (1 to 128 letters, digits, `.`, `_` or `-`) is a
+usage error that names the variable; a `GET` reads no AskGate record. Where every record is off,
+or the environment names no session (CI, a terminal, a script), every method is sent.
+
+A GitHub Actions job runs it with no host plugin. The command is the `bin/dispatch` of
+`@sjawhar/codex-envoy`, which is that package's npm `bin`
+(`npx --package @sjawhar/codex-envoy dispatch api …`), or of `@sjawhar/pi-envoy`, which declares
+no npm `bin` (`node_modules/@sjawhar/pi-envoy/bin/dispatch` once the package is installed). Each
+runs the bundled `dist/dispatch.js` with `bun`, so the job puts bun on its `PATH` first. The job
+holds `id-token: write`, the broker lists its workflow (`BROKER_EXCHANGE_JOB_WORKFLOWS` for a job
+that writes for no person), and the job's environment names the identity `github-actions`
+(above), with `AGENT_SECRETS_MACHINE_AUDIENCE` set to the broker's
+`BROKER_EXCHANGE_GITHUB_AUDIENCE`:
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  # bun is on PATH from an earlier step: bin/dispatch runs dist/dispatch.js with it.
+  - run: npx --package @sjawhar/codex-envoy dispatch api --path /api/v1/whoami
+    env:
+      DISPATCH_URL: https://dispatch.example
+      AGENT_SECRETS_URL: https://cipher.example
+      AGENT_SECRETS_MACHINE_IDENTITY: github-actions
+      AGENT_SECRETS_MACHINE_AUDIENCE: <the broker's BROKER_EXCHANGE_GITHUB_AUDIENCE>
+```
+
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
 Code, where claude-envoy's QA override `ENVOY_SESSION_ID` wins as it does on the
@@ -1254,6 +1625,31 @@ on success, 1 when Dispatch or AskGate refused the call, and 2 on a usage error.
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.
+The one exception is a call whose whole output is one JSON object (`dispatch issues --json`,
+`printsJson`): a cut object is no JSON object, so it is printed whole on every host, and the CLI
+prints its own lines on stderr. A `409 PARENT_STATUS_CONFLICT`, whichever command Dispatch refused,
+prints the refusal, then each issue that holds the rule as `KEY [status] title`, then what to do
+next, and exits 1, as a near copy's refusal does.
+That last part follows what the call changed, so it names no step that the rule refuses.
+A create (`dispatch issue`) is refused only under a done parent and takes no flag that moves it,
+so it prints how to reopen that parent first
+(`dispatch issue-update --issue <PARENT> --status in_progress --include-parent`, because the rule
+also refuses a plain status change of that parent where the issue above it is done or not
+started) or file the issue under an open parent or none.
+A reparent (`dispatch issue-update --parent <PARENT>`) refused for the parent it names, which no
+flag of the command moves, is told to move that parent first
+(`dispatch issue-update --issue <PARENT> --status in_progress --include-parent`), then to run the
+reparent again, with `--issue` and `--status` only where the call had them.
+A status change prints the flags of `dispatch issue-update --status` that move the issues.
+Those flags go with `--status` alone, and with `--reason` for done, so a call that also changed
+another field is told to send that change in a call of its own.
+A reparent refused for a child, against the status it also wrote, is told to run the status change
+first, in a call of its own, and the reparent after it, without `--status`.
+Dispatch refuses a credential scoped to one project each step that writes an issue of another
+project (`403 PROJECT_SCOPE`), and the CLI does not know its credential's scope. So where an issue
+the refusal names, which a flag of the line writes, is in another project than the issue the call
+names (its `--issue`, else `LEGION_ISSUE`), the line also says that such a credential is refused
+that step, and that a person, or a credential that names no project, must make it.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
 
@@ -1270,15 +1666,72 @@ at most once a day.
 `empty`, `text` or `json`, from `src/stand-in-gateway.ts`) on `--port` (ephemeral by default) and
 prints its URL, for proving what a command shows when a gateway, not Dispatch, answers.
 
+### The `dispatch` command's token files
+
+A copy of the command can use a broker token that was traded elsewhere, so the copy holds no
+subject token and trades nothing. Two settings name two files (`file-token-credential.ts`):
+
+- `DISPATCH_BROKER_TOKEN_FILE` names a file that holds one broker access token and nothing else.
+  Whitespace around it is trimmed.
+- `DISPATCH_BROKER_DPOP_KEY_FILE` names a file that holds the P-256 private key the token is bound
+  to, as one PKCS#8 PEM block (a block labelled `PRIVATE KEY`, as
+  `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256` writes it). A SEC1
+  (`EC PRIVATE KEY`) or PKCS#1 block is refused, though the runtime would read it.
+
+The key is made for the copy that holds the file. It is never a sign-in's box key, it signs no
+launcher proof and holds no launcher credential, and no token is bound to it but the read-only
+tokens traded for that copy. The broker's read trade binds such a key and refuses a key that a
+live launcher credential is bound to. Keeping every other token off the key is the rule of the
+driver that trades for the copy.
+
+With both set, the command's one Dispatch credential presents `Authorization: DPoP <token>` and a
+proof signed with the key, naming the request's method, its URL and the token (`ath`). It sends
+them to `DISPATCH_URL` alone, and refuses a request to any other origin. `DISPATCH_URL` must be
+Dispatch's public origin, because Dispatch checks each proof's URL against it. The command reads
+both files again before each request and keeps neither, so the driver renews the token by writing
+a new file and renaming it over the old one, and keeps the key. The Envoy listener never gets the
+token: it takes only its own settings (`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`, `envoy.token`), and the
+command makes no trade at the broker for Dispatch or for any other service.
+
+A person's read trade does not extend the launcher credential of the person's sign-in. Once that
+credential lapses, the broker refuses the driver's read trades and names the cure: one ordinary
+trade of the person, which `agent-secrets` makes. The read tokens traded under the lapsed
+credential end with it.
+
+Each proof carries the process's own clock in `iat`, and Dispatch takes a proof only within one
+minute of its own time, so the command must run on the real clock.
+
+The command refuses to start, exits 2 and names every setting at fault, when one of the two
+settings is set alone, when `DISPATCH_URL` is not set, or when any of these is set beside them:
+`DISPATCH_TOKEN_BROKER`, `DISPATCH_TOKEN_BROKER_READ`, `DISPATCH_TOKEN_BROKER_AS_OF`,
+`DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE`, `AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY`, a
+`dispatch.token` in the chosen `envoy.json`, or a `dispatch.token` in the checkout's
+`.envoy/envoy.json`. The checkout's file is read for this check even with `DISPATCH_URL` set, and
+one that cannot be read is refused too, since whether it holds a token cannot be told. A `!`
+command in either `dispatch.token` is found by the field's presence and never run. `dispatch login`
+exits 2 too, `--help` aside, before any request, while either setting is set, and names each of the
+variables above that is set beside them: a device login asks the broker and keeps a login in a file,
+and the token files trade nothing. A file that cannot be read, a token file that is empty or blank,
+and a key that is not P-256 in one PKCS#8 PEM block each fail the request with an error that names
+the setting and the file and quotes none of its bytes. Under a read-only token, a write prints
+Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
+
+Only the `dispatch` command reads the two settings: it passes `tokenFiles` to
+`sessionDispatchSettings`. Every other caller of `dispatchSettings` that finds either set, each
+plugin and its hooks included (claude-envoy, its Codex server, pi-envoy, pi-legion), turns Dispatch
+off with an error that says so, rather than writing with another credential beside them.
+
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-seven
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.
 `dispatch issue-update` reads the issue first and sends `PATCH /api/v1/issues/{key}` as the
-session actor: `status` (a Legion lifecycle status), `title`, `labels` (replacing the set),
-`priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
+session actor: `status` (a Legion lifecycle status), `title`, `labels` (`--label`, replacing the
+set), `labels_add` (`--labels-add`, repeated, adding to the labels the issue holds inside
+Dispatch's write and keeping the others; never beside `labels`, which is refused before any
+request), `priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
 and `external_links`: a non-empty list merges into the issue's existing links by URL rather than
 replacing them, and an explicit empty list (`--clear-external-links`) clears every link instead;
 `before` and `after` (`--before <KEY>` / `--after <KEY>`) move the issue on its project's board —
@@ -1292,6 +1745,27 @@ a PATCH that fails after the post names the posted message. The result is one li
 `priority cleared` on a clear and `reason posted as message <id> (<ref>)` ahead of a close — and a
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
+With `--include-children`, `--unlink-children` or `--include-parent`, `dispatch issue-update`
+sends `POST /api/v1/issues/{key}/status-change` (`DispatchClient.changeIssueStatus`) in place of
+the PATCH. The three flags go with `--status` alone, and with `--reason` beside `done`, which is
+posted first as for every close. The schema refuses them beside any other field,
+`--include-children` beside `--unlink-children`, and `--include-children` with `--status done`,
+before anything is sent (exit 2). Only a person who is signed in at a browser can close the open
+issues under an issue together with it, and the command presents a token: that person does it on
+the issue's page in Dispatch (Close issue, then Move them with it). The answer names each issue
+the call changed with its status after the call, so the command reads before it writes: the
+issue's own read names its children, with `--include-children` it reads the project's issues too,
+and with `--include-parent` alone it reads each issue above the issue, one parent at a time. It
+prints one line for each changed issue, in the order the steps ran: `KEY: status a -> b`, or
+`KEY: unlinked from P`. The issue the call names always gets a line, which carries the posted
+reason's message where there is one: in the order of the steps where the call changed it, and last
+where the call left its status as it was. A refusal names the issues the steps before it changed.
+A build older than the route answers no route: the
+write asks again as every write does, then the command refuses naming the route and sends no
+PATCH, since a PATCH would write the status without the option. The CLI's `--dry-run` prints the
+arguments and asks Dispatch nothing.
+`dispatch issues --json` prints `{issues, total, offset, limit}`, each issue with its status,
+parent and labels, as one JSON object and nothing else.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
 name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown

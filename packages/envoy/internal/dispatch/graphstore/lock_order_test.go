@@ -148,11 +148,12 @@ func newLockOrderFixture(t *testing.T) *lockOrderFixture {
 	return fixture
 }
 
-// lockOrderNode is one node as this test writes it.
+// lockOrderNode is one node as this test writes it: in the test's project, as every node of an
+// object a project owns is, so the write under test binds and states the project too.
 func lockOrderNode(kind, id string) Node {
 	return Node{
 		Kind: kind, ID: id, Supertag: kind,
-		Visibility: VisibilityProject, State: StateLive,
+		Visibility: VisibilityProject, State: StateLive, Project: lockOrderProj,
 		MadeAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC),
 		MadeBy: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: NoEvent,
 	}
@@ -751,7 +752,7 @@ func startStoreWrite(t *testing.T, ctx context.Context, f *lockOrderFixture, nod
 // claims about it was never put to the test.
 func requireQueued(t *testing.T, holder pgx.Tx, conn *pgxpool.Conn, done chan error, what string) {
 	t.Helper()
-	answer, answered := storetest.WaitForQueuedBehind(t, holder, conn.Conn().PgConn().PID(), done, lockWait)
+	answer, answered := storetest.WaitForQueuedBehind(t, holder, conn.Conn().PgConn().PID(), done)
 	if answered {
 		t.Fatalf("%s finished without waiting for the lock a holder has: %v%s", what, answer, deadlockNote(answer))
 	}

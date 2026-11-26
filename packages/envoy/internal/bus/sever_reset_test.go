@@ -31,15 +31,16 @@ func markerSubscriber(t *testing.T, subject string) (*nats.Conn, chan *nats.Msg)
 	return subscriber, received
 }
 
-// awaitWritten waits until nats.go has written everything conn had buffered into its socket.
+// awaitWritten waits until nats.go has written everything conn had buffered into its socket,
+// bounded only by the test binary's deadline (testwait.Until).
 func awaitWritten(t *testing.T, conn *nats.Conn, what string) {
 	t.Helper()
-	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, what+" written into the socket", func() bool {
+	testwait.Until(t, what+" written into the socket", func() (int, bool) {
 		buffered, err := conn.Buffered()
 		if err != nil {
 			t.Fatalf("read what nats.go holds of %s: %v", what, err)
 		}
-		return buffered == 0
+		return buffered, buffered == 0
 	})
 }
 
@@ -183,11 +184,7 @@ func TestASocketWhoseWriteFailedSendsNothingMoreOnceTheLinkMoves(t *testing.T) {
 	testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "a write of the stalled socket failed at its deadline", func() bool {
 		return writeFailedOn(dialer)
 	})
-	select {
-	case <-gaveUp:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: nats.go did not give the stalled connection up within 30 s of its failed write")
-	}
+	testwait.Receive(t, "control: nats.go to give the stalled connection up after its failed write", gaveUp)
 	if receivedOnceSettled(t, relay, subscriber, received, marker) {
 		t.Fatal("the socket whose write failed sent the marker once the link moved: its close was not a reset")
 	}
@@ -242,10 +239,12 @@ func stalledPeer(t *testing.T) (address string, accept func() net.Conn) {
 }
 
 // queueMarker writes a 64 KiB filler and then marker on conn, each write into the kernel's send queue,
-// so the marker waits there behind the stalled peer's full window.
+// so the marker waits there behind the stalled peer's full window. The writes' deadline is
+// testwait.Context's, the test binary's deadline less testwait's margin.
 func queueMarker(t *testing.T, conn net.Conn, marker []byte) {
 	t.Helper()
-	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	deadline, _ := testwait.Context(t).Deadline()
+	if err := conn.SetWriteDeadline(deadline); err != nil {
 		t.Fatalf("set the write deadline: %v", err)
 	}
 	for _, write := range [][]byte{make([]byte, 64<<10), marker} {
@@ -256,12 +255,14 @@ func queueMarker(t *testing.T, conn net.Conn, marker []byte) {
 }
 
 // closeSendsMarker closes conn and reports whether the peer then reads marker: a normal close sends
-// what the kernel still held, and a reset discards it.
+// what the kernel still held, and a reset discards it. The peer's read deadline is
+// testwait.Context's, the test binary's deadline less testwait's margin.
 func closeSendsMarker(t *testing.T, conn, peer net.Conn, marker []byte) bool {
 	t.Helper()
 	// A reset closes the socket before severableConn closes it again, which answers that it is closed.
 	_ = conn.Close()
-	if err := peer.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	deadline, _ := testwait.Context(t).Deadline()
+	if err := peer.SetReadDeadline(deadline); err != nil {
 		t.Fatalf("set the peer's read deadline: %v", err)
 	}
 	// A reset ends the read with an error once the peer has read what it had queued; a read that

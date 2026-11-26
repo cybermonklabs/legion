@@ -34,12 +34,35 @@ export const FORM_LAUNCHER_CREDENTIAL_DECLINED = "false";
  *  projects. */
 export const FORM_PROJECTS = "projects";
 
+/** RFC 6749's own form parameter, the scope a trade asks for: {@link SCOPE_READ} alone is the one
+ *  a client of this package asks for, and a trade that asks for none sends no parameter. */
+export const FORM_SCOPE = "scope";
+
+/** The scope that narrows a trade to reading (`oauthwire.ScopeRead`): the minted token keeps the
+ *  identity the same trade would have had, and Dispatch refuses every write it makes. */
+export const SCOPE_READ = "read";
+
+/** The broker's fourth form parameter: the cut, the past time a read trade's token reads at, as
+ *  an RFC 3339 time with at most six fractional digits (`oauthwire.FormAsOf`). Only a trade that
+ *  asks for {@link SCOPE_READ} sends it, and the broker refuses a cut later than the trade. */
+export const FORM_AS_OF = "as_of";
+
+/** The header of a read trade's second proof (`oauthwire.HeaderDPoPHolder`): a DPoP proof of the
+ *  same request signed with a key made for the token's holder, which the broker binds the token
+ *  to in place of the DPoP proof's key. A person's read trade and a device login's send it, since
+ *  the key each proves its trade with, the box key or the login's key, signs no read token. */
+export const HEADER_DPOP_HOLDER = "DPoP-Holder";
+
 /** The `subject_token_type` a pod presents its projected Kubernetes service-account token under. */
 export const SUBJECT_TOKEN_TYPE_KUBERNETES =
   "urn:envoy:params:oauth:token-type:kubernetes-service-account";
 
 /** The `subject_token_type` a machine presents its own Google identity token under. */
 export const SUBJECT_TOKEN_TYPE_GOOGLE = "urn:envoy:params:oauth:token-type:google-identity";
+
+/** The `subject_token_type` a GitHub Actions run presents the OIDC token GitHub minted for it
+ *  under (`oauthwire.SubjectTokenTypeGitHub`), which the broker answers from the workflow's entry. */
+export const SUBJECT_TOKEN_TYPE_GITHUB = "urn:envoy:params:oauth:token-type:github-workflow-run";
 
 /** The `subject_token_type` a person presents their own Google identity token under, which only a
  *  sign-in carries. */

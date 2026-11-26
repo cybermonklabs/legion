@@ -855,6 +855,46 @@ func TestAFreshSessionRefusesTheControllersOwnClaim(t *testing.T) {
 	refused(t, recorder, http.StatusConflict, "NOT_THE_CONTROLLER")
 }
 
+// A controller held for OpenAI's cyber-policy refusal is the one controller its keeper does not
+// retry (the daemon's controllerKeeper), so the operator's `legion claims retry` is its way back,
+// and both of its forms are admitted. Each leaves the recorded session, which holds the refused
+// content, behind, and starts the controller in a new one: without --fresh-session the machine's
+// retry forgets it (supervise's freshSession), since a resume would send that content to OpenAI
+// again with the keeper's start message.
+func TestTheOperatorsRetryStartsAHeldControllerInANewSession(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fresh bool
+	}{{"asking for a new session", true}, {"asking for none", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := freshSessionHarness(t, &phaseRestarter{})
+			token := claim.ControllerToken(testProject)
+			m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{
+				Token: token, Project: testProject, Role: claim.RoleController, Generation: 1, State: supervise.StateFailed,
+				Session: "ses_controller", SessionFile: "/tmp/controller.jsonl", FailureCause: supervise.CauseCyberPolicy,
+				Failure: "a provider error that cannot clear ended this claim's turn: OpenAI's cyber_policy refusal of this session's content",
+			}, "")
+			if err != nil {
+				t.Fatalf("create the held controller: %v", err)
+			}
+
+			recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: tc.fresh})
+
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the operator's retry of the held controller = %d %s, want it admitted", recorder.Code, recorder.Body)
+			}
+			m.Wait()
+			c := m.Claim()
+			if c.State != supervise.StateLaunching || c.FailureCause != "" {
+				t.Fatalf("the controller is %s (%q), want it launching with no failure record", c.State, c.FailureCause)
+			}
+			if c.Session != "" || c.Abandoned.Session != "ses_controller" {
+				t.Fatalf("the controller records session %q and abandoned %q; want the recorded session left behind", c.Session, c.Abandoned.Session)
+			}
+		})
+	}
+}
+
 // A fresh session is refused for a claim no launch has registered yet: its suspension would be
 // held for the agent it is still waiting for, and the request would answer long after the claim
 // moved on. The refusal says the claim is launching and which states a fresh session does
@@ -942,7 +982,7 @@ func TestAFreshSessionThatCouldNotStartTheClaimAgainAnswersACallerBelow104AsBefo
 					}
 					want := map[string]any{
 						"level": "INFO", "caller": "192.0.2.1:1234", "pod": "",
-						"pluginContract": float64(restoreContract(contract)), "daemonApiVersion": float64(DaemonAPIVersion),
+						"pluginContract": float64(restoreContract(contract)), "daemonApiVersion": float64(DaemonAPIVersion()),
 						"follows": followsRestore, "claim": string(token), "request": "resume", "served": servedTheRefusedStep,
 					}
 					for key, value := range want {

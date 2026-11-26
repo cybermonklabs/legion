@@ -25,12 +25,13 @@ import (
 // days. Accepting's is the architect's sign-off, which moves the issue on in the transaction that
 // records it, so an issue standing in accepting is always still waiting for it; every other
 // phase ends with its worker's completion, which moves the issue too. A recorded completion
-// answers nothing here: the merger's is recorded and moves no issue.
+// answers nothing here: the merger's is recorded and moves no issue. The pull request's state is
+// all it reads, so it reads the row alone (record.Store.PullRequestRow).
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
-	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	pr, err := store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return false, err
 	}
@@ -571,6 +572,16 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // test alone would decline the retry's task and relaunch the worker with no prompt
 // (supervise.Machine.queue). Its task is told as start's is, from the standing it reads only for
 // a worker it starts.
+//
+// It is marked decided as well (record.SuperviseRequest.Decided), the one phase worker's start
+// that is: every road into it is a person's or the issue's architect's own request — the
+// architect's retry_or_escalate, the operator's `legion claims retry` of a phase worker
+// (intake.RestartPhase or the held phase's retry), a person's todo on a held root
+// (releaseHeldRoot). So it is the one start of a phase worker that launches again the agent of a
+// claim held for OpenAI's cyber-policy refusal, which it starts in a new session whether or not
+// freshSession asks for one (supervise's freshSession), since the recorded session would send the
+// refused content to OpenAI again. The other start so marked is a promoted root's architect's
+// (StartPromotedArchitect).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -587,7 +598,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, decided: true, freshSession: freshSession})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
@@ -645,9 +656,12 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
 }
 
-// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
-// promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumeTask), on the one walk of its run it reads for that task and the entry it raises.
+// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's first run
+// brings back — its promotion, or the admission pass that finds the tree running when its design
+// gate opened first (admit's startMidPhaseMembers, returnMembersOfRunningTrees) — on the resume
+// task of the phase it stands in (ResumeTask), on the one walk of its run it reads for that task
+// and the entry it raises. Both are the promotion's start here: the pass's return is the one the
+// promotion would have made.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -684,8 +698,16 @@ type startMarks struct {
 	// (record.SuperviseRequest.ResendEntry). The held phase's retry sets it (restart), because
 	// the claim it reaches may hold that very entry as its given one; sendOwedEntry sends the
 	// entry its row names too and sets it not, because the claim it reaches is behind that entry
-	// and the entry test passes the task on its own.
+	// and the entry test passes the task on its own. It is the entry fence's mark alone, and says
+	// nothing of who asked for the start (decided).
 	resend bool
+	// decided says a person or the issue's architect asked for the start
+	// (record.SuperviseRequest.Decided), which makes it a start that launches again the agent of a
+	// claim held for OpenAI's cyber-policy refusal (supervise.RequestRetry.Decided). Of the phase
+	// workers' starts, restart alone sets it, the held phase's retry, which every such request
+	// comes through; no start the daemon makes by itself may, or it would send the refused content
+	// to OpenAI again.
+	decided bool
 	// resumeTask says the task is the phase's resume task (ResumeTask), so a claim that
 	// already holds a task of this generation and phase is given it once it is ready and the
 	// start delivers none (record.SuperviseRequest.ResumeTask). The promotion's start of a
@@ -765,8 +787,9 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		move = reassertion
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, Decided: marks.decided,
+		ResumeTask: marks.resumeTask, RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume,
+		FreshSession: marks.freshSession}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
@@ -1072,8 +1095,8 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 
 // The labels of a started worker's task that a prompt or a skill names to the worker, each the
 // text before the colon of one of the task's lines. Every line of the task is built from its
-// label here, and TestEachTaskLabelIsOneThePromptsName ties each one to the prompts and the
-// skills that tell the worker to read it, so a label renamed on one side alone fails there.
+// label here, and TestEachTaskLabelIsALineTheTaskWrites holds each label's text, so a label renamed
+// here alone fails there.
 // testerVerdictLabel, above, and reviewround's CommitLabel and EntryLabel are three more, tied by
 // tests of their own.
 const (
@@ -1211,7 +1234,8 @@ func HeldNotice(issue record.Issue) record.Notice {
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
-// root's own promotion made the tree live.
+// tree's first run made the tree live: its root's promotion, or the admission pass that finds a
+// re-admitted tree running first.
 func ChildReenteredNotice(child, root string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
 }

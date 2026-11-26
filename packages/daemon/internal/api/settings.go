@@ -50,6 +50,11 @@ type Settings struct {
 	Instructions string `json:"instructions,omitempty"`
 	// PlanGuidance is the path of the owners' plan guidance, absent while the file sets none.
 	PlanGuidance string `json:"plan_guidance,omitempty"`
+	// PrivateNameRulesFile is the deployment's private-name rule file's path, from
+	// `private_name_rules_file` or else LEGION_PRIVATE_NAME_RULES_FILE in the daemon's environment,
+	// absent while neither names one. It is the path alone, as `instructions` is, and never the
+	// rules, which name the deployment's private names.
+	PrivateNameRulesFile string `json:"private_name_rules_file,omitempty"`
 	// The durations, in whole seconds as the file takes them.
 	WorkerBootTimeoutSeconds      int `json:"worker_boot_timeout_seconds"`
 	WorkerRPCTimeoutSeconds       int `json:"worker_rpc_timeout_seconds"`
@@ -71,6 +76,11 @@ type Settings struct {
 	NatsURLs             []string `json:"nats_urls"`
 	// DispatchURL is absent while the file sets none.
 	DispatchURL string `json:"dispatch_url,omitempty"`
+	// DispatchTokenBroker is `dispatch_token_broker`, absent while it is false, so a deployment
+	// that never set it reads byte for byte as before the key existed. It says how the daemon and
+	// its roles reach Dispatch, never with what: the credential is a broker trade, and no path of
+	// a file holding one rides here (`dispatch_token_transition_file` stays out).
+	DispatchTokenBroker bool `json:"dispatch_token_broker,omitempty"`
 	// Projects is `{}` while the file declares none.
 	Projects map[string]ProjectSettings `json:"projects"`
 	Gates    GatesSettings              `json:"gates"`
@@ -551,6 +561,7 @@ func SettingsOf(cfg config.Config) Settings {
 		ProviderKeys:                            make([]string, len(cfg.ProviderKeys)),
 		Instructions:                            cfg.InstructionsPath,
 		PlanGuidance:                            cfg.PlanGuidancePath,
+		PrivateNameRulesFile:                    cfg.PrivateNameRulesFile,
 		WorkerBootTimeoutSeconds:                seconds(cfg.WorkerBootTimeout),
 		WorkerRPCTimeoutSeconds:                 seconds(cfg.WorkerRPCTimeout),
 		WorkerStopTimeoutSeconds:                seconds(cfg.WorkerStopTimeout),
@@ -567,6 +578,7 @@ func SettingsOf(cfg config.Config) Settings {
 		EnvoyURL:                                endpointOf(cfg.EnvoyURL),
 		NatsURLs:                                make([]string, len(cfg.NatsURLs)),
 		DispatchURL:                             endpointOf(cfg.DispatchURL),
+		DispatchTokenBroker:                     cfg.DispatchTokenBroker,
 		Projects:                                make(map[string]ProjectSettings, len(cfg.Projects)),
 		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
 		LingerHours:                             cfg.Linger.Hours(),

@@ -53,11 +53,10 @@ modelRoles:
   oracle: anthropic/claude-opus-5:high
   deep: anthropic/claude-fable-5-1:xhigh
 retry:
-  # A failed model call is retried on another model (Sami's decision of 2026-10-08 on
-  # dispatch://LEGION-578): the daemon's image probe reads this key and reports the model-fallback
-  # capability open while a deployment's copy still turns it off. Which model it falls back to is
-  # the repository's to add, as retry.fallbackChains keys (a record), under the models.yml route
-  # above.
+  # A failed model call is retried on another model: the daemon's image probe reads this key and
+  # reports the model-fallback capability open while a deployment's copy still turns it off. Which
+  # model it falls back to is the repository's to add, as retry.fallbackChains keys (a record),
+  # under the models.yml route above.
   modelFallback: true
 extensionHandlers:
   # AskGate (pi-envoy, in every pod) reviews each Dispatch write inside one tool_call handler, and

@@ -22,6 +22,7 @@ import {
   type ReferenceLinking,
   RefLink,
 } from "./RefLink";
+import { hostLinksReferences, type ReferenceHost, useReferenceHost } from "./reference-host";
 
 /** The anchor list of a body with no references: one shared value, so re-rendering such a body
  *  leaves the state untouched instead of committing a fresh empty array each time. */
@@ -97,13 +98,10 @@ export interface RenderedMarkdown {
   portals: ReactNode;
 }
 
-/** A surface's last pass over its rendered element, given the reference anchors the link pass
- *  found (each already emptied for its portal). It answers the anchors to portal into: the same
- *  ones, or whatever element it put in each one's place. */
-export type DecorateMarkdown = (
-  element: HTMLElement,
-  anchors: readonly ReferenceAnchor[]
-) => readonly ReferenceAnchor[];
+/** A surface's last pass over its rendered element, after the link pass has found each
+ *  reference anchor and emptied it for its portal: it may style the element or add to it, and it
+ *  leaves every anchor where the link pass put it. */
+export type DecorateMarkdown = (element: HTMLElement) => void;
 
 /**
  * What one piece of a sliced paint yields: `"page"` where the work it has just done reached the
@@ -261,27 +259,68 @@ export interface RenderedMarkdownOptions {
   references: ReferenceLinking;
 }
 
-/** Every anchor a paint leaves for a portal: the reference anchors the link pass found, as
- *  `decorate` answered them, and each Dispatch picture's placeholder after it. */
+/** Every anchor a paint leaves for a portal: the reference anchors the link pass found, and each
+ *  Dispatch picture's placeholder after `decorate` has run. */
 interface PortalAnchors {
   readonly pictures: readonly PictureAnchor[];
   readonly references: readonly ReferenceAnchor[];
 }
 
-/** Runs the link pass, `decorate` and the picture pass over a freshly painted element, in that
- *  order, and answers what the portals mount into. */
+/**
+ * Every link of a painted body as inert, link-styled text, for a host that is already one
+ * control - a link (a reply quote, an unfurl card, a hover card, a Broadcasts row), a search
+ * option or a margin card's toggle. A link inside one is a link in a link: a click on it would
+ * follow the inner link and the outer control at once, and it would be a second tab stop inside
+ * a tooltip. The words, their formatting and a reference's `data-dispatch-ref` (its hover card)
+ * stay; the host is the one thing a click or a key press follows. The anchors follow their words
+ * into the spans that replaced them, so each reference's portal still mounts where its words are.
+ * A person's reference is a span already (`collectReferenceAnchors`), no link to make inert.
+ */
+function inertLinks(
+  root: HTMLElement,
+  found: readonly ReferenceAnchor[]
+): readonly ReferenceAnchor[] {
+  const replaced = new Map<HTMLElement, HTMLElement>();
+  for (const link of root.querySelectorAll("a")) {
+    const span = document.createElement("span");
+    for (const { name, value } of link.attributes) {
+      if (name !== "href" && name !== "rel" && name !== "target") {
+        span.setAttribute(name, value);
+      }
+    }
+    span.setAttribute("data-markdown-link", "");
+    span.append(...link.childNodes);
+    link.replaceWith(span);
+    replaced.set(link, span);
+  }
+  return found.map((reference) => {
+    if (!(reference.anchor instanceof HTMLAnchorElement)) {
+      return reference;
+    }
+    const host = replaced.get(reference.anchor);
+    if (host === undefined) {
+      throw new Error("A reference anchor is not a link of the body it was found in.");
+    }
+    return { ...reference, anchor: host };
+  });
+}
+
+/** Runs the link pass, the host's own pass over what it linked, `decorate` and the picture pass
+ *  over a freshly painted element, in that order, and answers what the portals mount into. */
 function portalAnchors(
   element: HTMLElement,
   decorate: DecorateMarkdown | undefined,
-  references: ReferenceLinking
+  references: ReferenceLinking,
+  host: ReferenceHost
 ): PortalAnchors {
   linkifyDispatchRefs(element, references);
   const found = collectReferenceAnchors(element);
-  const anchors = decorate === undefined ? found : decorate(element, found);
+  const live = hostLinksReferences(host) ? found : inertLinks(element, found);
+  decorate?.(element);
   const placeholders = collectPictureAnchors(element);
   return {
     pictures: placeholders.length === 0 ? NO_PICTURES : placeholders,
-    references: anchors.length === 0 ? NO_ANCHORS : anchors,
+    references: live.length === 0 ? NO_ANCHORS : live,
   };
 }
 
@@ -304,12 +343,31 @@ export function onMarkdownLatePaint(listener: LatePaintListener): () => void {
 }
 
 /**
- * Where the content under `element` starts, as the reader sees it now: the element's own bottom
- * edge in the viewport. A shift the browser's own scroll anchoring already made is in that
- * measurement, so the page is never moved twice.
+ * The first box laid out under `element`, whose foot on the screen is `foot`: walking from the
+ * element up through its ancestors, the first following sibling that has a box, is in the flow
+ * (neither positioned out of it nor sticky) and starts at or below that foot, or null where none
+ * does. A sibling beside the element in a row starts above its foot, and the walk passes it by:
+ * its top does not move as the body grows. The element's own bottom edge is no measure of where
+ * the content under it starts: the bottom margin of a body's last block collapses through the
+ * element's foot, so a paint that fills an empty element moves that edge against the content
+ * under it. In a Conversation card the first batch of a list moves it 18.4px further than the
+ * card after it, and a correction read from it carried the reader those 18.4px wherever the
+ * document had end room to scroll into.
  */
-function whereTheContentUnderItWas(element: HTMLElement): number {
-  return element.getBoundingClientRect().bottom;
+function contentUnder(element: HTMLElement, foot: number): Element | null {
+  for (
+    let node: Element | null = element;
+    node !== null && node !== document.body;
+    node = node.parentElement
+  ) {
+    for (let next = node.nextElementSibling; next !== null; next = next.nextElementSibling) {
+      const { position } = getComputedStyle(next);
+      if (position === "absolute" || position === "fixed" || position === "sticky") continue;
+      const box = next.getBoundingClientRect();
+      if ((box.width > 0 || box.height > 0) && box.top >= foot - 1) return next;
+    }
+  }
+  return null;
 }
 
 /** The reader's place across one late paint, kept while the paint grows `element` under them. */
@@ -328,9 +386,11 @@ interface ReadersPlace {
  *
  * A body wholly above the top of the page pushes everything the reader is looking at down by
  * what its formatting added, so the page scrolls back by exactly that. A body the reader can see
- * is left alone - its top does not move, and that is where they are reading from. What is
- * measured is the element's own bottom edge in the viewport, which is where the content under it
- * starts.
+ * is left alone - its top does not move, and that is where they are reading from. Whether it is
+ * wholly above is read from the element's own bottom edge; how far it pushed the content under
+ * it, from the top edge of the first box laid out under it (`contentUnder`), or the element's
+ * own bottom edge where none is. A shift the browser's own scroll anchoring already made is in
+ * that measurement, so the page is never moved twice.
  *
  * `keep` runs once per batch of a sliced paint rather than once for the whole of it, because the
  * reader is not still while 32 batches land: with one measurement taken before the first batch
@@ -349,19 +409,31 @@ interface ReadersPlace {
  * not moved, which is every batch of a reader sitting still.
  */
 function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
-  let under = whereTheContentUnderItWas(element);
-  let placedAt = window.scrollY;
+  let above = false;
+  let under: Element | null = null;
+  let at = 0;
+  let placedAt = 0;
+  const where = () =>
+    under === null ? element.getBoundingClientRect().bottom : under.getBoundingClientRect().top;
+  const read = () => {
+    const foot = element.getBoundingClientRect().bottom;
+    above = foot <= 0;
+    // Only a body wholly above the top of the page is corrected, so only then is the content
+    // under it read.
+    under = above ? contentUnder(element, foot) : null;
+    at = under === null ? foot : under.getBoundingClientRect().top;
+    placedAt = window.scrollY;
+  };
+  read();
   return {
     hold() {
-      if (window.scrollY === placedAt) {
-        return;
+      if (window.scrollY !== placedAt) {
+        read();
       }
-      under = whereTheContentUnderItWas(element);
-      placedAt = window.scrollY;
     },
     keep() {
-      if (under <= 0) {
-        const moved = whereTheContentUnderItWas(element) - under;
+      if (above) {
+        const moved = where() - at;
         if (moved !== 0) {
           window.scrollBy(0, moved);
         }
@@ -382,18 +454,17 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  * same-origin dashboard URL is already a real link by then (GFM autolinked it, or the author
  * wrote it as Markdown link syntax). Either way, every reference anchor gets its href rewritten
  * to the SPA route and its text handed to a portal-mounted `RefLink` for the resolved title.
- * `decorate` runs last, on the fallback text as on a painted element, so a `<mark>` it adds
- * never splits a reference before the link pass sees it, and a plain lead it prepends is never
- * read as a reference; it answers the anchors the portals mount into, so it may replace an
- * anchor's element. Each Dispatch picture's placeholder is found after it, wherever it left one
- * (`MarkdownPreview` puts an inert span in a link's place), and gets a portal-mounted
- * `DispatchPicture` in the shape `pictures` names. Where the app provides a decision card
- * (`TextAskCard`), each `ask` shell a parsed `paint` drew gets one, mounted in the same commit
- * (`collectAskHosts`); the card is a dependency, so a new provider value renders again. On a
- * painted body, each fenced `mermaid` block then draws as its diagram (`drawMermaidDiagrams`,
- * which draws a source it has not drawn before late, once its worker answers; the paint that
- * replaces it, and the unmount, cancel that). It runs after every other pass, so a `dispatch://`
- * in a diagram's label is never wrapped as a link or collected as a reference.
+ * `decorate` runs last, on the fallback text as on a painted element, so a plain lead it
+ * prepends is never read as a reference; it leaves every anchor where the link pass put it. Each
+ * Dispatch picture's placeholder is found after it, wherever the paint left one, and gets a
+ * portal-mounted `DispatchPicture` in the shape `pictures` names. Where the app provides a
+ * decision card (`TextAskCard`), each `ask` shell a parsed `paint` drew gets one, mounted in the
+ * same commit (`collectAskHosts`); the card is a dependency, so a new provider value renders
+ * again. On a painted body, each fenced `mermaid` block then draws as its diagram
+ * (`drawMermaidDiagrams`, which draws a source it has not drawn before late, once its worker
+ * answers; the paint that replaces it, and the unmount, cancel that). It runs after every other
+ * pass, so a `dispatch://` in a diagram's label is never wrapped as a link or collected as a
+ * reference.
  * `onRendered` fires after each render lands; the newest callback is the one called, and a new
  * callback alone re-renders nothing. `paint` and `decorate` are dependencies: a caller passes a
  * module-level function or memoises one on what it reads. The options object itself is not one,
@@ -469,6 +540,7 @@ export function useRenderedMarkdown(
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
   const Card = useContext(TextAskCard);
+  const host = useReferenceHost();
   const [referenceAnchors, setReferenceAnchors] = useState<readonly ReferenceAnchor[]>(NO_ANCHORS);
   const [pictureAnchors, setPictureAnchors] = useState<readonly PictureAnchor[]>(NO_PICTURES);
   const [askHosts, setAskHosts] = useState<readonly AskBlockHost[]>(NO_ASK_HOSTS);
@@ -544,7 +616,8 @@ export function useRenderedMarkdown(
           const { pictures: placeholders, references: anchors } = portalAnchors(
             element,
             decorate,
-            references
+            references,
+            host
           );
           setReferenceAnchors(anchors);
           setPictureAnchors(placeholders);
@@ -584,7 +657,8 @@ export function useRenderedMarkdown(
           const { pictures: placeholders, references: anchors } = portalAnchors(
             element,
             decorate,
-            references
+            references,
+            host
           );
           setReferenceAnchors(anchors);
           setPictureAnchors(placeholders);
@@ -681,14 +755,18 @@ export function useRenderedMarkdown(
       { keepAPostedParse: true }
     );
     return cancelRender;
-  }, [Card, decorate, markdown, paint, paintInSlices, references, root, softBreaks, tree]);
+  }, [Card, decorate, host, markdown, paint, paintInSlices, references, root, softBreaks, tree]);
 
   return {
     isFallback,
     isPending,
     portals: [
-      ...referenceAnchors.map(({ anchor, key, route, text }) =>
-        createPortal(<RefLink anchor={anchor} route={route} text={text} />, anchor, key)
+      ...referenceAnchors.map(({ anchor, key, marked, reads, route, text }) =>
+        createPortal(
+          <RefLink anchor={anchor} marked={marked} reads={reads} route={route} text={text} />,
+          anchor,
+          key
+        )
       ),
       ...pictureAnchors.map(({ anchor, caption, key, route }) =>
         createPortal(

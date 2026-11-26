@@ -671,8 +671,8 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 		if notices := rig.notices(); len(notices) != 0 {
 			t.Fatalf("at the bound %s the controller was told %+v of a round that is over", rig.clock.Now(), notices)
 		}
-		if messages := rig.messages(); len(messages) != 1 {
-			t.Fatalf("the issue was written %d messages after two more sweeps, want the one of the round's end: %q", len(messages), messages)
+		if messages := rig.messages(); len(messages) != 0 {
+			t.Fatalf("the issue was written %q after two more sweeps, want nothing: the pod's launcher read the workspace before the replacement and found nothing", messages)
 		}
 	})
 
@@ -700,7 +700,7 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 		if len(notices) != 1 {
 			t.Fatalf("at the bound %s the controller was told %d times, want once", rig.clock.Now(), len(notices))
 		}
-		for _, want := range []string{"The runtime refused the pod replacement", refused.Error()} {
+		for _, want := range []string{"The pod replacement failed.", "The runtime can fail after it suspended the pod.", refused.Error()} {
 			if !strings.Contains(notices[0].Reason, want) {
 				t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
 			}
@@ -880,6 +880,48 @@ const podUpdateDeployReset = `update claims
 	set update_opened_at = $1, update_tasked_at = null, update_told_at = null
 	where update_round like 'pod:%'`
 
+// afterTheDeploy is the daemon of a later release over a store an earlier release left: the rig is
+// seeded with roles, its clock moves to deploy, the store is reset as migration 20261113110610
+// resets it where reset is set (podUpdateDeployReset), and a second daemon starts from the store
+// (restart).
+func afterTheDeploy(t *testing.T, deploy time.Time, reset bool, roles ...podUpdateRole) *podUpdateRig {
+	t.Helper()
+	rig := newPodUpdateRig(t, roles...)
+	rig.clockAt(deploy)
+	if reset {
+		if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
+			t.Fatalf("reset the open pod round as the migration does: %v", err)
+		}
+	}
+	return rig.restart()
+}
+
+// leftByTheEarlierRelease is a ready worker the earlier release left in the rig's open round, its
+// ask marked; answered is whether it answered that round.
+func leftByTheEarlierRelease(role claim.Role, answered bool) podUpdateRole {
+	r := readyWorker(role)
+	r.round, r.reasons, r.signalled = podUpdateRound, podUpdateDrift, answered
+	return r
+}
+
+// wantAsked holds the sweep's asks since the deploy to want, by role: each role is asked as many
+// times as want says, and each ask states the round's end at deploy plus pod_update_grace_minutes.
+func (r *podUpdateRig) wantAsked(deploy time.Time, want map[claim.Role]int) {
+	r.t.Helper()
+	asked := map[claim.Role]int{}
+	for _, ask := range r.asks() {
+		asked[ask.Role]++
+		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
+			r.t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
+		}
+	}
+	for role, n := range want {
+		if asked[role] != n {
+			r.t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
+		}
+	}
+}
+
 // The earlier release left a pod round open with no bound, its claims opened at the rig's start
 // and each marked tasked, because that release queued a task. This release deploys three hours
 // later, which is far past the round's bound, and its daemon starts from the store.
@@ -893,11 +935,6 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 	t.Parallel()
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
-	leftByTheEarlierRelease := func(role claim.Role) podUpdateRole {
-		r := readyWorker(role)
-		r.round, r.reasons = podUpdateRound, podUpdateDrift
-		return r
-	}
 	for _, tc := range []struct {
 		name  string
 		reset bool
@@ -906,14 +943,8 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 		{name: "the round keeps the clock the earlier release left", reset: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newPodUpdateRig(t, leftByTheEarlierRelease(claim.RoleImplementer), leftByTheEarlierRelease(claim.RoleTester))
-			rig.clockAt(deploy)
-			if tc.reset {
-				if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
-					t.Fatalf("reset the open pod round as the migration does: %v", err)
-				}
-			}
-			next := rig.restart()
+			next := afterTheDeploy(t, deploy, tc.reset,
+				leftByTheEarlierRelease(claim.RoleImplementer, false), leftByTheEarlierRelease(claim.RoleTester, false))
 			for _, role := range roles {
 				c := next.claimOf(role)
 				if c.UpdateRound != podUpdateRound || c.UpdateOpenedAt == nil {
@@ -939,18 +970,7 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 			for range 3 {
 				next.tick()
 			}
-			asked := map[claim.Role]int{}
-			for _, ask := range next.asks() {
-				asked[ask.Role]++
-				if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
-					t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
-				}
-			}
-			for _, role := range roles {
-				if asked[role] != 1 {
-					t.Errorf("the %s was asked %d times after the deploy, want once", role, asked[role])
-				}
-			}
+			next.wantAsked(deploy, map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 1})
 			if calls := next.replacements(); len(calls) != 0 {
 				t.Fatalf("the pod was replaced %d times after the deploy, want none before the new bound %s", len(calls), deploy.Add(podUpdateGrace))
 			}
@@ -972,18 +992,10 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *testing.T) {
 	t.Parallel()
 	deploy := podUpdateStart.Add(3 * time.Hour)
-	unanswered := readyWorker(claim.RoleImplementer)
-	unanswered.round, unanswered.reasons = podUpdateRound, podUpdateDrift
-	answeredBefore := readyWorker(claim.RoleTester)
-	answeredBefore.round, answeredBefore.reasons, answeredBefore.signalled = podUpdateRound, podUpdateDrift, true
 	failed := podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true,
 		contract: readyWorker(claim.RolePlanner).contract, round: podUpdateRound, reasons: podUpdateDrift}
-	rig := newPodUpdateRig(t, unanswered, answeredBefore, failed)
-	rig.clockAt(deploy)
-	if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
-		t.Fatalf("reset the open pod round as the migration does: %v", err)
-	}
-	next := rig.restart()
+	next := afterTheDeploy(t, deploy, true,
+		leftByTheEarlierRelease(claim.RoleImplementer, false), leftByTheEarlierRelease(claim.RoleTester, true), failed)
 	if c := next.claimOf(claim.RoleTester); c.UpdateRound != podUpdateRound || c.UpdateSignalledAt == nil {
 		t.Errorf("the tester after the deploy is in round %q with answer %v, want round %s and the answer it gave the earlier release", c.UpdateRound, c.UpdateSignalledAt, podUpdateRound)
 	}
@@ -998,19 +1010,7 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 	for range 3 {
 		next.tick()
 	}
-	asked := map[claim.Role]int{}
-	for _, ask := range next.asks() {
-		asked[ask.Role]++
-		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
-			t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
-		}
-	}
-	want := map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0, claim.RolePlanner: 0}
-	for role, n := range want {
-		if asked[role] != n {
-			t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
-		}
-	}
+	next.wantAsked(deploy, map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0, claim.RolePlanner: 0})
 	if calls := next.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times while the implementer had not answered, want none before the new bound %s", len(calls), deploy.Add(podUpdateGrace))
 	}
@@ -1022,6 +1022,36 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 			t.Fatalf("the pod was replaced at %s, want before the new bound %s: the tester's answer stands and the planner is failed", at, deploy.Add(podUpdateGrace))
 		}
 	}
+}
+
+// The tester answered the round under the earlier release, and the deploy's reset kept that
+// answer and cleared its ask mark (podUpdateDeployReset), as in the test above. Here the tester's
+// machine is in a decision when a sweep reads it, as a machine still deciding the last sweep's
+// post is on a loaded pod; the decision changes nothing of the claim (holdInDecision). That sweep
+// still reads the tester's answer and asks it nothing: the answer is a fact about the claim, and
+// only the decision to replace the pod reads a deciding claim as not having answered
+// (masked), because that decision may delete a disk. The implementer has not answered
+// and is asked once, so the rig's sweeps do ask.
+func TestPodUpdateRoundOpenAtTheDeployAsksNoRoleThatAnsweredWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
+	deploy := podUpdateStart.Add(3 * time.Hour)
+	next := afterTheDeploy(t, deploy, true,
+		leftByTheEarlierRelease(claim.RoleImplementer, false), leftByTheEarlierRelease(claim.RoleTester, true))
+	if c := next.claimOf(claim.RoleTester); c.UpdateSignalledAt == nil || c.UpdateTaskedAt != nil {
+		t.Fatalf("the tester after the deploy answered at %v and was asked at %v, want the earlier release's answer and no ask mark", c.UpdateSignalledAt, c.UpdateTaskedAt)
+	}
+	next.drifts(podUpdateDrift)
+
+	next.tick()
+	next.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	next.settleAll()
+	release := next.holdInDecision(claim.RoleTester)
+	next.tick()
+	release()
+	for range 2 {
+		next.tick()
+	}
+	next.wantAsked(deploy, map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0})
 }
 
 // The bound has come and no claim has answered, so the walk lets the replacement through. The
@@ -1056,6 +1086,169 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *test
 	if ended := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(ended) != 1 || ended[0]["atTheBound"] != false {
 		t.Fatalf("the round's end was logged %+v, want one line that no bound made", ended)
 	}
+}
+
+// Every role of the round has answered, and the round's bound has come by the sweep that replaces
+// the pod. Here the tester's machine is in a decision through that whole sweep (holdInDecision),
+// so the replacement's own decision reads the tester as not having answered (masked),
+// and the bound steps over that reading as it steps over every wait for an answer. What the lines
+// report is what each role said, not that reading: the tester answered, so no line of a bounded
+// end is written, and the line of the round's end says that no bound made it.
+func TestPodUpdateBoundLineIsNotWrittenForAnAnswerReadWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
+	rig := answeredBeforeTheBound(t)
+	rig.clockAt(podUpdateBound)
+
+	release := rig.holdInDecision(claim.RoleTester)
+	rig.tick()
+	release()
+
+	if calls := rig.replacements(); len(calls) != 1 {
+		t.Fatalf("the pod was replaced %d times by the sweep at the bound, want once", len(calls))
+	}
+	if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
+		t.Fatalf("the sweep logged a bounded end %+v, want none: every role had answered", lines)
+	}
+	if ended := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(ended) != 1 || ended[0]["atTheBound"] != false {
+		t.Fatalf("the round's end was logged %+v, want one line that no bound made", ended)
+	}
+}
+
+// podUpdateWalkWaitsLine is the line the walk logs where the sweep's snapshot reads every worker
+// as answered and its own fresh read, masked, finds one that has not answered or whose machine was
+// deciding (completePodUpdate).
+const podUpdateWalkWaitsLine = "supervise: every worker of this update round had answered in the sweep's snapshot, and the fresh read finds one that has not answered or whose machine was deciding something; the replacement waits for the next sweep or for the round's bound"
+
+// podUpdateRereadWaitsLine is the line the replacement logs where its own read again, masked,
+// finds a worker that has not answered or whose machine was deciding (replacePodForRound).
+const podUpdateRereadWaitsLine = "supervise: a worker of this update round has not answered, or its machine was deciding something, now the sweep has reached its replacement, and the round's bound has not come; nothing was replaced and the round stays open"
+
+// answeredBeforeTheBound is a rig whose round both workers have answered, before its bound, with
+// every machine deciding nothing.
+func answeredBeforeTheBound(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
+	t.Helper()
+	rig := newPodUpdateRig(t, append([]podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)}, roles...)...)
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.signal(claim.RoleTester, "a1b2c3d")
+	rig.settleAll()
+	return rig
+}
+
+// Before the bound, the walk's decision to replace the pod reads a role whose machine is deciding
+// as one that has not answered (masked): the decision may be a turn starting that the view does
+// not show yet. Both roles have answered, and the tester's machine is held in a decision through
+// one sweep. The walk itself waits, and says so; the replacement's read again is never reached;
+// once the hold ends, a later sweep replaces the pod. Given the answers as given, the walk would
+// hand the replacement on, and only the replacement's own read would stop it.
+func TestPodUpdateWalkWaitsWhileAnAnsweredRolesMachineDecides(t *testing.T) {
+	t.Parallel()
+	rig := answeredBeforeTheBound(t)
+	release := rig.holdInDecision(claim.RoleTester)
+	rig.tick()
+	release()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times while the tester's machine was deciding, want none", len(calls))
+	}
+	lines := loggedLines(t, rig.logs.String(), podUpdateWalkWaitsLine)
+	if len(lines) != 1 {
+		t.Fatalf("the walk logged its wait %d times, want once: the walk must read the deciding tester as not having answered", len(lines))
+	}
+	if waiting := fmt.Sprint(lines[0]["waiting"]); waiting != fmt.Sprintf("[%s]", claim.RoleTester) {
+		t.Fatalf("the walk's wait names %s, want the tester alone, whose machine was deciding", waiting)
+	}
+	rig.awaitReplacement(1, "once the tester's machine has decided")
+}
+
+// The replacement's last word, under the pod's launch turn, reads a role whose machine is deciding
+// as one that has not answered (masked), as the walk does. Both roles have answered and the walk
+// hands the replacement on; the tester's machine goes into a decision while the replacement waits
+// for the pod's launch turn (fake's HoldReplacePod). The last word refuses, and nothing is
+// replaced; once the hold ends, a later sweep replaces the pod.
+func TestPodUpdateLastWordRefusesWhileAnAnsweredRolesMachineDecides(t *testing.T) {
+	t.Parallel()
+	rig := answeredBeforeTheBound(t)
+	var release func()
+	rig.rt.HoldReplacePod(func() {
+		rig.rt.HoldReplacePod(nil)
+		release = rig.holdInDecision(claim.RoleTester)
+	})
+	rig.tick()
+	if release == nil {
+		t.Fatal("the sweep did not reach the replacement: the walk did not hand it on")
+	}
+	release()
+	if refused, made := len(rig.rt.CallsOf("ReplacePodNotDue")), len(rig.replacements()); refused != 1 || made != 0 {
+		t.Fatalf("the last word refused %d and the runtime replaced %d, want 1 and 0: the deciding tester has not answered for a deletion", refused, made)
+	}
+	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it, or its machine was deciding something", claim.RoleTester))
+	rig.awaitReplacement(1, "once the tester's machine has decided")
+}
+
+// Past the bound, the read of the workspace before the replacement weighs the answers as given: it
+// stops nothing in the pod. Both workers answered; a third role the daemon suspended has not, so
+// the round passed over it and the read is owed. The tester's machine is held in a decision
+// through the sweep at the bound. The read is made, and the line beside it says that no bound
+// made the end. Read masked, the read would be dropped as one the bound stepped over.
+func TestPodUpdateReadsTheWorkspaceOverAnAnswerReadWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
+	rig := answeredBeforeTheBound(t, suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
+	rig.clockAt(podUpdateBound)
+	release := rig.holdInDecision(claim.RoleTester)
+	rig.tick()
+	release()
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
+	}
+	if lines[0]["atTheBound"] != false || lines[0]["workspaceRead"] != "found no work" {
+		t.Fatalf("the replacement's line is %+v, want atTheBound=false and a read that found no work: every role the round asks had answered", lines[0])
+	}
+}
+
+// The replacement's read again, before it asks the runtime, reads a role whose machine is deciding
+// as one that has not answered (masked), as the walk does. The sweep walks every issue first and
+// makes their replacements after (reconcilePodUpdates), so a role of the second issue can go into
+// a decision while the first issue's pod is replaced (fake's HoldReplacePod). Both issues' roles
+// have answered before the bound, and the walk hands both replacements on. While the first pod is
+// replaced, the second issue's architect is held in a decision. The second replacement's read
+// again then waits, its line names that architect, and the runtime is not asked to replace the
+// second pod; once the hold ends, a later sweep replaces it. Given the answers as given, the read
+// again would ask the runtime, and only the last word under the pod's launch turn would stop it.
+func TestPodUpdateReplacementReadsAgainOverAnAnsweredRoleWhoseMachineDecides(t *testing.T) {
+	t.Parallel()
+	const first, second = "LEGION-1", "LEGION-2"
+	rig := newLimitRig(t, first, second)
+	logs := &syncBuffer{}
+	rig.s.log = jsonLogger(logs)
+	rig.tick()
+	rig.awaitRounds("the first sweep", first, second)
+	rig.answer(first)
+	rig.answer(second)
+	var release func()
+	rig.rt.HoldReplacePod(func() {
+		rig.rt.HoldReplacePod(nil)
+		release = rig.holdInDecision(second, claim.RoleArchitect)
+	})
+	rig.tick()
+	if release == nil {
+		t.Fatal("the sweep made no replacement: the walk handed neither issue on")
+	}
+	release()
+	if n := len(rig.replacementsOf(rig.pods[first])); n != 1 {
+		t.Fatalf("the pod of %s was replaced %d times, want once", first, n)
+	}
+	if refused, made := len(rig.rt.CallsOf("ReplacePodNotDue")), len(rig.replacementsOf(rig.pods[second])); refused != 0 || made != 0 {
+		t.Fatalf("the runtime refused %d replacements and replaced the pod of %s %d times, want neither: its read again must not ask the runtime while its architect's machine decides", refused, second, made)
+	}
+	lines := loggedLines(t, logs.String(), podUpdateRereadWaitsLine)
+	if len(lines) != 1 || lines[0]["issue"] != second || fmt.Sprint(lines[0]["waiting"]) != fmt.Sprintf("[%s]", claim.RoleArchitect) {
+		t.Fatalf("the read-again lines are %+v, want one of %s naming its architect alone, whose machine was deciding", lines, second)
+	}
+	rig.sweepUntilReplaced(second)
 }
 
 // A claim whose agent has not said it is ready holds no live session on its role's topic, so the

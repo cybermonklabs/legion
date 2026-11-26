@@ -204,7 +204,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	err := s.deps.Answerer.Run(answering, going.Request{
 		Words:  request.Words,
 		Search: s.goingSearch(request.Project, request.Author),
-		Bodies: s.goingBodies,
+		Bodies: s.goingBodies(request.ID),
 	}, emit)
 	switch {
 	case err == nil:
@@ -221,9 +221,10 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of. It searches as the run's author, the credential that
-// asked the question and the only one the stream serves, so the answer is drawn from what that
-// credential may read and no more.
+// search past what the caller asked of. It reads every kind the index holds, as the question is
+// of all of them. It searches as the run's author, the credential that asked the question and the
+// only one the stream serves, so the answer is drawn from what that credential may read and no
+// more.
 func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
@@ -253,9 +254,21 @@ func goingHitTitle(result model.SearchResult) string {
 }
 
 // goingBodies is each hit's own stored text, the text search ranked, cut to
-// contracts.GoingHitRuneMax runes a hit and keyed as going.Hit.Key keys it (goingItemText).
-func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]string, error) {
-	return goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax)
+// contracts.GoingHitRuneMax runes a hit and keyed as going.Hit.Key keys it (goingItemText), read
+// for run requestID: the comments and messages among them are recorded as the run's before the
+// texts are handed on (recordGoingPosts), so a delete of one withdraws the run's answer
+// (goingWithdrawal).
+func (s *server) goingBodies(requestID string) func(context.Context, []going.Hit) (map[string]string, error) {
+	return func(ctx context.Context, hits []going.Hit) (map[string]string, error) {
+		texts, err := goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.recordGoingPosts(ctx, requestID, hits, texts); err != nil {
+			return nil, err
+		}
+		return texts, nil
+	}
 }
 
 // streamGoingAnswer writes one run's answer as server-sent events: GET
@@ -266,7 +279,8 @@ func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]
 // A run past its ends_at with no terminal frame stored is ended by this reader, with the
 // deadline's error, and the stream ends on whatever terminal frame that write answers
 // (endGoingRun settles which one). That is how a stream ends when the pod that took the POST is
-// gone: nothing else would ever store that run's ending until the sweep ran.
+// gone: nothing else would ever store that run's ending until the sweep ran. A run given a post
+// that has since been deleted is written goingWithdrawal's frame and nothing else.
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
 	// is what this route compares the run's author with, and a credential resolves at a cost -
@@ -323,6 +337,19 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run under this reader
 			// (contracts.GoingRequestTTL); either way there is nothing left to read.
+			return
+		}
+		if state.Withdrawn {
+			// None of the frames this poll read is written: the withdrawal stands in the place of
+			// the run's ending, unless this reader already holds that ending (goingWithdrawal).
+			ending, err := s.goingWithdrawal(ctx, id, state)
+			if err != nil {
+				slog.Warn("dispatch going: end a withdrawn run", "request", id, "error", err)
+				return
+			}
+			if after < ending.Sequence && writeGoingFrame(w, ending) == nil {
+				_ = stream.Flush()
+			}
 			return
 		}
 		for _, frame := range frames {

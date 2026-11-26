@@ -1,7 +1,6 @@
 package bus
 
 import (
-	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // leaderReadBucket opens bucket on a connection of its own and answers the server's URL with it,
@@ -74,6 +74,7 @@ const noRequestFor = 500 * time.Millisecond
 // a direct get for a key it has not applied yet. Who answers each request is nats-server's, and
 // it turns on nothing but the subject the request was sent to.
 func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_wire"
 	const key = "ses_live"
 	stream := "KV_" + bucket
@@ -113,8 +114,8 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 		t.Errorf("Get(%s) sent %s too, want the direct get alone", key, sent.Subject)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	if _, err := kv.GetFromLeader(ctx, key); err != nil {
 		t.Fatalf("GetFromLeader(%s): %v", key, err)
 	}
@@ -138,10 +139,11 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 // marker are nats.ErrKeyNotFound, and a key no read may name is refused with the error Get
 // refuses it with, word for word, before anything is sent.
 func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_answers"
 	_, kv := leaderReadBucket(t, bucket)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	revision, err := kv.Put("ses_live", []byte("live"))
 	if err != nil {
@@ -202,11 +204,12 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 // put is answered as GetFromLeader answers it, and a key the stream holds no message for is
 // nats.ErrKeyNotFound.
 func TestTheNewestLeaderReadAnswersAMarkerAtTheSequenceItIsStoredAt(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_newest"
 	_, kv := leaderReadBucket(t, bucket)
 	conn := kv.Streams().Conn()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	put, err := kv.Put("ses_live", []byte("live"))
 	if err != nil {

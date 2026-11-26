@@ -38,8 +38,8 @@ const (
 	siteNotAProxyRequest = "proxy.go serveProxy: a request that is no proxy request (400)"
 	siteCredential       = "proxy.go refuseCredential: a credential that opens nothing (407)"
 	siteGrantRefused     = "proxy.go serveProxy: a grant the broker refuses (403)"
-	siteConnectTarget    = "proxy.go serveConnect: a CONNECT target that is no host and port (400)"
-	siteConnectAddress   = "proxy.go serveConnect: an address the proxy never dials (403)"
+	siteConnectTarget    = "connect.go serveConnect: a CONNECT target that is no host and port (400)"
+	siteConnectAddress   = "connect.go serveConnect: an address the proxy never dials (403)"
 	sitePlainBound       = "proxy.go servePlain: plain http to a bound host (403)"
 	sitePlainAddress     = "proxy.go servePlain: an address the proxy never dials (403)"
 	siteBoundConnection  = "bound.go serveBound: a grant that ended on an open connection"
@@ -292,7 +292,7 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 		{
 			site: siteAWSSignature, name: "a call signed with Signature Version 4a",
 			rig: func(t *testing.T) *rig {
-				r := newRig(t, Options{Rules: awsRules(), Answers: answers})
+				r := newRuledRig(t, awsRules(), Options{Answers: answers})
 				awsGrant(r, false)
 				return r
 			},

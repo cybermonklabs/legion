@@ -497,17 +497,27 @@ func issuePlanText(issue IssuePlan) string {
 	for index, rating := range issue.Ratings {
 		ratings[index] = fmt.Sprintf("%d %q %s %s", rating.Rating, rating.Reason, rating.StepID, moment(rating.EndedAt))
 	}
-	return fmt.Sprintf("%s %q closed %s plan %s ratings %v from %s to %s failed %d", issue.Issue, issue.Title,
-		issue.ClosedAt.UTC().Format(time.RFC3339Nano), plan, ratings, moment(issue.StartedAt), moment(issue.EndedAt), issue.FailedSteps)
+	return fmt.Sprintf("%s %q closed %s plan %s ratings %v from %s to %s failed %d variant %s", issue.Issue, issue.Title,
+		issue.ClosedAt.UTC().Format(time.RFC3339Nano), plan, ratings, moment(issue.StartedAt), moment(issue.EndedAt), issue.FailedSteps,
+		variantText(issue.Experiment))
+}
+
+// variantText is an experiment and its variant as experiment/variant, or none.
+func variantText(drawn *StepExperiment) string {
+	if drawn == nil {
+		return "none"
+	}
+	return drawn.Experiment + "/" + drawn.Variant
 }
 
 // The read of a project lists each issue of it that is done and closed, newest close first, with
-// its plan, the rating of its retro, the first start and the last end of its records and its
-// count of failed steps of kind step, all in one statement: a failed retro and a failed merge are
-// no failed step. An issue still open, an issue done with no close, an issue closed that is not
-// done, an issue of another project, LEGX's among them though its key starts with LEG, and a
-// record of another issue are not read into it; a finished issue Legion never ran is listed with
-// no plan, no rating, no time and no failed step.
+// its plan, the rating of its retro, the first start and the last end of its records, its count of
+// failed steps of kind step, and the experiment and the variant the records of its newest run name,
+// all in one statement: a failed retro and a failed merge are no failed step, and no record here
+// names an experiment, so each issue reads none. An issue still open, an issue done with no close,
+// an issue closed that is not done, an issue of another project, LEGX's among them though its key
+// starts with LEG, and a record of another issue are not read into it; a finished issue Legion
+// never ran is listed with no plan, no rating, no time and no failed step.
 func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closedFirst, closedSecond, closedThird := t0.Add(time.Hour), t0.Add(2*time.Hour), t0.Add(3*time.Hour)
@@ -774,6 +784,44 @@ func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
 				t.Errorf("the plan of %s newer than the plan of %s: %t, want %t", text(plans[newer]), text(plans[older]), got, want)
 			}
 		}
+	}
+}
+
+// A finished issue names the experiment and the variant the records of its newest run name, its
+// highest generation, and none where those records name none. LEG-1's first run names planning/a
+// and its second planning/b, the second's record written first, so a read that took the variant of
+// an older run, or of the first record it met, answers planning/a. LEG-2's records name none, and
+// LEG-3's first run names one while its newest names none yet, as a run whose variant still waits
+// for Dispatch's route does: it names none, never the older run's.
+func TestAFinishedIssueNamesItsVariant(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", new(t0.Add(5 * time.Hour))},
+		seededIssue{"LEG-2", "done", new(t0.Add(4 * time.Hour))}, seededIssue{"LEG-3", "done", new(t0.Add(3 * time.Hour))})
+	// run writes the start of the implementer's step of issue's generation, with the variant drawn
+	// where it names one.
+	run := func(issue string, generation int64, drawn *StepExperiment) {
+		t.Helper()
+		id := stepRun(t, pool, issue, StepKindStep, "implementer", 2, generation, new(minute(int(generation)*10)), nil, "")
+		if drawn != nil {
+			put(t, pool, StepWrite{ID: id, Issue: issue, Experiment: drawn}, minute(int(generation)*10))
+		}
+	}
+	run("LEG-1", 2, &StepExperiment{Experiment: "planning", Variant: "b"})
+	run("LEG-1", 1, &StepExperiment{Experiment: "planning", Variant: "a"})
+	run("LEG-2", 1, nil)
+	run("LEG-3", 1, &StepExperiment{Experiment: "planning", Variant: "a"})
+	run("LEG-3", 2, nil)
+
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{}, PlansFilter{})
+	if err != nil {
+		t.Fatalf("read the plans of LEG: %v", err)
+	}
+	got := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
+		got[index] = issue.Issue + " " + variantText(issue.Experiment)
+	}
+	if want := []string{"LEG-1 planning/b", "LEG-2 none", "LEG-3 none"}; !slices.Equal(got, want) {
+		t.Fatalf("the read names the variants %v, want %v", got, want)
 	}
 }
 

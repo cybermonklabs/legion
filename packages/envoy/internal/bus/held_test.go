@@ -3,12 +3,12 @@ package bus_test
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestAnotherSubscriptionOnOneTransportIsRefused: a client holds one subscription per transport, so
@@ -18,6 +18,7 @@ import (
 // (LEGION-690). A registration of the same subject and queue still replaces the held one, as the
 // listener's self-health rebuild relies on.
 func TestAnotherSubscriptionOnOneTransportIsRefused(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	publisher, err := nats.Connect(uri)
 	if err != nil {
@@ -68,13 +69,8 @@ func TestAnotherSubscriptionOnOneTransportIsRefused(t *testing.T) {
 			if err := publisher.Publish(held, []byte("still held")); err != nil {
 				t.Fatalf("publish: %v", err)
 			}
-			select {
-			case got := <-received:
-				if got != "still held" {
-					t.Fatalf("received %q, want the held subscription's message", got)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("the held subscription stopped delivering after the refused registration")
+			if got := testwait.Receive(t, "the held subscription to deliver after the refused registration", received); got != "still held" {
+				t.Fatalf("received %q, want the held subscription's message", got)
 			}
 
 			// The same subject and queue replace the held subscription, unsubscribing its handle.

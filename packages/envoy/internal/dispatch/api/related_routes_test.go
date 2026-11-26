@@ -160,7 +160,7 @@ func TestRelatedRouteKeywordsOnlySkipsMeaning(t *testing.T) {
 		issueEmbeddingText(title, ""): angledVector(0.9, 2),
 		text:                          queryVector(),
 	}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, relatedBound: meaningVerdictBound(t)})
 	createSuggestionProject(t, handler, "RKEY")
 	key := createSearchIssue(t, handler, "RKEY", title, "")
 	processAllPending(t, database, embedder)

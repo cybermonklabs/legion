@@ -16,6 +16,10 @@ import {
   LegionHandoffCompleteResponse,
   type LegionHealth,
   LegionHealthResponse,
+  LegionIntakeDiscardRequest,
+  LegionIntakeDiscardResponse,
+  LegionIntakeReplayRequest,
+  LegionIntakeReplayResponse,
   type LegionIssue,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
@@ -132,7 +136,8 @@ export interface LegionDaemonClient {
   readonly exit: (input: ExitInput) => Promise<void>;
   /** `claim.TurnOutcomeRequest`: how one of the claim's turns ended, under the sequence the
    * reporting plugin counted itself (`packages/pi-legion/src/turn-outcome.ts`). The answer is the
-   * trailing run of refused turns the daemon derived and whether this report failed the claim. */
+   * trailing run of refused turns the daemon derived (`LegionTurnOutcomeResponse` says what its
+   * `failed` holds). */
   readonly turnOutcome: (
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
@@ -192,6 +197,21 @@ export interface LegionDaemonClient {
   readonly projectResume: (
     input: z.input<typeof LegionProjectResumeRequest>
   ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
+  /** The controller's `replay_give_up`: the daemon applies again the messages its intake gave up
+   * on that the selection names, `giveUp`, one record by its id, or `consumer` with `throughSeq`,
+   * every open record of that consumer at or below that stream sequence, through the handling a
+   * live delivery takes, the effect `legion intake replay` runs for an operator. The answer is
+   * each record it took with how its replay ended, and how many open records of the selection
+   * are left. */
+  readonly intakeReplay: (
+    input: z.input<typeof LegionIntakeReplayRequest>
+  ) => Promise<z.output<typeof LegionIntakeReplayResponse>>;
+  /** The controller's `discard_give_up`: the daemon closes the give-ups the selection names, for
+   * `reason`, and applies nothing, the effect `legion intake discard` runs for an operator. The
+   * answer is the id of each record it closed. */
+  readonly intakeDiscard: (
+    input: z.input<typeof LegionIntakeDiscardRequest>
+  ) => Promise<z.output<typeof LegionIntakeDiscardResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -394,9 +414,10 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
  * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again), `register_plan` (its
- * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
- * same fact, answered the same), `stop_task` (a repeat finds the task stopped and changes nothing)
+ * takes as a re-registration of the same document and tells no one again), `register_plan` (the
+ * daemon judges every give against its store: a repeat of a give it applied is answered as taken
+ * while that version is in force, and writes nothing), `stop_task` (a repeat finds the task
+ * stopped and changes nothing)
  * and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
@@ -711,6 +732,20 @@ export function createLegionDaemonClient(
         "/legion/v1/project/resume",
         LegionProjectResumeRequest,
         LegionProjectResumeResponse,
+        input
+      ),
+    intakeReplay: (input) =>
+      post(
+        "/legion/v1/intake/replay",
+        LegionIntakeReplayRequest,
+        LegionIntakeReplayResponse,
+        input
+      ),
+    intakeDiscard: (input) =>
+      post(
+        "/legion/v1/intake/discard",
+        LegionIntakeDiscardRequest,
+        LegionIntakeDiscardResponse,
         input
       ),
     gateRegister: (input) =>

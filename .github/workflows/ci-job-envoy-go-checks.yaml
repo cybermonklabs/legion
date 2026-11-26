@@ -1,6 +1,6 @@
 name: CI job envoy-go-checks
 
-# The steps of ci.yaml's `envoy-go-checks` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#envoy-go-checks` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -13,15 +13,21 @@ name: CI job envoy-go-checks
 # build, vet, format, generated-code and migration checks are envoy-go-build's, which a pull
 # request runs.
 #
+# The harnesses run through .github/scripts/harness-pool.sh: each harness step queues its harness
+# and returns, the harnesses run beside each other, and the step "Wait for the script harnesses
+# and judge them" before the ci-ok report is their verdict, with each harness's log, exit status
+# and wall and CPU seconds in its log and the job summary
+# (.github/ci-notes/ci.md#the-harness-pool).
+#
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -59,6 +65,7 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -66,75 +73,118 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
-        run: bash scripts/dev-broker.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
-        run: bash scripts/dev-airlock.test.sh
-        working-directory: packages/envoy
-      - name: Required-input test for airlock-check.sh k7 (no stack or network)
-        run: bash scripts/airlock-check.test.sh
-        working-directory: packages/envoy
-      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
-        run: bash scripts/judge-check.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
-        run: bash scripts/dev-stack.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
-        run: bash scripts/project-secrets-check.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
-        run: bash scripts/callout-check.test.sh
-        working-directory: packages/envoy
-      - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
-        run: bash scripts/dev-postgres.test.sh
-        working-directory: packages/envoy
-      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
-        run: bash scripts/restore-dispatch-dump.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
-        run: bash scripts/listener-deploy-probe.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
-        run: bash scripts/daemon-release-gate.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
-        run: bash scripts/legacy-subjects-gate.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
-        run: bash scripts/legacy-subjects-purge.test.sh
-        working-directory: packages/envoy
-      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
-        run: bash loadtest/run-step.test.sh
-        working-directory: packages/envoy
-      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
-        run: bash loadtest/common.test.sh
-        working-directory: packages/envoy
       # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
       # instead of building helm with `go run`, which downloads and compiles it first: the render
       # took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in job
-      # 137388344183.
+      # 137388344183. It is a step before the pool's first start, since a harness started in the
+      # background takes the PATH the steps before it left.
       - uses: ./.github/actions/install-helm
+      # The script harnesses of the module, each a bash script of fakes that mostly waits on its
+      # fakes' answers, polls and deadlines rather than computing. As one step after another they
+      # were 944 s of this job's 1,292 s median (n=724 green pull-request jobs, 2026-11-22, when the
+      # job held the build and vet steps envoy-go-build holds now) while the runner's other cores
+      # idled. Each step below keeps its name and hands its harness to
+      # .github/scripts/harness-pool.sh, which queues it and returns; the harnesses then run beside
+      # each other, no more at once than the runner has cores, in the order queued (the longest
+      # first, so the shorter ones fill the other cores around them), and "Wait for the script
+      # harnesses and judge them" is their verdict and prints each one's log.
+      # The operator-token-minters check's harness is queued first: it is the longest, 706 s in its
+      # last whole run on a developer box (2026-11-25), so the shorter ones fill the other cores.
+      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
+        run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
+        working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
-        run: bash loadtest/cluster/cluster.test.sh
+        run: ../../.github/scripts/harness-pool.sh start loadtest/cluster/cluster.test.sh bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: bash loadtest/vm/vm.test.sh
+        run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
         working-directory: packages/envoy
-      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
-        run: bash loadtest/vm/sample.test.sh
+      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
+        run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
       # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
-      # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
+      # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale, so the
+      # locale is generated first, inside the same pooled command.
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; the runner's docker compose resolves the compose file; no Postgres)
-        run: |
-          sudo locale-gen en_US.UTF-8
-          bash deploy/scripts/autodeploy_test.sh
+        run: ../../.github/scripts/harness-pool.sh start deploy/scripts/autodeploy_test.sh bash -c 'sudo locale-gen en_US.UTF-8 && bash deploy/scripts/autodeploy_test.sh'
+        working-directory: packages/envoy
+      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-stack.test.sh bash scripts/dev-stack.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
+        run: ../../.github/scripts/harness-pool.sh start scripts/listener-deploy-probe.test.sh bash scripts/listener-deploy-probe.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
+        run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-gate.test.sh bash scripts/legacy-subjects-gate.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
+        run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-purge.test.sh bash scripts/legacy-subjects-purge.test.sh
+        working-directory: packages/envoy
+      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/common.test.sh bash loadtest/common.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/callout-check.test.sh bash scripts/callout-check.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
+        run: ../../.github/scripts/harness-pool.sh start scripts/project-secrets-check.test.sh bash scripts/project-secrets-check.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-broker.test.sh bash scripts/dev-broker.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-airlock.test.sh bash scripts/dev-airlock.test.sh
         working-directory: packages/envoy
       - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
-        run: bash deploy/scripts/up-dispatch_test.sh
+        run: ../../.github/scripts/harness-pool.sh start deploy/scripts/up-dispatch_test.sh bash deploy/scripts/up-dispatch_test.sh
         working-directory: packages/envoy
+      - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-postgres.test.sh bash scripts/dev-postgres.test.sh
+        working-directory: packages/envoy
+      - name: Required-input test for airlock-check.sh k7 (no stack or network)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-check.test.sh bash scripts/airlock-check.test.sh
+        working-directory: packages/envoy
+      - name: Count test for airlock-mutants.sh (a fixture tree and a stand-in go; no database or model)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants.test.sh bash scripts/airlock-mutants.test.sh
+        working-directory: packages/envoy
+      - name: Apply test for airlock-mutants.sh's patches (git apply --check of each; no database, model or Lean)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants-apply.test.sh bash scripts/airlock-mutants-apply.test.sh
+        working-directory: packages/envoy
+      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/run-step.test.sh bash loadtest/run-step.test.sh
+        working-directory: packages/envoy
+      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/judge-check.test.sh bash scripts/judge-check.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/vm/sample.test.sh bash loadtest/vm/sample.test.sh
+        working-directory: packages/envoy
+      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
+        run: ../../.github/scripts/harness-pool.sh start scripts/restore-dispatch-dump.test.sh bash scripts/restore-dispatch-dump.test.sh
+        working-directory: packages/envoy
+      # The verdict on the script harnesses the steps above queued: it waits for the last of them,
+      # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming
+      # each harness that failed (.github/scripts/harness-pool.sh). A job that passed every step
+      # to here queued all of its harnesses, so a wait that finds none fails it; one that failed
+      # before the harness steps has nothing to judge, and --allow-none keeps that from adding a
+      # second error to the first. `!cancelled()` rather
+      # than `always()`: the runner signals a running step on a cancel only when its condition no
+      # longer holds, and the wait answers that signal by naming each harness still running with
+      # its log so far; `exec`, so the signal reaches the wait itself.
+      - id: harness-wait
+        name: Wait for the script harnesses and judge them
+        if: ${{ !cancelled() }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          args=()
+          if [[ $JOB_STATUS != success ]]; then args+=(--allow-none); fi
+          exec .github/scripts/harness-pool.sh wait "${args[@]}"
+      # A job cancelled, or past its timeout, before the step above began: name each harness it
+      # queued as it is, with its log so far, rather than lose them with the job.
+      - name: Name the script harnesses a cancelled job left
+        if: cancelled() && steps.harness-wait.outcome == 'skipped'
+        run: .github/scripts/harness-pool.sh wait --allow-none --now
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
