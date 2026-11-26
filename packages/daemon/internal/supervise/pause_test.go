@@ -1644,12 +1644,12 @@ func TestAWaitThatEndsWithNoLetOutIsToldAtItsEnd(t *testing.T) {
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
 	want(t, 1)
 
-	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session})
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session, By: SuspendedByOperator})
 	h.wantStarts(secondToken, 0)
 	want(t, 1)
 
 	h.clock.Advance(wakePart)
-	h.mustPostTo(second, RequestResume{Claim: secondToken})
+	h.mustPostTo(second, RequestResume{Claim: secondToken, By: SuspendedByOperator})
 	h.wantStarts(secondToken, 1)
 	want(t, 1, h.clock.Now())
 }

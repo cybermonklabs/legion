@@ -1156,8 +1156,8 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// template migration and database clone before that, and storetest's drop of that clone
 	// after it: the wedged commit's connection is still open on the clone, so the plain drop is
 	// answered 55006 and tried again for dropWindow, 15 s, before the drop is forced
-	// (storetest.go:132, :147-161), and Main waits for that drop before the binary exits
-	// (storetest.go:110). Both measurements take it in: 54.56 s in this package's issue pod
+	// (storetest's dropDatabase), and Main waits for that drop before the binary exits
+	// (storetest.Run). Both measurements take it in: 54.56 s in this package's issue pod
 	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
 	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
 	// and it is minutes below the deadline of any run that holds this package (the -timeout
@@ -1165,14 +1165,17 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
 	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
-	// the deadline above watches none of what the child does after them: storetest.Main's wait for
-	// those drops (storetest.go:110), the admin Exec that drops the template on
-	// context.Background(), the leak report. A child stuck in one of those would hold this row
-	// until the run that holds this package reached its own deadline, which is the end this row
-	// exists to prevent, so the child is bounded from here too. The margin over childDeadline is
-	// what that teardown is worth: the 15 s the plain drop is retried for, the forced drop behind
-	// it and the template drop after that, which a minute covers with room to spare while leaving
-	// this row minutes inside the shortest run that holds the package.
+	// the deadline above watches none of what the child does after them: storetest.Run's drops,
+	// the clone's and its template's, which start together once the tests return and which Run
+	// waits for up to its bound (testdb.TeardownDeadline: testdb.TeardownGrace, 30 s, past the
+	// child's -timeout, counted from the start of its tests), then the leak report. A child stuck
+	// in one of those would hold this row until the run that holds this package reached its own
+	// deadline, which is the end this row exists to prevent, so the child is bounded from here too.
+	// The margin over childDeadline is what that teardown is worth: the 15 s the plain drop is
+	// retried for and the forced drop behind it, with the template's drop beside them, which a
+	// minute covers with room to spare; Run's own bound, 30 s past childDeadline and its read of
+	// what the drops wait on, ends inside it too, while leaving this row minutes inside the
+	// shortest run that holds the package.
 	const childTeardown = time.Minute
 	killing, cancelKilling := context.WithTimeout(context.Background(), childDeadline+childTeardown)
 	defer cancelKilling()

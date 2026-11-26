@@ -571,7 +571,7 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 	}
 	// The role whose stop is the boundary is retired before that stop runs: it has no process
 	// left to stop, which is what used to take the row out before it read the mark.
-	if err := rig.machine.Handle(ctx, supervise.RequestStop{Claim: rig.token}); err != nil {
+	if err := rig.machine.Handle(ctx, supervise.RequestStop{Claim: rig.token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("retire the claim the boundary stops: %v", err)
 	}
 

@@ -46,11 +46,13 @@ func ownerStepsWayBack(t *testing.T) string {
 
 // noticeKindsBeforeOwnerSteps is the list of the notice kinds an architect is told in the release
 // this rollback goes back to (its validNoticeKinds): every kind of this release's list but the
-// three it adds. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
-// no step_stop. Both are copies because that release's code is not in the tree. Its list of the
-// kinds for the controller alone is this release's (controllerOnlyNoticeKind) but for one kind:
-// the kind of a kept decision, which that release wrote under the name migration 20261124002047
-// renames, so the list carries that release's own name of it as a literal.
+// three it adds and the two #4065 adds, merge-holds-changed and provider-errors.
+// superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
+// no step_stop. Both are copies because that release's code is not in the tree, and so is its list
+// of the kinds for the controller alone (controllerKindsBeforeOwnerSteps): it names unslotted and
+// awaiting-person by their words, since that release reads both and this one no longer sends either,
+// and the kind of a kept decision by that release's own name of it, which migration 20261124002047
+// renames.
 var (
 	noticeKindsBeforeOwnerSteps = []record.NoticeKind{
 		"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
@@ -61,8 +63,8 @@ var (
 		"session-lost", "session-forgotten", "session-store-fault",
 	}
 	controllerKindsBeforeOwnerSteps = []record.NoticeKind{
-		record.TriageNotice, record.SlotFreeNotice, record.TodoNotice, record.TickNotice, record.UnslottedNotice,
-		record.AwaitingPersonNotice, "parked-decision", record.UpdateStalledNotice, record.ProviderErrorsNotice,
+		record.TriageNotice, record.SlotFreeNotice, record.TodoNotice, record.TickNotice, "unslotted",
+		"awaiting-person", "parked-decision", record.UpdateStalledNotice, record.ProviderErrorsNotice,
 		record.TreeStalledNotice, record.ArchitectStalledNotice,
 	}
 	superviseOpsBeforeOwnerSteps = []record.SuperviseOp{"start", "suspend", "release", "tree_close", "issue_close", "pause_stop"}

@@ -339,7 +339,7 @@ func TestTheByIssueReplacementWaitsForAMachineInADecision(t *testing.T) {
 
 	token := rig.tokens[claim.RoleImplementer]
 	holding, let := rig.holdNextResume(claim.RoleImplementer, podUpdatePod)
-	rig.sup.post(token, supervise.RequestResume{Claim: token})
+	rig.sup.post(token, supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator})
 	select {
 	case <-holding:
 	case <-time.After(10 * time.Second):
@@ -1004,12 +1004,12 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 		rig.handle(holder, supervise.RequestSuspend{Claim: token, Reason: "fresh session", By: supervise.SuspendedByOperator, NeverHold: true})
 		rig.awaitClaim(holder, "the fresh session's suspension to let its process go",
 			func(c supervise.Claim) bool { return c.State == supervise.StateSuspended && c.Locator == nil })
-		rig.handle(holder, supervise.RequestForgetSession{Claim: token, Session: recorded})
+		rig.handle(holder, supervise.RequestForgetSession{Claim: token, Session: recorded, By: supervise.SuspendedByOperator})
 		conn := fake.NewConn()
 		rig.conns.Register(token, conn)
 		rig.workers[holder] = conn
 		rig.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
-		rig.handle(holder, supervise.RequestResume{Claim: token})
+		rig.handle(holder, supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator})
 		rig.launchedIntoRoundPod(holder)
 		generation := rig.claimOf(holder).Generation
 		for _, ev := range []supervise.Event{
@@ -1065,7 +1065,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 
 				// The operator resumes the member, into the pod a process of the issue runs in.
 				rig.intoRoundPod(held)
-				rig.handle(held, supervise.RequestResume{Claim: rig.tokens[held]})
+				rig.handle(held, supervise.RequestResume{Claim: rig.tokens[held], By: supervise.SuspendedByOperator})
 				if c := rig.awaitClaim(held, "its launch to record its process", func(c supervise.Claim) bool { return c.Locator != nil }); podOf(c.Locator) != podUpdatePod {
 					t.Fatalf("the operator's resume launched the %s into pod %q, want the round's pod %s", held, podOf(c.Locator), podUpdatePod)
 				}
@@ -1117,7 +1117,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
 			rig.delayPauseHeldLaunch(pauseStoppedRole, pauseLetOut)
 			rig.intoRoundPod(launching)
-			rig.handle(launching, supervise.RequestResume{Claim: rig.tokens[launching]})
+			rig.handle(launching, supervise.RequestResume{Claim: rig.tokens[launching], By: supervise.SuspendedByOperator})
 			rig.launchedIntoRoundPod(launching)
 			rig.wantLaunchKeptForOwed(launching, pauseStoppedRole)
 			rig.registerInto(launching, podUpdatePod)

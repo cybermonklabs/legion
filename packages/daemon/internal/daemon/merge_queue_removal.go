@@ -175,15 +175,15 @@ type heldMessage struct {
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
-// the row until a session of that role takes it: the delivery a merge-queue removal and a
-// merge-forward message share (mergeQueueRemoval, mergeForwardMessage), once each has read what
-// ends its row on its own terms. It stops nothing it reaches, as a hook prompt stops nothing. A
-// released role is woken (wakeForDelivery), and the row waits on its backoff until the woken
-// session holds the role, or, while the wake pacing holds that resume, for its turn, reading the
-// claim again at most delayedWakeBound apart (delayedWait), as it waits while the listener answers
-// that nobody holds the role (notify.ErrNoHolder) or that its holder is unresponsive
-// (notify.ErrHolderUnresponsive). A role with no claim yet, its start still owed, is no end
-// either: the row waits for it.
+// the row until a session of that role takes it: the delivery a merge-queue removal, a merge holds
+// change and a merge-forward message share (mergeQueueRemoval, mergeHoldsChanged,
+// mergeForwardMessage), once each has read what ends its row on its own terms. It stops nothing it
+// reaches, as a hook prompt stops nothing. A released role is woken (wakeForDelivery), and the row
+// waits on its backoff until the woken session holds the role, or, while the wake pacing holds that
+// resume, for its turn, reading the claim again at most delayedWakeBound apart (delayedWait), as it
+// waits while the listener answers that nobody holds the role (notify.ErrNoHolder) or that its
+// holder is unresponsive (notify.ErrHolderUnresponsive). A role with no claim yet, its start still
+// owed, is no end either: the row waits for it.
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
 // m.claimEnded, once the role's claim has failed or retired, since that claim will not hold its

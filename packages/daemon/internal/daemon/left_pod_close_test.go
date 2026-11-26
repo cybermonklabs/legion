@@ -171,7 +171,7 @@ func resumeAsOperator(t *testing.T, rig *idleRig) {
 	t.Helper()
 	ctx := context.Background()
 	rig.sup.deps.Conns.(*fake.Conns).Register(rig.token, fake.NewConn())
-	if err := rig.machine.Handle(ctx, supervise.RequestResume{Claim: rig.token}); err != nil {
+	if err := rig.machine.Handle(ctx, supervise.RequestResume{Claim: rig.token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's resume of %s: %v", rig.token, err)
 	}
 	rig.machine.Wait()

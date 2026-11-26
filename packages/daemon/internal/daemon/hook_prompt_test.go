@@ -527,7 +527,7 @@ func keptAfterTheDelayedWake(t *testing.T, payload record.OutboxPayload, role cl
 func keptAfterAnOperatorsResume(t *testing.T, payload record.OutboxPayload, role claim.Role, message string) {
 	t.Helper()
 	p := delayTheWake(t, payload, role)
-	if err := p.machine.Handle(context.Background(), supervise.RequestResume{Claim: mustClaimToken(t, "LEGION-208", role)}); err != nil {
+	if err := p.machine.Handle(context.Background(), supervise.RequestResume{Claim: mustClaimToken(t, "LEGION-208", role), By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's resume of the delayed %s: %v", role, err)
 	}
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {

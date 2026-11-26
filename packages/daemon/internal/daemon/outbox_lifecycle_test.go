@@ -1215,7 +1215,7 @@ func TestAnOperatorResumeAfterAReadmissionDropsTheOldRunsTask(t *testing.T) {
 	// The issue is re-admitted and restarts in testing at generation 2.
 	issue.Generation = 2
 	putOutboxIssue(t, pool, records, issue)
-	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester}); err != nil {
+	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's resume: %v", err)
 	}
 	if resumes := resumesOf(rt, tester); len(resumes) != 1 {
