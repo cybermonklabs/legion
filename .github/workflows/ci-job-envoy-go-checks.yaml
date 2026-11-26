@@ -402,16 +402,18 @@ jobs:
           fi
         working-directory: packages/envoy
       # These five packages need no database, so they run here on every push. This is their one
-      # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
-      # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
+      # run: envoy-go's unit legs leave them out, .github/go-legs.yaml naming them under
+      # `elsewhere`, which ci_job_reads.py holds to this step's package list, built from
+      # NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
       - name: Test the architecture-note and spec-file rules and their commands
         run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
         working-directory: packages/envoy
       # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
       # type-checks the daemon's listener clients, so they run here, their one run, and a change to
-      # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
-      # leaves both packages out, its `grep -Ev` and this step's package list built from
-      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
+      # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit legs
+      # leave both packages out, .github/go-legs.yaml naming them under `elsewhere`, which
+      # ci_job_reads.py holds to this step's package list, built from LISTENERWIRE_PACKAGES in
+      # .github/scripts/ci_job_reads.py.
       - name: Test the listener's wire package, its clients and wirecheck
         run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
         working-directory: packages/envoy

@@ -2702,7 +2702,103 @@ report is their verdict.
 
 The slow half: the unit tests of every package of the envoy module, the container-backed NATS
 matrix and the integration suite, all against this job's Postgres. Its format, generated-code,
-build and pack steps are envoy-go-build's, and its shell-script tests envoy-go-checks'.
+build and pack steps are envoy-go-build's, and its shell-script tests envoy-go-checks'. The unit
+step runs in legs by area, beside a job of the other steps
+([below](#why-envoys-go-tests-run-in-legs)).
+
+## Why envoy's Go tests run in legs
+
+A go test step lasts as long as its longest package, or as its packages' sum over the runner's
+four cores when that is longer. envoy-go's unit step ran the module's 211 plain packages in one go
+test: about 4,050 s of package time over four slots, 1,113 s at the median of ten green merge
+groups on 2026-11-25 (14:00Z-17:15Z), after the job's other steps had spent about 8 minutes, so
+envoy-go took 28.4-31.6 minutes there. In the eight green merge groups of 19:36Z-21:15Z that ran
+it, envoy-go was 31.2-32.3 minutes and the slowest job of each, and those groups took 36.0-42.4
+minutes where the four without it took 7.3-14.9, set by daemon-go-race's first leg. envoy-go-race
+took 19.5-21.5 minutes, its one step ending with cmd/listener under the detector.
+
+So each step runs in legs, one job per leg, all at the same time, each over the packages
+`.github/go-legs.yaml` lists for it under packages/envoy, longest first, by area, so that a change
+to one area's code can run that area's legs:
+
+- envoy-go's unit step, through `packages/envoy/scripts/database-skips.sh --count-table`, in five
+  legs: the broker's command cmd/cipherd with the writer hold's client and the NATS auth service,
+  the rest of the broker, Dispatch's commands and lighter packages, Dispatch's heavier packages,
+  and the rest of the module. The step kept go test's four `-p` slots: a leg is slot-bound as the
+  one step was, so more slots on one runner would add load where more runners add none.
+- envoy-go's other steps, which ran one after another before the unit step and after it, each on a
+  runner of its own beside the legs: envoy-go-alone, the rows that measure time; envoy-go-race-impossible,
+  the rest of the plain run the race build cannot make (the bus's allocation count and the documents
+  package's memory bounds and render storms); envoy-go-skips, the skip counter's own test, the
+  store-form count and the two vets; and envoy-go-natslive, the container-backed matrix, the
+  integration suite and the callout check.
+- envoy-go-race's step in five legs: the listener's tests in two, a group each
+  (`.github/go-legs/packages/envoy/cmd/listener.yaml`, written by `.github/scripts/go_legs_groups.py`
+  as the daemon's are), the bus with the registry store, the session cache, kvwatch and the NATS
+  credentials, Dispatch's store and delivery, and the NATS auth service with the sign-in code flow,
+  which also runs the forced-order steps.
+
+envoy-go-alone runs the rows whose assertion is a bound on how long something takes, on a runner
+nothing else loads, since beside a leg's other packages such a row measures the load as much as the
+product. Two kinds, each built from a list in `.github/scripts/ci_job_reads.py`, which the steps'
+texts and the legs' `-skip` are both built from:
+
+- the unit packages' rows whose bound, measured from the test's own clock, is under twice its
+  slowest reading (`UNIT_ALONE_TESTS`, thirty-eight tests in twelve packages, by the rule of
+  dispatch://INFRA-1075 that #2733 applied over its paired runs), one package and one test at a
+  time (`-parallel 1`); the legs skip each by its name, which `hold_unit_alone_tests` holds to one
+  package of the module;
+- the rows of the plain run the race build cannot make that measure time
+  (`RACE_IMPOSSIBLE_ALONE_*`): every xid window test, the xid rig's own tests, the API's 200 ms
+  bound on the issue list and the auth service's restart storm.
+
+Measured with these legs on their own ubuntu-24.04-arm runners, each with its job's setup
+(throwaway run 45676312472): the unit legs took 607, 532, 398, 413 and 233 s as jobs, setup 76-90 s
+each; the race legs, with the listener whole in one, 1,057, 577, 671 and 362 s, before the
+forced-order steps' minute in the last. cmd/listener ran 902 s alone, 226 serial tests summing
+781 s and 698 parallel ones 824 s at its -parallel 8, so its tests are split in two groups,
+modelled at 442 s each.
+
+The rules the legs keep are the daemon's
+([ci-job-daemon-go.md](ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs)): each package
+runs once, in one leg, which `.github/scripts/go_legs.py` holds against `go list ./...` in each leg;
+a package the file names in no place runs in the last leg of the job `unlisted` names (here
+envoy-go, whose leg 5 is the rest of the module), with a warning in every leg, since envoy-go is
+held back on a pull request and a package added with no line would otherwise pass the pull
+request and fail every leg of both jobs in the merge group; the gate's Run for the plain legs is
+built from the module's `go list ./...` rather than from the file
+(`.github/scripts/ci_job_reads.py#leg_run_packages`), so a change to only such a package's test
+files still starts envoy-go; a package added under one of the race lane's trees
+(`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) with no race leg
+line would run in leg 5 without the race detector that `./<tree>/...` gave it on main, so
+`.github/scripts/ci_job_reads.py#hold_envoy_legs` refuses it as that file is imported: the
+ci-filters job fails naming it, and the changes job's generation falls open and selects every
+job, which the lint job fails on without naming the package; each leg runs in its step's mode;
+the jobs envoy-go and envoy-go-race keep their check-run names, wait for the jobs their `needs:`
+names and pass only when every one passed, reading the results once, through
+`needs.*.result`, and writing the words
+`.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds when one did not; and the legs
+are rebalanced from their own times. Two more are envoy's own:
+
+- **The NATS auth service runs in two jobs, once in each.** Its hold rows read the broker's hold row
+  from Postgres and skip without it, and only database-skips.sh counts skips, so a plain unit leg
+  runs it for that count beside its race leg. `go-legs.yaml` names it under `twice`, and go_legs.py
+  holds a package `twice` names to exactly two places, a leg of each of two jobs.
+- **Every package of the counter's table is counted in some leg.** `--count-table` counts the skips
+  of the table's packages among a leg's, and a leg with none of them prints `database_skips=NONE`
+  rather than a zero. `.github/scripts/ci_job_reads.py#hold_envoy_legs` holds the entry: its job
+  keys, the race legs to the race lane's envoy-go-race packages, `twice` to the race packages the
+  table holds, and `elsewhere` to the packages other jobs' steps are built to run
+  (envoy-go-race-api's and envoy-go-race-docs', envoy-go-natslive's integration suite, the text checks
+  and envoy-go-build's). check-ci-filters.test.sh holds those refusals.
+
+What it costs: each job repeats its setup, about 80 s for a unit leg and 65 s for a race leg, so
+the legs use more runner minutes than the two jobs did, and each summary job is one more wait for
+a runner after its kind's last leg. A job sets up only what its tests use: envoy-go-race-impossible
+and envoy-go-skips start no test container and run no Bun, so they pull no test image (their
+Postgres service's image aside), install nothing and set no testcontainers variable.
+Standard runners on this public repository bill no money; the cost is runner concurrency and that
+wait.
 
 ## The envoy-infra module, its own workspace and its live tests
 
@@ -2764,10 +2860,15 @@ that walks a live document without its lock races the room's peers, which no ord
 shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
 envoy-go because -race runs these packages several times slower, and each job carries a
 package deadline of its own, since go test's ten-minute default is a whole package's.
-envoy-go runs none of these packages plain any more (INFRA-1408): its unit step leaves out
-exactly what the lane runs, and the one plain run it keeps of them is the step named "Test
-what the race build cannot run at all or at full size", which runs the handful of
-assertions the detector makes impossible or shrinks and nothing else.
+envoy-go runs none of these packages plain any more (INFRA-1408) but the NATS auth service,
+whose skips its unit legs count (`.github/go-legs.yaml#twice`): its unit legs leave out every
+package the lane runs, each package under a tree's directory among them, since
+`.github/scripts/ci_job_reads.py#hold_envoy_legs` refuses a package added under a tree that no
+race leg lists (`unlisted` would otherwise run it plain); and the one other plain run it keeps
+of them is the step named "Test what the race build cannot run at all or at full size"
+(envoy-go-race-impossible) and, for the rows that measure time, the step "Test the xid window
+rows, the API's issue-list bound and the auth service's storm, alone" (envoy-go-alone), which
+run the handful of assertions the detector makes impossible or shrinks and nothing else.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
 the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
@@ -2777,13 +2878,11 @@ say why the document service runs alone.
 
 api sits apart, on a runner of its own, because isolation is what made it fast: sharing a
 runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to
-746.718 s. The packages
-left in envoy-go-race are cheap enough to share one: the two heaviest of those measured
-there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), are a quarter
-and a third of the lane's bar of 1080 s, which is 60 % of a 30-minute step's own timeout, so
-a runner each would buy nothing and cost about 8,000 replayed runner minutes. Running a heavy
-package apart also reads its seconds as its own job's, and leaves the others' numbers
-standing when one is red.
+746.718 s. The packages left in envoy-go-race shared one runner until their sum, about 4,000 s
+of package time over four slots, set that job's 20 minutes; they now run in five legs, a runner
+each, the listener's tests split over two of them
+([why](#why-envoys-go-tests-run-in-legs)). Running a heavy package apart also reads its seconds
+as its own job's, and leaves the others' numbers standing when one is red.
 
 envoy-go-race-api's tests drive the Dispatch store, so its job carries the lane's Postgres
 service.
@@ -2845,9 +2944,11 @@ is gone.
 The package's TestMain count of the services its tests left alive, which that job ran with -v
 to print, prints here too, since -json streams the binary's own output (`docs: 1286 services
 built, 0 still alive` in job 137289139255), and fails the run as it did there. What the race
-build cannot run or runs shrunk - the room-memory bounds, the full-size render-reuse storms and
-the xid window tests, whose gap bound only a plain build judges - runs plain, under the cleanup
-detector too, in envoy-go's step "Test what the race build cannot run at all or at full size".
+build cannot run or runs shrunk runs plain, under the cleanup detector too: the room-memory
+bounds and the full-size render-reuse storms in envoy-go-race-impossible's step "Test what the
+race build cannot run at all or at full size", and the xid window tests, whose gap bound only a
+plain build judges, in envoy-go-alone's step "Test the xid window rows, the API's issue-list
+bound and the auth service's storm, alone", on a runner nothing else loads.
 
 ## The real-process memory tests, and why they are a job of their own
 
@@ -2991,7 +3092,8 @@ minute and waits out each server's restart and the JetStream catch-up after it, 
 the listener's other tests, would hold up the job that runs them - envoy-go-race, which runs
 cmd/listener under the race detector, where it would be slower still. It runs only the tests
 the serverchange tag adds, since envoy-go-race runs the package's untagged tests already
-(envoy-go's unit step leaves /cmd/listener$ out, for the lane to run under the detector): the
+(envoy-go's unit legs leave cmd/listener out, .github/go-legs.yaml putting it in race legs 1 and
+2 for the lane to run under the detector): the
 -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the source at
 run time, so a second serverchange test added later runs here instead of being left out of a
 hand-written list. The assignment is a line of its own: under bash -e it carries the script's
