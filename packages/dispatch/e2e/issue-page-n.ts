@@ -22,7 +22,6 @@ import {
   contentsPane,
   gotoIssue,
   issuePage,
-  openMenu,
   outlineControl,
   outlineSheet,
   presetChooser,
@@ -125,10 +124,6 @@ export function identityBlock(page: Page): Locator {
 
 export function nodeMenuButton(page: Page): Locator {
   return issuePage(page).getByRole("button", { exact: true, name: CONTROL_LABELS.other_nodes });
-}
-
-export function nodeMenuItems(page: Page): Locator {
-  return openMenu(page).getByRole("menuitem");
 }
 
 /** The crumbs of the outline's zoom: none while the outline draws the whole issue, and at least

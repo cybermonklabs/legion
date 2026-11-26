@@ -28,6 +28,7 @@ import {
   EMPTY_STATE_LINES,
   FILE_WORDS,
   GAP_LINES,
+  NODE_REFERENCES_WORDS,
   NODE_TYPE_NAMES,
   PRESET_NAMES,
   PRESET_ORDER,
@@ -2944,23 +2945,16 @@ async function notesFile(testInfo: TestInfo): Promise<string> {
   return path;
 }
 
-/** Opens the issue's `/artifacts`, closing Details first where it covers a phone's page
- *  (dispatch://INFRA-1196 R14). */
-async function openArtifacts(page: Page, isPhone: boolean) {
+/** Opens the issue's Documents' list at its own address by a move inside the page, closing
+ *  Details first where it covers a phone's page (dispatch://INFRA-1196 R14). The list took the
+ *  Artifacts tab's list (part N's R2): each row carries what the tab's row offered beside the
+ *  file - the link that opens it, its copy control, its latest version's download and, for a
+ *  document the issue can drop, Remove - and the file's versions, its picture and what references
+ *  it are on its own page, which the row's link opens. */
+async function openDocumentsList(page: Page, isPhone: boolean) {
   if (isPhone) await closeDetails(page);
-  await openIssueAddress(page, "artifacts");
-}
-
-/** The node menu's item for the file `name`. The menu took the Artifacts tab's list
- *  (dispatch://INFRA-1196 R3, the Design's "Where each thing goes"), and its item carries what
- *  the list's row offered beside the file: the control that opens it, its copy control, its
- *  latest version's download and, for a document the issue can drop, Remove. The file's versions,
- *  its picture and what references it are on its own page, which the item opens. */
-function menuItem(page: Page, name: string): Locator {
-  return page
-    .getByRole("menu")
-    .getByRole("menuitem")
-    .filter({ has: page.getByRole("button", { exact: true, name }) });
+  await openIssueAddress(page, "documents");
+  await expect(documentsList(page), "Documents' list did not open").toBeVisible();
 }
 
 // Choosing a file only stages it; the row then shows a Summary field plus a confirming
@@ -2994,14 +2988,14 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   await page.goto(await specAddress(issue.key));
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
-  await openArtifacts(page, testInfo.project.name === "iphone");
+  await openDocumentsList(page, testInfo.project.name === "iphone");
 
-  // The menu's upload stages the picked file, with its Summary, Upload and Cancel.
+  // Documents' list's upload stages the picked file, with its Summary, Upload and Cancel.
   const upload = page.getByLabel(CONTROL_LABELS.upload_file);
   const diagramUpload = await diagramFile(testInfo);
   await upload.setInputFiles(diagramUpload);
   await confirmUpload(page);
-  const diagram = menuItem(page, "diagram.png");
+  const diagram = documentRow(page, "diagram.png");
   await expect(diagram).toBeVisible();
   await expect(diagram.getByRole("link", { name: "Download version 1" })).toBeVisible();
 
@@ -3011,8 +3005,8 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
     "download",
     ""
   );
-  // The menu item is compact: the versions, their count, the picture, the compare and the
-  // references live on the artifact's own page, not under every item.
+  // The list's row is compact: the versions, their count, the picture, the compare and the
+  // references live on the artifact's own page, not under every row.
   await expect(diagram.getByRole("button", { name: "Show all versions" })).toHaveCount(0);
   await expect(page.getByLabel(CONTROL_LABELS.filter_files)).toBeVisible();
 
@@ -3021,7 +3015,8 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   await expect(page.getByTestId("artifact-header")).toContainText("diagram.png");
   await expect(page.getByRole("img", { name: "diagram.png version 2" })).toBeVisible();
   expect(sockets()).toBe(1);
-  await page.getByRole("button", { name: "Show all versions" }).click();
+  // Every version is drawn open under the file, with no control that hides any (part N's R2), so
+  // the list is read with nothing pressed.
   const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
   await expect(versions).toContainText("Version 1");
   await expect(versions).toContainText("Version 2");
@@ -3039,54 +3034,66 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
   await expect(compare).toContainText("To · Version");
 
   await navigateInApp(page, `/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
+  await openDocumentsList(page, testInfo.project.name === "iphone");
 
   await upload.setInputFiles(await notesFile(testInfo));
   await confirmUpload(page);
-  const notes = menuItem(page, "notes.md");
+  const notes = documentRow(page, "notes.md");
   await expect(notes).toBeVisible();
   await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
   await navigateInApp(page, await specAddress(issue.key));
   await expect(documentEditor(page)).toContainText("The original document.");
 
-  await createComment(issue.key, {
+  const notesCitation = await createComment(issue.key, {
     body: `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`,
   });
 
-  await createComment(issue.key, {
+  const diagramCitation = await createComment(issue.key, {
     body: `See dispatch://${issue.key}/artifact/diagram-png before deciding.`,
   });
   // No reload: both citations reach the open page on its event feed, and the panel below reads
   // what the feed left.
-  await openArtifacts(page, testInfo.project.name === "iphone");
+  await openDocumentsList(page, testInfo.project.name === "iphone");
 
-  await diagram.getByRole("button", { exact: true, name: "diagram.png" }).click();
+  await documentLink(page, "diagram.png").click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
   // The panel names the record that cites this artifact and quotes it; its link goes to that
-  // source, not back to the artifact the reader is already on.
-  // What references the opened artifact is folded under its control (part N's R2).
-  await openedArtifact(page).getByRole("button", { exact: true, name: "Referenced by" }).click();
-  const diagramReferencedBy = page.getByRole("region", { name: "Referenced by" });
-  await expect(diagramReferencedBy).toContainText(`Comment · ${issue.key}`);
-  await expect(diagramReferencedBy).toContainText(
-    `See dispatch://${issue.key}/artifact/diagram-png before deciding.`
+  // source, not back to the artifact the reader is already on. What references the opened
+  // artifact is drawn open, in the page's own words (part N's R2, R12): a comment of the issue's
+  // own is named by its words, beside the page's word for a comment, with no issue named, and the
+  // words name the document they cite by the page's word for a document, as the outline's chip
+  // does (part G's R4).
+  const citingWords = `See ${NODE_TYPE_NAMES.document} before deciding.`;
+  const citing = page.getByRole("link", { exact: true, name: citingWords });
+  const diagramRow = openedArtifact(page)
+    .getByRole("region", { name: PROPERTY_LABELS.referenced_by })
+    .getByRole("listitem")
+    .filter({ has: citing });
+  const diagramSource = diagramRow.getByRole("link", { exact: true, name: citingWords });
+  await expect(diagramSource).toHaveAttribute(
+    "href",
+    `/issues/${issue.key}/comments/${diagramCitation.id}`
   );
-  await diagramReferencedBy.getByRole("link", { name: `Comment · ${issue.key}` }).click();
+  await expect(diagramRow).toContainText(NODE_REFERENCES_WORDS.kinds.comment);
+  await diagramSource.click();
   await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/comments/`));
 
   // One cold load, so the notes.md panel below is read by a page that cached nothing.
   await page.goto(`/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
-  await notes.getByRole("button", { exact: true, name: "notes.md" }).click();
+  await openDocumentsList(page, testInfo.project.name === "iphone");
+  await documentLink(page, "notes.md").click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
-  await openedArtifact(page).getByRole("button", { exact: true, name: "Referenced by" }).click();
-  const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
-  await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
-  await expect(notesReferencedBy).toContainText(
-    `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`
+  const notesRow = openedArtifact(page)
+    .getByRole("region", { name: PROPERTY_LABELS.referenced_by })
+    .getByRole("listitem")
+    .filter({ has: citing });
+  await expect(notesRow.getByRole("link", { exact: true, name: citingWords })).toHaveAttribute(
+    "href",
+    `/issues/${issue.key}/comments/${notesCitation.id}`
   );
+  await expect(notesRow).toContainText(NODE_REFERENCES_WORDS.kinds.comment);
   await navigateInApp(page, `/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
+  await openDocumentsList(page, testInfo.project.name === "iphone");
   await page.screenshot({ path: testInfo.outputPath("artifacts-tab.png"), fullPage: true });
 
   if (testInfo.project.name === "iphone") {
@@ -3172,11 +3179,11 @@ test("the node menu's filter narrows its files by name and kind", async ({ page 
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Artifact filtering" });
   await page.goto(`/issues/${issue.key}`);
-  await openArtifacts(page, false);
+  await openDocumentsList(page, false);
 
   const upload = page.getByLabel(CONTROL_LABELS.upload_file);
-  const diagram = menuItem(page, "diagram.png");
-  const notes = menuItem(page, "notes.md");
+  const diagram = documentRow(page, "diagram.png");
+  const notes = documentRow(page, "notes.md");
   await upload.setInputFiles(await diagramFile(testInfo));
   await confirmUpload(page);
   await expect(diagram).toBeVisible();
@@ -3198,16 +3205,16 @@ test("the node menu's filter narrows its files by name and kind", async ({ page 
   await expect(notes).toBeVisible();
 });
 
-// The node menu's upload stages a picked file as the Artifacts list's did (dispatch://INFRA-1196
-// R19, "nothing lost"): the file's name, an optional Summary for the version it makes, and Upload
-// and Cancel. Cancel sends nothing; Upload sends the file with its summary.
+// Documents' list's upload stages a picked file as the Artifacts list's did (dispatch://INFRA-1196
+// R19, "nothing lost"; part N's R2): the file's name, an optional Summary for the version it makes,
+// and Upload and Cancel. Cancel sends nothing; Upload sends the file with its summary.
 test("the node menu's upload stages a file with a Summary for its version, and Cancel sends nothing", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Staged upload" });
   const held = (await listIssueArtifacts(issue.key)).length;
-  await page.goto(`/issues/${issue.key}/artifacts`);
+  await page.goto(`/issues/${issue.key}/documents`);
 
   const upload = page.getByLabel(CONTROL_LABELS.upload_file);
   const summary = page.getByRole("textbox", { name: "Summary (optional)" });
@@ -3221,7 +3228,7 @@ test("the node menu's upload stages a file with a Summary for its version, and C
   await upload.setInputFiles(await notesFile(testInfo));
   await summary.fill("First review notes");
   await confirmUpload(page);
-  await expect(menuItem(page, "notes.md")).toBeVisible();
+  await expect(documentRow(page, "notes.md")).toBeVisible();
   const notes = (await listIssueArtifacts(issue.key)).find((one) => one.name === "notes.md");
   expect(notes?.versions?.map((version) => version.summary)).toEqual(["First review notes"]);
 });
@@ -3229,10 +3236,11 @@ test("the node menu's upload stages a file with a Summary for its version, and C
 // SLOW(>=2s): a real upload the history links, and the keyboard tour of the five presets with
 // each tab's box measured, at 1440 px and at 390 px.
 //
-// The nine tabs are gone (dispatch://INFRA-1196 R3): the row is five presets, and how many
-// artifacts an issue carries is the node menu's, not a tab's badge, so the `Artifacts (N)`
-// assertions this test carried are retired with it - what they proved, that the live feed
-// refreshes the page's own counts without a reload, is proved here on the history, in Details.
+// The nine tabs are gone (dispatch://INFRA-1196 R3): the row is the views' controls, Documents
+// among them (part N's R4), and how many artifacts an issue carries is Documents' list's, not a
+// tab's badge, so the `Artifacts (N)` assertions this test carried are retired with it - what
+// they proved, that the live feed refreshes the page's own counts without a reload, is proved
+// here on the history, in Details.
 //
 // It is not tagged `@phone`: the row sets 390 px itself, so the iphone project would run the
 // same assertions a second time (#2866, no browser row runs twice).
@@ -3287,7 +3295,7 @@ test("an uploaded document is linked from the history and the presets fit every 
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 1440 });
   const toolbar = presetToolbar(page);
   const toggles = presetToggles(page);
-  await expect(toggles).toHaveCount(5);
+  await expect(toggles).toHaveCount(PRESET_ORDER.length);
   const insideToolbar = async (toggle: Locator) => {
     const [rowBox, box] = await Promise.all([toolbar.boundingBox(), toggle.boundingBox()]);
     expect(rowBox).not.toBeNull();
@@ -3315,9 +3323,10 @@ test("an uploaded document is linked from the history and the presets fit every 
   };
   // Every control is reachable from the keyboard, each is inside the row as it takes focus, and
   // each is drawn at the height the row gives it.
-  const first = presetToggle(page, "conversation");
+  const [head, ...rest] = PRESET_ORDER;
+  const first = presetToggle(page, head);
   await first.focus();
-  for (const preset of ["spec", "verification", "plan", "decisions"] as const) {
+  for (const preset of rest) {
     await page.keyboard.press("ArrowRight");
     const toggle = presetToggle(page, preset);
     await expect(toggle).toBeFocused();
@@ -3327,9 +3336,9 @@ test("an uploaded document is linked from the history and the presets fit every 
   await page.keyboard.press("Home");
   await expect(first).toBeFocused();
   await insideToolbar(first);
-  await fitsTheRow(first, "Conversation");
+  await fitsTheRow(first, PRESET_NAMES[head]);
 
-  // At 390 px the row is one control naming the one on, which opens the five. This is the
+  // At 390 px the row is one control naming the one on, which opens the rest. This is the
   // width a finger is what reaches the filters, so this is where the touch target is read: the
   // one control a reader presses there carries it, and the row fails if it ever loses it. The
   // target is WCAG 2.2's 24 px (2.5.8), not the 44 px floor of today's tabs: the view row is one
@@ -3348,8 +3357,9 @@ test("an uploaded document is linked from the history and the presets fit every 
     `the preset control is ${chooserHeight} px tall at 390 px, under the 24 px a touch needs`
   ).toBeGreaterThanOrEqual(24);
   await chooser.click();
-  // The five are radio items of the menu, the one on checked (part D's `IssuePresets.tsx`).
-  await expect(page.getByRole("menu").getByRole("menuitemradio")).toHaveCount(5);
+  // Each view's control is a radio item of the menu, the one on checked (part D's
+  // `IssuePresets.tsx`), Documents among them (part N's R4).
+  await expect(page.getByRole("menu").getByRole("menuitemradio")).toHaveCount(PRESET_ORDER.length);
   await page.keyboard.press("Escape");
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
 
@@ -3370,8 +3380,8 @@ test("an uploaded document is linked from the history and the presets fit every 
 });
 
 // The Artifacts tab's badge and its rows' detail lines went with the tab (dispatch://INFRA-1196
-// R3): the node menu holds one item per file, whose name is never cut, and a file's version, size
-// and upload time are on its own page.
+// R3): Documents' list holds one row per file, whose name is never cut, and a file's versions are
+// drawn open on its own page (part N's R2).
 test("the node menu lists every file of the issue, and an item's name is not truncated @phone", async ({
   page,
 }) => {
@@ -3383,21 +3393,20 @@ test("the node menu lists every file of the issue, and an item's name is not tru
   });
   await createIssueArtifact(issue.key, { content: "# Audit\n\nOne more.\n", name: "audit.md" });
 
-  await page.goto(`/issues/${issue.key}/artifacts`);
-  const files = page
-    .getByRole("menu")
-    .getByRole("menuitem")
-    .filter({ has: page.getByRole("link", { name: /^Download version/ }) });
+  await page.goto(`/issues/${issue.key}/documents`);
+  const files = documentsRows(page).filter({
+    has: page.getByRole("link", { name: /^Download version/ }),
+  });
   await expect(files).toHaveCount(2);
 
-  // Every item shows its whole name: it wraps where it must rather than truncating. The count of
-  // two above waited for both items, so one read lists them.
+  // Every row shows its whole name: it wraps where it must rather than truncating. The count of
+  // two above waited for both rows, so one read lists them.
   for (const file of await files.all()) {
-    const name = file.getByRole("button").first();
+    const name = file.getByRole("link").first();
     expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   }
-  await files.getByRole("button", { exact: true, name: "audit.md" }).click();
-  await page.getByRole("button", { name: "Show all versions" }).click();
+  await documentLink(page, "audit.md").click();
+  // Every version is drawn open, with no control that hides any (part N's R2).
   await expect(
     page.getByRole("region", { exact: true, name: "Versions for audit.md" })
   ).toContainText("Version 1");
@@ -3415,12 +3424,11 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
     name: "cached-repair.md",
   });
   const sockets = countDocumentSockets(page, upload.artifact.id);
-  const row = menuItem(page, "cached-repair.md");
-  const openDocument = () =>
-    row.getByRole("button", { exact: true, name: "cached-repair.md" }).click();
+  const row = documentRow(page, "cached-repair.md");
+  const openDocument = () => documentLink(page, "cached-repair.md").click();
 
   await page.goto(`/issues/${issue.key}`);
-  await openArtifacts(page, false);
+  await openDocumentsList(page, false);
   // A page load would drop this marker, and the page's cached reads with it.
   await page.evaluate(() => Object.assign(window, { __e2eNavMarker: true }));
   await openDocument();
@@ -3565,13 +3573,13 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
 
     // Every chord of the key table opens its target's address (R11, R20): a filter's chord
     // turns it on from any other view and off from its own, `t c` turns every filter off, and
-    // the rest open the steps, the node menu, the history and the collaborators.
+    // the rest open the steps, Documents' list, the history and the collaborators.
     for (const [key, address] of [
       ["k", "verification"],
       ["p", "plan"],
       ["e", "steps"],
       ["d", "decisions"],
-      ["a", "artifacts"],
+      ["a", "documents"],
       ["v", "activity"],
       ["o", "collaborators"],
       ["s", "spec"],
@@ -3609,7 +3617,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     ).toHaveText(["0", "3"]);
     // Each chord is listed under what it does on this page, not under a tab the page no longer
     // has (`web/src/features/issue/useIssueKeymap.ts`'s `CHORDS`): the filters by the row's own
-    // names, and the panel, the children and the node menu as the page names them.
+    // names, and the panel, the children and Documents' list as the page names them.
     await expect(
       issueSection
         .getByRole("listitem")
@@ -3635,7 +3643,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         .filter({ hasText: CONTROL_LABELS.open_steps })
         .locator("kbd")
     ).toHaveText(["t", "e"]);
-    // The history takes `t v`, since `t a` opens the node menu and `l` the labels. Its words
+    // The history takes `t v`, since `t a` opens Documents' list and `l` the labels. Its words
     // are the page's own (`useIssueKeymap.ts`): `/activity` opens Details at the issue's history
     // (R15), as the user docs' address table has it.
     await expect(issueSection).toContainText("Open the issue's history in Details");
@@ -3847,34 +3855,48 @@ test("every chord the page bound before the redesign brings a target on screen w
     // Shift, which no key of the page binds - and the focus then leaves for the page for good.
     await page.keyboard.press("Shift");
 
-    // The node menu: `t a`, which named the Artifacts tab before this change.
+    // Documents' list: `t a`, which named the Artifacts tab before this change, opens it with the
+    // focus on its first row, on screen (part N's R4).
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("a");
-    expect(await openMenu(page).count(), "t a opens no menu").toBe(1);
-    expect(await focusInside(openMenu(page)), "t a does not put the focus in the node menu").toBe(
-      true
-    );
+    await expect(documentsList(page), "t a opens no Documents' list").toBeVisible();
+    await expect(
+      firstDocumentLink(page),
+      "t a does not put the focus on Documents' first row"
+    ).toBeFocused();
     expect(
-      await nodeMenuButton(page).count(),
-      `the menu t a opened is not the one named "${CONTROL_LABELS.other_nodes}" beside the presets`
-    ).toBe(1);
+      await onScreen(firstDocumentLink(page)),
+      "t a leaves Documents' first row off screen"
+    ).toBe(true);
+    await expectActiveControl(page, "documents");
+    const firstName = await firstDocumentLink(page).innerText();
 
-    // From the menu `t a` left the focus in, Enter opens the document on the focused item in
-    // place of the outline, and Escape - the key table's step after leaving a caret - closes it
-    // and draws the outline again.
+    // From the row `t a` left the focus on, Enter opens its document in place of the list and of
+    // the outline, and Escape - the key table's step after leaving a caret - closes it, back to
+    // the list with the focus on that row (part N's R2); Escape on the list then draws the
+    // outline again.
     await page.keyboard.press("Enter");
     await expect(
       openedArtifact(page),
-      "Enter on the node menu's item opens no document"
+      "Enter on Documents' first row opens no document"
     ).toHaveCount(1);
     expect(
       await tree(page).count(),
       "the opened document is not drawn in place of the outline"
     ).toBe(0);
     await page.keyboard.press("Escape");
-    await expect(tree(page), "Escape does not close the opened document").toBeVisible();
+    await expect(documentsList(page), "Escape does not close the opened document").toBeVisible();
     expect(await openedArtifact(page).count(), "Escape leaves the document drawn").toBe(0);
+    await expect(
+      documentLink(page, firstName),
+      "Escape leaves the focus off the document's row"
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(
+      tree(page),
+      "Escape on Documents' list does not draw the outline again"
+    ).toBeVisible();
   } finally {
     await context.close();
   }
@@ -3891,10 +3913,17 @@ test("Escape leaves the caret, then closes a document, then clears the words, th
     await expectActivePreset(page, PRESET_NAMES.spec);
     await expect(filterBox(page)).toHaveValue(words);
 
-    // A document opened from the node menu, with the caret in its text: the caret is left
-    // first, and the next Escape closes the document, back to the filter it was opened from.
-    await nodeMenuButton(page).click();
-    await openMenu(page).getByRole("button", { exact: true, name: spec.name }).click();
+    // A document opened from a chip of the Spec view, with the caret in its text: the caret is
+    // left first, and the next Escape closes the document, back to the view and the words the
+    // chip was pressed under (part N's R2: a chip's document goes back to the chip).
+    const chip = issuePage(page).locator(
+      `a[data-row-chip][data-row-reference="dispatch://${seeded.key}/artifact/${seeded.documents.cited}"]`
+    );
+    await expect(chip, "the Spec view draws no chip for the cited document").toHaveCount(1);
+    await chip.click();
+    await expect(page).toHaveURL(
+      new RegExp(`/issues/${seeded.key}/artifacts/${seeded.documents.cited}$`)
+    );
     await expect(openedArtifact(page)).toHaveCount(1);
     const editor = openedArtifact(page).getByRole("textbox", { name: "Document editor" });
     await editor.click();
@@ -4309,7 +4338,7 @@ test("a first live socket opening without a change makes no API request", async 
   const alice = await asReader(browser, "alice");
   try {
     const page = await alice.newPage();
-    const pending = trackApiRequests(page);
+    const traffic = watchApiRequests(page);
     const sockets = watchLiveSockets(page);
     let held: WebSocketRoute | undefined;
     const firstSocketReleased = Promise.withResolvers<void>();
@@ -4340,7 +4369,12 @@ test("a first live socket opening without a change makes no API request", async 
     // The title is the page's heading; the focused node's facts draw it a second time.
     await expect(page.getByRole("heading", { exact: true, name: "Quiet page load" })).toBeVisible();
     await expect.poll(() => held !== undefined).toBe(true);
-    await waitForReads(pending);
+    // The load is over once nothing has been in flight for the recorded baseline's window, not at
+    // the first moment nothing is: the outline's one batched read of the names its references
+    // cite goes out only after each of the tree's reads has answered (`useIssueTree.ts`), so the
+    // reads can all be in for a moment before it is sent, and a count started then would take it
+    // for the open's own (CI at 88443e7d: `reference-targets?ref=dispatch://CORE-1`).
+    await expectLoadSettled(traffic);
     if (held === undefined) throw new Error("the first live socket was not held");
     countRequests = true;
     firstSocketReleased.resolve();
@@ -5069,13 +5103,6 @@ async function upload(
   return ((await answer.json()) as ArtifactUploadResponse).artifact;
 }
 
-/** Picks `file` in the node menu's own upload control and confirms it, as a person does:
- *  choosing a file only stages it until the staged row's "Upload" is pressed. */
-async function uploadFromMenu(page: Page, file: UploadFile): Promise<void> {
-  await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles(file);
-  await page.getByRole("button", { exact: true, name: "Upload" }).click();
-}
-
 /** The download `link` starts when it is clicked: the name the browser saves it under, the
  *  address it came from and, once it has finished, the file it wrote. */
 async function saveFrom(page: Page, link: Locator) {
@@ -5090,15 +5117,15 @@ function versionAddress(id: string, number: number, download = false): string {
   return `/api/v1/artifacts/${id}/versions/${number}${download ? "?download=true" : ""}`;
 }
 
-/** Opens the issue's node menu at the address the Artifacts tab answered, which opens the menu
- *  now: the menu took the tab's list (dispatch://INFRA-1196 R3), one item per file with the
- *  download of its latest version, and the file's versions and picture are on its own page. */
-async function openNodeMenu(page: Page, issueKey: string): Promise<void> {
-  await page.goto(`/issues/${issueKey}/artifacts`);
-  await expect(page.getByRole("menu")).toBeVisible();
+/** Opens the issue's Documents' list by a load of its own address: the list took the Artifacts
+ *  tab's list (part N's R2), one row per file with the download of its latest version, and the
+ *  file's versions and picture are on its own page, which the row's link opens. */
+async function loadDocumentsList(page: Page, issueKey: string): Promise<void> {
+  await page.goto(`/issues/${issueKey}/documents`);
+  await expect(documentsList(page), "Documents' list did not open").toBeVisible();
 }
 
-// SLOW(>=2s): a cold load of the issue and its node menu, then the artifact's page and its whole
+// SLOW(>=2s): a cold load of the issue's Documents' list, then the artifact's page and its whole
 // version list, each link and picture read where it is drawn.
 // @webkit @firefox: the address the engine follows for a download and the one it draws a picture
 // from, which the rows below read the saved names of.
@@ -5115,15 +5142,15 @@ test("each Download version link names the download address and each picture the
   const diagram = await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
   await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
 
-  await openNodeMenu(page, issue.key);
-  // The item draws no picture: the file's picture is on its own page, read below.
-  const item = menuItem(page, "diagram.png");
+  await loadDocumentsList(page, issue.key);
+  // The row draws no picture: the file's picture is on its own page, read below.
+  const item = documentRow(page, "diagram.png");
   await expect(item.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
     "href",
     versionAddress(diagram.id, 2, true)
   );
 
-  await item.getByRole("button", { exact: true, name: "diagram.png" }).click();
+  await documentLink(page, "diagram.png").click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
   const shown = page.getByRole("region", { exact: true, name: "diagram.png version 2" });
   await expect(shown.getByRole("img", { name: "diagram.png version 2" })).toHaveAttribute(
@@ -5134,8 +5161,8 @@ test("each Download version link names the download address and each picture the
     "href",
     versionAddress(diagram.id, 2, true)
   );
+  // Every version is drawn open, with no control that hides any (part N's R2).
   const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
-  await versions.getByRole("button", { name: "Show all versions" }).click();
   for (const number of [1, 2]) {
     await expect(
       versions.getByRole("link", { name: `Download version ${number}` })
@@ -5143,8 +5170,8 @@ test("each Download version link names the download address and each picture the
   }
 });
 
-// SLOW(>=2s): two uploads through the node menu, each written and listed, and four downloads the
-// browser saves from the menu, the artifact's page and its version list.
+// SLOW(>=2s): two uploads through Documents' list, each written and listed, and four downloads
+// the browser saves from the list, the artifact's page and its version list.
 // @webkit @firefox: the name the engine saves from `filename*` and `filename`, and whether it asks
 // the server again for a download address it already followed: version 1's address saves a new
 // name once version 2 exists.
@@ -5153,23 +5180,23 @@ test("a file saves under its own name, and its older version under its number on
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Report downloads" });
-  await openNodeMenu(page, issue.key);
-  const item = menuItem(page, "report.pdf");
+  await loadDocumentsList(page, issue.key);
+  const item = documentRow(page, "report.pdf");
 
-  await uploadFromMenu(page, pdf("report.pdf", "first draft"));
+  await uploadInDocuments(page, pdf("report.pdf", "first draft"));
   const first = await saveFrom(page, item.getByRole("link", { name: "Download version 1" }));
   expect(first.suggestedFilename()).toBe("report.pdf");
 
-  await uploadFromMenu(page, pdf("report.pdf", "second draft"));
+  await uploadInDocuments(page, pdf("report.pdf", "second draft"));
   await expect(item.getByRole("link", { name: "Download version 2" })).toBeVisible();
-  await item.getByRole("button", { exact: true, name: "report.pdf" }).click();
+  await documentLink(page, "report.pdf").click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/report-pdf`);
   const shown = page.getByRole("region", { exact: true, name: "report.pdf version 2" });
   const current = await saveFrom(page, shown.getByRole("link", { name: "Download version 2" }));
   expect(current.suggestedFilename()).toBe("report.pdf");
 
+  // Every version is drawn open, with no control that hides any (part N's R2).
   const versions = page.getByRole("region", { exact: true, name: "Versions for report.pdf" });
-  await versions.getByRole("button", { name: "Show all versions" }).click();
   const older = await saveFrom(page, versions.getByRole("link", { name: "Download version 1" }));
   expect(older.url()).toBe(first.url());
   expect(older.suggestedFilename()).toBe("report-v1.pdf");
@@ -5177,7 +5204,7 @@ test("a file saves under its own name, and its older version under its number on
   expect(newest.suggestedFilename()).toBe("report.pdf");
 });
 
-// SLOW(>=2s): a cold load of the issue and its node menu, an upload through it, and the download
+// SLOW(>=2s): a cold load of the issue's Documents' list, an upload through it, and the download
 // the browser saves.
 // @webkit @firefox: the name the engine saves from `filename*` where the name holds spaces and a
 // character outside ASCII, which the ASCII `filename` beside it cannot carry, and WebKit's own
@@ -5188,13 +5215,13 @@ test("a file whose name holds spaces and a character outside ASCII saves under t
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Accented downloads" });
-  await openNodeMenu(page, issue.key);
+  await loadDocumentsList(page, issue.key);
 
   const name = "Q3 final résumé.pdf";
-  await uploadFromMenu(page, pdf(name, "the quarter"));
+  await uploadInDocuments(page, pdf(name, "the quarter"));
   const saved = await saveFrom(
     page,
-    menuItem(page, name).getByRole("link", { name: "Download version 1" })
+    documentRow(page, name).getByRole("link", { name: "Download version 1" })
   );
   // WebKit reads `filename*`, since the `é` stays where the ASCII `filename` has `_`, and then
   // writes each space as `_` (CI run 43750246861). Chromium and Firefox save the name exactly.
@@ -5202,7 +5229,7 @@ test("a file whose name holds spaces and a character outside ASCII saves under t
   expect(saved.suggestedFilename()).toBe(expected);
 });
 
-// SLOW(>=2s): a cold load of the issue and its node menu, and a download the browser saves and
+// SLOW(>=2s): a cold load of the issue's Documents' list, and a download the browser saves and
 // the row reads back from disk.
 // @webkit @firefox: the name the engine saves a document's Markdown under, and the bytes it writes.
 test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({ page }) => {
@@ -5213,9 +5240,9 @@ test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({
     title: "Spec download",
   });
   const specName = (await getArtifact(issue.primary_artifact_id)).name;
-  await openNodeMenu(page, issue.key);
+  await loadDocumentsList(page, issue.key);
 
-  const item = menuItem(page, specName);
+  const item = documentRow(page, specName);
   const saved = await saveFrom(page, item.getByRole("link", { name: "Download version 1" }));
   expect(saved.suggestedFilename()).toBe("spec.md");
   const spec = await getArtifactVersion(issue.primary_artifact_id, 1);
@@ -5248,9 +5275,10 @@ async function blockBelowTheFold(world: ReferenceWorld): Promise<string> {
 
 // A `/spec` address naming a comment by `?comment=` opens the issue page on that comment, not the
 // spec it quotes (dispatch://INFRA-1196 R20); written short, the id is resolved first and the
-// address replaced by the whole one. An agent wrote this comment, in a thread no person wrote in,
-// so it lands in the history in Details, which marks its turn: part M's history marks a turn by
-// `data-history-item` (`historyItem`), where today's page marks it `data-turn`.
+// address replaced by the whole one. The comment is on the spec's text, which part M's history in
+// Details holds no turn of: the page draws it as a node, and the address focuses that node, on
+// screen, with its text (part N's R6), as today's page opened its item in the margin. Threads
+// lands a comment on text once dispatch://INFRA-5704 is on `main`.
 test("a spec address that writes an anchored comment's id short opens it and is replaced by the whole id", async ({
   browser,
 }) => {
@@ -5268,10 +5296,12 @@ test("a spec address that writes an anchored comment's id short opens it and is 
     const address = `/issues/${world.host.key}/spec?comment=`;
     await page.goto(`${address}${short(anchored.id)}`);
     await expect(page).toHaveURL(`${address}${anchored.id}`);
-    const turn = historyItem(page, anchored.id);
-    await expect(turn).toHaveAttribute("aria-current", "true");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the address does not focus the comment" })
+      .toBe(anchored.id);
+    const turn = nodeRow(page, anchored.id).first();
+    await expect(turn).toBeInViewport();
     await expect(turn).toContainText("Anchored on the first line.");
-    await expect(historyPanel(page)).toBeVisible();
   } finally {
     await context.close();
   }
@@ -5402,7 +5432,7 @@ test("round-trips through the filters leave one open document connection and the
       await openMenu(page)
         .getByRole("menuitemradio", { name: new RegExp(`^${PRESET_NAMES[preset]}( |$)`) })
         .click();
-      await expectActivePreset(page, PRESET_NAMES[preset]);
+      await expectActiveControl(page, preset);
     }
     await expect(tree(page).getByText("Existing message 29")).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrollPosition);
