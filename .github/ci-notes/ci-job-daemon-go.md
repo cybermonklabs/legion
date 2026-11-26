@@ -42,9 +42,10 @@ import-path order, so one long package that came late set the step's time. In me
 So each step runs in legs: one job per leg, all at the same time, each over the packages
 `.github/go-legs.yaml` lists for it, longest first. Plain leg 1 is internal/store, whose 542 s
 sets its time, beside the next three, each on a core of its own; plain leg 2 is the other 87
-packages, about 880 s of package time over four cores, and the steps no leg splits (the
-race-impossible tests, the forced-order tests and Stage 1, 57 s in that job). internal/daemon
-takes three race legs, a group of its tests each ([below](#why-internaldaemons-tests-run-in-three-legs));
+packages, about 880 s of package time over four cores, and runs alone the steps no leg splits:
+the race-impossible tests, the forced-order tests and Stage 1, 57 s in that job, and the shape
+gate of internal/api stamped with main's merge order, added since (4 s with its stamp in job
+139602068850). internal/daemon takes three race legs, a group of its tests each ([below](#why-internaldaemons-tests-run-in-three-legs));
 race leg 4 is the other four packages, whose time is internal/launcher's (292 s in run
 45601893438; internal/intake took 134 s there, its tests now beside each other). The longest leg
 is then plain leg 1, internal/store's: 506 s of job in run 45678673783, against 463 s for the
@@ -53,23 +54,26 @@ waited 940 s for daemon-go.
 
 The rules the legs keep:
 
-- **Each package runs once, in one leg.** `.github/scripts/go_legs.py`, which each leg's go test
-  step runs for its packages, compares the file with `go list ./...` first and fails the step,
-  naming each, when a package is in two places, or when a place names no package. It also takes
-  how many legs the job's matrix runs (`strategy.job-total`) and fails when the file's legs are
-  not exactly those, since a leg the file has and the matrix does not launch runs in no job, and
-  when a leg lists no package, since xargs would then run go test on the module's root. A package
-  the file names in no place runs in the last leg of the job the module's `unlisted` names
-  (daemon-go), and every leg warns, naming it: daemon-go runs in the merge queue and not on a
-  pull request without its label, so a pull request that added a package and no line would
-  otherwise pass its own run and fail every leg of the group, and the queue would rebuild every
-  group behind it. An entry without `unlisted`, or one naming no job whose last leg runs whole
-  packages, fails every leg. `.github/scripts/go-legs.test.sh`, in the test job, holds those
-  readings, and one case adds a package and finds it in exactly one leg. A leg sees only its own
-  job's legs, so a package filed under a job key no matrix job runs would pass every leg and run
-  in none: `.github/scripts/ci_job_reads.py#hold_daemon_legs`, which the changes and ci-filters
-  jobs import, refuses any key but daemon-go, daemon-go-race, `elsewhere` and `unlisted`, and an
-  `unlisted` that is not daemon-go, and check-ci-filters.test.sh holds that.
+- **Each package runs once, in one place.** A place is one leg, or, for a package split by test
+  name as internal/daemon is in three race legs, one group of its tests in each of several legs
+  of one job ([below](#why-internaldaemons-tests-run-in-three-legs)), every test in one group.
+  `.github/scripts/go_legs.py`, which each leg's go test step runs for its packages, compares the
+  file with `go list ./...` first and fails the step, naming each, when a package is in two
+  places, or when a place names no package. It also takes how many legs the job's matrix runs
+  (`strategy.job-total`) and fails when the file's legs are not exactly those, since a leg the
+  file has and the matrix does not launch runs in no job, and when a leg lists no package, since
+  xargs would then run go test on the module's root. A package the file names in no place runs in
+  the last leg of the job the module's `unlisted` names (daemon-go), and every leg warns, naming
+  it: daemon-go runs in the merge queue and not on a pull request without its label, so a pull
+  request that added a package and no line would otherwise pass its own run and fail every leg of
+  the group, and the queue would rebuild every group behind it. An entry without `unlisted`, or
+  one naming no job whose last leg runs whole packages, fails every leg.
+  `.github/scripts/go-legs.test.sh`, in the test job, holds those readings, and one case adds a
+  package and finds it in exactly one leg. A leg sees only its own job's legs, so a package filed
+  under a job key no matrix job runs would pass every leg and run in none:
+  `.github/scripts/ci_job_reads.py#hold_daemon_legs`, which the changes and ci-filters jobs import,
+  refuses any key but daemon-go, daemon-go-race, `elsewhere` and `unlisted`, and an `unlisted` that
+  is not daemon-go, and check-ci-filters.test.sh holds that.
 - **Each leg runs in its step's mode.** A kind's legs are one matrix job with one step text, so
   -race, -skip and -timeout are the step's and no leg's own.
 - **The old check-run names stay.** The jobs daemon-go and daemon-go-race wait for their kind's
