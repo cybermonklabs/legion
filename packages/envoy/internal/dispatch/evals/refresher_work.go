@@ -50,12 +50,11 @@ import (
 //     other repository, from their first input day on, and begins no walk (settings_rewrite.go:
 //     settingsMoves names what each field of a rule moves and movedDeliveryDays the days it can
 //     move, and the pass finds the change by comparing each repository's rule it reads with the
-//     one the rows stand built under, so one that moves no eval rewrites nothing); a source that
-//     reads another repository builds that repository's days and deletes the old one's in the
-//     page's commit (syncKept), as a move of a project's default repository does for a source
-//     naming none, which the pass reads with the settings. The project's failure rows are written
-//     whole, and every failure row of each project whose failure measures are on where the kept
-//     repositories moved (applyFailures, failure_days.go).
+//     one the rows stand built under, so one that moves no eval rewrites nothing). A source move
+//     publishes a new selection (syncSettings); the repository gains rows where it had no rule
+//     before (syncKept). A settings save rewrites that project's failure rows. Changes to
+//     published defaults or source-key readers rewrite the affected measured projects' failure
+//     rows after publication (applyFailures, failure_days.go).
 //   - production_events: a posted deploy of a project whose events repository is read, its
 //     finished day before the change and after it (t_old and t_new), the merge days of the pull
 //     requests it names now and the days eval_day_members holds it and the pull requests it
@@ -349,6 +348,12 @@ type pageWork struct {
 	// settingsOf is the projects whose delivery settings the page's changes name (a settings
 	// change's repo), whose failure rows the page writes whole (applyFailures).
 	settingsOf map[string]bool
+	// failureFirstDayOf is the projects for which a settings change moved the effective first
+	// measured day, which the Evals page reads even if the project has no failure day rows.
+	failureFirstDayOf map[string]bool
+	// failureSelection names projects whose source-key readers or published defaults the page
+	// moves. Their failure rows are written against the new selection after it commits.
+	failureSelection []string
 	// record is set where commitPage records refresh.builtUnder in eval_days_rules with the cursors
 	// and the rebuild the page begins (syncSettings, syncKept). settingsApplied is set where that
 	// record moves the repositories a read of the evals chooses among (DeployReposIn: a source
@@ -383,6 +388,7 @@ func newPageWork() *pageWork {
 		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, left: map[string][]time.Time{}, ran: map[string]time.Time{},
 		prodEvents: map[string]map[string][]time.Time{}, legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{},
 		unowned: map[string]bool{}, restart: map[string]bool{}, settingsOf: map[string]bool{},
+		failureFirstDayOf: map[string]bool{},
 	}
 }
 
@@ -423,6 +429,9 @@ func (w *pageWork) addChange(change delivery.Change) {
 		// project's failure rows whole (applyFailures).
 		w.settings = true
 		w.settingsOf[change.Repo] = true
+		if change.Ref == failureFirstDaySettingsRef {
+			w.failureFirstDayOf[change.Repo] = true
+		}
 	case delivery.ChangeKindProductionEvents:
 		// A row of a project's record (repo the project, ref the row's id), with the time it
 		// counts on before and after: a posted deploy's days are rewritten in its project
@@ -483,8 +492,9 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // it, brings the delivery and CI rows to the delivery settings it reads (syncSettings), writes the
 // days the page names, and moves the cursors in a transaction of its own, which also records the
 // walks the page begins again and the rebuild it begins, and, where the page's days move what days
-// it does not name hold, writes them and those days (apply, commitPage). It then writes each day a
-// write left owed (writeOwed). It answers whether a feed holds more rows.
+// it does not name hold, writes them and those days (apply, commitPage). When the page publishes
+// defaults or source rules, the failure rows follow that commit, under the published selection.
+// It then writes each day a write left owed (writeOwed). It answers whether a feed holds more rows.
 //
 // A database holding no cursor row has committed no pass: the cursors start at the feeds' heads,
 // and a rebuild of every family begins (rebuild.go), which builds every day the feeds' history
@@ -582,11 +592,27 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	// Ordinarily the failure writes precede the cursors, so a failed write leaves its input
+	// changes to be read again. A page publishing a selection must use it after the commit.
+	afterPublish := work.defaults != nil || work.record
+	if !afterPublish {
+		if err := r.applyFailures(ctx, work); err != nil {
+			return false, err
+		}
+	}
 	parts.mark(partWork)
 	if err := r.commitPage(ctx, moved, work.restarts(r.projects), work, rebuilds); err != nil {
 		return false, err
 	}
 	parts.mark(partCommit)
+	if afterPublish {
+		if err := r.applyFailures(ctx, work); err != nil {
+			// The cursors have moved. Leave the failure walk owing a whole write on retry.
+			clear(r.failuresWritten)
+			return false, err
+		}
+		r.store.drainChanges(ctx)
+	}
 	if err := r.writeOwed(ctx); err != nil {
 		return false, err
 	}
@@ -617,8 +643,8 @@ func walkOf(family, project string) walkKey {
 // page's commit, as the span writes it answers, which the caller commits with the page's cursors
 // (commitPage). The days a write left owed before this page (owedDays) are named with the page's
 // own: a pass that failed after a moving write and before the day's own left them so. The
-// failure rows (applyFailures) and the unowned-p0 rows are written before it answers, so every
-// write the page's cursors pass is made, or is in the commit that moves them.
+// unowned-p0 rows are written before it answers. The caller writes the failure rows separately
+// (applyFailures), since those of a publishing page must follow its commit.
 func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*spanWrite, error) {
 	owed, err := r.store.owedDays(ctx, r.owners)
 	if err != nil {
@@ -626,9 +652,6 @@ func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*spanWrite, error) 
 	}
 	spans, err := r.applyFamilies(ctx, w, owed)
 	if err != nil {
-		return nil, err
-	}
-	if err := r.applyFailures(ctx, w); err != nil {
 		return nil, err
 	}
 	for _, project := range slices.Sorted(maps.Keys(w.unowned)) {

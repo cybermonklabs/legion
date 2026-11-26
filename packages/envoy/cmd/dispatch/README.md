@@ -1764,8 +1764,10 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   The same commit marks stale the stored figures of each cut the move moves rows of (`eval_figure_cuts_stale`), naming the evals whose rows it moved there, read from the stored rows of the commit: of the old and the new default's cut of each project whose default moved, the project's evals that hold a row under `:default` (6 of INFRA's 40), and, of each owner key a project gains, loses or reads otherwise through the repository, in the cut of the key's repository and in the project's own rows (`repo` `''`), its evals of that key's rows.
   It folds the history of none of them: on the farm at ten times INFRA's rate, Postgres just restarted, the fold of the own rows over every day that the commit made before took 3.45 s of the 3.9 s from the `PUT` to the commit, and the two defaults' cuts hold about 290,000 range rows at INFRA's size, past what a commit folds inside R14's 2 s.
   It folds the first paint of each cut it marks instead (`evals.foldMarkedFirstPaints`, below), so a first paint of every cut the move touches, the Evals tab's own rows among them, reads the stored figures from the commit on, and it logs one INFO line with the projects it moved, the cuts it marked, their evals, how long the first-paint folds took, how long the transaction took and how long it held the locks of the logged evals it folded (`locks_held_ms`).
-  The move writes no day row and no member, and a commit that clears the last default a project holds publishes the clear once.
-  So one page shows one state: the delivery routes and the Evals tab both read the published defaults, and the person's `PUT /api/v1/projects/{key}/default-repository` marks no view until the commit.
+  The publishing commit writes no day row or member, and a commit that clears the last default a project holds publishes the clear once.
+  In the same pass, after publication, the refresher rewrites the three failure evals of the measured projects the move affects, including projects whose own default did not move but whose deploy attribution did.
+  The failure builder and items route use the same attribution as deploy-frequency, under the published defaults and source selection.
+  A person's `PUT /api/v1/projects/{key}/default-repository` marks no view until the refresher publishes the move.
   No row of a repository is older than its first deploy or PR-checks run, the start of the history the reconcile holds for it, and its lead times begin on the merge day of the first pull request it ships.
 
 - The eval list's stored figures (`eval_range_figures`, `eval_day_figures`, `20261120072042`, `internal/dispatch/evals/figures.go`) are folds of day rows, written beside them, which a read of a range the Evals tab offers looks up by key (Routes below).
@@ -2770,9 +2772,12 @@ The release before this one writes no `production_events` change and never names
 It locks `delivery_changes` and `delivery_changes_pending` alone, for milliseconds, reads no row, and its census answers `0`.
 
 Migration `20261123002037_production_events_changes` puts the row trigger `production_events_changed` on `production_events`, so the day-row refresher rewrites the days of the three failure measures a write moves, and an evals view wakes once those days are rewritten.
+The refresher writes each affected project's failure days and refolds the stored figures of every cut they reach in the same transaction.
+A save of the failure sources or measurement start rewrites that project's failure history and marks the write as a settings rewrite so the Evals page receives the new figures without waiting for the hub's quiet period.
 It records each change in the change log's outbox (`delivery_change_log_pending`, `20261117100001`), which takes no lock, so no writer of the record takes the change log's lock; the writers drain the outbox after they commit (`delivery.DrainAfterCommit`).
 A change carries the project in `repo` and the row's id in `ref`, and in `t_old` and `t_new` the time the row counts on before and after: a deploy's `finished_at`, and a failure's blamed deploy's `finished_at` (`production_events_counts_at`).
 A failure whose `restored_at` moves logs a second change with its `restored_at` before and after, because a restore counts on its own day, and a write that moves nothing logs nothing.
+If a failure loses or replaces its restoring deploy, the trigger also names that deploy's old finish day when the other dates do not cover it.
 Two functions and one trigger on a table the release before this one never writes: it reads and rewrites no row, and its census answers `0`.
 
 Migration `20261123010254_project_delivery_settings` creates each project's delivery settings, where `delivery_settings` (`0079`) holds one row for the whole deployment (`delivery/project_settings.go`; Routes, below).
@@ -2784,6 +2789,7 @@ No column holds a target: each target is the target of the project's eval row.
 It copies the one `delivery_settings` row to the project whose default repository is its `deploy_repo`, with delivery on, no failure source, and one `github_workflow` source that names no repository and holds the row's rule and bookkeeping.
 Its census counts a `delivery_settings` row whose `deploy_repo` is the default repository of no project or of more than one, which the copy cannot place, and refuses the deploy on one, so the person sets that project's default repository first.
 A trigger on each table logs a `settings` change carrying the project key in `repo` (`delivery_change_log`) and notifies `dispatch_delivery_settings` with the project key, for every insert and delete and every update that moves a column other than the bookkeeping, `updated_by` and `updated_at`; every insert and update of a source sends `delivery_freshness`.
+If the effective first measured day moves, the settings change carries `failure-first-day` in `ref`, so the refresher can announce the new `data_since` even if it has no failure day rows to rewrite.
 The release before this one reads `delivery_settings` `where singleton`, writes it `on conflict (singleton)`, and neither reads nor writes the new tables, so `delivery_settings` stays as it is until the release after this one drops it.
 That release reads a `settings` change, and a notification on `dispatch_delivery_settings`, as a cue to read its singleton row again, which this release leaves as it is.
 A save it takes during the roll writes `delivery_settings`, which this release reads only through the kept `/api/v1/settings/delivery` route (Routes, below), so that save is made again on the project's settings tab.

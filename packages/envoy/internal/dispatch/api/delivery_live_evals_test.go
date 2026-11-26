@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1591,6 +1592,141 @@ func TestASettingsChangeAndItsRewriteSendTheEvalsPageOneDeltaAtOnce(t *testing.T
 				deliveryCauseSettingsRewrite, dayRowEvals)
 		})
 	}
+	t.Run("a save of the failure fields with failures on", func(t *testing.T) {
+		page := newRefreshedEvalsPage(t, nil, nil)
+		ctx, pool := t.Context(), page.rig.database.Pool
+		project := page.fixture.Project
+		today := measures.Midnight(page.now)
+		since := today.AddDate(0, 0, -2)
+		rule, read := seededDeliveryRules(t, pool).For(page.fixture.DeployRepo)
+		if !read {
+			t.Fatalf("no deploy source reads %s", page.fixture.DeployRepo)
+		}
+		saveFailures := func(sources []string, measuredSince time.Time) {
+			t.Helper()
+			saveProjectDelivery(t, pool, delivery.ProjectSettingsInput{
+				Project: project, Delivery: true,
+				Sources: []delivery.SourceInput{{
+					Kind: delivery.SourceKindGitHubWorkflow, Repo: new(page.fixture.DeployRepo),
+					DeployWorkflowPath: new(rule.DeployWorkflowPath), ProductionJobNames: rule.ProductionJobNames,
+					ProductionApplyStepName: rule.ProductionApplyStepName, StagingE2EJobName: rule.StagingE2EJobName,
+					StagingApplyJobName: rule.StagingApplyJobName, PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath),
+					PRChecksRollupJobName: rule.PRChecksRollupJobName,
+				}},
+				PopulationAuthors: rule.PopulationAuthors, ExcludedRepos: rule.ExcludedRepos,
+				FailureSources: sources, FailuresMeasuredSince: &measuredSince,
+			})
+		}
+		// Turn failures on, seed a deploy with a posted failure, and settle before the measured save.
+		saveFailures([]string{delivery.FailureSourceCheckResults}, since)
+		finished := since.Add(10 * time.Hour)
+		deploy := writeProductionEvent(t, pool, prodevents.Event{
+			ProjectKey: project, Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded,
+			Source: prodevents.SourceGitHub, SourceRef: prodevents.GitHubSourceRef(9001),
+			StartedAt: new(finished.Add(-10 * time.Minute)), FinishedAt: &finished,
+			Repo: page.fixture.DeployRepo, PullRequests: []string{},
+		})
+		writeProductionEvent(t, pool, prodevents.Event{
+			ProjectKey: project, Kind: prodevents.KindFailure, Source: prodevents.SourceAPI, SourceRef: "post:9001",
+			DeployID: new(deploy.ID), Signal: new(prodevents.SignalAPI), DetectedAt: new(finished.Add(time.Hour)),
+		})
+		page.refresh(t)
+		page.rig.quiesce(t, page.frame)
+		page.take(t)
+		page.requireAtRoute(t, "before saving the failure fields")
+
+		// Save the failure fields (turn on events and move failures_measured_since back 25 days):
+		// the settings save marks no evals view on its own.
+		beforeMark := page.rig.mark()
+		saveFailures([]string{delivery.FailureSourceCheckResults, delivery.FailureSourceEvents}, today.AddDate(0, 0, -27))
+		page.rig.hub.catchUpNow()
+		page.rig.clock.Advance(viewMaxWait)
+		page.rig.requireNothingSent(t, page.conn, "a failure-fields settings save before the refresher rewrites the failure rows")
+		if n := page.rig.count(beforeMark, recomputeBegin("")); n != 0 {
+			t.Fatalf("the failure-fields save began %d recomputes before the refresher ran, want 0", n)
+		}
+
+		// The refresher rewrites the project's failure rows in one transaction marked as a settings
+		// rewrite, so on a still clock the hub recomputes at once and sends one delta landing on GET.
+		beforeSeq := latestChange(t, page.rig.database)
+		mark := page.rig.mark()
+		page.refresh(t)
+		changes, err := delivery.ChangesSince(ctx, pool, beforeSeq, 200)
+		if err != nil {
+			t.Fatalf("read changes after failure-fields rewrite: %v", err)
+		}
+		failureIDs := []string{
+			evals.EvalID(project, evals.SlugChangeFailRate),
+			evals.EvalID(project, evals.SlugDeploymentReworkRate),
+			evals.EvalID(project, evals.SlugFailedDeployRecovery),
+		}
+		var logged []string
+		for _, change := range changes {
+			if change.Kind == delivery.ChangeKindEvalDays && slices.Contains(failureIDs, change.Ref) {
+				if change.RunKind != delivery.EvalDaysWrittenBySettingsRewrite {
+					t.Fatalf("the failure-fields rewrite logged %s with run_kind %q, want %q",
+						change.Ref, change.RunKind, delivery.EvalDaysWrittenBySettingsRewrite)
+				}
+				logged = append(logged, change.Ref)
+			}
+		}
+		slices.Sort(logged)
+		if !slices.Equal(logged, failureIDs) {
+			t.Fatalf("the failure-fields rewrite logged %v, want %v", logged, failureIDs)
+		}
+		page.rig.hub.catchUpNow()
+		delta := page.conn.delta(t, "e")
+		page.held = applyLiveDelta(t, evalsView, page.held, delta)
+		page.requireAtRoute(t, "after the failure-fields rewrite")
+		page.rig.clock.Advance(viewMaxWait)
+		page.rig.requireNothingSent(t, page.conn, "the failure-fields rewrite's one delta, past every quiet")
+		begun, rewrites := page.rig.count(mark, recomputeBegin("")), page.rig.count(mark, recomputeBegin(deliveryCauseSettingsRewrite))
+		if begun != 1 || rewrites != 1 {
+			t.Fatalf("the failure-fields rewrite began %d recomputes, %d of them %s, want 1 and 1",
+				begun, rewrites, deliveryCauseSettingsRewrite)
+		}
+
+		// Once the first day is in the future there are no day rows. Moving that future date
+		// still changes data_since and should send the same three evals at once.
+		sources := []string{delivery.FailureSourceCheckResults, delivery.FailureSourceEvents}
+		tomorrow := today.AddDate(0, 0, 1)
+		saveFailures(sources, tomorrow)
+		page.refresh(t)
+		page.rig.quiesce(t, page.frame)
+		page.take(t)
+		page.requireAtRoute(t, "with the first measured day tomorrow")
+		var remaining int
+		if err := pool.QueryRow(ctx, `select count(*) from eval_days where project_key = $1 and eval_id = any($2)`,
+			project, failureIDs).Scan(&remaining); err != nil || remaining != 0 {
+			t.Fatalf("with a future first day there are %d failure day rows (%v), want none", remaining, err)
+		}
+
+		saveFailures(sources, tomorrow.AddDate(0, 0, 1))
+		beforeSeq, mark = latestChange(t, page.rig.database), page.rig.mark()
+		page.refresh(t)
+		changes, err = delivery.ChangesSince(ctx, pool, beforeSeq, 200)
+		if err != nil {
+			t.Fatalf("read the changes after moving the future first day: %v", err)
+		}
+		if !slices.ContainsFunc(changes, func(change delivery.Change) bool {
+			return change.Kind == delivery.ChangeKindEvalDays && change.Repo == project &&
+				change.RunKind == delivery.EvalDaysWrittenBySettingsRewrite
+		}) {
+			t.Fatal("moving the future first day logged no project settings rewrite without day rows")
+		}
+		page.rig.hub.catchUpNow()
+		delta = page.conn.delta(t, "e")
+		if got := slices.Sorted(slices.Values(liveUpsertIDs(t, delta, "items"))); !slices.Equal(got, failureIDs) {
+			t.Fatalf("moving the future first day sent %v, want %v", got, failureIDs)
+		}
+		page.held = applyLiveDelta(t, evalsView, page.held, delta)
+		page.requireAtRoute(t, "after moving the future first day")
+		page.rig.clock.Advance(viewMaxWait)
+		page.rig.requireNothingSent(t, page.conn, "the future first day's one delta")
+		if begun := page.rig.count(mark, recomputeBegin("")); begun != 1 {
+			t.Fatalf("moving the future first day began %d recomputes, want one", begun)
+		}
+	})
 }
 
 // TestADayWriteAfterASettingsChangeThatMovedNoDayRowWaitsItsQuiet: a settings change marks no evals

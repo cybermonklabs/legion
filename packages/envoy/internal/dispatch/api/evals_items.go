@@ -830,7 +830,7 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 // deploy of one of them, the rows of those repositories' day rows.
 func (s *server) failureItemsOf(ctx context.Context, read evalItemsRead) ([]evals.FailureItem, error) {
 	if !read.once.failuresRead {
-		record, err := evals.FailureRecordIn(ctx, read.tx, read.project, read.entry.Definition.Slug)
+		record, err := evals.FailureRecordIn(ctx, read.tx, s.deps.Attributor, read.project, read.entry.Definition.Slug)
 		if err != nil {
 			return nil, err
 		}

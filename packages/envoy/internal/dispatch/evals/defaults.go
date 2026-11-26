@@ -254,7 +254,7 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 	if err != nil {
 		return movePublished{}, err
 	}
-	published := movePublished{projects: len(moved), cuts: len(marks)}
+	published := movePublished{moved: moved, cuts: len(marks)}
 	for _, evals := range marks {
 		published.evals += len(evals)
 	}
@@ -271,18 +271,19 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 }
 
 // movePublished is what the commit of a move of the default repositories did (publishDefaults):
-// how many projects it moved, how many cuts it marked stale and how many evals the marks name in
+// the projects it moved, how many cuts it marked stale and how many evals the marks name in
 // all, and what its fold of their first paints did.
 type movePublished struct {
-	projects, cuts, evals int
-	paints                markedPaints
+	moved       []string
+	cuts, evals int
+	paints      markedPaints
 }
 
 // log logs the commit of a move, whose transaction began at began and committed at committed, as a
 // batch of a stale cut's refold logs: beside the counts, how long the first-paint folds took and
 // how long the transaction took.
 func (p movePublished) log(began, committed time.Time) {
-	slog.Info("dispatch: the eval day-row refresher published a move of the default repositories", "projects", p.projects, "cuts_marked", p.cuts,
+	slog.Info("dispatch: the eval day-row refresher published a move of the default repositories", "projects", len(p.moved), "cuts_marked", p.cuts,
 		"evals", p.evals, "first_paints", p.paints.folded, "first_paint_ms", p.paints.took.Milliseconds(),
 		"transaction_ms", committed.Sub(began).Milliseconds())
 }

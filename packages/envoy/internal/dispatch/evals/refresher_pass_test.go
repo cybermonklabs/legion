@@ -691,6 +691,7 @@ func TestAPostedDeployCountsInItsRoutesProjectsDeployFrequencyAlone(t *testing.T
 		EvalID("OMEGA", SlugMergeToProduction), EventsRepo("OMEGA")); n != 0 {
 		t.Errorf("a post naming no pull request times %d merge-to-production rows, want none", n)
 	}
+	expectTruth(t, "after the posted deploys", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestAPostedDeployTimesThePullRequestsItShipsFirst: OMEGA's post at 11:00 names acme/omega-app#7,
@@ -740,6 +741,7 @@ func TestAPostedDeployTimesThePullRequestsItShipsFirst(t *testing.T) {
 		EventsRepo("OMEGA"), PullRequestMember(omegaApp, 7)); n != 0 {
 		t.Errorf("OMEGA's events repository counts #7, which a GitHub deploy shipped first, %d times, want none", n)
 	}
+	expectTruth(t, "after the posted deploy timing pull requests", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestAPostedDeployWrittenAfterItsDayWasBuiltRewritesThatDay: once the history has settled with
@@ -749,6 +751,7 @@ func TestAPostedDeployTimesThePullRequestsItShipsFirst(t *testing.T) {
 func TestAPostedDeployWrittenAfterItsDayWasBuiltRewritesThatDay(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedSources(t)
+	r.putFailures(t, "OMEGA", omegaJob, []string{delivery.FailureSourceEvents}, sourcesDay, eventsSource)
 	r.post(t, "OMEGA", "release-1", sourcesDay.Add(15*time.Hour))
 	r.settle(t)
 	if got := r.deploysOn(t, "OMEGA", refresherToday); got.n != 0 {
@@ -762,4 +765,9 @@ func TestAPostedDeployWrittenAfterItsDayWasBuiltRewritesThatDay(t *testing.T) {
 	if got := r.deploysOn(t, "OMEGA", refresherToday); got.n != 1 {
 		t.Errorf("OMEGA counts %d deploys today after the post, want 1", got.n)
 	}
+	window := Range{From: refresherToday, To: refresherToday.AddDate(0, 0, 1)}
+	wantFigures(t, "after the late posted deploy", r.failureValues(t, "OMEGA", window), map[string]*float64{
+		"change-fail-rate.total": new(1.0), "deployment-rework-rate.total": new(1.0),
+	})
+	expectTruth(t, "after the late posted deploy", r.storedFigures(t), r.truthFigures(t))
 }

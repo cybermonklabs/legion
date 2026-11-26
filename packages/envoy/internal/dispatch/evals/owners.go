@@ -141,7 +141,8 @@ func readOwners(ctx context.Context, q delivery.Querier) ([]string, error) {
 // eval_project_owners before the flip writes them, so a key whose first rows it stages is read by
 // the projects its readers are. A source key (sourceKey) is recorded with its one list, '{>~}',
 // which eval_project_owners reads it by. A key whose staged rows the rebuild abandons stands with
-// no row, as one whose rows all went.
+// no row, as one whose rows all went. Failure writes also register keys to make their readers'
+// changes visible to a later publication, even if the delivery walk has not reached a key yet.
 func recordOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
 	type owner struct{ key, repo, sharers, lists string }
 	var owners []owner
@@ -166,7 +167,7 @@ func recordOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
 			order by given.owner collate "C"
 			on conflict do nothing
 		`, owned, repos, sharers, lists); err != nil {
-			return fmt.Errorf("record %d owner keys a rebuild stages rows of: %w", len(owners), err)
+			return fmt.Errorf("record %d eval owner keys: %w", len(chunk), err)
 		}
 	}
 	return nil
@@ -181,22 +182,85 @@ func recordOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
 // none.
 func readersOf(ctx context.Context, q delivery.Querier, owners []string) (map[string][]string, error) {
 	readers := map[string][]string{}
+	err := readOwnerReaders(ctx, q, owners, func(owner string, reader counted) {
+		readers[owner] = append(readers[owner], reader.project)
+	})
+	return readers, err
+}
+
+// ownerReadersIn is readersOf with the via_repository decision for each reader.
+func ownerReadersIn(ctx context.Context, q delivery.Querier, owners []string) (map[string][]counted, error) {
+	readers := map[string][]counted{}
+	err := readOwnerReaders(ctx, q, owners, func(owner string, reader counted) {
+		readers[owner] = append(readers[owner], reader)
+	})
+	return readers, err
+}
+
+// readOwnerReaders visits each reader the published owner view gives to the supplied keys.
+func readOwnerReaders(ctx context.Context, q delivery.Querier, owners []string, visit func(string, counted)) error {
 	for chunk := range statementChunks(owners, paramBytes(1), textBytes) {
 		rows, err := q.Query(ctx, `
-			select owner, project_key from eval_project_owners where owner = any($1) order by project_key collate "C"
+			select owner, project_key, via from eval_project_owners where owner = any($1) order by project_key collate "C"
 		`, chunk)
 		if err != nil {
-			return nil, fmt.Errorf("read the projects that read %d owner keys: %w", len(owners), err)
+			return fmt.Errorf("read the projects that read %d owner keys: %w", len(chunk), err)
 		}
-		var owner, project string
-		if _, err := pgx.ForEachRow(rows, []any{&owner, &project}, func() error {
-			readers[owner] = append(readers[owner], project)
+		var owner string
+		var reader counted
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &reader.project, &reader.via}, func() error {
+			visit(owner, reader)
 			return nil
 		}); err != nil {
-			return nil, fmt.Errorf("read the projects that read %d owner keys: %w", len(owners), err)
+			return fmt.Errorf("read the projects that read %d owner keys: %w", len(chunk), err)
 		}
 	}
-	return readers, nil
+	return nil
+}
+
+// readUnrecordedOwners adds readers of keys the production record names before delivery has
+// registered them. It uses the same published inputs as the owner view: eval_owner_readers for
+// attribution lists (a plain key is one empty pick) and eval_days_rules for the source key.
+// It returns the missing keys, including keys with no current reader.
+func readUnrecordedOwners(ctx context.Context, q delivery.Querier, owners []string, readers map[string][]counted) ([]string, error) {
+	var missing []string
+	for chunk := range statementChunks(owners, paramBytes(1), textBytes) {
+		rows, err := q.Query(ctx, `
+			with missing as materialized (
+				select given.owner, split_part(given.owner, '|', 1) as repo_key,
+					string_to_array(split_part(given.owner, '|', 2), ',') as sharers,
+					coalesce(string_to_array(nullif(split_part(given.owner, '|', 3), ''), ';'), array['>']) as lists
+				from unnest($1::text[]) as given(owner)
+				where not exists (select 1 from eval_day_owners o where o.owner = given.owner)
+			)
+			select owner, null::text, false from missing
+			union all
+			select m.owner, r.project_key, r.via from missing m
+			cross join lateral eval_owner_readers(substr(m.repo_key, 2), m.sharers, m.lists) r
+			where m.lists <> '{>~}'
+			union all
+			select m.owner, p.key, true from missing m
+			join eval_days_rules rule on lower(rule.repo) = lower(substr(m.repo_key, 2))
+			join projects p on p.key = rule.project_key
+			where m.lists = '{>~}'`, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read unrecorded owner keys of the production record: %w", err)
+		}
+		var owner string
+		var project *string
+		var via bool
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &project, &via}, func() error {
+			if project == nil {
+				missing = append(missing, owner)
+			} else {
+				readers[owner] = append(readers[owner], counted{project: *project, via: via})
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read unrecorded owner keys of the production record: %w", err)
+		}
+	}
+	return missing, nil
 }
 
 // PublishedDefaultIn is the repository project publishes as its default, read in q

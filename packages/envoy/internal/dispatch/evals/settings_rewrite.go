@@ -402,6 +402,7 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 			w.rebuild = rebuildSettings
 		}
 		for key, rule := range r.rules {
+			w.failureSelection = append(w.failureSelection, rule.Project)
 			r.builtUnder[key] = builtRule{rule: rule}
 		}
 		w.record, w.settingsApplied = true, w.settings
@@ -415,6 +416,7 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 		next := r.rules[key]
 		recorded, held := r.builtUnder[key]
 		if !held {
+			w.failureSelection = append(w.failureSelection, next.Project)
 			r.builtUnder[key], w.record, w.settingsApplied = builtRule{rule: next}, true, true
 			continue
 		}
@@ -425,7 +427,10 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 		r.builtUnder[key] = builtRule{rule: next, since: recorded.since}
 		// Another project reading the repository moves the selection, which a read of either
 		// project's evals answers.
-		w.settingsApplied = w.settingsApplied || recorded.rule.Project != next.Project
+		if recorded.rule.Project != next.Project {
+			w.settingsApplied = true
+			w.failureSelection = append(w.failureSelection, recorded.rule.Project, next.Project)
+		}
 		at := slices.IndexFunc(kept, func(repo keptRepo) bool { return ruleKey(repo.name) == key && repo.deploys })
 		slugs, families := settingsMoves(recorded.rule, next)
 		if len(slugs) == 0 || at < 0 {
@@ -438,6 +443,7 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 	}
 	for key, one := range r.builtUnder {
 		if _, current := r.rules[key]; !current && one.rule.Project != "" {
+			w.failureSelection = append(w.failureSelection, one.rule.Project)
 			one.rule.Project = ""
 			r.builtUnder[key] = one
 			w.record, w.settingsApplied = true, true
@@ -1268,6 +1274,22 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
+// failureFirstDaySettingsRef marks a settings change of the effective first day of the failure
+// evals (project_delivery_settings_changed). It may change data_since with no day rows.
+const failureFirstDaySettingsRef = "failure-first-day"
+
+// markFailureFirstDayMoved announces a project's new first day if the rewrite did not already
+// log a day-row change for it. In either case the hub receives one settings rewrite.
+func markFailureFirstDayMoved(ctx context.Context, tx pgx.Tx, project string) error {
+	if _, err := tx.Exec(ctx, `
+		select delivery_change_log_pending($1, $2, $3, null, null, null)
+		where coalesce(nullif(current_setting('dispatch.eval_days_pending', true), ''), '{}') = '{}'`,
+		delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenBySettingsRewrite, project); err != nil {
+		return fmt.Errorf("log the change to %s's first failure day: %w", project, err)
+	}
+	return nil
+}
+
 // rewriteTimes is how long each part of one rewrite of a delivery settings change took
 // (rewriteSettings), read off a stopwatch it starts as it begins, so every moment of the rewrite
 // falls in exactly one part, in the order it runs them, and how long some reads within a part
@@ -1372,8 +1394,9 @@ const rewriteCountsStatement = `
 		(select count(*) from jsonb_object_keys(coalesce(nullif(current_setting('dispatch.eval_days_pending', true), ''), '{}')::jsonb))
 `
 
-// MarkSettingsRewrite marks tx as the refresher's rewrite of a delivery settings change, before its
-// first write of a day row: it sets the transaction-local setting dispatch.eval_days_cause to
+// MarkSettingsRewrite marks tx as the refresher's rewrite of a delivery settings change, including
+// a rewrite of a project's failure rows, before its first write of a day row. It sets the
+// transaction-local setting dispatch.eval_days_cause to
 // delivery.EvalDaysWrittenBySettingsRewrite, which eval_days_change_log records as the run_kind of
 // each eval_days change the transaction logs (migration 20261117100014). The Delivery page's live
 // hub recomputes an evals view at once for those changes, as for a rebuild's and a publishing of

@@ -754,8 +754,7 @@ func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*d
 // counts there too. Its rows are the repository's whichever project's source reads it, so a source
 // moved away and back, or to another project, rewrites none of them. A day's deploys are read of a
 // repository the refresher keeps alone (refresh.keptRepos), one that a source reads or read. This
-// is the one rule the delivery evals and their items read a deploy's projects by, and the failure
-// measures (failure_days.go) one that ships a pull request.
+// is the one rule the delivery evals and the failure measures read a GitHub deploy's projects by.
 func (a attribution) deployProjects(repo string, shipped []*delivery.DeliveryPullRequest) []counted {
 	if len(shipped) == 0 {
 		return []counted{{project: sourceKey(repo), via: true}}
@@ -827,11 +826,24 @@ func (a attribution) pushRuns(runs []delivery.DeliveryRun, deploys []dayDeploy) 
 // statementBytes (statementChunks): a span's and a settings rewrite's pull requests are every one
 // the history holds, which grow with it.
 func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullRequest, checks []delivery.DeliveryRun) (attribution, error) {
-	pool := s.database.Pool
+	var pulls []delivery.PullRequestKey
+	for _, run := range checks {
+		if run.PRNumber != nil {
+			pulls = append(pulls, delivery.PullRequestKey{Repo: run.Repo, Number: *run.PRNumber})
+		}
+	}
+	return readAttributionIn(ctx, s.database.Pool, s.attributor, prs, pulls, store.ReadSideBySide)
+}
+
+// readAttributionIn also accepts pull requests known only by key (PR-checks runs and GitHub
+// deploys in the production record). A snapshot uses sequential reads on its one connection.
+func readAttributionIn(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor,
+	prs []delivery.DeliveryPullRequest, referenced []delivery.PullRequestKey,
+	readAll func(context.Context, ...func(context.Context) error) error) (attribution, error) {
 	var resolve []delivery.PullRequestKey
 	var keys []string
 	keyed := map[string][]string{}
-	// checked is a PR-checks run's pull request: its row key, its repository and its number.
+	// checked is a referenced pull request whose row may not hold attribution inputs yet.
 	type checked struct {
 		member, repo string
 		number       int32
@@ -854,17 +866,14 @@ func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullR
 			keyed[*pr.IssueKey] = append(keyed[*pr.IssueKey], member)
 		}
 	}
-	for _, run := range checks {
-		if run.PRNumber == nil {
-			continue
-		}
-		member := PullRequestMember(run.Repo, *run.PRNumber)
+	for _, pull := range referenced {
+		member := PullRequestMember(pull.Repo, pull.Number)
 		if named[member] {
 			continue
 		}
 		named[member] = true
-		resolve = append(resolve, delivery.PullRequestKey{Repo: run.Repo, Number: *run.PRNumber})
-		pulls = append(pulls, checked{member: member, repo: run.Repo, number: int32(*run.PRNumber)})
+		resolve = append(resolve, pull)
+		pulls = append(pulls, checked{member: member, repo: pull.Repo, number: int32(pull.Number)})
 	}
 	resolved := map[delivery.PullRequestKey][]delivery.ResolvedCandidate{}
 	issueProjects, checkProjects := map[string]string{}, map[string]string{}
@@ -873,7 +882,7 @@ func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullR
 		reads = append(reads, func(ctx context.Context) error {
 			size := func(pull *delivery.PullRequestKey) int { return 4 + len(pull.Repo) + 4 + 4 }
 			for chunk := range statementChunks(resolve, paramBytes(2), size) {
-				found, err := s.attributor.ResolvedCandidates(ctx, pool, chunk)
+				found, err := attributor.ResolvedCandidates(ctx, q, chunk)
 				if err != nil {
 					return err
 				}
@@ -885,7 +894,7 @@ func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullR
 	if len(keys) > 0 {
 		reads = append(reads, func(ctx context.Context) error {
 			for chunk := range statementChunks(keys, paramBytes(1), textBytes) {
-				rows, err := pool.Query(ctx, `select key, project_key from issues where key = any($1)`, chunk)
+				rows, err := q.Query(ctx, `select key, project_key from issues where key = any($1)`, chunk)
 				if err != nil {
 					return fmt.Errorf("read the projects of the pull requests' issues: %w", err)
 				}
@@ -908,7 +917,7 @@ func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullR
 				for i, pull := range chunk {
 					members[i], repos[i], numbers[i] = pull.member, pull.repo, pull.number
 				}
-				rows, err := pool.Query(ctx, `
+				rows, err := q.Query(ctx, `
 					select given.member, issue.project_key
 					from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
 					join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
@@ -916,20 +925,20 @@ func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullR
 					where request.attribution_title_keys is null
 				`, members, repos, numbers)
 				if err != nil {
-					return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(pulls), err)
+					return fmt.Errorf("read the issues of %d referenced pull requests: %w", len(pulls), err)
 				}
 				var member, project string
 				if _, err := pgx.ForEachRow(rows, []any{&member, &project}, func() error {
 					checkProjects[member] = project
 					return nil
 				}); err != nil {
-					return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(pulls), err)
+					return fmt.Errorf("read the issues of %d referenced pull requests: %w", len(pulls), err)
 				}
 			}
 			return nil
 		})
 	}
-	if err := store.ReadSideBySide(ctx, reads...); err != nil {
+	if err := readAll(ctx, reads...); err != nil {
 		return attribution{}, err
 	}
 	attribute := attribution{lists: make(map[string]attributionList, len(named))}
@@ -945,53 +954,6 @@ func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullR
 		attribute.lists[PullRequestMember(pull.Repo, pull.Number)] = attributionListOf(candidates)
 	}
 	return attribute, nil
-}
-
-// pullRequestSet is pull requests, each once, by their row key (PullRequestMember), in the order
-// they were added: what readPullRequestIssues reads the issues of.
-type pullRequestSet struct {
-	members, repos []string
-	numbers        []int32
-	named          map[string]bool
-}
-
-// add adds pull request number of repo, where the set does not hold it yet.
-func (s *pullRequestSet) add(repo string, number int) {
-	member := PullRequestMember(repo, number)
-	if s.named[member] {
-		return
-	}
-	if s.named == nil {
-		s.named = map[string]bool{}
-	}
-	s.named[member] = true
-	s.members, s.repos, s.numbers = append(s.members, member), append(s.repos, repo), append(s.numbers, int32(number))
-}
-
-// readPullRequestIssues reads, in q, the issue the stored row of each pull request of prs names, by
-// its row key (pulls), and that issue's project, by issue key (projects), where the population
-// holds a row of the pull request naming an issue the issues table holds: one statement, a probe
-// of delivery_pull_requests' key for each pull request. whose says whose pull requests they are, in
-// an error.
-func readPullRequestIssues(ctx context.Context, q delivery.Querier, prs pullRequestSet, whose string) (pulls, projects map[string]string, err error) {
-	rows, err := q.Query(ctx, `
-		select given.member, request.issue_key, issue.project_key
-		from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
-		join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
-		join issues issue on issue.key = request.issue_key
-	`, prs.members, prs.repos, prs.numbers)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the issues of the %d pull requests %s: %w", len(prs.members), whose, err)
-	}
-	pulls, projects = map[string]string{}, map[string]string{}
-	var member, issue, project string
-	if _, err := pgx.ForEachRow(rows, []any{&member, &issue, &project}, func() error {
-		pulls[member], projects[issue] = issue, project
-		return nil
-	}); err != nil {
-		return nil, nil, fmt.Errorf("read the issues of the %d pull requests %s: %w", len(prs.members), whose, err)
-	}
-	return pulls, projects, nil
 }
 
 // countedFor is every project the day counts the item member for (a pull request, a deploy run or

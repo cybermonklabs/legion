@@ -720,8 +720,8 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
 // page last read the change log to its end (page), which the lost-cursor rule reads and which a
 // full page leaves where it stood. Once the transaction commits, the pass records what the spans
-// wrote (committed), and moves a batch of the change log's outbox into the log where the commit
-// logged a change.
+// wrote (committed) and the projects whose failure rows the published selection moves. The page
+// drains publishing changes after its failure writes (page), not here.
 func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork, spans []*spanWrite) error {
 	var rebuildWalks []walkKey
 	if work.rebuild != "" {
@@ -801,11 +801,11 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	logSpans(spans, committed.Sub(began))
 	if published != nil {
 		published.log(began, committed)
+		work.failureSelection = append(work.failureSelection, published.moved...)
 	}
-	// The commit logged a change where it recorded the rules (recordRules logs that they are
-	// recorded where one moved, which the delivery views are recomputed for), applied them, wrote a
-	// span or published a default: the log's outbox is moved into the log now, not at the next pass.
-	if work.record || work.settingsApplied || len(spans) > 0 || work.defaults != nil {
+	// A publishing page drains after the failure writes it owes. Otherwise the spans' changes
+	// are ready now.
+	if (len(spans) > 0 || work.settingsApplied) && !work.record && work.defaults == nil {
 		r.store.drainChanges(ctx)
 	}
 	return nil
