@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -431,13 +432,10 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
 	// namespace (there a connection that never answers, here one refused). The listener starts and
 	// serves, but answers Dispatch's token for that issuer 503, not the 400 that says it took the
-	// mark: the copy's fault before the fix, a token whose issuer the listener cannot read.
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unreachable := "http://" + closed.Addr().String()
-	_ = closed.Close()
+	// mark: the copy's fault before the fix, a token whose issuer the listener cannot read. The
+	// port is one the test holds and nothing listens on: a closed listener's port is any process's
+	// to take, and an issuer that takes it is reached.
+	unreachable := "http://" + testport.Refused(t)
 	strandedIssuer := unreachable
 	stranded, strandedPort := startCopysListener(t, binary, strandedIssuer, testDispatchSubject)
 	strandedBase := "http://127.0.0.1:" + strconv.Itoa(strandedPort)

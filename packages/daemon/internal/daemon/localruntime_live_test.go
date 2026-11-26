@@ -62,10 +62,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
 // localStopGrace is how long a stop waits for a child to end after the shutdown frame and then
@@ -153,6 +157,25 @@ func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) 
 	}
 	t.Cleanup(r.killEverything)
 	return r
+}
+
+// daemonOverrides is the daemon a proof boots over this runtime, and the one place that wiring is
+// written. Its runtime factory hands the daemon's worker stream to this runtime and answers rt,
+// which is this runtime or a proof's wrapper around it (sessionsRuntime). The API listener is the
+// one the fixture holds (heldListen). The scripts of the panes' launcher directory exec this
+// runtime's legion (paneLegion). Without it the boot writes its own executable there, this test
+// binary. A pane's `jj`, where the boot writes one, then runs the package's tests. A proof adds
+// what else its daemon needs to the overrides this answers.
+func (r *localRuntime) daemonOverrides(rt runtime.Runtime) overrides {
+	return overrides{
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
+			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+			r.conns, r.stream = listener, address
+			return rt, nil
+		},
+		listen:     heldListen,
+		paneLegion: r.legion,
+	}
 }
 
 // localHoldDetail is what this runtime answers a read of a claim a step holds: a detail of its
