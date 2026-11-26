@@ -81,7 +81,7 @@ export async function startFakeMod(
     readonly exited?: Promise<unknown>
     /** What the server has written so far, which the probe names once the server has exited. */
     readonly wrote?: () => string
-    /** Aborted once the caller's row has ended, at its limit included: the probe for the socket
+    /** Aborted once the caller's row has ended, at its guard included: the probe for the socket
      *  stops, naming that, and so does the polling after it, as `stop` stops it. A caller that
      *  holds the server process passes `exited`; one that does not passes this, and one may pass
      *  both. With neither, the probe runs until the socket answers or the row's deadline passes. */

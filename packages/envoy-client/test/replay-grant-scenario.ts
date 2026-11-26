@@ -1,6 +1,6 @@
 import { expect } from "bun:test";
 import { agentStreamControlSubject } from "@legion/contracts";
-import { settled, until } from "@legion/test-fixtures/wait";
+import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
 import { createInbox, type NatsConnection } from "nats";
 import { type NatsServer, sessionReplySubject } from "./nats-server";
 
@@ -131,7 +131,7 @@ export async function runReplayGrantScenario(scenario: ReplayGrantScenario): Pro
       // Asked again on each read of the log, as the other steps ask, so one lost ask does not
       // fail the row.
       requester.publish(agentStreamControlSubject(sessionID), REPLAY_ASK, { reply: before });
-      return refused(await server.log());
+      return refused(await server.log(performance.now() + timeLeft()));
     });
     await requester.flush();
     expect(arrived).toEqual([]);

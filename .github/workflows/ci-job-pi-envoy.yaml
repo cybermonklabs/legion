@@ -27,10 +27,8 @@ jobs:
     # --timeout (package.json) rather than as a job this limit cancels: over the job's 42 green
     # merge-group runs from 2026-11-20T01:35Z to 2026-11-21T08:58Z, its other steps at their
     # longest, 94 s, 5 s of its clock over its steps, and its test step's longest, 406 s
-    # (run 44807153227), plus that one guard, now 390 s, the room this sum leaves one hang: 895 s,
-    # under the 15 minutes. The guard was 250 s, which left the test step room to grow as it did
-    # from 285 s on 2026-11-18 to 406 s; the room is now the guard's, so a slower test step lowers
-    # the guard rather than the other way round.
+    # (run 44807153227), plus that one guard, 390 s, the room this sum leaves one hang: 895 s,
+    # under the 15 minutes. A slower test step lowers the guard.
     timeout-minutes: 15
     env:
       JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)

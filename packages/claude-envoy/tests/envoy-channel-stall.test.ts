@@ -349,7 +349,7 @@ describe.skipIf(!envoyStackEnabled)(
         )
         const signalledAt = Date.now()
         server.kill("SIGTERM")
-        // No timer bounds the exit: a server that never exits fails the wait at the row's
+        // The exit has no bound of its own: a server that never exits fails the wait at the row's
         // deadline, naming the exit. The row's `finally` then stops the host, whose release sends
         // the server SIGTERM again. This server handles SIGTERM once (`process.once` in
         // `../src/envoy-channel-server.ts`), so that second signal ends it, and the release sends

@@ -41,7 +41,7 @@ test("a relay socket session takes its relay subject on the socket and no agent 
     const tokenFile = join(home, "token");
     writeFileSync(tokenFile, `${fixtureSecret("proj")}\n`);
     // Whole milliseconds: `Bun.spawn` takes an integer `timeout`.
-    const timeoutMs = Math.floor(timeLeft());
+    const timeoutMs = Math.max(1, Math.floor(timeLeft()));
     const report = await runRelaySession({
       session: SESSION,
       cwd: import.meta.dir,
@@ -101,7 +101,7 @@ test("a relay subject the listener refuses is told naming why", async () => {
     const tokenFile = join(home, "token");
     writeFileSync(tokenFile, `${fixtureSecret("proj")}\n`);
     const refusal = `the listener's relay socket refused the subject ${standInDeliverSubject(SESSION)} (subject_not_granted)`;
-    const timeoutMs = Math.floor(timeLeft());
+    const timeoutMs = Math.max(1, Math.floor(timeLeft()));
     const report = await runRelaySession({
       session: SESSION,
       cwd: import.meta.dir,

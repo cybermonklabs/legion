@@ -158,8 +158,8 @@ export interface ReopenServerOptions {
    *  (the default), or once the server has written its first stderr line: a row that stops the
    *  server while it starts never sees the registration. */
   readonly awaitRegistration?: boolean
-  /** The shared `until` for a row on the command's guard. Older callers retain their per-step
-   *  `waitFor` bounds. */
+  /** The wait for the start's two facts: the shared `until`, for a row on the command's guard;
+   *  left out, `waitFor` at `PROCESS_WAIT_MS` each. */
   readonly waitForStart?: (what: string, probe: () => Promise<boolean>) => Promise<unknown>
   /** Whether the gate in front of the hub starts open (the default), or shut: the server's first
    *  dial is then refused, and dialed again, until the row opens it. */

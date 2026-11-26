@@ -49,22 +49,22 @@ function runToEnd(command: string[], killMs: number, env?: Record<string, string
  * write at the call. `work` is reserved at module scope and made by the hook that reservation
  * registered, so nothing exists to write into until then — and a `bun test -t <pattern>` that
  * selects no row of this file runs no hook of it, where a module body that staged its world
- * would leave every file of it behind. Each is handed the moment, on `performance.now()`'s clock,
- * at which a child it runs is killed.
+ * would leave every file of it behind. A staging that runs a child reads that child's kill time
+ * itself, from `timeLeft()`.
  */
-const stagings: ((killAt: number) => void)[] = [];
+const stagings: (() => void)[] = [];
 
 // The staging drain builds the pushed-code run's repository. Its seven git commands are the
-// only subprocess calls. They share one kill deadline measured from the start of the hook.
+// only subprocess calls. Each is killed `REAP_MARGIN_MS` before the hook's deadline, which
+// `timeLeft()` reads as the command starts.
 beforeAll(() => {
-  const killAt = performance.now() + timeLeft() - REAP_MARGIN_MS;
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
     writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
   }
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
-  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage(killAt);
+  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
 });
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
@@ -298,11 +298,11 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 // Pushed a change to the code under the PR's head before completing. The repository is staged
 // with every other run, in the hook above: `git init` here would make it whether or not a row of
 // this file runs.
-stagings.push((killAt) => {
+stagings.push(() => {
   const git = (...args: string[]) => {
     const result = runToEnd(
       ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
-      killAt - performance.now(),
+      timeLeft() - REAP_MARGIN_MS,
       { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);

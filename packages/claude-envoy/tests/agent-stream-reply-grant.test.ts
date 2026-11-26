@@ -128,11 +128,5 @@ describe.skipIf(LEGION_E2E !== "1")("the replay answer under a session's own NAT
       runner.stop()
       mod.close()
     }
-    // A hang guard: what can hang is a wait of `runReplayGrantScenario` for a replay answer or for
-    // the server's log of the refused publish, neither of which has a deadline of its own. Worst
-    // measured cost: 156.14 ms, in CI's claude-envoy job at 473ab6ae (run 45515356217), and
-    // 156.13 ms at 06d187e7 (run 45437325102). Main's 60_000 is 384.3 times the worst, so it is
-    // kept. The claude-envoy job leaves one hang 228 s: its `timeout-minutes: 10` less its 372 s
-    // in run 45515356217, and 60 s is inside that.
-  }, 60_000)
+  })
 })

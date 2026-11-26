@@ -5716,7 +5716,7 @@ describe("envoy OMP extension", () => {
       stderr: "pipe",
       // Killed at the row's deadline, so a process that never reports fails here, naming it,
       // before the command's guard.
-      timeout: Math.floor(timeLeft()),
+      timeout: Math.max(1, Math.floor(timeLeft())),
     });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(started.stdout).text(),
@@ -13551,7 +13551,7 @@ console.log(JSON.stringify(args));
       },
       // Killed at the row's deadline, so a run that hangs fails here, naming the process, before
       // the command's guard; the children end with it (`runSessionPod`).
-      timeoutMs: Math.floor(timeLeft()),
+      timeoutMs: Math.max(1, Math.floor(timeLeft())),
     });
     const refusal = (session: string) =>
       `envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_parent; this session ${session} claims nothing`;
@@ -18041,6 +18041,7 @@ console.log(JSON.stringify(args));
       // answered into the row below, under the same session id - a third trade on that row's
       // broker, or a second reply presented to it - and this row's cleanup never ran.
       test("signs the accept and the reply as the addressed session when the host leaves as the command ends", async () => {
+        const ownRow = rowCheck();
         const secrets = mkdtempSync(join(tmpdir(), "envoy-shell-broker-"));
         workDirectories.push(secrets);
         // A pod's projected service-account token, which is the identity this machine trades.
@@ -18157,9 +18158,11 @@ console.log(JSON.stringify(args));
           // client the accept traded for (`underWay`), so the pass forgets it only after.
           expect(traded).toEqual(["ses_delivery"]);
         } finally {
-          restore();
-          // A token this process traded is held under its session for the life of the process.
-          forgetBrokerClients();
+          if (ownRow()) {
+            restore();
+            // A token this process traded is held under its session for the life of the process.
+            forgetBrokerClients();
+          }
         }
       });
 
@@ -28025,13 +28028,13 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   beforeAll(async () => {
     const start = startStoppableEnvoyStack({ work: stackDirectory });
     stopStack = start.stop;
-    stack = await start.started;
     // What can hang is the stack's start, which builds natsd and the listener with `go build`
     // and waits for each to serve.
+    stack = await settled("the Envoy stack's start", start.started);
   });
   afterAll(async () => {
-    await stopStack?.();
     // What can hang is the stop of natsd or the listener, which a start cut off makes too.
+    if (stopStack !== undefined) await settled("the Envoy stack's stop", stopStack());
   });
 
   // The session runs on nats.js's real ping and dial timers and a real listener, so each wait

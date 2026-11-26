@@ -2,10 +2,11 @@
  * A wait of a row that starts a child process, which ends on what the child does and fails by name
  * when that never comes, before the row's hang guard does.
  *
- * `ROW_GUARD_MS` (120 s) is the default in the files that still use `beforeTheGuard` or
- * `exitBeforeTheGuard`. It matches #4924's `HANG_GUARD_MS`. The slowest row #4955 measured took
- * 39.7 s with its whole file on one CPU shared by 200 busy loops. The MCP dial row passes its
- * own `ROW_TIMEOUT_MS` to `untilTheGuard` instead.
+ * `ROW_GUARD_MS` (120 s) is the default of the files that set `setDefaultTimeout(ROW_GUARD_MS)`
+ * and the default guard of `untilTheGuard`, `beforeTheGuard` and `exitBeforeTheGuard`. It matches
+ * #4924's `HANG_GUARD_MS`. The slowest row #4955 measured took 39.7 s with its whole file on one
+ * CPU shared by 200 busy loops. The MCP dial row passes its own `ROW_TIMEOUT_MS` to
+ * `untilTheGuard` instead.
  *
  * These waits give up `NAMED_BEFORE_GUARD_MS` before their guard, counted from `rowStarted`.
  * `beforeTheGuard` names the fact it waited for and what the child wrote. Converted rows use

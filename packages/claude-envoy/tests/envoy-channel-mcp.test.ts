@@ -42,7 +42,7 @@ function sessionHome(prefix: string): Promise<string> {
  */
 let rowEnd = new AbortController()
 afterEach(() => {
-  rowEnd.abort()
+  rowEnd.abort(new Error("the row ended"))
   rowEnd = new AbortController()
 })
 

@@ -10,7 +10,7 @@
  * row and hook registered after it, in that file alone. It decides no verdict: it is far above any
  * run seen and under a CI job's limit, so a row that never ends still fails, named by Bun ("this
  * test timed out after 120000ms"). Not for a package whose command sets a measured `--timeout`
- * (pi-envoy's 250 s, pi-legion's 300 s, test-fixtures' 30 s): a file's default wins over the
+ * (pi-envoy's 390 s, pi-legion's 300 s, test-fixtures' 30 s): a file's default wins over the
  * command's, so it would cut that guard.
  */
 export const HANG_GUARD_MS = 120_000;
