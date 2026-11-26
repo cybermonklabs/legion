@@ -56,7 +56,7 @@ Every launch opens with a start message, and Envoy keeps no wake sent while no c
 | A comment that mentions your role and asks for an action on an agent | `skill://legion-controller/references/operations.md#an-action-another-agent-asks-for` |
 | A scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
-| An answer to an ask whether to move a tree to backlog; a deferral ask | `skill://legion-controller/references/backlog-asks.md`; `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` |
+| An answer to an ask whether to move a tree to backlog; a deferral ask | `skill://legion-controller/references/backlog-asks.md`; `skill://legion-controller/references/deferral-asks.md` |
 | Any other wake, a GitHub mention | `skill://legion-controller/references/wakes.md` |
 
 ## Issues handed to Legion

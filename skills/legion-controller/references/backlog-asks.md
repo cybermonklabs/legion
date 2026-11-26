@@ -14,7 +14,7 @@ With no `failure.at`, end the key `generation <n>` (`issues.<ISSUE>.generation`)
 
 ## Ask
 
-1. Find your earlier ask for this key. The command lists each of your comments that begins `Asked whether to `, except a deferral ask's (`skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers`), so it also finds an ask an earlier release worded otherwise:
+1. Find your earlier ask for this key. The command lists each of your comments that begins `Asked whether to `, except a deferral ask's (`skill://legion-controller/references/deferral-asks.md`), so it also finds an ask an earlier release worded otherwise:
 
    ```text
    notes=$(dispatch api --path '/api/v1/issues/<root>/comments') || { printf 'Dispatch read failed: %s\n' "$notes" >&2; exit 1; }

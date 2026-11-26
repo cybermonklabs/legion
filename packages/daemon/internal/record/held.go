@@ -104,7 +104,7 @@ const (
 // body, and this list must follow that body's cases exactly, since a reorder here moves the
 // words that test requires of the table; a word added there is added here, to
 // `LEGION_HELD_REASONS` in `packages/contracts/src/legion-api.ts`, and as a row of the table in
-// `skills/legion-controller/references/admission.md`.
+// `skills/legion-controller/references/admission-held.md`.
 var HeldReasons = []HeldReason{
 	HeldTreeClosed,
 	HeldTreeInBacklogOrIcebox,

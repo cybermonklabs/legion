@@ -56,7 +56,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
   say of each whose `waitingLine.kind` is `waiting_on_issue` that it holds no slot while it waits, nothing of its work stopped, and it takes one again by itself.
 
 - **What nothing starts.**
-  The most recent tick's `held` list grouped by `reason`, each group's count, issues and `heldBy`, and what ends it (`skill://legion-controller/references/admission.md`);
+  The most recent tick's `held` list grouped by `reason`, each group's count, issues and `heldBy`, and what ends it (`skill://legion-controller/references/admission-held.md`);
   an `unclassified` issue with its `phase` and `status`; each `task_stopped` issue with its `heldFrom`.
 
 - **Phase workers nothing will prompt.**
@@ -67,7 +67,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
   Each tree whose next step waits on a person's answer (an ask whether to move it to backlog, a deferral, finding or any other ask), with that ask's `dispatch://` reference, while the ask is open.
 
 - **Asks resolved with no answer.**
-  For each root in `admission.active` or `admission.waiting`, the newest ask comment of each key that step 1 of `skill://legion-controller/references/backlog-asks.md` lists, and the newest deferral ask comment that step 1 of `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` lists, whose ask was resolved with no answer, unless its wait has ended.
+  For each root in `admission.active` or `admission.waiting`, the newest ask comment of each key that step 1 of `skill://legion-controller/references/backlog-asks.md` lists, and the newest deferral ask comment that step 1 of `skill://legion-controller/references/deferral-asks.md` lists, whose ask was resolved with no answer, unless its wait has ended.
 
 - **Free slots**, counted in issues, as `skill://legion-controller/references/admission.md#free-slots` says.
 

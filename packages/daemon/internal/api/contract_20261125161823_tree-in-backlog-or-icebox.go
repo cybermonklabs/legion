@@ -16,7 +16,7 @@ import "github.com/sjawhar/legion/daemon/internal/record"
 // current domain and adds the new word, and the current parser rejects the former word.
 //
 // `packages/contracts/src/legion-api.ts`'s `LEGION_HELD_REASONS` and the controller's
-// `references/admission.md` name the new word, `legion state`'s `admission.held:` line counts
+// `references/admission-held.md` name the new word, `legion state`'s `admission.held:` line counts
 // under it, and the issue's `why` says "Its tree's root <root> stands in backlog or icebox, …".
 // The migration 20261124002047 moves the word in every unsent tick notice, so a notice queued
 // before the upgrade reaches the controller in the new word.

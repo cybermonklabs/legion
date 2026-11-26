@@ -21,7 +21,7 @@ A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Fo
 
 ## Act on its answer
 
-An answer to an ask with the option `Leave it admitted` (whether to move a tree to backlog) goes to `skill://legion-controller/references/backlog-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4. For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these three than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
+An answer to an ask with the option `Leave it admitted` (whether to move a tree to backlog) goes to `skill://legion-controller/references/backlog-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/deferral-asks.md` step 4. For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these three than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
 
 - `Do not file`: file nothing.
 - `File an issue`: `dispatch issue --project <PROJECT> --title '<the problem>' --spec-file -` in the project where the fix belongs (this one when the answer names none). The spec states the problem and where the fix belongs, cites the ask and its evidence, and carries `Filed for <the answer's By:> at their request: dispatch://<REPORT KEY>/ask/<id>`.
