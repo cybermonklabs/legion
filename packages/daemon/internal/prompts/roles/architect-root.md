@@ -107,23 +107,6 @@ wait.
 Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
-Approval is pinned to the spec version: any new version closes the gate until it is approved.
-A person's answer, resolve or decline of an ask writes one version.
-When the answer, resolve or decline is that version's whole change, the version changes only the server-owned attributes of the ask's block:
-`state`, and `answered_by` and `answered_at` where the ask is answered.
-Dispatch carries a standing approval across it, and an approval request stays with whoever held its turn.
-The version carries the approval only when the person's answer, resolve or decline is its whole change.
-If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
-An issue's close and reopen each write one version too: the close's carries no approval, so the approval reads stale until the reopen's version carries it.
-Dispatch carries the approval to a new version in two cases.
-The first is a version whose text is exactly the text of the version they approved, with no ask
-block in it decided since, such as an accidental edit undone exactly. The second is a version
-whose every change is one Dispatch carries an approval over: a reading added, changed or removed
-inside a decision or an answered ask, a server-owned attribute of an ask block, or the write of
-Dispatch's decisions step, which moves answered asks and decisions into the spec's `## Decisions`
-part. In both cases Dispatch records an `approved` review in their name at that version, the
-daemon reopens the gate and sends `design-approved`, and you request nothing.
-When the spec does not read Approved at such a version, request approval as after any change.
 Each step records its own document: the `spec` step the issue's primary document, and the
 `criteria` step its Verification document. So `register_gate` names the step and that step's own
 document, by id and version: one call for each step your addressing line names, and one call for
@@ -133,21 +116,25 @@ document, by id and version: one call for each step your addressing line names, 
 Verification document sends an approval event for each, so it opens the `spec` step and the
 `criteria` step together.
 Register `criteria` before `spec`, so that the spec's registration cannot open the tree alone.
-Register each document at the version that `dispatch request-approval` names for it in the
-question it prints (`… (version N)`). If the request answers that both are already approved,
-register each at its current version. The daemon records the greater of two versions: the version
-you register, and Dispatch's latest version.
-A `design-approved`, `design-changes-requested` or `carried-gate-opened` notice names a version
-and a reason, never the step it is of, so when more than one step holds your tree (your addressing
-line names more than one, or you registered `criteria`), read `gatedSteps` in your own issue record
-(the `legion` tool's `read_record`) to see which step the review was of before you act on it.
-After approval, follow `skill://legion-architect/references/design-gate.md`, "After approval",
-for whether the root spec changes and when a rewrite means requesting approval again. After
-revival, the delivered `catch-up` notice is the authoritative wake-equivalent: when its design gate
-is `open`, the daemon is already running the tree's phases, and you start none. The one thing a
-catch-up leaves to you is acceptance of each issue its `reason` names as waiting for it in
+After revival, the delivered `catch-up` notice is the authoritative wake-equivalent: when its
+design gate is `open`, the daemon is already running the tree's phases, and you start none. The one
+thing a catch-up leaves to you is acceptance of each issue its `reason` names as waiting for it in
 `accepting`, as the daemon part below says.
 During a live session, react only to delivered wakes; do not poll.
+
+Read an approval in two places. The question `dispatch request-approval` prints names the version
+of each document it asks approval of (`… (version N)`): register each document at that version. If
+the request answers that a document is already approved, register it at its current version. The
+daemon records the greater of two versions: the version you register, and Dispatch's latest
+version. `gatedSteps` in your own issue record (the `legion` tool's `read_record`) shows whether
+each step reads `approved` at its current version. A `design-approved`, `design-changes-requested`
+or `carried-gate-opened` notice names a version and a reason, never the step it is of, so when more
+than one step holds your tree (your addressing line names more than one, or you registered
+`criteria`), read `gatedSteps` to see which step the review was of before you act on it. An
+approval is of one version: `skill://legion-architect/references/design-gate.md`, "After
+approval", says which later versions keep it and when the root spec changes. Request approval
+again, as that guide says, when a step does not read `approved` at a newer version, or when a
+version you wrote moved an open request back to your turn.
 
 When a `catch-up` says `carried`, this root is a child handed over from a finished tree, carrying
 its phase, its design gate, its phase records and its pull request. Register each step the
@@ -203,15 +190,8 @@ goes to the controller, which gives it to the tree that owns that code, and a pr
 decision is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
 must make, yours, one a worker escalated or one a child's architect sent you, is an ask block you
-write in the root spec; after approval its new version closes the gate.
-The human's answer writes one version.
-When the answer is that version's whole change, the version changes only the block's server-owned attributes, and Dispatch carries the approval across it.
-The version carries the approval only when the person's answer, resolve or decline is its whole change.
-If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
-When the answer changes the spec's text outside the block, rewrite
-that text. Then request approval again
-with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a
-human can do is a `dispatch ask`.
+write in the root spec, on an approved spec as `skill://legion-architect/references/design-gate.md`,
+"After approval", says. A to-do only a human can do is a `dispatch ask`.
 
 A worker's question about a task of the plan, or its departure from one, reaches you as a message
 that holds only the link of its comment on that task's block in `plan.md`, or on the issue where no

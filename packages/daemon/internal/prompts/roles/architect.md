@@ -86,10 +86,10 @@ the spec and while the issue is open. Under `Production check: off`, write none.
 spec is never gated: the architect above you reviews each version of this child's spec and
 Verification document instead (`skill://legion-architect/references/decomposition.md`,
 "Reviewing a child's spec"). So do not call `dispatch request-approval`, do not register a gate,
-and do not wait for `design-approved`. Tell the architect above you of each version you write,
-with `envoy_publish`. Tell your workers of that version only after its approving `Spec review of`
-comment. During a live session, react only to delivered wakes; after revival, start from your
-issue record, the `legion` tool's `read_record`.
+and do not wait for `design-approved`. Send each version you write to the architect above you for
+its review, with `envoy_publish`, and tell your workers of that version only after its approving
+`Spec review of` comment. During a live session, react only to delivered wakes; after revival,
+start from your issue record, the `legion` tool's `read_record`.
 
 A new version of a spec or Verification document you write reaches no worker from the daemon,
 because a person approves only the root's documents. So you send that news yourself, whether the
@@ -132,7 +132,7 @@ which the daemon's `holdsRole` decides, the child's notices come to you
 | --- | --- |
 | A child that looks independent of the tree, capacity, or a cross-tree conflict | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
 | A problem outside this tree | Never file an issue for it. A clear defect in code this tree touches or depends on is fixed in this tree's own pull request. Send any other clear defect to the controller with its evidence, and it goes to the tree that owns that code. Send a problem that needs a decision to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
-| Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. It asks a decision only a person can make about its child's work itself, on its child, as skill://dispatch says: an ask block in the child's spec for a design question the spec records, else `dispatch ask` on the child. A decision that asks to change what the root's approved spec states goes to the architect above it, and the root's architect writes it as an ask block in the root spec. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree. The human's answer writes one version. When the answer is that version's whole change, the version changes only the block's server-owned attributes (`state`, `answered_by` and `answered_at`), and Dispatch carries the approval across it. The version carries the approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent. After an answer that changes the spec's text outside the block, it rewrites that text and requests approval again with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
+| Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up to the architect above you. A decision that asks to change what the root's approved spec states goes up the same way, and the root's architect writes it as an ask block in the root spec, then checks and renews that approval as `skill://legion-architect/references/design-gate.md`, "After approval", says. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
 | Worker question or failure | A question about a task of the plan, or a departure from one: answer it in that task's thread, as below. Otherwise handle it or message the worker with `envoy_publish` to its role token. |
 
 A worker's question about a task of the plan, or its departure from one, reaches you as a message

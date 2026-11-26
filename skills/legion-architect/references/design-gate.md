@@ -82,7 +82,7 @@ For each gated step, once every child is filed:
 
 - A version you write moves the request to your turn, and the person stops seeing it: once they
   agree, run `dispatch request-approval` again.
-  Their answer, resolve or decline writes one version, which keeps it with them.
+  Their answer, resolve or decline writes one version, which leaves the request with whoever held its turn.
   The version carries an approval only when the person's answer, resolve or decline is its whole change.
   If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
 - `already approved at version <N>`: still `register_gate` that id and version.
@@ -99,10 +99,13 @@ architect and every phase holder when the gate closes. Four keep it: a version w
 is the approver's answer to an ask block, given after the approval at a browser or under a
 credential with the approve scope, a block added since the approval included; one equal to the
 approved text (an accidental edit undone exactly) with no ask block in it decided since; one whose
-every change is a reading in a decision or an answered ask, a server-owned ask attribute or the
-decisions step's `## Decisions` write; and, after a close and a reopen, the approved text with only
-the questions the close withdrew open again. A close's own version keeps none. For each, Dispatch
-records an `approved` review, the daemon sends `design-approved`, and you request nothing.
+every change is a reading added, changed or removed in a decision or an answered ask, a
+server-owned ask attribute or the decisions step's `## Decisions` write; and, after a close and a
+reopen, the approved text with only the questions the close withdrew open again. A close's own
+version keeps none, so the approval reads stale until the reopen's. For each, Dispatch records an
+`approved` review, the daemon sends `design-approved`, and you request nothing. Where the step
+does not read `approved` at such a version (`gatedSteps` in `read_record`), request approval as
+after any change.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as an ask block at the end of the section it
