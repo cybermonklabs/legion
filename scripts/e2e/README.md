@@ -4543,7 +4543,9 @@ each pass also reads again the open pull requests the earlier cases left in `acm
 
   after the first start: no head row of `#21` or `#22`, the intake bound at the stream's next sequence, and no read of either pull request from GitHub.
   Within 5 seconds of the push, `#22` is stored open at its new head, `#21` has no row, and `dispatch results` compares the check with `#22` at that head.
-  After the second start: the intake bound right after the ack floor the first start left, the durable redelivered nothing, `#21` has no row, no pull request is read by the REST routes the intake reads with, and every call of GitHub but the webhook redelivery sweep's is the reconcile pass's facts line reading `#22`'s commit messages, which the read of the push did not store because the body named the issue: the installation lookup, the token and one GraphQL query asking for `#22` alone, with the messages not stored before the second start and stored after its pass.
+  After the second start: the intake bound right after the ack floor the first start left, the durable redelivered nothing, `#21` has no row, and no pull request is read by the REST routes the intake reads with.
+  The start's reconcile pass calls GitHub only to read the commit messages that the read of the push did not store, which the case reads from `#22`'s stored texts before the second start and after its pass: not stored before (the body named the issue), so exactly one GraphQL query asking for `#22` alone, with the installation lookup and the token it needs, and nothing else, and the messages stored after; stored before, no call at all.
+  The webhook redelivery sweep's read, the App's own duty, is left out.
   The last start binds at or below that ack floor and reads a pull request from GitHub, so the readings of the second start can see a start that reads an event again
 
 Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.

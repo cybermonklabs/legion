@@ -4426,10 +4426,11 @@ async function limitAfterOnePass(pass: string): Promise<string | undefined> {
 //                    commit messages, and the fake's log emptied.
 //   second-start     after a second start, the same three facts. T3: the bind right after the ack
 //                    floor the first start left, no event redelivered, no head row of #21, no read
-//                    of a pull request by the REST routes the intake reads with, and no call to
-//                    GitHub but those of the reconcile pass's facts line (tipCallOfTheFactsLine):
-//                    its one GraphQL query asking for #22 is that line's only where #22's commit
-//                    messages were not stored before the second start and are after its pass.
+//                    of a pull request by the REST routes the intake reads with, and the start's
+//                    reconcile pass calls GitHub only to read the commit messages the read of the
+//                    push did not store: #22's not stored before, exactly one GraphQL query asking
+//                    for #22 alone with the lookup and token it needs (tipCallOfTheFactsLine), and
+//                    its messages stored after; stored before, no call at all.
 //   control-durable  while no server runs: the durable deleted and created again at the stream's
 //                    first message.
 //   control-start    after one more start: it binds at or below the floor the second start found,
@@ -4911,31 +4912,37 @@ async function tipSecondStart(
       `T3: the second start read pull requests as the intake reads an event's: ${eventReads.map(callText).join("; ")}`
     );
   }
-  // The webhook redelivery sweep's read (GET /app/hook/deliveries) is the App's own duty, and no
-  // read of an event.
-  const others = calls.filter(
-    (call) => call.route !== "GET /app/hook/deliveries" && !tipCallOfTheFactsLine(call)
-  );
-  if (others.length > 0) {
-    failures.push(
-      `T3: the second start called GitHub for more than the facts line's read of #22: ${others.map(callText).join("; ")}`
-    );
-  }
-  // The facts line's read is the one GraphQL query asking for #22, and it is that read only where
-  // #22's texts held no commit messages before it and hold them after the pass.
+  // The claim (v-first-start-tip): the start's reconcile pass calls GitHub only to read the commit
+  // messages that the read of the push did not store. Where #22's texts held none before the second
+  // start (the push's read stores none where the body names the issue), the start sends exactly one
+  // GraphQL query, the facts line's, asking for #22 alone, beside the installation lookup and the
+  // token that query needs, and #22's messages are stored after the pass. Where they were stored
+  // before, it calls GitHub for nothing. The webhook redelivery sweep's read
+  // (GET /app/hook/deliveries) is the App's own duty, neither the intake's nor the pass's, and is
+  // left out.
   const messagesAfter = await sql(tipMessagesOfTheSecond);
-  const factsReads = calls.filter((call) => call.route === "POST /graphql").length;
   note(
     `T3 #22's commit messages: ${messagesBefore} before the second start, ${messagesAfter} after its pass`
   );
-  if (factsReads > 0 && (messagesBefore !== "not read" || messagesAfter !== "read")) {
-    failures.push(
-      `T3: the second start sent ${factsReads} GraphQL query(ies) asking for #22, whose commit messages were ${messagesBefore} before it and ${messagesAfter} after it: no read of messages the push's read left unread`
-    );
+  const counted = calls.filter((call) => call.route !== "GET /app/hook/deliveries");
+  const unstored = messagesBefore === "not read";
+  if (unstored) {
+    const queries = counted.filter((call) => call.route === "POST /graphql");
+    if (queries.length !== 1 || queries[0]?.asks !== `${tipRepo}#22`) {
+      failures.push(
+        `T3: the second start sent ${queries.length} GraphQL query(ies) (${queries.map(callText).join("; ") || "none"}), want one asking for ${tipRepo}#22 alone, the facts line's read of the commit messages the push's read did not store`
+      );
+    }
+    if (messagesAfter !== "read") {
+      failures.push(
+        `T3: after the second start's pass #22's commit messages are ${messagesAfter}, want read: its query read no messages the push's read left unread`
+      );
+    }
   }
-  if (messagesBefore === "not read" && messagesAfter !== "read") {
+  const others = counted.filter((call) => !(unstored && tipCallOfTheFactsLine(call)));
+  if (others.length > 0) {
     failures.push(
-      `T3: the second start's pass left #22's commit messages ${messagesAfter}, which its facts line reads`
+      `T3: the second start called GitHub for more than ${unstored ? "the facts line's read of #22's commit messages" : "nothing, #22's messages being stored"}: ${others.map(callText).join("; ")}`
     );
   }
   return failures.length === 0 ? undefined : failures.join("\n   ");
