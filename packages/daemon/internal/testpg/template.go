@@ -28,7 +28,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
@@ -52,9 +51,9 @@ var shared struct {
 }
 
 // Clone is the URL of a database carrying every migration, cloned from this process's template and
-// dropped at the test's end. A pool opened on it holds testdb.PoolConns connections unless
-// LEGION_TEST_PG_DSN sets a size of its own, which it keeps (testdb.PoolBounded). Without
-// LEGION_TEST_PG_DSN the test is skipped, as testdb.Database's is.
+// dropped at the test's end. A pool opened on it holds the `pool_max_conns` LEGION_TEST_PG_DSN
+// names, or four where it names none (testdb.PoolBounded). Without LEGION_TEST_PG_DSN the test is
+// skipped, as testdb.Database's is.
 func Clone(t testing.TB, prefix string) string {
 	t.Helper()
 	if !shared.main {
@@ -98,20 +97,17 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 	return st
 }
 
-// ClonePool is Clone opened as a pool of testpool.PoolConns connections, closed when the test ends —
-// before the clone is dropped, since Clone registered that cleanup first. The pool is built from
-// store.PoolConfig, as the daemon's own is, so a test that wraps it with store.NewPool writes
-// through the store's text rule. The size is fixed rather than pgxpool's default,
-// max(4, runtime.NumCPU()), which PoolConfig leaves: a test whose work runs concurrently on the
-// pool opens as many connections as the pool allows, and on a machine of many CPUs that passed
-// the server's max_connections (testpool.PoolConns says more).
+// ClonePool is Clone opened as the pool its DSN names, closed when the test ends — before the clone
+// is dropped, since Clone registered that cleanup first. The pool is built from store.PoolConfig,
+// as the daemon's own is, so a test that wraps it with store.NewPool writes through the store's
+// text rule. PoolBounded already set MaxConns from LEGION_TEST_PG_DSN, so this function does not
+// overrule a size the developer chose.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
 	config, err := store.PoolConfig(Clone(t, prefix))
 	if err != nil {
 		t.Fatalf("configure a pool on the cloned database: %v", err)
 	}
-	config.MaxConns = testpool.PoolConns
 	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool on the cloned database: %v", err)

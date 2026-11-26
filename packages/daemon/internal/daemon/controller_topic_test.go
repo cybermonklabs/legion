@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -58,7 +58,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	}
 	architectTopic, controllerTopic := notify.RoleTopicPrefix+string(architect), notify.ControllerTopic(token)
 	listener.refuseFirst(controllerTopic, 2)
-	raw, err := testpool.NewPool(context.Background(), cfg.PostgresDSN)
+	raw, err := pgxpool.New(context.Background(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}

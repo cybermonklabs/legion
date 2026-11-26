@@ -156,7 +156,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 		for range listener.Events() {
 		}
 	}()
-	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, serveLiveLeakCheck(t), log); err != nil {
+	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, serveLiveLeakCheck(t), log, nil); err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
 

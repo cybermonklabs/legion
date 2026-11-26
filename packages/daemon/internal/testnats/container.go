@@ -111,8 +111,7 @@ type startOptions struct {
 // (loopbackPorts, loopback.go), so a client another test left dialing an earlier container's port
 // cannot reach this one; a publish Docker refuses because a probed port was taken in between is
 // tried again on a fresh address and ports, up to startTries starts, and the error then names
-// every refusal. On another machine's daemon they are published as daemonHost says, on ports
-// Docker picks.
+// every refusal. On another machine's daemon Docker picks the published ports.
 func start(image string, o startOptions) (*Container, error) {
 	label, err := armReaper()
 	if err != nil {
@@ -122,22 +121,20 @@ func start(image string, o startOptions) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !daemon.local() {
+		return startAt(image, o, label, daemon.dial, clientPort, monitorPort)
+	}
 	var refused []error
 	for range startTries {
-		dial, publish := daemon.dial, []string{daemon.publish(clientPort), daemon.publish(monitorPort)}
-		if daemon.local() {
-			host, ports, err := loopbackPorts(2)
-			if err != nil {
-				return nil, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
-			}
-			dial = host
-			publish = []string{publishAt(host, ports[0], clientPort), publishAt(host, ports[1], monitorPort)}
+		host, ports, err := loopbackPorts(2)
+		if err != nil {
+			return nil, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 		}
-		c, err := startAt(image, o, label, dial, publish)
+		c, err := startAt(image, o, label, host, publishAt(host, ports[0], clientPort), publishAt(host, ports[1], monitorPort))
 		if err == nil {
 			return c, nil
 		}
-		if !daemon.local() || !addressInUse(err) {
+		if !addressInUse(err) {
 			return c, errors.Join(append(refused, err)...)
 		}
 		refused = append(refused, err)
@@ -149,12 +146,12 @@ func start(image string, o startOptions) (*Container, error) {
 // Docker refuses to publish a port because something took the probed one first.
 const startTries = 5
 
-// startAt creates and runs one container of image, its two ports published as publish says, and
-// dials them at dial.
-func startAt(image string, o startOptions, label, dial string, publish []string) (*Container, error) {
+// startAt creates and runs one container of image, with clientPublish and monitorPublish as Docker
+// create's two --publish values, and dials the published ports at dial.
+func startAt(image string, o startOptions, label, dial, clientPublish, monitorPublish string) (*Container, error) {
 	ctx := context.Background()
 	args := []string{"create", "--label", label, "--cpus", "1", "--memory", "512m",
-		"--publish", publish[0], "--publish", publish[1]}
+		"--publish", clientPublish, "--publish", monitorPublish}
 	for name, value := range o.labels {
 		args = append(args, "--label", name+"="+value)
 	}
@@ -292,26 +289,12 @@ func (c *Container) port(ctx context.Context, port string) (string, error) {
 }
 
 // dockerDaemon is where the Docker daemon the docker CLI reaches publishes a container's ports:
-// dial is the host this process dials a published port on, and bind the host address the port
-// is published on, empty for every interface of the daemon's machine.
-type dockerDaemon struct {
-	dial, bind string
-}
-
-// publish is docker create's --publish value for the container's port.
-func (d dockerDaemon) publish(port string) string {
-	if d.bind == "" {
-		return port
-	}
-	return d.bind + "::" + port
-}
-
-// address is the address this process dials for a published port.
-func (d dockerDaemon) address(port string) string { return net.JoinHostPort(d.dial, port) }
+// dial is the host this process dials a published port on.
+type dockerDaemon struct{ dial string }
 
 // local is whether the daemon runs on this machine and publishes on its loopback, where start
 // gives each container a loopback address of its own.
-func (d dockerDaemon) local() bool { return d.bind == "127.0.0.1" && isLoopback(d.dial) }
+func (d dockerDaemon) local() bool { return isLoopback(d.dial) }
 
 // publishAt is docker create's --publish value for the container's port at host's port.
 func publishAt(host string, port int, containerPort string) string {
@@ -342,20 +325,14 @@ const hostOverrideVariable = "TESTCONTAINERS_HOST_OVERRIDE"
 // withHostOverride is d dialled at override, when override names a host. daemonHost reads the
 // endpoint alone, and a process in a developer container that reaches the host's Docker socket
 // reads it as this machine, whose 127.0.0.1 is the container's own: such a process names the host
-// as it reaches it (the bridge gateway, host.docker.internal) in TESTCONTAINERS_HOST_OVERRIDE. A
-// port dialled at a host that is not loopback is published on every interface of the daemon's
-// machine, since the dial arrives through one of them; a loopback override keeps it on 127.0.0.1.
-// testcontainers-go found the bridge gateway itself where /.dockerenv exists, and this fixture does
-// not: there the variable is how to reach it.
+// as it reaches it (the bridge gateway, host.docker.internal) in TESTCONTAINERS_HOST_OVERRIDE.
+// testcontainers-go found the bridge gateway itself where /.dockerenv exists, and this fixture
+// does not: there the variable is how to reach it.
 func withHostOverride(d dockerDaemon, override string) dockerDaemon {
-	switch {
-	case override == "":
+	if override == "" {
 		return d
-	case isLoopback(override):
-		return dockerDaemon{dial: override, bind: "127.0.0.1"}
-	default:
-		return dockerDaemon{dial: override}
 	}
+	return dockerDaemon{dial: override}
 }
 
 // isLoopback is whether host names this machine's loopback interface: localhost, or a loopback
@@ -380,14 +357,11 @@ func cliEndpoint(ctx context.Context) (string, error) {
 	return endpoint, nil
 }
 
-// daemonHost is where the daemon at endpoint publishes a container's ports and where this process
-// dials them. A daemon on a unix socket, a named pipe or a loopback address runs on this machine:
-// its ports are published on 127.0.0.1 alone and dialled there, so a shared machine exposes no
-// test server. A daemon on another machine (tcp:// or ssh:// to a host that is not loopback)
-// publishes on every interface of that machine, and its ports are dialled at its host name, as
-// testcontainers-go dialled them.
+// daemonHost is where this process dials ports Docker publishes on the daemon at endpoint. A daemon
+// on a unix socket, a named pipe or a loopback address runs on this machine. A daemon on another
+// machine (tcp:// or ssh:// to a host that is not loopback) is dialled at its host name.
 func daemonHost(endpoint string) (dockerDaemon, error) {
-	local := dockerDaemon{dial: "127.0.0.1", bind: "127.0.0.1"}
+	local := dockerDaemon{dial: "127.0.0.1"}
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return dockerDaemon{}, fmt.Errorf("the Docker endpoint %q: %w", endpoint, err)

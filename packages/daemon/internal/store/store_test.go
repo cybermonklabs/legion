@@ -33,12 +33,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// testDSN is the devbox and CI Postgres the store tests run against. Without it
-// there is nothing to test: the store has no in-memory mode by design. A pool a test opens on it
-// holds testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it
-// keeps (testdb.PoolBounded): each URL this package's tests build from it goes only to a pool,
-// Open's or pgxpool's, and a pool sized by the CPU count would ask a large machine's Postgres for
-// more connections than it allows.
+// testDSN is the devbox and CI Postgres the store tests run against. Without it there is nothing
+// to test: the store has no in-memory mode by design. A pool a test opens on it keeps the
+// pool_max_conns LEGION_TEST_PG_DSN names, or testpool.PoolConns where it names none
+// (testdb.PoolBounded): each URL this package's tests build from it goes only to a pool, Open's or
+// pgxpool's, and a pool sized by the CPU count would ask a large machine's Postgres for more
+// connections than it allows.
 //
 // These tests name no internal/testpg helper, and the file imports that package nowhere: testpg
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a

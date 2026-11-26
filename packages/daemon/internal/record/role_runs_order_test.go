@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -108,8 +107,9 @@ func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsOwnRunHasTakenAway(t *t
 		must(t, tx.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise'`, issue).Scan(&row))
 	})
 
-	// The writer's own pool, and the read's, which traces its statements.
-	writer, err := testpool.NewPool(ctx, dsn)
+	// The writer's own pool, and the read's, which traces its statements. dsn came from Clone, so
+	// PoolBounded already gave both the pool_max_conns LEGION_TEST_PG_DSN names.
+	writer, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the writer's pool: %v", err)
 	}
@@ -119,7 +119,6 @@ func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsOwnRunHasTakenAway(t *t
 	if err != nil {
 		t.Fatalf("parse the read's pool configuration: %v", err)
 	}
-	config.MaxConns = testpool.PoolConns
 	config.ConnConfig.Tracer = starting
 	reader, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

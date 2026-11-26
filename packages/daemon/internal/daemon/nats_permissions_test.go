@@ -164,7 +164,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				var serverLogErr error
 				testwait.Eventually(t, "the server log naming the refused JetStream API publish", func() bool {
 					var serverLog string
-					serverLog, serverLogErr = readDaemonGrantServerLogs(server)
+					serverLog, serverLogErr = server.Logs(context.Background())
 					serverLine = matchingLogLine(serverLog, "Publish Violation", denied)
 					return serverLine != ""
 				})
@@ -365,15 +365,11 @@ func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissi
 
 func daemonGrantServerLogs(t *testing.T, server *testnats.Container) string {
 	t.Helper()
-	text, err := readDaemonGrantServerLogs(server)
+	text, err := server.Logs(context.Background())
 	if err != nil {
 		t.Fatalf("read the server log: %v", err)
 	}
 	return text
-}
-
-func readDaemonGrantServerLogs(server *testnats.Container) (string, error) {
-	return server.Logs(context.Background())
 }
 
 func matchingLogLine(text string, terms ...string) string {

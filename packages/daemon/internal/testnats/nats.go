@@ -11,11 +11,12 @@
 // server freed by a test goes to the next test that asks, newest freed first, so a run one test at
 // a time takes the same server throughout.
 //
-// A server per slot, not per test. The shape was chosen for testcontainers-go's Ryuk reaper: Ryuk
-// stayed only while a container of the process was connected, and a reaper left idle past its
-// timeout removed itself, so a later test's start, finding it removing, failed ("unexpected
-// container status removing"). The package starts its containers through the docker CLI now
-// (container.go), and a pooled server still lives until Main.
+// A server per slot, not per test: a sequential run starts one container rather than one per test,
+// while a parallel run starts no more containers than it has simultaneous holders. Each returned
+// server is drained, reset and leak-checked before another test takes it, so reuse shares no
+// streams, consumers, messages or connections. Main owns the bounded pool's containers and removes
+// them at the end of the binary; a test-owned container (StartImage or StartNkeyAuthorizedUsers)
+// is removed at that test's end.
 //
 // A host with no Docker, such as a Sandbox pod, runs a nats-server of its own with JetStream and
 // its monitoring endpoint, and names it in LEGION_TEST_NATS_URL (its client URL) and

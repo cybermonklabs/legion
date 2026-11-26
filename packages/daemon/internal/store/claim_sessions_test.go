@@ -19,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -693,7 +692,6 @@ func secondStore(t *testing.T, store *Store, configure func(*pgxpool.Config)) *S
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.MaxConns = testpool.PoolConns
 	configure(config)
 	raw, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

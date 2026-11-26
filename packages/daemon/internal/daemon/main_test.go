@@ -114,4 +114,7 @@ func TestMain(m *testing.M) {
 // This test binary links no module of testcontainers-go (testbinary.LinksNoTestcontainers). It
 // starts itself again for each role process of the idle rig (TestIdleRigRoleProcess above), and
 // each of those starts paid that library's package init.
-func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) { testbinary.LinksNoTestcontainers(t) }
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) {
+	t.Parallel()
+	testbinary.LinksNoTestcontainers(t)
+}

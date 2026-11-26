@@ -65,8 +65,8 @@ const testOperatorToken = "operator-bearer-for-daemon-tests"
 // (testpg.Clone), one per test, so a test's rows, its advisory locks (the one lock every fact
 // applies under among them) and its daemons' sweeps are its own, and tests run beside each other.
 // Two calls with one t answer the one clone: a test that boots two daemons, of one project or of
-// two, boots them on one database. A pool opened on it, the daemon's under test among them, holds
-// testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it keeps
+// two, boots them on one database. A pool opened on it, the daemon's under test among them, keeps
+// the pool_max_conns LEGION_TEST_PG_DSN names, or testpool.PoolConns where it names none
 // (testdb.PoolBounded). The daemon has no in-memory mode: what it does on a boot is what its store
 // recorded, and a boot migrates Legion's schema into whatever database it is given, which on a
 // clone of the migrated template finds nothing left to do. A test that sets LEGION_TEST_PG_DSN
@@ -1174,11 +1174,6 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startMargin is what a start the daemon never finishes leaves of the test binary's deadline: room
-// for the failure to be reported by name and for the cleanups, the daemon's own stop among them
-// (stopBudget), to run before `go test` panics at its -timeout.
-const startMargin = 30 * time.Second
-
 // startDaemonLogging is startDaemon writing the daemon's log to log. A test that points its
 // workflow at no GitHub of its own gets repositoriesGitHub, so every launch on a repository reads
 // its default branch from a stand-in rather than from github.com.
@@ -1188,9 +1183,9 @@ const startMargin = 30 * time.Second
 // helper's own failed a test whose daemon was only slow. The signal is the
 // seam the boot runs once the goroutine that serves the API has begun (beforeServingLatched,
 // wrapped here around any hook the test set). The wait ends there, at the daemon's exit, which
-// fails the test naming the exit's error, or at the test binary's own deadline less startMargin,
-// which fails it naming the wait; with no deadline (-timeout 0) it has no end but those two. Once
-// the daemon serves, one GET /healthz confirms the route answers 200.
+// fails the test naming the exit's error, or when testwait.Context ends at the test binary's
+// deadline less testwait's margin; with no deadline (-timeout 0) it has no end but those two.
+// Once the daemon serves, one GET /healthz confirms the route answers 200.
 //
 // The daemon's own log is kept beside log, and printed when the test fails, its stop included,
 // since a test's own logger is most often quietLogger. Once the daemon answers /healthz, the test
@@ -1230,19 +1225,14 @@ func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.
 	}
 	go func() { d.done <- run(ctx, cfg, log, o) }()
 	t.Cleanup(d.stop)
-	wait := context.Background()
-	if deadline, bounded := t.Deadline(); bounded {
-		var stop context.CancelFunc
-		wait, stop = context.WithDeadline(wait, deadline.Add(-startMargin))
-		defer stop()
-	}
+	wait := testwait.Context(t)
 	select {
 	case <-serving:
 	case exited := <-d.done:
 		d.stopped.Store(true)
 		t.Fatalf("the daemon exited after %s, before it served HTTP: %v", time.Since(started).Round(time.Millisecond), exited)
 	case <-wait.Done():
-		t.Fatalf("the daemon did not serve HTTP on %s within %s, the test binary's deadline less %s", d.base, time.Since(started).Round(time.Millisecond), startMargin)
+		t.Fatalf("the daemon did not serve HTTP on %s before testwait.Context ended after %s", d.base, time.Since(started).Round(time.Millisecond))
 	}
 	request, err := http.NewRequestWithContext(wait, http.MethodGet, d.base+"/healthz", nil)
 	if err != nil {

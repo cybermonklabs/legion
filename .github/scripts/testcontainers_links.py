@@ -47,7 +47,6 @@ CI runs it in ci.yaml's ci-filters job; its tests (testcontainers_links.test.sh)
 test job.
 """
 
-import json
 import os
 import re
 import subprocess
@@ -56,6 +55,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import go_build_tags
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_MODULES = [REPO / "packages" / "envoy", REPO / "packages" / "daemon"]
 FORBIDDEN = "github.com/testcontainers/"
@@ -107,18 +107,6 @@ def go(module: Path, *args: str) -> str:
     return result.stdout
 
 
-def go_list_json(module: Path, *args: str) -> list:
-    """The objects of one `go list -json=...` stream, in order."""
-    text = go(module, "list", *args)
-    decoder = json.JSONDecoder()
-    out, at = [], 0
-    while True:
-        while at < len(text) and text[at].isspace():
-            at += 1
-        if at == len(text):
-            return out
-        value, at = decoder.raw_decode(text, at)
-        out.append(value)
 
 
 def first_self_start_line(path: Path):
@@ -133,17 +121,6 @@ def first_self_start_line(path: Path):
     return None
 
 
-def constraint_of(path: Path) -> str:
-    """The text of path's `//go:build` line, trimmed, or "" when it has none. The directive binds
-    only above the package clause."""
-    with open(path, encoding="utf-8") as source:
-        for line in source:
-            stripped = line.strip()
-            if stripped.startswith("//go:build"):
-                return stripped[len("//go:build"):].strip()
-            if stripped.startswith("package "):
-                return ""
-    return ""
 
 
 def testdata_dirs(packages: list, module: Path) -> list:
@@ -214,8 +191,9 @@ def self_starting_tests(packages: list) -> list:
             line = first_self_start_line(path)
             if not line:
                 continue
-            constraint = constraint_of(path)
-            if not BARE_TAG.match(constraint):
+            constraints = go_build_tags.constraint_lines(path)
+            constraint = constraints[0] if len(constraints) == 1 else ""
+            if not BARE_TAG.fullmatch(constraint):
                 raise Refusal(
                     f"{line} starts the test binary, and the default build leaves the file out under "
                     f"the constraint '{constraint or '(its file name)'}', which is not one tag alone, "
@@ -229,7 +207,8 @@ def self_starting_tests(packages: list) -> list:
 
 def graph(module: Path, *args: str) -> dict:
     """ImportPath -> Imports over one `go list -deps` run."""
-    return {p["ImportPath"]: p.get("Imports", []) for p in go_list_json(module, "-deps", "-json=ImportPath,Imports", *args)}
+    return {p["ImportPath"]: p.get("Imports", [])
+            for p in go_build_tags.decode_stream(go(module, "list", "-deps", "-json=ImportPath,Imports", *args))}
 
 
 def base(path: str) -> str:
@@ -273,11 +252,11 @@ def shown(chain: list) -> str:
 
 def check_module(module: Path) -> Report:
     report = Report()
-    packages = go_list_json(module, f"-json={PACKAGE_FIELDS}", "./...")
+    packages = go_build_tags.decode_stream(go(module, "list", f"-json={PACKAGE_FIELDS}", "./..."))
     mains = [p["ImportPath"] for p in packages if p.get("Name") == "main"]
     extra = testdata_dirs(packages, module)
     if extra:
-        for p in go_list_json(module, "-e", "-json=ImportPath,Name,Error", *extra):
+        for p in go_build_tags.decode_stream(go(module, "list", "-e", "-json=ImportPath,Name,Error", *extra)):
             error = (p.get("Error") or {}).get("Err", "")
             if error:
                 if EXCLUDED_BY_CONSTRAINTS in error:

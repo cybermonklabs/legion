@@ -208,9 +208,8 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// holds the two holders above.
 	p.launchRounds = &launchRounds{}
 	opts := reads.opts
-	opts.RoundPodEnds = p.launchRounds.ends
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
-		p.memoryGuardKills, p.volumeReports)
+		p.memoryGuardKills, p.volumeReports, nil)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -623,7 +622,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // errVolumeReportsUnbound, which the launcher session logs.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
-	reports *volumeTrimReports) runtimeFactory {
+	reports *volumeTrimReports, leakCheckBuilt func(sandbox.LeakCheckReader)) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
@@ -644,6 +643,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// is pushed none; a daemon with no Apps reads none, and the runtime refuses the start of a
 		// role whose launcher names a tag under a named check with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI, opts.LeakCheckSetting)
+		if leakCheckBuilt != nil {
+			leakCheckBuilt(opts.LeakCheck)
+		}
 		// Each process an issue pod's memory guard ends, and each the controller pod's ends,
 		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed

@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testpool"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -281,7 +282,7 @@ func newPersonHandoverRigOn(t *testing.T, dispatch scratchDispatchOptions, admis
 		map[string]string{"key": cfg.Project, "name": "A person's handover"}, nil)
 	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository",
 		map[string]any{"repo": "acme/widgets"}, nil)
-	raw, err := testpool.NewPool(t.Context(), cfg.PostgresDSN)
+	raw, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}

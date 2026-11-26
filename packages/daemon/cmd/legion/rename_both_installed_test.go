@@ -134,6 +134,49 @@ func TestLegionGhRefusesACommandWhoseRepositoriesRouteToTwoDirectories(t *testin
 	}
 }
 
+// realGHForCapture is the real gh a test that drives one without a control of its own runs
+// (bothInstalledGh, which reads only gh's help): LEGION_GH_PATH when the test runs in a Legion
+// pane or pod, whose `gh` on PATH is the wrapper, else the first gh on PATH that is no script
+// (realGHCandidates) and answers as gh does with a home of its own (answersAsGH); a machine with
+// none skips, as the other gh-backed tests do. The first gh on PATH need not be that one: a
+// machine's own wrapper or a version manager's shim can head PATH with the real gh further down.
+// TestRealGhAndGitSendTheTargetOwnersToken has a control of its own, which tells a real gh from a
+// wrapper by the token it sends, so it tries the candidates itself.
+//
+// Its callers start every command by an absolute path (this binary as `legion`, a wrapper they
+// wrote, the gh this answers, the git exec.LookPath found) with an environment of the command's
+// own: Go resolves a bare name against the PATH of the process making the call and never against
+// the one a child's Env holds (os/exec LookPath, read when exec.Command is built), so a bare `gh`
+// would reach whatever gh this machine has. Nothing here changes this process's PATH, so the
+// tests that drive a real gh run beside the package's other tests.
+func realGHForCapture(t *testing.T) string {
+	t.Helper()
+	candidates, named := realGHCandidates()
+	path := ""
+	for _, candidate := range candidates {
+		if named || answersAsGH(t, candidate) {
+			path = candidate
+			break
+		}
+	}
+	if path == "" {
+		t.Skipf("no gh on PATH but a script answers `gh --version` as gh does with a home of its own (%q were tried): the test drives the real gh; set LEGION_GH_PATH to it", candidates)
+	}
+	return path
+}
+
+// answersAsGH is whether gh, run with a home of its own and a PATH of the system's directories
+// alone, prints gh's own version line. The real gh does; a version manager's shim, which picks a
+// version from the caller's own home, answers an error there instead.
+func answersAsGH(t *testing.T, gh string) bool {
+	t.Helper()
+	home := t.TempDir()
+	cmd := exec.Command(gh, "--version")
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "GH_CONFIG_DIR=" + home, "GH_NO_UPDATE_NOTIFIER=1"}
+	out, err := cmd.Output()
+	return err == nil && strings.HasPrefix(string(out), "gh version ")
+}
+
 // bothInstalledGh runs the real `legion gh` over bothInstalledBundle through a `gh` script it
 // writes, started by that script's absolute path (the call below says why), with the child's
 // PATH holding that script first, as a pane's does; it answers its exit status and everything

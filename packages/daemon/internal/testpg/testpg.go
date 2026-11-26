@@ -12,7 +12,8 @@
 // delay (testdb.Delayed) or through a proxy that holds or cuts a commit's reply (testdb.CommitFaults),
 // a pool whose transactions are cancelled between two statements (testdb.CancelAfterScan), and the
 // drop that waits out an autovacuum worker and a backend that has not exited yet (testdb.Drop),
-// which every clone of this package's template and the template itself go through. The size of
-// every pool a test builds is Envoy's public testpool (testpool.PoolConns, testpool.NewPool), which
-// ClonePool's pool takes and both Go modules import.
+// which every clone of this package's template and the template itself go through. ClonePool keeps
+// the pool_max_conns its cloned DSN names; a test-owned pool with an unsized URL uses Envoy's
+// public testpool (testpool.PoolConns, testpool.ParseConfig and testpool.NewPool), which both Go
+// modules import.
 package testpg

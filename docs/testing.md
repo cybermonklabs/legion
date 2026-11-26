@@ -767,47 +767,23 @@ template below it, and the package's `TestMain` drops them all when the run ends
 moves its clone further forward applies only the migrations past its version (`migrateAbove`),
 not the whole history again.
 
-A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
-its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
-of 4 and the machine's CPU count, so on a large machine one test could ask for more connections
-than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` gives a
-URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` where it sets no size;
-`testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
-`internal/store` answer such URLs. A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or
-another child process reads takes `testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which
-hold none of pgxpool's keys even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a
-key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets
-`pool_max_conns`.
+A pgx pool a daemon test opens on a URL `testdb.Database`, `testpg.Clone` or the `testDSN` of
+`internal/daemon` and `internal/store` holds the `pool_max_conns` `LEGION_TEST_PG_DSN` names.
+`testdb.PoolBounded` carries that setting through each rewrite, or writes
+`pool_max_conns=testpool.PoolConns` where the environment names no size. The caller keeps that
+setting with `pgxpool.ParseConfig` or `store.Open`; it does not overrule a developer's choice.
+A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or another child process reads takes
+`testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which hold none of pgxpool's keys even
+when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a key to the server, which refuses it,
+`psql` refuses the URL, and Dispatch refuses a URL that sets `pool_max_conns`.
 
-A test that needs one of envoy's binaries takes it from
-`packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
-process and removes the directory when `testbuild.Main` ends the run.
-
-A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
-`DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
-`packages/envoy/scripts/dev-postgres.sh`'s container.
-
-## A pool a Go test builds
-
-A Postgres pool a test builds has the same size on every machine. pgxpool's default,
-`max(4, runtime.NumCPU())`, is 4 on CI's 4-vCPU runners and 288 on a 288-CPU dev machine, so a test
-that runs work concurrently on an unsized pool opens as many connections as the machine has CPUs:
-on that machine `TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget` ran 100
-appliers on one `testpg.ClonePool`, passed the server's `max_connections` of 100 and failed with
-SQLSTATE 53300, while CI passed.
-
-Both modules name the size once: `testpool.PoolConns` in `packages/envoy/testpool`, 4, which is
-what every unsized pool already had on CI and pgx's own floor. It is a public package of the envoy
-module, which `packages/daemon` imports through its `replace` of `packages/envoy`; it imports
-nothing of either module, so every test package can take it, and it is a package of its own
-because envoy's `internal/testpg` imports testcontainers. A test writes `testpool.NewPool(ctx, dsn)`
-where it would write `pgxpool.New`, and sets `config.MaxConns` to the constant on a config from
-`pgxpool.ParseConfig`; a test that needs another size sets `MaxConns` itself. A pool copied from
-another pool's `Config()` keeps that pool's size, and `testpg.ClonePool` is sized at the
-constant. A store a product opens sizes its own pool from what its DSN says: the daemon's test
-pools open on DSNs that name `pool_max_conns` (`internal/testpg/testdb`'s `PoolBounded`, at
-`testdb.PoolConns`), so a daemon store a test opens holds that size, and Dispatch's `store.Open`
-holds its `sharedPoolSize` and refuses a DSN that names one.
+A test-owned pool whose URL carries no `pool_max_conns` must use `testpool.ParseConfig` or
+`testpool.NewPool`. That is the rule for `testdb.Outage`, Envoy's `storetest.URL`, and a test's
+own temporary database. Those helpers set MaxConns to `testpool.PoolConns`, 4, which is pgx's
+floor and the size every unsized pool had on CI. A test that needs another size sets MaxConns
+itself. The helper is a public package of the Envoy module, which the daemon imports through its
+replace; it imports only pgxpool and the standard library. It is separate because Envoy's
+`internal/testpg` imports testcontainers.
 
 ## A Go test that opens a NATS client
 

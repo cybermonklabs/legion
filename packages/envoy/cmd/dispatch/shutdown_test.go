@@ -1095,11 +1095,10 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
-	config, err := pgxpool.ParseConfig(relay.url)
+	config, err := testpool.ParseConfig(relay.url)
 	if err != nil {
 		t.Fatalf("parse the relay's URL: %v", err)
 	}
-	config.MaxConns = testpool.PoolConns
 	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
 	opened, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

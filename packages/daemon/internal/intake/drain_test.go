@@ -127,7 +127,6 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	if err != nil {
 		t.Fatalf("parse the delayed database URL: %v", err)
 	}
-	delayed.MaxConns = testpool.PoolConns
 	delayed.ConnConfig.Tracer = counter
 	pool, err := pgxpool.NewWithConfig(ctx, delayed)
 	if err != nil {

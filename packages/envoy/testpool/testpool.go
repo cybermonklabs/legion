@@ -1,7 +1,7 @@
-// Package testpool holds the size of every Postgres pool a test of the envoy and daemon modules
-// builds with pgxpool itself (PoolConns), and NewPool, which is pgxpool.New at that size. pgxpool's
-// own default follows the machine's CPU count, so a test that took it would run with a pool of a
-// different size on every machine.
+// Package testpool holds the size of every PostgreSQL pool a test opens on a DSN that does not
+// itself name `pool_max_conns`. It supplies PoolConns and ParseConfig, which applies it; NewPool
+// builds a pool from that configuration. pgxpool's own default follows the machine's CPU count, so
+// a test that took it would run with a pool of a different size on every machine.
 //
 // It is a public package of the envoy module so that the daemon module imports it as it is: Go's
 // internal rule keeps the daemon from importing a package under packages/envoy/internal, and a
@@ -9,8 +9,8 @@
 // library and nothing else, so a test binary that takes it links no more than that:
 // internal/testpg, beside which it would otherwise sit, imports testcontainers to start a Postgres
 // container. Its users are tests and test helpers of both modules: the daemon's internal/testpg's
-// ClonePool among them, and internal/testpg/testdb, whose PoolConns, the size it writes into each
-// DSN it hands a pool, is this one.
+// ClonePool among them. A URL testdb.PoolBounded returns is already sized from
+// LEGION_TEST_PG_DSN, so its callers use pgxpool.ParseConfig and keep that size.
 package testpool
 
 import (
@@ -32,13 +32,23 @@ import (
 // A test that needs another size sets MaxConns itself.
 const PoolConns = 4
 
-// NewPool is pgxpool.New with MaxConns fixed at PoolConns: a pool on dsn that dials nothing until
-// it is used, as pgxpool.New's does, and that answers pgxpool's own errors unchanged.
-func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+// ParseConfig is pgxpool.ParseConfig for a test-owned DSN that names no pool size, with MaxConns
+// set to PoolConns. A DSN testdb.PoolBounded returned already names the test server's size, which
+// callers must keep with pgxpool.ParseConfig instead.
+func ParseConfig(dsn string) (*pgxpool.Config, error) {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, err
 	}
 	config.MaxConns = PoolConns
+	return config, nil
+}
+
+// NewPool opens a test-owned, unsized DSN with ParseConfig: pgxpool.New at PoolConns.
+func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	config, err := ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
 	return pgxpool.NewWithConfig(ctx, config)
 }

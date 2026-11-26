@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"net"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -8,10 +9,9 @@ import (
 )
 
 // The fixture dials a published port on the machine of the daemon at the endpoint it reaches. A
-// daemon on this machine publishes on 127.0.0.1 alone and is dialled there; one on another machine
-// publishes on every interface and is dialled at its host.
+// daemon on this machine is dialled at loopback; one on another machine is dialled at its host.
 func TestTheDaemonHostFollowsTheEndpointsMachine(t *testing.T) {
-	local := dockerDaemon{dial: "127.0.0.1", bind: "127.0.0.1"}
+	local := dockerDaemon{dial: "127.0.0.1"}
 	for _, tc := range []struct {
 		name, endpoint string
 		want           dockerDaemon
@@ -34,7 +34,7 @@ func TestTheDaemonHostFollowsTheEndpointsMachine(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("daemonHost(%q) = %+v, want %+v", tc.endpoint, got, tc.want)
 			}
-			if address := got.address("32768"); address != tc.address {
+			if address := net.JoinHostPort(got.dial, "32768"); address != tc.address {
 				t.Errorf("address = %q, want %q", address, tc.address)
 			}
 		})
@@ -53,12 +53,10 @@ func TestTheDaemonHostFollowsTheEndpointsMachine(t *testing.T) {
 
 // TESTCONTAINERS_HOST_OVERRIDE names the host a published port is dialled at, as testcontainers-go
 // reads it, whatever machine the endpoint names: a developer container on the host's socket sets
-// it to the host as the container reaches it (the bridge gateway, host.docker.internal). A port
-// dialled at a host that is not loopback is published on every interface of the daemon's machine,
-// since the dial reaches that machine through one of them; a loopback override keeps 127.0.0.1.
-// Empty, it changes nothing.
+// it to the host as the container reaches it (the bridge gateway, host.docker.internal). Empty,
+// it changes nothing.
 func TestTheHostOverrideNamesTheHostAPublishedPortIsDialledAt(t *testing.T) {
-	local := dockerDaemon{dial: "127.0.0.1", bind: "127.0.0.1"}
+	local := dockerDaemon{dial: "127.0.0.1"}
 	remote := dockerDaemon{dial: "10.1.2.3"}
 	for _, tc := range []struct {
 		name, override string
@@ -69,7 +67,7 @@ func TestTheHostOverrideNamesTheHostAPublishedPortIsDialledAt(t *testing.T) {
 		{"a host name over the host's socket", "host.docker.internal", local, dockerDaemon{dial: "host.docker.internal"}, "host.docker.internal:32768"},
 		{"an IPv6 host over the host's socket", "fd00::1", local, dockerDaemon{dial: "fd00::1"}, "[fd00::1]:32768"},
 		{"another machine's daemon", "builder.example", remote, dockerDaemon{dial: "builder.example"}, "builder.example:32768"},
-		{"localhost", "localhost", local, dockerDaemon{dial: "localhost", bind: "127.0.0.1"}, "localhost:32768"},
+		{"localhost", "localhost", local, dockerDaemon{dial: "localhost"}, "localhost:32768"},
 		{"a loopback address", "127.0.0.1", remote, local, "127.0.0.1:32768"},
 		{"no override", "", local, local, "127.0.0.1:32768"},
 		{"no override of another machine's daemon", "", remote, remote, "10.1.2.3:32768"},
@@ -79,7 +77,7 @@ func TestTheHostOverrideNamesTheHostAPublishedPortIsDialledAt(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("withHostOverride(%+v, %q) = %+v, want %+v", tc.daemon, tc.override, got, tc.want)
 			}
-			if address := got.address("32768"); address != tc.address {
+			if address := net.JoinHostPort(got.dial, "32768"); address != tc.address {
 				t.Errorf("address = %q, want %q", address, tc.address)
 			}
 		})
@@ -153,16 +151,5 @@ func TestTheFixtureReachesTheEndpointTheDockerCLIResolves(t *testing.T) {
 	}
 	if len(reached) < 3 {
 		t.Fatalf("the rows reached %d endpoint(s), %v: too few to show which setting wins", len(reached), reached)
-	}
-}
-
-// The publish flag binds the daemon's loopback address for a daemon on this machine, and no
-// address, so every interface, for one on another machine, whose ports this process dials there.
-func TestThePublishFlagFollowsTheDaemonsMachine(t *testing.T) {
-	if got := (dockerDaemon{dial: "127.0.0.1", bind: "127.0.0.1"}).publish(clientPort); got != "127.0.0.1::4222/tcp" {
-		t.Errorf("publish on this machine = %q, want 127.0.0.1::4222/tcp", got)
-	}
-	if got := (dockerDaemon{dial: "10.1.2.3"}).publish(clientPort); got != "4222/tcp" {
-		t.Errorf("publish on another machine = %q, want 4222/tcp", got)
 	}
 }

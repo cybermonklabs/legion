@@ -11,6 +11,7 @@
 package fixtureenv
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
@@ -170,10 +172,10 @@ func MustGuard(keep ...string) {
 	}
 }
 
-// guardFailed ends the test process MustGuard could not guard. It is a function of its own because
-// it is the half of MustGuard a test can run: Guard fails only where os.Unsetenv or os.Setenv
-// does, and neither can be made to fail from outside the process, since os.Unsetenv returns no
-// error on unix and the key os.Setenv is given is a literal of Guard's own.
+// guardFailed ends the test process MustGuard could not guard. Guard can fail while changing its
+// environment or while realTools cannot identify a git or jj from the PATH it was given; that
+// second failure is observable outside this process (TestGuardNamesAToolItCannotRead). This
+// function is separate because it is the half of MustGuard a test can run.
 func guardFailed(err error) {
 	fmt.Fprintln(os.Stderr, "TestMain:", err)
 	os.Exit(1)
@@ -241,15 +243,31 @@ func realTools(path string) (string, error) {
 
 // runningBinary runs onPath with args, which make it run parentExe in a shell under itself, in dir,
 // under the process's environment with path as its PATH and env over it, and answers the absolute
-// path that prints: the program onPath ran. A run that prints no such path is an error naming the
-// command, its status, what it printed and its stderr.
+// path that prints: the program onPath ran. It gives the tool a fixed bound even though Guard runs
+// from TestMain before go test starts the test binary's timeout alarm. A run that prints no such
+// path is an error naming the command, its status, what it printed and its stderr.
+const runningBinaryTimeout = 30 * time.Second
+
 func runningBinary(dir, path, onPath string, args, env []string) (string, error) {
-	cmd := exec.Command(onPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), runningBinaryTimeout)
+	defer cancel()
+	return runningBinaryContext(ctx, dir, path, onPath, args, env)
+}
+
+// runningBinaryContext is runningBinary under ctx, so the test of a blocking wrapper can give it a
+// short deadline without changing Guard's production bound.
+func runningBinaryContext(ctx context.Context, dir, path, onPath string, args, env []string) (string, error) {
+	cmd := exec.CommandContext(ctx, onPath, args...)
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), "PATH="+path), env...)
+	cmd.WaitDelay = 5 * time.Second
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("could not read the program %s runs: `%s %s` did not answer within %s: %w; stderr: %s",
+			onPath, onPath, strings.Join(args, " "), runningBinaryTimeout, ctx.Err(), stderr.String())
+	}
 	binary := strings.TrimSpace(string(out))
 	if err == nil && filepath.IsAbs(binary) {
 		_, err = os.Stat(binary)
