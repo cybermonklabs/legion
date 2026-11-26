@@ -13161,3 +13161,111 @@ test("after Take out of epic with the rows marked last far above the view lands,
     text
   ).toBe(true);
 });
+
+// INFRA-3135, round 29 (the tester's), by the architect's ruling of 2026-11-26 14:12Z on the
+// selection bar's return (dispatch://INFRA-3135/artifact/bar-return-design-md version 7, whose
+// contract names a row as leaving from the reader's press until it is no longer listed, never
+// shorter). Measured at b04db619 in builds Jobs infra-3135-l-h2-zhxxw, infra-3135-l-h4-br4nn and
+// infra-3135-l-h5-2prxr, in Chromium, Firefox and WebKit at 1440x900 and 390x664, 34 of 34 cases: on
+// the project List of an epic's issues, with two rows marked, Take out of epic's writes held and
+// both marks then unticked, so the bar goes by the reader's own untick, the focus stands on the
+// checkbox of the row marked last; once the writes are let through the two rows leave the list and
+// the focus falls to the page body. The List names a row as leaving only once its write has answered
+// (`moved`, features/project/issues-table-actions.ts:242, read as `leaving` at :1106), and this round
+// hands that to the bar's hand-off (IssuesTable.tsx:354, :473), against IssuesTable.tsx:343-345's
+// own words that "a landing never stands on a row the press is taking away however long the write
+// and its read take". The same at 53f87411, 18 of 18 (infra-3135-l-b2-nzlnk).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-29 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): forty issues of an epic seeded, and two Take out of epic presses with their writes held.
+test("with Take out of epic's writes held and both marks then unticked, the project List leaves the focus on a control of the list, never the page body, once the rows leave, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 40; index++) {
+    await createIssue({ parent: epic.key, project: "CORE", title: `Epic row ${index}` });
+  }
+  // Each issue write is held while `holding` is true, and let through after.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route(
+    (url) => /^\/api\/v1\/issues\/[^/]+$/u.test(url.pathname),
+    async (route) => {
+      if (route.request().method() !== "PATCH" || !holding) return route.fallback();
+      held.push(route);
+    }
+  );
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const box = page.getByTestId("issues-table-scroll");
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    const where = `project List at ${size.width}x${size.height}`;
+    await page.setViewportSize(size);
+    await page.goto(
+      `/projects/CORE/issues?f.epic=${encodeURIComponent(`${epic.key} · Table epic`)}`
+    );
+    await expect.poll(() => page.locator("[data-issue-row]").count()).toBeGreaterThanOrEqual(8);
+    await box.evaluate((node) => window.scrollBy(0, node.getBoundingClientRect().top - 60));
+    await settledScrollTop(page);
+    await nextFrames(page);
+    const order = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>("[data-issue-row]")]
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+        .map((row) => row.getAttribute("data-issue-row") ?? "")
+    );
+    const upper = order[2] ?? "";
+    const lower = order[3] ?? "";
+    const marks = [lower, upper].map((key) =>
+      page.getByRole("checkbox", { exact: true, name: `Select ${key}` })
+    );
+    // The lower row first, so the row marked last is the upper one.
+    for (const mark of marks) {
+      await mark.focus();
+      await page.keyboard.press("Space");
+      await expect(mark).toBeChecked();
+    }
+    await expect(bar).toContainText("2 selected");
+    holding = true;
+    await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => held.length, { message: `${where}: the writes were never sent` })
+      .toBeGreaterThan(0);
+    for (const mark of marks) {
+      await mark.click({ force: true });
+      await nextFrames(page);
+    }
+    await expect(bar).toHaveCount(0);
+    holding = false;
+    for (const route of held.splice(0)) await route.continue().catch(() => undefined);
+    await expect(page.locator(`[data-issue-row="${upper}"]`)).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.locator(`[data-issue-row="${lower}"]`)).toHaveCount(0, { timeout: 15_000 });
+    await settledScrollTop(box);
+    await nextFrames(page);
+    // One read is the answer: both rows have left the list and the box holds still, so nothing moves
+    // the focus after this.
+    const focus = await box.evaluate((node) => {
+      const active = document.activeElement;
+      return {
+        body: active === null || active === document.body,
+        inList: active !== null && node.contains(active),
+        name:
+          active === null
+            ? "nothing"
+            : `${active.tagName.toLowerCase()} "${(active.getAttribute("aria-label") ?? active.textContent ?? "").trim().slice(0, 60)}"`,
+      };
+    });
+    if (focus.body || !focus.inList) {
+      wrong.push(
+        `${where}: once the rows left the focus is on ${focus.body ? "the page body" : focus.name}`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
