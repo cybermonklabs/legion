@@ -15,9 +15,9 @@ package agent
 // The rewrite is no new run, as the architect ruled once a rewrite at the run's level wrote 5,526
 // to 17,565 reasoning tokens and made the person wait 1.4 to 4.4 minutes for the answer
 // (dispatch://INFRA-1588/comment/7c38ba3b-bde1-4bb4-bcc7-f966b0968b8c): it is one model call,
-// offered no tool, that asks for no reasoning (rewriteEffort), for which the pacer reserves the
-// reasoning tokens of Fast's calls still (rewriteReasoningTokens), within rewriteCallTime of what
-// is left of the run's working time (rewrite). At 52f1406a that call was given the run's
+// offered no tool, at the lowest effort the chat model's calls ask for (rewriteEffort), whose
+// reasoning the pacer reserves at that effort (rewriteReasoningTokens), within rewriteCallTime of
+// what is left of the run's working time (rewrite). At 52f1406a that call was given the run's
 // whole conversation, and ran past its bound in 2 of 2 tries of the real model, so, as the
 // architect ruled (dispatch://INFRA-1588/comment/8a23ec38-289e-44c4-88a0-b332fd3f5453), it is
 // given a short system message of the answer's rules (rewritePrompt), the person's words, the held
@@ -61,18 +61,15 @@ const retryWords = 90
 // (missedRewrite). A variable, so a test shortens it.
 var rewriteCallTime = 20 * time.Second
 
-// The rewrite's effort and its reserve. The effort is off, no reasoning: the agent loop sends it
-// to both of OpenAI's protocols as "none" and turns thinking off on both of Anthropic's
-// (agentloop's openaiEffort and anthropicOptions). At low effort, Fast's and the guard's check's
-// (Levels, noPlanEffort), the rewrite ran past rewriteCallTime in 4 of 6 held replies of the real
-// model at 84294a61, and the 2 that ended took 19.5 s and 18.4 s with about 1,240 reasoning tokens
-// each, so, as the architect ruled
-// (dispatch://INFRA-1588/comment/24d8e13d-f013-4a87-b748-2f7c55f607e8), it asks for none. Its
-// reserve, the reasoning tokens the pacer reserves for it beside its output tokens and the tokens
-// of its short prompt, is Fast's still (Level.ReasoningTokens), as the check reserves its own
-// (noPlanReasoningTokens).
+// The rewrite's effort and its reserve: the lowest reasoning effort the chat model's calls ask
+// for, Fast's and the guard's check's (Levels, noPlanEffort), and the reasoning tokens the pacer
+// reserves for a call at that effort beside its output tokens and the tokens of its short prompt,
+// Fast's (Level.ReasoningTokens), as the check reserves its own (noPlanReasoningTokens). Low is
+// the lowest the chat model takes: Azure's grok-4.7 refuses a call that asks for no reasoning
+// (effort off, sent as "none") with HTTP 400, which the preview at c0fc22e7 measured in 8 of 8
+// rewrites.
 const (
-	rewriteEffort          = "off"
+	rewriteEffort          = "low"
 	rewriteReasoningTokens = 353
 )
 

@@ -256,16 +256,16 @@ func requireHeldShown(t *testing.T, server *fakeServer, fake *agenttest.Model, h
 	}
 }
 
-// TestTheRewriteIsOfferedNoToolAndNoReasoning: the turn after a reply held back as long is a
+// TestTheRewriteIsOfferedNoToolAtTheLowEffort: the turn after a reply held back as long is a
 // rewrite, not a new run, as the architect ruled
 // (dispatch://INFRA-1588/comment/7c38ba3b-bde1-4bb4-bcc7-f966b0968b8c) once such a turn at the
 // run's level wrote 5,526 to 17,565 reasoning tokens to shorten a reply. A Standard run's first
 // step is offered its tools at the level's effort; its rewrite's request sends no tool and no
-// tool choice and asks for no reasoning, reasoning_effort "none", what the agent loop sends to
-// Chat Completions for rewriteEffort, at the level's output tokens still; and the pacer reserves
-// for it its prompt, the level's output tokens and rewriteReasoningTokens, no tool and not the
-// level's reasoning tokens. Its reply ends the turn done as the answer.
-func TestTheRewriteIsOfferedNoToolAndNoReasoning(t *testing.T) {
+// tool choice and asks for rewriteEffort, the lowest effort the chat model's calls ask for, at the
+// level's output tokens still; and the pacer reserves for it its prompt, the level's output
+// tokens and rewriteReasoningTokens, no tool and not the level's reasoning tokens. Its reply ends
+// the turn done as the answer.
+func TestTheRewriteIsOfferedNoToolAtTheLowEffort(t *testing.T) {
 	long, short := plainWords("long", 130), plainWords("short", 30)
 	fake := agenttest.New(t, lengthScript(long, short))
 	server, client := newFakeServer(t, keptPlan)
@@ -283,8 +283,8 @@ func TestTheRewriteIsOfferedNoToolAndNoReasoning(t *testing.T) {
 		t.Errorf("the first step asks for effort %v with the tools %v, want the Standard level's %s and its tools", effort, tools, standard.Effort)
 	}
 	rewrite := steps[1]
-	if effort, tools, choice := rewrite.Field("reasoning_effort"), rewrite.Field("tools"), rewrite.Field("tool_choice"); effort != "none" || tools != nil || choice != nil {
-		t.Errorf("the rewrite asks for effort %v with the tools %v and the tool choice %v, want none, no reasoning, and no tool", effort, tools, choice)
+	if effort, tools, choice := rewrite.Field("reasoning_effort"), rewrite.Field("tools"), rewrite.Field("tool_choice"); effort != rewriteEffort || tools != nil || choice != nil {
+		t.Errorf("the rewrite asks for effort %v with the tools %v and the tool choice %v, want %s and no tool", effort, tools, choice, rewriteEffort)
 	}
 	if tokens := rewrite.Field("max_tokens"); tokens != float64(standard.OutputTokens) {
 		t.Errorf("the rewrite asks for max_tokens %v, want the level's %d", tokens, standard.OutputTokens)
@@ -292,8 +292,8 @@ func TestTheRewriteIsOfferedNoToolAndNoReasoning(t *testing.T) {
 	chars := messageChars(rewrite)
 	want := chars/charsPerToken + standard.OutputTokens + rewriteReasoningTokens
 	if reserved := server.lastReply(t).ReservedTokens; reserved != want {
-		t.Errorf("the pacer reserved %d tokens for the rewrite, want %d: a quarter of the %d characters of its messages, no tool, the level's %d output tokens and Fast's %d reasoning tokens",
-			reserved, want, chars, standard.OutputTokens, rewriteReasoningTokens)
+		t.Errorf("the pacer reserved %d tokens for the rewrite, want %d: a quarter of the %d characters of its messages, no tool, the level's %d output tokens and the %d reasoning tokens of %s effort",
+			reserved, want, chars, standard.OutputTokens, rewriteReasoningTokens, rewriteEffort)
 	}
 }
 
@@ -374,7 +374,7 @@ func TestARewriteThatFailsShowsTheHeldReplyWhole(t *testing.T) {
 // writes a long reply, given all of that. Its rewrite's request holds rewritePrompt as its system
 // message, then the person's words as every step gives them, the held reply as the model's own and
 // longTold after it, and nothing else - no earlier turn, no page, no read, no earlier step - and
-// sends no tool and no tool choice, with reasoning_effort "none", no reasoning.
+// sends no tool and no tool choice, at rewriteEffort.
 func TestTheRewriteIsGivenTheWordsTheHeldReplyAndTheNoteAlone(t *testing.T) {
 	const words, earlier = "what is the state of ACME-7's open children", "who holds ACME-7"
 	long, short := "[ACME-7](dispatch://ACME-7) waits on "+plainWords("long", 130), plainWords("short", 30)
@@ -425,8 +425,8 @@ func TestTheRewriteIsGivenTheWordsTheHeldReplyAndTheNoteAlone(t *testing.T) {
 			t.Errorf("the rewrite's message %d is %v %q, want %s %q", at, message["role"], messageText(message), want[at].role, want[at].text)
 		}
 	}
-	if effort, tools, choice := rewrite.Field("reasoning_effort"), rewrite.Field("tools"), rewrite.Field("tool_choice"); effort != "none" || tools != nil || choice != nil {
-		t.Errorf("the rewrite asks for effort %v with the tools %v and the tool choice %v, want none, no reasoning, and no tool", effort, tools, choice)
+	if effort, tools, choice := rewrite.Field("reasoning_effort"), rewrite.Field("tools"), rewrite.Field("tool_choice"); effort != rewriteEffort || tools != nil || choice != nil {
+		t.Errorf("the rewrite asks for effort %v with the tools %v and the tool choice %v, want %s and no tool", effort, tools, choice, rewriteEffort)
 	}
 }
 

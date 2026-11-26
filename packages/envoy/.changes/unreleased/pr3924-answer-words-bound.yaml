@@ -14,9 +14,8 @@ body: |-
   status and title that each link already shows, or for the same answer again where the person's
   words ask for more than a short answer. The rewrite is no new run: it is given a short system
   message of the answer's rules, the person's words, the first reply and that note, and none of
-  the run's reads, earlier steps or tools; it has 20 seconds of its own within what is left of
-  the run's working time, and asks for no reasoning (`off`) whatever the run's level, since at
-  low effort it ran past those 20 seconds in 4 of 6 tries with the real model. It may
+  the run's reads, earlier steps or tools; it asks for low reasoning effort whatever the run's
+  level, and has 20 seconds of its own within what is left of the run's working time. It may
   shorten the first reply and add nothing to it: a rewrite whose reply links an item or an
   address the first reply does not link, or names an issue key the first reply does not name,
   or that runs out of its time or fails, ends the turn with the first reply shown whole, never
