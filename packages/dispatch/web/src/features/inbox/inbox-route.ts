@@ -198,7 +198,9 @@ export function buildInboxPath(route: InboxRoute = {}): string {
  * through the path `buildInboxPath` builds rather than through the parameters alone, because
  * the Inbox's query string is rebuilt whole from the route on every change - a parameter
  * outside `InboxRoute` would be dropped by the next selection - and because the Inbox the
- * address points at is `/`, whichever of the page's addresses the reader arrived on.
+ * address points at is `/`, whichever of the page's addresses the reader arrived on. The write
+ * replaces the history entry, and carries `state` into it where the caller keeps something of
+ * its own there (the open row's, `pane-selection.ts`).
  *
  * An Inbox address that holds both an agent and `section` - the Agents page's Needs you link
  * before it named the agent alone, kept in a bookmark or a history - is read as the agent
@@ -206,12 +208,18 @@ export function buildInboxPath(route: InboxRoute = {}): string {
  * no history entry holds an address the Inbox does not draw. Only the Inbox's own address is
  * rewritten: a page the drawer peeks over keeps its own.
  */
-export function useInboxRoute(): readonly [InboxRoute, (next: InboxRoute) => void] {
+export function useInboxRoute(): readonly [
+  InboxRoute,
+  (next: InboxRoute, state?: unknown) => void,
+] {
   const params = useAddressParams();
   const { pathname } = usePageAddress();
   const go = useAddressNavigate();
   const route = useMemo(() => inboxRouteOf(params), [params]);
-  const setRoute = useCallback((next: InboxRoute) => go(buildInboxPath(next)), [go]);
+  const setRoute = useCallback(
+    (next: InboxRoute, state?: unknown) => go(buildInboxPath(next), { state }),
+    [go]
+  );
   const stale = pathname === "/" && route.agent !== undefined && params.has("section");
   useEffect(() => {
     if (stale) go(buildInboxPath(route));

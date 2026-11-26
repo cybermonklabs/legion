@@ -11,7 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import { usersQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow, OpenAskRow } from "../../api/types";
@@ -33,7 +33,12 @@ import type { SegmentedControlProps } from "../../components/SegmentedControl";
 import { focusListStop, SelectionBar, useLastMarkedPlace } from "../../components/SelectionBar";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useNestedPanels } from "../../components/useNestedPanels";
-import { capSearchQuery, useNavigationState } from "../../lib/page-address";
+import {
+  capSearchQuery,
+  loadWholePage,
+  useAddressNavigate,
+  useNavigationState,
+} from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -1119,11 +1124,9 @@ function InboxBody({
   /** Opens the compose dialog: **New message** and `n`. */
   readonly onCompose: () => void;
 }): ReactNode {
-  const [addressRoute] = useInboxRoute();
-  // The router's own writer, for the two writes that carry the history entry's state with them
-  // (`pane-selection.ts`'s marks): `useInboxRoute`'s writer carries none.
-  const navigate = useNavigate();
+  const [addressRoute, goToRoute] = useInboxRoute();
   const entryState = useNavigationState();
+  const navigate = useAddressNavigate();
   const filter = filterOverride ?? addressRoute;
   // The reading column stands beside the list from 1280 px, on the page alone (`columns`).
   // Below that width the page draws the same short rows, and a row the reader opens is read in
@@ -1154,8 +1157,8 @@ function InboxBody({
   const showDismissed = show === "dismissed";
   const listRef = useRef<HTMLElement>(null);
   /** The list column, which scrolls in itself beside the reading column. It is drawn with no row
-   *  as well, and it is the list's own stop for the selection bar's hand-off
-   *  (`useLastMarkedPlace`). */
+   *  as well, and it is the list's own stop for the selection bar's hand-off while the list is
+   *  shown (`barStop`, `useLastMarkedPlace`). */
   const listScroller = useRef<HTMLElement>(null);
   /** Everything this Inbox draws under the bar of selected rows - the header, the list or its
    *  empty message, and the column or the reading view - where the pane's hand-off finds the row,
@@ -1204,15 +1207,12 @@ function InboxBody({
     if (onFilterChange) {
       onFilterChange(next);
     } else {
-      // To the address, with `replace` rather than a push: a reader trying filters out would
-      // otherwise have to walk Back through every pick, the rule every address-backed filter here
-      // holds to (`lib/page-address.ts`). A rewrite that keeps the row the address names keeps
-      // what its history entry says of it too: who picked the row, and whether opening it pushed
-      // over the list (`pane-selection.ts`).
-      navigate(buildInboxPath(next), {
-        replace: true,
-        state: next.item === filter.item ? entryState : undefined,
-      });
+      // To the address, which `useInboxRoute` writes with `replace` rather than pushing: a
+      // reader trying filters out would otherwise have to walk Back through every pick, the
+      // rule every address-backed filter here holds to (`lib/page-address.ts`). A rewrite that
+      // keeps the row the address names keeps what its history entry says of it too: who picked
+      // the row, and whether opening it pushed over the list (`pane-selection.ts`).
+      goToRoute(next, next.item === filter.item ? entryState : undefined);
     }
   };
   /** The search box, so `f` can land the reader's focus in it from anywhere on the page. */
@@ -1297,18 +1297,21 @@ function InboxBody({
   // write lands (see `SnoozeControl`). A refused or stopped write holds no row, and its reason
   // stays with the ask for every control drawn for it. Under the Blocked on you narrowing
   // (`?section=needs-you`), which lists no snoozed ask, the optimistic moment drops the row at
-  // once, and only the reader's hand keeps it.
+  // once: the hand's own hold keeps no row a press of the reader's is taking away (`leavingNow`).
   const snoozeWrites = useInboxWrites(AskSnoozeContext);
   const snoozing = snoozeWrites.out;
   /** The asks the reader wrote to from this list - a snooze, Assign to me, a hand-on, a bulk
-   *  snooze - by the render their write ended after, `null` while it is out. A row such a write
-   *  takes out of the list is the reader's own move, and it leaves no later than the render after
-   *  the write ends: each write moves the Inbox read itself as it is made, and a row its write
-   *  held in the list is let go as it ends. Once the selection has settled on that render the
-   *  mark is dropped (the effect after `usePaneSelection`), so a row the write left in the list
-   *  that later leaves on its own - withdrawn, resolved - is said to have left. The writes are
-   *  this Inbox's own (`InboxAskWrites`), so the marks are read off them after each commit
-   *  (below), not told by each control that pressed. */
+   *  snooze - by the render their write ended after, `null` while it is live: a snooze, an
+   *  Assign to me or a hand-on while it is out or failed (`AskWrites.live`), so one Dispatch
+   *  refused or the reader stopped is still theirs, and the bar's snooze until it settles,
+   *  whatever Dispatch answers. A row such a write takes out of the list is the reader's own
+   *  move, and it leaves no later than the render after the write ends: each write moves the
+   *  Inbox read itself as it is made, and a row its write held in the list is let go as it ends.
+   *  Once the selection has settled on that render the mark is dropped (the effect after
+   *  `usePaneSelection`), so a row the write left in the list that later leaves on its own -
+   *  withdrawn, resolved - is said to have left. The writes are this Inbox's own
+   *  (`InboxAskWrites`), so the marks are read off them after each commit (below), not told by
+   *  each control that pressed. */
   const writtenHere = useRef<Map<string, number | null>>(new Map());
   /** Which render this is: an ended mark is dropped after the first render made after it ended. */
   const renders = useRef(0);
@@ -1373,8 +1376,8 @@ function InboxBody({
   // reader's filters hide, and every ask block of a document open in the column, not only the
   // selected one. Keeping one of those would pull a question the filters hide into the list. So
   // a write keeps its ask's row only among `presented`, the rows this list last drew.
-  const assignsOut = useInboxWrites(AskAssignWritesContext).out;
-  const handOnsOut = useInboxWrites(AskHandOnWritesContext).out;
+  const { live: assignsLive, out: assignsOut } = useInboxWrites(AskAssignWritesContext);
+  const { live: handOnsLive, out: handOnsOut } = useInboxWrites(AskHandOnWritesContext);
   const answersOut = useInboxWrites(AskAnswerWritesContext).out;
   const declinesOut = useInboxWrites(AskDeclineWritesContext).out;
   const clarificationsOut = useInboxWrites(AskClarificationWritesContext).out;
@@ -1586,17 +1589,18 @@ function InboxBody({
     }
   });
   // The marks of the reader's own writes (`writtenHere`), read off this Inbox's writes after each
-  // commit: an ask with a snooze, an Assign to me or a hand-on out, or under the bar's snooze, is
-  // marked while that write is out, and a mark whose write is no longer out ends at this render.
-  // An ask thread's reply from a card that is no longer out and landed marks its thread row
-  // (`repliedHere`). A layout effect declared before the selection's own, so a commit that takes
-  // a row away has its marks before the selection reads them (`usePaneSelection`).
+  // commit: an ask with a snooze, an Assign to me or a hand-on out or failed, or under the bar's
+  // snooze while it is pending, is marked while that lasts, and a mark whose write no longer
+  // marks it ends at this render. An ask thread's reply from a card that is no longer out and
+  // landed marks its thread row (`repliedHere`). A layout effect declared before the selection's
+  // own, so a commit that takes a row away has its marks before the selection reads them
+  // (`usePaneSelection`).
   useLayoutEffect(() => {
-    const out = new Set([...snoozing, ...bulkSnoozing, ...assignsOut, ...handOnsOut]);
-    for (const id of out) writtenHere.current.set(id, null);
+    const live = new Set([...snoozeWrites.live, ...bulkSnoozing, ...assignsLive, ...handOnsLive]);
+    for (const id of live) writtenHere.current.set(id, null);
     let ended = false;
     for (const [id, at] of writtenHere.current) {
-      if (at !== null || out.has(id)) continue;
+      if (at !== null || live.has(id)) continue;
       writtenHere.current.set(id, thisRender);
       ended = true;
     }
@@ -1903,11 +1907,11 @@ function InboxBody({
    *  focus to `document.body` - where neither of Escape's branches holds and the key would do
    *  nothing. The reader then stands exactly where a click and then `j` leaves them today. A
    *  reading view below 1280 px has no row in sight to come back to, and its Escape goes to the
-   *  list rather than to a row, so from inside it the step alone is taken. From anywhere else
-   *  the column's noted focus is forgotten: a control the column's own code took away under the
-   *  focus, with no render of the Inbox's to read that loss, leaves the note on it, and the
-   *  step's commit would hand the focus to the next question's stop (below `paneScroller`),
-   *  which no loss of this key took. */
+   *  list rather than to a row, so the step alone is taken. From anywhere else the column's
+   *  noted focus is forgotten: a control the column's own code took away under the focus, with
+   *  no render of the Inbox's to read that loss, leaves the note on it, and the step's commit
+   *  would hand the focus to the next question's stop (below `paneScroller`), which no loss of
+   *  this key took. */
   const move = (delta: 1 | -1) => {
     if (mode === "columns" && focusInPane()) {
       paneSelection.selectedRow()?.focus();
@@ -2114,10 +2118,9 @@ function InboxBody({
         const owner = inHand("[data-inbox-owner]");
         // Below 1280 px with no row open, a thread row's title opens the row in place on a plain
         // click (`ThreadTitle`'s `onOpen`), and a script's click is one. `o` is the way to the
-        // thread's own page, as it is beside the column, so it follows the link itself - through
-        // the router, the one way this page moves the address (`lib/page-address.ts`).
+        // thread's own page, as it is beside the column, so it follows the link itself.
         if (mode === "list" && handRow()?.kind !== "ask" && owner instanceof HTMLAnchorElement) {
-          navigate(`${owner.pathname}${owner.search}${owner.hash}`);
+          loadWholePage(owner.href);
           return;
         }
         owner?.click();
@@ -2181,12 +2184,12 @@ function InboxBody({
       // Below 1280 px the reading view stands in the list's place, so one level out of it is
       // the list, at the row the reader left (`pane-selection.ts`). In the answer box, a text
       // input or the document's editor Escape is that field's own, and leaving the whole view
-      // from there would be a bigger move than the reader pressed for; a select in the view's
-      // head - Snooze, Priority - takes no typed text, so Escape there is the way back to the row,
-      // as it was from the card's own Snooze. Inside the question's card - an option, a button -
-      // one level out is the view itself, its scroller, where the next Escape is the list: the
-      // options the reader picked are the card's own state, and closing the view would drop
-      // them. Registered ahead of `clear-selection`, so the marks the bulk bar holds outlast it.
+      // from there would be a bigger move than the reader pressed for; a closed pick in the view's
+      // head - Snooze, Priority - holds no text of the reader's, so Escape there is the way back to
+      // the row, as it was from the card's own Snooze. Inside the question's card - an option, a
+      // button - one level out is the view itself, its scroller, where the next Escape is the
+      // list: the options the reader picked are the card's own state, and closing the view would
+      // drop them. Registered ahead of `clear-selection`, so the marks the bulk bar holds outlast it.
       // Not a palette row, for the reason `clear-selection` gives.
       id: "leave-reading",
       inEditable: true,
@@ -2202,7 +2205,7 @@ function InboxBody({
       },
       when: () =>
         mode === "reading" &&
-        (document.activeElement === null || !takesText(document.activeElement)) &&
+        !(document.activeElement !== null && takesText(document.activeElement)) &&
         document.activeElement?.matches(BULK_PICKER_SELECTOR) !== true &&
         (outsideAskCard() || paneScroller() !== null),
     },
@@ -2329,14 +2332,14 @@ function InboxBody({
       keys: "Escape",
       label: "Back to the list from the bulk snooze picker",
       run: () => {
-        // The row `h` was pressed on, else the first row, passing over every row the bar's own
+        // In the reading view the view's scroller, where the bar's actions came from. Else the
+        // row `h` was pressed on, else the first row, passing over every row the bar's own
         // Snooze write is over while that write is pending (`bulkSnoozing`, which the bar empties
         // once the write settles, a refusal or a stop included). The list keeps such a row in its
         // band only until the write lands, and its move into a folded Later then is no press's
         // doing (`causedByReader`), so a focus put on it would fall to the body. With no drawn
         // row left that the bar's write is not taking away, the bar itself is the level out: it
-        // holds the count and the way to clear it. A reading view below 1280 px hides the list,
-        // so there the view's scroller is the level out, else the bar.
+        // holds the count and the way to clear it.
         (mode === "reading"
           ? (paneScroller() ?? bulkBarRef.current)
           : ([originRow(pickerOrigin.current), ...rows()].find(
@@ -2409,25 +2412,33 @@ function InboxBody({
   // The bar's hand-off (`useLastMarkedPlace`): after a press of the bar that hands the reader on
   // (R8: a Dismiss, a Move to Inbox, a Snooze once it lands), the target it hands them on to - the
   // row of the item after the marked ones, which takes the focus itself, or the list's empty
-  // message (`paneSelection.takeHandOff` below), with the list column's own stop holding the focus
-  // until the list draws it. Else the mark of the row the reader marked last while the list holds
-  // it, out of sight or not. After a press that took that row away: a row the reader can see at
-  // its place, else before it, else after it. With no row marked: the first row the reader can see
-  // below whatever the page draws over the list. Each is shown whole at its nearest edge. Else the
-  // list column's own stop, with no scroll. While a press is taking a listed row off this view
-  // (`leavingNow`), the landing is owed and made by the commit that takes those rows away: a
+  // message (`paneSelection.takeHandOff` below), with the list's own stop (`barStop`) holding the
+  // focus until the list draws it. Else the mark of the row the reader marked last while the list
+  // holds it, out of sight or not. After a press that took that row away: a row the reader can see
+  // at its place, else before it, else after it. With no row marked: the first row the reader can
+  // see below whatever the page draws over the list. Each is shown whole at its nearest edge. Else
+  // the list's own stop, with no scroll (`barStop`). While a press is taking a listed row off this
+  // view (`leavingNow`), the landing is owed and made by the commit that takes those rows away: a
   // Dismiss's or a Move to Inbox's rows (`dismissedHere`), and a Snooze's, the bar's and a row's
   // own (`snoozedHere`). The list keeps a snoozed row in its band only until the write lands, and
   // its move into a folded Later then is no press's doing, so a focus put on it falls to the page's
   // body - which is what the bar's Snooze left in WebKit, eight times in eight repeats (builds Job
   // `infra-3135-infra-3135-r29t-snp-vfht5`). So the name stands until the read that places the
   // row.
-  /** Whether a press of the reader's is taking this row off the view: the one answer the bar's
-   *  hand-off is given and the one the hand's own hold reads (`seen`, below). A row named here is
-   *  never kept on the page for the hand in it: the hold that keeps a row under the reader's hand
-   *  would keep this one for the focus the hand-off parked on it, and the write that takes it away
-   *  would never land. */
-  const leavingNow = (id: string): boolean => dismissedHere(id) || snoozedHere.current.has(id);
+  /** Whether a press of the reader's is taking this row off the view: a Dismiss's or a Move to
+   *  Inbox's (`dismissedHere`), and a Snooze's, the bar's or a row's own, from the pick until the
+   *  first read the list adopts after its write (`snoozedHere`). The one answer the bar's hand-off
+   *  is given, the one the hand's own hold reads (`seen`, below), and the one the list's anchor
+   *  reads beside its own other reasons (`ViewportAnchor`'s `leaving`, below): the rows the
+   *  hand-off waits for are the rows the anchor lets go, so once the landing is made, their going
+   *  moves nothing. The anchor names the rows of a commit before that commit's layout effects
+   *  run (`getSnapshotBeforeUpdate`), where the Snooze names below are still the last commit's,
+   *  so a Snooze's write out (`snoozing`, `bulkSnoozing`) names its rows too: the pick's own
+   *  commit is named for it. A row named here is never kept on the page for the hand in it: the
+   *  hold that keeps a row under the reader's hand would keep this one for the focus the hand-off
+   *  parked on it, and the write that takes it away would never land. */
+  const leavingNow = (id: string): boolean =>
+    dismissedHere(id) || snoozing.has(id) || bulkSnoozing.has(id) || snoozedHere.current.has(id);
   // The names the hand-off reads, kept after every commit and before it reads them in that commit
   // (`useLastMarkedPlace`, below).
   //
@@ -2465,12 +2476,33 @@ function InboxBody({
       if (refused || adoptedInbox !== name.read) names.delete(id);
     }
   });
+  // Below 1280 px with a row open, the page draws that row's reading view in the list's place and
+  // hides the list (`page`'s `readingView`), and a focus put in the hidden list falls to the
+  // page's body. So there the hand-off reads the view: the view's row is the one row drawn, the
+  // view's own checkbox is that row's mark, and the view's scroller is the list's own stop.
+  /** The open row's reading view while it stands in the list's place, else null. */
+  const barReadingView = (): HTMLElement | null => (mode === "reading" ? paneRef.current : null);
+  /** The list's own stop for the bar's hand-off: the reading view's scroller while the view
+   *  stands in the list's place, else the list column. */
+  const barStop = (): HTMLElement | null =>
+    barReadingView() === null ? listScroller.current : paneScroller();
   const landAtPlace = useLastMarkedPlace({
-    control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
+    control: (id) => {
+      const view = barReadingView();
+      // The view's own mark is the first checkbox in it: its first line, Back and Mark, comes
+      // before the row's body (`ReadingView`).
+      const row = view === null ? originRow(id) : view.dataset.inboxReadingRow === id ? view : null;
+      return row?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null;
+    },
     lastMarked,
     leaving: leavingNow,
-    list: () => listScroller.current,
-    order: () => rows().map((row) => row.dataset.inboxRow ?? ""),
+    list: barStop,
+    order: () => {
+      const view = barReadingView();
+      return view === null
+        ? rows().map((row) => row.dataset.inboxRow ?? "")
+        : [view.dataset.inboxReadingRow ?? ""];
+    },
     shown: bulkBarShown,
   });
   /** The asks of the bar's Snooze whose hand-off is begun (`paneSelection.beginHandOff`), from its
@@ -2573,9 +2605,9 @@ function InboxBody({
   // marked - is held in the band they saw it in until the Inbox lets go of it once the write
   // lands (`heldRow`), while the list still lists it. A refused or stopped write holds nothing.
   // Under the Blocked on you narrowing, which lists no snoozed ask, the row is dropped at once,
-  // and only the reader's hand holds it. A row whose Assign to me, hand-on, answer, decline,
-  // question back or reply is out is held as the row under the hand is, listed or not, until
-  // that write lands.
+  // and the reader's hand does not hold it (`leavingNow`). A row whose Assign to me, hand-on,
+  // answer, decline, question back or reply is out is held as the row under the hand is, listed
+  // or not, until that write lands.
   // That band is a band of the layout the row was drawn under, so a snooze holds its row only
   // while the list is still drawn under it - the same grouping, and the same view. Under that
   // layout the band a write holds its row in is drawn again though no other row is left in it
@@ -2650,6 +2682,7 @@ function InboxBody({
     if (onFilterChange) onFilterChange(next);
     else {
       navigate(buildInboxPath(next), {
+        replace: false,
         state:
           inboxEntryState(entryState).inboxDefaultPick === true
             ? { inboxDefaultPick: true }
@@ -3012,11 +3045,11 @@ function InboxBody({
       // reader saw once they go. Then the row takes the focus, and is shown whole by the least
       // scroll once the foot's pass has given the list the room the bar took. A target not drawn
       // yet - the empty message of a press that empties the view, drawn once its rows have gone -
-      // takes it once the list draws it, and the list column's own stop holds it until then. Else
-      // the hand-off above lands by its own rule, and the list column's own stop is the last place
-      // the focus can go.
+      // takes it once the list draws it, and the list's own stop (`barStop`) holds it until then.
+      // Else the hand-off above lands by its own rule, and the list's own stop (`barStop`) is the
+      // last place the focus can go.
       returnFocus={() =>
-        landAtPlace.land(paneSelection.takeHandOff()) ? null : focusListStop(listScroller.current)
+        landAtPlace.land(paneSelection.takeHandOff()) ? null : focusListStop(barStop())
       }
       size={BAR_SIZE}
       state={barState}
@@ -3390,11 +3423,15 @@ function InboxBody({
   //
   // The anchor does not hold the reader's row in place against the rows a press of theirs takes
   // away (`leaving`): the rows after them move up into their place, as the reader asked. Those
-  // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), the rows
-  // a snooze write, a row's own or the bar's, moves to another band in the commit that lets go of
-  // them, the rows an Assign to me, a hand-on, an answer, a decline, a question back or a reply
-  // lets go of, which then leave the list where the read no longer lists them there, and the rows
-  // of a band the reader's press on its toggle folds shut (`folding`), in the commit that folds it.
+  // are the rows the bar's hand-off waits for (`leavingNow`), a Dismiss's, a Move to Inbox's and a
+  // Snooze's, a row's own or the bar's, for as long as the hand-off waits for them: a snoozed row
+  // the motion hold keeps drawn after its write lands is named until it goes, and its going after
+  // the landing moves no row (the tester's red row of INFRA-3135's round 29, builds Job
+  // `infra-3135-i-h5-g6tnd`, where the anchor named it only while the write was out and scrolled
+  // the list back by its height). Beside them, the rows an Assign to me, a hand-on, an answer, a
+  // decline, a question back or a reply lets go of, which then leave the list where the read no
+  // longer lists them there, and the rows of a band the reader's press on its toggle folds shut
+  // (`folding`), in the commit that folds it.
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -3415,12 +3452,7 @@ function InboxBody({
         group="data-inbox-section"
         item={ROW_ATTRIBUTE}
         leaving={(id) =>
-          dismissedHere(id) ||
-          snoozing.has(id) ||
-          bulkSnoozing.has(id) ||
-          askWriteOut(id) ||
-          replying.has(id) ||
-          folding.current?.has(id) === true
+          leavingNow(id) || askWriteOut(id) || replying.has(id) || folding.current?.has(id) === true
         }
         ref={viewport}
         rootRef={listRef}

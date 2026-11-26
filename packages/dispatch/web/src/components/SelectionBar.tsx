@@ -87,6 +87,11 @@ export interface MarkedList {
    *  null), and lands on its mark once drawn. Answers what takes that landing back. A list that
    *  draws every row it holds leaves this out. */
   readonly drawRow?: (id: string) => () => void;
+  /** Makes the list's own layout current against the room the page gives it now: the hand-off
+   *  calls it right before each landing it makes, the table's own through `drawRow` included, and
+   *  after the foot's own pass (`afterFootPass`), so the box the landing is judged against is the
+   *  box the list keeps after it. A list whose layout follows the page by itself leaves this out. */
+  readonly fit?: () => void;
   /** Whether a press of the reader's is taking row `id` away while the page still draws it: from
    *  the press until the row is no longer in `order`, or until the press is refused or undone. The
    *  hand-off owes its landing while any listed row is named here, and the page never keeps a row
@@ -111,7 +116,12 @@ export interface MarkedList {
  * the place yet. Where the going left the focus on the page's body, it is parked with no scroll
  * (`park`): on the mark of the row the reader marked last while the list draws it and the reader
  * can see part of it, else on the list's own stop, and on that stop where the page named a target
- * it has not drawn yet. A focus the reader holds elsewhere is theirs. Each commit asks again.
+ * it has not drawn yet. A focus the reader holds elsewhere is theirs. The bar asks the hand-off
+ * only for a focus its going dropped onto the body (`land`); a going that leaves the focus in a
+ * row the list names as leaving - the reader's own untick of the last mark while the press's
+ * writes are out, by a click that keeps the focus on the mark - is owed by the hand-off itself,
+ * in that commit, and moves nothing then: the row's going would drop the reader's focus onto the
+ * body, and the landing takes it then. Each commit asks again.
  *
  * **Landed.** No listed row is leaving, so the hand-off lands once and then watches nothing. The
  * place is the mark of the row the reader marked last while the list holds it, out of sight or
@@ -125,9 +135,10 @@ export interface MarkedList {
  * on to (`land`'s `to`: the Inbox's R8 of dispatch://INFRA-2160, the row of the item after the
  * marked ones, or the list's empty message), that target is the place instead, and the place of
  * the row marked last is not read: it takes the focus and is shown whole at its nearest edge the
- * same way. The landing is made once the foot's own pass has given the list the room the bar's
+ * same way. Every landing is made once the foot's own pass has given the list the room the bar's
  * foot had back (`hooks/useFootInset.ts`'s `afterFootPass`), since that pass moves the box the
- * reader sees the rows through.
+ * reader sees the rows through, and against the list's layout made current right then
+ * (`MarkedList`'s `fit`).
  *
  * **Drawing.** The place is not drawn yet: the target the page named, where the list has not
  * drawn it (the Inbox draws its empty message only once the rows a press takes away have gone),
@@ -136,24 +147,31 @@ export interface MarkedList {
  * hand-off parked it on in the list (`holdOnStop`), and the landing is owed: the named target
  * takes the focus at its nearest edge by the least scroll (`landNearest`) in the first commit that
  * draws it, once the foot's pass has run, and the table draws its row and lands on it itself
- * (`MarkedList`'s `drawRow`), while the hand-off holds what takes that landing back. A list
- * without `drawRow` that holds the row marked last undrawn answers false from `land` and leaves
- * the landing to the list's own stop.
+ * (`MarkedList`'s `drawRow`), after that pass too, while the hand-off owes that landing and holds
+ * what takes it back. A list without `drawRow` that holds the row marked last undrawn answers
+ * false from `land` and leaves the landing to the list's own stop.
  *
- * **Cancelled.** The reader's own press, key or wheel (`READER_ACTS`) ends whatever is owed, the
- * table's landing on a row it is drawing included. A press the armed press counts as its own - the
+ * **Cancelled.** The reader's own press, key or wheel (`READER_ACTS`) ends whatever is owed where
+ * it leaves the focus on a control that stays, or on the page's body by their own doing, as a
+ * click on a blank part of the page leaves it. A press the armed press counts as its own - the
  * second press on a control its write holds - is no such act (`pressIsArmedOwn`), and neither is
  * a modifier key alone, which only changes the key pressed with it (`LONE_MODIFIERS`): the Tab of
- * Shift+Tab is the act, and it starts from the parked mark. Where the act leaves the focus on the
- * parked mark of a leaving row, the list's own stop takes it with no scroll, so it does not fall to
- * the body with that row. That is read once the act has been answered (`afterAnswer`): a task
- * after a press or a wheel, and a task after a key's own keyup, at which Space has ticked the mark.
- * A settle before the read - a new landing owed, or the hook's unmount - ends it unmade, so a key
- * whose keyup never comes, as when the window loses the focus, leaves no wait behind. Nothing of
- * this follows the reader after that.
+ * Shift+Tab is the act, and it starts from the parked mark. Where the act left the focus is read
+ * once the act has been answered (`afterAnswer`): a task after a press or a wheel, and a task
+ * after a key's own keyup, by which the page's keymap has moved the focus and Space has ticked
+ * the mark. Nothing lands between the act and that read: the act takes back the table's landing
+ * on a row it is drawing too. Where the read finds the focus in a row the list names as leaving -
+ * the parked mark, or another leaving row the reader's key moved it into - or on the body because
+ * the control that held it went with its row, the landing stays owed, as in Owed, and is made
+ * once those rows have gone; the table is asked to draw its row again then. Otherwise nothing of
+ * this follows the reader after that. A settle before the read - a new landing owed, or the
+ * hook's unmount - ends it unmade, so a key whose keyup never comes, as when the window loses the
+ * focus, leaves no wait behind.
  *
  * So a reader deep in a long list keeps their place, and the focus goes neither to the list's first
- * row nor to the page's body.
+ * row nor to the page's body. One case is not answered yet: a bar action that a dialog confirms,
+ * as main's parent-status question does for Move to epic, ends on the body, because the dialog's
+ * confirm is then the armed press and the bar's own gate is not (the pull request's Fast-follow).
  */
 export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
@@ -166,8 +184,14 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // What is owed, from the bar's going until the landing is made or the reader acts. Null in Idle
   // and once it is settled. Its identity is the token a landing waiting on the foot's pass checks.
   const owed = useRef<Owed | null>(null);
-  // The mark a park left the focus on while its row is leaving, else null.
-  const parked = useRef<HTMLElement | null>(null);
+  // The read of where the reader's act left the focus, which `owe` puts off until the act has been
+  // answered (`afterAnswer`), as this render wrote it below: it can owe the landing again, through
+  // `owePlace`, which is written after `owe` and owes through it.
+  const answerAct = useRef<(last: string | null, from: Element | null, to?: LandingTarget) => void>(
+    () => undefined
+  );
+  // Whether the bar was drawn at the host's last commit, so the commit that takes it away is known.
+  const drawn = useRef(false);
   // What ends, unmade, the read of where the reader's act left the focus (`afterAnswer`) while it
   // is still to come, else null.
   const pending = useRef<(() => void) | null>(null);
@@ -176,7 +200,6 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   const settle = useCallback(() => {
     const was = owed.current;
     owed.current = null;
-    parked.current = null;
     was?.unwatch();
     pending.current?.();
     pending.current = null;
@@ -200,18 +223,37 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         if (owed.current !== entry) return;
         if (event.type !== "wheel" && pressIsArmedOwn(event.target)) return;
         if (event instanceof globalThis.KeyboardEvent && LONE_MODIFIERS[event.key] === true) return;
-        const stood = parked.current;
+        // Nothing lands between the act and the read below, the table's own landing included: the
+        // page's keymap answers the key before anything moves the focus, and Space ticks the mark
+        // at its keyup.
         if (entry.kind === "own") entry.abandon();
         settle();
-        if (stood === null) return;
+        const last = entry.kind === "own" ? entry.id : entry.kind === "place" ? entry.last : null;
+        const to = entry.kind === "own" ? undefined : entry.to;
+        // The control that held the focus last since the act, which a focus on the body at the
+        // read fell from: a move of the focus raises `focusin`, and a control taken out of the
+        // page with its row raises none.
+        let from = document.activeElement;
+        const moves = new AbortController();
+        document.addEventListener(
+          "focusin",
+          (focus) => {
+            if (focus.target instanceof Element) from = focus.target;
+          },
+          { capture: true, passive: true, signal: moves.signal }
+        );
         // Read once the act has been answered: a key the page's keymap answers moves the focus
-        // itself, and Space ticks the mark at its keyup. Only a focus the act left on the parked
-        // mark of a leaving row goes to the list's own stop. Set after the settle above, so only a
+        // itself, and Space ticks the mark at its keyup. Set after the settle above, so only a
         // later one ends it.
-        pending.current = afterAnswer(event, () => {
+        const unread = afterAnswer(event, () => {
           pending.current = null;
-          if (document.activeElement === stood) focusListStop(latest.current.list());
+          moves.abort();
+          answerAct.current(last, from, to);
         });
+        pending.current = () => {
+          moves.abort();
+          unread();
+        };
       };
       for (const kind of READER_ACTS) {
         document.addEventListener(kind, onAct, {
@@ -240,7 +282,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   const drawLast = useCallback(
     (live: MarkedList, id: string): boolean => {
       if (live.drawRow === undefined) return false;
-      waitDrawn(live, { abandon: live.drawRow(id), kind: "own" });
+      waitDrawn(live, { abandon: live.drawRow(id), id, kind: "own" });
       return true;
     },
     [waitDrawn]
@@ -273,16 +315,19 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     },
     [drawLast, waitDrawn]
   );
-  /** Makes the owed landing once the foot's pass has given the list its room back: the place, or
-   *  the named target the page has now drawn. A later commit asks again while the same landing is
-   *  owed, and the first answer settles it. A windowed table's own landing is the table's. */
+  /** Makes the owed landing once the foot's pass has given the list its room back, against the
+   *  list's layout made current then (`MarkedList`'s `fit`): the place, or the named target the
+   *  page has now drawn. A later commit asks again while the same landing is owed, and the first
+   *  answer settles it. A windowed table's own landing is the table's. */
   const landAfterFootPass = useCallback(() => {
     const place = owed.current;
     if (place === null || place.kind === "own") return;
     afterFootPass(() => {
       if (owed.current !== place) return;
       settle();
-      landNow(latest.current, place.kind === "place" ? place.last : null, place.to);
+      const live = latest.current;
+      live.fit?.();
+      landNow(live, place.kind === "place" ? place.last : null, place.to);
     });
   }, [landNow, settle]);
   // Each commit of the host asks the hand-off again while a landing is owed: the commit that lets
@@ -290,9 +335,19 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // the landing waits on lands it. A windowed table's own landing is made once the focus stands in
   // the list's rows.
   useLayoutEffect(() => {
-    const place = owed.current;
-    if (place === null) return;
     const live = latest.current;
+    const went = drawn.current && !live.shown;
+    drawn.current = live.shown;
+    const place = owed.current;
+    if (place === null) {
+      // The bar gone with the focus in a row the list names as leaving: the reader unticked the
+      // last mark while the press's writes are out, by a click that leaves the focus on the mark,
+      // as Chromium's and Firefox's do. The bar hands on only a focus its going dropped onto the
+      // body (`land`), and this one is the reader's, so nothing moves now. The row's going would
+      // drop it onto the body, so the landing is owed, as after the bar's own hand-off.
+      if (went && focusInLeavingRow(live)) owe({ kind: "place", last: live.lastMarked() });
+      return;
+    }
     if (place.kind === "drawing") {
       if (place.to() !== null) landAfterFootPass();
       return;
@@ -304,36 +359,62 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       return;
     }
     if (anyLeaving(live)) {
-      if (focusOnDocument()) parked.current = park(live, place.last, place.to);
+      if (focusOnDocument()) park(live, place.last, place.to);
       return;
     }
     landAfterFootPass();
   });
-  return {
-    land: (to) => {
-      const last = list.lastMarked();
-      if (anyLeaving(list)) {
+  /** Owes the landing on the place the row `last` gives (or on `to`, where the page named one),
+   *  and asks for it at once, as each commit asks while it is owed: the focus parked while the
+   *  list names a listed row as leaving, Drawing while a named target is not drawn yet, else the
+   *  landing made after the foot's pass. */
+  const owePlace = useCallback(
+    (live: MarkedList, last: string | null, to?: LandingTarget) => {
+      if (anyLeaving(live)) {
         owe({ kind: "place", last, to });
-        if (focusOnDocument()) parked.current = park(list, last, to);
-        return true;
+        if (focusOnDocument()) park(live, last, to);
+        return;
       }
-      // Nothing is leaving, so the place is the place: Idle goes straight to Landed, after the
-      // foot's pass as every landing does, and nothing is parked meanwhile. A place not drawn yet
-      // goes straight to Drawing.
       if (to !== undefined && to() === null) {
-        waitDrawn(list, { kind: "drawing", to });
-        return true;
-      }
-      if (
-        to === undefined &&
-        last !== null &&
-        list.order().includes(last) &&
-        list.control(last) === null
-      ) {
-        return drawLast(list, last);
+        waitDrawn(live, { kind: "drawing", to });
+        return;
       }
       owe({ kind: "place", last, to });
       landAfterFootPass();
+    },
+    [landAfterFootPass, owe, waitDrawn]
+  );
+  // Where the reader's act left the focus, once it has been answered: in a row the list names as
+  // leaving, or on the body because the control that held it (`from`) went with its row, the
+  // landing the act ended is owed again, on the place of the same row marked last (or the target
+  // the page named). A focus on a control that stays, or on the body by the reader's own doing,
+  // leaves nothing owed.
+  answerAct.current = (last, from, to) => {
+    const live = latest.current;
+    if (focusOnDocument() ? from?.isConnected === false : focusInLeavingRow(live)) {
+      owePlace(live, last, to);
+    }
+  };
+  return {
+    land: (to) => {
+      const last = list.lastMarked();
+      // A list that cannot draw the row marked last, which it holds and its window has not drawn,
+      // leaves that landing to the page, where nothing is leaving and no target was named. Else the
+      // landing is owed: the focus is parked while a listed row is leaving, and where none is, the
+      // place is the place, so Idle goes straight to Landed, after the foot's pass as every
+      // landing does, the table's own on a row its window has not drawn included (`landNow`), and
+      // nothing is parked meanwhile; a named target not drawn yet goes straight to Drawing.
+      if (
+        to === undefined &&
+        list.drawRow === undefined &&
+        last !== null &&
+        list.control(last) === null &&
+        list.order().includes(last) &&
+        !anyLeaving(list)
+      ) {
+        return false;
+      }
+      owePlace(list, last, to);
       return true;
     },
   };
@@ -349,9 +430,9 @@ export type LandingTarget = () => HTMLElement | null;
  *  or a windowed table's own landing on the row it is drawing (`MarkedList`'s `drawRow`), with what
  *  takes that landing back (`own`). */
 type OwedFor =
-  | { readonly kind: "place"; readonly last: string | null; readonly to: LandingTarget | undefined }
+  | { readonly kind: "place"; readonly last: string | null; readonly to?: LandingTarget }
   | { readonly kind: "drawing"; readonly to: LandingTarget }
-  | { readonly abandon: () => void; readonly kind: "own" };
+  | { readonly abandon: () => void; readonly id: string; readonly kind: "own" };
 
 /** An owed landing, with what ends its watch on the reader's acts. */
 type Owed = OwedFor & { readonly unwatch: () => void };
@@ -373,6 +454,18 @@ function holdOnStop(list: MarkedList): void {
   if (focusOnDocument() || stop.contains(focused)) focusListStop(stop);
 }
 
+/** Whether the focus stands in a row the list holds and names as leaving (`MarkedList`'s
+ *  `leaving`): on its mark, or anywhere in the row around it. */
+function focusInLeavingRow(list: MarkedList): boolean {
+  const { leaving } = list;
+  const focused = document.activeElement;
+  if (leaving === undefined || focused === null) return false;
+  return list
+    .order()
+    .some(
+      (row) => leaving(row) && list.control(row)?.closest(ROW_SELECTOR)?.contains(focused) === true
+    );
+}
 /** The bar's hand-off, as the hook answers it (`useLastMarkedPlace`). */
 export interface MarkedPlace {
   /** Hands the focus to the place of the row marked last, and answers whether it moved anything:
@@ -383,11 +476,12 @@ export interface MarkedPlace {
   readonly land: (to?: LandingTarget) => boolean;
 }
 
-/** What the reader does that ends a landing that is owed (`useLastMarkedPlace`): a press, a key or
- *  a wheel of theirs, read on the document's capture so nothing can stop it on the way. A press
- *  the armed press counts as its own is not one (`pressIsArmedOwn`), and neither is a keydown of
- *  a modifier alone (`LONE_MODIFIERS`): a reader who holds Shift for Shift+Tab has not acted yet,
- *  and the Tab that follows is their act. */
+/** What the reader does that the hand-off reads as their act while a landing is owed
+ *  (`useLastMarkedPlace`): a press, a key or a wheel of theirs, read on the document's capture so
+ *  nothing can stop it on the way. Where it leaves the focus decides whether the landing stays
+ *  owed. A press the armed press counts as its own is not one (`pressIsArmedOwn`), and neither is
+ *  a keydown of a modifier alone (`LONE_MODIFIERS`): a reader who holds Shift for Shift+Tab has not
+ *  acted yet, and the Tab that follows is their act. */
 const READER_ACTS = ["pointerdown", "keydown", "wheel"] as const;
 
 /** Runs `read` once the reader's act `event` has been answered, and answers what ends the wait
@@ -418,7 +512,7 @@ function afterAnswer(event: Event, read: () => void): () => void {
   };
 }
 
-/** Parks the focus while a landing is owed, with no scroll, and answers the mark it left it on.
+/** Parks the focus while a landing is owed, with no scroll.
  *  The park is the mark of the row the reader marked last, while the list draws that row and the
  *  reader can see part of the mark below whatever the page draws over the list, as the landing
  *  judges a mark (`markShown`): their own row is where the page reads their place from, which a
@@ -428,18 +522,13 @@ function afterAnswer(event: Event, read: () => void): () => void {
  *  it has not drawn yet, whose landing is not the place of the row marked last: the focus waits on
  *  the stop for it, not on that row's mark. The landing itself is still owed either way: the
  *  commit that takes the press's rows away makes it, wherever the park left the focus. */
-function park(
-  list: MarkedList,
-  last: string | null,
-  to: LandingTarget | undefined
-): HTMLElement | null {
+function park(list: MarkedList, last: string | null, to?: LandingTarget): void {
   const mark = last === null || (to !== undefined && to() === null) ? null : list.control(last);
   if (mark === null || !markShown(mark, new Map(), list.head?.() ?? null)) {
     focusListStop(list.list());
-    return null;
+    return;
   }
   focusNoScroll(mark);
-  return mark;
 }
 
 /** Puts the focus on a list's own stop with no scroll, as a component's hand-off gives a region
@@ -626,8 +715,9 @@ const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
 
 /** The bar's own arming of its hand-off at its root, for a key: what every component's root arms
  *  for (`armOnPress`), and Escape from a control inside the bar besides, which the bar's hand-off
- *  counts as the reader's own (`SelectionBar`): Escape there clears the selection the bar holds,
- *  where a component's root reads it as the reader leaving a control. */
+ *  counts as the reader's own (`SelectionBar`): on a page whose keymap clears the selection on
+ *  Escape, as the Inbox's does, Escape there clears the selection the bar holds (the project List
+ *  binds no such key), where a component's root reads it as the reader leaving a control. */
 function armOnBarKey(event: KeyboardEvent<HTMLDivElement>): void {
   if (event.key === "Escape" && event.target instanceof Element) {
     armHandOff(event.target, event.currentTarget);

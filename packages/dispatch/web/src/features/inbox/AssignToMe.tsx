@@ -57,6 +57,9 @@ export interface AskAssignWrites {
    *  The Inbox makes the ask's write while a control is drawn for it, and while its write is out
    *  or refused. */
   readonly draw: (askId: string, issueKey: string) => () => void;
+  /** The asks whose save is out or refused, which the Inbox marks as the reader's own writes
+   *  (`AskWrites.live`). */
+  readonly live: ReadonlySet<string>;
   /** The Assign to me of `askId`. Every control drawn for that ask shows this one write. */
   readonly of: (askId: string) => AskAssignWrite;
   /** The asks whose save is out. The Inbox keeps each one's row where the reader saw it until
@@ -165,8 +168,10 @@ export function AskAssignWritesProvider({ children }: { children: ReactNode }): 
   );
   const writes = useMemo<AskAssignWrites>(() => {
     const out = new Set<string>();
+    const live = new Set<string>();
     for (const [askId, { shown }] of entries) {
       if (shown.pending) out.add(askId);
+      if (shown.pending || shown.failed) live.add(askId);
     }
     const writeOf = (askId: string): IssueAssigneeWrite => {
       const write = made.get(askId)?.current;
@@ -180,6 +185,7 @@ export function AskAssignWritesProvider({ children }: { children: ReactNode }): 
     // the row kept, from that commit on.
     return {
       draw,
+      live,
       of: (askId) => {
         const shown = entries.get(askId)?.shown ?? NOTHING_SAVED;
         return {

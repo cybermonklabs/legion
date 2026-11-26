@@ -575,11 +575,15 @@ test("the Inbox is rows with their marks and no table, and opening one opens the
   await rows.first().locator("time").first().click();
   const pane = page.getByTestId("inbox-pane");
   await expect(pane, "opening an item opened no reading pane").toBeVisible();
+  // The list is the grid's first column, the divider its second and the pane its third. The
+  // list's own box reaches 20 px left of its column into the page's inset, so that its rows'
+  // checkboxes are not clipped (`Inbox.tsx`): the list's width is the column's, the grid's own
+  // first track.
   const share = await pane.evaluate((node) => {
     const columns = node.closest<HTMLElement>("div.grid");
-    const list = columns?.firstElementChild as HTMLElement | null;
+    const tracks = columns === null ? [] : getComputedStyle(columns).gridTemplateColumns.split(" ");
     const paneWidth = node.getBoundingClientRect().width;
-    const listWidth = list?.getBoundingClientRect().width ?? 0;
+    const listWidth = Number.parseFloat(tracks[0] ?? "0");
     return { listWidth, paneWidth, share: paneWidth / (paneWidth + listWidth) };
   });
   expect(

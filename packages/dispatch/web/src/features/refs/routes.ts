@@ -14,7 +14,6 @@ import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { addressPath } from "../../lib/page-address";
-import { agentsAddress } from "../agents/agent-search";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import {
   type BlockTarget,
@@ -561,6 +560,11 @@ export function buildMachinePath(host: string): string {
   return `/machines/${encodeURIComponent(host)}`;
 }
 
+/** The `?role=` the Agents page narrows to, the page a `dispatch://role/<token>` reference
+ *  opens (`buildReferencePath`), named here so this file and the page's own spelling of it
+ *  (`features/agents/agent-search.ts`) cannot drift apart. */
+export const AGENTS_ROLE_PARAM = "role";
+
 /** The `?component=` the Architecture pane holds its selected component in, the page a
  *  `dispatch://<PROJECT>/component/<id>` reference opens (`buildReferencePath`), named once
  *  here so the pane reading it (`features/architecture/ArchitecturePage.tsx`) and the link
@@ -1049,10 +1053,7 @@ export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string
     case "agent-session":
       return `/agents/${encodeURIComponent(route.session)}/live`;
     case "role":
-      // The Agents page narrowed to the role, written by that page's own address grammar
-      // (`agentsAddress`), the one place its parameters are spelled. A token longer than the
-      // address carries whole opens the page unnarrowed rather than narrowed to a cut name.
-      return agentsAddress({ roles: [route.role] }) ?? "/agents";
+      return `/agents?${new URLSearchParams({ [AGENTS_ROLE_PARAM]: route.role })}`;
     case "component": {
       const architecture = buildProjectPath({ kind: "architecture", project: route.project });
       return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;

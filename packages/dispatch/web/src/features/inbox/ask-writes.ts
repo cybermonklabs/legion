@@ -34,6 +34,12 @@ export interface AskWrites<P> {
   /** Lets go of the newest press of `askId` where it has landed. A press that is out or failed
    *  stays. The same function on every render. */
   readonly forgetLanded: (askId: string) => void;
+  /** The asks whose newest press is out or failed. The Inbox marks each one as the reader's own
+   *  write (`writtenHere`) while it is here: a write marks its ask while it is pending or failed,
+   *  so a row whose write Dispatch refused, or the reader stopped, that then leaves the list is
+   *  the reader's own move too, and the open row's reading column moves on rather than saying
+   *  it left. */
+  readonly live: ReadonlySet<string>;
   /** The newest press of each ask this kind has written, by ask. */
   readonly newest: ReadonlyMap<string, AskPressState<P>>;
   /** The asks whose write is out. The Inbox keeps each one's row where the reader saw it until
@@ -117,8 +123,10 @@ export function useAskWrites<TData, P, TContext = unknown>(
   );
   return useMemo(() => {
     const out = new Set<string>();
+    const live = new Set<string>();
     for (const [askId, { state }] of newest) {
       if (state === "out") out.add(askId);
+      if (state !== "landed") live.add(askId);
     }
     const holdOut = (press: P) =>
       setNewest((current) =>
@@ -131,6 +139,7 @@ export function useAskWrites<TData, P, TContext = unknown>(
           return state === undefined || state === "out" ? current : without(current, askId);
         }),
       forgetLanded,
+      live,
       newest,
       out,
       press: (press: P) => {

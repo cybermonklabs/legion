@@ -147,6 +147,9 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
 
 /** Every card's hand-on in one Inbox (`useAskHandOnWrites`). */
 export interface AskHandOnWrites {
+  /** The asks whose hand-on is out or failed, which the Inbox marks as the reader's own writes
+   *  (`AskWrites.live`). */
+  readonly live: ReadonlySet<string>;
   /** The asks whose hand-on is out. The Inbox keeps each one's row where the reader saw it, if
    *  it drew one, until the write lands (`heldRow`). A refused or stopped hand-on is not out, so
    *  the next read of the Inbox places its row. */
@@ -168,6 +171,7 @@ export function useAskHandOnWrites(): AskHandOnWrites {
   const writes = useAskWrites(pressAsk, handOnWrite(useQueryClient()));
   return useMemo(
     () => ({
+      live: writes.live,
       of: (ask: Ask): AskHandOnWrite => {
         const entry = writes.newest.get(ask.id);
         return {

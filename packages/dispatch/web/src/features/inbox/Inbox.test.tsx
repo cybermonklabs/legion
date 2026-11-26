@@ -1623,18 +1623,7 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     replies: [],
   }));
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <main>
-            <Inbox pane={false} />
-          </main>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const { queryClient, unmount } = renderInbox("/", { pane: false });
 
   try {
     const card = await screen.findByTestId("ask-ask-b");
@@ -1665,7 +1654,7 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-c"]));
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
-    view.unmount();
+    unmount();
     scrolls.mockRestore();
     getAsk.mockRestore();
     listOpenAsks.mockRestore();
@@ -4926,6 +4915,97 @@ test("a bulk Snooze that lands with the pointer on a row below the marked rows l
   }
 });
 
+// INFRA-3135, round 31 (the architect's rule that the list's anchor and the bar's hand-off read one
+// answer of the rows a press is taking away, after the tester's red row of round 29, builds Job
+// infra-3135-i-h5-g6tnd): the pointer rests on a row and then travels over the list from before
+// the bar's Snooze is picked, from the keyboard, until after it lands, so the motion hold keeps
+// the read from before the pick and the rows it took stay drawn in their band after the write,
+// while the hand-off still waits for them. The rows marked stood above the window, so the hand-off
+// parked the focus on the list's own stop, and the row under the pointer is the one the anchor
+// keeps. Once the pointer rests, the rows go, and the anchor lets them go with no scroll of its
+// own (it used to name a snoozed row only while its write was out, and scrolled the window back by
+// the rows' height): the one scroll is R8's landing bringing the row after them to the window's
+// top.
+test("a bulk Snooze that lands while the pointer travels over the list lets the rows it took go once the pointer rests, and only the landing scrolls", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 12 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
+  const landed = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landed.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  // Five rows above the window: the third and the fourth, which the reader marks, among them.
+  const laidOut = layRowsDown(5 * LAID_ROW_PX);
+  const scrolled = spyOn(window, "scrollBy");
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Question 12?");
+    const [marked, last, nextRow, , , , resting] = rowIds().slice(2, 9) as [
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+    ];
+    await user.click(markOf(marked));
+    await user.click(markOf(last));
+    await screen.findByText("2 selected");
+    const row = document.querySelector<HTMLElement>(`[data-inbox-row="${resting}"]`);
+    if (row === null) throw new Error(`${resting} row missing`);
+    await user.hover(row);
+    const before = row.getBoundingClientRect().top;
+    /** The pointer travelling on over the list: the motion hold's own pointermove. */
+    const travel = () => fireEvent.pointerMove(row);
+
+    const trigger = screen.getByRole("button", { name: "Snooze selected asks" });
+    act(() => trigger.focus());
+    await user.keyboard("{Enter}");
+    travel();
+    await user.keyboard("tom");
+    travel();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    travel();
+    await act(async () => {
+      landed.resolve();
+      await landed.promise;
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument()
+    );
+    await waitFor(() => expect(screen.getByTestId("inbox-list")).toHaveFocus());
+    expect(rowIds()).toContain(last);
+    scrolled.mockClear();
+
+    // The pointer rests, and the rows go.
+    await waitFor(() => expect(rowIds()).not.toContain(last));
+    const after = shortRow(nextRow);
+    await waitFor(() => expect(after).toHaveFocus());
+    expect(rowIds()).not.toContain(marked);
+    // The list's anchor let the snoozed rows go with no scroll of its own: the one scroll is R8's
+    // landing bringing the row after them, 300 px above the window once they went, to its top.
+    expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -3 * LAID_ROW_PX }]]);
+    expect(after.getBoundingClientRect().top).toBe(0);
+    expect(row.getBoundingClientRect().top).toBe(before + LAID_ROW_PX);
+    expect(window.scrollY).toBe(2 * LAID_ROW_PX);
+  } finally {
+    unmount();
+    scrolled.mockRestore();
+    laidOut();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 /** How tall `layItemsDown` draws a band's heading. */
 const LAID_HEADING_PX = 40;
 
@@ -5350,20 +5430,7 @@ test("Escape onto a row whose own snooze is saving leaves the focus on the body 
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter initialEntries={["/?group=waiting-on"]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <main>
-            <Inbox pane={false} />
-          </main>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which owner?");
     const trigger = within(rowOf("ask-b")).getByLabelText("Snooze CORE-2: Which format?");
@@ -5392,7 +5459,7 @@ test("Escape onto a row whose own snooze is saving leaves the focus on the body 
     await user.keyboard("j");
     expect(rowOf("ask-a")).toHaveFocus();
   } finally {
-    view.unmount();
+    unmount();
     getAsk.mockRestore();
     listOpenAsks.mockRestore();
     snoozeAsk.mockRestore();
@@ -5796,9 +5863,9 @@ test("the bar's Snooze, held while its write is out, keeps the focus and sends n
 // - `renderInbox`'s `pane: false` mounts the list as the Peek drawer does (its own filter,
 //   `onFilterChange` and the dialog's key scope): every row that writes a filter or presses a key
 //   goes this way.
-// - Eleven rows render `<Inbox pane={false} />` in a router of their own. They only read a starting
-//   filter from the address: they write no filter and press no key, so the drawer's props would
-//   change nothing they check.
+// - Sixteen rows render `<Inbox pane={false} />` in a router of their own. They only read a
+//   starting filter from the address: they write no filter and press no key, so the drawer's
+//   props would change nothing they check.
 //
 // The tests below widen the window to the column; the reading view below its width is
 // `Inbox.reading-view.test.tsx`'s.

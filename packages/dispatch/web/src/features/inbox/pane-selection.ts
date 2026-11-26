@@ -1,9 +1,8 @@
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNavigate, useNavigationType } from "react-router-dom";
 
 import { scrollToNearest } from "../../components/focus-place";
 import type { LandingTarget } from "../../components/SelectionBar";
-import { type PageAddress, useNavigationState, usePageAddress } from "../../lib/page-address";
+import { useAddressNavigate, useHistoryEntry } from "../../lib/page-address";
 import { focusOnDocument } from "../shell/roving";
 import { answerDraft } from "./answer-drafts";
 import { buildInboxPath, type InboxRoute } from "./inbox-route";
@@ -234,13 +233,9 @@ export function usePaneSelection({
   rowsReady,
   snoozing,
 }: PaneSelectionOptions): PaneSelection {
-  // The router's own writer and its step back: the selection writes the history entry's marks
-  // with the address (`InboxEntryState`), and pushes the entry a row opened below the column's
-  // width stands on, which `useInboxRoute`'s writer does neither of.
-  const navigate = useNavigate();
-  const address = usePageAddress();
-  const navigationType = useNavigationType();
-  const entry = inboxEntryState(useNavigationState());
+  const go = useAddressNavigate();
+  const historyEntry = useHistoryEntry();
+  const entry = inboxEntryState(historyEntry.state);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const selectedNow = useRef<string | undefined>(undefined);
   selectedNow.current = selectedId;
@@ -282,11 +277,10 @@ export function usePaneSelection({
    *  that took rows standing above the view scrolls nothing (R4). */
   const revealNext = useRef(true);
 
-  /** The history entry `close` went back from - the address it named, the router's own object,
-   *  which a landed step replaces - while that step is under way. A browser's `history.go` lands
-   *  a frame or more later, so until it does the address still names the row the reader closed:
-   *  read as a new address, it would select that row again. */
-  const leaving = useRef<PageAddress | undefined>(undefined);
+  /** The history entry `close` went back from, by its key, while that step is under way. A
+   *  browser's `history.go` lands a frame or more later, so until it does the address still
+   *  names the row the reader closed: read as a new address, it would select that row again. */
+  const leaving = useRef<string | undefined>(undefined);
   const listAnswered = useRef(false);
   /** Below the column's width, the row that now stands where the row the reading view showed
    *  stood, when that row left the list on its own: the list comes back with the focus there. */
@@ -319,7 +313,7 @@ export function usePaneSelection({
     // `?item=` rather than leaving it on the row that has just left: a reload reads the address,
     // and an address naming a row the reader deferred would open the folded band and put that
     // question back in front of them.
-    navigate(buildInboxPath({ ...filter, item: id }), {
+    go(buildInboxPath({ ...filter, item: id }), {
       replace: mode !== "push",
       state: Object.keys(written).length === 0 ? undefined : written,
     });
@@ -335,9 +329,9 @@ export function usePaneSelection({
       select(undefined);
       return;
     }
-    if (leaving.current !== address) {
-      leaving.current = address;
-      navigate(-1);
+    if (leaving.current !== historyEntry.key) {
+      leaving.current = historyEntry.key;
+      historyEntry.back();
     }
   };
 
@@ -661,7 +655,7 @@ export function usePaneSelection({
     if (
       reading === "unlisted" &&
       filter.item === undefined &&
-      navigationType === "POP" &&
+      historyEntry.navigationType === "POP" &&
       top !== undefined
     ) {
       select(rowId(top.row), "column-default");
@@ -757,7 +751,7 @@ export function usePaneSelection({
     // A back step `leaveView` started is under way: the address still names the row it is
     // leaving, and is read again once the step lands.
     if (leaving.current !== undefined) {
-      if (leaving.current === address) return;
+      if (leaving.current === historyEntry.key) return;
       leaving.current = undefined;
     }
     if (columns) settleBesideList();
