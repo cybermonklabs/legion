@@ -40,6 +40,15 @@ const keptLogEvery = time.Minute
 // could not be asked>.
 const KeptFullMessage = "broker: Dispatch could not be asked what kind of member a person is; serving them as the full member Dispatch last answered"
 
+// KeptStaleMessage is logged at WARN, at most once a minute per person, when a member-kind read is
+// refused because the kept answer is older than KeptAnswerTTL, followed by person=<the canonical
+// login>, as_of=<the time the kept answer rests on> and error=<why Dispatch could not be asked>.
+const KeptStaleMessage = "broker: the member kind Dispatch last answered is older than the broker's serving bound; refusing while Dispatch cannot be asked"
+
+// KeptStaleProjectMessage is logged at WARN, at most once a minute per person and project, when a
+// project read under OrKept is refused because the kept answer is older than KeptAnswerTTL.
+const KeptStaleProjectMessage = "broker: the project answer Dispatch last gave is older than the broker's serving bound; refusing while Dispatch cannot be asked"
+
 // keepFailedMessage is logged at WARN when an answer of the person route could not be kept: while
 // Dispatch cannot be asked the person is answered from the answer kept before it, and refused
 // where this one named a kind other than full or held them (keeping.unkept, keeping.unkeptHeld).
@@ -158,9 +167,9 @@ func (c *Client) Keep(keeper Keeper, log *slog.Logger, registry *metrics.Registr
 	}
 	if registry != nil {
 		kept.kindUnchecked = registry.NewCounter("broker_member_kind_unchecked_total",
-			"Member-kind reads the broker answered from the kind it kept for the person because Dispatch could not be asked, at most one a minute per person, by that kind: full, served; restricted, none or unreadable, refused.")
+			"Member-kind reads the broker answered from the kind it kept for the person because Dispatch could not be asked, at most one a minute per person, by that kind: full, served; restricted, none, unreadable or stale (older than the serving bound), refused.")
 		kept.projectUnchecked = registry.NewCounter("broker_project_visibility_unchecked_total",
-			"Project reads of the request machine's person rule the broker answered from the answer it kept for the person and project because Dispatch could not be asked, at most one a minute per person and project, by that answer: public, visible or missing, served; not_visible, none or unreadable, refused.")
+			"Project reads of the request machine's person rule the broker answered from the answer it kept for the person and project because Dispatch could not be asked, at most one a minute per person and project, by that answer: public, visible or missing, served; not_visible, none, unreadable or stale (older than the serving bound), refused.")
 	}
 	c.kept = kept
 }
@@ -197,6 +206,10 @@ const (
 	// keptUnreadable is a kept answer the database could not read, or one naming a kind this
 	// broker does not know.
 	keptUnreadable = "unreadable"
+	// keptStale is a kept answer older than KeptAnswerTTL: a kept full member kind, or a kept
+	// public, visible or no-project answer, that the broker no longer serves while Dispatch cannot
+	// be asked, since a change it never saw could have made it wrong. It is counted and refused.
+	keptStale = "stale"
 )
 
 // keptAnswerExpired reports whether an answer kept at at is too old to serve while Dispatch cannot
@@ -211,9 +224,9 @@ func (c *Client) keptAnswerExpired(at time.Time) bool {
 // uncheckableReason's words). The last answer is the later, by as_of, of the one the Keeper holds
 // and one this process read and could not keep (keeping.unkept), which is never full. The Keeper
 // is read apart from ctx, bounded by keptReadTimeout. Each read is counted in
-// broker_member_kind_unchecked_total by its label (keptFull, keptRestricted, keptNone or
-// keptUnreadable), and a served one logged at WARN (KeptFullMessage), at most once a minute per
-// person.
+// broker_member_kind_unchecked_total by its label (keptFull, keptRestricted, keptNone,
+// keptUnreadable or keptStale), and a served full (KeptFullMessage) or a refused stale
+// (KeptStaleMessage) one logged at WARN, at most once a minute per person.
 func (c *Client) keptKind(ctx context.Context, person string, cause error) (string, error) {
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keptReadTimeout)
 	member, found, readErr := c.kept.keeper.KeptMemberKind(readCtx, person)
@@ -233,17 +246,23 @@ func (c *Client) keptKind(ctx context.Context, person string, cause error) (stri
 		kept = keptLabel(member.Kind)
 	}
 	if kept == keptFull && c.keptAnswerExpired(member.AsOf) {
-		return "", fmt.Errorf("%w; the member kind kept for %s is older than %s; the broker serves a kept full for at most %s while Dispatch cannot be asked", cause, person, KeptAnswerTTL, KeptAnswerTTL)
+		kept = keptStale
 	}
 	if noted(c, c.kept.kindNoted, person, kept) {
 		c.kept.kindUnchecked.Inc([2]string{"kept", kept})
-		if kept == keptFull {
+		switch kept {
+		case keptFull:
 			c.kept.log.Warn(KeptFullMessage, "person", person, "as_of", member.AsOf.UTC().Format(time.RFC3339Nano), "error", cause)
+		case keptStale:
+			c.kept.log.Warn(KeptStaleMessage, "person", person, "as_of", member.AsOf.UTC().Format(time.RFC3339Nano),
+				"age", c.now().Sub(member.AsOf).Round(time.Second).String(), "error", cause)
 		}
 	}
 	switch {
 	case kept == keptFull:
 		return MemberFull, nil
+	case kept == keptStale:
+		return "", fmt.Errorf("%w; the member kind kept for %s is older than %s, the broker's serving bound while Dispatch cannot be asked", cause, person, KeptAnswerTTL)
 	case readErr != nil && kept == keptUnreadable:
 		return "", fmt.Errorf("%w; the member kind kept for %s could not be read either: %v", cause, person, readErr)
 	}
@@ -498,8 +517,10 @@ func (c *Client) keepProject(ctx context.Context, key accessKey, answer Answer, 
 // where this process read an answer that the project is private, asked at or after it, and could
 // not keep it (unkeptPrivate). Every other read is cause, wrapped with what was kept, as a client
 // with no keeper fails it. Each read is counted in broker_project_visibility_unchecked_total by
-// its label, and a served one logged at WARN (KeptProjectMessage), at most once a minute per
-// person and project.
+// its label, and a served one logged at WARN (KeptProjectMessage) or a refused stale one
+// (KeptStaleProjectMessage), at most once a minute per person and project. A kept answer that
+// shows the project or holds no such project (public, visible, missing) is refused as stale once
+// it is older than KeptAnswerTTL, since a change the broker never saw could have made it private.
 func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (Answer, error) {
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keptReadTimeout)
 	standing, found, readErr := c.kept.keeper.KeptProjectStanding(readCtx, key.person, key.project)
@@ -532,8 +553,8 @@ func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (A
 	default:
 		kept = keptUnreadable
 	}
-	if (kept == keptPublic || kept == keptVisible) && c.keptAnswerExpired(standing.AskedAt) {
-		return Answer{}, fmt.Errorf("%w; the answer kept for %q and project %s is older than %s; the broker serves a kept visible project for at most %s while Dispatch cannot be asked", cause, key.person, key.project, KeptAnswerTTL, KeptAnswerTTL)
+	if (kept == keptPublic || kept == keptVisible || kept == keptMissing) && c.keptAnswerExpired(standing.AskedAt) {
+		kept = keptStale
 	}
 	if noted(c, c.kept.projectNoted, key, kept) {
 		c.kept.projectUnchecked.Inc([2]string{"kept", kept})
@@ -541,6 +562,10 @@ func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (A
 		case keptPublic, keptVisible, keptMissing:
 			c.kept.log.Warn(KeptProjectMessage, "person", key.person, "project", key.project, "kept", kept,
 				"asked_at", standing.AskedAt.UTC().Format(time.RFC3339Nano), "error", cause)
+		case keptStale:
+			c.kept.log.Warn(KeptStaleProjectMessage, "person", key.person, "project", key.project,
+				"asked_at", standing.AskedAt.UTC().Format(time.RFC3339Nano),
+				"age", c.now().Sub(standing.AskedAt).Round(time.Second).String(), "error", cause)
 		}
 	}
 	switch kept {
@@ -548,6 +573,8 @@ func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (A
 		return Answer{Project: key.project, Visibility: standing.Visibility, Person: key.person, Visible: true}, nil
 	case keptMissing:
 		return Answer{}, &ProjectNotFoundError{Project: key.project}
+	case keptStale:
+		return Answer{}, fmt.Errorf("%w; the answer kept for %q and project %s is older than %s, the broker's serving bound while Dispatch cannot be asked", cause, key.person, key.project, KeptAnswerTTL)
 	case keptUnreadable:
 		if readErr != nil {
 			return Answer{}, fmt.Errorf("%w; the answer kept for %s and project %s could not be read either: %v", cause, key.person, key.project, readErr)

@@ -225,10 +225,13 @@ func TestAMemberKindReadDispatchDoesNotAnswerIsAnsweredFromTheKeptKind(t *testin
 
 // TestAFullKeptAnswerExpiresWhileDispatchIsDown: while Dispatch is down, a kept full answer
 // serves until KeptAnswerTTL and not at it. At the bound, the broker refuses rather than serving a
-// person as full on an answer old enough to have missed a demotion before the outage.
+// person as full on an answer old enough to have missed a demotion before the outage, and counts
+// and logs the refused read under the stale label, so a dashboard does not read the outage as
+// recovery.
 //
 // The fault: serving a kept full answer however old; ada is still full at KeptAnswerTTL, and the
-// test fails naming that read.
+// test fails naming that read. Returning before the count (no stale label); the read at the bound
+// adds no stale count and logs nothing, and the test fails there.
 func TestAFullKeptAnswerExpiresWhileDispatchIsDown(t *testing.T) {
 	st := storetest.Open(t)
 	dispatch := projectaccesstest.NewServer(t, nil, keptKinds())
@@ -245,8 +248,11 @@ func TestAFullKeptAnswerExpiresWhileDispatchIsDown(t *testing.T) {
 
 	r.clock.advance(time.Nanosecond)
 	r.refused(t, keptAda, "at the kept-answer bound")
-	if got := r.unchecked(t, projectaccess.MemberFull); got != 1 {
-		t.Fatalf(`broker_member_kind_unchecked_total{kept="full"} at the bound = %d, want 1: the expired answer is not served`, got)
+	if got := r.unchecked(t, "stale"); got != 1 {
+		t.Fatalf(`broker_member_kind_unchecked_total{kept="stale"} at the bound = %d, want 1: the expired read is counted stale`, got)
+	}
+	if warned := r.warned(projectaccess.KeptStaleMessage, keptAda); len(warned) != 1 || warned[0]["as_of"] == "" || warned[0]["error"] == "" {
+		t.Fatalf("the expired read logged %v; want one WARN %q with as_of and the error", warned, projectaccess.KeptStaleMessage)
 	}
 }
 

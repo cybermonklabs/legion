@@ -18,6 +18,14 @@ import (
 // Every process writes the answers its own asks fetched, so each row keeps the latest by
 // Dispatch's own clock, the answer's as_of, and never by the order the writes arrive in.
 
+const keepMemberKindSQL = `insert into person_member_kind (person, member_kind, as_of) values ($1, nullif($2, ''), $3)
+	on conflict (person) do update set member_kind = excluded.member_kind, as_of = excluded.as_of
+	where person_member_kind.as_of < excluded.as_of`
+
+const keepPersonStandingSQL = `insert into person_standing (person, held, answered_at, not_held_until) values ($1, $2, $3, $4)
+	on conflict (person) do update set held = excluded.held, answered_at = excluded.answered_at, not_held_until = excluded.not_held_until
+	where person_standing.answered_at < excluded.answered_at`
+
 // KeepPersonAnswer writes one answer of Dispatch's person route for person, as of asOf: the member
 // kind memberKind it named ("" for none) to person_member_kind and, where held is not nil, whether
 // Dispatch holds the person with the deadline notHeldUntil (nil for none) to person_standing. Each
@@ -27,14 +35,6 @@ import (
 // transaction rolls back both attempted writes on failure, though either row can already hold a
 // later answer. person is a login as record.CanonicalLogin spells it, which each table's check
 // refuses any other spelling of.
-const keepMemberKindSQL = `insert into person_member_kind (person, member_kind, as_of) values ($1, nullif($2, ''), $3)
-	on conflict (person) do update set member_kind = excluded.member_kind, as_of = excluded.as_of
-	where person_member_kind.as_of < excluded.as_of`
-
-const keepPersonStandingSQL = `insert into person_standing (person, held, answered_at, not_held_until) values ($1, $2, $3, $4)
-	on conflict (person) do update set held = excluded.held, answered_at = excluded.answered_at, not_held_until = excluded.not_held_until
-	where person_standing.answered_at < excluded.answered_at`
-
 func (s *Store) KeepPersonAnswer(ctx context.Context, person, memberKind string, held *bool, asOf time.Time, notHeldUntil *time.Time) error {
 	if held == nil {
 		_, err := s.Pool.Exec(ctx, keepMemberKindSQL, person, memberKind, asOf)

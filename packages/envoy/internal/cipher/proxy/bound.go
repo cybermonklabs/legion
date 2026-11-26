@@ -884,13 +884,18 @@ func (s *Server) carryHold(ctx context.Context, operator string) *cutCall {
 		return nil
 	}
 	switch v := s.hold.Decide(ctx, operator); v.Kind {
+	case hold.Served:
+		return nil
 	case hold.Held, hold.HeldUnkept:
 		return &cutCall{http.StatusForbidden, hold.CodeHeld, v.HeldWords()}
 	case hold.DeadlinePassed:
 		s.log.Error(holdUnreadable, "person", operator, "error", v.Err)
 		status, code, words := v.Refusal()
 		return &cutCall{status, code, words}
-	case hold.Uncheckable:
+	default:
+		// Every other check that decides nothing — Dispatch refusing the broker's own account
+		// (hold.BrokerRefused), an answer the broker can neither ask for nor read (hold.Uncheckable)
+		// — leaves the call to the reads after it, logged as a read that failed is.
 		s.log.Error(holdUnreadable, "person", operator, "error", v.Err)
 	}
 	return nil

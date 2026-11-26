@@ -73,9 +73,10 @@ const (
 // before the removal (BROKER_ACCESS_TOKEN_SECONDS).
 const CacheTTL = 30 * time.Second
 
-// KeptAnswerTTL is the longest a client serves a kept full member kind or a kept visible project
-// while Dispatch cannot be asked. It bounds the stale access of a person demoted, or removed from
-// a project's list, before the outage that prevented the broker from learning the change.
+// KeptAnswerTTL is the longest a client serves a kept full member kind, a kept visible project, or
+// a kept no-project answer while Dispatch cannot be asked. It bounds the stale access of a person
+// demoted, or removed from a project's list, and a project made private or made under a key the
+// broker last saw as no project, before the outage that kept the broker from learning the change.
 const KeptAnswerTTL = time.Hour
 
 // RelayedReadBound is how long a member-kind read made for a route Dispatch's server relays may
@@ -163,9 +164,11 @@ var outageCodes = []string{"DATABASE_UNAVAILABLE", "OIDC_ISSUER_UNAVAILABLE"}
 // naming no code at all (a page in front of Dispatch), is Dispatch not answering now; a 500 naming
 // any other code of Dispatch's, such as IDENTITY_ERROR, is an answer that lasts until somebody
 // fixes it. The cost is that a Dispatch bug that answers 500 INTERNAL gets the same degraded
-// behavior as an outage: a caller can use an answer it kept. That can serve a full member or a
-// visible project, and the hold can decide from person_standing; a caller without a kept answer it
-// may serve still refuses.
+// behavior as an outage, for as long as it lasts: a caller can use an answer it kept. That can
+// serve a kept full member or a kept visible project, up to KeptAnswerTTL; the hold gate decides
+// from person_standing, which serves a person of whom no answer is kept unless
+// BROKER_HOLD_REQUIRES_DEADLINE is set (hold.Gate.CheckUntil); and an approver's revoke goes
+// ahead, since a revoke only takes access away (requests.Machine.RevokeByApprover).
 const internalCode = "INTERNAL"
 
 // Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
