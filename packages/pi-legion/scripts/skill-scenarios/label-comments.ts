@@ -25,10 +25,11 @@
  * refuses both with a 400 (`temperature` is deprecated, and tool_choice types `tool` and `any` are
  * not supported), and the baseline judge used neither: it sent thinking off (`between_tools` for
  * this model) and no sampling setting. A reply that does not answer every question is asked for
- * again. The key goes in the `x-api-key` header. --key-file is a 0600 file that holds an Anthropic
- * key, read again for each call, and the call goes to https://api.anthropic.com. --key-command is a
- * program that prints the gateway key, run again for each call, and the call goes to
- * <gateway>/v1/messages. A 429 or 5xx answer is tried again after a wait.
+ * again. The route is model-call.ts's: --key-file is a 0600 file that holds an Anthropic key, read
+ * again for each call, and the call goes to https://api.anthropic.com; --key-command is a program
+ * that prints the gateway key, run again for each call, and the call goes to
+ * <gateway>/v1/messages. The key goes in the `x-api-key` header. A 429 or 5xx answer is tried
+ * again after a wait.
  *
  * It writes <out>/labels.jsonl: one row for each comment, oldest first. Stdout gets the counts.
  * Stdout names no person and quotes no comment, so a pull request can carry it as printed. The
@@ -37,12 +38,12 @@
  * comment that gets no label fails the run (exit 1) and stderr names it. Exit 2 is a refusal
  * before any read: a bad argument, an --out inside a git or jj checkout, or no Dispatch.
  */
-import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
+import { askModel, type ModelRoute, modelRoute } from "./model-call";
 import {
-  backoffMs,
   byCreatedAt,
   type CliIo,
   type Fetch,
@@ -55,7 +56,6 @@ import {
   processIo,
   resolveDispatch,
   type Sleep,
-  transient,
 } from "./production-dispatch";
 
 /** The eleven questions of the labels artifact, word for word, in its order. */
@@ -121,21 +121,16 @@ type QuestionKey = (typeof QUESTIONS)[number]["key"];
 
 /** The model of the labels artifact (`anthropic/claude-sonnet-5-5`). */
 export const MODEL = "claude-sonnet-5-5";
-/** Anthropic's own endpoint, for the --key-file route. */
-const ANTHROPIC_URL = "https://api.anthropic.com";
 /** Every setting of the call is fixed here, as the baseline judge sent it (its chat judge's
  * maxTokens, and thinking off). The model refuses `temperature`, `top_k` and a forced tool. */
 const MAX_TOKENS = 4096;
 const THINKING = { type: "between_tools" } as const;
-const ANTHROPIC_VERSION = "2023-06-01";
 /** How many model calls and how many Dispatch reads run at once. */
 const CONCURRENCY = 8;
 /** How many times one model call is tried before its comment fails. */
 const MODEL_TRIES = 8;
 /** The longest one model call may take. */
 const MODEL_TIMEOUT_MS = 120_000;
-/** The longest the key command may run. */
-const KEY_COMMAND_TIMEOUT_MS = 30_000;
 
 /** The text judge's system prompt (packages/ai/src/judgment/text-judge.md of the pinned Oh My Pi,
  * rendered for these questions and normalized as Oh My Pi normalizes a rendered prompt). */
@@ -194,12 +189,6 @@ function stateMessage(issue: string, comment: Comment): string {
 const USAGE =
   "usage: label-comments.ts --since <RFC 3339> --until <RFC 3339> --out <dir> (--gateway <url> --key-command <file> | --key-file <file>)";
 
-/** Where the model calls go, and how each call gets its key. */
-interface ModelRoute {
-  readonly url: string;
-  readonly key: () => Promise<string>;
-}
-
 /** One comment of the set. */
 interface Labelled {
   readonly issue: string;
@@ -220,45 +209,6 @@ export function isYes(chance: number): boolean {
   return chance > 0.5;
 }
 
-/** The key that `file` holds, read now. Throws naming the file, never the key. */
-async function readKeyFile(file: string): Promise<string> {
-  const key = (await Bun.file(file).text()).trim();
-  if (key === "") throw new Error(`the key file ${file} is empty`);
-  return key;
-}
-
-/** The key that the program `file` prints, run now. Throws naming the program, never its output. */
-async function runKeyCommand(file: string): Promise<string> {
-  const child = Bun.spawn([file], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
-  const timer = setTimeout(() => child.kill(), KEY_COMMAND_TIMEOUT_MS);
-  const [output, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  clearTimeout(timer);
-  if (code !== 0) throw new Error(`the key command ${file} exited ${code}`);
-  const key = output.trim();
-  if (key === "") throw new Error(`the key command ${file} printed no key`);
-  return key;
-}
-
-/** Why the model call failed, from Anthropic's error JSON when the body is one. */
-function modelError(status: number, text: string): string {
-  try {
-    const shape = JSON.parse(text) as { error?: { type?: unknown; message?: unknown } };
-    const { type, message } = shape.error ?? {};
-    if (typeof type === "string" && typeof message === "string") {
-      return `the model answered ${status} ${type}: ${message}`;
-    }
-  } catch {
-    // The body is not JSON. The line below says so.
-  }
-  return `the model answered ${status}`;
-}
-
-/** The wait that a `retry-after` header asks for, in milliseconds, or 0. */
-function retryAfterMs(response: Response): number {
-  const seconds = Number(response.headers.get("retry-after"));
-  return Number.isFinite(seconds) && seconds > 0 ? Math.min(60_000, seconds * 1000) : 0;
-}
-
 /** The chances that the model gave for one comment. Throws naming why it has no label. */
 async function label(
   item: Labelled,
@@ -273,46 +223,13 @@ async function label(
     system: SYSTEM_BLOCKS,
     messages: [{ role: "user", content: stateMessage(item.issue, item.comment) }],
   });
-  let last = "";
-  let wait = 0;
-  for (let attempt = 1; attempt <= MODEL_TRIES; attempt++) {
-    if (attempt > 1) await sleep(Math.max(wait, backoffMs(attempt - 1)));
-    wait = 0;
-    let response: Response;
-    let text: string;
-    try {
-      response = await fetchImpl(`${route.url}/v1/messages`, {
-        method: "POST",
-        headers: {
-          "x-api-key": await route.key(),
-          "anthropic-version": ANTHROPIC_VERSION,
-          "content-type": "application/json",
-        },
-        body,
-        signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
-      });
-      // A connection that fails while the body arrives is a failed call, as one before the headers.
-      text = await response.text();
-    } catch (error) {
-      last = `the model call failed: ${messageFor(error)}`;
-      continue;
-    }
-    if (!response.ok) {
-      last = modelError(response.status, text);
-      if (transient(response.status)) {
-        wait = retryAfterMs(response);
-        continue;
-      }
-      throw new Error(last);
-    }
-    try {
-      return chancesOf(text);
-    } catch (error) {
-      // A sampled reply can leave out a question. Ask again.
-      last = messageFor(error);
-    }
-  }
-  throw new Error(`${last}, on each of ${MODEL_TRIES} tries`);
+  // A sampled reply can leave out a question: chancesOf throws, and the reply is asked for again.
+  return askModel(route, body, chancesOf, {
+    fetch: fetchImpl,
+    sleep,
+    tries: MODEL_TRIES,
+    timeoutMs: MODEL_TIMEOUT_MS,
+  });
 }
 
 const WORD_CHARACTER = /[\p{L}\p{N}_]/u;
@@ -453,37 +370,6 @@ function parseArguments(argv: readonly string[]): Arguments | string {
     return `--since, --until and --out are required. ${USAGE}`;
   }
   return { ...values, since, until, out };
-}
-
-/** The model route that the arguments name, or the refusal. */
-function modelRoute(args: Arguments): ModelRoute | string {
-  const { gateway, keyCommand, keyFile } = args;
-  const refusal =
-    "name one model route: --key-file <file>, or --gateway <url> with --key-command <file>";
-  if (keyFile !== undefined) {
-    if (gateway !== undefined || keyCommand !== undefined) return refusal;
-    let mode: number;
-    try {
-      mode = statSync(keyFile).mode;
-    } catch (error) {
-      return `--key-file ${keyFile} cannot be read: ${messageFor(error)}`;
-    }
-    if ((mode & 0o077) !== 0) {
-      return `--key-file ${keyFile} can be read by its group or by others. Make it 0600.`;
-    }
-    return { url: ANTHROPIC_URL, key: () => readKeyFile(keyFile) };
-  }
-  if (gateway === undefined || keyCommand === undefined) return refusal;
-  let url: URL;
-  try {
-    url = new URL(gateway);
-  } catch {
-    return `--gateway ${gateway} is not a URL`;
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return `--gateway ${gateway} is not an http or https URL`;
-  }
-  return { url: gateway.replace(/\/+$/, ""), key: () => runKeyCommand(keyCommand) };
 }
 
 /** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused). */
