@@ -327,10 +327,11 @@ func rewriteApprovalAsk(
 	})
 }
 
-// ApprovalRefKeys reads the ref_key of each document named by documents, keyed by artifact id, in
-// one statement. It is what a writer of an approval request's approves tuples needs to spell the
-// version node address of each document the request names (graphstore.VersionID).
-func ApprovalRefKeys(ctx context.Context, q Queryer, documents []model.AskApprovalDocument) (map[string]string, error) {
+// approvalRefKeys reads the ref_key of each document named by documents, keyed by artifact id, in
+// one statement. It is what a rewrite of an approval request's approves tuples needs to spell the
+// version node address of each document it moves (graphstore.VersionID); a new request takes each
+// ref_key from the document rows its route read already (api's openApprovalAsk).
+func approvalRefKeys(ctx context.Context, q Queryer, documents []model.AskApprovalDocument) (map[string]string, error) {
 	ids := make([]string, 0, len(documents))
 	for _, document := range documents {
 		if !slices.Contains(ids, document.ArtifactID) {
@@ -390,7 +391,7 @@ func planApprovesMoves(ctx context.Context, tx pgx.Tx, askID string, prior, next
 	if nodeAddress == nil {
 		return graphstore.Uncaused{}, nil
 	}
-	keys, err := ApprovalRefKeys(ctx, tx, moved)
+	keys, err := approvalRefKeys(ctx, tx, moved)
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}

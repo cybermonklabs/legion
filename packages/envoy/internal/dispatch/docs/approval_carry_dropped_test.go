@@ -46,6 +46,12 @@ type droppedCarryRestore struct {
 // moved is set the criterion's node is written overtaken before version 4, so version 4's record is
 // not the one alice approved though its text is. It subscribes to the document service's events
 // before version 4, which the restore's transaction publishes once it has committed.
+//
+// The spec's record at the head is read three times: at version 2, where it is alice's pin; at
+// version 3, where it is not, since the criterion's words are in it (a block's text value is its
+// whole slice of the version's markdown, refs' AttributeText, and the spec takes the criterion);
+// and at version 4, where it is her pin again unless the criterion's state moved. The last is what
+// the carry is weighed by, so where it is not as moved says, the test proves nothing.
 func restoreOverTheRecord(t *testing.T, moved bool) droppedCarryRestore {
 	t.Helper()
 	ctx := context.Background()
@@ -122,7 +128,7 @@ func restoreOverTheRecord(t *testing.T, moved bool) droppedCarryRestore {
 			t.Fatalf("write the criterion overtaken: %v", err)
 		}
 	}
-	requireHeadRecord("after the criterion's state moved or stood", !moved)
+	requireHeadRecord("once version 3 words the criterion again", false)
 
 	if _, err := joinedReplaceText(service, spec, approved, alice); err != nil {
 		t.Fatalf("write the approved text again: %v", err)
@@ -155,6 +161,7 @@ func restoreOverTheRecord(t *testing.T, moved bool) droppedCarryRestore {
 			drained = true
 		}
 	}
+	requireHeadRecord("once version 4 restores the approved text over the criterion's state moved or stood", !moved)
 	return restore
 }
 

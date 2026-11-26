@@ -682,13 +682,18 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	documents := []model.AskApprovalDocument{
 		{ArtifactID: artifact.ID, Name: artifact.Name, Version: version, RequestedVersion: version},
 	}
+	// The ref_key of each document the request names, which spells the version node each approves
+	// tuple of a new request goes to (graphstore.VersionID): read with each document's row, so it
+	// costs no read of its own.
+	refKeys := map[string]string{artifact.ID: artifact.RefKey}
 	if input.IncludeVerification {
-		verification, err := s.verificationDocumentFor(r.Context(), tx, *artifact.IssueKey)
+		verification, refKey, err := s.verificationDocumentFor(r.Context(), tx, *artifact.IssueKey)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		documents = append(documents, verification)
+		refKeys[verification.ArtifactID] = refKey
 	}
 	// A supplied summary is validated even when this request opens no row.
 	question, err := approvalQuestion(documents, summary)
@@ -697,16 +702,19 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	// The approval before this request, and the transaction's now() beside it in the same batch:
-	// a request that opens an approval ask dates its node and its row by that now(), the row's
-	// created_at column default, which its insert writes explicitly (openApprovalAsk), and reading
-	// it here costs that request no round trip of its own. A request that renews the open one
-	// dates its requester's follow by it (renewApprovalAsk), and one that does neither reads it
-	// for nothing.
+	// The approval before this request, and the transaction's now() and the head's cut of the
+	// tuple log beside it in the same batch: a request that opens an approval ask dates its node
+	// and its row by that now(), the row's created_at column default, which its insert writes
+	// explicitly, and pins the cut's seq on its node as the store revision it was taken at
+	// (openApprovalAsk), and reading them here costs that request no round trip of its own. A
+	// request that renews the open one dates its requester's follow by the now()
+	// (renewApprovalAsk), and one that does neither reads both for nothing.
 	var now time.Time
+	var cut refs.TreeCut
 	batch := &pgx.Batch{}
 	applyApproval := queueApprovals(batch, []*model.Artifact{&artifact})
 	batch.Queue(`select now()`).QueryRow(func(row pgx.Row) error { return row.Scan(&now) })
+	refs.QueueHeadCut(batch, &cut)
 	if err := tx.SendBatch(r.Context(), batch).Close(); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -792,7 +800,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	} else {
-		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, question, now); err != nil {
+		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, refKeys, question, now, cut.ReadSeq); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -872,7 +880,9 @@ func approvalAfterRequest(approval model.ArtifactApproval, ask model.Ask) model.
 // document a human approved before carries that approval's version, time and approver on the
 // request (approval.approved), so the human reads what the re-approval follows; a first request
 // carries none. The approval named is the first document's, the one the request was opened on.
-// createdAt is the transaction's now(), which the caller read with the approval before the write.
+// createdAt is the transaction's now(), and readSeq the head's seq of the tuple log, which the
+// caller read with the approval before the write; refKeys is the ref_key of each document, which
+// the caller read with its row.
 // The event is filled in once Commit has run the write phase (queueLoggedEvent), and so is the
 // ask's OpenedEventID, which its caller takes from the event then.
 func (s *server) openApprovalAsk(
@@ -883,8 +893,10 @@ func (s *server) openApprovalAsk(
 	artifact model.Artifact,
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
+	refKeys map[string]string,
 	question string,
 	createdAt time.Time,
+	readSeq int64,
 ) (*model.Ask, *model.Event, error) {
 	// The request's id, drawn here as createAskBlock draws an ask block's, because the node goes
 	// in before the row; the node, its relations and the row are dated by createdAt, the
@@ -938,20 +950,12 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, nil, err
 	}
-	cut, err := refs.HeadCut(ctx, tx)
-	if err != nil {
-		return nil, nil, err
-	}
-	refKeys, err := docs.ApprovalRefKeys(ctx, tx, documents)
-	if err != nil {
-		return nil, nil, err
-	}
 	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
 	// The approval request's ask is the node this write makes, first of the nodes AskFacts
-	// answers (graphstore.Created). It pins the store revision it was taken at (refs.HeadCut) as a
+	// answers (graphstore.Created). It pins the store revision it was taken at, readSeq, as a
 	// value of its own and states one approves tuple to each version node the request names (R14).
 	nodes[0] = graphstore.Created(nodes[0])
-	nodes[0].Attributes = map[string]any{graphcensus.AttributeRequestReadSeq: cut.ReadSeq}
+	nodes[0].Attributes = map[string]any{graphcensus.AttributeRequestReadSeq: readSeq}
 	facts = graphstore.AttributeFacts(facts, nodes[0])
 	if marked {
 		for _, document := range documents {
@@ -1222,30 +1226,31 @@ func artifactMetadata(ctx context.Context, q queryer, id string) (model.Artifact
 
 // verificationDocumentFor is the Verification document of the issue issueKey names, at its
 // current settled version, for a request that asks a human to approve it and the issue's spec at
-// once. An issue with no Verification document, and one whose Verification document has no
-// settled version, each refuse the request, since there is nothing to name beside the spec. The
-// one caller is behind the NOT_SPEC_DOCUMENT guard, which already refuses a document that is no
-// issue's spec (isSpecDocument), so a document with no issue never reaches here.
-func (s *server) verificationDocumentFor(ctx context.Context, q queryer, issueKey string) (model.AskApprovalDocument, error) {
+// once, and that document's ref_key, read with its row. An issue with no Verification document,
+// and one whose Verification document has no settled version, each refuse the request, since
+// there is nothing to name beside the spec. The one caller is behind the NOT_SPEC_DOCUMENT guard,
+// which already refuses a document that is no issue's spec (isSpecDocument), so a document with
+// no issue never reaches here.
+func (s *server) verificationDocumentFor(ctx context.Context, q queryer, issueKey string) (model.AskApprovalDocument, string, error) {
 	const noVerification = "the issue has no Verification document to approve beside this one; write verification.md first, or request approval of this document alone"
 	verification, held, err := s.verificationDocument(ctx, q, issueKey, "")
 	if err != nil {
-		return model.AskApprovalDocument{}, fmt.Errorf("read the issue's Verification document: %w", err)
+		return model.AskApprovalDocument{}, "", fmt.Errorf("read the issue's Verification document: %w", err)
 	}
 	if !held {
-		return model.AskApprovalDocument{}, errorf(http.StatusConflict, "NO_VERIFICATION_DOCUMENT", "%s", noVerification)
+		return model.AskApprovalDocument{}, "", errorf(http.StatusConflict, "NO_VERIFICATION_DOCUMENT", "%s", noVerification)
 	}
 	version, err := settledVersionNumber(ctx, q, verification.ID)
 	if err != nil {
-		return model.AskApprovalDocument{}, err
+		return model.AskApprovalDocument{}, "", err
 	}
 	if version == 0 {
-		return model.AskApprovalDocument{}, errorf(http.StatusConflict, "NO_VERSION",
+		return model.AskApprovalDocument{}, "", errorf(http.StatusConflict, "NO_VERSION",
 			"%s has no settled version to approve yet", verification.Name)
 	}
 	return model.AskApprovalDocument{
 		ArtifactID: verification.ID, Name: verification.Name, Version: version, RequestedVersion: version,
-	}, nil
+	}, verification.RefKey, nil
 }
 
 // createPlanReviewInput is the body of POST /api/v1/artifacts/{id}/plan-reviews.

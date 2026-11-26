@@ -140,15 +140,14 @@ func recordCarryForced(ctx context.Context) bool {
 // statement: the document's issue; the query of its node where that node is a query node; whether
 // the issue has converted (issue_trees); the record digest the version_renders row of version $2
 // holds where it owes none and holds no tree_mismatch; the digest the review $3 stands on, which
-// every gate compares (ReviewStandColumns): its row of artifact_review_carries' record_sha256 where
-// that holds one, else its content_sha256, $4; and whether the issue's queries hold a mark
-// (issue_query_marks).
+// every gate compares (reviewPin), $4 where the review is no stored row; and whether the issue's
+// queries hold a mark (issue_query_marks).
 var recordStandStatement = `
 	select coalesce(a.issue_key, ''), coalesce(q.attributes->>'` + graphstore.AttributeQuery + `', ''),
 	       exists (select 1 from issue_trees t where t.issue_key = a.issue_key),
 	       (select r.record_sha256 from version_renders r
 	        where r.artifact_id = a.id and r.number = $2 and not r.digest_owed and not r.tree_mismatch),
-	       coalesce((select c.record_sha256 from artifact_review_carries c where c.review_id = $3::uuid), $4::text),
+	       coalesce((select ` + reviewPin + ` from artifact_reviews where artifact_reviews.id = $3::uuid), $4::text),
 	       exists (select 1 from issue_query_marks m where m.issue_key = a.issue_key)
 	from artifacts a
 	left join graph_nodes q on q.kind = '` + graphstore.KindArtifact + `' and q.id = a.ref_key and q.supertag = '` + graphstore.SupertagQuery + `'
@@ -181,17 +180,16 @@ func readRecordStand(ctx context.Context, tx pgx.Tx, artifactID string, number i
 	return stand, nil
 }
 
-// approvalPin is the digest newest, an approval, stands on, as every gate reads it
-// (ReviewStandColumns): the record digest its row of artifact_review_carries holds where newest is a
-// carry whose row holds one, read in one statement, and its content_sha256 elsewhere, read off the
-// review itself.
+// approvalPin is the digest newest, an approval, stands on, as every gate reads it (reviewPin):
+// read in one statement where newest is a carry, and its content_sha256 elsewhere, read off the
+// review itself, as it is for a carry this transaction queued and has not written.
 func approvalPin(ctx context.Context, tx pgx.Tx, newest model.ArtifactReview) (*string, error) {
 	if newest.CarriedFromVersion == nil || newest.ID == "" {
 		return newest.ContentSHA256, nil
 	}
 	var pin *string
 	if err := tx.QueryRow(ctx, `
-		select coalesce((select c.record_sha256 from artifact_review_carries c where c.review_id = $1::uuid), $2::text)`,
+		select coalesce((select `+reviewPin+` from artifact_reviews where artifact_reviews.id = $1::uuid), $2::text)`,
 		newest.ID, newest.ContentSHA256).Scan(&pin); err != nil {
 		return nil, fmt.Errorf("read the digest the approval of version %d of %s stands on: %w", newest.Version, newest.ArtifactID, err)
 	}

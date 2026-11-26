@@ -59,21 +59,35 @@ const ReviewStandJoin = `
 		where a.id = artifact_reviews.artifact_id
 	) stand on true`
 
+// reviewPin selects, of the artifact_reviews row unaliased, the digest the review stands on, which
+// every gate compares with the digest of the current query (R14): the record's digest on its row
+// of artifact_review_carries where that row holds one (the fill's repin, fillOwedDigests), and
+// else its content_sha256 (R14: "Every read that compares a review with the current query's digest
+// reads that column where it holds a digest, and the review's content_sha256 elsewhere"). The one
+// exception is a carry the release before wrote: its reason opens CarriedReviewReasonPrefix and no
+// row of artifact_review_carries names its artifact.approved, since every carry this build writes
+// records its event on its row (reviewWrite.queueEvent) and the backfill's row of an older carry
+// names none. No fill repins such a carry, so it stands on the digest its own version answers
+// (artifact_version_text_sha256), the digest the fill repins every carry of a version's write to
+// but a record carry, which no release before this one writes. That is its content_sha256 unless
+// its version owed its record's digest when the carry was written and the fill has filled it since.
+const reviewPin = `coalesce(
+		(select c.record_sha256 from artifact_review_carries c where c.review_id = artifact_reviews.id),
+		case when starts_with(artifact_reviews.reason, '` + CarriedReviewReasonPrefix + `') and not exists (
+			select 1 from artifact_review_carries c where c.review_id = artifact_reviews.id and c.event_id is not null)
+		then artifact_version_text_sha256(artifact_reviews.artifact_id, artifact_reviews.version) end,
+		artifact_reviews.content_sha256)`
+
 // ReviewStandColumns selects, after ReviewReadColumns of the artifact_reviews row unaliased joined
 // to stand (ReviewStandJoin), what a gate compares of the review (ScanReviewStand): whether its
 // document is a query node of a converted issue, whether that document is retired, and, for such a
-// document alone, the digest the review stands on and the digest of the current query. The pin is
-// the record's digest on the review's row of artifact_review_carries where that row holds one, and
-// else the review's content_sha256 (R14: "Every read that compares a review with the current
-// query's digest reads that column where it holds a digest, and the review's content_sha256
-// elsewhere"). The current digest is the one artifact_version_text_sha256 answers for the
-// document's newest version: the record's where that version's version_renders row holds one, and
-// else the digest of its stored markdown. Every other document reads neither, so its approval read
-// computes no digest at all.
+// document alone, the digest the review stands on (reviewPin) and the digest of the current query.
+// The current digest is the one artifact_version_text_sha256 answers for the document's newest
+// version: the record's where that version's version_renders row holds one, and else the digest of
+// its stored markdown. Every other document reads neither, so its approval read computes no digest
+// at all.
 const ReviewStandColumns = `coalesce(stand.query, false), coalesce(stand.retired, false),
-	case when stand.query then coalesce(
-		(select c.record_sha256 from artifact_review_carries c where c.review_id = artifact_reviews.id),
-		artifact_reviews.content_sha256) end,
+	case when stand.query then ` + reviewPin + ` end,
 	case when stand.query and stand.latest is not null then artifact_version_text_sha256(artifact_reviews.artifact_id, stand.latest) end`
 
 // ApprovalStand is what a gate compares of a document's newest review (R14, T14 of the issue-tree
