@@ -78,7 +78,7 @@ func TestAPhaseEndedMessageToARelaunchParkedOverALiveProcessPublishesAtOnce(t *t
 // does not advertise the delivery mode can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
 // A role with no live holder is a wait while the hour after the row was made runs
-// (phaseEndedUnheld), since a listener that refuses to keep a publish naming no source session
+// (publishKeptToRole), since a listener that refuses to keep a publish naming no source session
 // keeps nothing for it.
 func TestAPhaseEndedMessageRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 	ctx := context.Background()

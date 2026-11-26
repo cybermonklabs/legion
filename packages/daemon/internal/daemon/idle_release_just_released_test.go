@@ -151,7 +151,7 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 // registers with the listener (idleRigPlan.HoldsBeforeEnvoy), as a woken Oh My Pi is still
 // starting then. No live session holds the role, and the publish names no source session, so the
 // listener refuses it with nothing kept (404, its request line's outcome role_no_source_session),
-// and each row waits on its backoff (hookPromptUnheld). The process is held until the listener has
+// and each row waits on its backoff (publishKeptToRole). The process is held until the listener has
 // refused each prompt twice, past two of the row's backoff steps. Once the process goes on, its
 // registration and its claim of the role give the role a live holder, and each row's next attempt
 // delivers its prompt to the woken session. A refused publish stores nothing, so each prompt

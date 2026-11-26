@@ -57,7 +57,7 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 // the gate holds a kept publish as it holds every other (outbox.publishKept, the merge of
 // cybermonklabs/legion#4088 into #4220): to a claim that records a session it does not hold, a hook
 // prompt publishes nothing, kept or not, and its row waits for a session to hold the role as it
-// waits on the listener's own no-holder answer (hookPromptUnheld). To a claim holding its own
+// waits on the listener's own no-holder answer (publishKeptToRole). To a claim holding its own
 // session, it is published with keep as before (R9). One hook prompt to each claim stands in for
 // the kept rows, since a hook prompt and a phase-ended message are the two kinds publishKeptToRole
 // publishes, and one stands in for both.

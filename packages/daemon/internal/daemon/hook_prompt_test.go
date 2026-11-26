@@ -170,7 +170,7 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
 // A role with no live holder is a wait while the hour after the row was made runs. Past that hour
 // the row ends before it publishes, a failure no retry repairs, which finishes the row with a
-// message on the issue (hookPromptEnded, permanentRefusal, finishRefused).
+// message on the issue (keptRoleMessageEnded, permanentRefusal, finishRefused).
 func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

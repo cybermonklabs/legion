@@ -90,9 +90,9 @@ func TestAPhaseEndedMessageToAnUnheldRoleWaitsAndReachesItsSessionInsideTheHour(
 }
 
 // Once the hour after its row was made has passed with no session of the role handed the message,
-// the row ends before anything publishes it, with the log line its end has always had and the
-// reason, and no message on the issue: the role's next task from the daemon names its phase
-// anyway. At the head before this end the row publishes once more past its hour.
+// the row ends before anything publishes it, with phaseEndedUndeliveredLine and the reason, and
+// no message on the issue: the role's next task from the daemon names its phase anyway. At the
+// head before this end the row publishes once more past its hour.
 func TestAPhaseEndedMessagePastItsHourEndsWithItsLogLine(t *testing.T) {
 	t.Parallel()
 	runner, _, pool, publisher, _, logs := unheldTesterRunner(t)
@@ -114,64 +114,111 @@ func TestAPhaseEndedMessagePastItsHourEndsWithItsLogLine(t *testing.T) {
 	}
 }
 
-// A phase-ended message to a released role waits past its hour only while a wake of that role can
-// come or is under way (wakeInFlight). While the issue is in the workflow, the row's attempt wakes
-// the role and the row waits for the woken session through the launch the wake opened. An issue
-// that has left the workflow gets no wake, so its row is held to the hour: past it, the row ends
-// with its log line, publishes nothing and wakes nothing. Each row is the other's control: a rule
-// that let every released role wait would fail the second, and one that ended every row past its
-// hour, wakeInFlight forced false, fails the first.
-func TestAPhaseEndedMessageToAReleasedRoleWaitsPastItsHourOnlyWhileAWakeCanCome(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name   string
-		status string
-		ends   bool
-	}{
-		{name: "the workflow still wakes the role", status: "in_progress"},
-		{name: "the issue has left the workflow", status: "backlog", ends: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			publisher := &holderPublisher{}
-			logs := &syncBuffer{}
-			runner, sup, pool := runnerIn(t, phase.Testing, tc.status, publisher, slog.New(slog.NewJSONHandler(logs, nil)))
-			holdSlot(t, pool, "LEGION-208")
-			publisher.setAbsent(notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleTester)))
-			machine := releasedClaim(t, sup, claim.RoleTester)
-			phaseEndedRowMadeAt(t, runner, pool, time.Now().Add(-2*time.Hour))
-
-			drainAt(t, runner, 0, "the row's first attempt, past its hour")
-			if tc.ends {
-				if left := rowsOf(t, pool, record.OutboxKindPhaseEnded); left != 0 {
-					t.Fatalf("phase-ended rows left = %d, want the row ended at its hour: no wake comes to a role of an issue out of the workflow", left)
-				}
-				if attempts, _ := publisher.snapshot(); attempts != 0 {
-					t.Fatalf("publish attempts = %d, want none for a message past its hour", attempts)
-				}
-				if held := machine.Claim(); !held.Released() {
-					t.Fatalf("the tester is %s by %s, want it left released: the issue is out of the workflow", held.State, held.SuspendedBy)
-				}
-				if ended := endedLines(logs); len(ended) != 1 {
-					t.Fatalf("the row's end lines are %q, want one", ended)
-				}
-				return
+// keptReleasedRows are the two kinds of kept role message, as a released-role test enqueues and
+// reads them: a hook prompt to the implementer of an issue in implementing, which ends with the
+// message on the issue, and a phase-ended message to the tester of an issue in testing, which ends
+// with its log line and no message on the issue.
+var keptReleasedRows = []struct {
+	kind    string
+	role    claim.Role
+	at      phase.Phase
+	rows    record.OutboxKind
+	enqueue func(t *testing.T, runner *outbox, pool *store.Pool, made time.Time)
+	// ended fails unless the row's end was told as its kind tells it; waiting fails unless no end
+	// was told.
+	ended, waiting func(t *testing.T, pool *store.Pool, logs *syncBuffer)
+}{
+	{
+		kind: "a hook prompt", role: claim.RoleImplementer, at: phase.Implementing, rows: record.OutboxKindHookPrompt,
+		enqueue: func(t *testing.T, runner *outbox, pool *store.Pool, made time.Time) {
+			hookRowMadeAt(t, runner, pool, firedHook, made)
+		},
+		ended: func(t *testing.T, pool *store.Pool, _ *syncBuffer) {
+			held := heldMessages(t, pool)
+			if len(held) != 1 {
+				t.Fatalf("messages on the issue = %+v, want one naming the prompt", held)
 			}
-			if left := rowsOf(t, pool, record.OutboxKindPhaseEnded); left != 1 {
-				t.Fatalf("phase-ended rows left = %d after the first attempt, want the row waiting while its released role is woken, past its hour", left)
+			requireSays(t, held[0].body, "the hour after the hook fired passed and no session of the implementer took it", firedHook.Prompt)
+		},
+		waiting: func(t *testing.T, pool *store.Pool, _ *syncBuffer) {
+			if held := heldMessages(t, pool); len(held) != 0 {
+				t.Fatalf("messages on the issue = %+v, want none while the role's wake is under way", held)
 			}
-			if held := machine.Claim(); held.Released() {
-				t.Fatalf("UNKNOWN: the tester is still %s by %s after the first attempt, so the row woke nothing and the wait tests nothing", held.State, held.SuspendedBy)
+		},
+	},
+	{
+		kind: "a phase-ended message", role: claim.RoleTester, at: phase.Testing, rows: record.OutboxKindPhaseEnded,
+		enqueue: phaseEndedRowMadeAt,
+		ended: func(t *testing.T, _ *store.Pool, logs *syncBuffer) {
+			if ended := endedLines(logs); len(ended) != 1 {
+				t.Fatalf("the row's end lines are %q, want one", ended)
 			}
-			drainAt(t, runner, 2*time.Minute, "the row's attempt while the woken role launches")
-			t.Logf("the woken tester is %s at the row's second attempt", machine.View().State)
-			if left := rowsOf(t, pool, record.OutboxKindPhaseEnded); left != 1 {
-				t.Fatalf("phase-ended rows left = %d, want the row waiting for the woken session past its hour", left)
-			}
+		},
+		waiting: func(t *testing.T, _ *store.Pool, logs *syncBuffer) {
 			if ended := endedLines(logs); len(ended) != 0 {
 				t.Fatalf("the row logged its end %q, want none while the role's wake is under way", ended)
 			}
-		})
+		},
+	},
+}
+
+// A kept role message to a released role waits past its hour only while a wake of that role can
+// come or is under way (wakeComing). While the issue is in the workflow and its tree does not
+// linger, the row's attempt wakes the role (deliveryWake), and the row waits for the woken session,
+// also past its hour, through the launch the wake's resume opened. An issue that has left the
+// workflow gets no wake, so its row is held to the hour as any other: past it, the row ends as its
+// kind ends, publishes nothing and wakes nothing. Each row is the other's control: a rule that let
+// every released role wait would fail the second, and one that ended every row past its hour would
+// fail the first.
+func TestAKeptRoleMessageToAReleasedRoleWaitsPastItsHourOnlyWhileAWakeCanCome(t *testing.T) {
+	t.Parallel()
+	for _, message := range keptReleasedRows {
+		for _, tc := range []struct {
+			name   string
+			status string
+			ends   bool
+		}{
+			{name: "the workflow still wakes the role", status: "in_progress"},
+			{name: "the issue has left the workflow", status: "backlog", ends: true},
+		} {
+			t.Run(message.kind+": "+tc.name, func(t *testing.T) {
+				t.Parallel()
+				publisher := &holderPublisher{}
+				logs := &syncBuffer{}
+				runner, sup, pool := runnerIn(t, message.at, tc.status, publisher, slog.New(slog.NewJSONHandler(logs, nil)))
+				holdSlot(t, pool, "LEGION-208")
+				publisher.setAbsent(notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", message.role)))
+				machine := releasedClaim(t, sup, message.role)
+				message.enqueue(t, runner, pool, time.Now().Add(-2*time.Hour))
+
+				drainAt(t, runner, 0, "the row's first attempt, past its hour")
+				if tc.ends {
+					if left := rowsOf(t, pool, message.rows); left != 0 {
+						t.Fatalf("%s rows left = %d, want the row ended at its hour: no wake comes to a role of an issue out of the workflow", message.rows, left)
+					}
+					if attempts, _ := publisher.snapshot(); attempts != 0 {
+						t.Fatalf("publish attempts = %d, want none for a message past its hour", attempts)
+					}
+					if held := machine.Claim(); !held.Released() {
+						t.Fatalf("the %s is %s by %s, want it left released: the issue is out of the workflow", message.role, held.State, held.SuspendedBy)
+					}
+					message.ended(t, pool, logs)
+					return
+				}
+				if left := rowsOf(t, pool, message.rows); left != 1 {
+					t.Fatalf("%s rows left = %d after the first attempt, want the row waiting while its released role is woken, past its hour", message.rows, left)
+				}
+				if held := machine.Claim(); held.Released() {
+					t.Fatalf("UNKNOWN: the %s is still %s by %s after the first attempt, so the row woke nothing and the wait tests nothing", message.role, held.State, held.SuspendedBy)
+				}
+				drainAt(t, runner, 2*time.Minute, "the row's attempt while the woken role launches")
+				t.Logf("the woken %s is %s at the row's second attempt", message.role, machine.View().State)
+				if left := rowsOf(t, pool, message.rows); left != 1 {
+					t.Fatalf("%s rows left = %d, want the row waiting for the woken session past its hour", message.rows, left)
+				}
+				message.waiting(t, pool, logs)
+			})
+		}
 	}
 }
 
