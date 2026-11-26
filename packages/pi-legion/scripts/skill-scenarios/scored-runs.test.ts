@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { OWNER_WALK_STAGES, ownerWalkWorld, questionsOf } from "./owner-walk";
-import { cells, ownerWalk, reachOf } from "./scored-runs";
+import { BOUND_CLAUSE, cells, ownerWalk, reachOf } from "./scored-runs";
 import {
   type OwnerWalkWorld,
   RunRow,
@@ -627,6 +627,77 @@ describe("cells", () => {
         passes: 6,
         pending: 0,
         verdict: "fail",
+      },
+    ]);
+  });
+
+  // Catches: a control cell filled by one kind's or one family's runs, so D's verdict comes from
+  // Claude owners alone when one Job ran `--count 12` of root-D-claude.
+  test("a control cell takes three runs of each kind and family, and one case's twelve runs leave it UNKNOWN", () => {
+    const runs = fresh();
+    for (let n = 1; n <= 12; n += 1)
+      plantRow(runs, {
+        form: "D",
+        kind: "root",
+        family: "claude",
+        label: "ctl-D",
+        n,
+        clauses: [clause("read", false)],
+      });
+    expect(cells(runs, "owner-walk")).toEqual([
+      {
+        scenario: "owner-walk",
+        label: "ctl-D",
+        cell: "guidance/D",
+        count: 12,
+        scored: 3,
+        passes: 0,
+        pending: 0,
+        verdict: "UNKNOWN",
+      },
+    ]);
+  });
+
+  // Catches: a run held to its bound counted as an owner who did not pass the control's clause,
+  // so hung runs help a negative control pass.
+  test("a control cell counts no run held to its bound, and is UNKNOWN without its twelve", () => {
+    const runs = fresh();
+    let owner = 0;
+    for (const kind of ["root", "child"] as const)
+      for (const family of ["claude", "gpt"] as const)
+        for (let n = 1; n <= 3; n += 1) {
+          const held = owner < 2;
+          plantRow(runs, {
+            form: "D",
+            kind,
+            family,
+            label: "ctl-D",
+            n,
+            clauses: held
+              ? [
+                  clause("read", false),
+                  {
+                    id: BOUND_CLAUSE.id,
+                    clause: BOUND_CLAUSE.sentence,
+                    pass: false,
+                    evidence: "the run did not end within its bound",
+                    counts: {},
+                  },
+                ]
+              : [clause("read", owner < 6)],
+          });
+          owner += 1;
+        }
+    expect(cells(runs, "owner-walk")).toEqual([
+      {
+        scenario: "owner-walk",
+        label: "ctl-D",
+        cell: "guidance/D",
+        count: 12,
+        scored: 10,
+        passes: 4,
+        pending: 0,
+        verdict: "UNKNOWN",
       },
     ]);
   });

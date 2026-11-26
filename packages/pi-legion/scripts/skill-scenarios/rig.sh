@@ -262,6 +262,12 @@
 #                                 which `rig.sh plans-capture` writes (required)
 #   SKILL_SCENARIOS_GUIDANCE_MODELS  forms A, C and D: "<claude model> <gpt model>", the ids the
 #                                 guidance names (owner-walk.ts world), the ids the gateway lists
+#   SKILL_SCENARIOS_LAUNCH_NOTICES  `world` (the default) or `none`: what an owner's launch request
+#                                 holds of the world's notices (launch_request). `none` gives the
+#                                 launch no notice, so the label's launch publishes none. The rig is
+#                                 test infrastructure, and production never sets this: rig.test.ts's
+#                                 notice row sets it for its control, which publishes a notice of
+#                                 its own to another role
 # For spec-writing and spec-rewrite:
 #   SKILL_SCENARIOS_SOURCE      `batch`: a directory name under $SKILL_SCENARIOS_WORK/sources
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
@@ -312,38 +318,16 @@
 # `<turn> <first|answered|approved> <exit line>`. `seed.ts capture-spec` then reads back what the
 # run wrote (seed.ts's header names each file), and `rig.sh judge` judges the run afterwards.
 #
-# An owner's run (run_owner_walk, scored_session) starts from the label's own texts: every text
-# the agent starts from comes from the label's code, through the label's one entry,
-# packages/pi-legion/scripts/skill-scenarios/label-texts.sh (a label without it is refused by
-# name), built once per label (`label-texts.sh build`, at batch-scored's start) into the label's
-# own directory of the work directory, RIG_TEXTS_BIN (load_label), outside every checkout:
-#   1. The run's own Dispatch, from the label's run-server.sh, seeded with `seed.ts owner-walk`,
-#      and dispatch-proxy.ts in front of it, which answers the plans read with the recorded answer
-#      and logs each request of the agent's to dispatch-proxy.jsonl.
-#   2. `label-texts.sh world` walks the world through the label's engine (TestRigWorld): the start
-#      task a root owner's admission queues, and every notice of the owner's issue, oldest first.
-#   3. The daemon stand-in (daemon-standin.ts) for the owner's claim, with the world's issues, the
-#      label's contract and the label's register_plan, and pod-standin.ts for each pod tool.
-#   4. `label-texts.sh launch` composes the system prompt and the pane's variables as the label's
-#      daemon and tmux runtime do (TestRigLaunch), with the guidance file of forms A, C and D, and
-#      publishes each notice to the batch's listener, kept for the role until a session claims it.
-#      TestRigLaunch sets no productionCheck, so the architect's prompt from the rig reads
-#      "Production check: off", which is right for a rig, which has no production. A launch whose
-#      environment holds a LEGION_STALL_ variable is refused (launch_env): the plugin's defaults
-#      are the limits a run waits on, and a deployment may set them, never a run.
-#   5. launch_rpc starts the label's Oh My Pi in RPC mode (`--model @default --mode rpc
-#      --append-system-prompt <file>`, as the runtime starts a pane), sends each start task as one
-#      RPC prompt once the stand-in's log shows the claim's claims/ready, and ends each turn on
-#      facts, checked every 10 s: the last of agent_start and agent_end is agent_end, get_state
-#      answers that no turn runs, and the session's newest claims/activity report since that
-#      turn began says no background work runs and names no reminder (the plugin sends it at
-#      session_stop, just before the run's agent_end). Then it sends the form's questions, and
-#      writes `exit=0` once that turn ends too. At a turn's bound (SKILL_SCENARIOS_TIMEOUT) it
-#      writes `exit=bound`, and held.txt says what held the run: the turn, the background work, or
-#      the reminder and the count of reminders.
-#   6. `seed.ts capture-scored` reads back what the run left on Dispatch.
-# Two runs of one kind hold one role token (legion-lweval-<key>-architect) on one listener, so
-# batch-scored runs owner-walk one run at a time.
+# An owner's run (run_owner_walk, scored_session) starts from the label's own texts, through the
+# label's one entry, packages/pi-legion/scripts/skill-scenarios/label-texts.sh, built once per label
+# outside every checkout (load_label); a label without the entry is refused by name. The run gets its
+# own Dispatch behind dispatch-proxy.ts, its world and its launch from label-texts.sh, the daemon
+# and pod stand-ins, and then the label's Oh My Pi in RPC mode (launch_rpc, rpc.sh). The launch has
+# no productionCheck, so the architect's prompt reads "Production check: off", right for a rig. A
+# turn ends when it has ended, no turn runs, and no background work or reminder is pending; at its
+# bound (SKILL_SCENARIOS_TIMEOUT) out.txt ends exit=bound and held.txt says what held the run.
+# `seed.ts capture-scored` then reads back what the run left on Dispatch. Runs are serial: owners
+# of one kind share one role token on the listener.
 set -euo pipefail
 # Nothing the rig starts inherits a service endpoint or credential from the caller: a Legion pane
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
@@ -428,10 +412,6 @@ model_standin_unrouted=http://model-standin.invalid
 owner_walk_repo=example/csv-importer
 owner_walk_project=LWEVAL
 owner_walk_stage=guidance
-# launch_rpc's clock: seconds between two looks at a run's end, and the bound on the claim's
-# claims/ready.
-rpc_poll=10
-rpc_ready_bound=300
 
 mkdir -p "$work"
 
@@ -446,6 +426,10 @@ timeout_hook=
 # a given Postgres URL's password in PGPASSWORD alone, and safe_url prints that URL without it.
 # shellcheck source-path=SCRIPTDIR/../../../.. source=packages/envoy/scripts/lib/pg-url.sh disable=SC1091 # followed under shellcheck -x
 . "$root/packages/envoy/scripts/lib/pg-url.sh"
+# rpc.sh: the run's RPC session (launch_rpc and its rpc_* functions and clock), which rpcRun in
+# rig.test.ts sources too.
+# shellcheck source=packages/pi-legion/scripts/skill-scenarios/rpc.sh disable=SC1091 # followed under shellcheck -x
+. "$here/rpc.sh"
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
@@ -1139,15 +1123,29 @@ given_services() {
 # stay in their order, and a query that keeps none prints no `?`. For a URL pg-url.sh refuses,
 # pg-url.sh names the fault on standard error, and safe_url prints a fixed placeholder, never the
 # URL. Any other URL, the NATS one, is read as Go's net/url reads it, which nats.go parses a server
-# URL with: the password runs to the last `@` before the path, the query or the fragment, so a raw
-# `@` in it goes too.
+# URL with: the user info runs to the last `@` before the path, the query or the fragment, so a raw
+# `@` in the password goes too. A user and password keeps its user; user info with no `:` is a
+# token to nats.go, so it goes whole.
 safe_url() {
-  local url scheme rest user='' kept='' param key
+  local url scheme rest user='' kept='' param key prefix authority info
   local -a params=()
   case $1 in
   postgres://* | postgresql://*) ;;
+  *://*)
+    prefix=${1%%://*}://
+    rest=${1:${#prefix}}
+    authority=${rest%%[/?#]*}
+    if [[ $authority == *@* ]]; then
+      info=${authority%@*}
+      [[ $info == *:* ]] && info=${info%%:*}@ || info=''
+      printf '%s%s%s%s\n' "$prefix" "$info" "${authority##*@}" "${rest:${#authority}}"
+    else
+      printf '%s\n' "$1"
+    fi
+    return
+    ;;
   *)
-    printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^/?#]*@,\1@,'
+    printf '%s\n' "$1"
     return
     ;;
   esac
@@ -2036,6 +2034,16 @@ run_tester_proof() {
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh.
   bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
+  tester_pane
+  launch "$name"
+  # What the run left on its issue: every handoff record, each with its body, for testerProof.
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
+}
+
+# tester_pane writes the tester's pane, $R/pane.env: worker.env (worker-pane.ts's), the batch's
+# services, the run's own Dispatch, and git, jj and gh as the tester's. The services carry the
+# batch's NATS URL, which can hold a credential, so the pane is its owner's alone (owner_only).
+tester_pane() {
   {
     cat "$R/worker.env" "$services_env"
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
@@ -2046,9 +2054,6 @@ run_tester_proof() {
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
   } | owner_only "$R/pane.env"
-  launch "$name"
-  # What the run left on its issue: every handoff record, each with its body, for testerProof.
-  seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
 # ---- The scored scenarios: a label's own texts, and an owner in RPC mode ----
@@ -2112,21 +2117,27 @@ world_request() {
 # workspace, the daemon stand-in, the batch's listener, NATS and Envoy token, the run's boot token,
 # the gh stand-in, the pane's PATH (base_env's), the architect's claim on the owner's issue in R's
 # tree, an empty file of deployment instructions (the rig is no deployment and writes none), every
-# notice of the world's answer, and planGuidanceFile for a world with guidance (forms A, C and D).
+# notice of the world's answer (none with SKILL_SCENARIOS_LAUNCH_NOTICES=none, the header), and
+# planGuidanceFile for a world with guidance (forms A, C and D).
 # The batch's NATS URL can carry a credential, so jq reads it from LAUNCH_NATS_URL, its environment,
 # never from argv, which every user of this machine reads.
 launch_request() {
+  local notices=${SKILL_SCENARIOS_LAUNCH_NOTICES:-world}
+  case $notices in
+  world | none) ;;
+  *) fail "SKILL_SCENARIOS_LAUNCH_NOTICES is '$notices', not world or none" ;;
+  esac
   : >"$R/instructions.md"
   LAUNCH_NATS_URL=$(service_value ENVOY_NATS_URL) jq -n --slurpfile world "$1" --slurpfile answer "$2" --arg daemon "$3" --arg guidance "${4:-}" \
     --arg state "$R/state" --arg workspace "$R/cwd" --arg envoy "$(service_value ENVOY_URL)" \
     --arg envoyToken "$(service_value ENVOY_TOKEN_FILE)" \
-    --arg boot "$R/secrets/boot" --arg gh "$R/bin/gh" --arg path "$R/bin:$PATH" --arg instructions "$R/instructions.md" '
+    --arg boot "$R/secrets/boot" --arg gh "$R/bin/gh" --arg path "$R/bin:$PATH" --arg instructions "$R/instructions.md" --arg notices "$notices" '
     $world[0] as $w
     | {project: $w.project, stateDir: $state, workspace: $workspace, daemonUrl: $daemon, envoyUrl: $envoy,
        envoyTokenFile: $envoyToken, natsUrls: [$ENV.LAUNCH_NATS_URL], bootTokenFile: $boot, ghToken: "rig-gh-token",
        ghPath: $gh, path: $path, claim: {tree: $w.issues[0].tree, issue: $w.subject, role: $w.role},
        repository: $w.repository, defaultBranch: $w.defaultBranch, instructionsFile: $instructions,
-       notices: $answer[0].notices}
+       notices: (if $notices == "none" then [] else $answer[0].notices end)}
     + (if $guidance == "" then {} else {planGuidanceFile: $guidance} end)'
 }
 
@@ -2138,13 +2149,18 @@ service_value() {
 # launch_env ANSWER prints the pane's variables of the launch answer ANSWER (C2's LaunchAnswer),
 # NAME=value a line, for the run's pane file. A launch whose environment holds a LEGION_STALL_
 # variable is refused, naming it: a run waits on the limits of the plugin's defaults
-# (pi-shared/src/stall-limits.ts), which a deployment may set and a run never does. So is a value
-# that holds a line break, which a pane file cannot carry.
+# (pi-shared/src/stall-limits.ts), which a deployment may set and a run never does. So is a name
+# that is not a shell variable's (`^[A-Za-z_][A-Za-z0-9_]*$`), naming it: the launch file exports
+# each pane line, and bash refuses to export such a name and goes on without it, so the agent would
+# run without that variable. So is a value that holds a line break, which a pane file cannot carry.
 launch_env() {
-  local stall
+  local stall names
   stall=$(jq -r '.env | keys[] | select(startswith("LEGION_STALL_"))' "$1") || fail "the launch answer $1 does not parse"
   [ -z "$stall" ] ||
     fail "the launch's environment holds $(paste -sd' ' <<<"$stall"): a run waits on the plugin's defaults, which a deployment may set and a run never does, so the launch is refused"
+  names=$(jq -r '.env | keys[] | select(test("^[A-Za-z_][A-Za-z0-9_]*$") | not) | @json' "$1")
+  [ -z "$names" ] ||
+    fail "the launch's environment holds $(paste -sd' ' <<<"$names"), which is no shell variable's name: the launch file could not export it, and the agent would run without it, so the launch is refused"
   jq -e '[.env[] | test("\n")] | any | not' "$1" >/dev/null ||
     fail "a variable of the launch answer $1 holds a line break, which a pane file cannot carry"
   jq -r '.env | to_entries[] | "\(.key)=\(.value)"' "$1"
@@ -2182,256 +2198,8 @@ pod_standins() {
   done
 }
 
-# The run's RPC session (launch_rpc): rpc-sent.jsonl holds each command sent and rpc-events.jsonl
-# each frame Oh My Pi printed, each line `{at, ms, sent|got}`, `ms` its epoch milliseconds, and
-# rpc.jsonl both in time order once the session ends.
-
-# rpc_now prints the time now as `<UTC instant, microseconds> <epoch milliseconds>`.
-rpc_now() {
-  local t=$EPOCHREALTIME
-  local s=${t%.*} u=${t#*.}
-  printf '%(%Y-%m-%dT%H:%M:%S)T.%sZ %s\n' "$s" "$u" "$s${u:0:3}"
-}
-
-# rpc_send COMMAND writes one RPC command to the session's stdin and records it.
-rpc_send() {
-  local now
-  now=$(rpc_now)
-  printf '%s\n' "$1" >&"$rpc_fd"
-  printf '{"at":"%s","ms":%s,"sent":%s}\n' "${now% *}" "${now#* }" "$1" >>"$R/rpc-sent.jsonl"
-}
-
-# rpc_answer ID FIELD prints FIELD of the session's response to the command ID, waiting up to 30 s,
-# or nothing when none came.
-rpc_answer() {
-  local i answer
-  for ((i = 0; i < 120; i++)); do
-    answer=$(jq -rs --arg id "$1" --arg field "$2" \
-      '[.[] | .got | objects | select(.type == "response" and .id == $id)] | last
-       | if . == null then "" else (getpath($field | split(".")) | tostring) end' "$R/rpc-events.jsonl")
-    [ -z "$answer" ] || break
-    sleep 0.25
-  done
-  printf '%s\n' "$answer"
-}
-
-# rpc_state prints get_state's isStreaming, true or false, or `unanswered`.
-rpc_state() {
-  local id=state-${EPOCHREALTIME/./} answer
-  rpc_send "$(jq -cn --arg id "$id" '{type: "get_state", id: $id}')"
-  answer=$(rpc_answer "$id" data.isStreaming)
-  printf '%s\n' "${answer:-unanswered}"
-}
-
-# rpc_ms is the jq definition of an instant's epoch milliseconds, for the stand-in's `at`.
-rpc_ms='def ms: capture("^(?<s>[^.Z]+)(\\.(?<f>[0-9]+))?Z$") | ((.s + "Z") | fromdateiso8601) * 1000 + ((.f // "") + "000" | .[0:3] | tonumber);'
-
-# rpc_turn SINCE prints the session's turn as `<state> <its agent_end's ms> <its agent_start's ms>`:
-# none (no turn yet), running (agent_start last), ended (agent_end last, and both at or after
-# SINCE, epoch milliseconds: the turn ran after SINCE), or before (its last turn ran before SINCE).
-rpc_turn() {
-  jq -rs --argjson since "$1" '
-    [.[] | select((.got | type) == "object" and (.got.type == "agent_start" or .got.type == "agent_end"))] as $turns
-    | ($turns | last) as $last | ([$turns[] | select(.got.type == "agent_start")] | last) as $start
-    | if $last == null then "none 0 0"
-      elif $last.got.type == "agent_start" then "running 0 \($start.ms)"
-      elif $last.ms >= $since and $start.ms >= $since then "ended \($last.ms) \($start.ms)"
-      else "before \($last.ms) \($start.ms // 0)" end' "$R/rpc-events.jsonl"
-}
-
-# rpc_activity AFTER prints the session's newest claims/activity report in the stand-in's log at or
-# after AFTER (epoch milliseconds) as `<running> <nextReminderAt or null> <kinds, comma-separated>`,
-# or `none`.
-rpc_activity() {
-  [ -f "$R/daemon.log" ] || { echo none && return 0; }
-  jq -rRs --argjson after "$1" "$rpc_ms"'
-    [split("\n")[] | select(. != "") | fromjson? | objects
-     | select(.path == "/legion/v1/claims/activity" and (.body | type) == "object" and (.at | ms) >= $after)] | last
-    | if . == null then "none"
-      else "\(.body.backgroundWork.running) \(.body.phase.nextReminderAt // "null") \((.body.backgroundWork.kinds // []) | join(", "))" end' \
-    "$R/daemon.log"
-}
-
-# rpc_settled SINCE succeeds when the session's run has ended on the facts of "When a run ends":
-# its last turn began and ended after SINCE, get_state answers that no turn runs, and the session's
-# newest activity report since that turn began says no background work runs and names no reminder.
-# The plugin sends that report at session_stop, just before the run's last agent_end, so the
-# report is read from the turn's start, not its end.
-rpc_settled() {
-  local state started activity
-  read -r state _ started < <(rpc_turn "$1")
-  [ "$state" = ended ] || return 1
-  [ "$(rpc_state)" = false ] || return 1
-  activity=$(rpc_activity "$started")
-  [[ $activity == "false null"* ]]
-}
-
-# rpc_ready waits, bounded (rpc_ready_bound), for the stand-in's log to show the claim's
-# claims/ready, and fails when Oh My Pi exits first.
-rpc_ready() {
-  local i
-  for ((i = 0; i < rpc_ready_bound * 2; i++)); do
-    [ -f "$R/daemon.log" ] &&
-      jq -e -s 'any(.[]; .path == "/legion/v1/claims/ready" and .status < 300)' "$R/daemon.log" >/dev/null 2>&1 && return 0
-    kill -0 "$omp_pid" 2>/dev/null || fail "Oh My Pi exited before its claim was ready; see $R/omp-stderr.txt"
-    sleep 0.5
-  done
-  fail "the session's claim was not ready within ${rpc_ready_bound}s: $R/daemon.log holds no claims/ready; see $R/omp-stderr.txt"
-}
-
-# rpc_prompt FILE DEADLINE sends FILE's text, unchanged, as one RPC prompt. A prompt Oh My Pi
-# refuses while a turn runs is sent again once get_state answers that none runs; past DEADLINE
-# (bash's SECONDS) it fails.
-rpc_prompt() {
-  local id answer
-  while :; do
-    id=prompt-${EPOCHREALTIME/./}
-    rpc_send "$(jq -cn --arg id "$id" --rawfile message "$1" '{type: "prompt", id: $id, message: $message}')"
-    answer=$(rpc_answer "$id" success)
-    case $answer in
-    true) return 0 ;;
-    false) ;;
-    *) fail "Oh My Pi did not answer the prompt of $1 within 30 s; see $R/rpc-events.jsonl" ;;
-    esac
-    while [ "$(rpc_state)" != false ]; do
-      [ "$SECONDS" -lt "$2" ] || return 1
-      sleep "$rpc_poll"
-    done
-  done
-}
-
-# rpc_wait SINCE DEADLINE waits, a look every rpc_poll seconds, until the run has ended
-# (rpc_settled SINCE), and fails past DEADLINE (bash's SECONDS), or when Oh My Pi exits first.
-rpc_wait() {
-  while :; do
-    rpc_settled "$1" && return 0
-    kill -0 "$omp_pid" 2>/dev/null || fail "Oh My Pi exited before the run ended; see $R/omp-stderr.txt"
-    [ "$SECONDS" -lt "$2" ] || return 1
-    sleep "$rpc_poll"
-  done
-}
-
-# rpc_reminders prints how many reminders of Legion's the run's transcripts hold
-# (`legion-phase-reminder` messages).
-rpc_reminders() {
-  find "$R/sessions" -name '*.jsonl' -type f -exec cat {} + 2>/dev/null |
-    jq -R 'fromjson? | objects | select(.customType == "legion-phase-reminder")' | jq -s length
-}
-
-# rpc_bound BOUND SINCE ends a run at its bound: held.txt says what held it (the turn, the
-# background work, or the reminder and the count of reminders), and out.txt ends `exit=bound`.
-rpc_bound() {
-  local state started activity running at kinds reason
-  read -r state _ started < <(rpc_turn "$2")
-  activity=none
-  [ "$state" = none ] || activity=$(rpc_activity "$started")
-  read -r running at kinds <<<"$activity"
-  if [ "$state" = running ] || [ "$(rpc_state)" = true ]; then
-    reason="a turn running"
-  elif [ "$running" = true ]; then
-    reason="background work running: ${kinds:-of no kind it names}"
-  elif [ -n "${at:-}" ] && [ "$at" != null ]; then
-    reason="a reminder armed for $at, after $(rpc_reminders) reminders"
-  elif [ "$state" = none ] || [ "$state" = before ]; then
-    reason="no turn started"
-  else
-    reason="no activity report of the session since its turn began"
-  fi
-  printf 'the run did not end within %s seconds: %s\n' "$1" "$reason" >"$R/held.txt"
-  echo exit=bound >>"$R/out.txt"
-  rpc_end
-}
-
-# rpc_end closes the session's stdin, waits up to 15 s for Oh My Pi to exit, stops what is left,
-# and writes rpc.jsonl.
-rpc_end() {
-  local i
-  [ -z "$rpc_fd" ] || { exec {rpc_fd}>&- && rpc_fd=''; }
-  for ((i = 0; i < 30; i++)); do
-    kill -0 "$omp_pid" 2>/dev/null || break
-    sleep 0.5
-  done
-  stop_tree "$omp_pid" || true
-  wait "$omp_pid" 2>/dev/null || true
-  omp_pid=''
-  jq -cs 'sort_by(.ms)[]' "$R/rpc-sent.jsonl" "$R/rpc-events.jsonl" >"$R/rpc.jsonl"
-}
-
-# launch_rpc BOUND [START...] -- [THEN...] runs the label's Oh My Pi as the runtime starts a
-# pane: `--model @default --mode rpc --append-system-prompt $R/system-prompt.md`, with the run's
-# --session-dir, in $R/cwd under $R/pane.env alone. The pane's variables reach Oh My Pi through the
-# launch file's environment, never through process arguments: an owner's pane can carry the launch
-# answer's NATS URL, including a credential. The file starts itself again with an empty environment,
-# exports each pane line, and execs Oh My Pi with the pane's lines as its whole environment. The
-# frame loop takes TZ=UTC for itself alone. Once the stand-in's log shows claims/ready, it sends
-# each START file's text as one RPC prompt, and then each THEN file's once the turn before it ended.
-# A run with no start task waits for a notice turn. Each turn has BOUND seconds. Its last out.txt
-# line is `exit=0` once the last turn ended, or `exit=bound` (rpc_bound).
-launch_rpc() {
-  local bound=$1 starts=() thens=() omp file since launched
-  local -x TZ=UTC
-  shift
-  while [ $# -gt 0 ] && [ "$1" != -- ]; do
-    starts+=("$1")
-    shift
-  done
-  [ $# = 0 ] || shift
-  thens=("$@")
-  omp=$(rig_omp "$pin") || exit 1
-  : >"$R/rpc-events.jsonl"
-  : >"$R/rpc-sent.jsonl"
-  : >"$R/out.txt"
-  rm -f "$R/rpc.in"
-  mkfifo "$R/rpc.in"
-  # The rig's end of the session's stdin. Every child inherits it, so the script closes it first:
-  # while any process held it open, rpc_end's close would give Oh My Pi no end of input, and it
-  # would be killed rather than exit.
-  exec {rpc_fd}<>"$R/rpc.in"
-  cat >"$R/launch-rpc.sh" <<EOF
-#!/usr/bin/env bash
-[ "\${1:-}" = clean ] || exec env -i "\$BASH" "\$0" clean
-exec $rpc_fd>&-
-cd $(printf %q "$R/cwd") || exit 1
-export -n PWD OLDPWD
-mapfile -t vars <$(printf %q "$R/pane.env")
-for var in "\${vars[@]}"; do export "\$var"; done
-{ exec env -u SHLVL $(printf %q "$omp") --model @default --mode rpc --append-system-prompt $(printf %q "$R/system-prompt.md") \
-  --session-dir $(printf %q "$R/sessions"); } <$(printf %q "$R/rpc.in") 2>>$(printf %q "$R/omp-stderr.txt") |
-  {
-    export TZ=UTC
-    while IFS= read -r frame || [ -n "\$frame" ]; do
-      [ -n "\$frame" ] || continue
-      t=\$EPOCHREALTIME s=\${t%.*} u=\${t#*.}
-      case \$frame in '{'*) ;; *) frame=\$(jq -Rn --arg f "\$frame" '\$f') ;; esac
-      printf '{"at":"%(%Y-%m-%dT%H:%M:%S)T.%sZ","ms":%s,"got":%s}\n' "\$s" "\$u" "\$s\${u:0:3}" "\$frame"
-    done
-  } >>$(printf %q "$R/rpc-events.jsonl")
-EOF
-  launched=$(rpc_now)
-  launched=${launched#* }
-  start_process omp bash "$R/launch-rpc.sh"
-  rpc_ready
-  if [ ${#starts[@]} = 0 ]; then
-    rpc_wait "$launched" $((SECONDS + bound)) || {
-      rpc_bound "$bound" "$launched"
-      return 0
-    }
-  fi
-  for file in "${starts[@]}" "${thens[@]}"; do
-    since=$(rpc_now)
-    since=${since#* }
-    local deadline=$((SECONDS + bound))
-    if ! rpc_prompt "$file" "$deadline" || ! rpc_wait "$since" "$deadline"; then
-      rpc_bound "$bound" "$since"
-      return 0
-    fi
-  done
-  rpc_end
-  echo "exit=0" >>"$R/out.txt"
-}
-
 # scored_session runs the owner of owner-walk's world, seeded by seed.ts owner-walk into
-# $R/fixture.json, on the label's own texts (the header's "An owner's run", steps 2 to 6).
+# $R/fixture.json, on the label's own texts (the header's "An owner's run").
 scored_session() {
   local fixture=$R/fixture.json texts=$R/texts owner tree_root phase port guidance='' file i
   mkdir -p "$texts" "$R/state" "$R/secrets"
@@ -2577,19 +2345,20 @@ cmd_label_tree() {
 
 # label_tree_apply TREE LINE applies one manifest line (a ManifestLine as JSON) to TREE.
 label_tree_apply() {
-  local tree=$1 kind path patch
+  local tree=$1 kind path commit patch
   kind=$(jq -r .kind <<<"$2")
   path=$(jq -r '.path // empty' <<<"$2")
+  commit=$(jq -r '.commit // empty' <<<"$2")
   case $kind in
   file)
     mkdir -p "$(dirname -- "$tree/$path")"
-    git -C "$root" show "$(jq -r .commit <<<"$2"):$path" >"$tree/$path"
+    git -C "$root" show "$commit:$path" >"$tree/$path"
     ;;
   reverse)
     patch=$(dirname -- "$tree")/reverse.patch
-    git -C "$root" diff --binary "$(jq -r .commit <<<"$2")^" "$(jq -r .commit <<<"$2")" -- "$path" >"$patch"
+    git -C "$root" diff --binary "$commit^" "$commit" -- "$path" >"$patch"
     [ -s "$patch" ] || {
-      echo "$(jq -r .commit <<<"$2") changes no $path" >&2
+      echo "$commit changes no $path" >&2
       return 1
     }
     git -C "$tree" apply -R "$patch"
@@ -2844,8 +2613,10 @@ cmd_evidence() {
 # row is its rig error (rig-error.txt), and then their rows and reach lines (cmd_rows) and cells.
 cmd_score() {
   local scenario=${1:-} dir names=()
-  [ "$scenario" = owner-walk ] || bun "$here/score.ts" runs "$work/runs" "$@" || return
-  [ -z "$scenario" ] || [ "$scenario" = owner-walk ] || return 0
+  if [ "$scenario" != owner-walk ]; then
+    bun "$here/score.ts" runs "$work/runs" "$@" || return
+    [ -z "$scenario" ] || return 0
+  fi
   for dir in "$work/runs"/owner-walk-*/; do
     [ -d "$dir" ] || continue
     names+=("$(basename -- "$dir")")

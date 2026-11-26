@@ -1,6 +1,6 @@
 # owner-walk, form E (ctl-E, the approved control of v-guidance-judge): form B with the owner's
 # sentences on the choice of an agent taken out: the paragraph of go/architect-common.md, and the
-# sentence and the bullet of the architect's plan reference.
+# sentence of the architect's plan reference. These are the two texts an owner loads that ask for
+# the choice and that the skills trim (#5564) keeps; patches/README.md says why there is no third.
 drop packages/daemon/internal/prompts/go/architect-common.md controls/drops/owner-walk-E-choice-paragraph.txt
 drop skills/legion-architect/references/plan.md controls/drops/owner-walk-E-choice-sentence.txt
-drop skills/legion-architect/references/plan.md controls/drops/owner-walk-E-choice-bullet.txt

@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -39,7 +37,7 @@ func TestRigWorld(t *testing.T) {
 	}
 
 	// A label the daemon writes (`Task: <id>.`) and a planted line of the task's text, which
-	// the implementer's start carries, and the working copy the made WorkspaceDir answers.
+	// the implementer's start carries, and the working copy WorkspaceDir answers.
 	t.Run("the task", func(t *testing.T) {
 		const marker = "rig-marker-line-5d1e: the planted line of this task's text."
 		world := rigOwnWorld()
@@ -113,55 +111,6 @@ func TestRigWorld(t *testing.T) {
 		}
 		if !slices.Contains(keys, world.Subject) || !slices.Contains(keys, backlog) {
 			t.Errorf("the catch-up names %v, want the root %s and its backlog child %s", keys, world.Subject, backlog)
-		}
-	})
-
-	// The engine's WorkspaceDir is made for the type this label gives it (rigWorkspace): an issue,
-	// and at a label whose type takes one, the issue's branch. A call of any other shape fails the
-	// test, naming what it got, and a call of the right shape answers the request's workspace.
-	t.Run("the workspace", func(t *testing.T) {
-		field, ok := reflect.TypeFor[Config]().FieldByName("WorkspaceDir")
-		if !ok {
-			t.Fatal("this label's Config has no WorkspaceDir")
-		}
-		var refused []error
-		made := &rigWorkspace{dir: "/rig/workspaces/RIG-1"}
-		fn, err := made.makeFor(field.Type, func(err error) { refused = append(refused, err) })
-		if err != nil {
-			t.Fatal(err)
-		}
-		issue := record.Issue{Key: "RIG-1"}
-		right := []reflect.Value{reflect.ValueOf(issue)}
-		for range field.Type.NumIn() - 1 {
-			right = append(right, reflect.ValueOf(claim.IssueBranch(issue.Key)))
-		}
-		if got := fn.Call(right)[0].String(); got != made.dir || len(refused) != 0 {
-			t.Fatalf("the made WorkspaceDir answered %q and refused %v, want %q and nothing refused", got, refused, made.dir)
-		}
-		// A reflect call of a function value refuses a wrong count before the function runs, so
-		// the count is put to the made function's own body.
-		more := append(slices.Clone(right), reflect.ValueOf(claim.IssueBranch(issue.Key)))
-		if _, err := made.answer(more); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("with %d arguments", len(more))) {
-			t.Errorf("one argument more is answered %v, want a refusal naming %d arguments", err, len(more))
-		}
-		other := []reflect.Value{reflect.ValueOf(issue), reflect.ValueOf("legion/RIG-2")}
-		if _, err := made.answer(other); err == nil || !strings.Contains(err.Error(), `"legion/RIG-2"`) {
-			t.Errorf("a branch other than %s's is answered %v, want a refusal naming it", issue.Key, err)
-		}
-		if field.Type.NumIn() == 2 {
-			fn.Call(other)
-			if len(refused) != 1 || !strings.Contains(refused[0].Error(), `"legion/RIG-2"`) {
-				t.Errorf("the made function, given another branch, refused %v, want one refusal naming it", refused)
-			}
-		}
-		issueType, stringType := reflect.TypeFor[record.Issue](), reflect.TypeFor[string]()
-		for _, typ := range []reflect.Type{
-			reflect.FuncOf([]reflect.Type{issueType, stringType, stringType}, []reflect.Type{stringType}, false),
-			reflect.FuncOf([]reflect.Type{issueType}, []reflect.Type{reflect.TypeFor[int]()}, false),
-		} {
-			if _, err := (&rigWorkspace{}).makeFor(typ, func(error) {}); err == nil || !strings.Contains(err.Error(), typ.String()) {
-				t.Errorf("a WorkspaceDir of type %s is made with %v, want a refusal naming the type", typ, err)
-			}
 		}
 	})
 }
@@ -322,7 +271,7 @@ func writeRigWorldAnswer(t *testing.T, path string, answer rigWorldAnswer) {
 //
 //   - the engine is returnEngine's, for the request's project, the design-gate steps of a
 //     deployment that leaves `gates.design` unset (config.Gates.Steps), the request's repository
-//     and the request's workspace (rigWorkspace);
+//     and the request's workspace, which WorkspaceDir answers for every issue;
 //   - each issue is recorded at its phase and status, each root with its tree's lifecycle, then
 //     the gate and the subject's pull request;
 //   - a plan is given as register_plan gives it (intake.PlanGiven), at version 2, whose one task
@@ -340,13 +289,7 @@ func rigWorld(t *testing.T, req rigWorldRequest) rigWorldAnswer {
 	engine.cfg.Project = req.Project
 	engine.cfg.Steps = config.Gates{}.Steps()
 	engine.cfg.Repositories = fixedRepositories{served: map[string]string{req.Repository: req.DefaultBranch}}
-	workspace := &rigWorkspace{dir: req.Workspace}
-	field := reflect.ValueOf(&engine.cfg).Elem().FieldByName("WorkspaceDir")
-	made, err := workspace.makeFor(field.Type(), func(err error) { t.Error(err) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	field.Set(made)
+	engine.cfg.WorkspaceDir = func(record.Issue) string { return req.Workspace }
 
 	for i, issue := range req.Issues {
 		at := phase.Admitted
@@ -592,60 +535,4 @@ func (w rigWalk) rows() rigWorldAnswer {
 		w.t.Fatalf("read the outbox of %s: %v", w.req.Subject, err)
 	}
 	return answer
-}
-
-// rigWorkspace is the engine's Config.WorkspaceDir as the rig's world sets it: dir, for a call of
-// the shape the field's type takes. That type is func(record.Issue) string at one label and
-// func(issue record.Issue, branch string) string at another, so the function is made for the type
-// with reflect.MakeFunc and one file compiles at both, and the shape is held when it is called: a
-// later change of the type fails the test rather than going unseen by a build.
-type rigWorkspace struct {
-	dir string
-	// params is how many arguments the field's type takes.
-	params int
-}
-
-// makeFor makes the function of type typ, refusing a type other than an issue and at most one
-// string, with one string result. Each call of the made function that answer refuses is given to
-// fail.
-func (w *rigWorkspace) makeFor(typ reflect.Type, fail func(error)) (reflect.Value, error) {
-	issueType := reflect.TypeFor[record.Issue]()
-	switch {
-	case typ.Kind() != reflect.Func:
-		return reflect.Value{}, fmt.Errorf("WorkspaceDir is a %s, want a function", typ)
-	case typ.NumOut() != 1 || typ.Out(0).Kind() != reflect.String:
-		return reflect.Value{}, fmt.Errorf("WorkspaceDir is a %s, want one result of kind string", typ)
-	case typ.NumIn() < 1 || typ.NumIn() > 2 || typ.In(0) != issueType || (typ.NumIn() == 2 && typ.In(1).Kind() != reflect.String):
-		return reflect.Value{}, fmt.Errorf("WorkspaceDir is a %s, want a function of a record.Issue and at most a string, its branch", typ)
-	}
-	w.params = typ.NumIn()
-	return reflect.MakeFunc(typ, func(args []reflect.Value) []reflect.Value {
-		dir, err := w.answer(args)
-		if err != nil {
-			fail(err)
-		}
-		return []reflect.Value{reflect.ValueOf(dir).Convert(typ.Out(0))}
-	}), nil
-}
-
-// answer is the made function's body: dir for an issue followed, where the type takes it, by the
-// issue's own branch (claim.IssueBranch), and a refusal naming any other argument or count.
-func (w *rigWorkspace) answer(args []reflect.Value) (string, error) {
-	if len(args) == 0 {
-		return "", errors.New("WorkspaceDir was called with no argument, want a record.Issue")
-	}
-	issue, ok := args[0].Interface().(record.Issue)
-	if !ok {
-		return "", fmt.Errorf("WorkspaceDir was called with a %s first, want a record.Issue", args[0].Type())
-	}
-	branch := claim.IssueBranch(issue.Key)
-	for i, arg := range args[1:] {
-		if arg.Kind() != reflect.String || arg.String() != branch {
-			return "", fmt.Errorf("WorkspaceDir was called for %s with %#v as argument %d, want its branch %q", issue.Key, arg.Interface(), i+2, branch)
-		}
-	}
-	if len(args) != w.params {
-		return "", fmt.Errorf("WorkspaceDir was called for %s with %d arguments, want the %d its type takes", issue.Key, len(args), w.params)
-	}
-	return w.dir, nil
 }

@@ -62,7 +62,7 @@ import {
   type ScoredRow,
   wholeKeys,
 } from "./scored-runs-contracts";
-import { SessionEntry, session, sessionId } from "./transcript";
+import { parsedSession, type SessionEntry, session, sessionId } from "./transcript";
 
 /** The scenarios whose runs score.ts scores through this module. */
 export const SCORED_SCENARIOS: readonly string[] = ["owner-walk"];
@@ -117,16 +117,6 @@ function transcriptFiles(dir: string): string[] {
       : [];
   return walk(path.join(dir, "sessions")).sort();
 }
-function entriesOf(file: string): SessionEntry[] {
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .flatMap((line, index) => {
-      if (line.trim() === "") return [];
-      const parsed = SessionEntry.safeParse(JSON.parse(line));
-      if (!parsed.success) throw new Error(`${file}:${index + 1} is not a record`);
-      return [parsed.data];
-    });
-}
 
 /** A host of REACH_HOSTS as a tool argument names it: the whole name, in any case. A name inside a
  * longer one (`mystorage.googleapis.com`) is another host; a subdomain of the bucket's API
@@ -151,7 +141,7 @@ export function reachOf(dir: string, run: string): Reach[] {
   for (const file of transcriptFiles(dir)) {
     let entries: SessionEntry[];
     try {
-      entries = entriesOf(file);
+      entries = parsedSession(file);
     } catch (error) {
       throw new Error(`${run}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -258,7 +248,7 @@ const PLANS_READ =
  * each tool call whose arguments PLANS_READ matches, and the text of its result. */
 function plansReads(dir: string): { call: string; printed: string }[] {
   return transcriptFiles(dir).flatMap((file) => {
-    const entries = entriesOf(file);
+    const entries = parsedSession(file);
     const results = new Map<string, string>();
     for (const entry of entries)
       if (entry.message?.role === "toolResult" && entry.message.toolCallId !== undefined)
@@ -465,11 +455,11 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
     }
   }
   const clauses: ScoreClause[] = own.map((clause) => {
+    const named = { id: clause.id, clause: clause.sentence };
     if (clause.rule !== undefined) {
       const result = clause.rule(evidence);
       return {
-        id: clause.id,
-        clause: clause.sentence,
+        ...named,
         pass: result.pass,
         evidence: `${clause.id}: ${result.evidence}`,
         counts: result.counts,
@@ -478,15 +468,13 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
     const item = judgment?.items.find((each) => each.item === clause.id);
     return item === undefined
       ? {
-          id: clause.id,
-          clause: clause.sentence,
+          ...named,
           pass: "pending",
           evidence: `${clause.id}: waiting for judgment.json's item ${clause.id} (rubrics/owner-walk.md)`,
           counts: {},
         }
       : {
-          id: clause.id,
-          clause: clause.sentence,
+          ...named,
           pass: item.verdict === "pass",
           evidence: `${clause.id}: ${item.verdict}, by ${judgment?.by}: ${item.why}`,
           counts: {},
@@ -581,12 +569,13 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
 }
 
 /** One cell of a scenario's runs under a label (C7): its name, its count, the control it is (none
- * for a case's cell), and its runs with their numbers. */
+ * for a case's cell, else the clause it counts, its bound, and how many runs of each case it
+ * takes), and its runs with their numbers. */
 interface CellGroup {
   label: string;
   cell: string;
   count: number;
-  control: { id: string; fewerThan: number } | undefined;
+  control: { id: string; fewerThan: number; perCase: number } | undefined;
   rows: { n: number; row: RunRow }[];
 }
 
@@ -601,24 +590,42 @@ function cellOf(
   owner: OwnerWalkCase
 ): CellGroup {
   const control = stage.controls.find((each) => each.form === owner.form);
+  const perCase = stage.runs[owner.form];
   return {
     label,
     cell: `${stageName}/${control === undefined ? caseName(owner) : owner.form}`,
-    count:
-      stage.runs[owner.form] *
-      (control === undefined ? 1 : OWNER_WALK_KINDS.length * FAMILIES.length),
+    count: perCase * (control === undefined ? 1 : OWNER_WALK_KINDS.length * FAMILIES.length),
     control:
-      control === undefined ? undefined : { id: control.clause, fewerThan: control.fewerThan },
+      control === undefined
+        ? undefined
+        : { id: control.clause, fewerThan: control.fewerThan, perCase },
     rows: [],
   };
 }
 
-/** A cell's first scored runs by their number, up to its count; a rig error counts none. */
+/** A row of a run held to its bound: its clause BOUND_CLAUSE fails. */
+function heldToBound(row: ScoredRow): boolean {
+  return row.clauses.some((clause) => clause.id === BOUND_CLAUSE.id && clause.pass === false);
+}
+
+/** A cell's first scored runs by their number, up to its count; a rig error counts none. A
+ * control's cell takes up to its share of each case (perCase), so one case's runs never stand in
+ * for another kind's or family's; and it counts no run held to its bound, which did nothing the
+ * control can count: a hung run must not help a control pass. */
 function scoredOf(group: CellGroup): ScoredRow[] {
-  return [...group.rows]
+  const scored = [...group.rows]
     .sort((a, b) => a.n - b.n || (a.row.run < b.row.run ? -1 : 1))
-    .flatMap(({ row }) => (row.outcome === "scored" ? [row] : []))
-    .slice(0, group.count);
+    .flatMap(({ row }) => (row.outcome === "scored" ? [row] : []));
+  if (group.control === undefined) return scored.slice(0, group.count);
+  const { perCase } = group.control;
+  const taken = new Map<string, number>();
+  return scored.filter((row) => {
+    if (heldToBound(row)) return false;
+    const n = taken.get(row.case) ?? 0;
+    if (n >= perCase) return false;
+    taken.set(row.case, n + 1);
+    return true;
+  });
 }
 
 /**
@@ -714,9 +721,9 @@ export function cells(runsDir: string, scenario: string): CellLine[] {
  *     clause: <id> <passes> of <s>[ (<p> pending)], …; runs passed <passes> of <s>; verdict <v>`.
  *   - A control form's cell is the control's own, the cell cells() keys: every owner's runs of the
  *     form under the label, at the control's count, whatever `count` is: `cell <scenario> <label>
- *     <case>: the control <stage>/<form> over every owner: <n> runs, <s> scored, <e> rig errors,
- *     count <c>; <clause id> <passes> of <s>[ (<p> pending)]; it passes when fewer than <bound>
- *     pass <clause id>; verdict <v>`.
+ *     <case>: the control <stage>/<form> over every owner: <n> runs, <s> scored, <e> rig errors[,
+ *     <h> held to their bound and not counted], count <c>, <k> of each case; <clause id> <passes>
+ *     of <s>[ (<p> pending)]; it passes when fewer than <bound> pass <clause id>; verdict <v>`.
  * A case with no run that holds a row.json prints `cell <scenario> <label> <case>: no run holds a
  * row.json, so the cell is UNKNOWN`.
  */
@@ -749,7 +756,11 @@ export function caseCell(
     const { id, fewerThan } = group.control;
     const cell = cellLine(scenario, group);
     const pending = cell.pending > 0 ? ` (${cell.pending} pending)` : "";
-    return `${head}: the control ${cell.cell} over every owner: ${group.rows.length} runs, ${cell.scored} scored, ${errors} rig errors, count ${cell.count}; ${id} ${cell.passes} of ${cell.scored}${pending}; it passes when fewer than ${fewerThan} pass ${id}; verdict ${cell.verdict}`;
+    const held = group.rows.filter(
+      ({ row }) => row.outcome === "scored" && heldToBound(row)
+    ).length;
+    const bound = held > 0 ? `, ${held} held to their bound and not counted` : "";
+    return `${head}: the control ${cell.cell} over every owner: ${group.rows.length} runs, ${cell.scored} scored, ${errors} rig errors${bound}, count ${cell.count}, ${group.control.perCase} of each case; ${id} ${cell.passes} of ${cell.scored}${pending}; it passes when fewer than ${fewerThan} pass ${id}; verdict ${cell.verdict}`;
   }
   if (group.rows.length === 0) return `${head}: no run holds a row.json, so the cell is UNKNOWN`;
   const counted = { ...group, count };

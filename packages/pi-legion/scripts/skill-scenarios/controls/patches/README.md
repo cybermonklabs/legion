@@ -65,17 +65,22 @@ text was read with `git show <commit>:<path>` and occurs once in its file at #49
 | --- | --- | --- | --- | --- |
 | `owner-walk-E-choice-paragraph.txt` | `packages/daemon/internal/prompts/go/architect-common.md` | the paragraph "For each step, decide whether a fresh agent works it or the agent of an earlier step, …" (line 6) | 1 | 1 |
 | `owner-walk-E-choice-sentence.txt` | `skills/legion-architect/references/plan.md` | the sentence "For each step, a fresh agent or the agent of an earlier step, and why." of the task block's example (line 18) | 1 | 1 |
-| `owner-walk-E-choice-bullet.txt` | `skills/legion-architect/references/plan.md` | the bullet that says this release cannot carry out the choice of a fresh or an earlier agent (lines 25-26) | 1 | 1 |
+
+E took out a third text until the skills trim (#5564): the bullet of `plan.md` that said this
+release cannot carry out the choice of a fresh or an earlier agent, "write the choice all the same"
+(lines 25-26 at #4902's head). The trim deletes that bullet, so a drop of it occurs 0 times at any
+label that carries the trim, and the Job stops building E's tree. Its drop is gone, and nothing
+replaces it: at #5564's head `e42a6ceaf799`, `git grep -i -E 'fresh agent|agent of an earlier|fresh
+or an earlier|earlier agent'` over `packages/daemon/internal/prompts`, `skills`,
+`packages/pi-legion/src` and `packages/pi-shared/src` finds the two texts E drops and no other. At a
+label without the trim, E's tree keeps the bullet. `rig.test.ts`'s row "E's manifest applies to this
+checkout's own two files" holds E to the texts a label of this checkout carries, so a change that
+deletes one of E's two texts fails that row before it reaches a Job.
+
+| Drop text | Its file | What it takes out | Count at #4902's head | Count at `main` `d27405712c7c` |
+| --- | --- | --- | --- | --- |
 | `owner-walk-D-strict-plans-read.txt` | `skills/legion-architect/references/plan.md` | the three lines of "Reading how plans went" that name `dispatch plans` and ask for its read (lines 77-79) | 1 | 0 |
 
-The plan named `plan.md:77-78` at #4902's earlier head `b665c79ab99a`, where two lines named the
-read. #4902's commit `6b0ece5c101b` ("the plans read's two forms") made them three lines, 77 to
-79, so D strict takes out all three. `main` holds the older two lines, so D strict applies at
-#4902's head alone, as its check runs there.
-
-`git grep` at #4902's head finds no other text an owner loads that asks for the choice of an agent
-(`fresh agent`, `agent of an earlier`, `fresh or an earlier`) in
-`packages/daemon/internal/prompts`, `skills`, `packages/pi-legion/src` or `packages/pi-shared/src`.
-The other texts that name `dispatch plans` are the read's paragraph of `go/architect-common.md`,
-which D's patch takes out, and the three lines above; the dispatch CLI's own help of `plans`
-(`packages/envoy-client/src/dispatch-commands/plans.ts`) stays in D and in D strict.
+D strict removes `plan.md:77-79` at the pinned #4902 head, so it does not apply to the older main
+version. The manifests leave the Dispatch CLI's `plans` help unchanged. `../pr-4902-head/README.md`
+names what else must change with these lines.

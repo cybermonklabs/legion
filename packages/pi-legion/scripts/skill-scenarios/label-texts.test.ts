@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -34,17 +34,63 @@ function run(cwd: string, env: Environment, ...argv: string[]) {
   return { status: ran.exitCode, stdout: ran.stdout.toString(), stderr: ran.stderr.toString() };
 }
 
+// RIG_TEXTS_BIN is set, outside the label, so require_tests alone can refuse the label: with it
+// unset, require_bin's own exit 2 would pass the row whatever require_tests does.
 test("build in a label without the three test files exits 2, naming each missing test", () => {
   requireHostTools("bash");
   const { label, script, env } = bareLabel();
 
-  const built = run(label, env, "bash", script, "build");
+  const built = run(label, { ...env, RIG_TEXTS_BIN: directory("bin") }, "bash", script, "build");
 
   expect(built.status).toBe(2);
   for (const [pkg, file, name] of tests) {
     expect(built.stderr).toContain(`packages/daemon/internal/${pkg}/${file}`);
     expect(built.stderr).toContain(name);
   }
+});
+
+// Catches: a label whose daemon moved the engine's package, as a refactor would, built as if the
+// entry's test were still there. The label holds this checkout's own three test files at their
+// own paths; with them all, the build gets past the tests' check to the compile (the planted go
+// fails it, exit 1); with internal/workflow moved, it stops at the check, exit 2, naming the file
+// and its test. A refactor of this checkout that moves a test file fails the copy below by name.
+test("a label whose engine's package moved is refused by name, and one with this checkout's three tests is not", () => {
+  requireHostTools("bash", "git");
+  const { label, script, env } = bareLabel();
+  const root = path.resolve(import.meta.dir, "../../../..");
+  for (const [pkg, file] of tests) {
+    const from = path.join(root, "packages", "daemon", "internal", pkg, file);
+    const dir = path.join(label, "packages", "daemon", "internal", pkg);
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(from, path.join(dir, file));
+  }
+  const identity = ["-c", "user.name=Label Test", "-c", "user.email=label@example.invalid"];
+  for (const args of [
+    ["-c", "init.defaultBranch=main", "init", "-q"],
+    ["add", "-A"],
+    ["commit", "-qm", "label"],
+  ]) {
+    const ran = run(label, env, "git", ...identity, ...args);
+    if (ran.status !== 0) throw new Error(`git ${args.join(" ")}: ${ran.status} ${ran.stderr}`);
+  }
+  const tools = directory("go-fails");
+  writeFileSync(path.join(tools, "go"), "#!/bin/sh\necho 'go: planted failure' >&2\nexit 1\n", {
+    mode: 0o755,
+  });
+  const withGo = { ...env, PATH: `${tools}:${env.PATH ?? ""}`, RIG_TEXTS_BIN: directory("bin") };
+
+  const whole = run(label, withGo, "bash", script, "build");
+  expect({ status: whole.status, stderr: whole.stderr }).toEqual({
+    status: 1,
+    stderr: expect.stringContaining("go test -c of the three packages failed"),
+  });
+
+  const internal = path.join(label, "packages", "daemon", "internal");
+  renameSync(path.join(internal, "workflow"), path.join(internal, "engine"));
+  const moved = run(label, withGo, "bash", script, "build");
+  expect(moved.status).toBe(2);
+  expect(moved.stderr).toContain("packages/daemon/internal/workflow/rig_world_test.go");
+  expect(moved.stderr).toContain("TestRigWorld");
 });
 
 // A test binary exits 0 when -test.run selects nothing, printing a warning and PASS. The label
