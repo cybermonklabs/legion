@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,10 +27,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 )
 
 // TestMain runs the package's tests, or, run by seedInChild with seedChildEnv set, is that test's
-// seed: one run of seed over the database seedChildDatabaseEnv names.
+// seed: one run of seed over the database seedChildDatabaseEnv names. Only TestMain makes a seed
+// of a copy a test starts: in a build of these tests without it, such a copy runs the tests, each
+// of which starts copies that run them again. seedInChild refuses to start a copy in such a
+// process (seedCopyRefusal), and TestACopyStartedAsASeedRunsAsTheSeed fails in such a build by
+// name.
 func TestMain(m *testing.M) {
 	if report := os.Getenv(seedChildEnv); report != "" {
 		os.Exit(seedAsChild(os.Getenv(seedChildDatabaseEnv), report))
@@ -43,6 +49,50 @@ const (
 	seedChildEnv         = "DISPATCH_SEED_TEST_CHILD_REPORT"
 	seedChildDatabaseEnv = "DISPATCH_SEED_TEST_CHILD_DATABASE_URL"
 )
+
+// seedCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
+// process that has seedChildEnv set was started as a seed, and TestMain runs such a process as a
+// seed, so one that runs the tests runs in a build without TestMain, and a copy started there would
+// run the tests again. seedInChild answers it as its own error rather than failing a test, because
+// it runs on a goroutine of its own.
+func seedCopyRefusal() error {
+	if report := os.Getenv(seedChildEnv); report != "" {
+		return fmt.Errorf("this process has %s=%s, so a test started it as a seed, but it runs the tests: this build of the tests has no TestMain that runs a seed, and a copy started here would run the tests again", seedChildEnv, report)
+	}
+	return nil
+}
+
+// seedCopyRefusal, which seedInChild asks before any copy starts, refuses a process that has
+// seedChildEnv set and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal.
+func TestAProcessStartedAsASeedStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, seedChildEnv)
+	if err := seedCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", seedChildEnv, err)
+	}
+	t.Setenv(seedChildEnv, "/run/subjects.json")
+	if err := seedCopyRefusal(); err == nil || !strings.Contains(err.Error(), seedChildEnv+"=/run/subjects.json") {
+		t.Fatalf("with %s set: %v, want a refusal that names it", seedChildEnv, err)
+	}
+}
+
+// A copy started with seedChildEnv set runs as a seed: it opens the database seedChildDatabaseEnv
+// names, and refuses one it cannot read, exit 1. The seed does not read -h. In a build without
+// TestMain, the testing package reads -h before any test runs, prints its own flag usage and exits
+// 0, so this test fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsASeedRunsAsTheSeed(t *testing.T) {
+	t.Parallel()
+	if err := seedCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-h")
+	cmd.Env = append(os.Environ(), seedChildEnv+"="+filepath.Join(t.TempDir(), "subjects.json"), seedChildDatabaseEnv+"=postgres://%zz")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if want := "open the test database: "; !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as a seed with -h and a database URL it cannot read: %v, want exit 1 and a refusal that starts %q\n%s", err, want, out)
+	}
+}
 
 // seedAsChild fills the database at databaseURL as seed does in a test, and writes the run's
 // subjects to report as JSON. It writes the seed's progress and report on stdout and a failure
@@ -102,6 +152,9 @@ func seedInChildren(t *testing.T, databases ...*store.Store) []*seedRun {
 // wrote to report. It answers an error rather than failing t, because seedInChildren calls it
 // from a goroutine of its own.
 func seedInChild(t *testing.T, database *store.Store, report string) (*seedRun, error) {
+	if err := seedCopyRefusal(); err != nil {
+		return nil, err
+	}
 	command := exec.CommandContext(t.Context(), os.Args[0])
 	command.Env = append(os.Environ(),
 		seedChildEnv+"="+report, seedChildDatabaseEnv+"="+database.Pool.Config().ConnString())

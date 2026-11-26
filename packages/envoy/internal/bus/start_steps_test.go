@@ -1,9 +1,7 @@
 package bus
 
 import (
-	"encoding/json"
 	"errors"
-	"net/http"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -13,26 +11,15 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// startTriesOf counts the connections the server whose monitoring is at monitor took from the client
-// named name, open and closed: one for each try of that client's start.
-func startTriesOf(t *testing.T, monitor, name string) int {
+// startTriesOf counts the connections server took from the client named name, open and closed, as
+// its settled record of them lists them (testnats.Server.Connections): one for each try of that
+// client's start. A start ends right after it closes its last try's connection, and one read of the
+// server's listing at that moment can find that connection on neither its list of open connections
+// nor its list of closed ones, and so count a try too few.
+func startTriesOf(t *testing.T, server *testnats.Server, name string) int {
 	t.Helper()
-	endpoint := monitor + "/connz?state=all&limit=4096"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
-	if err != nil {
-		t.Fatalf("GET %s: %v", endpoint, err)
-	}
-	defer response.Body.Close()
-	var connz struct {
-		Connections []struct {
-			Name string `json:"name"`
-		} `json:"connections"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
-		t.Fatalf("decode %s: %v", endpoint, err)
-	}
 	tries := 0
-	for _, connection := range connz.Connections {
+	for _, connection := range server.Connections(t) {
 		if connection.Name == name {
 			tries++
 		}
@@ -60,7 +47,7 @@ func TestAnEnsureThatFailsForAnotherReasonEndsTheStartAtItsFirstTry(t *testing.T
 		client.Close()
 		t.Fatalf("a start whose ensure the server refused for its replica count started, after %s", took)
 	}
-	tries := startTriesOf(t, server.MonitorURL(), name)
+	tries := startTriesOf(t, server, name)
 	t.Logf("the start ended %s after it began, after %d tries: %v", took, tries, err)
 	if err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3") {
 		t.Fatalf("the start ended with %v, want the ensure's own failure, naming ENVOY_NATS_REPLICAS=3", err)

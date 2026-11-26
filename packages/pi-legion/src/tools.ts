@@ -21,6 +21,7 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
+  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
@@ -33,8 +34,9 @@ import pkg from "../package.json";
 /** This plugin's own build, which `read_build` answers with: the manifest of the module this
  * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
  * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
- * build on every pod made from an older image. */
-const BUILD = pluginBuildOf(pkg);
+ * build on every pod made from an older image. Its contract is `daemonContract`'s, read as the
+ * module loads. */
+const BUILD = pluginBuildOf(pkg, import.meta.dir);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
 
@@ -423,6 +425,7 @@ function toolSchema(pi: PiApi): unknown {
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
+    check_opened_at: phaseOp.check_opened_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
     return_to: phaseOp.return_to,
@@ -526,7 +529,7 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
+  /** Told of each successful step completion or backward move, never a look's report. */
   readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update message on its pod, and its phase stays open. */
@@ -600,11 +603,13 @@ export function createLegionTool(deps: {
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
         "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
-        "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
+        "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
+        "again is answered as taken, and adds you to its givers), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
         "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
-        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
-        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), a plan given for a run of the issue " +
+        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION), and every plan of a recorded issue whose tree " +
+        "lingers after it left the workflow, the plan in force among them (TREE_LINGERING). " +
         "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
         "the group): it records nothing, and the same plan given again gets the same answer. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
@@ -759,15 +764,16 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to another phase. Either way this session's phase is no longer open.
+          // A successful phase completion or backward move closes phase input. A report with
+          // check_opened_at leaves it open for this session's phase work.
           // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
           // `@legion/pi-shared/phase-stall`).
-          if (operation === "handoff_complete" || operation === "request_backward_move") {
+          const effect = phaseInputAfter(operation, parameters);
+          if (effect === "phase-closed") {
             onPhaseCompleted(context);
-          } else if (operation === "ready_for_update") {
+          } else if (effect === "update-answered") {
             onUpdateAnswered(context);
           }
           return jsonSuccess(answer);
@@ -898,8 +904,8 @@ export function createLegionTool(deps: {
             // The document is named as register_gate's is: its id, or a reference looked up.
             const isId = LegionPlanRegisterRequest.shape.artifactId.safeParse(reference).success;
             const artifactId = isId ? reference : await resolveDocument(issue, reference);
-            // The fact is keyed by the issue, its generation, the document and the version, so a
-            // repeat is the registration again, answered the same.
+            // The daemon judges every give against its store: a repeat of a registration it
+            // applied is answered as taken while that version is in force, and writes nothing.
             const taken = await retryWhileDaemonRestarts(
               "register_plan",
               async () =>

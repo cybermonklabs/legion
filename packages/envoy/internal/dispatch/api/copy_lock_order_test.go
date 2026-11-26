@@ -333,6 +333,42 @@ func buildCopyLockGraph() (*lockGraph, error) {
 		return nil, errors.New("docs.projectCopiesLock, the statement the copy lock is taken with, is gone: point the guard at its replacement")
 	}
 	copyLock = sqlWhitespace.ReplaceAllString(strings.ToLower(copyLock), " ")
+	graph := newLockGraph(root, modules, constants)
+	for _, name := range ownTransactionFunctions {
+		fn := graph.named[name]
+		if fn == nil {
+			return nil, fmt.Errorf("%s, which ownTransactionFunctions lists as running in a transaction of its own, is gone: point the list at its replacement", name)
+		}
+		fn.ownTransaction = true
+	}
+	for _, fn := range graph.functions {
+		fn.seeds = statementLocks(fn, constants, copyLock)
+		fn.reach = fn.seeds
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, fn := range graph.functions {
+			reach := fn.reach
+			for _, callees := range graph.calls(fn) {
+				for _, callee := range callees {
+					reach |= callee.reach
+				}
+			}
+			if reach != fn.reach {
+				fn.reach, changed = reach, true
+			}
+		}
+	}
+	return graph, nil
+}
+
+// newLockGraph builds the call graph over the packages modules type-checked from source, as the
+// copy-lock guard (buildCopyLockGraph) and the spec-writer guard's planted module
+// (plantedSpecWriterGraph) both read it: the module's concrete types, the candidates for an
+// interface method call; every function, method and function literal (addFile); and the
+// functions each variable and struct field stores (addStored). It reads no lock: what each
+// function takes is the copy-lock guard's own pass over the graph.
+func newLockGraph(root string, modules *moduleImporter, constants map[string]string) *lockGraph {
 	graph := &lockGraph{
 		root:            root,
 		info:            modules.info,
@@ -357,35 +393,10 @@ func buildCopyLockGraph() (*lockGraph, error) {
 	for _, source := range modules.sources {
 		graph.addFile(source)
 	}
-	for _, name := range ownTransactionFunctions {
-		fn := graph.named[name]
-		if fn == nil {
-			return nil, fmt.Errorf("%s, which ownTransactionFunctions lists as running in a transaction of its own, is gone: point the list at its replacement", name)
-		}
-		fn.ownTransaction = true
-	}
 	for _, source := range modules.sources {
 		graph.addStored(source)
 	}
-	for _, fn := range graph.functions {
-		fn.seeds = statementLocks(fn, constants, copyLock)
-		fn.reach = fn.seeds
-	}
-	for changed := true; changed; {
-		changed = false
-		for _, fn := range graph.functions {
-			reach := fn.reach
-			for _, callees := range graph.calls(fn) {
-				for _, callee := range callees {
-					reach |= callee.reach
-				}
-			}
-			if reach != fn.reach {
-				fn.reach, changed = reach, true
-			}
-		}
-	}
-	return graph, nil
+	return graph
 }
 
 // addFile registers every function, method and function literal source declares, including the
@@ -667,6 +678,18 @@ func (g *lockGraph) callees(call *ast.CallExpr) []*lockFunction {
 		for _, argument := range call.Args {
 			callees = append(callees, g.functionValue(argument)...)
 		}
+	}
+	return callees
+}
+
+// calleesAndPassed is what call runs as callees resolves it, and every function call is passed,
+// whatever call does with it: a function handed to a Go method or time.AfterFunc too, which
+// callees leaves out as another goroutine's. The keyed-write guard (keyedWriteGuard.callees) and
+// the spec-writer guard (specWriterWalk.step) follow a call this way.
+func (g *lockGraph) calleesAndPassed(call *ast.CallExpr) []*lockFunction {
+	callees := g.callees(call)
+	for _, argument := range call.Args {
+		callees = append(callees, g.functionValue(argument)...)
 	}
 	return callees
 }

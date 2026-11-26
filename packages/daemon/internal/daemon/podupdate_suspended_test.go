@@ -55,7 +55,7 @@ var (
 // suspendedRole is a claim with a session that by suspended, as the store holds it and a boot
 // restores it: the session is kept, and no process runs.
 func suspendedRole(role claim.Role, by supervise.SuspendSource) podUpdateRole {
-	return podUpdateRole{role: role, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion, suspendedBy: by}
+	return podUpdateRole{role: role, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion(), suspendedBy: by}
 }
 
 // replacedOverPassedOverClaims carries R3's round to its replacement: two ready workers and two
@@ -318,6 +318,7 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 // tester makes no read of the workspace, the line names no claim under notWaitedFor, and the
 // issue is written nothing.
 func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon), readyWorker(claim.RoleTester))
 	token := rig.tokens[claim.RoleImplementer]
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
@@ -423,7 +424,7 @@ func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
 	// passed over left work that no role was asked to push.
 	t.Run("no claim passed over", func(t *testing.T) {
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
-			podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion})
+			podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion()})
 		rig.drifts(podUpdateDrift)
 
 		rig.tick()

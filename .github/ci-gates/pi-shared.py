@@ -5,7 +5,9 @@ GATE = gate("pi_shared", "pi-shared", reads=reads(
     ("packages/envoy-client/test/fake-dispatch.ts", "`packages/pi-shared/src/handoff-record.test.ts#fakeLatestHandoff`, imported from @legion/envoy-client/test/fake-dispatch"),
     (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
     (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
-    (f"{FIX}/daemon-api/**", "`packages/pi-shared/src/daemon-client.test.ts#daemonFixture`, `packages/pi-shared/src/legion-claim-core.test.ts#daemonFixture`, `packages/pi-shared/src/legion-phase-ops.test.ts#daemonFixture`"),
+    (f"{FIX}/daemon-api/**", "`packages/pi-shared/src/daemon-client.test.ts#daemonFixture`, `packages/pi-shared/src/legion-claim-core.test.ts#daemonFixture`, `packages/pi-shared/src/legion-phase-ops.test.ts#daemonFixture`; "
+                             "and `packages/contracts/src/daemon-contract.ts#lastReleased` reads released-contracts.json and `packages/contracts/src/daemon-contract.ts#entryFixtures` lists contracts/*.json "
+                             "for `packages/contracts/src/daemon-contract.ts#daemonContract` of a manifest that names no contract, as `packages/pi-shared/src/daemon-client.test.ts#declaredSettings` takes this tree's contract"),
     ("packages/pi-legion/src/**", "`packages/pi-shared/src/daemon-client.test.ts#CONSUMER_SOURCES` and `packages/pi-shared/src/daemon-client.test.ts#consumerFiles` walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields a read in it names"),
     ("packages/pi-legion/extensions/**", "`packages/pi-shared/src/daemon-client.test.ts#CONSUMER_SOURCES` and `packages/pi-shared/src/daemon-client.test.ts#consumerFiles` walks every .ts of it that is no test, as above"),
     ("packages/claude-envoy/src/**", "`packages/pi-shared/src/daemon-client.test.ts#CONSUMER_SOURCES` and `packages/pi-shared/src/daemon-client.test.ts#consumerFiles` walks every .ts of it that is no test, as above"),
@@ -17,6 +19,7 @@ GATE = gate("pi_shared", "pi-shared", reads=reads(
      "`packages/pi-shared/src/git-lock.test.ts#daemonNote` reads it and holds git-lock.ts's copy to it"),
 ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "
                      "@legion/envoy-client/* (exports.bun -> src)")
+  + dispatch_api_types(at("pi-shared", "Typecheck pi-shared"))
   + install_jj("pi-shared") + bun_job("pi-shared"))
 GATE = with_reads(GATE, [
     Read('packages/envoy-client/test/**', "filter pi_shared held packages/envoy-client/test/** by hand before the filters were computed: it selected 10 file(s) no other read of this gate declares"),

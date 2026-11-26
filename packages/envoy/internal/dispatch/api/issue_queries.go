@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -46,12 +47,23 @@ var (
 	listPinnedIssuesPageQuery = issueSummaryQuery(true, true, true)
 )
 
-// issueSummaryQuery writes one listing statement. `filtered` applies every filter to `issues i`
-// alone, so `total` is a count over it with no join and the paged text orders and cuts it before
-// anything else is resolved: the six joins then run for the page's rows alone, and a listing of
-// twenty rows costs twenty issues' blockers, specs, open asks, children, components and
-// repository rather than every matching issue's. Both counts come from the one statement, since
-// two statements read two snapshots and can disagree about a table a write is moving.
+// issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
+// alone, so `total` is a count over `filtered`, which runs none of the six joins that resolve a
+// row's values, and the paged text orders and cuts it before anything else is resolved: the six
+// joins then run for the page's rows alone, and a listing of twenty rows costs twenty issues'
+// blockers, specs, open asks, children, components and repository rather than every matching
+// issue's. Both counts come from the one statement, since two statements read two snapshots and
+// can disagree about a table a write is moving.
+//
+// `filtered` is the matched issues read back by their places in one array (generate_subscripts)
+// rather than straight from the scan that matches them, so every plan sizes it at the 1,000 rows
+// generate_subscripts plans, as priorityMemberTerms sizes its seed, rather than at the one issue
+// the generic plan estimates through issueListFilters' arms: each join that attaches a value to
+// the matched issues then reads its grouped term once rather than once for each issue. The array
+// holds each matched row's address (ctid), which the read takes back in the same statement and so
+// under the same snapshot. It holds addresses rather than keys because Postgres finds an element
+// of fixed width at its place at once, and the n-th key of an array of text only by reading the
+// n-1 before it.
 //
 // An empty page still carries the count the caller asked for, so `listed` answers one issue of
 // the filtered set marked `in_page` false when the page holds nothing, and scanIssuePage drops
@@ -71,18 +83,21 @@ var (
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
 // reason: it is read only under `?moved=true` ($14), and a request without it reads no event.
 func issueSummaryQuery(pinned, paged, readAdvances bool) string {
-	parameter := 16
+	parameter := 18
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
 		parameter++
 	}
-	query := `with recursive ` + issueAdvancesFilterTerms + `, filtered as (
-		select i.key, i.status, i.rank, i.created_at
+	query := `with recursive ` + issueAdvancesFilterTerms + `, matched as (
+		select i.ctid as address
 		from issues i` + pinnedJoin + `
-		left join advancing on advancing.key = i.key
-		left join advances_originating originating on originating.key = i.key
 		` + issueListFilters + `
+	), filtered as (
+		select i.key, i.status, i.rank, i.created_at
+		from (select array_agg(address) as addresses from matched) m
+		cross join generate_subscripts(m.addresses, 1) as place(n)
+		join issues i on i.ctid = m.addresses[place.n]
 	)`
 	advancesColumns := issueAdvancesColumns
 	terms := issueComponentsTerms + `, ` + refs.IssueRepoTerms
@@ -115,29 +130,43 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 `
 }
 
-// issueListFilters are the eleven filters a listing request carries, written as fourteen
-// parameters (the priority filter takes a list and a flag for the unset, and the `advances`
-// filter a list and a flag for each of its two keywords), every one but the last written against
-// `issues i` alone, so the filtered term joins nothing. The status filter ($2) is a list of the
-// statuses named, an issue standing in any of them, and the empty list is every status. The
-// closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time,
-// is outside every window. The last is the `advances` filter, which no column of an issue holds
-// and whose answer a relation of an issue above it can decide: it reads two terms computed once
-// per request (issueAdvancesFilterTerms), joined to the issue by its key, so the filtered term
-// still resolves nothing per row and the page and the count both read it. Its arms are a union:
-// the ids named ($11), the work under none ($12), and the work under any ($13), which is every
-// issue `advancing` holds and so exactly the issues the arm for none leaves out. `?own=true`
-// ($15) reads the arms over `originating` instead: the ids named and any, each over the issues
-// that state a matched priority no issue above them carries, and none, which matches no
-// priority, over nothing.
+// issueListFilters are the eleven filters a listing request carries, written as sixteen
+// parameters (the label filter takes its keys and the two strings of its map, the priority filter
+// a list and a flag for the unset, and the `advances` filter a list and a flag for each of its two
+// keywords), every one but the last written against `issues i` alone. The status filter ($2) is
+// a list of the statuses named, an issue standing in any of them, and the empty list is every
+// status. The label filter ($5) is the labelKey of each label named. An issue matches when it
+// carries a label of each key. The statement maps each stored label with translate() and the
+// two strings of labelFoldMap ($16, $17), so a stored label matches a key exactly where
+// strings.EqualFold matches it, whatever the collation of the column.
+// The closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no
+// time, is outside every window. The last is the `advances` filter, which no column of an issue
+// holds and whose answer a relation of an issue above it can decide: it reads two terms computed
+// once per request (issueAdvancesFilterTerms) and tests each issue's key for membership in them,
+// so `matched` resolves no priority per row. The page and the count both read it. The named ids
+// ($11) and the work under any ($13) are one test of membership in `advancing`. The work under
+// none ($12) is every issue `advancing` does not hold. `?own=true` ($15) reads the arms over
+// `advances_originating` instead: the ids named and any, one test of membership over the issues
+// that state a matched priority no issue above them carries, and none over nothing.
+//
+// Each test is an `in` or a `not in` over a term, never a join to it. Postgres plans an
+// uncorrelated `in` as a hashed subplan whenever the term's estimated rows fit in hash_mem: the
+// term is hashed once per execution and each issue costs one probe, whatever the plan expects of
+// the issues. A join leaves that choice to the estimate. pgx prepares every statement, and from a
+// connection's sixth run Postgres may run the generic plan, made with no argument known
+// (speedCustomPlans); every arm above that a parameter can switch off is a guess to that plan,
+// and together they estimate one issue, where a join loops every issue over the whole term. The
+// arms are disjunctions, as the request's union needs, so the planner cannot make a semi-join of
+// them either.
 //
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
-// (issueSummaryJoins), and the parameters after $15 are the pinned login and the page.
+// (issueSummaryJoins). $16 and $17 are the two strings of the label filter's map (labelFoldMap),
+// and the parameters after them are the pinned login and the page.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
-		  and ($5::text[] = '{}' or (select array_agg(lower(label)) from unnest(i.labels) as label) @> $5)
+		  and ($5::text[] = '{}' or (select array_agg(translate(label, $16::text, $17::text)) from unnest(i.labels) as label) @> $5)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
@@ -145,11 +174,9 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($9::timestamptz is null or i.closed_at >= $9)
 		  and ($10::timestamptz is null or i.closed_at < $10)
 		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
-		       or (not $15::boolean and (coalesce(advancing.named, false)
-		           or ($12::boolean and advancing.key is null)
-		           or ($13::boolean and advancing.key is not null)))
-		       or ($15::boolean and (coalesce(originating.named, false)
-		           or ($13::boolean and originating.key is not null))))`
+		       or (not $15::boolean and (i.key in (select key from advancing where named or $13::boolean)
+		           or ($12::boolean and i.key not in (select key from advancing))))
+		       or ($15::boolean and i.key in (select key from advances_originating where named or $13::boolean)))`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -261,8 +288,8 @@ const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 // advances any, and $15 whether it asked for `own`. `advancing` holds one row per issue that
 // advances a live priority by either route, `named` saying whether one of them is an id the
 // request asked for, and `advances_originating` the same of the issues that state a priority no
-// issue above them carries, so `filtered` decides every key by one join on the issue's key
-// (issueListFilters) and still resolves nothing per row.
+// issue above them carries, so `matched` decides every key by a test of its membership in these
+// terms (issueListFilters says why it is not a join) and still resolves nothing per row.
 //
 // `advances_relations` is the relations the issues' own rows state now, one row per (issue,
 // priority), by the reading of the log issueAdvancesTerms makes for a page. A priority whose
@@ -573,6 +600,59 @@ func (a *advancesScan) resolve() []model.IssueAdvance {
 	return entries
 }
 
+// labelKey is the key that two labels share exactly when strings.EqualFold matches them: each rune
+// of the label is replaced by the least rune of its unicode.SimpleFold orbit. So Ä and ä share a
+// key, and K, k and the Kelvin sign U+212A share one. LEGİON (with U+0130) and legion do not:
+// strings.ToLower maps U+0130 to i, but U+0130 is alone in its orbit. R26 (holdsLegionLabel) and
+// the Legion daemon (CarriesLegionLabel) read the legion label by strings.EqualFold, so Dispatch
+// must keep two labels apart wherever strings.EqualFold does. Otherwise labels_add of legion on
+// an issue that carries LEGİON adds nothing, and neither R26 nor the daemon reads the issue as a
+// Legion issue.
+func labelKey(label string) string {
+	return strings.Map(leastFold, label)
+}
+
+// leastFold is the least rune of the unicode.SimpleFold orbit of r.
+func leastFold(r rune) rune {
+	least := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		least = min(least, f)
+	}
+	return least
+}
+
+// labelFoldMap is the map that the listing's label filter applies to each stored label with
+// translate() (issueListFilters). from holds every rune of the unicode.SimpleFold orbit of every
+// rune of labels, each rune once. to holds, at the same place, the least rune of that rune's
+// orbit. The map is exact for this reason. A label rune in from becomes the least rune of its
+// orbit, as labelKey writes it. A label rune not in from stays itself and cannot equal a rune of a
+// key, because each rune of a key is the least rune of an orbit that from holds whole. So a mapped
+// label equals labelKey(filter) exactly when the two have the same count of runes and each rune
+// of the label is in the orbit of the filter's rune at that place, which is strings.EqualFold.
+// translate() reads no collation, so the database's collation cannot change the match.
+func labelFoldMap(labels []string) (from, to string) {
+	var fromRunes, toRunes strings.Builder
+	seen := make(map[rune]struct{})
+	for _, label := range labels {
+		for _, r := range label {
+			if _, added := seen[r]; added {
+				continue
+			}
+			least := leastFold(r)
+			f := r
+			for {
+				seen[f] = struct{}{}
+				fromRunes.WriteRune(f)
+				toRunes.WriteRune(least)
+				if f = unicode.SimpleFold(f); f == r {
+					break
+				}
+			}
+		}
+	}
+	return fromRunes.String(), toRunes.String()
+}
+
 func normalizeIssueLabels(values []string) ([]string, error) {
 	if len(values) > contracts.MaxIssueLabels {
 		return nil, countExceededError("LABELS_INPUT", "labels", len(values), contracts.MaxIssueLabels)
@@ -584,7 +664,7 @@ func normalizeIssueLabels(values []string) ([]string, error) {
 		if length := itemblocks.Units16(label); length == 0 || length > contracts.IssueLabelMax {
 			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "each label must be 1 to %d characters", contracts.IssueLabelMax)
 		}
-		key := strings.ToLower(label)
+		key := labelKey(label)
 		if _, duplicate := seen[key]; duplicate {
 			continue
 		}
@@ -616,8 +696,9 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index, label := range labels {
-		labels[index] = strings.ToLower(label)
+		labels[index] = labelKey(label)
 	}
+	labelsFrom, labelsTo := labelFoldMap(labels)
 	// Each time bound is read under its literal key rather than through a helper taking the key,
 	// so routes_query_keys_test.go's walk can tie each one to issueListQuery.
 	var updatedSince *time.Time
@@ -684,7 +765,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// (advancesOriginTerms); without an `advances` value it filters nothing.
 	own := query.Get("own") == "true"
 	arguments := []any{project, statuses, parent, store.MicrosecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
-		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved, own}
+		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved, own,
+		labelsFrom, labelsTo}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -950,14 +1032,21 @@ type issueDetail struct {
 	// pays for it here, with the detail it already reads, instead of a graph request of
 	// its own; the edges themselves are read only when the reader opens the panel.
 	ReferencedByCount int `json:"referenced_by_count"`
+	// ComponentsReasonTree is the tree of the reason the issue's attachment gives for touching no
+	// component (Components.Reason, of mode `none`), which its writer typed in a box that carries
+	// the reference picker and the header's Components line draws through the renderer. It
+	// stands beside the issue rather than inside its components because model.Issue is the
+	// payload of the issue's events and no payload gains a field, and it stands last, so an
+	// answer to a caller that asked for no trees keeps its bytes.
+	ComponentsReasonTree model.DisplayTree `json:"components_reason_tree,omitempty"`
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
 // issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
 // refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
-// for (wantsDisplayTrees): the display trees of the documents' approval reasons and of the open
-// asks' texts, which only the dashboard reads.
+// for (wantsDisplayTrees): the display trees of the documents' approval reasons, the open asks'
+// texts and the attachment's reason for touching no component, which only the dashboard reads.
 func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
@@ -1024,12 +1113,15 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		return issueDetail{}, err
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
-	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
-	// texts are one query of the stored trees, and what it did not hold is stored on a goroutine
-	// of its own, beside the rest of the request.
+	// where the sequential loader read them after loadArtifacts. The reasons, the open asks'
+	// texts and the attachment's reason are one query of the stored trees, and what it did not
+	// hold is stored on a goroutine of its own, beside the rest of the request.
 	reader := s.readDisplayTrees(ctx, trees)
 	read.Artifacts = artifactReads(artifacts, reader)
 	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
+	if read.Issue.Components.Mode == "none" {
+		reader.textOf(&read.ComponentsReasonTree, read.Issue.Components.Reason)
+	}
 	reader.resolve()
 	return read, nil
 }

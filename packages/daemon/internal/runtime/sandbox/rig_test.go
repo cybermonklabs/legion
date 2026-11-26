@@ -35,6 +35,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -541,17 +542,22 @@ type rig struct {
 	// leakCheckTag and leakCheckInstalled are what every fake launcher's hello says of the shared
 	// public leak check: its pin, "" for none, and whether it holds that pin installed
 	// (withLeakCheckHello). refuseLeakCheck, when set, is the cause every fake launcher answers
-	// each launcher_leak_check slice with, silentLeakCheck has it answer none at all, and
-	// causelessLeakCheck has it refuse each slice with no cause.
+	// each launcher_leak_check slice with, silentLeakCheck has it answer none at all,
+	// causelessLeakCheck has it refuse each slice with no cause, and deafLauncher has it read
+	// nothing after its first state, so the daemon's first command waits in its write.
 	leakCheckTag       string
 	leakCheckInstalled bool
 	refuseLeakCheck    string
 	silentLeakCheck    bool
 	causelessLeakCheck bool
+	deafLauncher       bool
 	// resumesBySession is what every fake launcher's hello says of looking a session up by its id
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
+	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
+	heldStops <-chan struct{}
 }
 
 type rigOption func(*rig, *Options)
@@ -578,6 +584,11 @@ func withRefusedLeakCheck(cause string) rigOption {
 // one whose install is still running when the daemon's hop ends.
 func withSilentLeakCheck() rigOption { return func(g *rig, _ *Options) { g.silentLeakCheck = true } }
 
+// withDeafLauncher has every fake launcher report its first state and then read nothing, as one
+// whose process stopped reading its connection does: the daemon's next write to it never ends
+// until its deadline.
+func withDeafLauncher() rigOption { return func(g *rig, _ *Options) { g.deafLauncher = true } }
+
 // withCauselessLeakCheck has every fake launcher refuse each slice of the leak check with no
 // cause, an answer no launcher of this release gives and the daemon refuses as malformed.
 func withCauselessLeakCheck() rigOption {
@@ -587,6 +598,12 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
+// is closed.
+func withHeldStops(release <-chan struct{}) rigOption {
+	return func(g *rig, _ *Options) { g.heldStops = release }
+}
 
 // testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
 // reports and no volume seam behind it: the tests that build one drive the launcher protocol
@@ -848,10 +865,36 @@ func (t generationTracker) specChanged(gvr schema.GroupVersionResource, obj k8sr
 	return !isBefore || !isAfter || !reflect.DeepEqual(before.Object["spec"], after.Object["spec"])
 }
 
-// advance moves the runtime's clock.
+// advance moves the present the runtime reads ages against (now, Options.Now), not the clock its
+// waits run on (Runtime.clock), which a test that sets a clocktest.Fake there moves with step.
 func (g *rig) advance(d time.Duration) {
 	next := g.now.Load().Add(d)
 	g.now.Store(&next)
+}
+
+// step moves fc, the clock the rig's runtime waits on (the test sets g.r.clock = fc before it
+// starts the wait), recheckInterval forward, and returns once a check of the runtime's wait has
+// begun at the new moment and found the wait not over, or once ended reports true because the
+// wait under test is over. await arms each recheck for the moment its check began plus
+// recheckInterval, so a recheck pending one recheckInterval past the new moment says a check began
+// after the move, and read what the runtime's stores held before it. A check that began before the
+// move arms a recheck the move has reached, which fires at once, so a check of the new moment
+// follows it; and a move of recheckInterval reaches the recheck the last check armed, so every
+// step is answered by one.
+func (g *rig) step(fc *clocktest.Fake, ended func() bool) {
+	g.t.Helper()
+	fc.Advance(recheckInterval)
+	awaitArmedAt(g.t, fc, "a check of the runtime's wait", fc.Now().Add(recheckInterval), ended)
+}
+
+// awaitArmedAt waits until fc has a deadline pending at at (Armed), or until ended, when not nil,
+// reports true; what names what the deadline stands for in the failure at the test binary's
+// deadline.
+func awaitArmedAt(t testing.TB, fc *clocktest.Fake, what string, at time.Time, ended func() bool) {
+	t.Helper()
+	testwait.Eventually(t, what+", a deadline armed for "+at.Format(time.RFC3339Nano), func() bool {
+		return (ended != nil && ended()) || slices.ContainsFunc(fc.Armed(), at.Equal)
+	})
 }
 
 // record logs every request, and gives what a create makes the uid and creation time an API
@@ -1177,10 +1220,12 @@ func (g *rig) secret(name string) *corev1.Secret {
 	return object.(*corev1.Secret)
 }
 
-// eventually fails the test unless ok holds within a second.
+// eventually fails the test unless ok holds before the test binary's deadline (testwait.Eventually):
+// the rig's controller, informers and launchers run on goroutines of their own, and beside the
+// package's other parallel tests a loaded machine may take them longer than any fixed span.
 func (g *rig) eventually(what string, ok func() bool) {
 	g.t.Helper()
-	testwait.WithinPolling(g.t, time.Second, 5*time.Millisecond, what, ok)
+	testwait.Eventually(g.t, what, ok)
 }
 
 // spawn launches spec and fails the test on an error.
@@ -1330,6 +1375,10 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	go func() {
 		writer := shimwire.NewWriter(client)
 		_ = writer.WriteFrame(launcherFirstState(running))
+		if g.deafLauncher {
+			<-g.ctx.Done()
+			return
+		}
 		// checks is the slices of each leak check sequence that arrived and installed whether
 		// this launcher process holds the check installed, as the real launcher's checkInstall
 		// does: it installs nothing, and answers the last slice of a sequence, and every slice
@@ -1354,6 +1403,9 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
+				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
+					<-g.heldStops
+				}
 				answers, _ := answerGeneration(frame, &running)
 				for _, answer := range answers {
 					_ = writer.WriteFrame(answer)

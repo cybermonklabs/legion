@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import { linkHoverText, linkText } from "../../theme/classes";
 import { referenceTriggerProps } from "./RefPreview";
-import { buildReferencePath, parseNodeReference, shortForm } from "./routes";
+import { parseNodeReference, referenceHref, shortForm } from "./routes";
 
 /**
  * A `dispatch://` reference drawn as a link to what it names, with the preview the whole app
@@ -25,14 +25,21 @@ export function ReferenceLink({
   if (route === undefined) {
     return <span data-testid={testId}>{reference}</span>;
   }
+  const words = label ?? shortForm(route);
+  // A person has no page (R5), as has any reference whose path the gate refuses: the words
+  // stand on their own, since there is nowhere for them to go.
+  const href = referenceHref(route);
+  if (href === undefined) {
+    return <span data-testid={testId}>{words}</span>;
+  }
   return (
     <Link
       {...referenceTriggerProps(route)}
       className={`underline ${linkText} ${linkHoverText}`}
       data-testid={testId}
-      to={buildReferencePath(route)}
+      to={href}
     >
-      {label ?? shortForm(route)}
+      {words}
     </Link>
   );
 }

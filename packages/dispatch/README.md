@@ -705,6 +705,52 @@ DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http:/
   bash packages/dispatch/e2e/acceptance/graph-sizing.sh
 ```
 
+`e2e/acceptance/priority-list-production.sh` is the driver of the check `c-both-plans-production`:
+it measures how long production's server takes to answer the issue list filtered by a priority, as
+the p90 of the access log's `elapsed_ms` over 200 reads of each of three requests.
+The three are the page of 50 (`page`), `&open=true` (`open`) and the whole list (`whole`) of the
+priority with the most open issues.
+The script sends them itself, one at a time, 200 of each form in turn, each with the User-Agent
+`priority-list-production/<probe id>/<form>`, and stops after 21 reads of one form took over
+1,000 ms by curl's clock.
+It then reads their lines back from the deployment's container logs with `gcloud logging read`,
+again every 30 s for at most 10 minutes until the log holds every line the probe sent.
+A form's p90 is the value at rank ceil(0.9 n) of its lines' `elapsed_ms` in ascending order, and
+the form passes at 200 ms or under.
+Before it sends a read, the fleet must have served a commit carrying `MERGE_SHA` for three hours:
+`/healthz`'s `fleet_commit`, the commit every live server process serves, must carry it by
+GitHub's compare (`identical` or `ahead`).
+A look that has to wait ends on the line `read again at or after <time> with ...`, which names the
+values the next look takes, and exits 3.
+
+Its inputs are `DISPATCH_URL`, the deployed Dispatch; the bearer, in `DISPATCH_TOKEN` or
+`DISPATCH_TOKEN_FILE`; `MERGE_SHA`, the merge commit's 40 hex digits; and `LOGGING_PROJECT`, the
+Google Cloud project that holds the deployment's container logs.
+This public repository names no such project, so the driver refuses to start without it (exit 2).
+Each time it takes or prints is UTC to the second, `YYYY-MM-DDTHH:MM:SSZ`.
+A later look also takes the values the line of an earlier one names: `FLEET_SINCE` and
+`FLEET_COMMIT`, the time the three hours started and the commit they count for, so a deploy in
+between starts them over; or `PROBE_ID`, `PROBE_AT` and `PROBE_STOPPED`, all three or none, with
+which the look sends nothing and reads back that probe's lines.
+`BEFORE_DEPLOY=1` is for the check's negative control alone: the look then requires a commit that
+does not carry `MERGE_SHA`, and skips the three-hour wait.
+`gh` and `gcloud` run as the accounts they are signed in with.
+It exits 0 when every form's p90 is at most 200 ms; 1 when a form's p90 is over 200 ms, a line's
+status is not 200 or the first answer of a form holds no issue; 2 when the look cannot measure (an
+input unset or malformed, a first answer that is not 200, no line of the probe in the log after 10
+minutes, or a probe id of another build); and 3 for a look that waits.
+A look that finds a failure exits 1 even where it would also wait.
+The first look, from the repository root; each later one adds the values the last one named:
+
+```bash
+DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding the bearer> \
+  MERGE_SHA=<merge commit> LOGGING_PROJECT=<project> \
+  bash packages/dispatch/e2e/acceptance/priority-list-production.sh
+```
+
+`cd packages/dispatch && bun test e2e/__tests__/priority-list-production.test.ts` runs it against
+stand-ins of `curl`, `gh`, `gcloud` and `sleep` that reach nothing past the host.
+
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
 nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
@@ -773,7 +819,7 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All nine drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+All ten drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
@@ -1105,6 +1151,49 @@ of `e2e/visual.e2e.ts`, whose baselines are committed as
 claims. A baseline comes only from the pinned container, through
 `e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
 machine with no container.
+
+A third layer holds every page to the layout rule of `AGENTS.md` ("Layout"), and
+`bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every
+reviewed route, the excluded ones whose reason argues only against a shot or a scan, two pages a
+reader's choice in this browser draws another way (the new issue page, the project's board), and
+the project page and its Architecture tab, which a project with an architecture source draws -
+over the review corpus and a stress layer that writes
+production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
+each state a route names (the Peek drawer open, rows or agents selected). At each width
+`e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
+`measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
+does for anything but a code block, one picture wider than the box, a data table or a board's
+lanes, something cut off at a side with no ellipsis (a code block's text, a picture and a fixed
+layer's own text among them), a closed `data-layout-group` showing more entries than its cap, a
+group that declares a cap other than a whole number from 1 to 10 or marks more than one "+N"
+control, and a group the route must mark (`requiredGroups`) of which no shown entry is marked.
+Each direct child of a `data-layout-group` element is one entry, except the one "+N" control,
+which is marked `data-layout-more`; so each child must be one chip, since a child that draws
+several chips still counts as one and its group can show more chips than its cap and pass. The
+rows are
+`e2e/layout-rule.stub.e2e.ts`, in the stubbed layer on every pull request: their HTTP answers are
+recorded as every stubbed row's are, and the document and live sockets beside the HAR
+(`e2e/layout-sockets.ts`); `bun run e2e:stub:record -- layout-rule.stub` records them again after
+a change to the stress layer. The rows draw the app's font stacks in faces committed under
+`e2e/fonts/` (each directory holds its licence), the faces CI resolves for them: the root's
+`Inter` in DejaVu Sans, Tailwind's `--font-mono` and `--font-sans` (opened with them for the rows)
+in Liberation Mono and Liberation Sans, and the editor's `SF Mono` and the diagrams'
+`JetBrains Mono` in DejaVu Sans Mono. A reading fails if any of them does not load. The rows run
+in `en-US` and UTC, so a run on any machine measures the text CI measures.
+`e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
+case, and holds the instrument to reporting the one and not the other. A row fails on each breach
+no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints for its
+breach (for a page that scrolls sideways, that of the deepest element past the viewport), matches
+only a breach of that locator, and accepts exactly its `count` of them, so the count is the bound
+of what it lets through - on a page whose own region drew fewer than 100 elements (or the route's
+own `minElements`), and on an entry whose route, state and width it measured and which its
+reading did not match exactly; and
+`e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route or a state the rows
+never read; the type `LayoutWidth` holds its width to the five the rows read. That list holds the
+breaches main still has, in one array per INFRA-5200 fix pull request (the issue page's, the
+Inbox's and the other pages'); each fix pull request deletes every entry of its own array and
+leaves it empty, so the three merge in any order, and the list and its use go once all three are
+empty.
 
 ## Phone check
 
