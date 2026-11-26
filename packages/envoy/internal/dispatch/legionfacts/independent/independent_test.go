@@ -250,3 +250,75 @@ func union[Left, Right any](left map[string]Left, right map[string]Right) map[st
 	}
 	return keys
 }
+
+// TestIndependentReadLeavesOutTheEventsAndObservationsAfterTo: Read stands its events and its
+// observations as of Window.To, as Window says. AFTR-1's only Legion work is a role event an hour
+// after To, by a session that took its Legion title before To on another project's issue, so as of
+// To no Legion work of AFTR-1 is recorded and it has no facts. AFTR-2's `tree` row, written an hour
+// after To, names AFTR-1, so as of To AFTR-2 is still in a tree of its own. A read past both rows
+// sees each of them, so the two answers at To are the bound's and not a rule's.
+func TestIndependentReadLeavesOutTheEventsAndObservationsAfterTo(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := t.Context()
+	to := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	exec := func(what, sql string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	exec("seed projects", `insert into projects (key, name, default_assignee) values ('AFTR', 'After to', 'alice'), ('OTHR', 'Other', 'alice')`)
+	exec("seed the other project's issue", `
+		insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
+		values ('OTHR-1', 'OTHR', 1, 'Where the session took its title', 'in_progress', '00000001', '{"kind":"system","id":"test"}', $1)
+	`, to.Add(-6*time.Hour))
+	exec("seed the title AFTR-1's session took before to", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('OTHR-1', 1, 'comment.created', '{"kind":"session","id":"ses-aftr1","origin":{"session_title":"Legion implementer · AFTR-1"}}', '{}', false, $1)
+	`, to.Add(-5*time.Hour))
+	exec("seed issues", `
+		insert into issues (key, project_key, number, title, status, rank, created_by, created_at) values
+			('AFTR-1', 'AFTR', 1, 'Worked only after to', 'in_progress', '00000001', '{"kind":"system","id":"test"}', $1),
+			('AFTR-2', 'AFTR', 2, 'Put in another tree after to', 'in_progress', '00000002', '{"kind":"system","id":"test"}', $1)
+	`, to.Add(-6*time.Hour))
+	exec("seed AFTR-2's role event before to", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('AFTR-2', 1, 'comment.created', '{"kind":"session","id":"ses-aftr2","origin":{"session_title":"Legion implementer · AFTR-2"}}', '{}', false, $1)
+	`, to.Add(-3*time.Hour))
+	exec("seed AFTR-1's role event after to", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('AFTR-1', 1, 'comment.created', '{"kind":"session","id":"ses-aftr1","origin":{"session_title":"Legion implementer · AFTR-1"}}', '{}', false, $1)
+	`, to.Add(time.Hour))
+	exec("seed AFTR-2's tree row after to", `
+		insert into legion_observations (project, issue_key, field, value, observed_at)
+		values ('AFTR', 'AFTR-2', 'tree', '"AFTR-1"', $1)
+	`, to.Add(time.Hour))
+
+	scope := independent.Scope{Project: "AFTR"}
+	reading, err := independent.Read(ctx, database.Pool, scope, independent.Window{To: to})
+	if err != nil {
+		t.Fatalf("independent.Read as of %s: %v", to.Format(time.RFC3339), err)
+	}
+	if facts, seen := reading.Issues["AFTR-1"]; seen {
+		t.Errorf("AFTR-1 as of %s = %+v, want no facts: its only Legion work was recorded an hour after", to.Format(time.RFC3339), facts)
+	}
+	got, ok := reading.Issues["AFTR-2"]
+	if !ok {
+		t.Fatalf("AFTR-2 has no facts as of %s, though its first worker event was 3 h before", to.Format(time.RFC3339))
+	}
+	if got.Tree != "AFTR-2" {
+		t.Errorf("AFTR-2 as of %s is in tree %s, want its own: the tree row that names AFTR-1 was written an hour after", to.Format(time.RFC3339), got.Tree)
+	}
+
+	later := to.Add(3 * time.Hour)
+	after, err := independent.Read(ctx, database.Pool, scope, independent.Window{To: later})
+	if err != nil {
+		t.Fatalf("independent.Read as of %s: %v", later.Format(time.RFC3339), err)
+	}
+	if _, seen := after.Issues["AFTR-1"]; !seen {
+		t.Errorf("AFTR-1 has no facts as of %s, after its Legion work was recorded", later.Format(time.RFC3339))
+	}
+	if tree := after.Issues["AFTR-2"].Tree; tree != "AFTR-1" {
+		t.Errorf("AFTR-2 as of %s is in tree %s, want AFTR-1, which its tree row names by then", later.Format(time.RFC3339), tree)
+	}
+}
