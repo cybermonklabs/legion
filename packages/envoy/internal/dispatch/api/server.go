@@ -1384,11 +1384,11 @@ func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
-// rather than of one request — a browser's cookie holds both scopes, and the shared token and a
-// service-account token hold none — and the cookie's is on the dashboard's hottest path, so
-// allocating either per request would be waste. Nothing writes a Credential or appends to its
-// Scopes: Holds reads, actScopes copies the slice header onto the act it records, and
-// tokenScopes builds a set of its own.
+// rather than of one request — a browser's cookie holds every scope (model.Scopes: person,
+// approve and p0), and the shared token and a service-account token hold none — and the cookie's
+// is on the dashboard's hottest path, so allocating either per request would be waste. Nothing
+// writes a Credential or appends to its Scopes: Holds reads, actScopes copies the slice header
+// onto the act it records, and tokenScopes builds a set of its own.
 var (
 	scopelessCredential = &model.Credential{}
 	personCredential    = &model.Credential{Scopes: model.Scopes}
@@ -1464,6 +1464,8 @@ func actorNamesWriter(supplied *model.Actor) bool {
 
 // actScopes is the scopes an act records of credential: the ones of model.Scopes, which an act's
 // reader may ask about (ActorAct.Holds; DISPATCH_SCOPES and ActorActSchema in @legion/contracts).
+// An act records the credential's whole set, so the act of a personal token that holds p0 records
+// p0, though no reader of a recorded act asks for it: they ask for approve alone.
 // legion-status, which a Legion daemon's own broker token holds and holds alone, is the
 // credential's leave to write a Legion issue's status (legion_status_scope.go), not a grant an act
 // carries, so such a credential's act records no scope. No credential holds it beside another

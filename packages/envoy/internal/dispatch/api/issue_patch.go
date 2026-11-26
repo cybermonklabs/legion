@@ -332,6 +332,24 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
+	// A close that names priority 0 from a credential without p0 is refused here, before the
+	// settlement below writes the issue's document versions and asks, when the issue's own
+	// priority is not 0 already: a refused write writes nothing of its request. The priority is
+	// read on the pool with no lock held, so this only spares the settlement; the check under the
+	// owner lock decides every case, and answers each write the read let through. An issue that is
+	// not there is left to the lock step's own answer.
+	if closes && refuseP0WithoutScope(call.writer.credential, priority, nil) != nil {
+		var stored *int
+		err := s.deps.Store.Pool.QueryRow(ctx, `select priority from issues where key = $1`, key).Scan(&stored)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return issueWriteResult{}, err
+		}
+		if err == nil {
+			if refusal := refuseP0WithoutScope(call.writer.credential, priority, stored); refusal != nil {
+				return issueWriteResult{}, refusal
+			}
+		}
+	}
 	// A close is checked once here too, on the pool and with no lock held, for who may close an
 	// issue Legion runs (judgeSpecWriter), so that a close the check refuses does not settle the
 	// issue's documents first. It only spares that settlement: the check under the owner locks
@@ -421,6 +439,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	before, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
+		return issueWriteResult{}, err
+	}
+	// The p0 check (p0_scope.go) is the first refusal that reads the issue: a write that makes
+	// its own priority 0 without the scope is refused before the sequence, the parent and the
+	// closed issue are, so a credential without p0 meets this refusal and no other. before.Priority
+	// is the issue's own column, never a priority its parent has.
+	if err := refuseP0WithoutScope(call.writer.credential, priority, before.Priority); err != nil {
 		return issueWriteResult{}, err
 	}
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {

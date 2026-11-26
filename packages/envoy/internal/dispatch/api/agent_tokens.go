@@ -92,10 +92,12 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 type createAgentTokenInput struct {
 	Name string `json:"name" required:"true"`
 	// Scopes is the set the new token holds. A body that names none at all leaves it to the
-	// caller's own set, which is why the field is a pointer: an empty array is a token that
-	// holds nothing, and that is a different request from one that asks for the default. A set
-	// that holds read is a read-only token's: read alone, or read beside person.
-	Scopes *[]string `json:"scopes" enum:"person,approve,read"`
+	// caller's own set but p0 (callerScopes), which is why the field is a pointer: an empty array
+	// is a token that holds nothing, and that is a different request from one that asks for the
+	// default. A token holds p0 only where its body names it and its maker holds it. A set that
+	// holds read is a read-only token's: read alone, or read beside person, never beside approve
+	// or p0.
+	Scopes *[]string `json:"scopes" enum:"person,approve,p0,read"`
 }
 
 // createAgentToken is POST /api/v1/me/agent-tokens. Its answer is the one time the token's
@@ -155,7 +157,7 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 // updateAgentTokenScopesInput is the body of PATCH /api/v1/me/agent-tokens/{id}. Its scopes never
 // hold read: no token changes to or from read only (updateAgentTokenScopes).
 type updateAgentTokenScopesInput struct {
-	Scopes *[]string `json:"scopes" required:"true" enum:"person,approve"`
+	Scopes *[]string `json:"scopes" required:"true" enum:"person,approve,p0"`
 }
 
 // updateAgentTokenScopes is PATCH /api/v1/me/agent-tokens/{id}: the whole set one of the
@@ -238,22 +240,25 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 
 // codeTokenScopesInput refuses a set no token may hold: a word that is no scope this deployment
 // knows, approve without person, which agent_tokens' own check refuses as well, or read beside
-// approve, which agent_read_tokens' own check refuses. It also refuses any change of a token to or
-// from read only (updateAgentTokenScopes).
+// approve or p0, which agent_read_tokens' own check refuses for approve and tokenScopes for p0. It
+// also refuses any change of a token to or from read only (updateAgentTokenScopes).
 const codeTokenScopesInput = "TOKEN_SCOPES_INPUT"
 
 // tokenWords is every word a personal token's scopes may hold: the scopes a credential acts under
-// (model.Scopes), and read (model.ScopeRead), which marks a token that may only read.
+// (model.Scopes: person, approve and p0), and read (model.ScopeRead), which marks a token that may
+// only read.
 var tokenWords = append(slices.Clip(model.Scopes), model.ScopeRead)
 
 // tokenScopes is the set a mint or an edit gives a token: the one the body names, or, where it
-// names none, the set the caller's own credential holds. It writes its own refusal and answers
-// false for a set the token may not hold (codeTokenScopesInput) and for one the caller does not
-// hold itself (403 OAUTH_SCOPE_REQUIRED): a credential gives a token only what it holds, or a
-// token narrowed to one scope would mint itself a wide one. read is the one word the caller need
-// not hold, since it gives the token nothing: it narrows the token to reading. A read-only token
-// holds read alone or beside person, never beside approve, since settling what a person settles
-// is a write. A scope named twice is stored once.
+// names none, the set the caller's own credential holds but p0 (callerScopes). It writes its own
+// refusal and answers false for a set the token may not hold (codeTokenScopesInput) and for one
+// the caller does not hold itself (403 OAUTH_SCOPE_REQUIRED): a credential gives a token only what
+// it holds, or a token narrowed to one scope would mint itself a wide one. So a credential without
+// p0 that names p0 is refused, also where the token it changes holds p0 already, since a change
+// sends the token's whole set. read is the one word the caller need not hold, since it gives the
+// token nothing: it narrows the token to reading. A read-only token holds read alone or beside
+// person, never beside approve or p0, since settling what a person settles and setting an issue's
+// priority to P0 are writes. A scope named twice is stored once.
 func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string) ([]string, bool) {
 	if requested == nil {
 		return callerScopes(actor), true
@@ -264,8 +269,8 @@ func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string) 
 	for _, scope := range *requested {
 		if !slices.Contains(tokenWords, scope) {
 			writeError(w, codeTokenScopesInput, http.StatusBadRequest, fmt.Sprintf(
-				"%q is no scope this deployment knows; the scopes are %s, %s and %s",
-				scope, model.ScopePerson, model.ScopeApprove, model.ScopeRead))
+				"%q is no scope this deployment knows; the scopes are %s, %s, %s and %s",
+				scope, model.ScopePerson, model.ScopeApprove, model.ScopeP0, model.ScopeRead))
 			return nil, false
 		}
 		// Act is nil for a browser, whose person holds every scope, which is what Holds answers
@@ -285,23 +290,40 @@ func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string) 
 			model.ScopeApprove, model.ScopePerson))
 		return nil, false
 	}
-	if slices.Contains(scopes, model.ScopeRead) && slices.Contains(scopes, model.ScopeApprove) {
+	if slices.Contains(scopes, model.ScopeRead) &&
+		(slices.Contains(scopes, model.ScopeApprove) || slices.Contains(scopes, model.ScopeP0)) {
 		writeError(w, codeTokenScopesInput, http.StatusBadRequest, fmt.Sprintf(
-			"a token holding %s holds it alone or beside %s, never beside %s: settling what a person settles is a write",
-			model.ScopeRead, model.ScopePerson, model.ScopeApprove))
+			"a token holding %s holds it alone or beside %s, never beside %s or %s: settling what a person settles and setting an issue's priority to P0 are writes",
+			model.ScopeRead, model.ScopePerson, model.ScopeApprove, model.ScopeP0))
 		return nil, false
 	}
 	return scopes, true
 }
 
-// callerScopes is the set the caller's own credential holds: the scopes actingPerson copied onto
-// Act for a token that acted for its person, and both scopes for a browser, whose cookie names
-// no agent because the person themselves acted.
+// mintDefaultScopes is the set a mint that names no scopes gives when a browser makes it: every
+// scope a person's own credential holds but p0 (model.Scopes), which a person gives a token only
+// by naming it. Every such mint shares this one slice, so none allocates; nothing writes it.
+var mintDefaultScopes = []string{model.ScopePerson, model.ScopeApprove}
+
+// callerScopes is the set a mint that names no scopes gives: every scope the caller's own
+// credential holds but p0. That is the scopes actingPerson copied onto Act for a token that acted
+// for its person, less p0, and person and approve for a browser, whose cookie names no agent
+// because the person themselves acted. A token that holds p0 allocates its set, and every other
+// caller allocates none.
 func callerScopes(actor model.Actor) []string {
-	if actor.Act != nil {
+	if actor.Act == nil {
+		return mintDefaultScopes
+	}
+	if !slices.Contains(actor.Act.Scopes, model.ScopeP0) {
 		return actor.Act.Scopes
 	}
-	return model.Scopes
+	scopes := make([]string, 0, len(actor.Act.Scopes)-1)
+	for _, scope := range actor.Act.Scopes {
+		if scope != model.ScopeP0 {
+			scopes = append(scopes, scope)
+		}
+	}
+	return scopes
 }
 
 // revokeAgentToken is DELETE /api/v1/me/agent-tokens/{id}: it revokes one of the caller's tokens,
