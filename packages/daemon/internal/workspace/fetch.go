@@ -29,21 +29,22 @@ import (
 )
 
 // isolatedGitConfig is the configuration Fetch's git reads besides its own and its command line's
-// (feedGit): none. Not the system's, not the image user's; and git's `-c`, GIT_CONFIG_PARAMETERS,
-// no process provisioning starts inherits (config.go).
+// (isolatedGit): none. Not the system's, not the image user's; and git's `-c`,
+// GIT_CONFIG_PARAMETERS, no process provisioning starts inherits (config.go).
 var isolatedGitConfig = []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}
 
-// feedGit is how every git command of Fetch's, FeedGit's and FeedGitWithin's begins: git, then
-// packWindowConfig as `-c` pairs. That git reads no system file (isolatedGitConfig), so the worker
-// image's /etc/gitconfig does not reach it, its runner removes the role environment's pairs
-// (execRunner.Run), and the feed's own configuration may hold none of the four (feedConfigKeys).
-// The runner's own pins (pinnedGitConfig) reach it too, but they reach every command any NewRunner
-// starts, the daemon's host runners among them, so the four go on this command line instead. git
-// exports the pairs to every git it starts in turn, the index-pack of a clone or a fetch among
-// them. They come before everything a caller adds, and git takes the last value of a key, so a
-// caller's own `-c` of one of them wins: the repository cache's repack keeps repackMemory's. Its
-// capacity is its length, so an append to it copies rather than writing past the shared prefix.
-var feedGit = func() []string {
+// isolatedGit is the reusable git command prefix that adds packWindowConfig as `-c` pairs. Cache
+// fetches, issue-clone fills, and the helpers that read or tend either repository use it. That git
+// reads no system file (isolatedGitConfig), so the worker image's /etc/gitconfig does not reach it,
+// its runner removes the role environment's pairs (execRunner.Run), and the repository cache's own
+// configuration may hold none of the four (cacheConfigKeys). The runner's own pins
+// (pinnedGitConfig) reach it too, but they reach every command any NewRunner starts, the daemon's
+// host runners among them, so the four go on this command line instead. git exports the pairs to
+// every git it starts in turn, the index-pack of a clone or a fetch among them. They come before
+// everything a caller adds, and git takes the last value of a key, so a caller's own `-c` of one of
+// them wins: the repository cache's repack keeps repackMemory's. Its capacity is its length, so an
+// append to it copies rather than writing past the shared prefix.
+var isolatedGit = func() []string {
 	argv := []string{"git"}
 	for _, pair := range packWindowConfig {
 		argv = append(argv, "-c", pair[0]+"="+pair[1])
@@ -129,7 +130,7 @@ func StreamCache(ctx context.Context, run Runner, stream CacheStream, gitDir str
 		return StreamReport{}, err
 	}
 	if !exists {
-		if _, err := RunChecked(ctx, run, slices.Concat(feedGit, []string{"init", "--bare", "--quiet", gitDir}), isolatedGitConfig, filepath.Dir(gitDir)); err != nil {
+		if _, err := RunChecked(ctx, run, slices.Concat(isolatedGit, []string{"init", "--bare", "--quiet", gitDir}), isolatedGitConfig, filepath.Dir(gitDir)); err != nil {
 			return StreamReport{}, err
 		}
 	}
@@ -158,18 +159,18 @@ const CacheFetchTimeout = 2 * time.Hour
 // anything the answer carries.
 const CacheRepositoryHeader = "Legion-Repository"
 
-// InitExitUsage is the exit status of `legion workspace-init fetch` and `provision` for a usage
-// error, a flag or an argument they do not know. It is the usage exit of every legion command.
+// InitExitUsage is the exit status of `legion workspace-init provision` for a usage error, a flag
+// or an argument it does not know. It is the usage exit of every legion command.
 const InitExitUsage = 2
 
-// InitExitOutsideVolume is the exit status of `legion workspace-init fetch` and `provision` for a
-// failure whose cause is outside the issue's volume (ErrOutsideVolume). A new volume does not cure
-// such a failure, so the runtime keeps a kept volume for it. Every other failure exits 1.
+// InitExitOutsideVolume is the exit status of `legion workspace-init provision` for a failure whose
+// cause is outside the issue's volume (ErrOutsideVolume). A new volume does not cure such a failure,
+// so the runtime keeps a kept volume for it. Every other failure exits 1.
 const InitExitOutsideVolume = 3
 
 // ErrOutsideVolume is the cause of a failure outside the issue's volume. These failures wrap it
 // (OutsideVolume):
-//   - a refusal of `fetch` or `provision` before it touches the volume,
+//   - a refusal of `provision` before it touches the volume,
 //   - a failed read of the provisioning token,
 //   - the wait for the repository cache, and a request that the cache refuses or does not answer,
 //   - a transfer or a ref listing from GitHub that failed as outsideVolumeFailure reads it.
@@ -190,68 +191,44 @@ type outsideVolume struct{ err error }
 func (e outsideVolume) Error() string   { return e.err.Error() }
 func (e outsideVolume) Unwrap() []error { return []error{e.err, ErrOutsideVolume} }
 
-// FetchReport is where Fetch filled the feed from and what each source brought: the feed
-// repository; whether it was cloned whole from GitHub; the repository cache's tar, its length, how
-// long it streamed and how long its history took to verify, when the feed was unpacked from it;
-// and how much the feed's objects grew across the transfer from GitHub, with how many refs that
-// transfer made, moved or deleted.
+// FetchReport records the repository cache's fetch: whether it was cloned whole from GitHub and how
+// much its objects grew across a GitHub transfer, with how many refs that transfer made, moved or
+// deleted.
 type FetchReport struct {
 	Cloned      bool
 	GitHubBytes int64
 	Refs        int
 }
 
-// Fetch fills the feed with the provisioning token and no configuration but the one-shot
-// credential's and the pins: the process of a pod's first init container, the only one that holds
-// the token, whose feed is its own and which mounts nothing a tree agent can write, and the
-// repository cache's process (repocache), whose volume is its own. It reaches GitHub as the tmux
-// runtime's Source does, so the token's holders share one credential rule.
+// Fetch fills the repository cache's bare clone with the provisioning token and no configuration
+// but the one-shot credential's and the pins. The cache process (repocache) owns its volume and
+// reaches GitHub as the tmux runtime's Source does, so the token's holders share one credential
+// rule.
 //
-// A feed that holds the repository already — the cache's clone at each refresh, or an issue pod's
-// feed when the kubelet retries its fetch container in the same pod — has the delta fetched into
-// it from GitHub, once the locks and partial packs a killed fetch left are gone
-// (RemoveStaleFeedLocks). An issue pod's feed found present is never removed or replaced: one in a
-// shape Fetch does not write fails the fetch and is kept (ownFeedRepository), since the pod's clone
-// reads the feed's objects through its alternates; the repository cache's own clone, which no clone
-// borrows from, is removed in that case and filled afresh (FetchRequest.ReplaceForeign). A feed
-// that does not exist is filled in a temporary sibling, its garbage collection turned off
-// (feedConfiguration), and renamed into place once everything that fills it succeeded, so the
-// feed's repository is whole and current, or absent.
-// It is the repository cache's own process (repocache): a feed that does not exist is cloned bare
-// from GitHub, its default branch alone; one that exists has that branch fetched into it. An issue
-// pod streams the cache's tar into its own clone instead (StreamCache).
+// A cache clone that already holds the repository has the delta fetched into it from GitHub, once
+// the locks and partial packs a killed fetch left are gone (RemoveStaleCacheLocks). A cache clone
+// in a shape Fetch does not write is removed and filled afresh. An absent cache clone is filled in a
+// temporary sibling, its garbage collection turned off (cacheConfiguration), and renamed into place
+// once everything that fills it succeeded, so the repository is whole and current, or absent. The
+// initial clone takes GitHub's default branch alone; a cache clone that exists has that branch
+// fetched into it.
 //
-// Each size-following stage of a fetch that holds a clock gets its own bound, FetchTimeout unless
-// the request sets Bound (the repository cache's own first clone), and none starts past the one it
-// is in: from the cache, the verification of what was streamed has one, counted from the stream's
-// end, and the delta from GitHub has another; without a cache, the clone or fetch from GitHub has
-// one. The stream from the cache holds no clock: it ends when it falls below the low-speed bound
-// (CacheStreamLowSpeedBytes, CacheStreamLowSpeedTime) and otherwise runs as long as the repository
-// needs, so a download that is still receiving is never thrown away and begun again from nothing
-// (INFRA-495). So an issue pod's fetch ends its waits and its clocked stages within FetchBudget,
-// however long it waited on the cache, and a slow stream never leaves the verification or the
-// delta minutes to run in: nine of one deployment's issue pods died in the delta on 2026-10-26,
-// the stream and its verification having used most of the one bound they then shared
-// (sjawhar/legion#2235). The repository cache's first clone, which waits on nothing, may take its
-// whole CacheFetchTimeout, within FetchBudget too, and is no issue pod's. The few local git
-// commands around them (reading refs, writing the feed's configuration) keep CommandTimeout
-// each and take moments. Every attempt of a transfer from GitHub reads
-// the provisioning token anew as it starts (FetchRequest.Token, fetchCredential.renew), so it
-// presents the token as its file stands then, not as it stood when the fetch began. A transfer
-// from GitHub that fails transiently (transientCloneFailure) is run again after the next of
-// fetchBackoff's waits, once per wait, its failure logged and whatever a failed clone left removed
-// first, and no retry starts past the bound. A transfer still failing after the last wait, and
-// every other failure, is the answer at once. Each attempt's stderr has every token the fetch has
-// read replaced by *** as soon as the attempt returns, so nothing Fetch logs or returns carries
-// one, wherever git echoed it.
+// Each GitHub transfer gets FetchTimeout unless the request sets Bound (the repository cache's own
+// first clone), and none starts past the one it is in. The repository cache's first clone may take
+// the whole CacheFetchTimeout. The few local git commands around each transfer (reading refs and
+// writing the cache's configuration) keep CommandTimeout and take moments. Every attempt reads the
+// provisioning token anew as it starts (FetchRequest.Token, fetchCredential.renew), so it presents
+// the token as its file stands then, not as it stood when the fetch began. A transfer from GitHub
+// that fails transiently (transientCloneFailure) is run again after the next of fetchBackoff's
+// waits, once per wait, its failure logged and whatever a failed clone left removed first, and no
+// retry starts past the bound. A transfer still failing after the last wait, and every other
+// failure, is the answer at once. Each attempt's stderr has every token the fetch has read replaced
+// by *** as soon as the attempt returns, so nothing Fetch logs or returns carries one, wherever git
+// echoed it.
 //
-// A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text:
-// a read of the provisioning token that failed, a cache named without its token, the wait for the
-// cache, a request the cache refuses or does not answer, and a transfer or a ref listing from
-// GitHub that outsideVolumeFailure reads so, retried or not. The failures of what the cache
-// streamed do not: unpackEntry gives one error for a write to the volume that failed and for a
-// stream that broke, and a write that failed is the volume's, whatever the stream did. Nor does
-// verifyCache's failure, or any other failure.
+// A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text: a
+// read of the provisioning token that failed, or a transfer or ref listing from GitHub that
+// outsideVolumeFailure reads so, retried or not. Every other failure is the answer unchanged.
 func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, error) {
 	cache, err := CacheRepository(request.Root, request.Repo)
 	if err != nil {
@@ -312,9 +289,9 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	defer func() {
 		_ = rolefile.RemoveTree(staging)
 	}()
-	clone := feedTransfer{
+	clone := gitHubTransfer{
 		verb: "clone",
-		argv: slices.Concat(feedGit, []string{
+		argv: slices.Concat(isolatedGit, []string{
 			"-c", "gc.auto=0", "-c", "maintenance.auto=false",
 			"clone", "--bare", "--single-branch", "--no-tags", "--quiet", GitHubURL(request.Repo), staging,
 		}),
@@ -326,7 +303,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	if err := report.fromGitHub(ctx, run, request, clone, staging, held, deadline); err != nil {
 		return FetchReport{}, err
 	}
-	if err := settleFeed(ctx, run, staging, cache); err != nil {
+	if err := settleCache(ctx, run, staging, cache); err != nil {
 		return FetchReport{}, err
 	}
 	return report, credential.remove()
@@ -334,10 +311,10 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 
 // cacheFetchInto refreshes the one branch the cache retains. repocache narrows any pre-existing
 // foreign refs after this fetch and before it publishes the cache.
-func cacheFetchInto(cache string, repo ghrepo.Repository, target string) feedTransfer {
-	return feedTransfer{
+func cacheFetchInto(cache string, repo ghrepo.Repository, target string) gitHubTransfer {
+	return gitHubTransfer{
 		verb: "fetch",
-		argv: slices.Concat(feedGit, []string{
+		argv: slices.Concat(isolatedGit, []string{
 			"-c", "gc.auto=0", "-c", "maintenance.auto=false",
 			"--git-dir=" + cache, "fetch", "--no-tags", "--prune", "--quiet", GitHubURL(repo),
 			"+" + target + ":" + target,
@@ -346,14 +323,14 @@ func cacheFetchInto(cache string, repo ghrepo.Repository, target string) feedTra
 	}
 }
 
-// settleFeed writes the feed repository's own configuration into staging and moves it to feed,
-// once what fills it has succeeded, so the feed's repository is whole and current, or absent.
-func settleFeed(ctx context.Context, run Runner, staging, feed string) error {
-	if err := feedConfiguration(ctx, run, staging); err != nil {
+// settleCache writes the cache repository's own configuration into staging and moves it to cache,
+// once what fills it has succeeded, so the cache repository is whole and current, or absent.
+func settleCache(ctx context.Context, run Runner, staging, cache string) error {
+	if err := cacheConfiguration(ctx, run, staging); err != nil {
 		return err
 	}
-	if err := os.Rename(staging, feed); err != nil {
-		return fmt.Errorf("move the fetched repository into the feed at %s: %w", feed, err)
+	if err := os.Rename(staging, cache); err != nil {
+		return fmt.Errorf("move the fetched repository into the cache at %s: %w", cache, err)
 	}
 	return nil
 }
@@ -362,8 +339,8 @@ func settleFeed(ctx context.Context, run Runner, staging, feed string) error {
 // with Fetch's retries, all before deadline, and records how much the repository's objects grew
 // across it and how many refs it made, moved or deleted. A clone's gitDir holds no repository
 // before it runs: nothing, and no ref.
-func (r *FetchReport) fromGitHub(ctx context.Context, run Runner, request FetchRequest, transfer feedTransfer, gitDir string, held *fetchCredential, deadline time.Time) error {
-	refsBefore, err := feedRefs(ctx, run, gitDir, transfer.verb == "fetch")
+func (r *FetchReport) fromGitHub(ctx context.Context, run Runner, request FetchRequest, transfer gitHubTransfer, gitDir string, held *fetchCredential, deadline time.Time) error {
+	refsBefore, err := repositoryRefs(ctx, run, gitDir, transfer.verb == "fetch")
 	if err != nil {
 		return err
 	}
@@ -374,7 +351,7 @@ func (r *FetchReport) fromGitHub(ctx context.Context, run Runner, request FetchR
 	if _, err := transferWithRetries(ctx, run, request, transfer, held, deadline); err != nil {
 		return err
 	}
-	refsAfter, err := feedRefs(ctx, run, gitDir, true)
+	refsAfter, err := repositoryRefs(ctx, run, gitDir, true)
 	if err != nil {
 		return err
 	}
@@ -413,8 +390,8 @@ func remoteHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 // fetch's credential, retries and deadline; "" when GitHub names no HEAD. A HEAD that names
 // anything but a branch is the fetch's failure.
 func remoteRefs(ctx context.Context, run Runner, request FetchRequest, gitDir string, held *fetchCredential, deadline time.Time, patterns ...string) (string, map[string]string, error) {
-	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir, "ls-remote", "--symref", GitHubURL(request.Repo), "HEAD"}, patterns)
-	result, err := transferWithRetries(ctx, run, request, feedTransfer{verb: "ls-remote", argv: argv, dir: gitDir}, held, deadline)
+	argv := slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir, "ls-remote", "--symref", GitHubURL(request.Repo), "HEAD"}, patterns)
+	result, err := transferWithRetries(ctx, run, request, gitHubTransfer{verb: "ls-remote", argv: argv, dir: gitDir}, held, deadline)
 	if err != nil {
 		return "", nil, fmt.Errorf("read GitHub's default branch of %s: %w", request.Repo, err)
 	}
@@ -453,7 +430,7 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	if target == "" {
 		return nil
 	}
-	symbolicRef := slices.Concat(feedGit, []string{"--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"})
+	symbolicRef := slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"})
 	current, err := runCommandTimeout(ctx, run, symbolicRef, isolatedGitConfig, gitDir, run.Timeout())
 	if err := answered(symbolicRef, current, err); err != nil {
 		return err
@@ -473,9 +450,9 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	return nil
 }
 
-// feedRefs is every ref of the bare repository gitDir with the object it names, or none when held
-// is unset: a repository a clone is yet to make.
-func feedRefs(ctx context.Context, run Runner, gitDir string, held bool) (map[string]string, error) {
+// repositoryRefs is every ref of gitDir with the object it names, or none when held is unset: a
+// repository a clone is yet to make.
+func repositoryRefs(ctx context.Context, run Runner, gitDir string, held bool) (map[string]string, error) {
 	refs := map[string]string{}
 	if !held {
 		return refs, nil
@@ -682,12 +659,12 @@ func unpackCacheInto(ctx context.Context, run Runner, request CacheStream, stagi
 	return stream.read.Load(), nil
 }
 
-// verifyCache holds the history the cache streamed into staging to what a feed takes: every pack's
+// verifyCache holds the history the cache streamed into a clone's .git directory: every pack's
 // bytes must be the ones its checksum names, its index must carry its own checksum and name that
 // pack, and every object the refs reach must be there (`git fsck --connectivity-only`, which walks
 // the reachable commits and trees through the packs' indexes and reads no blob).
 //
-// A pack the cache streamed its index with (FeedEntry) is checked by the checksums git writes into
+// A pack the cache streamed with its index (CacheEntry) is checked by the checksums git writes into
 // both (packChecksums): the pack's own trailing hash over its bytes, the index's over its, and the
 // pack hash the index records, which must be the pack's. That catches a pack or an index a
 // transfer or a disk damaged, at a few seconds per gigabyte. It does not repeat `git index-pack`'s
@@ -706,8 +683,8 @@ func unpackCacheInto(ctx context.Context, run Runner, request CacheStream, stagi
 // 3.2 GB cache, 8 to 12 minutes in every issue pod, the verification nine of them ran out of their
 // bound in (sjawhar/legion#2235).
 //
-// A pack that arrived without its index is indexed here, as every pack was before: then the feed,
-// and not the cache, writes the index git reads. A pack that does not verify and a history that is
+// A pack that arrived without its index is indexed here, as every pack was before: the clone, and
+// not the cache, writes the index git reads. A pack that does not verify and a history that is
 // not whole are refused, naming what failed. Each git command runs within what remains before
 // deadline, the verification's own bound, counted from the stream's end (Fetch); one with nothing
 // left fails the fetch, naming the bound.
@@ -752,10 +729,11 @@ func verifyCache(ctx context.Context, run Runner, request CacheStream, staging s
 
 // objectHash is the hash function the repository at gitDir names its objects with, as git reports
 // it (`git rev-parse --show-object-format`). Every checksum a pack and its index carry is that
-// hash's, so its size is how those files end. Today it is always sha1: unpackCache makes the staging
-// repository with `git init --bare` under no configuration, and a feed refuses any object format but
-// sha1 (feedConfigKeys), so a SHA-256 cache is refused at its pack's checksum. The sha256 case is
-// for a git whose default format has changed, and reads the same file layout with 32-byte hashes.
+// hash's, so its size is how those files end. Today it is always sha1: unpackCache makes the
+// staging repository with `git init --bare` under no configuration, and the repository cache
+// refuses any object format but sha1 (cacheConfigKeys), so a SHA-256 cache is refused at its pack's
+// checksum. The sha256 case is for a git whose default format has changed, and reads the same file
+// layout with 32-byte hashes.
 func objectHash(ctx context.Context, run Runner, gitDir string) (func() hash.Hash, error) {
 	named, err := CacheGit(ctx, run, gitDir, "rev-parse", "--show-object-format")
 	if err != nil {
@@ -851,12 +829,12 @@ func remaining(clock Clock, deadline time.Time, whose string, bound time.Duratio
 	return left, nil
 }
 
-// unpackEntry writes one entry of the repository cache's tar into staging, refusing one a feed does
-// not take.
+// unpackEntry writes one entry of the repository cache's tar into a clone's .git directory,
+// refusing one the clone does not take.
 func unpackEntry(staging string, header *tar.Header, body io.Reader) error {
 	name := strings.TrimSuffix(header.Name, "/")
 	if !filepath.IsLocal(filepath.FromSlash(name)) || path.Clean(name) != name {
-		return fmt.Errorf("the repository cache's tar holds %q, which is not a path inside the feed", name)
+		return fmt.Errorf("the repository cache's tar holds %q, which is not a path inside the clone's git directory", name)
 	}
 	dir := header.Typeflag == tar.TypeDir
 	if !dir && header.Typeflag != tar.TypeReg {
@@ -952,24 +930,24 @@ func (r *countingReader) stalledBy(err error) error {
 // errStreamStalled is what a stream the low-speed bound ended says of itself, naming the bound.
 var errStreamStalled = fmt.Errorf("the repository cache delivered less than %d bytes in %s, the low-speed bound below which its stream is ended", CacheStreamLowSpeedBytes, CacheStreamLowSpeedTime)
 
-// feedTransfer is how Fetch brings the repository from GitHub: verb names each attempt in the
+// gitHubTransfer is how Fetch brings a repository from GitHub: verb names each attempt in the
 // log and in a failure, argv is the attempt, destination, for a clone, is the temporary
 // directory the attempt clones into, removed before a retry, and dir is the directory each
 // attempt runs in. That is never destination: transferWithRetries removes it between attempts,
 // and a child whose working directory has been removed cannot start.
-type feedTransfer struct {
+type gitHubTransfer struct {
 	verb        string
 	argv        []string
 	destination string
 	dir         string
 }
 
-// stageBeside is the temporary sibling of feed a feed that lacks the repository is filled in. A
-// sibling an earlier Fetch left — killed before it renamed or removed it — is removed first and
-// logged: only Fetch writes beside the feed's repository, and a killed clone of a large repository
-// left on a volume of fixed size would fill it.
-func stageBeside(feed string, log func(string)) (string, error) {
-	stale, err := filepath.Glob(feed + cloneSuffix + "*")
+// stageBeside is the temporary sibling of destination a clone that lacks the repository is filled
+// in. Fetch uses it for the repository cache, and ensureRepoClone uses it for an issue pod's clone.
+// A sibling an earlier attempt left — killed before it renamed or removed it — is removed first and
+// logged: a killed clone of a large repository left on a volume of fixed size would fill it.
+func stageBeside(destination string, log func(string)) (string, error) {
+	stale, err := filepath.Glob(destination + cloneSuffix + "*")
 	if err != nil {
 		return "", err
 	}
@@ -979,22 +957,21 @@ func stageBeside(feed string, log func(string)) (string, error) {
 		}
 		log("removed the clone an earlier fetch left at " + left)
 	}
-	staging, err := os.MkdirTemp(filepath.Dir(feed), filepath.Base(feed)+cloneSuffix)
+	staging, err := os.MkdirTemp(filepath.Dir(destination), filepath.Base(destination)+cloneSuffix)
 	if err != nil {
-		return "", fmt.Errorf("create the clone's temporary directory beside %s: %w", feed, err)
+		return "", fmt.Errorf("create the clone's temporary directory beside %s: %w", destination, err)
 	}
 	return staging, nil
 }
 
-// cloneSuffix follows the feed repository's name in the temporary directory it is filled in.
+// cloneSuffix follows the destination repository's name in the temporary directory it is filled in.
 const cloneSuffix = ".clone-"
 
-// feedConfiguration is what the feed repository's own configuration sets: no automatic garbage
+// cacheConfiguration is what the cache repository's own configuration sets: no automatic garbage
 // collection or maintenance, ever, and every fetch's objects kept as the pack they arrived in
-// (`fetch.unpackLimit=1`). An issue pod's clone reads the feed's objects through its alternates
-// (feedClone), so no maintenance may remove an object the clone borrows; it also keeps feed
-// refreshes predictable and preserves the repository cache's pack-only stream.
-func feedConfiguration(ctx context.Context, run Runner, gitDir string) error {
+// (`fetch.unpackLimit=1`). It keeps cache refreshes predictable and preserves the repository
+// cache's pack-only stream.
+func cacheConfiguration(ctx context.Context, run Runner, gitDir string) error {
 	for _, pair := range [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}, {"fetch.unpackLimit", "1"}} {
 		if _, err := CacheGit(ctx, run, gitDir, "config", pair[0], pair[1]); err != nil {
 			return err
@@ -1003,21 +980,20 @@ func feedConfiguration(ctx context.Context, run Runner, gitDir string) error {
 	return nil
 }
 
-// CacheGit runs git on the bare repository gitDir — a feed's, or the repository cache's — under
-// the runner's slow-command budget, holding no credential and reading no configuration but that
-// repository's own and the pack settings feedGit names: what reads or tends such a repository
-// outside Fetch's transfer. It runs in gitDir itself, which is there whenever something reads or
-// tends it, so no caller has to name a directory and no child of this package's takes the one the
-// process happens to run in.
+// CacheGit runs git on gitDir — the repository cache's bare repository or an issue pod clone's
+// .git — under the runner's slow-command budget, holding no credential and reading no configuration
+// but that repository's own and the pack settings isolatedGit names. It runs in gitDir itself,
+// which is there whenever something reads or tends it, so no caller has to name a directory and no
+// child of this package's takes the one the process happens to run in.
 func CacheGit(ctx context.Context, run Runner, gitDir string, args ...string) (Result, error) {
-	return RunChecked(ctx, run, slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args), isolatedGitConfig, gitDir)
+	return RunChecked(ctx, run, slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir}, args), isolatedGitConfig, gitDir)
 }
 
-// CacheGitWithin is FeedGit bounded by timeout instead of the runner's slow-command budget: for a
+// CacheGitWithin is CacheGit bounded by timeout instead of the runner's slow-command budget: for a
 // command on such a repository whose duration follows the repository's size, as the cache's repack
-// does. A `-c` among args comes after feedGit's, so it wins over them for its key.
+// does. A `-c` among args comes after isolatedGit's, so it wins over them for its key.
 func CacheGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, args ...string) (Result, error) {
-	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args)
+	argv := slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir}, args)
 	result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, gitDir, timeout)
 	return checkedResult(argv, result, err)
 }
@@ -1026,7 +1002,7 @@ func CacheGitWithin(ctx context.Context, run Runner, gitDir string, timeout time
 // a transient failure as Fetch says, each attempt bounded by what remains before deadline and run
 // on the provisioning token as it stands when the attempt starts (renew). It answers the attempt
 // that succeeded.
-func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, transfer feedTransfer, held *fetchCredential, deadline time.Time) (Result, error) {
+func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, transfer gitHubTransfer, held *fetchCredential, deadline time.Time) (Result, error) {
 	now := request.Clock.Now()
 	if _, err := remaining(request.Clock, deadline, "fetch's", request.bound(), "the "+transfer.verb+" from GitHub"); err != nil {
 		return Result{}, err
@@ -1212,9 +1188,9 @@ var gitHubRefusals = []string{"Authentication failed", "Repository not found"}
 //
 // Every other cause line is not outside the volume: curl 23 is a write to the volume that failed,
 // and curl 60 is a certificate that does not verify. Nor is a credential git could not read
-// (`could not read Username`), an object the feed lacks (`fatal: bad object`), or any other
-// failure. transientCloneFailure keeps its own rule, which tells which failures the fetch runs
-// again.
+// (`could not read Username`), an object the repository cache lacks (`fatal: bad object`), or any
+// other failure. transientCloneFailure keeps its own rule, which tells which failures the fetch
+// runs again.
 func outsideVolumeFailure(result Result) bool {
 	if result.TimedOut {
 		return true

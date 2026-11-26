@@ -8223,8 +8223,8 @@ An agent that resumes on a kept volume is told `LEGION_WORKSPACE_RECREATED=false
 **What an agent plants.**
 On a kept volume, what an agent plants reaches the issue's next pod and its agents.
 A file that an agent writes on the volume is there for each later pod of the issue, and so is configuration that starts a program ([A shell on an issue's disk](#a-shell-on-an-issues-disk)).
-The provisioning token still reaches no plant.
-Nothing that a plant makes the next pod run reads the token, no host that a plant names receives it, and no file on the volume holds it ([Trust model: the provisioning token](#trust-model-the-provisioning-token)).
+A plant can reach the provisioning token on a kept volume: the next pod's `workspace-init` holds the token and runs git in the clone that the earlier pods' agents wrote, so a plant in the clone's git configuration (an `http.proxy`, say) sees the token on its way to GitHub.
+No hook and no git maintenance runs there, whatever the clone's configuration says, and git reaches a remote over https alone ([Trust model: the provisioning token](#trust-model-the-provisioning-token)).
 On an ephemeral volume, nothing that an agent plants reaches the next pod.
 
 **Rolling back.**
@@ -8988,11 +8988,14 @@ Expect the daemon's warning `supervise: process died`, with the dead process's `
 
 The provisioning token is the implement App's installation token narrowed to reading — contents, metadata, pull requests, issues, Actions, checks, commit statuses and attestations at read (`readPermissions`, `internal/appauth/permissions.go`, and `ReadToken`, `internal/appauth/appauth.go`) — nothing a clone, a fetch or a repository cache could write with.
 It is minted naming no repository, so it reaches every repository of the owner's installation and a plant that reaches it reads every one of them; what it still cannot do there is push, open or merge a pull request, or change a repository or its settings.
-The narrowing makes that risk smaller and does not end it, and every agent of an issue can write the issue's volume
+The narrowing makes that risk smaller and does not end it.
+Every agent of an issue can write the issue's volume
 — its own issue's alone, since no other issue's pod mounts it:
 the clone's hooks, its git and jj configuration (a legacy `.jj/workspace-config.toml`, which jj would migrate into what it reads, included), its remote URL, its `http.proxy`.
-git and jj obey all of it — they run hooks, the git jj is told to run, working-copy filters and `ext::` transports, and send credentials through the proxy the configuration names
-— so the provisioning clone, which runs with that token before any role of the issue exists, happens in no process whose git or jj an agent's plant can reach.
+`workspace-init` holds the token and runs git and jj in that clone: on a new ephemeral volume before any role of the issue exists, and on a kept volume, or when the kubelet runs the pod's init container again after the pod's sandbox was lost, after the issue's agents have run.
+Its pins hold whatever the clone's configuration says: no hook runs, no git maintenance starts, git reaches a remote over https alone, and no jj configuration an agent writes reaches it (below).
+The clone's other git configuration, an `http.proxy` among it, applies to its fetch from GitHub, so a plant there can see the token.
+Keeping the provisioning token from the issue's own agents is not one of Legion's goals: the token reads what the implement App's own lease, which the issue's implement roles hold, already reads and writes.
 
 The daemon mints it with `ReadToken` (`implementTokens`, `internal/daemon/kubernetes.go`), and the three places that mint one — an issue pod's provisioning as the daemon makes the pod (`issuePod.provision`), the gh refresher's minute and the repository cache's Secret — share that one source.
 An installation that refuses the reading lease — GitHub answers 422 to a token request for a permission the installation is not granted, and mints nothing rather than leaving it out; the permissions the request names are what the installation was granted a moment before, so a refusal here is a grant that changed between the two calls — fails the mint, in key mode as in token mode, and no wider token is minted in its place.
@@ -9021,11 +9024,9 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with one init co
 
   The container reads the provisioning token for its GitHub transfer, and the gh refresher updates each live pod's provisioning Secret to the current lease.
   A failed provision is retried only by the kubelet's three-restart grace.
-  Provisioning runs no git or jj configuration an agent can plant before it starts.
+  Provisioning runs no hook and starts no git maintenance, whatever the clone's configuration says, and the clone's other git configuration applies to its fetch, as above.
 
-`packages/daemon/internal/runtime/sandbox/boundary_test.go` runs `workspace-init` exactly as the
-manifest states it against such plants, with every one of provisioning's git and jj pins made
-ineffective.
+`packages/daemon/internal/runtime/sandbox/boundary_test.go` runs `workspace-init` exactly as the manifest states it, on an ephemeral volume and on a kept one.
 
 No jj configuration an agent writes ahead of a command reaches provisioning's jj either:
 jj 0.38 and later keep a repository's and a workspace's configuration in the config home (the pod's own, in-memory and empty at every start), and the one way a file on the volume becomes jj configuration, jj migrating a legacy `.jj/workspace-config.toml` or `.jj/repo/config.toml` that has no id file beside it, is closed by removing that file before each jj command provisioning runs (`disarmLegacyConfig`, `internal/workspace/config.go`).
@@ -9035,7 +9036,7 @@ when it runs in a workspace that has no `.jj`;
 and when the workspace's `.jj/repo` names any other directory, followed through symlinks and `..` as jj itself follows it, is neither a directory nor a regular file, is a symlink to a regular file, or is a file larger than 4,096 bytes (`guardWorkspace`, the same file).
 The worker image's jj is 0.46; on the tmux runtime, which runs the host's jj through the same code, the daemon refuses to start with a jj older than 0.38 (`resolveTools`, naming `LEGION_JJ_PATH`), since before 0.38 `.jj/repo/config.toml` is the repository's live configuration.
 
-The boundary above protects the provisioning token alone.
+The rules above concern the provisioning token alone.
 Since LEGION-631 each role holds its own App's tokens in the gh bundle its `LEGION_GH_OWNERS_DIR` names, which only its own namespaces bind ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
 an implement role (the implementer, the merger) holds the implement App's tokens, and a review role (the architect, planner, tester, reviewer) the review App's.
 Every directory of the bundle holds that owner's installation lease at the role's own permissions: the implement App's write set, or the review App's review set.

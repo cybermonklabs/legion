@@ -12,7 +12,7 @@ func CacheGitStdin(ctx context.Context, run Runner, gitDir, stdin string, args .
 	if run == nil {
 		return Result{}, errors.New("workspace runner is required")
 	}
-	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args)
+	argv := slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir}, args)
 	result, err := run.Run(ctx, Command{Argv: argv, Env: isolatedGitConfig, Dir: gitDir, Stdin: stdin, Timeout: run.Timeout()})
 	return checkedResult(argv, result, err)
 }

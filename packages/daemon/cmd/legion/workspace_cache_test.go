@@ -126,9 +126,9 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 		},
 		{
 			name: "an unknown flag",
-			args: func(v *issueVolume) []string { return append(v.cacheArgs(), "--feed", v.root) },
+			args: func(v *issueVolume) []string { return append(v.cacheArgs(), "--unused-option", v.root) },
 			code: 2,
-			says: func(*issueVolume) string { return "-feed" },
+			says: func(*issueVolume) string { return "-unused-option" },
 		},
 		{
 			name: "a positional argument",

@@ -39,11 +39,11 @@ const winitHelper = workspace.GitHubCredentialHelper
 
 // fakeJJ is the jj first on the issue volume's PATH. It records every invocation as one line,
 // "<WINIT_TAG> <argv>" without the runner's leading --config pin, and runs the real jj with that
-// pin — with WINIT_HOLD set, the `jj git init --colocate` that makes the shared clone (cloned from
-// the pod's feed just before) opens the directory's `release` fifo, writes its pid to its `held`
-// fifo, waits on `release` until the test closes its end there, and exits without initializing. A
-// fresh provisioning's first jj command is that init, so a process held there is mid-provisioning.
-// WINIT_HOLD is empty for every other case, which therefore holds nowhere.
+// pin — with WINIT_HOLD set, the `jj git init --colocate` that completes the directly filled clone
+// opens the directory's `release` fifo, writes its pid to its `held` fifo, waits on `release` until
+// the test closes its end there, and exits without initializing. A fresh provisioning's first jj
+// command is that init, so a process held there is mid-provisioning. WINIT_HOLD is empty for every
+// other case, which therefore holds nowhere.
 const fakeJJ = `#!/bin/sh
 pin=
 case "$1" in --config=*) pin=$1; shift ;; esac
@@ -442,9 +442,8 @@ func (v *issueVolume) gitInput(t *testing.T, input string, args ...string) strin
 
 // commitAddingAFile commits name, holding content, onto parent's tree in the repository whose git
 // directory is gitDir, and points ref at that commit. It runs git plumbing alone and writes no
-// working copy: a pod's shared clone is cloned with --no-checkout and its sparse patterns cleared
-// (workspace.feedClone), so it has no working tree to write a file into and a jj snapshot of it
-// would record none.
+// working copy: an issue pod's clone has its sparse patterns cleared (workspace.issuePodClone), so
+// it has no working tree to write a file into and a jj snapshot of it would record none.
 func (v *issueVolume) commitAddingAFile(t *testing.T, gitDir, parent, ref, name, content string) {
 	t.Helper()
 	dir := "--git-dir=" + gitDir
@@ -621,16 +620,16 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 	}
 }
 
-// A fresh issue volume, provisioned from the feed `fetch` filled: the issue's clone, its origin
-// still GitHub's and marked as gh's default repository (`remote.origin.gh-resolved base`), and the
-// issue's jj workspace on its bookmark, the clone's credential helper the one named, no gh shim
-// and no tmux pane's `legion` launcher on the volume (a pod's PATH names the image's gh and
-// legion, and its credential is the gh files its role Secret projects), one log
-// line naming the workspace, and no sessions directory: no container of the pod mounts one, every
-// session being a row in the database the deployment names (INFRA-80). The permanent
-// guard on the pod path: a recording `codegraph` stub is first on PATH throughout, and this
-// container must never call it (#1647) — only a synchronous warm-up regressing back onto the init
-// container's launch path would.
+// A fresh issue volume is provisioned by filling the issue's clone directly from GitHub or the
+// repository cache: its origin is still GitHub's and marked as gh's default repository
+// (`remote.origin.gh-resolved base`), and its jj workspace is on its bookmark. The clone has the
+// named credential helper, no gh shim and no tmux pane's `legion` launcher on the volume (a pod's
+// PATH names the image's gh and legion, and its credential is the gh files its role Secret
+// projects), one log line naming the workspace, and no sessions directory: no container of the pod
+// mounts one, every session being a row in the database the deployment names (INFRA-80). The
+// permanent guard on the pod path: a recording `codegraph` stub is first on PATH throughout, and
+// this container must never call it (#1647) — only a synchronous warm-up regressing back onto the
+// init container's launch path would.
 func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
@@ -1080,13 +1079,13 @@ func (p *initProcess) wait(t *testing.T) (code int, rest []string) {
 	return p.cmd.ProcessState.ExitCode(), rest
 }
 
-// holder fills the feed, starts `provision` for LEGION-42, and returns once it is held inside its
-// first jj command, the shared clone's init (fakeJJ's WINIT_HOLD), where it stays until the test ends. That jj
-// leads a process group of its own (procgroup.Configure), which no kill of workspace-init reaches,
-// so the test holds the one writing end of the jj's `release` fifo (O_RDWR opens a fifo without
-// waiting for a reader) and the hold ends when that end closes: in holder's cleanup, which runs
-// once start's has ended workspace-init and waits, where /proc shows it, until the jj has exited;
-// or as the kernel closes it, when the test binary dies first.
+// holder starts `provision` for LEGION-42 and returns once it is held inside its first jj command,
+// the shared clone's init (fakeJJ's WINIT_HOLD), where it stays until the test ends. That jj leads a
+// process group of its own (procgroup.Configure), which no kill of workspace-init reaches, so the
+// test holds the one writing end of the jj's `release` fifo (O_RDWR opens a fifo without waiting for
+// a reader) and the hold ends when that end closes: in holder's cleanup, which runs once start's has
+// ended workspace-init and waits, where /proc shows it, until the jj has exited; or as the kernel
+// closes it, when the test binary dies first.
 func (v *issueVolume) holder(t *testing.T) *initProcess {
 	t.Helper()
 	v.provisionEnv(t)
@@ -1309,6 +1308,7 @@ func TestWorkspaceInitProvisionKeepsOnlyTheIssueRefs(t *testing.T) {
 	}
 	if want := []string{
 		"refs/heads/legion/LEGION-42", "refs/heads/main",
+		"refs/remotes/origin/HEAD",
 		"refs/remotes/origin/legion/LEGION-42", "refs/remotes/origin/legion/LEGION-42.task",
 		"refs/remotes/origin/main",
 	}; !slices.Equal(refs, want) {
@@ -1503,5 +1503,39 @@ func TestWorkspaceInitProvisionTracksTheRecordedDefaultAfterGitHubChangesHead(t 
 	}
 	if tracked := v.jj(t, "bookmark", "list", "--tracked", "exact:release", "-T", `name ++ "@" ++ remote ++ "\n"`, "--ignore-working-copy", "-R", v.clone()); !strings.Contains(tracked, "release@origin") {
 		t.Fatalf("tracked release bookmarks %q, want release@origin", tracked)
+	}
+}
+
+// A clone the fill makes leaves origin/HEAD naming GitHub's default branch, as a clone from GitHub
+// does, so jj's trunk() resolves to that branch's tip when it is named neither main nor master nor
+// trunk. Without origin/HEAD, `jj git init --colocate` sets no trunk() alias and trunk() is the
+// root commit.
+func TestWorkspaceInitProvisionSetsTrunkToTheDefaultBranch(t *testing.T) {
+	v := newIssueVolume(t).withRemote(t, "develop")
+	remote := v.env["WINIT_REMOTE"]
+	develop := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/develop")
+	v.provisionEnv(t)
+
+	code, _, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if head := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "symbolic-ref", "refs/remotes/origin/HEAD"); head != "refs/remotes/origin/develop" {
+		t.Fatalf("origin/HEAD names %q, want refs/remotes/origin/develop", head)
+	}
+	// jj keeps the repository's own configuration, the trunk() alias its init writes among it, in
+	// the config home the provision ran with, so the read takes the provision's environment.
+	command := exec.Command(v.realJJ, "log", "-r", "trunk()", "--no-graph", "-T", "commit_id", "--ignore-working-copy", "-R", v.clone())
+	command.Dir = v.root
+	command.Env = fixtureenv.Isolated(t.TempDir())
+	for name, value := range v.env {
+		command.Env = append(command.Env, name+"="+value)
+	}
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("jj log -r trunk(): %v", err)
+	}
+	if trunk := strings.TrimSpace(string(output)); trunk != develop {
+		t.Fatalf("trunk() is %s, want develop's tip %s", trunk, develop)
 	}
 }

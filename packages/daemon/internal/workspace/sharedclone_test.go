@@ -156,12 +156,12 @@ var packWindows = [][2]string{
 
 // The shared clone's own configuration carries the four pack settings, for the one git of a pod
 // that reads nothing else: the shared public leak check's, which every push runs with every
-// GIT_CONFIG variable removed and GIT_CONFIG_NOSYSTEM set. After a provision from a feed, as
-// `workspace-init provision` does in a pod, a git in the issue's workspace under such an
-// environment (the fixtures': no GIT_CONFIG variable, GIT_CONFIG_NOSYSTEM=1,
-// GIT_CONFIG_GLOBAL=/dev/null) reads each of them from the local scope, the clone's own file. A
-// value a role changed there is set back at the next provision. The feed holds none of them,
-// since Fetch would refuse a feed whose configuration did (feedConfigKeys).
+// GIT_CONFIG variable removed and GIT_CONFIG_NOSYSTEM set. After `workspace-init provision` fills a
+// pod's clone directly, a git in the issue's workspace under such an environment (the fixtures': no
+// GIT_CONFIG variable, GIT_CONFIG_NOSYSTEM=1, GIT_CONFIG_GLOBAL=/dev/null) reads each of them from
+// the local scope, the clone's own file. A value a role changed there is set back at the next
+// provision. The repository cache holds none of them: Fetch rebuilds a cache whose configuration
+// does (cacheConfigKeys).
 func TestTheSharedCloneMapsPacksInSmallWindows(t *testing.T) {
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
@@ -296,12 +296,13 @@ func gitConfigRead(t *testing.T, dir string, args ...string) (string, int) {
 }
 
 // Every provision marks origin as gh's default repository in the shared clone
-// (configureCloneDefaultRepository), on both runtimes' paths: from GitHub, as the tmux daemon
-// does, and from a pod's feed, as `workspace-init provision` does, whose first provision
-// TestProvisionFromAFeedMarksOriginAndTurnsOffTheAmbiguousRefWarningLeavingTheFeedAlone reads.
-// The clone and the issue's workspace each read one gh-resolved line, `remote.origin.gh-resolved
-// base`. A clone that already holds a marker, here the one `gh repo fork --remote` leaves on the
-// remote it renames origin to, keeps it at its next provision and gets no origin line beside it.
+// (configureCloneDefaultRepository). This test covers the tmux runtime's GitHub path. The issue
+// pod's directly filled clone gets the same marker, as
+// TestWorkspaceInitProvisionsTheIssueWorkspace in cmd/legion/workspace_init_test.go proves. The
+// clone and the issue's workspace each read one gh-resolved line,
+// `remote.origin.gh-resolved base`. A clone that already holds a marker, here the one `gh repo fork
+// --remote` leaves on the remote it renames origin to, keeps it at its next provision and gets no
+// origin line beside it.
 func TestProvisionMarksOriginAsGhsDefaultRepository(t *testing.T) {
 	// readsOnly fails the test unless the shared clone and the issue's workspace each print the
 	// one line want from `git config --get-regexp '^remote\..*\.gh-resolved$'`, the read gh makes

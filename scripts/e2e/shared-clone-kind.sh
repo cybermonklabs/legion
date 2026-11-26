@@ -175,7 +175,14 @@ pass
 container=roles
 in_pod() { kind_k -n legion exec "$pod" -c "$container" -- "$@"; }
 clone=/legion/repos/github.com/$repo
-default_refs=$(printf 'refs/heads/master\nrefs/remotes/origin/master')
+# expected_refs <pod>: the refs the pod's clone holds outside refs/jj/: its issue's own bookmark,
+# which the workspace's creation exports to git (CLONE-1 in the first pod, CLONE-2 in the second),
+# the default branch, and origin's HEAD and default branch, in for-each-ref's order.
+expected_refs() {
+  local issue=CLONE-1
+  [ "$1" = "$second" ] && issue=CLONE-2
+  printf 'refs/heads/legion/%s\nrefs/heads/master\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/master' "$issue"
+}
 
 refs_in_clone() {
   local proof_pod=${1:-$pod} refs
@@ -215,7 +222,8 @@ pass
 begin refs
 for proof_pod in "$pod" "$second"; do
   refs=$(refs_in_clone "$proof_pod")
-  [ "$refs" = "$default_refs" ] || fail "pod $proof_pod's clone refs are $(printf %q "$refs"), want $(printf %q "$default_refs")"
+  want=$(expected_refs "$proof_pod")
+  [ "$refs" = "$want" ] || fail "pod $proof_pod's clone refs are $(printf %q "$refs"), want $(printf %q "$want")"
   note "pod $proof_pod git -C $clone for-each-ref outside refs/jj/: $(tr '\n' ' ' <<<"$refs")"
 done
 pass
@@ -273,7 +281,8 @@ git_fetch=$(role_exec git -C "$clone" fetch 2>&1) ||
 jj_fetch=$(role_exec sh -c "cd \"$clone\" && jj git fetch" 2>&1) ||
   fail "plain jj git fetch as role $role: $jj_fetch"
 plain_refs=$(refs_in_clone)
-[ "$plain_refs" = "$default_refs" ] || fail "the clone refs after plain fetch are $(printf %q "$plain_refs"), want $(printf %q "$default_refs")"
+want=$(expected_refs "$pod")
+[ "$plain_refs" = "$want" ] || fail "the clone refs after plain fetch are $(printf %q "$plain_refs"), want $(printf %q "$want")"
 note "plain git fetch: $(tr '\n' ' ' <<<"$git_fetch")"
 note "plain jj git fetch: $(tr '\n' ' ' <<<"$jj_fetch")"
 note "refs after plain fetch: $(tr '\n' ' ' <<<"$plain_refs")"
@@ -316,7 +325,9 @@ cache_refs=$(kind_k -n legion exec "$cache_sandbox" -c cache -- git --git-dir="$
   fail "list cache refs: $cache_refs"
 [ "$cache_refs" = refs/heads/master ] || fail "cache refs are $(printf %q "$cache_refs"), want refs/heads/master alone"
 # shellcheck disable=SC2016 # expanded by the cache pod's shell
-index_objects=$(kind_k -n legion exec "$cache_sandbox" -c cache -- sh -c 'tmp=$(mktemp) || exit; trap "rm -f \"$tmp\"" EXIT; for index in "$1"/objects/pack/*.idx; do [ -e "$index" ] || continue; git show-index < "$index" > "$tmp" || exit; cut -d" " -f2 < "$tmp" || exit; done' sh "$cache_clone") ||
+# `git show-index` runs inside the cache's repository (--git-dir), which names the object format:
+# the image's git segfaults (exit 139) reading an index outside any repository.
+index_objects=$(kind_k -n legion exec "$cache_sandbox" -c cache -- sh -c 'tmp=$(mktemp) || exit; trap "rm -f \"$tmp\"" EXIT; for index in "$1"/objects/pack/*.idx; do [ -e "$index" ] || continue; git --git-dir="$1" show-index < "$index" > "$tmp" || exit; cut -d" " -f2 < "$tmp" || exit; done' sh "$cache_clone") ||
   fail "list cache pack indexes: $index_objects"
 [ -n "$index_objects" ] || fail "cache $cache_sandbox has no pack index under $cache_clone/objects/pack"
 # shellcheck disable=SC2016 # expanded by the cache pod's shell
