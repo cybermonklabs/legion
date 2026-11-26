@@ -175,17 +175,18 @@ jobs:
         # passing them on the window's shape alone (storetest.XidRequireGapsEnv).
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
-      # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
-      # backend's rows run that backend's own code: the store forms against the GCP fake and the
-      # in-process AWS store (onEachStore) and the use chain against a broker whose settings name
-      # each store, each row that runs the command reading the injection line that names its
-      # store's kind (source.withSettings), all in ./cmd/cipher/; and GET /v1/settings
-      # answering each store's own key field beside the Google exchange audience, in
-      # ./internal/cipher/api/. This step runs only those tests in only those two packages (-run,
-      # under backend-count.sh's own 5-minute -timeout, which the budget above counts) and counts
-      # the passes of each, so a test whose AWS half was skipped or removed, or that lives in
-      # neither package, reads aws=0 and fails, as the verification's check c8 requires. It is
-      # their one run: the unit step skips them by name.
+      # Each named test runs once on each store the registry holds as its `aws`, `gcp` and
+      # `memory` subtests, and each store's rows run that store's own code: the store forms
+      # against the GCP fake, the in-process AWS store and a memory secrets file (onEachStore)
+      # and the use chain against a broker whose settings name each store, each row that runs the
+      # command reading the injection line that names its store's kind (source.withSettings), all
+      # in ./cmd/cipher/; and GET /v1/settings answering each store's own fields beside the Google
+      # exchange audience, in ./internal/cipher/api/. This step runs only those tests in only
+      # those two packages (-run, under backend-count.sh's own 5-minute -timeout, which the budget
+      # above counts) and counts the passes of each on every store the registry's files name, so a
+      # test whose half on one store was skipped or removed, or that lives in neither package,
+      # reads 0 there and fails, as the verification's check c8 requires. It is their one run: the
+      # unit step skips them by name.
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/cipher/ ./internal/cipher/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # The unit step below runs the module through the one skip counter of its database-backed

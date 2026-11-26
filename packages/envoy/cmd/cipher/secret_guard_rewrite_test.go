@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -20,7 +21,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/smithy-go"
-	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
@@ -30,8 +30,8 @@ import (
 )
 
 // TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds: a removal retag whose second write, the
-// requesters rewrite, IAM refuses (refusingTags: a definite refusal, so the store did not act) says
-// what the requesters tag holds now, which is what it held before.
+// requesters rewrite, the store refuses as access denied (refuseTagWrite: a definite refusal, so
+// the store did not act) says what the requesters tag holds now, which is what it held before.
 // Where the guard was leaving the tag (the last project tag removed), it still holds the guard,
 // which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads.
 // Where the guard was joining it (a secret that keeps a dispatch-project tag written without the
@@ -67,21 +67,20 @@ func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			secret := awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
-			secret.Tags[policy.TagRequesters] = c.held
-			for k, v := range c.tags {
-				secret.Tags[k] = v
-			}
-			local := awstest.NewLocal(secret)
-			startSecretBroker(t, servedBy(local))
-			awstest.Use(t, refusingTags{local}, testAccount, adaSignIn)
-			_, stderr, code := runSecret(append([]string{"retag", "API_KEY"}, strings.Fields(c.args)...)...)
-			if code != 1 || !strings.Contains(stderr, "the removal stands") {
-				t.Fatalf("retag %s with the rewrite refused: exit %d stderr %q; want exit 1 and the removal standing", c.args, code, stderr)
-			}
-			if !strings.Contains(stderr, c.want) || strings.Contains(stderr, c.notWant) {
-				t.Fatalf("retag %s with the rewrite refused said %q; want it to say %q and not %q", c.args, stderr, c.want, c.notWant)
-			}
+			onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+				tags := ownerTier("ada@example.com", policy.TierHuman)
+				tags[policy.TagRequesters] = c.held
+				maps.Copy(tags, c.tags)
+				store.put(t, "API_KEY", tags, "v1")
+				store.refuseTagWrite(2)
+				_, stderr, code := runSecret(append([]string{"retag", "API_KEY"}, strings.Fields(c.args)...)...)
+				if code != 1 || !strings.Contains(stderr, "the removal stands") {
+					t.Fatalf("retag %s with the rewrite refused: exit %d stderr %q; want exit 1 and the removal standing", c.args, code, stderr)
+				}
+				if !strings.Contains(stderr, c.want) || strings.Contains(stderr, c.notWant) {
+					t.Fatalf("retag %s with the rewrite refused said %q; want it to say %q and not %q", c.args, stderr, c.want, c.notWant)
+				}
+			})
 		})
 	}
 }
@@ -564,7 +563,7 @@ func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T)
 	settings := gcpTestSettings()
 	broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 	id := testGCPPrefix + "api-key"
-	annotations := awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags
+	annotations := policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags
 	annotations[policy.TagRequesters] = "ada@example.com"
 	annotations[policy.TagProject] = "PRIV"
 	annotations[policy.TagMaxGrant] = "1h"
@@ -661,8 +660,10 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 	const retagIfNot = "read the tags as they now stand with `agent-secrets secret show API_KEY`, and run this retag again if they do not hold its change"
 	const notAsked = "could not be asked to reread API_KEY"
 	for _, c := range []struct {
-		name             string
-		lose             string
+		name string
+		// loseAt is the tag write of the retag whose answer is lost: a removal retag's removal is
+		// its first, its requesters rewrite its second; a set retag makes one.
+		loseAt           int
 		unlisted         bool
 		rereadFails      bool
 		removalStands    bool
@@ -671,117 +672,90 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 		removed          bool
 	}{
 		{
-			name: "the requesters rewrite's answer was lost", lose: "tag", args: []string{"--max-grant", "none"},
+			name: "the requesters rewrite's answer was lost", loseAt: 2, args: []string{"--max-grant", "none"},
 			want:       []string{"leaves open whether this write landed", "the removal stands, but whether API_KEY's requesters were written as " + `"` + rewrite + `"` + " is unknown"},
 			requesters: rewrite, tier: policy.TierHuman, removed: true,
 		},
 		{
-			name: "the removal's answer was lost", lose: "untag", args: []string{"--max-grant", "none"},
+			name: "the removal's answer was lost", loseAt: 1, args: []string{"--max-grant", "none"},
 			want:       []string{"leaves open whether this write landed", "whether the removal landed is unknown, so its second write, API_KEY's requesters as " + `"` + rewrite + `"` + ", was not made"},
 			requesters: "ada@example.com", tier: policy.TierHuman, removed: true,
 		},
 		{
-			name: "the answer to a removal with no second write was lost", lose: "untag", unlisted: true, args: []string{"--max-grant", "none"},
+			name: "the answer to a removal with no second write was lost", loseAt: 1, unlisted: true, args: []string{"--max-grant", "none"},
 			want:       []string{"leaves open whether this write landed", retagIfNot},
 			requesters: "", tier: policy.TierHuman, removed: true,
 		},
 		{
-			name: "a set retag's answer was lost", lose: "tag", args: []string{"--tier", policy.TierAgent},
+			name: "a set retag's answer was lost", loseAt: 1, args: []string{"--tier", policy.TierAgent},
 			want:       []string{"leaves open whether this write landed", retagIfNot},
 			requesters: rewrite, tier: policy.TierAgent, removed: false,
 		},
 		{
-			name: "the removal's answer was lost and the reread refused", lose: "untag", rereadFails: true, args: []string{"--max-grant", "none"},
+			name: "the removal's answer was lost and the reread refused", loseAt: 1, rereadFails: true, args: []string{"--max-grant", "none"},
 			want:       []string{"leaves open whether this write landed", "whether the removal landed is unknown", notAsked},
 			requesters: "ada@example.com", tier: policy.TierHuman, removed: true,
 		},
 		{
-			name: "the requesters rewrite's answer was lost and the reread refused", lose: "tag", rereadFails: true, removalStands: true, args: []string{"--max-grant", "none"},
+			name: "the requesters rewrite's answer was lost and the reread refused", loseAt: 2, rereadFails: true, removalStands: true, args: []string{"--max-grant", "none"},
 			want:       []string{"leaves open whether this write landed", "the removal stands, but whether API_KEY's requesters were written as " + `"` + rewrite + `"` + " is unknown", notAsked},
 			requesters: rewrite, tier: policy.TierHuman, removed: true,
 		},
 		{
-			name: "a set retag's answer was lost and the reread refused", lose: "tag", rereadFails: true, args: []string{"--tier", policy.TierAgent},
+			name: "a set retag's answer was lost and the reread refused", loseAt: 1, rereadFails: true, args: []string{"--tier", policy.TierAgent},
 			want:       []string{"leaves open whether this write landed", retagIfNot, notAsked},
 			requesters: rewrite, tier: policy.TierAgent, removed: false,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			secret := awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
-			if !c.unlisted {
-				secret.Tags[policy.TagRequesters] = "ada@example.com"
-				secret.Tags[policy.TagProject] = "PRIV"
-			}
-			secret.Tags[policy.TagMaxGrant] = "1h"
-			local := awstest.NewLocal(secret)
-			broker := startSecretBroker(t, servedBy(local))
-			if c.rereadFails {
-				broker.failRereads(http.StatusServiceUnavailable)
-			}
-			awstest.Use(t, &raceOnTag{WriterAPI: local, loseAnswer: c.lose}, testAccount, adaSignIn)
-			_, stderr, code := runSecret(append([]string{"retag", "API_KEY"}, c.args...)...)
-			if code != 1 {
-				t.Fatalf("%s: exit %d stderr %q; want 1", c.name, code, stderr)
-			}
-			for _, said := range c.want {
-				if !strings.Contains(stderr, said) {
-					t.Fatalf("%s: stderr %q does not say %q", c.name, stderr, said)
+			onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+				tags := ownerTier("ada@example.com", policy.TierHuman)
+				if !c.unlisted {
+					tags[policy.TagRequesters] = "ada@example.com"
+					tags[policy.TagProject] = "PRIV"
 				}
-			}
-			for _, claim := range notGuessed {
-				if strings.Contains(stderr, claim) {
-					t.Fatalf("%s: stderr %q claims %q, which the retag cannot know", c.name, stderr, claim)
+				tags[policy.TagMaxGrant] = "1h"
+				store.put(t, "API_KEY", tags, "v1")
+				if c.rereadFails {
+					broker.failRereads(http.StatusServiceUnavailable)
 				}
-			}
-			if c.rereadFails {
-				said := stderr
-				if c.removalStands {
-					said = strings.ReplaceAll(said, "the removal stands", "")
+				store.loseTagWriteAnswer(c.loseAt)
+				_, stderr, code := runSecret(append([]string{"retag", "API_KEY"}, c.args...)...)
+				if code != 1 {
+					t.Fatalf("%s: exit %d stderr %q; want 1", c.name, code, stderr)
 				}
-				for _, claim := range []string{"stands", "after the write", "its next reload"} {
-					if strings.Contains(said, claim) {
-						t.Fatalf("%s: stderr %q says %q of a write whose outcome is unknown", c.name, stderr, claim)
+				for _, said := range c.want {
+					if !strings.Contains(stderr, said) {
+						t.Fatalf("%s: stderr %q does not say %q", c.name, stderr, said)
 					}
 				}
-			}
-			if n := strings.Count(stderr, show); n != 1 {
-				t.Fatalf("%s: stderr %q names %q %d times; want once", c.name, stderr, show, n)
-			}
-			tags := awsstore.TagMap(describe(t, local, "API_KEY").Tags)
-			if _, kept := tags[policy.TagMaxGrant]; kept == c.removed || tags[policy.TagRequesters] != c.requesters || tags[policy.TagTier] != c.tier {
-				t.Fatalf("tags after %s = %v; want the store's own (applied) result: max-grant removed %v, requesters %q, tier %q", c.name, tags, c.removed, c.requesters, c.tier)
-			}
-			if rereads, _ := broker.recorded(); !c.rereadFails && (len(rereads) != 1 || rereads[0] != "API_KEY") {
-				t.Fatalf("%s: rereads %v; want one of API_KEY, since the write may have changed the tags", c.name, rereads)
-			}
+				for _, claim := range notGuessed {
+					if strings.Contains(stderr, claim) {
+						t.Fatalf("%s: stderr %q claims %q, which the retag cannot know", c.name, stderr, claim)
+					}
+				}
+				if c.rereadFails {
+					said := stderr
+					if c.removalStands {
+						said = strings.ReplaceAll(said, "the removal stands", "")
+					}
+					for _, claim := range []string{"stands", "after the write", "its next reload"} {
+						if strings.Contains(said, claim) {
+							t.Fatalf("%s: stderr %q says %q of a write whose outcome is unknown", c.name, stderr, claim)
+						}
+					}
+				}
+				if n := strings.Count(stderr, show); n != 1 {
+					t.Fatalf("%s: stderr %q names %q %d times; want once", c.name, stderr, show, n)
+				}
+				held := store.tags(t, "API_KEY")
+				if _, kept := held[policy.TagMaxGrant]; kept == c.removed || held[policy.TagRequesters] != c.requesters || held[policy.TagTier] != c.tier {
+					t.Fatalf("tags after %s = %v; want the store's own (applied) result: max-grant removed %v, requesters %q, tier %q", c.name, held, c.removed, c.requesters, c.tier)
+				}
+				if rereads, _ := broker.recorded(); !c.rereadFails && (len(rereads) != 1 || rereads[0] != "API_KEY") {
+					t.Fatalf("%s: rereads %v; want one of API_KEY, since the write may have changed the tags", c.name, rereads)
+				}
+			})
 		})
 	}
-	t.Run("gcp: a set retag's answer was lost", func(t *testing.T) {
-		fake := gcptest.NewFakeSecretManager()
-		gcptest.UseFake(t, fake)
-		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
-		settings := gcpTestSettings()
-		broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-		id := testGCPPrefix + "api-key"
-		fake.Secrets[id] = &gcptest.FakeSecret{
-			Secret:      &secretmanagerpb.Secret{Name: id, Annotations: awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags, Etag: "1"},
-			Versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
-			Payloads:    [][]byte{[]byte("v1")},
-			EtagCounter: 1,
-		}
-		fake.AnswerAfter = map[string]codes.Code{"UpdateSecret": codes.Unavailable}
-		_, stderr, code := runSecret("retag", "API_KEY", "--tier", policy.TierAgent)
-		if code != 1 || !strings.Contains(stderr, "leaves open whether this write landed") || strings.Count(stderr, show) != 1 {
-			t.Fatalf("gcp retag whose UpdateSecret answer was lost: exit %d stderr %q; want 1, saying the outcome is unknown and naming %q once", code, stderr, show)
-		}
-		fake.Mu.Lock()
-		tier := fake.Secrets[id].Secret.GetAnnotations()[policy.TagTier]
-		fake.Mu.Unlock()
-		if tier != policy.TierAgent {
-			t.Fatalf("tier after the lost answer = %q; want %q: the fake applied the write", tier, policy.TierAgent)
-		}
-		if rereads, _ := broker.recorded(); len(rereads) != 1 || rereads[0] != "API_KEY" {
-			t.Fatalf("rereads after a GCP write whose answer was lost = %v; want one of API_KEY", rereads)
-		}
-	})
 }

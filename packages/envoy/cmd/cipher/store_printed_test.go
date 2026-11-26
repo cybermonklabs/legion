@@ -162,10 +162,10 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 		says     string
 	}{
 		{"an unknown store", Settings{Store: planted, SecretsPrefix: policytest.Prefix}, "the broker's settings name an unknown secret store "},
-		{"an invalid KMS key ARN", Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: planted, AWSAccountID: testAccount, AWSRegion: "us-east-1"}, "the broker's settings name an invalid KMS key ARN "},
+		{"an invalid KMS key ARN", Settings{SecretsPrefix: policytest.Prefix, Fields: map[string]string{"kms_key_arn": planted, "aws_account_id": testAccount, "aws_region": "us-east-1"}}, "the broker's settings name an invalid KMS key ARN "},
 		{"a project its prefix does not name", func() Settings {
 			s := gcpTestSettings()
-			s.GCPProject = planted
+			s.Fields["gcp_project"] = planted
 			return s
 		}(), "the broker's settings name project "},
 	} {
@@ -217,26 +217,27 @@ func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 				name, shown = "control: "+row.name+", beside a clean address", planted
 			}
 			t.Run(name, func(t *testing.T) {
-				local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-				startSecretBroker(t, row.answer)
-				if !clean {
-					t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
-				}
-				awstest.Use(t, local, testAccount, adaSignIn)
-				useStdin(t, "v2")
-				stdout, stderr, code := runSecret("set", "HELD_KEY")
-				if code != 1 {
-					t.Fatalf("exit %d, stdout %q, stderr %q; want 1", code, stdout, stderr)
-				}
-				var want []string
-				for _, says := range row.says {
-					want = append(want, strings.ReplaceAll(says, "%s", shown))
-				}
-				forbidden := []string{"demopass9z"}
-				if !clean {
-					forbidden = append(forbidden, planted)
-				}
-				wantNamedNotPrinted(t, "the output", stdout+stderr, want, forbidden...)
+				onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+					putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+					broker.answerAs(row.answer)
+					if !clean {
+						t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
+					}
+					useStdin(t, "v2")
+					stdout, stderr, code := runSecret("set", "HELD_KEY")
+					if code != 1 {
+						t.Fatalf("exit %d, stdout %q, stderr %q; want 1", code, stdout, stderr)
+					}
+					var want []string
+					for _, says := range row.says {
+						want = append(want, strings.ReplaceAll(says, "%s", shown))
+					}
+					forbidden := []string{"demopass9z"}
+					if !clean {
+						forbidden = append(forbidden, planted)
+					}
+					wantNamedNotPrinted(t, "the output", stdout+stderr, want, forbidden...)
+				})
 			})
 		}
 	}

@@ -37,9 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
@@ -115,8 +113,8 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 	}
 	// --profile was a flag of the AWS backend (cybermonklabs/legion#1833) until #4130; the
 	// tool now reads the store credential from the environment, as the cloud's own tools do, so a
-	// form given --profile is a usage error naming the variables to use instead, and those that
-	// outrank them.
+	// form given --profile is a usage error naming, for each store the registry holds, the
+	// variables to use instead, and those that outrank them (profileRefusal).
 	for _, a := range args[1:] {
 		flagName, _, _ := strings.Cut(a, "=")
 		if strings.HasPrefix(flagName, "-") && strings.TrimLeft(flagName, "-") == policy.LegacyTypeTag {
@@ -124,7 +122,13 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 			return exitUsageError
 		}
 		if a == "--profile" || strings.HasPrefix(a, "--profile=") {
-			fmt.Fprintln(stderr, "agent-secrets secret: --profile is not a flag: agent-secrets reads the store credential from the environment, as the cloud's own tools do. On Google Cloud set CLOUDSDK_ACTIVE_CONFIG_NAME (a gcloud configuration) or CLOUDSDK_CORE_ACCOUNT (a gcloud account), which CLOUDSDK_AUTH_ACCESS_TOKEN and GOOGLE_APPLICATION_CREDENTIALS outrank when set; on AWS set AWS_PROFILE, which access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and AWS_WEB_IDENTITY_TOKEN_FILE, outrank when set, as in the AWS CLI.")
+			var hints []secretstore.ProfileHint
+			for _, b := range backends.All() {
+				if hint, ok := b.ProfileHint(); ok {
+					hints = append(hints, hint)
+				}
+			}
+			fmt.Fprintln(stderr, profileRefusal(hints))
 			return exitUsageError
 		}
 	}
@@ -136,6 +140,25 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 	// The argument is not printed, as cmdGroup's is not.
 	fmt.Fprintf(stderr, "agent-secrets secret: unknown form (not printed); the forms are %s\n", secretFormNames())
 	return exitUsageError
+}
+
+// profileRefusalPrefix opens the --profile refusal, whatever stores the registry holds.
+const profileRefusalPrefix = "agent-secrets secret: --profile is not a flag: agent-secrets reads the store credential from the environment, as the cloud's own tools do. "
+
+// profileRefusal is the --profile refusal: profileRefusalPrefix, then each store's clause in the
+// order of its Rank, joined by "; ", the first letter upper-cased, and a full stop.
+func profileRefusal(hints []secretstore.ProfileHint) string {
+	hints = slices.Clone(hints)
+	slices.SortStableFunc(hints, func(a, b secretstore.ProfileHint) int { return cmp.Compare(a.Rank, b.Rank) })
+	clauses := make([]string, 0, len(hints))
+	for _, hint := range hints {
+		clauses = append(clauses, hint.Clause)
+	}
+	text := strings.Join(clauses, "; ")
+	if text == "" {
+		return strings.TrimSuffix(profileRefusalPrefix, " ")
+	}
+	return profileRefusalPrefix + strings.ToUpper(text[:1]) + text[1:] + "."
 }
 
 // requireTrustedBrokerURL refuses a non-https broker URL unless the broker's host is loopback
@@ -848,23 +871,17 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 	return s, nil
 }
 
-// openSecretBackend opens the writer of the store settings.Store names, from the store registry:
-// AWS Secrets Manager, pinned to the key ARN's own account and region, for "" or aws.Name - a
-// broker that predates `store` names neither - or GCP Secret Manager, pinned to the project
-// secrets_prefix and kms_key_name's own shape agree on, for gcp.Name. Each store's OpenWriter
-// checks the settings before any cloud call, and signs in from the environment, not a flag;
-// every child it starts runs through runChild. Any other store is refused before any cloud call.
+// openSecretBackend opens the writer of the store settings.Store names, from the store registry
+// (backends.Lookup), AWS Secrets Manager where the settings name none (secretstore.DefaultName): a
+// broker that predates `store` names none. Each store's OpenWriter checks the settings before any
+// call of its store, and signs in from the environment, not a flag; every child it starts runs
+// through runChild. A store this build does not register is refused before any store is opened.
 func openSecretBackend(ctx context.Context, settings Settings) (secretstore.Writer, error) {
-	switch settings.Store {
-	case "", aws.Name, gcp.Name:
-		backend, err := backends.Lookup(cmp.Or(settings.Store, aws.Name))
-		if err != nil {
-			return nil, err
-		}
-		return backend.OpenWriter(ctx, settings.store(), secretstore.WriterOptions{Run: runChild})
-	default:
+	backend, err := backends.Lookup(cmp.Or(settings.Store, secretstore.DefaultName))
+	if err != nil {
 		return nil, fmt.Errorf("the broker's settings name an unknown secret store %s", settings.words(strconv.Quote(settings.Store)))
 	}
+	return backend.OpenWriter(ctx, settings.store(), secretstore.WriterOptions{Run: runChild})
 }
 
 // rereadAfter asks the broker to reread name after a form's write that leaves no type to check,

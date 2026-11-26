@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,8 +16,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
@@ -34,55 +33,62 @@ func TestATypedWriteOnALapsedSignInRegistersItAgainAndIsChecked(t *testing.T) {
 	const person = "ada@example.com"
 	for _, form := range []string{"create", "retag"} {
 		t.Run(form, func(t *testing.T) {
-			broker := newLoginBroker(t)
-			issuer := loginIssuer(t, person)
-			withNoBrokerIdentity(t)
-			t.Setenv(cipherclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
-			t.Setenv(cipherclient.BrokerURLVar, broker.server.URL)
-			t.Setenv(cipherclient.SessionVar, "")
-			forceMetadataMachine(t)
-			if err := login(context.Background(), io.Discard, &approvingWriter{t: t, issuer: issuer}); err != nil {
-				t.Fatalf("login: %v", err)
-			}
-			store := cipherclient.SignIns(os.Getenv)
-			first, err := store.Choose("")
-			if err != nil {
-				t.Fatalf("the sign-in login kept: %v", err)
-			}
-			broker.lapse()
+			onEachStoreRig(t, func(t *testing.T, rig storeRig) {
+				broker := newLoginBroker(t)
+				issuer := loginIssuer(t, person)
+				withNoBrokerIdentity(t)
+				t.Setenv(cipherclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
+				t.Setenv(cipherclient.BrokerURLVar, broker.server.URL)
+				t.Setenv(cipherclient.SessionVar, "")
+				forceMetadataMachine(t)
+				if err := login(context.Background(), io.Discard, &approvingWriter{t: t, issuer: issuer}); err != nil {
+					t.Fatalf("login: %v", err)
+				}
+				store := cipherclient.SignIns(os.Getenv)
+				first, err := store.Choose("")
+				if err != nil {
+					t.Fatalf("the sign-in login kept: %v", err)
+				}
+				broker.lapse()
 
-			local := awstest.NewLocal()
-			broker.mu.Lock()
-			broker.settings = map[string]any{"secrets_prefix": policytest.Prefix, "kms_key_arn": awstest.KeyARN,
-				"aws_account_id": testAccount, "aws_region": "us-east-1", "secret_type_tag": true}
-			broker.rereadAnswer = servedBy(local)
-			registered := broker.enrollments
-			broker.mu.Unlock()
-			awstest.Use(t, local, testAccount, adaSignIn)
-			args := typedWrite(t, local, form)
+				raw, err := json.Marshal(rig.settings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var settings map[string]any
+				if err := json.Unmarshal(raw, &settings); err != nil {
+					t.Fatal(err)
+				}
+				broker.mu.Lock()
+				broker.settings = settings
+				broker.rereadAnswer = rig.answer
+				registered := broker.enrollments
+				broker.mu.Unlock()
+				args := typedWrite(t, rig.store, form)
 
-			stdout, stderr, code := runSecret(args...)
-			if code != 0 || !strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || !strings.Contains(stdout, "(type "+policy.TypeGoogleLogin+")") ||
-				strings.Contains(stderr, "was not checked") {
-				t.Fatalf("a typed %s on a lapsed sign-in: exit %d, stdout %q, stderr %q; want 0, the broker serving LOGIN_KEY as its type, and no line saying its view was not checked", form, code, stdout, stderr)
-			}
-			kept, err := store.Choose("")
-			if err != nil {
-				t.Fatalf("the sign-in after the reread: %v", err)
-			}
-			if kept.EnrollmentID == first.EnrollmentID || kept.EnrollmentID != broker.liveEnrollment() || kept.Thumbprint != first.Thumbprint {
-				t.Fatalf("the sign-in names %s under key %s; want %s, the enrollment the broker now holds, under the same key %s",
-					kept.EnrollmentID, kept.Thumbprint, broker.liveEnrollment(), first.Thumbprint)
-			}
-			broker.mu.Lock()
-			registrations := broker.enrollments - registered
-			broker.mu.Unlock()
-			if registrations != 1 {
-				t.Fatalf("the %s registered %d sessions; want one, the lapsed sign-in's again", form, registrations)
-			}
-			if got, want := broker.rereadEnrollments(), []string{first.EnrollmentID, kept.EnrollmentID}; !slices.Equal(got, want) {
-				t.Fatalf("the rereads named %q; want %q: the lapsed enrollment refused, then the new one, and none with no proof", got, want)
-			}
+				stdout, stderr, code := runSecret(args...)
+				if code != 0 || !strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || !strings.Contains(stdout, "(type "+policy.TypeGoogleLogin+")") ||
+					strings.Contains(stderr, "was not checked") {
+					t.Fatalf("a typed %s on a lapsed sign-in: exit %d, stdout %q, stderr %q; want 0, the broker serving LOGIN_KEY as its type, and no line saying its view was not checked", form, code, stdout, stderr)
+				}
+				kept, err := store.Choose("")
+				if err != nil {
+					t.Fatalf("the sign-in after the reread: %v", err)
+				}
+				if kept.EnrollmentID == first.EnrollmentID || kept.EnrollmentID != broker.liveEnrollment() || kept.Thumbprint != first.Thumbprint {
+					t.Fatalf("the sign-in names %s under key %s; want %s, the enrollment the broker now holds, under the same key %s",
+						kept.EnrollmentID, kept.Thumbprint, broker.liveEnrollment(), first.Thumbprint)
+				}
+				broker.mu.Lock()
+				registrations := broker.enrollments - registered
+				broker.mu.Unlock()
+				if registrations != 1 {
+					t.Fatalf("the %s registered %d sessions; want one, the lapsed sign-in's again", form, registrations)
+				}
+				if got, want := broker.rereadEnrollments(), []string{first.EnrollmentID, kept.EnrollmentID}; !slices.Equal(got, want) {
+					t.Fatalf("the rereads named %q; want %q: the lapsed enrollment refused, then the new one, and none with no proof", got, want)
+				}
+			})
 		})
 	}
 }

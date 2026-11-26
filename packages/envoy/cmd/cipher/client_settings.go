@@ -7,6 +7,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
 	"net/http"
 
 	"github.com/sjawhar/envoy/cipheraddr"
@@ -14,30 +16,89 @@ import (
 )
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
-// lives under and, per store, the key they are encrypted with and where they are; on either store,
+// lives under, and the store's own fields (Fields: on AWS the key and the account and region that
+// hold the secrets, on GCP the key and the project, on the memory store its file); on any store,
 // the Google exchange audience a machine's own identity token must carry, from which the use
 // command finds that identity with no setting (machineSource); and whether the broker reads a
 // secret's type from the type tag (SecretTypeTag), without which the secret forms write no typed
 // secret (requireTypeTag). A broker from before the store field answers none, and holds them in
-// AWS Secrets Manager; one from before the audience, or one that accepts no machine identity,
-// names none; and one from before the type tag answers no secret_type_tag.
+// AWS Secrets Manager (secretstore.DefaultName); one from before the audience, or one that accepts
+// no machine identity, names none; and one from before the type tag answers no secret_type_tag.
 type Settings struct {
 	Store                  string `json:"store,omitempty"`
 	SecretsPrefix          string `json:"secrets_prefix"`
-	KMSKeyARN              string `json:"kms_key_arn,omitempty"`
-	AWSAccountID           string `json:"aws_account_id,omitempty"`
-	AWSRegion              string `json:"aws_region,omitempty"`
-	KMSKeyName             string `json:"kms_key_name,omitempty"`
-	GCPProject             string `json:"gcp_project,omitempty"`
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
 	SecretTypeTag          bool   `json:"secret_type_tag,omitempty"`
 	// JudgeKeys is each key whose judge tag gives the model judge seconds of it, with those
 	// seconds and its guidance tag; absent where no key carries one. `secret show` reads it to
 	// say who decides a request for a key and what the judge will look for.
 	JudgeKeys map[string]JudgeKey `json:"judge_keys,omitempty"`
+	// Fields is every other string member of the body, by its JSON name: the store's own fields,
+	// which its registry entry reads (store).
+	Fields map[string]string `json:"-"`
 	// answeredBy is the address whose answer these settings are (client.Settings), so a message
 	// prints a field of them only as that address lets the text of its answer print (words).
 	answeredBy cipheraddr.Address
+}
+
+// settingsFixed is Settings' fixed fields as JSON reads them, apart from Fields.
+type settingsFixed struct {
+	Store                  string              `json:"store,omitempty"`
+	SecretsPrefix          string              `json:"secrets_prefix"`
+	GoogleExchangeAudience string              `json:"google_exchange_audience,omitempty"`
+	SecretTypeTag          bool                `json:"secret_type_tag,omitempty"`
+	JudgeKeys              map[string]JudgeKey `json:"judge_keys,omitempty"`
+}
+
+// settingsFixedNames are settingsFixed's JSON names, which Fields never holds.
+var settingsFixedNames = map[string]bool{"store": true, "secrets_prefix": true, "google_exchange_audience": true, "secret_type_tag": true, "judge_keys": true}
+
+// UnmarshalJSON reads the fixed fields, and puts every other member whose value is a JSON string
+// into Fields; a member of any other kind is no store field, and is left out.
+func (s *Settings) UnmarshalJSON(data []byte) error {
+	var fixed settingsFixed
+	if err := json.Unmarshal(data, &fixed); err != nil {
+		return err
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return err
+	}
+	fields := map[string]string{}
+	for name, raw := range members {
+		var value string
+		if settingsFixedNames[name] || json.Unmarshal(raw, &value) != nil {
+			continue
+		}
+		fields[name] = value
+	}
+	*s = Settings{
+		Store: fixed.Store, SecretsPrefix: fixed.SecretsPrefix, GoogleExchangeAudience: fixed.GoogleExchangeAudience,
+		SecretTypeTag: fixed.SecretTypeTag, JudgeKeys: fixed.JudgeKeys, Fields: fields,
+	}
+	return nil
+}
+
+// MarshalJSON writes the fixed fields as UnmarshalJSON reads them, and each of Fields as a member
+// of its own; a field that has a fixed field's name is not written.
+func (s Settings) MarshalJSON() ([]byte, error) {
+	raw, err := json.Marshal(settingsFixed{
+		Store: s.Store, SecretsPrefix: s.SecretsPrefix, GoogleExchangeAudience: s.GoogleExchangeAudience,
+		SecretTypeTag: s.SecretTypeTag, JudgeKeys: s.JudgeKeys,
+	})
+	if err != nil || len(s.Fields) == 0 {
+		return raw, err
+	}
+	members := map[string]any{}
+	if err := json.Unmarshal(raw, &members); err != nil {
+		return nil, err
+	}
+	for name, value := range s.Fields {
+		if !settingsFixedNames[name] {
+			members[name] = value
+		}
+	}
+	return json.Marshal(members)
 }
 
 // words is text of these settings - a field, or a value read out of one, or a check's words that
@@ -47,19 +108,9 @@ type Settings struct {
 func (s Settings) words(text string) string { return s.answeredBy.Words(text) }
 
 // store is s as a store's writer and registry entry read them (secretstore.Settings): the store,
-// the prefix, each per-store field the broker answered by its JSON name, and how a field prints
-// (words).
+// the prefix, the store's own fields, and how a field prints (words).
 func (s Settings) store() secretstore.Settings {
-	fields := map[string]string{}
-	for name, value := range map[string]string{
-		"kms_key_arn": s.KMSKeyARN, "aws_account_id": s.AWSAccountID, "aws_region": s.AWSRegion,
-		"kms_key_name": s.KMSKeyName, "gcp_project": s.GCPProject,
-	} {
-		if value != "" {
-			fields[name] = value
-		}
-	}
-	return secretstore.Settings{Store: s.Store, Prefix: s.SecretsPrefix, Fields: fields, Words: s.words}
+	return secretstore.Settings{Store: s.Store, Prefix: s.SecretsPrefix, Fields: maps.Clone(s.Fields), Words: s.words}
 }
 
 // JudgeKey is one key in Settings.JudgeKeys.

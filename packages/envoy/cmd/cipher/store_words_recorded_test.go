@@ -4,45 +4,32 @@
 // of the usage's environment table, and the source a line names for each settings body - held to
 // what main printed before the stores moved into packages of their own. An AWS or a GCP deployment
 // upgrades with no change to what its people and scripts read. testdata/recorded-on-main/ was
-// written once, on main, by this file as it was then:
+// written once, on main, by this file as it was then, and is never written again: a record
+// written by the code it checks compares that code with itself and proves nothing. A change that
+// means to move one of these texts for the AWS or the GCP store is a change to what a
+// deployment's CLI prints, which the records exist to catch.
 //
-//	go test ./cmd/cipher/ -run 'RecordedOnMain' -args -record
-//
-// Never write the records again from later code: a record written by the code it checks compares
-// that code with itself and proves nothing. A change that means to move one of these texts for
-// the AWS or the GCP store is a change to what a deployment's CLI prints, which the records exist
-// to catch.
+// The refusal and the rows are held twice: as the default build prints them, from every store the
+// registry holds, and as exactly the AWS and GCP stores' parts make them (their two ProfileHints,
+// their two HelpRows), so that half keeps holding once a later store adds its own.
 package main
 
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
-
-var recordStoreWords = flag.Bool("record", false, "write testdata/recorded-on-main/ instead of comparing; run only on main, as store_words_recorded_test.go's head comment says")
 
 // recordedOnMain is the directory of this file's records.
 const recordedOnMain = "testdata/recorded-on-main"
-
-// writeRecord writes data to the record name under recordedOnMain.
-func writeRecord(t *testing.T, name string, data []byte) {
-	t.Helper()
-	path := filepath.Join(recordedOnMain, name)
-	if err := os.MkdirAll(recordedOnMain, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("wrote %d bytes to %s", len(data), path)
-}
 
 // readRecord answers the record name under recordedOnMain, failing t when it cannot be read or
 // holds nothing, which would compare nothing.
@@ -60,21 +47,30 @@ func readRecord(t *testing.T, name string) []byte {
 }
 
 // TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints, byte for
-// byte, the refusal main printed, which names the variables each store's own tools read.
+// byte, the refusal main printed, which names the variables each store's own tools read; and the
+// refusal the AWS and GCP stores' two hints make (profileRefusal) is that same line.
 func TestProfileRefusalRecordedOnMain(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { clientConfig = nil })
+	want := readRecord(t, "profile-refusal.txt")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"secret", "list", "--profile", "x"}, &stdout, &stderr)
 	if code != exitUsageError {
 		t.Fatalf("secret list --profile x exited %d (stderr %q), want %d", code, stderr.String(), exitUsageError)
 	}
-	if *recordStoreWords {
-		writeRecord(t, "profile-refusal.txt", stderr.Bytes())
-		return
-	}
-	if want := readRecord(t, "profile-refusal.txt"); !bytes.Equal(stderr.Bytes(), want) {
+	if !bytes.Equal(stderr.Bytes(), want) {
 		t.Errorf("secret list --profile x printed\n%q\nrecorded on main\n%q", stderr.String(), want)
+	}
+	var hints []secretstore.ProfileHint
+	for _, b := range []secretstore.Backend{aws.Backend{}, gcp.Backend{}} {
+		hint, ok := b.ProfileHint()
+		if !ok {
+			t.Fatalf("the %s store gives no clause of the --profile refusal", b.ID())
+		}
+		hints = append(hints, hint)
+	}
+	if got := profileRefusal(hints) + "\n"; got != string(want) {
+		t.Errorf("the AWS and GCP stores' hints make\n%q\nrecorded on main\n%q", got, want)
 	}
 }
 
@@ -108,15 +104,14 @@ func usageStoreRows(t *testing.T) string {
 }
 
 // TestUsageStoreRowsRecordedOnMain: the usage's environment table prints the store rows main
-// printed, byte for byte.
+// printed, byte for byte, and the AWS and GCP stores' two HelpRows are those rows.
 func TestUsageStoreRowsRecordedOnMain(t *testing.T) {
-	rows := usageStoreRows(t)
-	if *recordStoreWords {
-		writeRecord(t, "usage-store-rows.txt", []byte(rows))
-		return
-	}
-	if want := string(readRecord(t, "usage-store-rows.txt")); rows != want {
+	want := string(readRecord(t, "usage-store-rows.txt"))
+	if rows := usageStoreRows(t); rows != want {
 		t.Errorf("usage()'s store rows are\n%s\nrecorded on main\n%s", rows, want)
+	}
+	if rows := (aws.Backend{}).HelpRows() + (gcp.Backend{}).HelpRows(); rows != want {
+		t.Errorf("the AWS and GCP stores' HelpRows are\n%s\nrecorded on main\n%s", rows, want)
 	}
 }
 
@@ -167,14 +162,6 @@ func TestSourceWordsRecordedOnMain(t *testing.T) {
 			src := brokerSource(address).withSettings(settings)
 			got = append(got, sourceWords{Row: row.row, Settings: json.RawMessage(row.body), Clean: clean, String: src.String(), StoreName: src.storeName()})
 		}
-	}
-	if *recordStoreWords {
-		raw, err := json.MarshalIndent(got, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeRecord(t, "source-words.json", append(raw, '\n'))
-		return
 	}
 	var want []sourceWords
 	if err := json.Unmarshal(readRecord(t, "source-words.json"), &want); err != nil {

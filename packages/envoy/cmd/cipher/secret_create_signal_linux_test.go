@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,10 +30,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // TestCreateSignalHelper is the process the tests below signal. It creates on GCP's fake Secret
-// Manager, or, with AGENT_SECRETS_CREATE_STORE=aws, on awstest.Local through the AWS backend.
+// Manager, or, with AGENT_SECRETS_CREATE_STORE=aws, on awstest.Local through the AWS backend, or,
+// with AGENT_SECRETS_CREATE_STORE=memory, on the memory store's file AGENT_SECRETS_CREATE_FILE
+// names, printing APPLIED <call> once a memory write has changed the file.
 // AGENT_SECRETS_CREATE_ADD makes the GCP store answer AddSecretVersion "unavailable" without
 // storing the value, or "lost" (Unavailable) once it has stored it. AGENT_SECRETS_CREATE_HOLD,
 // <method>:<duration>, holds each call of that method that long before the store answers it, so a
@@ -82,7 +86,8 @@ func TestCreateSignalHelper(t *testing.T) {
 		}
 		hold = func() { time.Sleep(d) }
 	}
-	if os.Getenv("AGENT_SECRETS_CREATE_STORE") == "aws" {
+	switch os.Getenv("AGENT_SECRETS_CREATE_STORE") {
+	case "aws":
 		local := awstest.NewLocal()
 		served := servedBy(local)
 		startSecretBroker(t, func(name string) Reread {
@@ -90,7 +95,15 @@ func TestCreateSignalHelper(t *testing.T) {
 			return served(name)
 		})
 		awstest.Use(t, announcedCreate{Local: local, held: held == "CreateSecret", hold: hold}, testAccount, adaSignIn)
-	} else {
+	case "memory":
+		path := os.Getenv("AGENT_SECRETS_CREATE_FILE")
+		served := memoryServedBy(path)
+		startSecretBrokerWith(t, memorySettings(path), func(name string) Reread {
+			fmt.Println("REREAD", name)
+			return served(name)
+		})
+		t.Cleanup(memory.SwapHooks(memory.Hooks{Applied: func(call string) { fmt.Println("APPLIED", call) }}))
+	default:
 		fake := gcptest.NewFakeSecretManager()
 		switch os.Getenv("AGENT_SECRETS_CREATE_ADD") {
 		case "unavailable":
@@ -125,7 +138,7 @@ func TestCreateSignalHelper(t *testing.T) {
 		})
 	}
 	secretStdin = &onFirstRead{r: os.Stdin, first: func() { fmt.Println("READING") }}
-	code := cmdSecret([]string{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}, os.Stdout, os.Stderr)
+	code := cmdSecret([]string{"create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent"}, os.Stdout, os.Stderr)
 	fmt.Println("RETURNED", code)
 }
 
@@ -341,21 +354,45 @@ func TestCreateSignalDuringInitialRecoveryDeletesTheEmptySecret(t *testing.T) {
 }
 
 // TestCreateSignalWhileReadingDeletesTheEmptySecret: a hang-up, an interrupt, a quit or a
-// termination while the create reads a value piped in deletes the empty secret it made, asks the
-// broker to reread the name, and then ends the process by that signal, the value never added.
+// termination while the create reads a value piped in ends the process by that signal, the value
+// never stored: on GCP, whose create made the empty secret first, after deleting it and asking
+// the broker to reread the name; on the memory store, whose create makes nothing before the
+// value, with no write at all.
 func TestCreateSignalWhileReadingDeletesTheEmptySecret(t *testing.T) {
 	t.Parallel()
-	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM} {
-		t.Run(unix.SignalName(sig), func(t *testing.T) {
-			p := startCreate(t, helperCommand())
-			p.waitFor("READING")
-			p.signal(sig)
-			out := p.endedBy(sig)
-			if strings.Count(out, "CALL DeleteSecret") != 1 || !strings.Contains(out, "REREAD NEW_TEST") || strings.Contains(out, "CALL AddSecretVersion") {
-				t.Fatalf("output %q; want the empty secret deleted once and reread, and no value added", out)
-			}
-		})
+	for _, store := range []string{"gcp", "memory"} {
+		for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM} {
+			t.Run(store+"/"+unix.SignalName(sig), func(t *testing.T) {
+				env, file := createStoreEnv(t, store)
+				p := startCreate(t, helperCommand(), env...)
+				p.waitFor("READING")
+				p.signal(sig)
+				out := p.endedBy(sig)
+				switch store {
+				case "gcp":
+					if strings.Count(out, "CALL DeleteSecret") != 1 || !strings.Contains(out, "REREAD NEW_TEST") || strings.Contains(out, "CALL AddSecretVersion") {
+						t.Fatalf("output %q; want the empty secret deleted once and reread, and no value added", out)
+					}
+				case "memory":
+					if strings.Contains(out, "APPLIED") || len(readMemoryFile(t, file)) != 0 {
+						t.Fatalf("output %q, file %v; want no write: the create made nothing before the value", out, readMemoryFile(t, file))
+					}
+				}
+			})
+		}
 	}
+}
+
+// createStoreEnv is the helper's environment for a create on store, gcp or memory, and for memory
+// the empty secrets file it writes.
+func createStoreEnv(t *testing.T, store string) (env []string, file string) {
+	t.Helper()
+	if store != "memory" {
+		return nil, ""
+	}
+	file = filepath.Join(t.TempDir(), "secrets.json")
+	writeMemoryFile(t, file, nil)
+	return []string{"AGENT_SECRETS_CREATE_STORE=memory", "AGENT_SECRETS_CREATE_FILE=" + file}, file
 }
 
 // TestCreateSignalWhileTheAddIsInFlightWaitsForItsAnswer: a signal that arrives while the add of
@@ -533,28 +570,38 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 // TestCreateSignalInheritedIgnoredStaysIgnored: a hang-up or an interrupt the process inherited as
 // ignored, as under nohup or a shell trap that ignores it, stays ignored while the create reads a
 // value piped in: the read goes on, nothing is deleted, and the whole value is stored once the
-// pipe closes.
+// pipe closes, on GCP and on the memory store.
 func TestCreateSignalInheritedIgnoredStaysIgnored(t *testing.T) {
 	t.Parallel()
 	requireSignalDispositions(t)
-	p := startCreate(t, exec.Command("bash", "-c", `trap '' HUP INT; exec "$0" -test.run='^TestCreateSignalHelper$'`, os.Args[0]))
-	p.waitFor("READING")
-	// The create's watch on the signals is in place by the read: a signal it watched would have a
-	// handler of its own and be ignored no longer.
-	pid := p.cmd.Process.Pid
-	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGINT} {
-		if !ignores(t, pid, sig) || catches(t, pid, sig) {
-			t.Fatalf("while the create reads, %s is ignored %t and caught %t; want it ignored, as inherited, and not caught", unix.SignalName(sig), ignores(t, pid, sig), catches(t, pid, sig))
-		}
-	}
-	p.signal(syscall.SIGHUP)
-	p.signal(syscall.SIGINT)
-	_, _ = io.WriteString(p.stdin, "piped-value")
-	_ = p.stdin.Close()
-	if _, ok := received(t, p.waited); !ok {
-		t.Fatalf("the create had not ended after its value came, %s before the test binary's deadline; output %q", waitMargin, p.out.String())
-	}
-	if out := p.out.String(); p.waitErr != nil || !strings.Contains(out, "RETURNED 0") || !strings.Contains(out, "created NEW_TEST") || strings.Contains(out, "CALL DeleteSecret") {
-		t.Fatalf("the create ended %v, output %q; want the value stored and nothing deleted", p.waitErr, out)
+	for _, store := range []string{"gcp", "memory"} {
+		t.Run(store, func(t *testing.T) {
+			env, file := createStoreEnv(t, store)
+			p := startCreate(t, exec.Command("bash", "-c", `trap '' HUP INT; exec "$0" -test.run='^TestCreateSignalHelper$'`, os.Args[0]), env...)
+			p.waitFor("READING")
+			// The create's watch on the signals is in place by the read: a signal it watched would
+			// have a handler of its own and be ignored no longer.
+			pid := p.cmd.Process.Pid
+			for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGINT} {
+				if !ignores(t, pid, sig) || catches(t, pid, sig) {
+					t.Fatalf("while the create reads, %s is ignored %t and caught %t; want it ignored, as inherited, and not caught", unix.SignalName(sig), ignores(t, pid, sig), catches(t, pid, sig))
+				}
+			}
+			p.signal(syscall.SIGHUP)
+			p.signal(syscall.SIGINT)
+			_, _ = io.WriteString(p.stdin, "piped-value")
+			_ = p.stdin.Close()
+			if _, ok := received(t, p.waited); !ok {
+				t.Fatalf("the create had not ended after its value came, %s before the test binary's deadline; output %q", waitMargin, p.out.String())
+			}
+			if out := p.out.String(); p.waitErr != nil || !strings.Contains(out, "RETURNED 0") || !strings.Contains(out, "created NEW_TEST") || strings.Contains(out, "CALL DeleteSecret") {
+				t.Fatalf("the create ended %v, output %q; want the value stored and nothing deleted", p.waitErr, out)
+			}
+			if store == "memory" {
+				if secrets := readMemoryFile(t, file); len(secrets) != 1 || secrets[0].Value != "piped-value" {
+					t.Fatalf("the memory file holds %v; want NEW_TEST with the whole value", secrets)
+				}
+			}
+		})
 	}
 }

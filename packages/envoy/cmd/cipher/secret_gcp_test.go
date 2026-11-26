@@ -46,10 +46,11 @@ const (
 // answered them (Settings.answeredBy), so a refusal a test calls directly names their fields.
 func gcpTestSettings() Settings {
 	return Settings{
-		Store: gcp.Name, SecretsPrefix: testGCPPrefix,
-		KMSKeyName: testKMSKeyName, GCPProject: testGCPProject,
+		Store:         gcp.Name,
+		SecretsPrefix: testGCPPrefix,
 		SecretTypeTag: true,
 		answeredBy:    cipheraddr.New("https://broker.example"),
+		Fields:        map[string]string{"kms_key_name": testKMSKeyName, "gcp_project": testGCPProject},
 	}
 }
 
@@ -1115,8 +1116,9 @@ func TestGCPSecretReadsRefuseBadSettings(t *testing.T) {
 	gcptest.UseFake(t, gcptest.NewFakeSecretManager())
 	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, Settings{
-		Store: gcp.Name, SecretsPrefix: testGCPPrefix, GCPProject: testGCPProject,
-		KMSKeyName: "not-a-key-name",
+		Store:         gcp.Name,
+		SecretsPrefix: testGCPPrefix,
+		Fields:        map[string]string{"gcp_project": testGCPProject, "kms_key_name": "not-a-key-name"},
 	}, alwaysServed)
 
 	_, stderr, code := runSecret("list")
@@ -1124,20 +1126,6 @@ func TestGCPSecretReadsRefuseBadSettings(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	if !strings.Contains(stderr, "invalid KMS key name") {
-		t.Fatalf("stderr: %q", stderr)
-	}
-}
-
-// TestOpenSecretBackendRefusesUnknownStore: a store name neither backend names is refused before
-// any cloud call.
-func TestOpenSecretBackendRefusesUnknownStore(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293).
-	startSecretBrokerWith(t, Settings{Store: "azure-key-vault"}, alwaysServed)
-	_, stderr, code := runSecret("list")
-	if code != 1 {
-		t.Fatalf("exit %d, stderr %q", code, stderr)
-	}
-	if !strings.Contains(stderr, `unknown secret store "azure-key-vault"`) {
 		t.Fatalf("stderr: %q", stderr)
 	}
 }
