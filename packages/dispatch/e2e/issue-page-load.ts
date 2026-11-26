@@ -730,6 +730,8 @@ export interface OutlineRow {
 /** The rows of Conversation's outline as the load ends, in the order they are drawn, before any
  *  control of the paging rule is pressed. */
 export async function outlineRows(page: Page): Promise<OutlineRow[]> {
+  // Read once the load has ended (`waitForLoadEnd`), the moment Row 2's named row is defined at:
+  // that instant's rows are the rows the reading means, and no wait would read others.
   const rows = await page.evaluate(() =>
     [...document.querySelectorAll("[data-issue-body] [data-node-row]")].map((row) => ({
       id: row.getAttribute("data-node-id") ?? "",

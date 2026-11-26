@@ -848,6 +848,8 @@ async function readLoad(page: Page, requests: LoadRequests): Promise<LoadReading
   let reading = UNREAD_LOAD;
   try {
     const end = await waitForLoadEnd(page, requests);
+    // The first screen is the rows in the viewport as the load ends, which `waitForLoadEnd` has
+    // just reached: that instant is the one R1 reads, and a wait would read a later one.
     const screen = firstScreenPaint(await firstScreenOf(page));
     const shape = await pageShape(page);
     const atEnd = await recordOf(page);

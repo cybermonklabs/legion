@@ -785,13 +785,21 @@ export function instrumentPage(config: PageConfig): void {
   };
   const words = (of: Element): string => (of.textContent ?? "").replace(/\s+/g, " ").trim();
   const rowLabel = (row: Element): string => {
-    const key =
-      row.getAttribute("data-row-key") ??
-      row.getAttribute("data-node-id") ??
-      row.getAttribute("data-child-entry") ??
-      String(idOf(row));
-    if (row.hasAttribute("data-child-entry")) return `child ${key}`;
-    return `${row.getAttribute("data-node-type") ?? "row"} ${key}`;
+    // The row's own key, read in the order of the attributes the rows of the views carry, else
+    // the id this load gave the row.
+    let key: string | null = null;
+    for (const name of ["data-row-key", "data-node-id", "data-child-entry"]) {
+      // The script reads the DOM in the page itself: an attribute is the row's own, as the page
+      // wrote it when it drew the row, and no Playwright probe of a state still to come.
+      const value = row.getAttribute(name);
+      if (value !== null) {
+        key = value;
+        break;
+      }
+    }
+    const named = key ?? String(idOf(row));
+    if (row.hasAttribute("data-child-entry")) return `child ${named}`;
+    return `${row.getAttribute("data-node-type") ?? "row"} ${named}`;
   };
 
   // The earliest paint of each row's first line, by the row: Element Timing's element is the one
@@ -938,14 +946,12 @@ export function instrumentPage(config: PageConfig): void {
     if (config.boxes === "all") {
       for (const [group, selectors] of Object.entries(config.groups)) {
         for (const control of document.querySelectorAll(selectors.join(", "))) {
-          keep(
-            index,
-            control,
-            group,
-            () =>
-              control.getAttribute("aria-label") ??
-              (words(control).slice(0, 48) || control.tagName.toLowerCase())
-          );
+          keep(index, control, group, () => {
+            // The script reads the DOM in the page itself: the control's name is its own, as the
+            // page drew it in this frame, and no Playwright probe of a state still to come.
+            const label = control.getAttribute("aria-label");
+            return label ?? (words(control).slice(0, 48) || control.tagName.toLowerCase());
+          });
         }
       }
       for (const row of document.querySelectorAll(config.rows)) {
@@ -1263,6 +1269,8 @@ const LOAD_POLL_MS = 100;
 
 /** The instruments `page` holds, or a failure that says they were installed too late. */
 async function instrumented(page: Page): Promise<void> {
+  // The init script is added before the page's first navigation and runs before any script of a
+  // document, so a page that has committed holds the instruments now or never will.
   const held = await page.evaluate(() => window.__loadInstruments !== undefined);
   if (!held) {
     throw new Error(
@@ -1306,6 +1314,8 @@ export async function waitForLoadEnd(page: Page, requests: LoadRequests): Promis
  *  browser observes no entry type the readers read, fails here rather than reading zeros. */
 export async function recordOf(page: Page): Promise<LoadRecord> {
   await instrumented(page);
+  // What the checks below read was fixed as the document started - whether `web-vitals` loaded,
+  // which entry types this browser observes - so one instant's record answers them for good.
   const record = await page.evaluate(() => window.__loadInstruments?.record());
   if (record === undefined) throw new Error("the load instruments left the page");
   if (!record.vitals) {
