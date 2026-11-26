@@ -147,27 +147,13 @@ func TestAStopEndsALeaseJoinStillTryingAndReleasesTheLeaseItTook(t *testing.T) {
 	})
 }
 
-// joinRefusedStopBound is how long the stop of a pod whose lease join waits between two tries of
-// the bucket its grant refuses may take: the join returns at the stop, and a pod receiving without
-// a lease and holding no message stops receiving well inside it.
-const joinRefusedStopBound = time.Second
-
-// A pod whose NATS grant refuses the listener state bucket, stopped while its lease join waits
-// between two tries of that bucket (joinDeliveryLease), ends the join at the stop: the stop returns
-// within joinRefusedStopBound, the join returns with no lease, and a grant that lets the open
-// through after the stop takes nothing. The row runs main's own join through the receiver's
-// (durableReceiver.startJoin), on a lease connection of an nkey user whose grant lacks the bucket,
-// and stops the pod once the join has logged listenerStateRefusedLine twice, so the stop comes in
-// the second refusal's wait, 4 s, past the first doubling.
-//
-// Before, the join slept out each wait between two refused tries (waitOutGrantRefusal), whatever
-// its context said, and the stop waits for the join: the stop spent the rest of that wait, up to
-// durableRefusedRetryCap and so past the shutdown's 10 s, and a join that woke once the stop had
-// given up opened the bucket a grant applied meanwhile let through, took the record and renewed
-// it until the exit.
-// It must not run in parallel: its stop must return within joinRefusedStopBound, 1 s.
-func TestAStopEndsALeaseJoinWaitingOutTheGrantsRefusal(t *testing.T) {
-	const machineID = "box-join-refused"
+// startRefusedJoinRig is startJoiningReceiverRig for a pod whose NATS grant refuses the listener
+// state bucket throughout, on a server of its own whose nkey user may publish to its inboxes and
+// ask for the account's JetStream info ($JS.API.INFO) and nothing of the bucket. It returns the
+// rig, its receive loop active, and the pod's lease connection, dialled as that user as main dials
+// it (openDeliveryLease), which a row hands main's join (joinAsMain).
+func startRefusedJoinRig(t *testing.T, machineID string) (*receiverRig, *natsgo.Conn) {
+	t.Helper()
 	seed, public := testnats.User(t)
 	refusing := testnats.Grant{
 		Publish:   testnats.GrantRules{Allow: []string{"_INBOX.>", "$JS.API.INFO"}},
@@ -176,13 +162,19 @@ func TestAStopEndsALeaseJoinWaitingOutTheGrantsRefusal(t *testing.T) {
 	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: refusing})
 	rig := startJoiningReceiverRig(t, granted.AdminURL, machineID, nil)
 	rig.awaitState(t, receiveActive, 10*time.Second)
-	// The lease connection is the refused user's, dialled as main dials it (openDeliveryLease).
 	conn, err := bus.Dial("receive-test-join "+machineID, []string{granted.URL()}, testnats.SeedOnly(seed))
 	if err != nil {
 		t.Fatalf("connect the lease as the refused user: %v", err)
 	}
 	t.Cleanup(conn.Close)
+	return rig, conn
+}
 
+// joinAsMain hands the rig's receiver main's join of machineID's lease over conn
+// (durableReceiver.startJoin): joinDeliveryLease, then the first rounds and the loop of the lease
+// it returns (lease.Contend, lease.Start). The channel it returns gets what joinDeliveryLease
+// returned, before the try returns.
+func joinAsMain(rig *receiverRig, conn *natsgo.Conn, machineID string) <-chan *lease {
 	tried := make(chan *lease, 1)
 	rig.receiver.startJoin(func(ctx context.Context) *lease {
 		joined := joinDeliveryLease(ctx, conn, 1, machineID, "pod-a", rig.receiver.logger)
@@ -194,6 +186,32 @@ func TestAStopEndsALeaseJoinWaitingOutTheGrantsRefusal(t *testing.T) {
 		joined.Start(context.Background())
 		return joined
 	})
+	return tried
+}
+
+// joinRefusedStopBound is how long the stop of a pod whose lease join waits between two tries of
+// the bucket its grant refuses may take: the join returns at the stop, and a pod receiving without
+// a lease and holding no message stops receiving well inside it.
+const joinRefusedStopBound = time.Second
+
+// A pod whose NATS grant refuses the listener state bucket, stopped while its lease join waits
+// between two tries of that bucket (joinDeliveryLease), ends the join at the stop: the stop returns
+// within joinRefusedStopBound, and the join returns with no lease. The row runs main's own join
+// through the receiver's (durableReceiver.startJoin, joinAsMain), on a lease connection of an nkey
+// user whose grant lacks the bucket (startRefusedJoinRig), and stops the pod once the join has
+// logged listenerStateRefusedLine twice, so the stop comes in the second refusal's wait, 4 s, past
+// the first doubling.
+//
+// Before, the join slept out each wait between two refused tries (waitOutGrantRefusal), whatever
+// its context said, and the stop waits for the join: the stop spent the rest of that wait, up to
+// durableRefusedRetryCap and so past the shutdown's 10 s, and a join that woke once the stop had
+// given up opened the bucket a grant applied meanwhile let through, took the record and renewed
+// it until the exit.
+// It must not run in parallel: its stop must return within joinRefusedStopBound, 1 s.
+func TestAStopEndsALeaseJoinWaitingOutTheGrantsRefusal(t *testing.T) {
+	const machineID = "box-join-refused"
+	rig, conn := startRefusedJoinRig(t, machineID)
+	tried := joinAsMain(rig, conn, machineID)
 	// Each refused try runs out the open's listenerStateOpenSends waits: the server drops a refused
 	// request, and a lease connection no bus client owns reads the refusal only once the open ends.
 	secondRefusal := durableBindPoll + nextRefusedWait(durableBindPoll) + 2*listenerStateOpenSends*listenerStateRequestWait + 10*time.Second
@@ -216,21 +234,65 @@ func TestAStopEndsALeaseJoinWaitingOutTheGrantsRefusal(t *testing.T) {
 	default:
 		t.Fatal("the stop returned with the lease join still waiting for its next try: a grant applied now would let it take the record after the stop")
 	}
+}
 
-	// The grant lets the open through from now, after the stop: a join still waiting would open
-	// the bucket once its wait ended, take the record and renew it.
-	granted.Regrant(t, testnats.GrantedUser{Public: public, Grant: testnats.Grant{
-		Publish:   testnats.GrantRules{Allow: []string{"_INBOX.>", "$JS.API.>", "$KV." + bus.ListenerStateBucket + ".>"}},
-		Subscribe: testnats.GrantRules{Allow: []string{"_INBOX.>"}},
-	}})
-	if _, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait); err != nil {
-		t.Fatalf("UNKNOWN: the lease connection cannot open the bucket under the new grant: %v; the row needs a grant that lets a join still trying through", err)
+// joinOpenFailedLine is the WARN joinDeliveryLease logs, with the wait before its next try, at a
+// try of the listener state bucket that failed neither by the grant's refusal nor by an answer
+// from the cluster's state, an open no answer came to included.
+const joinOpenFailedLine = "listener state bucket open failed; retrying"
+
+// joinTryEndLines are the lines joinDeliveryLease logs at the end of a try of the listener state
+// bucket that failed, one at each such try, each naming the wait before the next try: the grant's
+// refusal (listenerStateRefusedLine), an answer from the cluster's state (clusterStateLine) and
+// any other failure (joinOpenFailedLine).
+var joinTryEndLines = []string{listenerStateRefusedLine, clusterStateLine, joinOpenFailedLine}
+
+// A pod whose NATS grant refuses the listener state bucket, stopped while its lease join's open of
+// that bucket is in flight (joinDeliveryLease, openListenerState), ends the join with nothing
+// logged: none of joinTryEndLines names a retry the pod will not make, and the join returns with
+// no lease. The row runs main's own join through the receiver's (durableReceiver.startJoin,
+// joinAsMain) on a lease connection of an nkey user whose grant lacks the bucket
+// (startRefusedJoinRig), and stops the pod inside the join's first open: the lease connection has
+// sent that open's first request (nats.Conn.Stats), and the join has logged none of
+// joinTryEndLines, which a try logs only once its open has ended. The server drops each refused
+// request, so that open runs out listenerStateOpenSends of listenerStateRequestWait, 6 s.
+//
+// Before, the join read ctx only once an open had succeeded: an open the stop failed was read as
+// the grant's refusal or as a failed open, and the pod logged listenerStateRefusedLine at ERROR, or
+// joinOpenFailedLine at WARN, each with a retry_in, as it stopped.
+// It must not run in parallel: the stop must follow the open's first request by well under the
+// open's 6 s, and the row reads the log for the open's end only just before it stops the pod.
+func TestAStopThatCutsALeaseJoinsOpenLogsNoRetry(t *testing.T) {
+	const machineID = "box-join-cut"
+	rig, conn := startRefusedJoinRig(t, machineID)
+	sentBefore := conn.Stats().OutMsgs
+	tried := joinAsMain(rig, conn, machineID)
+	// The join's first open starts durableBindPoll after the join does, with its first request.
+	firstSend := durableBindPoll + 10*time.Second
+	if !testwait.Holds(firstSend, time.Millisecond, func() bool { return conn.Stats().OutMsgs > sentBefore }) {
+		t.Fatalf("UNARRANGED: the lease connection sent no request in %s of the join, want its first open's; the row needs the stop inside that open", firstSend)
 	}
-	// The rest of the wait the stop came in, the open, and a round of the lease it would make.
-	outlived := nextRefusedWait(nextRefusedWait(durableBindPoll)) + leaseRenewEvery + time.Second
-	time.Sleep(outlived)
-	if record, found := leaseRecordOf(t, rig); found && !record.Released {
-		t.Fatalf("the lease record %s after the stop is %+v, want none or a released one: the join outlived the stop", outlived, record.leaseFields)
+	logsBefore := rig.logs.String()
+	for _, line := range joinTryEndLines {
+		if strings.Contains(logsBefore, line) {
+			t.Fatalf("UNARRANGED: the join logged %q before the stop, so its first open had ended; the row needs the stop inside that open", line)
+		}
+	}
+
+	stopReceiving(rig)
+	logsAfter := rig.logs.String()
+	for _, line := range joinTryEndLines {
+		if logged := strings.Count(logsAfter, line) - strings.Count(logsBefore, line); logged != 0 {
+			t.Errorf("the join logged %q %d times from the stop on, want none: the stop cut its open, and the line names a retry the pod will not make", line, logged)
+		}
+	}
+	select {
+	case joined := <-tried:
+		if joined != nil {
+			t.Fatal("the lease join the stop cut returned a lease, want none: the grant refused the bucket throughout")
+		}
+	default:
+		t.Fatal("the stop returned with the lease join still in its open of the bucket")
 	}
 }
 

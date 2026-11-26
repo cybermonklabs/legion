@@ -1699,17 +1699,19 @@ const listenerStateRefusedLine = "listener state bucket refused by the NATS gran
 // ended, wherever it is. The shutdown ends ctx and waits for the try the join runs in, within
 // stopHTTPGrace (durableReceiver.startJoin, durableReceiver.Stop): a join that slept its retry_in
 // out, up to durableRefusedRetryCap, would spend that budget, and a lease it made after waking
-// would take the record and renew it until the process exits. An open that succeeds once ctx has
-// ended returns nil too, with no lease made over it.
+// would take the record and renew it until the process exits. A try the stop cut ends with nothing
+// logged by the join and no lease: the join reads ctx as soon as the open returns, before it reads
+// the open's result, so an open that ctx's end failed logs neither listenerStateRefusedLine nor
+// the WARN of a retry, and an open that succeeded once ctx had ended makes no lease.
 func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, machineID, instance string, logger *logging.Logger) *lease {
 	wait, refusedWait := durableBindPoll, nextRefusedWait(durableBindPoll)
 	clusterWait := clusterStateWait{next: durableBindPoll}
 	for waitUnlessDone(ctx, wait) == nil {
 		kv, err := openListenerState(ctx, conn, replicas, listenerStateRequestWait)
+		if ctx.Err() != nil {
+			return nil
+		}
 		if err == nil {
-			if ctx.Err() != nil {
-				return nil
-			}
 			logger.Info("listener state bucket opened: joining the machine's delivery lease", slog.String("bucket", bus.ListenerStateBucket))
 			return newLease(kv, machineID, instance, productionLeaseConfig(), time.Now, logger)
 		}

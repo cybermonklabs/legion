@@ -512,6 +512,7 @@ A grant applied after the pod started is so taken within one wait, with no resta
 
 - A stop ends a join still trying before it stops receiving, and waits for it, within the receive stop's budget ("Graceful stop order" above): a lease the join took as the pod stopped is ended with the pod's receiving, its term handed back as any holder's is, or released by the stop when the pod had not taken it up yet, so no standby waits out the record of a pod that stopped gracefully (`durableReceiver.Stop`).
   The join's wait for its next try of the bucket, up to 30 s, ends at the stop too, so it spends none of that budget, and an open that succeeds once the stop came makes no lease (`joinDeliveryLease`).
+  A try the stop cut, in that wait or in its open of the bucket, logs nothing of its own from the stop on, so a pod stopped while its grant still refuses the bucket logs neither `listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR nor `listener state bucket open failed; retrying` at WARN for a retry it will not make.
   A shutdown that comes as the lease joins ends the term the pod received on without a lease, its subscription drained and what it holds NAKed, rather than handing that term to the lease (`durableReceiver.receive`); one that comes once the lease has taken the term over ends it as the holder's term, with the hand-back a holder's stop makes (`durableReceiver.run`).
 
 Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` (for a `gcp:NatsHub`, its users;

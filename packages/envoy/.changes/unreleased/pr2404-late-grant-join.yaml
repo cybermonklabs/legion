@@ -21,9 +21,10 @@ body: |-
     machine's shared one, still answering from the pod's own records each pair it delivered or
     attempted before the join for as long as that record stops a delivery. A pod that stops while
     it still tries the bucket ends that try before it stops delivering, its wait for the next try
-    included, so the stop does not wait that `retry_in` out, and a lease the try took as the pod
-    stopped is handed back or released by that stop, so no standby waits out the record of a pod
-    that stopped gracefully.
+    included, so the stop does not wait that `retry_in` out; a try the stop cuts, in that wait or
+    in its open of the bucket, logs nothing of its own, so the stopping pod logs no retry it will
+    not make; and a lease the try took as the pod stopped is handed back or released by that stop,
+    so no standby waits out the record of a pod that stopped gracefully.
 time: 2026-11-20T16:00:25.893817402Z
 custom:
     Issue: pr2404
