@@ -635,6 +635,7 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 	if err != nil {
 		return false, fmt.Errorf("record the merge of %s: %w", issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	if tag.RowsAffected() == 1 {
 		return true, nil
 	}
@@ -1671,9 +1672,11 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string,
 // next change raises its generation alone and never calls this (ClearChangeGeneration).
 func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
 	describe := fmt.Sprintf("clear the generation of tree %s", tree)
-	if _, err := tx.Exec(ctx, `update issues set tree_generation = generation where key = $1 and tree = key`, tree); err != nil {
+	tag, err := tx.Exec(ctx, `update issues set tree_generation = generation where key = $1 and tree = key`, tree)
+	if err != nil {
 		return fmt.Errorf("%s: raise its tree generation: %w", describe, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $2) and state <> 'open'",
 		"issue in (select key from issues where tree = $1)", "tree = $1", tree, describe, now)
 }
