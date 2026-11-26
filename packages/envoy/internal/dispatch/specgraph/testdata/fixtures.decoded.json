@@ -2879,6 +2879,69 @@
       "schema": true
     }
   ],
+  "nodes/hard-texts.yaml": [
+    {
+      "data": {
+        "definition": [
+          "a \"quoted\" word",
+          "a \u0026 b",
+          "a \u0026amp; b",
+          "a \u0026lt; b",
+          "a } b",
+          "a { b",
+          "a # b",
+          "a `code` b",
+          "a b",
+          "a 😀 b",
+          "#a}",
+          "line one",
+          "line two",
+          "a: b",
+          "x #y",
+          "- x",
+          "? x",
+          ": x",
+          "|",
+          "\u003e",
+          "'",
+          "\"",
+          "#",
+          "@at",
+          "`",
+          " lead",
+          "yes",
+          "no",
+          "Off",
+          "0x1F",
+          "1_000",
+          ".inf",
+          "2026-11-16",
+          "a\tb",
+          "a\u2028b",
+          "a\u2029b",
+          "ab",
+          "=",
+          "\u003c\u003c",
+          "0x_",
+          "1.2.3",
+          "2026-11-16 10:00:00 +01:00",
+          "a﻿b",
+          "a ",
+          "a\u0001b",
+          "emoji 😀",
+          "line three",
+          "2026-11-16T10:00:00",
+          "2026-11-16 10:00:00 Z",
+          "2026-11-16T10:00:00 +01:00",
+          "2026-1-5 10:00:00"
+        ],
+        "id": "hard-texts",
+        "name": "hard texts",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
   "nodes/quoted.yaml": [
     {
       "data": {

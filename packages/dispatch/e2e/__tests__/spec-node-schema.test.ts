@@ -1,11 +1,13 @@
 // The schema of a node of The Spec, and the YAML of the spec files, read the same in TypeScript as
 // in Go (R5 of the specification). ajv reads the one schema of the repository and the one table
-// of its cases that the Go test TestSchemaCases reads; the yaml library reads the YAML nodes of
-// specgraph's testdata/nodes, each as the data of the .decoded.json file beside it, which a person
-// wrote and which the Go test TestNodesDecodeToTheirData holds yaml.v3 to; and it reads each YAML
+// of its cases that the Go test TestSchemaCases reads; the yaml library reads each YAML file of
+// specgraph's testdata/nodes, which the printer writes (TestPrintWritesTheFileForm), each as the
+// data of the .decoded.json file beside it, which a person wrote and which the Go test
+// TestNodesDecodeToTheirData holds yaml.v3 to: hard-texts.yaml holds each line that the printer
+// quotes or escapes, such as `=`, `<<`, `yes`, `0x_` and a date with a time. It also reads each YAML
 // fixture of specgraph's testdata, each file that the printer wrote for the tests, as the data of
-// testdata/fixtures.decoded.json, which the Go test TestEachYAMLFixtureDecodesAsItsData holds
-// yaml.v3 and the Go schema validator to.
+// testdata/fixtures.decoded.json, which the Go test TestEachYAMLFixtureDecodesAsItsData writes and
+// holds yaml.v3 and the Go schema validator to.
 
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
@@ -56,7 +58,14 @@ describe("the schema of a node", () => {
 });
 
 describe("the YAML of the spec files", () => {
-  for (const name of ["all-kinds", "quoted", "separators"]) {
+  const nodeFiles = readdirSync(specgraphPath("testdata/nodes"))
+    .filter((name) => name.endsWith(".yaml"))
+    .map((name) => name.slice(0, -".yaml".length))
+    .sort();
+  test("testdata/nodes holds YAML files", () => {
+    expect(nodeFiles.length).toBeGreaterThan(0);
+  });
+  for (const name of nodeFiles) {
     test(`${name}.yaml reads as ${name}.decoded.json, and the schema takes each node`, () => {
       const documents = parseAllDocuments(specgraph(`testdata/nodes/${name}.yaml`));
       if ("empty" in documents) throw new Error(`${name}.yaml holds no document`);

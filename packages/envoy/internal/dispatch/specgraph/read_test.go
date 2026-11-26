@@ -21,13 +21,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Each document of the hand-written files of testdata/nodes reads, with yaml.v3 and as JSON, as
-// the data that a person wrote for it in the .decoded.json file beside it, and the schema takes
-// that data (v-second-library). The TypeScript test of the schema holds yaml's reading of the same
-// files to the same data and the same schema.
+// Each document of each YAML file of testdata/nodes reads, with yaml.v3 and as JSON, as the data
+// that a person wrote for it in the .decoded.json file beside it, and the schema takes that data
+// (v-second-library). The printer writes each such file (TestPrintWritesTheFileForm). The test
+// lists the files, so none can be left out of it, and a file with no .decoded.json fails it. The
+// TypeScript test of the schema holds yaml's reading of the same files to the same data and the
+// same schema.
 func TestNodesDecodeToTheirData(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"all-kinds", "quoted", "separators"} {
+	paths, err := filepath.Glob("testdata/nodes/*.yaml")
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("testdata/nodes holds no YAML file: %v", err)
+	}
+	for _, path := range paths {
+		name := strings.TrimSuffix(filepath.Base(path), ".yaml")
 		documents, problems, _ := readDocuments(name+".yaml", []byte(fileText(t, "testdata/nodes/"+name+".yaml")))
 		if len(problems) != 0 {
 			t.Fatalf("%s.yaml: problems %+v", name, problems)

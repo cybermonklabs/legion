@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
 )
 
 // allKinds is the five nodes of testdata/nodes/all-kinds.yaml, in the order of the file, as Go
@@ -85,6 +88,12 @@ func TestPrintWritesTheFileForm(t *testing.T) {
 		t.Fatal(err)
 	}
 	sameText(t, "separators.yaml", document, fileText(t, "testdata/nodes/separators.yaml"))
+
+	document, err = printNode(hardTextsTerm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameText(t, "hard-texts.yaml", document, fileText(t, "testdata/nodes/hard-texts.yaml"))
 }
 
 // sameText fails the test at the first line where got and want differ.
@@ -129,6 +138,33 @@ var hardTexts = []string{
 	"yes", "no", "Off", "0x1F", "1_000", ".inf", "2026-11-16", "a\tb", "a\u2028b", "a\u2029b", "a\u0085b",
 	"=", "<<", "0x_", "1.2.3", "2026-11-16 10:00:00 +01:00",
 	"a\ufeffb", "a\u00a0", "a\x01b", "emoji \U0001F600", "line one\nline two\nline three",
+}
+
+// timedTexts are texts that a YAML 1.1 reader (PyYAML) reads as another type and that hardTexts
+// does not hold: a date with a time in each of its spellings.
+var timedTexts = []string{
+	"2026-11-16T10:00:00", "2026-11-16 10:00:00 Z", "2026-11-16T10:00:00 +01:00", "2026-1-5 10:00:00",
+}
+
+// hardTextsTerm is the term of testdata/nodes/hard-texts.yaml, whose definition holds each line of
+// hardTexts and timedTexts: the printer writes it (TestPrintWritesTheFileForm), and a person wrote
+// the data of hard-texts.decoded.json, which yaml.v3 (TestNodesDecodeToTheirData) and the TypeScript
+// yaml library (spec-node-schema.test.ts) each read the file as, so both read the texts that the
+// printer quotes as the same strings.
+var hardTextsTerm = Term{ID: "hard-texts", Name: "hard texts", Definition: uniqueLines(slices.Concat(hardTexts, timedTexts))}
+
+// uniqueLines is each line of texts once, in the order of its first place, one line of a text each:
+// a list of a node holds no line two times.
+func uniqueLines(texts []string) string {
+	var lines []string
+	for _, text := range texts {
+		for line := range strings.SplitSeq(text, "\n") {
+			if !slices.Contains(lines, line) {
+				lines = append(lines, line)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Each node prints as a document that the reader reads back as the same node, with the same digest
@@ -361,4 +397,58 @@ func sortedLists(node any) any {
 // nodeDigest is the digest of node, a Statement, Check, Component or Term.
 func nodeDigest(node any) string {
 	return node.(interface{ Digest() string }).Digest()
+}
+
+// typedPlain is each pattern by which a YAML reader reads a plain scalar as another type than a
+// string: PyYAML 6.0.1's implicit resolvers for YAML 1.1 (yaml/resolver.py, written without the
+// verbose mode), and the YAML 1.2 core schema's, which the TypeScript yaml library reads.
+var typedPlain = []struct {
+	reader, tag string
+	re          *regexp.Regexp
+}{
+	{"YAML 1.1", "null", regexp.MustCompile(`^(?:~|null|Null|NULL|)$`)},
+	{"YAML 1.1", "bool", regexp.MustCompile(`^(?:yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$`)},
+	{"YAML 1.1", "int", regexp.MustCompile(`^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$`)},
+	{"YAML 1.1", "float", regexp.MustCompile(`^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$`)},
+	{"YAML 1.1", "timestamp", regexp.MustCompile(`^(?:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?(?:[Tt]|[ \t]+)[0-9][0-9]?:[0-9][0-9]:[0-9][0-9](?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?)$`)},
+	{"YAML 1.1", "merge", regexp.MustCompile(`^<<$`)},
+	{"YAML 1.1", "value", regexp.MustCompile(`^=$`)},
+	{"YAML 1.1", "yaml", regexp.MustCompile(`^(?:!|&|\*)$`)},
+	{"YAML 1.2 core", "null", regexp.MustCompile(`^(?:~|null|Null|NULL|)$`)},
+	{"YAML 1.2 core", "bool", regexp.MustCompile(`^(?:true|True|TRUE|false|False|FALSE)$`)},
+	{"YAML 1.2 core", "int", regexp.MustCompile(`^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$`)},
+	{"YAML 1.2 core", "float", regexp.MustCompile(`^(?:[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$`)},
+}
+
+// The printer writes a scalar plain only when yaml.v3 reads the plain form back as the same string,
+// and a YAML 1.1 reader resolves more plain scalars to other types: "=" (value) and "<<" (merge)
+// make PyYAML refuse the whole file, and "0x_" or "2026-11-16T10:00:00" read as an error or a
+// datetime. So no text of hardTexts or timedTexts prints as a plain scalar that a pattern of
+// typedPlain matches.
+func TestPrintWritesNoPlainScalarThatAYAML11ReaderTypes(t *testing.T) {
+	t.Parallel()
+	for _, text := range slices.Concat(hardTexts, timedTexts) {
+		document, err := printNode(Term{ID: "typed", Name: "typed term", Definition: text})
+		if err != nil {
+			t.Fatalf("printNode(%q): %v", text, err)
+		}
+		var root yaml.Node
+		if err := yaml.Unmarshal([]byte(document), &root); err != nil {
+			t.Fatalf("the document of %q does not read: %v", text, err)
+		}
+		var walk func(n *yaml.Node)
+		walk = func(n *yaml.Node) {
+			if n.Kind == yaml.ScalarNode && n.Style == 0 {
+				for _, p := range typedPlain {
+					if p.re.MatchString(n.Value) {
+						t.Errorf("%q prints as the plain scalar %q, which a %s reader reads as a %s, not a string", text, n.Value, p.reader, p.tag)
+					}
+				}
+			}
+			for _, child := range n.Content {
+				walk(child)
+			}
+		}
+		walk(&root)
+	}
 }
