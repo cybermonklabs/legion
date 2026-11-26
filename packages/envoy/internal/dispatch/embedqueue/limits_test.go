@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -17,20 +18,33 @@ import (
 
 // azureFake stands in for an Azure AI Foundry deployment's embeddings route: it answers 429 while
 // throttling is set, 404 DeploymentNotFound while missing is set (the deployment name is not one
-// the resource has), and vectors otherwise, recording each request's inputs.
+// the resource has), and vectors otherwise, recording each request's inputs and what it answered.
 type azureFake struct {
 	mu         sync.Mutex
 	throttling bool
 	missing    bool
 	requests   [][]string
+	// answers is each request's answer: its status, when the request arrived and how long the
+	// answer took. A call the client's own timeout cut is a failure in place of the 429, which
+	// starts a bisection that logs nothing, so these are what a failure message can show of it.
+	answers []string
 }
 
 func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	arrived := time.Now()
+	status := http.StatusOK
+	defer func() {
+		f.mu.Lock()
+		f.answers = append(f.answers, fmt.Sprintf("%d (arrived %s, answered after %s)",
+			status, arrived.Format(time.RFC3339Nano), time.Since(arrived)))
+		f.mu.Unlock()
+	}()
 	var request struct {
 		Input []string `json:"input"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		status = http.StatusBadRequest
+		http.Error(w, err.Error(), status)
 		return
 	}
 	f.mu.Lock()
@@ -39,12 +53,14 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	if throttling {
-		w.WriteHeader(http.StatusTooManyRequests)
+		status = http.StatusTooManyRequests
+		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"error":{"code":"RateLimitReached","message":"Rate limit is exceeded."}}`))
 		return
 	}
 	if missing {
-		w.WriteHeader(http.StatusNotFound)
+		status = http.StatusNotFound
+		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"error":{"code":"DeploymentNotFound","message":"The API deployment for this resource does not exist."}}`))
 		return
 	}
@@ -60,17 +76,24 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *azureFake) take() [][]string {
+	requests, _ := f.takeAnswered()
+	return requests
+}
+
+// takeAnswered is take with each request's answer beside it.
+func (f *azureFake) takeAnswered() (requests [][]string, answers []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	requests := f.requests
-	f.requests = nil
-	return requests
+	requests, answers = f.requests, f.answers
+	f.requests, f.answers = nil, nil
+	return requests, answers
 }
 
 // An Azure 429, through the real AzureClient, is a throttle: the whole batch is retried as one
 // request - never bisected, never confirmed with a canary - however many times it recurs, and
 // nothing is dead-lettered; once Azure answers, the batch is embedded under the Azure identity.
 func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ids := []string{"AZTH-1", "AZTH-2", "AZTH-3"}
 	for _, id := range ids {
@@ -99,8 +122,8 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 		if err != nil || blocked || !throttled || succeeded != 0 || failed != len(ids) {
 			t.Fatalf("cycle %d: ProcessBatch = %d, %d, %v, %v, %v; want 0, %d, not blocked, throttled", cycle, succeeded, failed, blocked, throttled, err, len(ids))
 		}
-		if requests := fake.take(); len(requests) != 1 || len(requests[0]) != len(ids) {
-			t.Fatalf("cycle %d: Azure saw %v, want one request carrying the whole batch", cycle, requests)
+		if requests, answers := fake.takeAnswered(); len(requests) != 1 || len(requests[0]) != len(ids) {
+			t.Fatalf("cycle %d: Azure saw %v, want one request carrying the whole batch; Azure answered %v", cycle, requests, answers)
 		}
 	}
 	var dead, confirmed int
@@ -136,6 +159,7 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 // own BackgroundTokensPerMinute: two rows whose estimates together pass it go in separate calls,
 // and the shared bucket is capped at it.
 func TestBatchSizeAndTokenCeilingFollowTheEmbeddersLimits(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	// 30,400 characters is 7,600 estimated tokens: one fits under a 15,000 ceiling, two do not.
@@ -213,6 +237,7 @@ func batchBytes(texts []string) int {
 // groups of three, each at most Azure's 320,000-byte budget, every row in exactly one group and in
 // order; the token ceiling alone (MaxBatchBytes 0) groups the same rows 25 at a time, as before.
 func TestChunkForBudgetKeepsEachCallWithinTheByteBudget(t *testing.T) {
+	t.Parallel()
 	limits := azureLimits(t)
 	if limits.MaxBatchBytes != 320_000 || limits.MaxBatchTexts != 96 {
 		t.Fatalf("Azure limits = %+v, want 96 texts and 320,000 bytes", limits)
@@ -278,6 +303,7 @@ func (e *timeoutEmbedder) Embed(ctx context.Context, texts []string, inputType e
 // call over its byte budget would time out: every call stays within the budget and succeeds the
 // first time, so nothing is bisected or sent twice, and every row is current.
 func TestAFullBatchOfDenseTextIsEmbeddedWithinTheByteBudgetWithoutBisection(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	limits := azureLimits(t)
 	// The token pace is not under test: a ceiling this high never waits.

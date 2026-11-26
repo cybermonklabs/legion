@@ -149,6 +149,8 @@ func clockRows() []clockRow {
 			never: "the outbox's close of a tree after its fact commits (store.Store.ReserveWorkflowTreeCleanup, ReserveOperatorTreeCleanup); a replay finishes a close row without releasing a tree"},
 		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "ConfirmCleanup"},
 			never: "the outbox's confirmation of a tree's released resources (store.Store.CleanupReservedTree); a replay releases no tree"},
+		{statement: nowStatement{"internal/store/pod_replacement.go", "(*Store).RecordPodReplacement"},
+			never: "the daemon's replacement of an issue's pod (internal/daemon's podreplace.go); a replay replaces no pod"},
 	}
 }
 
