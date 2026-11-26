@@ -5951,6 +5951,13 @@ const PRESSED_BLOCK = "r-pressed";
 /** The word of that block a press lands in, and how far into it. */
 const PRESSED_WORD = "Placeholder";
 const PRESSED_INTO = 4;
+/** A separate spec block that ends with an inline HTML atom. */
+const ENDING_ATOM_BLOCK = "r-ending-atom";
+const INLINE_HTML = '[data-type="html"]';
+const ENDING_ATOM_TEXT = "<name>";
+const ENDING_ATOM_WORDS = `Kept by ${ENDING_ATOM_TEXT}`;
+// The first paragraph keeps the words column wider than the last paragraph on both viewports.
+const ENDING_ATOM_INTRO = "An opening paragraph with room for a press on the next line.";
 /** The words of a comment another person wrote, and the word of them a press lands in. */
 const THEIR_WORDS = "Bob's comment on the issue, which no other reader edits.";
 const THEIR_WORD = "comment";
@@ -6023,6 +6030,39 @@ async function pointOnLink(page: Page, link: Locator): Promise<{ x: number; y: n
   return point;
 }
 
+/** Brings the ending inline HTML into view and finds a press in the text column past it. */
+async function pointPastInlineHtml(page: Page, words: Locator): Promise<{ x: number; y: number }> {
+  const atom = words.locator(INLINE_HTML);
+  await expect(atom, "the Conversation row draws no ending inline HTML").toHaveText(
+    ENDING_ATOM_TEXT
+  );
+  const lineY = await atom.evaluate((element) => {
+    const line = [...element.getClientRects()].at(-1);
+    if (line === undefined) throw new Error("the ending inline HTML has no box");
+    return (line.top + line.bottom) / 2;
+  });
+  await wheelToMiddle(page, lineY);
+  const point = await words.evaluate((column, selector) => {
+    const atom = column.querySelector(selector);
+    const line = atom === null ? undefined : [...atom.getClientRects()].at(-1);
+    if (line === undefined) return null;
+    const y = Math.round((line.top + line.bottom) / 2);
+    const first = Math.floor(line.right) + 1;
+    const last = Math.min(first + 39, Math.ceil(column.getBoundingClientRect().right) - 1);
+    for (let x = last; x >= first; x--) {
+      const hit = document.elementFromPoint(x, y);
+      if (hit !== null && column.contains(hit)) {
+        if (hit.closest(`a, button, [data-node-trail], ${selector}`) === null) return { x, y };
+      }
+    }
+    return null;
+  }, INLINE_HTML);
+  if (point === null) {
+    throw new Error("no part of the words column is visible past the inline HTML");
+  }
+  return point;
+}
+
 /** Turns the wheel, the reader's own act, to bring what stands `y` px down the screen to its
  *  middle, and waits for the page to stop. */
 async function wheelToMiddle(page: Page, y: number): Promise<void> {
@@ -6032,6 +6072,11 @@ async function wheelToMiddle(page: Page, y: number): Promise<void> {
   await settledScrollTop(page);
 }
 
+async function closePressedRowEditor(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  await expect.poll(() => caretInNode(page), { message: "Escape left the caret in" }).toBe(false);
+}
+
 // c-press-caret (R18, decision 420 (1)): a press on the words of an outline row that takes a caret
 // opens its editor with the caret where the press landed, as Enter opens it at the block's start,
 // and a letter typed then lands there; a press on a row that takes no caret - a comment another
@@ -6039,9 +6084,9 @@ async function wheelToMiddle(page: Page, y: number): Promise<void> {
 // follows the link. Read on Conversation's outline at 1440 px and at 390 px, where the phone's
 // press is a tap. Before R18 only Enter opened the editor, while the pointer's text cursor
 // (decision 323) said the words took typing.
-// SLOW(>=2s): the whole issue seeded with a statement inserted in its spec and a second reader's
-// comment, and the conversation loaded at each width for a press, a letter typed and taken out
-// again, a press on the comment and a link followed.
+// A separate statement ends with inline HTML. A press past it must put typed text after the atom.
+// SLOW(>=2s): seed the issue, two spec statements and another reader's comment. At each width,
+// load Conversation, press and type in both statements, press the comment and follow the link.
 test("a press on a row puts the caret where it lands @phone", async ({ browser }) => {
   test.setTimeout(180_000);
   const seed = async () => {
@@ -6054,6 +6099,11 @@ test("a press on a row puts the caret where it lands @phone", async ({ browser }
           markdown: `:::requirement{#${PRESSED_BLOCK}}\n${pressedWords(seeded.key, seeded.documents.cited)}\n:::`,
           op: "insert",
         },
+        {
+          after: `block:${requirementBlockId(4)}`,
+          markdown: `:::requirement{#${ENDING_ATOM_BLOCK}}\n${ENDING_ATOM_INTRO}\n\n${ENDING_ATOM_WORDS}\n:::`,
+          op: "insert",
+        },
       ],
     });
     return { ...seeded, theirs: theirs.id };
@@ -6061,6 +6111,7 @@ test("a press on a row puts the caret where it lands @phone", async ({ browser }
   await phase(browser, seed, async (page, seeded) => {
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const statement = nodeRow(page, blockNodeId(specSlug, PRESSED_BLOCK)).first();
+    const endingStatement = nodeRow(page, blockNodeId(specSlug, ENDING_ATOM_BLOCK)).first();
     const comment = nodeRow(page, seeded.theirs).first();
     // The phone's project presses by touch; the desktop's reads both widths with the mouse.
     const touch = test.info().project.name === "iphone";
@@ -6123,10 +6174,30 @@ test("a press on a row puts the caret where it lands @phone", async ({ browser }
         );
         await page.keyboard.press("Backspace");
         await expect(block).toContainText(`${PRESSED_WORD} words`);
-        await page.keyboard.press("Escape");
+        await closePressedRowEditor(page);
+
+        // Press beyond the atom, not on it. The typed marker distinguishes the two sides.
+        await expect(endingStatement, "the ending atom's row takes no typing").toHaveAttribute(
+          "data-editable",
+          ""
+        );
+        await press(await pointPastInlineHtml(page, rowWords(endingStatement)));
         await expect
-          .poll(() => caretInNode(page), { message: "Escape left the caret in" })
-          .toBe(false);
+          .poll(() => caretInRowBlock(page, ENDING_ATOM_BLOCK), {
+            message: "a press past the ending inline HTML opened no editor for that row",
+          })
+          .toBe(true);
+        const atomParagraph = endingStatement
+          .locator(`[contenteditable="true"] [data-block-id="${ENDING_ATOM_BLOCK}"] p`)
+          .filter({ has: page.locator(`${INLINE_HTML}[contenteditable="false"]`) });
+        await page.keyboard.type("Q");
+        await expect(
+          atomParagraph,
+          "a press past the ending inline HTML must insert Q after <name>, not before it"
+        ).toHaveText(`${ENDING_ATOM_WORDS}Q`);
+        await page.keyboard.press("Backspace");
+        await expect(atomParagraph).toHaveText(ENDING_ATOM_WORDS);
+        await closePressedRowEditor(page);
 
         // A press on a comment another person wrote moves the focus to its row alone.
         await expect(comment, "another person's comment takes typing").not.toHaveAttribute(
