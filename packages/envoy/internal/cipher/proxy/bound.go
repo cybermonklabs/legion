@@ -38,6 +38,11 @@ import (
 // token that lapses in the middle of one fails the call rather than being retried.
 const mintAgainBefore = 5 * time.Minute
 
+// proxyOnlyHeaders are the headers that belong to this connection and not to the service: removed
+// from the forwarded request and from the leftover scan alike. A header taken off one list alone
+// would go upstream (or be scanned) while the other did not see it.
+var proxyOnlyHeaders = [...]string{"Proxy-Authorization", "Proxy-Connection"}
+
 // grantValues is one grant's real values on this pod, read once and then held until a name's
 // own reread drops it (DropName), the policy version the read ran under stops being the live
 // one, or a minted value comes within mintAgainBefore of its expiry; and the whole entry is
@@ -547,35 +552,36 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// Headers of the proxy itself, which belong to this connection and not to the service. The
 	// swap and the signature have already run, so a header the kind names keeps its value and the
 	// signature covers neither of these.
-	header.Del("Proxy-Authorization")
-	header.Del("Proxy-Connection")
+	for _, name := range proxyOnlyHeaders {
+		header.Del(name)
+	}
 	// SC14 scans the request as the command wrote it, leaving out only the placeholder the swap
 	// replaced. A second, ended or unknown placeholder in the same named header remains and is
-	// refused. proxyrules.Swap puts one space where the swap put the value, inside a Basic
+	// refused. proxyrules.SwapForScan puts one space where the swap put the value, inside a Basic
 	// credential too, and changes nothing else, so the text on the two sides of the placeholder
 	// stays apart in the scan as the value keeps it apart upstream. A kind prefix right after the
 	// placeholder therefore has a boundary before it and is read whatever the value ends in, and
 	// the default prefix right before it is not joined to the text after it into a placeholder
 	// the request never sends. A space is no letter or digit and no character of
-	// placeholder.Alphabet. The empty string would join the two sides. The AWS sign path instead
-	// removes the three headers signAWS deletes before it signs, because the signer wrote
-	// them; the query is scanned as the command wrote it, since the sign path does not rewrite
-	// it (presigned URLs are refused earlier). Proxy-only headers and Cipher-Repository leave
-	// before the service and are left out too.
+	// placeholder.Alphabet. The empty string would join the two sides. The AWS sign path removes
+	// signerHeaders because the signer wrote them; the query is scanned as the command wrote it,
+	// since the sign path does not rewrite it (presigned URLs are refused earlier). Proxy-only
+	// headers and Cipher-Repository leave before the service and are left out too.
 	var scannedHeaders http.Header
 	if way == proxyrules.WaySign {
 		scannedHeaders = headerOf(request.Headers)
-		scannedHeaders.Del("Authorization")
-		scannedHeaders.Del("X-Amz-Date")
-		scannedHeaders.Del("X-Amz-Security-Token")
+		for _, name := range signerHeaders {
+			scannedHeaders.Del(name)
+		}
 	} else {
 		// SwapForScan, not a second Rewrite: Rewrite decides again, and its check refuses a
 		// request whose headers already hold the value it is given. SwapForScan takes no
 		// decision and bakes in the space separator. Rewrite above has decided this request.
 		scannedHeaders = headerOf(proxyrules.SwapForScan(rules.KindOf(rules.Lookup(grant.Secret)), grant.Placeholder, request).Headers)
 	}
-	scannedHeaders.Del("Proxy-Authorization")
-	scannedHeaders.Del("Proxy-Connection")
+	for _, name := range proxyOnlyHeaders {
+		scannedHeaders.Del(name)
+	}
 	scannedHeaders.Del(proxyrules.CipherRepositoryHeader)
 	// A placeholder the command still carries after the swap would leave the proxy with it: an
 	// ended grant's, another session's, a grant's beside the one this request is handled for, or

@@ -809,8 +809,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		ErrorLog: s.errorLog,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL
-			pr.Out.Header.Del("Proxy-Authorization")
-			pr.Out.Header.Del("Proxy-Connection")
+			for _, name := range proxyOnlyHeaders {
+				pr.Out.Header.Del(name)
+			}
 		},
 		ErrorHandler: s.badGateway(host, r.URL.Path),
 	}
