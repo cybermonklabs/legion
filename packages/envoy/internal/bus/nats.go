@@ -62,14 +62,15 @@ type connectOpts struct {
 	// one.
 	logger          *slog.Logger
 	keeperStepGuard time.Duration
-	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
-	// reports, and startCheck WithStartCheck's check.
-	credentialWait     time.Duration
-	credentialRefused  func(error)
-	credentialAdmitted func()
-	startCheck         func(*Client) error
-	closedHook         func()
-	closeSettleBound   time.Duration
+	// credentialWait, credentialRefused, credentialAdmitted and credentialWaitClock are
+	// WithCredentialWait's bound, reports and clock, and startCheck WithStartCheck's check.
+	credentialWait      time.Duration
+	credentialRefused   func(error)
+	credentialAdmitted  func()
+	credentialWaitClock CredentialWaitClock
+	startCheck          func(*Client) error
+	closedHook          func()
+	closeSettleBound    time.Duration
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -162,6 +163,20 @@ func WithPublishAcknowledgementClock(clock AcknowledgementClock) ConnectOption {
 // waiting one. nil, the default, is time.Now.
 func WithReconnectErrClock(now func() time.Time) DialOption {
 	return func(o *connectOpts) { o.reconnectErrClock = now }
+}
+
+// CredentialWaitClock is the one clock a credential-refusal start reads and sleeps on. Production
+// leaves it nil and uses the wall clock. Tests that supply it must make Sleep move the time Now
+// reports, as waitOutCredentialRefusals uses both to decide its retry bound.
+type CredentialWaitClock interface {
+	Now() time.Time
+	Sleep(time.Duration)
+}
+
+// WithCredentialWaitClock overrides the clock a credential-refusal start uses. It is for tests of
+// programs that start clients: production leaves it unset and uses the wall clock.
+func WithCredentialWaitClock(clock CredentialWaitClock) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.credentialWaitClock = clock })
 }
 
 // WithReplicas sets the deployment's replica count, ReplicasEnvVar, for the stream
@@ -342,7 +357,7 @@ func WithStreamMessageReads() ConnectOption {
 // admitted is still called when it gets in. A start in the background (WithConnectInBackground)
 // never fails, so it ignores the option.
 //
-// cmd/listener alone passes it, through its start (natsStart.option): to the main client, the role
+// cmd/listener alone passes it, through its start (natsStart.options): to the main client, the role
 // lane (ConnectRoleLane) and the session-consumer connection (ConnectSessionConsumers), each a
 // connect of the listener's start, so a listener started before the hub's servers have reloaded
 // its new nkey connects once they have, where it would exit and be restarted.
@@ -765,7 +780,11 @@ func credentialStart(urls []string, ownsStream bool, opts connectOpts, settings 
 			opts.credentialRefused(err)
 		}
 	}
-	return waitOutCredentialRefusals(opts.credentialWait, refused, wallStartClock, func() (*Client, error) {
+	clock := wallStartClock
+	if opts.credentialWaitClock != nil {
+		clock = startClock{now: opts.credentialWaitClock.Now, sleep: opts.credentialWaitClock.Sleep}
+	}
+	return waitOutCredentialRefusals(opts.credentialWait, refused, clock, func() (*Client, error) {
 		client, failedAt, err := checkedStart(urls, ownsStream, opts, settings, dialer, 1, 0)
 		if err != nil && failedAt != stepDial && !credentialRefusal(err) {
 			return nil, endsStart{err}

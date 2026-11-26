@@ -1086,7 +1086,7 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 		go func() {
 			defer close(restarted)
 			if _, pull, _ := rig.relays.restart(context.Background(), &relayRun{sessionID: sessionID}); pull != nil {
-				pull.Stop()
+				stopRestartPullAtServer(t, rig.sessionConsumerRig, sessionID, pull)
 			}
 		}()
 		// The registration leaves this window only once the restart has reached it: waiting for

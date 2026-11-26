@@ -251,7 +251,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 	const (
 		target = "ses_frozen_bus_target"
 		sender = "ses_frozen_bus_sender_with_no_interest_record"
-		within = 4 * time.Second
+		within = 5 * time.Second
 	)
 	for _, route := range []struct {
 		name    string

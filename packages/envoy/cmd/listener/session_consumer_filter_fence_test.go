@@ -282,7 +282,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 	if pull == nil {
 		t.Fatalf("the restart of %s pulled nothing, outcome %v", sessionID, outcome)
 	}
-	pull.Stop()
+	stopRestartPullAtServer(t, a.sessionConsumerRig, sessionID, pull)
 
 	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTFENCEADD.comment")
@@ -326,7 +326,7 @@ func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurthe
 	if pull == nil {
 		t.Fatalf("the restart of %s pulled nothing, outcome %v", sessionID, outcome)
 	}
-	pull.Stop()
+	stopRestartPullAtServer(t, a.sessionConsumerRig, sessionID, pull)
 
 	wrote := requireFenceReadFailureLogged(t, a.sessionConsumerRig, sessionID)
 	requireKeptTheBucketsRow(t, b, sessionID, "restart", wrote, newest,
@@ -387,11 +387,26 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 	if pull == nil {
 		t.Fatalf("the restart of %s pulled nothing, outcome %v", sessionID, outcome)
 	}
-	pull.Stop()
+	stopRestartPullAtServer(t, a.sessionConsumerRig, sessionID, pull)
 
 	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTWRITEADD.comment")
 	b.awaitPending(t, sessionID, 1)
+}
+
+// stopRestartPullAtServer ends pull and orders a following store after the server took its
+// unsubscribe. SessionPull.Stop queues an UNSUB and returns before nats.go's flusher must send it;
+// a message stored in that window can be delivered to the stopped pull and remain awaiting an ack.
+// The consumer-info request uses the same session-consumer connection, whose operations the server
+// reads in order, so its reply follows the UNSUB.
+func stopRestartPullAtServer(t *testing.T, rig *sessionConsumerRig, sessionID string, pull *bus.SessionPull) {
+	t.Helper()
+	pull.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWaitBound(t))
+	defer cancel()
+	if _, err := rig.deps.consumers.Info(ctx, sessionID); err != nil {
+		t.Fatalf("confirm the stopped restart pull of %s is gone at the server: %v", sessionID, err)
+	}
 }
 
 // A consumer call whose answer did not come back is judged by the fence as a write that may

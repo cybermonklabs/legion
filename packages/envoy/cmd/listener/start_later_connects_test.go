@@ -207,7 +207,7 @@ const laterConnectRefusedFor = 15 * time.Second
 // of its own, and each ends the start when it fails. Behind a hub whose servers reload a new nkey
 // one at a time, the main client can get in through the one server that has reloaded while a later
 // connect meets one that has not. So each later connect waits out a refusal of the credential as
-// the main client does, under the start's own bound (natsStart.option), and /healthz answers 503
+// the main client does, under the start's own bound (natsStart.options), and /healthz answers 503
 // naming the refusal while it does. The server here admits the nkey for the main client, then
 // refuses it for laterConnectRefusedFor while a later connect runs, then admits it again: the
 // connect has not returned by the time the server admits the nkey again, and then it connects, and
@@ -248,7 +248,7 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 			server, uri := testnats.StartConfig(t, nkeyAuthorization(fallback, nkeyUser(public)), []string{"-js"}, true)
 			t.Setenv(bus.NkeySeedEnvVar, seed)
 			cfg := config.Service{MachineID: "start-later-connects", NATSURLs: []string{uri}, NATSReplicas: 1}
-			start := newNATSStart(listenerCredentialWait)
+			start, sleeps := newNATSStartRecordingCredentialSleeps(listenerCredentialWait)
 			base := serveStartRoutes(t, start)
 			client, err := connectListenerBus(cfg, nil, start)
 			if err != nil {
@@ -297,6 +297,7 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 			if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 				t.Fatalf("/healthz after %s's connect = %d %v, want main's 200 starting", row.name, status, fields)
 			}
+			sleeps.requireFirst(t, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second})
 		})
 	}
 }

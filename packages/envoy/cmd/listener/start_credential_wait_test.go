@@ -55,9 +55,48 @@ const streamInfoSubject = "$JS.API.STREAM.INFO." + bus.Stream
 // which errors.Is matches to nats.ErrAuthorization, itself spelled in lower case).
 const authorizationViolation = "Authorization Violation"
 
-// credentialWaitTolerance is how far each wait of the start, as the server records it, may stand
-// from the wait the start is due to make (c-start-accept).
+// credentialWaitTolerance is the dial latency between a child's start and the server taking its
+// first connection, which awaitChildExitAtBound allows when it reads the child's credential bound.
 const credentialWaitTolerance = 500 * time.Millisecond
+
+// credentialSleepRecorder records the waits the start passes to its one credential-retry clock
+// while preserving the production wall-clock wait. The server's connection timestamps also cover
+// scheduling and handshake work before and after a wait, so only this clock can assert the
+// backoff the start requested.
+type credentialSleepRecorder struct {
+	mu    sync.Mutex
+	slept []time.Duration
+}
+
+func newNATSStartRecordingCredentialSleeps(wait time.Duration) (*natsStart, *credentialSleepRecorder) {
+	recorder := &credentialSleepRecorder{}
+	start := newNATSStart(wait)
+	start.credentialWaitClock = recorder
+	return start, recorder
+}
+
+// Now is the production wall clock, paired with Sleep for bus.CredentialWaitClock.
+func (*credentialSleepRecorder) Now() time.Time { return time.Now() }
+
+// Sleep records the requested wait and then makes its production wall-clock sleep.
+func (r *credentialSleepRecorder) Sleep(wait time.Duration) {
+	r.mu.Lock()
+	r.slept = append(r.slept, wait)
+	r.mu.Unlock()
+	time.Sleep(wait)
+}
+
+// requireFirst fails unless the first retry waits were what want names.
+func (r *credentialSleepRecorder) requireFirst(t *testing.T, want []time.Duration) {
+	t.Helper()
+	r.mu.Lock()
+	got := slices.Clone(r.slept)
+	r.mu.Unlock()
+	if len(got) < len(want) || !slices.Equal(got[:len(want)], want) {
+		t.Fatalf("the start slept %v for its first retry waits, want %v", got, want)
+	}
+	t.Logf("the start slept %v for its first retry waits", got[:len(want)])
+}
 
 // startDrainBound is how long a start the test stopped waiting for may run on once the test's
 // servers have stopped: its dials are refused then, so it ends after main's ten tries, one second
@@ -329,10 +368,10 @@ func triesWaits(t *testing.T, tries []listenerTry, n int) []time.Duration {
 }
 
 // TestTheListenerStartWaitsOutACredentialRefusal (c-start-accept): a start whose credential the
-// server refuses, at the connect or at the stream's reconcile, waits out the refusal with waits of
-// 1, 2, 4 and 8 seconds between its first five tries, answers /healthz 503 naming the refusal and
-// /livez 204 meanwhile, and connects and reconciles the stream once the server reloads an
-// authorization that admits it, 30 s after the start's first try, as the hub's reloader does. The
+// server refuses, at the connect or at the stream's reconcile, sleeps 1, 2, 4 and 8 seconds after
+// its first four refusals, answers /healthz 503 naming the refusal and /livez 204 meanwhile, and
+// connects and reconciles the stream once the server reloads an authorization that admits it, 30 s
+// after the start's first try, as the hub's reloader does. The
 // start then returns no error and /healthz answers as on main. Without the wait the start ends with
 // the refusal: after main's ten tries, about ten seconds, at the connect, and at once at the
 // reconcile.
@@ -371,7 +410,7 @@ func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 			_, fallback := testnats.User(t)
 			server, uri := testnats.StartConfig(t, row.refusing(public, fallback), []string{"-js"}, true)
 			t.Setenv(bus.NkeySeedEnvVar, seed)
-			start := newNATSStart(listenerCredentialWait)
+			start, sleeps := newNATSStartRecordingCredentialSleeps(listenerCredentialWait)
 			base := serveStartRoutes(t, start)
 			if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 				t.Fatalf("/healthz before the start = %d %v, want main's 200 starting", status, fields)
@@ -400,14 +439,7 @@ func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 			if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 				t.Fatalf("/healthz after the start = %d %v, want main's 200 starting", status, fields)
 			}
-			tries := listenerTries(t, server.MonitorURL())
-			waits := triesWaits(t, tries, len(wantWaits)+1)
-			t.Logf("the server recorded %d tries; waits between the first five: %v", len(tries), waits)
-			for i, want := range wantWaits {
-				if gap := waits[i] - want; gap > credentialWaitTolerance || gap < -credentialWaitTolerance {
-					t.Fatalf("the server recorded waits %v between the start's first five tries, want %v, each within %s", waits, wantWaits, credentialWaitTolerance)
-				}
-			}
+			sleeps.requireFirst(t, wantWaits)
 		})
 	}
 }
@@ -454,11 +486,11 @@ func edgeStartRun(t *testing.T, uri string) (config.Service, *edgeGrant) {
 }
 
 // TestAnEdgeListenerStartWaitsOutACredentialRefusal: an edge listener (ENVOY_EDGE_PROJECTS) is
-// cmd/listener too, so its start waits out a refusal of its nkey as every listener's does
-// (connectListenerBus). While the server refuses the nkey, /healthz answers 503 naming the refusal
-// and /livez 204, and the server records waits of 1, 2, 4 and 8 s between the start's first five
-// tries. The server reloads an authorization that admits the nkey 20 s after the first try, past
-// the ten tries a start without the wait makes; the start then connects and finds the stream
+// cmd/listener too, so its start sleeps 1, 2, 4 and 8 seconds after its first four credential
+// refusals as every listener's does (connectListenerBus). While the server refuses the nkey,
+// /healthz answers 503 naming the refusal and /livez 204. The server reloads an authorization that
+// admits the nkey 20 s after the first try, past the ten tries a start without the wait makes; the
+// start then connects and finds the stream
 // (edgeStreamPresent), and /healthz answers as on main. Without the wait the start ends with the
 // refusal after those ten tries, about ten seconds, and /healthz answers 200 "starting" throughout.
 func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
@@ -471,7 +503,7 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	rig := startEdgeStartServer(t, func(_, fallback string) string { return nkeyAuthorization(fallback) })
 	cfg, edge := edgeStartRun(t, rig.uri)
 	t.Setenv(bus.NkeySeedEnvVar, rig.seed)
-	start := newNATSStart(listenerCredentialWait)
+	start, sleeps := newNATSStartRecordingCredentialSleeps(listenerCredentialWait)
 	base := serveStartRoutes(t, start)
 
 	run.begin(cfg, edge, start)
@@ -494,14 +526,7 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 		t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
 	}
-	tries := listenerTries(t, rig.server.MonitorURL())
-	waits := triesWaits(t, tries, len(wantWaits)+1)
-	t.Logf("the server recorded %d tries; waits between the first five: %v", len(tries), waits)
-	for i, want := range wantWaits {
-		if gap := waits[i] - want; gap > credentialWaitTolerance || gap < -credentialWaitTolerance {
-			t.Fatalf("the server recorded waits %v between the edge listener's first five tries, want %v, each within %s", waits, wantWaits, credentialWaitTolerance)
-		}
-	}
+	sleeps.requireFirst(t, wantWaits)
 }
 
 // TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream: an edge listener's start reads the stream
@@ -530,7 +555,7 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 		rig := startEdgeStartServer(t, refusingRead)
 		cfg, edge := edgeStartRun(t, rig.uri)
 		t.Setenv(bus.NkeySeedEnvVar, rig.seed)
-		start := newNATSStart(listenerCredentialWait)
+		start, sleeps := newNATSStartRecordingCredentialSleeps(listenerCredentialWait)
 		base := serveStartRoutes(t, start)
 
 		run.begin(cfg, edge, start)
@@ -551,6 +576,7 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 			t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
 		}
 		t.Logf("the start completed %s after its first try, having tried %d times", got.at.Sub(run.began), len(listenerTries(t, rig.server.MonitorURL())))
+		sleeps.requireFirst(t, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second})
 	})
 
 	t.Run("control: a read the grant refuses for good ends the listener at the bound", func(t *testing.T) {
@@ -954,10 +980,10 @@ func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStar
 // listener whose credential the server never admits exits 1 once the bound has passed, its last
 // line naming its credential's public key and the last refusal; a start whose server is not there
 // at all ends after main's ten tries, not at the bound; and the production start's bound is 180 s,
-// which main passes to the start (runListener, newNATSStart), whose option connectListenerBus hands
-// to the owning connect and, on an edge listener, to bus.Connect, and startRoleLane and
+// which main passes to the start (runListener, newNATSStart), whose options connectListenerBus
+// hands to the owning connect and, on an edge listener, to bus.Connect, and startRoleLane and
 // startSessionDelivery hand to the role lane's and the session consumers' connects:
-// bus.WithCredentialWait has one call outside tests, natsStart.option in cmd/listener.
+// bus.WithCredentialWait has one call outside tests, natsStart.options in cmd/listener.
 func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	if seedFile, child := os.LookupEnv(startChildSeedFile); child {
 		runStartChild(seedFile)
