@@ -1433,6 +1433,69 @@ test("the line a removal's read the bound ended draws goes as the next removal l
   }
 });
 
+// Every removal reads the one document list again, so the line the first document's row draws
+// for a read the bound ended goes as a second document's removal lands, though that read is still
+// out: the list's one hold forgets it then (`useListReadBound`), and the second row alone says why
+// the read its own removal made has not settled, once that read's bound ends.
+test("the line one document's removal leaves goes as another document's removal lands", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const more: Artifact = {
+    ...notes,
+    id: "artifact-more-notes",
+    name: "More notes",
+    ref_key: "CORE-1/more-notes",
+    slug: "more-notes",
+  };
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes, more], noReferences, {
+    queryClient,
+  });
+  // Each removal's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(next);
+  const firstRow = await screen.findByTestId("artifact-design-notes");
+  const secondRow = screen.getByTestId("artifact-more-notes");
+  const first = within(firstRow).getByRole("button", { name: "Remove" });
+  const second = within(secondRow).getByRole("button", { name: "Remove" });
+  const why = "Could not load artifacts. Dispatch did not answer within 30 seconds.";
+  // Dispatch answers no read of the list after the first removal while the row runs.
+  listArtifacts.mockReturnValue(Promise.withResolvers<Artifact[]>().promise);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(first);
+    await tick(0);
+    removals[0]?.();
+    await tick(0);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(firstRow).getByRole("alert").textContent).toBe(why);
+
+    await user.click(second);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(2);
+    removals[1]?.();
+    await tick(0);
+    expect(second.textContent).toBe("Removing…");
+    expect(
+      within(firstRow).queryByRole("alert"),
+      "the first removal's read kept its line on its row past the second removal"
+    ).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(secondRow).getByRole("alert").textContent).toBe(why);
+    expect(within(firstRow).queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
 // A file artifact is refused by the same test a document that holds writing is refused by, so
 // its row offers no press that is always refused; a closed issue says why before the press.
 test("a file's row offers no removal, and a closed issue refuses the document's", async () => {

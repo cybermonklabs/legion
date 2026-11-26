@@ -468,6 +468,116 @@ test("the line a dismissal's read the bound ended draws goes as the next dismiss
   }
 });
 
+/** A second expired secret request, beside `expiredSecretRow`'s. */
+function lapsedSecretRow(): CredentialPendingRow {
+  return expiredSecretRow({ identifiers: ["LAPSED_API_KEY"], record_id: "req-10" });
+}
+
+// Every dismissal reads the one list again, so the line the first request's row draws for a read
+// the bound ended goes as a second request's dismissal lands, though that read is still out: the
+// section's one hold forgets it then (`useListReadBound`), and the second row alone says why the
+// read its own dismissal made has not settled, once that read's bound ends.
+test("the line one expired request's dismissal leaves goes as another request's dismissal lands", async () => {
+  const getPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [expiredSecretRow(), lapsedSecretRow()],
+  });
+  // Each dismissal's answer, held until the row moves the clock, so what it sets off runs in `act`.
+  const { answers: dismissals, next } = heldAnswers<void>();
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockImplementation(next);
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ListedSection />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const first = await screen.findByRole("button", {
+    name: "Dismiss expired secret request DEEL_API_KEY",
+  });
+  const second = screen.getByRole("button", {
+    name: "Dismiss expired secret request LAPSED_API_KEY",
+  });
+  const firstRow = first.closest("li") as HTMLElement;
+  const secondRow = second.closest("li") as HTMLElement;
+  const note = /^Couldn't load credential requests\./;
+  const why = "Couldn't load credential requests. Dispatch did not answer within 30 seconds.";
+  // Dispatch answers no read of the list after the first dismissal while the row runs.
+  getPending.mockReturnValue(Promise.withResolvers<{ pending: CredentialPendingRow[] }>().promise);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(first);
+    await tick(0);
+    dismissals[0]?.();
+    await tick(0);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(firstRow).getByText(note).textContent).toBe(why);
+
+    await user.click(second);
+    await tick(0);
+    expect(dismiss).toHaveBeenCalledTimes(2);
+    dismissals[1]?.();
+    await tick(0);
+    expect(second).toHaveAttribute("aria-disabled", "true");
+    expect(
+      within(firstRow).queryByText(note),
+      "the first dismissal's read kept its line on its row past the second dismissal"
+    ).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(secondRow).getByText(note).textContent).toBe(why);
+    expect(within(firstRow).queryByText(note)).toBeNull();
+  } finally {
+    view.unmount();
+    client.clear();
+    realClock();
+    getPending.mockRestore();
+    dismiss.mockRestore();
+  }
+});
+
+// A dismissal by the keyboard takes its row away once the list is read again, and with it the
+// Dismiss the reader's Enter left the focus on, which the browser would leave on the page's body.
+// The section hands it on itself (`useFocusPlace`), armed by the press at its root
+// (`ARM_ON_PRESS`), to the next request's Dismiss.
+test("Enter on an expired request's Dismiss hands the focus to the next request's Dismiss once its row goes", async () => {
+  const user = userEvent.setup();
+  const getPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [expiredSecretRow(), lapsedSecretRow()],
+  });
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockImplementation(async () => {
+    getPending.mockResolvedValue({ pending: [lapsedSecretRow()] });
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ListedSection />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const pressed = await screen.findByRole("button", {
+      name: "Dismiss expired secret request DEEL_API_KEY",
+    });
+    const next = screen.getByRole("button", {
+      name: "Dismiss expired secret request LAPSED_API_KEY",
+    });
+    act(() => pressed.focus());
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(pressed).not.toBeInTheDocument());
+    expect(dismiss.mock.calls).toEqual([["req-9", keyedAttempt]]);
+    await waitFor(() => expect(next).toHaveFocus());
+  } finally {
+    view.unmount();
+    client.clear();
+    getPending.mockRestore();
+    dismiss.mockRestore();
+  }
+});
+
 test("renders nothing while the list loads or when it lists none, a broker-less Dispatch's answer", () => {
   for (const status of ["loading", "listed"] as const) {
     const view = renderSection({ requests: [], status });

@@ -74,7 +74,11 @@ export function useUnsettledRead(): readonly [
  * press that made the write live (`holdHandOff`), so a row or a form that read takes away is still
  * the press's doing (`causedByReader`). `unsettled` is why the read of the latest hold has not
  * settled, once that hold ran out: it goes once that read settles, and at once as a later hold
- * begins, and an earlier hold's read never puts its reason back (`useUnsettledRead`).
+ * begins, and an earlier hold's read never puts its reason back (`useUnsettledRead`). A list whose
+ * rows each read the whole list again takes one hold for every row, so any row's press forgets
+ * why an earlier read had not settled: one that says that reason once, for the whole list, takes
+ * this hook (`RevocableList`, `AgentsPage`'s conversation), and one that says it on the row whose
+ * press made the read takes `useListReadBound`.
  */
 export function useReadBound(): readonly [
   unsettled: string | undefined,
@@ -90,4 +94,38 @@ export function useReadBound(): readonly [
     [waitWithinBound]
   );
   return [unsettled, holdThrough];
+}
+
+/** A list's hold through its re-read, as each of its rows takes it (`useListReadBound`): it holds
+ *  as `useReadBound`'s `holdThrough` does, with `row` the list's key for the row whose press made
+ *  `read`. */
+export type ListReadHold = (row: string, read: Promise<unknown>) => Promise<void>;
+
+/**
+ * One hold through a list's re-read for every row of the list (`useReadBound`), for a list whose
+ * rows each press a write that reads the whole list again and that says why that read has not
+ * settled on the row whose press made it: the expired requests of the Inbox's Credential requests
+ * section (`CredentialRequestsSection`), the documents of an issue's Artifacts tab
+ * (`ArtifactsTab`) and of a document page's header, which draws one document after another
+ * (`ArtifactHeader`), and the Inbox's thread cards (`Inbox`). `holdThrough` takes the row whose
+ * press made the read with the read (`ListReadHold`). Each press begins a new read of the same
+ * list, so it forgets why an earlier read had not settled, whichever row's press made that one.
+ * `unsettledOf` answers that reason for the row whose press made the latest read, and nothing for
+ * every other row.
+ */
+export function useListReadBound(): readonly [
+  unsettledOf: (row: string) => string | undefined,
+  holdThrough: ListReadHold,
+] {
+  const [unsettled, holdThrough] = useReadBound();
+  // The row whose press made the latest read, the one row that says why it has not settled.
+  const [readBy, setReadBy] = useState<string>();
+  const holdRowThrough = useCallback<ListReadHold>(
+    (row, read) => {
+      setReadBy(row);
+      return holdThrough(read);
+    },
+    [holdThrough]
+  );
+  return [(row) => (row === readBy ? unsettled : undefined), holdRowThrough];
 }

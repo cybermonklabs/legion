@@ -1,12 +1,13 @@
 import { awaitsDecision } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { invalidateWaitingForPaused } from "../../api/query-client";
-import { useReadBound } from "../../api/read-bound";
+import { type ListReadHold, useListReadBound } from "../../api/read-bound";
 import type { CredentialPendingRow } from "../../api/types";
+import { ARM_ON_PRESS, focusableIn, useFocusPlace } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LabelPill } from "../../components/Pill";
 import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -97,14 +98,28 @@ const CREDENTIAL_REQUESTS_NOT_LOADED = "Couldn't load credential requests.";
  *  included. Each row makes its own dismissal and shows its own refusal under it (the broker's
  *  message: `NOT_APPROVER`, `RECORD_PENDING`, `RECORD_TERMINAL`, `NOT_FOUND`), as
  *  `RevocableList` does for a revoke; a dismissal that lands and one refused both read the list
- *  again, since either answer says what the broker now holds. Dismiss is held (`heldPress`), not
- *  disabled, while its write is out and through the read that takes the row away, so it keeps the
- *  focus until the row goes; the submit guard drops a second press that lands before the hold is
- *  drawn. */
-function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
+ *  again, since either answer says what the broker now holds. Every dismissal reads the one list,
+ *  so the section holds every row's Dismiss through that read with one hold (`useListReadBound`),
+ *  and this row says why that read has not settled only where its own dismissal made the latest
+ *  one (`unsettled`). Dismiss is held (`heldPress`), not disabled, while its write is out and
+ *  through the read that takes the row away, so it keeps the focus until the row goes, and the
+ *  section hands it on then (`CredentialRequestsSection`); the submit guard drops a second press
+ *  that lands before the hold is drawn. */
+function ExpiredRowLines({
+  holdThrough,
+  row,
+  unsettled,
+}: {
+  /** The section's hold through its read of the list, which this row's landed dismissal makes as
+   *  the request's it dismissed (`useListReadBound`). */
+  holdThrough: ListReadHold;
+  row: CredentialPendingRow;
+  /** Why the section's read of the list has not settled, where this request's dismissal made the
+   *  latest one, else undefined. */
+  unsettled: string | undefined;
+}): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
-  const [unsettled, holdThrough] = useReadBound();
   const label =
     `Dismiss expired ${requestKindLabel(row).toLowerCase()} ${requestIdentifiers(row)}`.trimEnd();
   // The row shows a refused dismissal itself, under its own line. The press carries the request
@@ -120,11 +135,15 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
     // Pending, and Dismiss held, through the read of the list that takes the row away. That read
     // settles either way, and a failed one lets the button go. A read that has not settled by the
     // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
-    // it go then, and the row says why the list is not read yet (`useReadBound`).
+    // it go then, and the row says why the list is not read yet (`useListReadBound`) until that
+    // read settles or another dismissal makes the next one.
     // The read waits on a fetch the network had already paused, which that deadline ends too
     // (`invalidateWaitingForPaused`).
-    onSuccess: () =>
-      holdThrough(invalidateWaitingForPaused(queryClient, credentialPendingQuery().queryKey)),
+    onSuccess: (_result, { recordId }) =>
+      holdThrough(
+        recordId,
+        invalidateWaitingForPaused(queryClient, credentialPendingQuery().queryKey)
+      ),
     method: "POST",
     readsLate: true,
     write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
@@ -178,6 +197,22 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   );
 }
 
+/** The control the section hands the focus to once `gone`, a request's row a dismissal took away,
+ *  has left the list (`CredentialRequestsSection`): the first one the focus can reach
+ *  (`focusableIn`) in the nearest row after it that is still listed - an expired request's Dismiss,
+ *  since the broker lists the expired requests last - else in the nearest such row before it.
+ *  `drawn` is the rows as the commit before drew them, which still holds `gone`. Null where no
+ *  other row offers a control. */
+function controlNear(drawn: readonly Element[], gone: Element): HTMLElement | null {
+  const at = drawn.indexOf(gone);
+  if (at === -1) return null;
+  for (const row of [...drawn.slice(at + 1), ...drawn.slice(0, at).reverse()]) {
+    const control = row.isConnected ? focusableIn(row)[0] : undefined;
+    if (control !== undefined) return control;
+  }
+  return null;
+}
+
 /** The Inbox's supplementary credential-requests section, mounted above the ask sections, from the
  *  Inbox's own reading of the list (`useCredentialRequests`), which its Blocked on you control and
  *  its empty state read too. A pending request's line leads to where it is decided; an expired
@@ -189,7 +224,18 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
  *  the list (before either early return, so the hook always runs), rather than once per
  *  `CredentialSessionLines` instance, for every row's directory and machine; the shell's one
  *  poller (`AgentRegistryPoller`) refreshes that list, so N listed rows never phase N polls of
- *  their own (LEGION-587's review, round 3). */
+ *  their own (LEGION-587's review, round 3).
+ *
+ *  Every dismissal reads the one list again, so the section holds every row's Dismiss through that
+ *  read with one hold (`useListReadBound`): a dismissal that lands forgets why an earlier one's
+ *  read had not settled, whichever row made it, and only the row whose dismissal made the latest
+ *  read says why that one has not. The read takes a dismissed row away, and with it the Dismiss
+ *  that held the reader's focus, which the browser would leave on the page's body. So the section
+ *  hands that focus on itself (`useFocusPlace`), counted in the row it stood in: to the next
+ *  listed request's Dismiss, else to the control of the row before it (`controlNear`), else, with
+ *  no other row left, back over the page from the place the row left, as every hand-off walks. The
+ *  press arms that hand-off at the section's root (`ARM_ON_PRESS`), and the hold through the read
+ *  keeps the press the cause of the row's going. */
 export function CredentialRequestsSection({
   credentials: { requests, status },
 }: {
@@ -199,6 +245,23 @@ export function CredentialRequestsSection({
     requests.some((row) => credentialSessionNamesAnyone(row.session)),
     true
   );
+  const [unsettledOf, holdThrough] = useListReadBound();
+  const list = useRef<HTMLUListElement>(null);
+  // The rows as the latest commit drew them, which the hand-off reads for the row a commit after
+  // it took away (`controlNear`).
+  const drawn = useRef<readonly Element[]>([]);
+  const noteFocus = useFocusPlace(
+    (element) => {
+      const row = element.closest("li");
+      return row !== null && row.parentElement === list.current ? row : null;
+    },
+    (row) => controlNear(drawn.current, row)
+  );
+  // After the hand-off's own check, which runs first in the same commit, so that check reads the
+  // rows as the commit before drew them, the row this one took away among them.
+  useLayoutEffect(() => {
+    drawn.current = list.current === null ? [] : [...list.current.children];
+  });
   if (status === "failed") {
     return <p className={dangerText}>{CREDENTIAL_REQUESTS_NOT_LOADED}</p>;
   }
@@ -207,17 +270,30 @@ export function CredentialRequestsSection({
   }
 
   return (
-    <section aria-labelledby="credential-requests-heading" className="mb-6">
+    <section
+      aria-labelledby="credential-requests-heading"
+      className="mb-6"
+      {...ARM_ON_PRESS}
+      onFocus={noteFocus}
+    >
       <h2
         className={`text-base font-semibold ${textMutedOnCanvas}`}
         id="credential-requests-heading"
       >
         Credential requests
       </h2>
-      <ul className="mt-2 space-y-2">
+      <ul className="mt-2 space-y-2" ref={list}>
         {requests.map((row) => (
           <li key={row.record_id}>
-            {awaitsDecision(row) ? <PendingRowLine row={row} /> : <ExpiredRowLines row={row} />}
+            {awaitsDecision(row) ? (
+              <PendingRowLine row={row} />
+            ) : (
+              <ExpiredRowLines
+                holdThrough={holdThrough}
+                row={row}
+                unsettled={unsettledOf(row.record_id)}
+              />
+            )}
             <div className="mt-0.5 flex flex-col gap-0.5 text-xs">
               <CredentialSessionLines
                 agents={agents}

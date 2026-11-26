@@ -5,7 +5,7 @@ import { act, renderHook } from "@testing-library/react";
 import { onFakeClock, realClock, settle, tick } from "../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "./client";
 import { DispatchQueryClient, waitingForPausedReads } from "./query-client";
-import { readWithinBound, useReadBound } from "./read-bound";
+import { readWithinBound, useListReadBound, useReadBound } from "./read-bound";
 
 /** What `answer` holds so far: its value once it has settled, else `"waiting"`. */
 function watch<T>(answer: Promise<T>): () => T | "waiting" {
@@ -298,6 +298,42 @@ test("useReadBound keeps the later hold's reason when an earlier hold's read set
 
     await act(async () => later.resolve());
     expect(hook.result.current[0]).toBeUndefined();
+  } finally {
+    hook.unmount();
+    realClock();
+  }
+});
+
+// A list's one hold (`useListReadBound`) says why the latest read has not settled for the row
+// whose press made it and for no other: another row's press forgets it as its hold begins, though
+// that earlier read never settles, and the reason of its own read is said for that row alone.
+test("useListReadBound says why the latest read has not settled for the row whose press made it alone", async () => {
+  jest.useFakeTimers();
+  const hook = renderHook(() => useListReadBound());
+  const shown = () => ({
+    first: hook.result.current[0]("first"),
+    second: hook.result.current[0]("second"),
+  });
+  try {
+    act(() => {
+      void hook.result.current[1]("first", Promise.withResolvers<void>().promise);
+    });
+    await tick(REQUEST_DEADLINE_MS);
+    expect(shown()).toEqual({ first: NOT_ANSWERED, second: undefined });
+
+    const later = Promise.withResolvers<void>();
+    act(() => {
+      void hook.result.current[1]("second", later.promise);
+    });
+    expect(shown(), "the first row's reason outlived the second row's hold").toEqual({
+      first: undefined,
+      second: undefined,
+    });
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(shown()).toEqual({ first: undefined, second: NOT_ANSWERED });
+    await act(async () => later.resolve());
+    expect(shown()).toEqual({ first: undefined, second: undefined });
   } finally {
     hook.unmount();
     realClock();

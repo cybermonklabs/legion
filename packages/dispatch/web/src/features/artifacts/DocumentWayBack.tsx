@@ -9,7 +9,7 @@ import {
   removedEvenIfGone,
 } from "../../api/client";
 import { waitingForPausedReads } from "../../api/query-client";
-import { useReadBound } from "../../api/read-bound";
+import type { ListReadHold } from "../../api/read-bound";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -210,11 +210,16 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  * nothing names, and refuses every other one with a sentence that names the test it failed, which
  * is shown here, where the person pressed.
  *
- * It holds the removal it made - `Removing…`, a refusal and its Retry, and why the list read after
- * it has not settled - so it is drawn for one document alone, and each host keys it by the
- * document: the issue's document list keys the row it sits in (`ArtifactRow`), and the page's
- * header, which the issue's page draws for one document after another, keys the control itself
- * (`ArtifactHeader`).
+ * It holds the removal it made - `Removing…`, a refusal and its Retry - so it is drawn for one
+ * document alone, and each host keys it by the document: the issue's document list keys the row
+ * it sits in (`ArtifactRow`), and the page's header, which the issue's page draws for one document
+ * after another, keys the control itself (`ArtifactHeader`).
+ *
+ * Its host holds every removal it draws through the read of the document list with one hold
+ * (`useListReadBound`): the issue's document list holds all its rows' removals so, since each of
+ * them reads that one list again, and a later removal forgets why an earlier one's read had not
+ * settled, whichever row made it. The host hands this control that hold (`holdThrough`) and why
+ * that read has not settled where this document's removal made the latest one (`unsettled`).
  *
  * `onRemoved` is the host's own way back from the page of a document that has gone, handed the
  * document the removal was of. It is called when the removal lands, by when the reader may have
@@ -222,16 +227,23 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  */
 export function RemoveDocument({
   artifact,
+  holdThrough,
   onRemoved,
   refusal = null,
+  unsettled,
 }: {
   readonly artifact: Artifact;
+  /** The host's hold through its read of the document list, which a landed removal makes as the
+   *  document's it removed (`useListReadBound`). */
+  readonly holdThrough: ListReadHold;
   readonly onRemoved?: (removed: Artifact) => void;
   readonly refusal?: string | null;
+  /** Why the host's read of the document list has not settled, where this document's removal
+   *  made the latest one, else undefined. */
+  readonly unsettled: string | undefined;
 }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
-  const [unsettled, holdThrough] = useReadBound();
   const remove = useKeyedWrite({
     inline: true,
     // The press carries the document it removes: the indicator names it, and the route takes its
@@ -249,12 +261,13 @@ export function RemoveDocument({
     // away, so the button keeps the reader's focus until the row goes. That read settles either
     // way, and a failed one lets the button go. A read that has not settled by the request
     // deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets it go
-    // then, and the row says why the list is not read yet (`useReadBound`).
+    // then, and the row says why the list is not read yet (`useListReadBound`) until that read
+    // settles or another removal makes the next one.
     onSuccess: (_result, removed) => {
       // The read waits on a fetch the network had already paused, which that deadline ends too.
       const list = waitingForPausedReads(queryClient, () => refreshArtifact(queryClient, removed));
       onRemoved?.(removed);
-      return holdThrough(list);
+      return holdThrough(removed.id, list);
     },
   });
   useReleaseWhenLate(submitGuard, remove.late);

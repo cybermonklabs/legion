@@ -6,7 +6,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
 import { invalidateWaitingForPaused } from "../../api/query-client";
-import { useReadBound } from "../../api/read-bound";
+import type { ListReadHold } from "../../api/read-bound";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
@@ -45,12 +45,25 @@ export const INBOX_NOT_LOADED = "Could not load your inbox.";
  * Inbox** in the Dismissed view - which the list it is drawn in provides (`DismissControl`). A
  * thread anchored in a document shows the text it is anchored to rather than the document: a card
  * is no place to open one. Mark read is held while its write is out within its deadline
- * (`heldPress`, `late`) and through the re-read it starts, up to the read's request deadline
- * (`useReadBound`).
+ * (`heldPress`, `late`) and through the re-read it starts, up to the read's request deadline.
+ * Every Mark read reads the Inbox's one list again, so the list holds every card's Mark read
+ * through that read with one hold (`useListReadBound`), which it hands the card (`holdThrough`)
+ * with why that read has not settled where this card's mark made the latest one (`unsettled`).
  */
-export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
+export function ThreadRowCard({
+  holdThrough,
+  thread,
+  unsettled,
+}: {
+  /** The list's hold through its re-read, which a landed mark makes as the thread's it marked
+   *  (`useListReadBound`). */
+  holdThrough: ListReadHold;
+  thread: MyReplyRow;
+  /** Why the list's re-read has not settled, where this card's mark made the latest one, else
+   *  undefined. */
+  unsettled: string | undefined;
+}): ReactNode {
   const queryClient = useQueryClient();
-  const [unsettled, holdThrough] = useReadBound();
   // The press carries the row as it stood when Mark read was pressed: its newest reply and its
   // unread ids move as replies arrive, and the Retry of a press the reader stopped marks what
   // that press marked.
@@ -75,7 +88,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
       if (state !== null && state !== undefined && read.kind === "agent") {
         storeAgentState(queryClient, read.session.id, state);
       }
-      return holdThrough(invalidateWaitingForPaused(queryClient, myRepliesKey));
+      return holdThrough(pressed.thread_id, invalidateWaitingForPaused(queryClient, myRepliesKey));
     },
   });
   const row = { kind: "thread", thread } as const;

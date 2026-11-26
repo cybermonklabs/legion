@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
+import { type ListReadHold, useListReadBound } from "../../api/read-bound";
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
@@ -748,16 +749,25 @@ function InboxCardRow({
 }
 
 /** A Reply or an Agent row where the question rows are cards: the row's mark over the card's
- *  shell, whose thread body - and whose **Dismiss** - is written elsewhere. */
+ *  shell, whose thread body - and whose **Dismiss** - is written elsewhere. The card's Mark read
+ *  takes the list's one hold through the read it makes (`useListReadBound`). */
 function ThreadCardRow({
   group: groupKey,
+  holdMarkReadThrough,
   marked,
+  markReadUnsettled,
   onMark,
   onRelease,
   row,
   section,
   thread,
-}: InboxRowProps & { thread: MyReplyRow }): ReactNode {
+}: InboxRowProps & {
+  /** The list's hold through its read after a Mark read (`useListReadBound`). */
+  holdMarkReadThrough: ListReadHold;
+  /** Why the list's read has not settled, where this card's mark made the latest one. */
+  markReadUnsettled: string | undefined;
+  thread: MyReplyRow;
+}): ReactNode {
   return (
     <InboxRowShell
       group={groupKey}
@@ -771,7 +781,11 @@ function ThreadCardRow({
       <div className="mb-1.5 flex items-center gap-2">
         <ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />
       </div>
-      <ThreadRowCard thread={thread} />
+      <ThreadRowCard
+        holdThrough={holdMarkReadThrough}
+        thread={thread}
+        unsettled={markReadUnsettled}
+      />
     </InboxRowShell>
   );
 }
@@ -1198,6 +1212,11 @@ function InboxBody({
   // The thread side of this list, in one hook: the reader's Inbox or what they dismissed out of
   // it, the read mark a write over that list carries, and the page behind **Show more**.
   const threads = useInboxThreadRows({ asksOnly, listRef, show });
+  // Every card's Mark read reads this list again (`ThreadRowCard`), so the list holds them all
+  // through that read with one hold: a mark that lands forgets why an earlier one's read had not
+  // settled, whichever card made it, and only the card whose mark made the latest read says why
+  // that one has not (`useListReadBound`).
+  const [markReadUnsettledOf, holdMarkReadThrough] = useListReadBound();
   /** Every row this list could hold before its five fields narrow it: what the bar counts. */
   const candidates = [...askRows, ...threads.rows];
   // The filters and the typed text both decide what is listed. A row a write of the reader's
@@ -2224,7 +2243,13 @@ function InboxBody({
         viewer={viewer}
       />
     ) : (
-      <ThreadCardRow {...shared} key={id} thread={row.thread} />
+      <ThreadCardRow
+        {...shared}
+        holdMarkReadThrough={holdMarkReadThrough}
+        key={id}
+        markReadUnsettled={markReadUnsettledOf(row.thread.thread_id)}
+        thread={row.thread}
+      />
     );
   };
 

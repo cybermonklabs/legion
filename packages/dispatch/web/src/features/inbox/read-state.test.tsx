@@ -5,8 +5,9 @@
 
 import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
@@ -29,6 +30,7 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
+import { useListReadBound } from "../../api/read-bound";
 import type {
   Agent,
   Comment,
@@ -114,14 +116,17 @@ function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
   return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
 }
 
-/** A client holding everything the Inbox reads but the thread's own comments. */
-function seeded(rows: readonly MyReplyRow[]): QueryClient {
-  const client = new QueryClient({
+/** A client holding everything the Inbox reads but the thread's own comments: `client`, a plain
+ *  one unless the row needs the app's own. */
+function seeded(
+  rows: readonly MyReplyRow[],
+  client: QueryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
-  });
+  })
+): QueryClient {
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(inboxQuery().queryKey, []);
   client.setQueryData(inboxThreadsQuery().queryKey, threadsRead(rows));
@@ -129,6 +134,20 @@ function seeded(rows: readonly MyReplyRow[]): QueryClient {
   // The unread set `useMarkThreadRead` watches: without the thread in it nothing is marked.
   client.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, threadsRead(rows));
   return client;
+}
+
+/** Thread cards drawn as the Inbox's list draws them, under the list's one hold through the read
+ *  a Mark read makes (`useListReadBound`). */
+function ListedCards({ threads }: { readonly threads: readonly MyReplyRow[] }): ReactNode {
+  const [unsettledOf, holdThrough] = useListReadBound();
+  return threads.map((thread) => (
+    <ThreadRowCard
+      holdThrough={holdThrough}
+      key={thread.thread_id}
+      thread={thread}
+      unsettled={unsettledOf(thread.thread_id)}
+    />
+  ));
 }
 
 function renderInbox(client: QueryClient): void {
@@ -255,7 +274,7 @@ test("a Mark read the reader stopped says what Retry does, not a message's words
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+        <ListedCards threads={[commentRow("comment-1", "The retry budget")]} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -297,7 +316,7 @@ test("Mark read releases its hold when its landed mark's re-read reaches the req
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <ReadThreads />
-        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+        <ListedCards threads={[commentRow("comment-1", "The retry budget")]} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -359,7 +378,7 @@ test("the line a Mark read's re-read the bound ended draws goes as the next mark
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <ReadThreads />
-        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+        <ListedCards threads={[commentRow("comment-1", "The retry budget")]} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -400,6 +419,71 @@ test("the line a Mark read's re-read the bound ended draws goes as the next mark
   }
 });
 
+// Every Mark read reads the Inbox's one list again, so the line the first card draws for a read
+// the bound ended goes as a second card's mark lands, though that read is still out: the list's
+// one hold forgets it then (`useListReadBound`), and the second card alone says why the read its
+// own mark made has not settled, once that read's bound ends.
+test("the line one card's Mark read leaves goes as another card's mark lands", async () => {
+  // Each mark's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: marks, next } = heldAnswers<void>();
+  const mark = answerThreadReads().mockImplementation(next);
+  mockCommentReads();
+  // Dispatch answers no read of the list while the row runs.
+  restores.push(
+    spyOn(api, "listMyReplies").mockReturnValue(Promise.withResolvers<MyRepliesResponse>().promise)
+  );
+  const read = (row: MyReplyRow): MyReplyRow => ({ ...row, unread: false, unread_count: 0 });
+  const client = seeded(
+    [read(commentRow("comment-1", "The retry budget")), read(commentRow("comment-9", "Timeouts"))],
+    new DispatchQueryClient({
+      defaultOptions: {
+        mutations: { retry: false },
+        queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+      },
+    })
+  );
+  renderInbox(client);
+  const why = "Could not load your inbox. Dispatch did not answer within 30 seconds.";
+  try {
+    await waitFor(() => expect(screen.getAllByTestId("inbox-thread-comment")).toHaveLength(2));
+    const card = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-inbox-row="reply:${id}"]`) as HTMLElement;
+    const firstCard = card("comment-1");
+    const secondCard = card("comment-9");
+    const first = within(firstCard).getByRole<HTMLButtonElement>("button", { name: "Mark read" });
+    const second = within(secondCard).getByRole<HTMLButtonElement>("button", {
+      name: "Mark read",
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(first);
+    await tick(0);
+    await act(async () => marks[0]?.());
+    await tick(0);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(firstCard).getByRole("alert")).toHaveTextContent(why);
+
+    await user.click(second);
+    await tick(0);
+    expect(mark).toHaveBeenCalledTimes(2);
+    await act(async () => marks[1]?.());
+    await tick(0);
+    expect(heldNotDisabled(second, "Mark read")).toBe(true);
+    expect(
+      within(firstCard).queryByRole("alert"),
+      "the first mark's re-read kept its line on its card past the second mark"
+    ).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(secondCard).getByRole("alert")).toHaveTextContent(why);
+    expect(within(firstCard).queryByRole("alert")).toBeNull();
+  } finally {
+    cleanup();
+    client.clear();
+    realClock();
+  }
+});
+
 // A mark that never answers - offline, each try failing at the network - holds Mark read until
 // its deadline and no longer: past it the mark is still tried, and a press then marks again.
 test("Mark read lets go at the mark's write deadline and marks again", async () => {
@@ -411,7 +495,7 @@ test("Mark read lets go at the mark's write deadline and marks again", async () 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+        <ListedCards threads={[commentRow("comment-1", "The retry budget")]} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -450,7 +534,7 @@ test("a Mark read's Retry marks what the stopped press marked, not the row's new
   const card = (thread: MyReplyRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ThreadRowCard thread={thread} />
+        <ListedCards threads={[thread]} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -539,7 +623,7 @@ test("an Agent thread is read by reply id, and moves no session read mark", asyn
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ThreadRowCard thread={plannerAgentRow()} />
+        <ListedCards threads={[plannerAgentRow()]} />
       </QueryClientProvider>
     </MemoryRouter>
   );
