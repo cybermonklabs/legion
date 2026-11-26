@@ -890,12 +890,18 @@ function sameLine(point: Point, edge: Point): boolean {
   return middle >= line.top && middle <= line.bottom;
 }
 
-/** The box of a caret at `point`: the collapsed range's own, or the box of the element it is in
- *  where the browser draws the range none - a place between elements, an empty paragraph. */
+/** The box of a caret at `point`: the collapsed range's own; where the browser draws the range
+ *  none, right after an atom - an element the caret cannot enter - the atom's last line; and
+ *  else the box of the element the place is in, as for an empty paragraph. */
 function caretBox([node, offset]: Point): DOMRect | null {
   const range = document.createRange();
   range.setStart(node, offset);
   const own: DOMRect | undefined = range.getClientRects()[0];
   if (own !== undefined) return own;
+  const before = node.childNodes[offset - 1];
+  const atom = before instanceof HTMLElement && !before.isContentEditable;
+  const lines = atom ? before.getClientRects() : undefined;
+  const last = lines?.[lines.length - 1];
+  if (last !== undefined) return last;
   return (node instanceof Element ? node : node.parentElement)?.getBoundingClientRect() ?? null;
 }

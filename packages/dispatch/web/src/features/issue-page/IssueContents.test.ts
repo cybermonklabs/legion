@@ -12,14 +12,20 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PublishedReferenceNames, ReferenceNamesProvider } from "../refs/reference-names";
 import { producingMessages } from "./contents-entries";
 import { KEY } from "./decisions-filter/decisions-fixtures";
-import { FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
+import {
+  type FocusedNode,
+  FocusedNodeProvider,
+  useFocusedNode,
+  useSetFocusedNode,
+} from "./focused-node";
 import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
 import { NoTooltips } from "./NoTooltips";
 import { type LineNames, useIssueNames } from "./one-line";
+import { OutlineRequestProvider, useAskOutline } from "./outline-request";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
 import { presetView } from "./presets";
-import { Publisher, publishedNames } from "./projection-fixture";
+import { lineNamesOf, Publisher, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { SENTENCE_TABLE } from "./sentence-table";
 
@@ -60,24 +66,18 @@ const alice: Actor = { id: "alice", kind: "user" };
 const bob: Actor = { id: "bob", kind: "user" };
 const agent: Actor = { id: "session-1", kind: "agent" };
 
-/** What a page that published `lines`, the line a chip names each block by, and no other name
- *  names an entry's references by (`useIssueNames`): a reference with no line reads as its
- *  author wrote it. */
-function lineNamesOf(lines: ReadonlyMap<string, string> = new Map()): LineNames {
-  return {
-    ambiguous: new Set(),
-    author: () => "",
-    deleted: new Map(),
-    edited: new Set(),
-    issue: "CORE-1",
-    issues: [],
-    lines,
-    names: new Map(),
-  };
-}
-
 /** A page that has published no name. */
-const NO_NAMES = lineNamesOf();
+const NO_NAMES = lineNamesOf(KEY);
+
+/** A query client that already holds the reader, alice, as the page's who-am-I read answers her,
+ *  and asks for nothing again. */
+function readerClient(): QueryClient {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  return client;
+}
 
 /** Each entry as its id, with the entries under it after a colon. */
 function shape(entries: readonly ContentsEntry[]): string[] {
@@ -229,10 +229,7 @@ function FocusOn({ id }: { id: string }): null {
 // would skip the list for.
 test("folding the entry above the one the reader is in leaves the tab stop on the folded entry", () => {
   const root = node("CORE-1", "issue", [node("ask-1", "ask", [node("ask-2", "ask")])]);
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const client = readerClient();
   const view = render(
     createElement(
       QueryClientProvider,
@@ -263,6 +260,86 @@ test("folding the entry above the one the reader is in leaves the tab stop on th
     act(() => within(parent).getByRole("button", { name: CONTROL_LABELS.fold }).click());
     expect(view.container.querySelector('[data-contents-entry="ask-2"]')).toBeNull();
     expect(stops()).toEqual(["ask-1"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The page's hands on the focus and the outline, held where a case reaches them: what the
+ *  outline sets as the reader moves, and what a choice in the list asks of the outline. */
+interface PageHands {
+  ask?: (id: string | undefined, focusBranch: boolean) => void;
+  setFocused?: (node: FocusedNode | undefined) => void;
+}
+
+/** Hands the page's focus setter and the list's ask to `held`, and writes the node the focus is
+ *  on now where a case reads it (`[data-focused]`). */
+function Hands({ held }: { held: PageHands }): ReactNode {
+  held.setFocused = useSetFocusedNode();
+  held.ask = useAskOutline();
+  return createElement("output", { "data-focused": useFocusedNode()?.id ?? "" });
+}
+
+// The Outline sheet draws a new list each time it opens.
+// While it was shut, after its last choice (`ask-2`), the reader moved in the outline to a reply
+// in their own thread, which is no entry, then left the outline for the Outline control. The
+// node the focus is on now is none, and the list drawn again marks the reader's thread, which
+// holds the node the focus was last on, rather than the entry the sheet last chose, and Focus
+// branch draws that thread's branch.
+test("a list drawn again after the focus left the outline marks the entry holding the node it was last on, not the last choice", () => {
+  const client = readerClient();
+  const held: PageHands = {};
+  const branches: (string | undefined)[] = [];
+  const page = (open: boolean) =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(
+        FocusedNodeProvider,
+        null,
+        createElement(
+          OutlineRequestProvider,
+          null,
+          createElement(Hands, { held }),
+          open
+            ? createElement(ContentsList, {
+                focusBranch: false,
+                lineNames: NO_NAMES,
+                onFocusBranch: (current) => branches.push(current),
+                onGo: () => {},
+                producing: producingMessages(nested),
+                root: nested,
+              })
+            : null
+        )
+      )
+    );
+  const view = render(page(false));
+  try {
+    act(() => held.ask?.("ask-2", false));
+    act(() => held.setFocused?.({ id: "ask-2", text: "ask-2", type: "ask" }));
+    act(() => held.setFocused?.({ id: "reply-mine", text: "reply-mine", type: "comment" }));
+    act(() => held.setFocused?.(undefined));
+    expect(
+      view.container.querySelector("[data-focused]")?.getAttribute("data-focused"),
+      "the focus that left the outline is still on a node"
+    ).toBe("");
+
+    view.rerender(page(true));
+    expect(
+      view.container.querySelector('[data-contents-entry="reply-mine"]'),
+      "the reply the focus was last on is an entry"
+    ).toBeNull();
+    expect(
+      [...view.container.querySelectorAll<HTMLElement>('[aria-selected="true"]')].map(
+        (row) => row.dataset.contentsEntry
+      ),
+      "the list drawn again did not mark the thread holding the node the focus was last on"
+    ).toEqual(["comment-mine"]);
+    act(() =>
+      within(view.container).getByRole("button", { name: CONTROL_LABELS.focus_branch }).click()
+    );
+    expect(branches, "Focus branch did not draw the thread's branch").toEqual(["comment-mine"]);
   } finally {
     view.unmount();
   }
@@ -352,10 +429,7 @@ function drawMeasured(
     box.mockRestore();
   };
   try {
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-    });
-    client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+    const client = readerClient();
     const view = render(createElement(QueryClientProvider, { client }, element));
     return {
       container: view.container,
@@ -464,7 +538,7 @@ test("an entry draws its node's first block as its line, never its first two blo
 // inside one: each word of a name is a token of its own.
 test("an entry that cites a labelled statement is cut before the name goes in, never inside a word of it", () => {
   const cited = "dispatch://CORE-1/spec#b-r1";
-  const lineNames = lineNamesOf(new Map([[cited, "R1. Every node is whole"]]));
+  const lineNames = lineNamesOf(KEY, { lines: new Map([[cited, "R1. Every node is whole"]]) });
   const opened = node("CORE-1", "issue", [
     node("ask-1", "ask", [], { text: `Should ${cited} stay as it is? Then more.` }),
   ]);

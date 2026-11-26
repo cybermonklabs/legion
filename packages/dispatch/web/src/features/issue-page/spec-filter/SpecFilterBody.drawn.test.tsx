@@ -63,7 +63,7 @@ import type { BriefCounts } from "../IssueThreeThings";
 import type { OutlineRequest } from "../IssueTree";
 import { presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
-import { type CaretAt, caretInBlock } from "../node-caret";
+import { type CaretAt, caretInBlock, confineKey } from "../node-caret";
 import { shortDay } from "../node-time";
 import { TWO_THREADS } from "../outline-fixtures";
 import { NO_FAILED_READS } from "../outline-reads";
@@ -2793,6 +2793,112 @@ test("a press past an atom that ends a statement's block puts the caret after it
       expect(window.getSelection()?.anchorOffset, atom).toBe("Read the note".length);
     }
   } finally {
+    host.remove();
+  }
+});
+
+// The caret after an atom that ends a statement's last line stands at a place between two
+// elements, where the browser draws a collapsed range no box, so the line it is read on is the
+// atom's last line: Down there is refused, as at the end of the block's text, and the caret stays
+// in the block, while Up goes on to the editor. Read as the middle of its whole paragraph, the
+// place stood on the line above the last, and Down went on to the editor, out of the block.
+// happy-dom lays nothing out, so the boxes are given: the paragraph's three lines of 20 px from
+// 100 px down, ten characters of its text on each, and the atom at the end of the last.
+test("Down from the caret after an atom that ends a statement's last line stays in the block", () => {
+  const host = document.createElement("div");
+  host.innerHTML = `<div contenteditable="true"><section data-block-id="r1"><p>One line, two lines, the note<span contenteditable="false" data-type="html">&lt;name&gt;</span><img class="ProseMirror-separator" alt=""><br class="ProseMirror-trailingBreak"></p></section></div>`;
+  document.body.append(host);
+  const editable = host.firstElementChild;
+  const paragraph = host.querySelector("p");
+  const atom = host.querySelector("span");
+  const lineAt = (line: number) => new DOMRect(0, 100 + 20 * line, 0, 20);
+  const ranges = spyOn(Range.prototype, "getClientRects").mockImplementation(function (
+    this: Range
+  ) {
+    const line = Math.min(2, Math.floor(this.startOffset / 10));
+    return (this.startContainer instanceof Text ? [lineAt(line)] : []) as unknown as DOMRectList;
+  });
+  const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return (this === atom ? [lineAt(2)] : []) as unknown as DOMRectList;
+  });
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this === paragraph ? new DOMRect(0, 100, 600, 60) : new DOMRect();
+  });
+  const confine = (event: KeyboardEvent) => confineKey(host, "r1", event, undefined);
+  host.addEventListener("keydown", confine, true);
+  const pressed = (key: string) =>
+    editable?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key }));
+  try {
+    const at: CaretAt = { x: 1, y: 2, offset: "One line, two lines, the note".length, next: true };
+    expect(caretInBlock(host, "r1", at)).toBe(true);
+    expect(window.getSelection()?.anchorNode).toBe(paragraph);
+    expect(window.getSelection()?.anchorOffset).toBe(2);
+    expect(pressed("ArrowDown"), "Down after the atom on the last line was not refused").toBe(
+      false
+    );
+    expect(pressed("ArrowUp"), "Up after the atom on the last line was refused").toBe(true);
+  } finally {
+    host.removeEventListener("keydown", confine, true);
+    ranges.mockRestore();
+    lines.mockRestore();
+    boxes.mockRestore();
+    host.remove();
+  }
+});
+
+// The caret at the start of the line after a hard break stands right after the `<br>`, between
+// two nodes, where the browser draws a collapsed range no box. A `<br>` is no atom: the caret
+// stands on the line under it, so its box, on the line the break ends, is not the caret's line,
+// and Up from there goes on to the editor, which moves the caret to the line above. Read by the
+// box of the `<br>`, the place stood on the first line, and Up was refused there. happy-dom lays
+// nothing out, so the boxes are given as Chromium drew `first<br>second`: the text `first` and
+// the `<br>` at 3 to 21 px, the text `second` at 27 to 45 px, and no box for the place itself.
+test("Up from the start of the line after a hard break moves to the line above", () => {
+  const host = document.createElement("div");
+  host.innerHTML = `<div contenteditable="true"><section data-block-id="r1"><p>first<br>second</p></section></div>`;
+  document.body.append(host);
+  const editable = host.firstElementChild;
+  const paragraph = host.querySelector("p");
+  const first = new DOMRect(0, 3, 0, 18);
+  const second = new DOMRect(0, 27, 0, 18);
+  const ranges = spyOn(Range.prototype, "getClientRects").mockImplementation(function (
+    this: Range
+  ) {
+    const text = this.startContainer;
+    if (!(text instanceof Text)) return [] as unknown as DOMRectList;
+    return [text.data === "first" ? first : second] as unknown as DOMRectList;
+  });
+  const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return (this.tagName === "BR" ? [first] : []) as unknown as DOMRectList;
+  });
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this === paragraph ? new DOMRect(0, 3, 600, 42) : new DOMRect();
+  });
+  const confine = (event: KeyboardEvent) => confineKey(host, "r1", event, undefined);
+  host.addEventListener("keydown", confine, true);
+  try {
+    expect(caretInBlock(host, "r1")).toBe(true);
+    if (paragraph !== null) window.getSelection()?.collapse(paragraph, 2);
+    expect(window.getSelection()?.anchorNode).toBe(paragraph);
+    expect(window.getSelection()?.anchorOffset).toBe(2);
+    const up = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowUp" });
+    expect(
+      editable?.dispatchEvent(up),
+      "Up from the start of the line after a hard break was refused"
+    ).toBe(true);
+  } finally {
+    host.removeEventListener("keydown", confine, true);
+    ranges.mockRestore();
+    lines.mockRestore();
+    boxes.mockRestore();
     host.remove();
   }
 });

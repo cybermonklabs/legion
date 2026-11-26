@@ -131,7 +131,7 @@ import { verificationCheck } from "./issue-page-v";
 import { settledScrollTop } from "./mermaid-helpers";
 import { settledValue } from "./settled";
 import { expect, test } from "./test";
-import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -765,6 +765,70 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
     await expect(crumbs, "Focus branch turned off did not return to the parent").toHaveCount(
       parentDepth
     );
+  });
+});
+
+// The Outline sheet draws a new list each time it opens. After a choice there, the reader moves
+// in the outline into another entry, the thread they began, down to a reply in it, which is no
+// entry, and opens the sheet again: the list marks that thread, which holds the node the focus
+// was last on (`useLastFocusedNodeId`), rather than the entry the sheet last chose, and Focus
+// branch there draws the thread's branch.
+// SLOW(>=2s): the whole seeded issue, a load of the page at 390 px, a choice in the Outline
+// sheet, a zoom and two moves of the focus, each waited on until the outline redraws.
+test("the Outline sheet opened again marks the entry the focus was last in rather than its last choice, and Focus branch draws that branch @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const question = blockNodeId(specSlug, seeded.openQuestion.blockId);
+    const thread = seeded.comments.threads[0] ?? "";
+    const reply = seeded.comments.replies[0] ?? "";
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+
+    await outlineControl(page).click();
+    const entry = (id: string) => outlineSheet(page).locator(`[data-contents-entry="${id}"]`);
+    await expect(entry(question), "the Outline sheet does not list the open question").toHaveCount(
+      1
+    );
+    await entry(question).click();
+    await expect(outlineSheet(page), "a choice in the Outline sheet left it open").toHaveCount(0);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "a choice in the Outline sheet went to no node",
+      })
+      .toBe(question);
+
+    // Into the reader's first thread, which below 1024 px the right arrow zooms into, and down
+    // to the first reply under it.
+    await focusRow(page, thread);
+    await page.keyboard.press("ArrowRight");
+    await expect(nodeRow(page, reply), "the zoom into the thread drew no reply").toHaveCount(1);
+    await focusRow(page, reply);
+
+    await outlineControl(page).click();
+    await expect(entry(thread), "the Outline sheet does not list the reader's thread").toHaveCount(
+      1
+    );
+    await expect(entry(reply), "the reply the focus was last on is an entry").toHaveCount(0);
+    await expect(
+      entry(thread),
+      "the reopened Outline sheet did not mark the entry the focus was last in"
+    ).toHaveAttribute("aria-selected", "true");
+    await expect(
+      entry(question),
+      "the reopened Outline sheet marked its last choice, which the focus had left"
+    ).toHaveAttribute("aria-selected", "false");
+    const sheetBranch = focusBranchControl(outlineSheet(page));
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "false");
+    await sheetBranch.click();
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "true");
+    await expect
+      .poll(async () => (await drawnRows(page)).find((row) => row.visible)?.id, {
+        message: "Focus branch in the reopened Outline sheet did not draw the thread's branch",
+      })
+      .toBe(thread);
   });
 });
 
@@ -1967,11 +2031,12 @@ test("the Spec view opened at its address with its statements' reads refused put
 });
 
 // An address on the Spec view, loaded whole from another page as a reader who follows a link to
-// it loads it, lands on the row it names with that row inside the viewport once the page has
-// gone quiet: a statement, a comment the view draws, and a comment the issue holds none of. Each
-// case is a full load of Settings, then a full load of the address, never a press or a move
-// inside the app, so the view draws every row from an empty cache. The seeded spec's sixty
-// statements stand well past one screen, so a row drawn after them can stand below it.
+// it loads it, lands on the row it names with that row inside the viewport once the view has
+// drawn its statements and the page has stopped moving: a statement, a comment the view draws,
+// and a comment the issue holds none of. Each case is a full load of Settings, then a full load
+// of the address, never a press or a move inside the app, so the view draws every row from an
+// empty cache. The seeded spec's sixty statements stand well past one screen, so a row drawn
+// after them can stand below it.
 //
 // A `#b-` fragment names the spec's own block, so it is the view's own address and not one
 // beside it (`issue-address.ts`'s `namesSpecBlock`): the view lands on the statement itself and
@@ -2000,7 +2065,10 @@ test("the Spec view opened at its address with its statements' reads refused put
 // A comment id of the right shape that no comment of the issue has draws the outline's line for
 // it in the view's place, with the focus on that line's heading, which stands in view.
 // SLOW(>=2s): a seeded issue of sixty statements, then four loads of Settings and four of the
-// Spec view, each waited on until the page goes quiet.
+// Spec view, each waited on until the view has drawn its statements and the page has stopped
+// moving. No load waits for the page's requests to go quiet: a request Settings still had in
+// flight when the address was loaded could stay counted as in flight, and that wait then ran to
+// its limit.
 test("an address on the Spec view lands on a statement, on a comment it draws and on a comment the issue holds none of, each loaded from another page with the focused row in view", async ({
   browser,
 }) => {
@@ -2010,17 +2078,14 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     const spec = presetPath(seeded.key, "spec");
     const body = issuePage(page).locator("[data-spec-body]");
     const statements = body.locator("[data-spec-statement]");
-    /** A full load of Settings, waited on until it is drawn, then a full load of `address`,
-     *  watched from its start so the page going quiet can be waited on. */
-    const fromSettings = async (address: string): Promise<ApiRequests> => {
+    /** A full load of Settings, waited on until it is drawn, then a full load of `address`. */
+    const fromSettings = async (address: string): Promise<void> => {
       await page.goto("/settings");
       await expect(
         page.getByRole("heading", { level: 1, name: "Settings" }),
         `Settings is not drawn before ${address} is loaded`
       ).toBeVisible();
-      const traffic = watchApiRequests(page);
       await gotoIssue(page, address);
-      return traffic;
     };
 
     // The last statement, by its fragment.
@@ -2028,11 +2093,12 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     const statement = body.locator(
       `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, last)}"]`
     );
-    await expectLoadSettled(await fromSettings(`${spec}#b-${last}`));
+    await fromSettings(`${spec}#b-${last}`);
     await expect(
       statements,
       "the last statement's fragment does not draw every statement of the spec"
     ).toHaveCount(seeded.requirements.length);
+    await settledScrollTop(page);
     await expect(
       statement,
       "the last statement's fragment leaves the focus off its row of the Spec view"
@@ -2052,17 +2118,17 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       await held.promise;
       await route.continue();
     });
-    const traffic = await fromSettings(`${spec}?comment=${seeded.commentId}`);
+    await fromSettings(`${spec}?comment=${seeded.commentId}`);
     await expect(
       comment,
       "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held"
     ).toBeVisible();
     held.resolve();
-    await expectLoadSettled(traffic);
     await expect(
       statements,
       "the comment's address does not draw every statement of the spec once the coverage and the spec's blocks answer"
     ).toHaveCount(seeded.requirements.length);
+    await settledScrollTop(page);
     await expect(
       comment,
       "the comment's address leaves the focus off its row of the Spec view once the statements are drawn above it"
@@ -2077,7 +2143,7 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       await keyHeld.promise;
       await route.continue();
     });
-    const keyTraffic = await fromSettings(`${spec}?comment=${seeded.commentId}`);
+    await fromSettings(`${spec}?comment=${seeded.commentId}`);
     await expect(
       comment,
       "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before End"
@@ -2088,11 +2154,11 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     ).toBeFocused();
     await page.keyboard.press("End");
     keyHeld.resolve();
-    await expectLoadSettled(keyTraffic);
     await expect(
       statements,
       "the comment's address, End pressed on its row during the load, does not draw every statement of the spec once the coverage and the spec's blocks answer"
     ).toHaveCount(seeded.requirements.length);
+    await settledScrollTop(page);
     await expectOnScreen(
       comment,
       "End on the comment's row during the load, its statements drawn above it"
@@ -2109,8 +2175,9 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       `a comment of the seeded issue has the id ${GONE_COMMENT}`
     ).not.toContain(GONE_COMMENT);
     const fallback = FALLBACK_LINES.comment(seeded.key);
-    await expectLoadSettled(await fromSettings(`${spec}?comment=${GONE_COMMENT}`));
+    await fromSettings(`${spec}?comment=${GONE_COMMENT}`);
     const heading = await expectFallbackLine(page, fallback, body, "a gone comment under Spec");
+    await settledScrollTop(page);
     await expectOnScreen(heading, "a gone comment under Spec");
   });
 });
@@ -2403,9 +2470,12 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
       page.getByRole("heading", { level: 1, name: "Settings" }),
       "Settings is not drawn before the comment's address is loaded"
     ).toBeVisible();
-    const traffic = watchApiRequests(page);
     await gotoIssue(page, `${presetPath(seeded.key, "spec")}?comment=${seeded.longCommentId}`);
-    await expectLoadSettled(traffic);
+    await expect(
+      body.locator("[data-spec-statement]"),
+      "the comment's address under Spec does not draw every statement of the spec"
+    ).toHaveCount(seeded.requirements.length);
+    await settledScrollTop(page);
     const comment = body.locator(`[data-node-row][data-node-id="${seeded.longCommentId}"]`);
     await expect(
       comment,
@@ -2565,6 +2635,100 @@ test("a press on a Spec statement's words after every inline kind the editor hol
         "a press on the statement's words after every inline kind does not put the caret in them",
       otherWord: `a press on the word "${pressed}", after every inline kind the statement holds, puts the caret in another word`,
     });
+  });
+});
+
+// A press past inline HTML that ends a statement of several lines puts the caret after it, and
+// the editor's box stands the caret's line where the press was. The caret after an atom that ends
+// the words stands between two elements, where the browser draws a collapsed range no box; at
+// e18d2df4 the box was then scrolled to put the middle of the whole paragraph at the press, which
+// stood the caret's line lines under the pointer. Chromium answers a point past the end of the
+// atom's line with the end of the atom's text, inside it, and `pressInWords` reads that place by
+// the atom's last line as a press after it. The press is under the atom's own box, which is as
+// tall as its font and not as its line, and still on its line. The press, the place the browser
+// answers for it, the editor's layout, the caret's boxes and the scroll are the browser's own.
+// SLOW(>=2s): a seeded issue of sixty statements, a load of the Spec view and a press, each read
+// once the page has stopped moving.
+test("a press past inline HTML that ends a Spec statement of several lines keeps the caret's line at the press", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = seedStatement(() =>
+    statementBlock(
+      LONG_BLOCK_ID,
+      `${longWords("long", 40)}\\\n${longWords("more", 40)}\\\nKept by <name>`
+    )
+  );
+  await phase(browser, seed, async (page, seeded) => {
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
+    const atom = '[data-type="html"]';
+    await expect(
+      long.locator(`[data-node-words] ${atom}`),
+      "the statement draws no inline HTML at the end of its words"
+    ).toHaveCount(1);
+    // The press is 40 px past the atom and 1 px under its box, inside its line.
+    const at = await long.locator(`[data-node-words] ${atom}`).evaluate((drawn) => {
+      const line = [...drawn.getClientRects()].at(-1);
+      return {
+        x: Math.round((line?.right ?? 0) + 40),
+        y: Math.round(line?.bottom ?? 0) + 1,
+      };
+    });
+    expect(
+      await long.evaluate(
+        (row, { point, selector }) => {
+          const hit = document.elementFromPoint(point.x, point.y);
+          const words = row.querySelector("[data-node-words]");
+          return words?.contains(hit) === true && hit?.closest(`a, button, ${selector}`) === null;
+        },
+        { point: at, selector: atom }
+      ),
+      `the point (${at.x}, ${at.y}) is not on the statement's words past its inline HTML`
+    ).toBe(true);
+    const pressedAt = await settledScrollTop(page);
+    await page.mouse.click(at.x, at.y);
+    await expect
+      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
+        message: "a press past the statement's inline HTML does not put the caret in its words",
+      })
+      .toBe(true);
+    const moved = (await settledScrollTop(page)) - pressedAt;
+    expect(
+      await long.evaluate((row, selector) => {
+        const placed = row.querySelector(`[data-editor-box] ${selector}`);
+        const caret = window.getSelection();
+        if (placed === null || caret?.anchorNode == null) return false;
+        const after = document.createRange();
+        after.setStartAfter(placed);
+        return after.comparePoint(caret.anchorNode, caret.anchorOffset) >= 0;
+      }, atom),
+      "a press past the statement's inline HTML puts the caret before it"
+    ).toBe(true);
+    expect(
+      Math.abs(moved),
+      `a press past the statement's inline HTML moves the page ${moved} px`
+    ).toBeLessThanOrEqual(1);
+    const caret = await settledValue("the caret's line in the editor's box", () =>
+      long.evaluate((row, selector) => {
+        const placed = row.querySelector(`[data-editor-box] ${selector}`);
+        const box = placed?.closest("[data-editor-box]")?.getBoundingClientRect();
+        const line = placed == null ? undefined : [...placed.getClientRects()].at(-1);
+        return {
+          bottom: line?.bottom ?? 0,
+          boxBottom: box?.bottom ?? 0,
+          boxTop: box?.top ?? 0,
+          top: line?.top ?? 0,
+        };
+      }, atom)
+    );
+    expect(
+      caret.top <= at.y && at.y <= caret.bottom,
+      `the caret's line stands from ${caret.top} to ${caret.bottom} px, not at the press's ${at.y} px`
+    ).toBe(true);
+    expect(
+      caret.top >= caret.boxTop && caret.bottom <= caret.boxBottom,
+      `the caret's line, from ${caret.top} to ${caret.bottom} px, is outside the editor's box, from ${caret.boxTop} to ${caret.boxBottom} px`
+    ).toBe(true);
   });
 });
 
