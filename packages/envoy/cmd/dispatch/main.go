@@ -2265,13 +2265,33 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
+//
+// The handler it returns is the server's root handler, so refuseContentSniffing around it holds
+// every answer the process writes.
 func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
-	return mux
+	return refuseContentSniffing(mux)
+}
+
+// refuseContentSniffing writes `X-Content-Type-Options: nosniff` on every answer, before the
+// handler below it runs, so the header is set whoever writes the answer and whatever it answers:
+// a probe, a route of the API table, the 404 of a path no route answers, a sign-in route, the
+// GitHub proxy, or a refusal the router gives before any route. A browser that reads a body as a
+// type it guessed from the bytes, rather than the type the answer names, can run text a person
+// wrote as a page of Dispatch's own origin.
+//
+// The API table sets the same header on its own answers (api.compressAnswers), for the entry
+// points that serve that table without this wrapper; setting the same value twice changes
+// nothing.
+func refuseContentSniffing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // issuers are the two OIDC issuers the process discovers in the background, as /healthz reports

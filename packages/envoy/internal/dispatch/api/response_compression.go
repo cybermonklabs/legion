@@ -46,8 +46,10 @@ const (
 // takes both. Every answer carries `X-Content-Type-Options: nosniff` the same way, compressed or
 // not: these answers are JSON holding text people wrote, and a browser that reads one of them as
 // something other than the type it was given runs that text as a page of Dispatch's own origin.
-// The routes that serve an upload's own bytes set the same header for the same reason
-// (serveFileVersion, artifact_files.go).
+// It is set here for every row of the table, the rows that serve an upload's own bytes included
+// (serveFileVersion, artifact_files.go), so no handler of a row sets it again. The dispatch
+// command sets it around its whole root handler too (refuseContentSniffing), which is what
+// carries it to the answers written outside this table.
 func compressAnswers(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Accept-Encoding")

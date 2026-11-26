@@ -158,7 +158,6 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 			w.Header().Set("Cache-Control", versionCacheControl)
 		}
 		w.Header().Set("Content-Disposition", attachmentDisposition(filename))
-		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
 		w.WriteHeader(http.StatusOK)
 	}

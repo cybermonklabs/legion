@@ -1382,7 +1382,6 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			// The download is the Markdown file itself, not the JSON that wraps it: the text the
 			// JSON's `markdown` field holds, with no display tree read.
 			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Disposition", attachmentDisposition(filename))
 			w.Header().Set("Cache-Control", downloadCacheControl)
 			w.Header().Set("Content-Length", strconv.Itoa(len(markdown)))
