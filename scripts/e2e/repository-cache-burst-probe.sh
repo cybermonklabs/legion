@@ -1229,6 +1229,7 @@ github_apps:
 runtime:
   kubernetes:
     namespace: legion
+    kubeconfig: ./kubeconfig
     image: ghcr.io/cybermonklabs/legion-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
     storage_class: standard
     session_store: postgres
@@ -1253,6 +1254,17 @@ config_check() {
     printf 'x\n' > "$dir/$f"
     chmod 0600 "$dir/$f"
   done
+  # A kubeconfig the check reads and never dials (a TEST-NET-1 address): a Job's pod mounts no
+  # ServiceAccount token, so a fixture naming none would send the check to in-cluster credentials.
+  cat > "$dir/kubeconfig" << 'KUBECONFIG'
+apiVersion: v1
+kind: Config
+clusters: [{name: example, cluster: {server: "https://192.0.2.20:6443"}}]
+users: [{name: legion-daemon, user: {token: placeholder}}]
+contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]
+current-context: legion-daemon
+KUBECONFIG
+  chmod 0600 "$dir/kubeconfig"
   write_config "$dir/enabled.yaml" both
   write_config "$dir/disabled.yaml" none
   write_config "$dir/partial.yaml" bucket

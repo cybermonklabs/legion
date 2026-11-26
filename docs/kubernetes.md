@@ -5584,7 +5584,7 @@ architect, planner, implementer, tester, reviewer, merger):
    No line names a signed address, its query, a token, or a ref's contents.
    A cache that is never ready, refuses the pod's token, names another repository, or streams history that does not verify fails the fetch, naming why, and nothing is cloned from GitHub instead, so the cache's own first clone is the one full download of the repository ([The repository cache](#the-repository-cache)).
 
-   - A fresh feed is filled beside its final path and renamed into place only once the bucket's downloads or the stream, their verification and the delta have all succeeded, so the disk holds a whole and current feed or none; a bucket attempt that fails leaves nothing of itself there for `/tar`.
+   - A fresh feed is filled beside its final path and renamed into place only once the bucket's downloads or the stream, their verification and the delta have all succeeded, so the disk holds a whole and current feed or none.
      A retry of the fetch in the same pod that does find a feed there fetches the delta into it alone (`the feed holds <owner>/<repo> already: …`), after removing every git lock file a fetch killed mid-update left in the feed and every partial pack (`objects/pack/tmp_*`) a transfer killed mid-pack left there, each logged with its age, and after deleting every branch outside the delta that GitHub no longer lists or has moved, each logged with its reason, as a fresh feed's fetch does too (below, [The repository cache](#the-repository-cache)).
      Such a retry is rare: the kubelet retries a failed init container on the pod it failed in, but the daemon reads that first failure (`failedInit`, `observe.go`) and replaces the pod within seconds, and a pod created anew starts on an empty disk and fills its feed whole.
      On a kept volume each later pod of the issue finds the feed too, and fetches the delta into it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
@@ -5603,7 +5603,7 @@ architect, planner, implementer, tester, reviewer, merger):
      default branch of <owner>/<repo> is now <name>, which this fetch did not bring: HEAD stays at
      <ref> until a fetch brings it`).
      Once the fetch may start — at once, or once the cache is ready
-     — the attempt on the cache's bucket has 15 minutes for all of it (`workspace.BucketFetchTimeout`), the verification of what the cache's `/tar` streamed has a 30-minute bound (`workspace.FetchTimeout`), counted from the stream's end, and the delta from GitHub has a 30-minute bound of its own, so neither a bucket attempt that fails late nor a slow stream leaves the delta minutes to run in.
+     — the bucket attempt has 15 minutes (`workspace.BucketFetchTimeout`), `/tar`'s verification 30 (`workspace.FetchTimeout`), and the delta from GitHub 30 of its own, so neither leaves the delta short.
      The fetch's waits, transfers and checks end within 205 minutes (`workspace.FetchBudget`) however long it waited, and the few local git commands around them take moments;
      a step with nothing left fails the fetch, naming the bound.
      Each transfer from GitHub is tried again up to four times after a transient failure, within that bound.
