@@ -897,9 +897,9 @@ func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *te
 // writes this owner a second notice. And the moment it names is the pacer's estimate for the
 // wake's place when the stop was built, which the machine carries on its report
 // (supervise.StallBackstopStop.WakeDue), not a guess at how long a wave takes; the notice says
-// it is an estimate, which any change of the pacing's queues or pace can move, a wake ahead
-// leaving earlier and a wake joining ahead, the jitter or a late timer later, and so says the claim waits until the pacing lets
-// the launch out rather than until that moment.
+// it is an estimate, which a change to the pacing's queues or to its pace can move earlier or
+// later, and so says the claim waits until the pacing lets the launch out rather than until that
+// moment.
 func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T) {
 	t.Parallel()
 	rig := newBackstopRig(t)
@@ -937,8 +937,8 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 		"the daemon took back the implementer's task without ending its turn and queued the replacement launch",
 		"still owed",
 		"the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallInstant(parked.At),
-		"any change of the pacing's queues or pace can move that moment, for example a wake ahead of it leaving the pacing can move it earlier",
-		"a wake joining ahead of it, the jitter the pacing adds to each wake it lets out ahead of it, or a timer that fires late can move it later",
+		"a change to the pacing's queues or to its pace can move that moment earlier or later",
+		"for example a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later",
 		"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out",
 		"What the pacing lets out then may be nothing at all, or not the launch the park queued",
 		"a suspension waiting for this claim",

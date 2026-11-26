@@ -930,12 +930,11 @@ process about to start; `plugin-refresh`, the relaunch of a session whose plugin
 earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
 `catch-up`, the notice a start writes to an architect that is already running)
 and `dueAt`, the pacing's estimate, at the read, of the moment it lets that wake out, as the
-queues stand. Any change of the queues or of the pace moves that moment; for example, a wake ahead
-of it that leaves, or a message mark on its own claim, moves it earlier, and a wake that joins
-ahead of it, the jitter of each turn ahead of it, a timer that fires late, or, for a message wake,
-an ordinary wake that joins an empty second queue, which the share then owes a turn, moves it
-later, so two reads can name two moments. The jitter alone, a random part of up to one interval for
-each turn, can make a wake with n wakes ahead of it run up to n intervals after its `dueAt`.
+queues stand. A change to the queues or to the pace can move that moment earlier or later, so two
+reads can name two moments: for example, a wake ahead of it in its own queue that leaves moves it
+earlier, and a wake that joins and is let out ahead of it moves it later. The jitter alone, a
+random part of up to one interval for each turn, can make a wake with n wakes ahead of it run up
+to n intervals after its `dueAt`.
 An empty array says the wave has
 gone out; the latest `dueAt` in it is the pacing's estimate of when the last of the wave goes.
 A claim on that list needs

@@ -39,9 +39,9 @@ type StallBackstopStop struct {
 	// WakeDue is the moment the pacer estimated, when the stop was built, that it lets out the
 	// place of the launch the pacing parked (wakepace.Place.Estimate, reserveWake), carried so the
 	// owner's notice names that estimate rather than guessing at the wait (the daemon's
-	// stallBackstopEnds). It is an estimate and no due moment: a wake ahead leaving moves the
-	// let-out earlier, and the jitter of the turns ahead or a message wake going ahead moves it
-	// later, so the notice says so. It is the zero time for every other end, which queues no wake.
+	// stallBackstopEnds). It is an estimate and no due moment: a change to the queues or to the
+	// pace can move the let-out earlier or later, so the notice says so. It is the zero time for
+	// every other end, which queues no wake.
 	WakeDue time.Time
 	// StopUnconfirmed is whether the runtime left the process this end let go possibly running:
 	// it refused the stop and the machine went on anyway, or the daemon's own stop cut the launch

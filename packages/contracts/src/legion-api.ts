@@ -194,13 +194,12 @@ const legionStepView = z.object({
 
 /** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
  * `dueAt`, the pacing's estimate at the read of the moment it lets the wake out, as its queues
- * stand (contract 193; entry 20261125211005). Any change of the queues or of the pace moves that
- * moment; for example, a wake ahead of it that leaves, or a message mark on its own claim, moves it
- * earlier, and a wake that joins ahead of it, the jitter of each turn ahead of it, a timer that
- * fires late, or, for a message wake, an ordinary wake that joins an empty second queue, which the
- * share then owes a turn, moves it later, so two reads can name two moments. The claim view's `wake` and `legionWakeWaiting` below carry the same wake, so both
- * spread this one object and cannot drift apart in type. Both fields are optional here, since no
- * plugin code reads the claim view's `wake`; `legionWakeWaiting` requires `dueAt` over the
+ * stand (contract 193; entry 20261125211005). A change to the queues or to the pace can move that
+ * moment earlier or later, so two reads can name two moments: for example, a wake ahead of it in
+ * its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it
+ * moves it later. The claim view's `wake` and `legionWakeWaiting` below carry the same wake, so
+ * both spread this one object and cannot drift apart in type. Both fields are optional here, since
+ * no plugin code reads the claim view's `wake`; `legionWakeWaiting` requires `dueAt` over the
  * spread, because the controller's `read_state` summary reads it (LEGION_ANSWER_READS). The kind
  * is read as a plain string, so a lane a later daemon adds is read rather than refused. */
 const legionPacedWake = {
@@ -721,15 +720,14 @@ const legionHeldOutboxRow = z.object({
  * (`worker_wakes_per_minute`, `worker_wake_burst`, contract 53): the claim it will wake, that
  * claim's issue and role, what kind of wake it is, and `dueAt`, the pacing's estimate at the read
  * of the moment it lets the wake out, as its queues stand (entry 20261125211005). A waiting wake
- * holds a place and no moment of its own. Any change of the queues or of the pace moves that
- * moment; for example, a wake ahead of it that leaves, or a message mark on its own claim, moves it
- * earlier, and a wake that joins ahead of it, the jitter of each turn ahead of it, a timer that
- * fires late, or, for a message wake, an ordinary wake that joins an empty second queue, which the
- * share then owes a turn, moves it later, so two reads can name two moments. The kinds are the daemon's three paced lanes:
- * `launch`, a role process it is about to start, and `plugin-refresh`, the relaunch of a process
- * whose plugin speaks an earlier contract than the daemon's, which the stale-plugin lane's own
- * gate admits (contract 73), both held in the claim's machine and lost with a restart, which
- * raises the wave again through its own paths; and
+ * holds a place and no moment of its own. A change to the queues or to the pace can move that
+ * moment earlier or later, so two reads can name two moments: for example, a wake ahead of it in
+ * its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it
+ * moves it later. The kinds are the daemon's three paced lanes: `launch`, a role process it is
+ * about to start, and `plugin-refresh`, the relaunch of a process whose plugin speaks an earlier
+ * contract than the daemon's, which the stale-plugin lane's own gate admits (contract 73), both
+ * held in the claim's machine and lost with a restart, which raises the wave again through its own
+ * paths; and
  * `catch-up`, the notice a start writes to an architect already running in place of a launch,
  * whose outbox row stands held while its place waits in the queue. `kind` is an unconstrained
  * string, so a lane a later daemon names is read rather than refused. `dueAt` is required: the

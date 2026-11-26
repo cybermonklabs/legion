@@ -2002,9 +2002,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		// A catch-up the wake pacing still holds in its queue has no moment of its own
 		// (earlierNoticeFor's held, record.CatchUpIsHeld), so this row waits for the pacer's
 		// estimate of its place (catchUpPacing.estimate), or parkedWakeBound where that comes
-		// first (parkedWait): the estimate moves as wakes ahead of the place leave or a message
-		// wake goes ahead of it, and a held row with no place yet has none, so the row reads again
-		// within the bound.
+		// first (parkedWait): a change to the queues or to the pace can move the estimate earlier
+		// or later, and a held row with no place yet has none, so the row reads again within the
+		// bound.
 		if held {
 			estimate := r.catchUps.estimate(earlier)
 			if !estimate.After(r.now()) {

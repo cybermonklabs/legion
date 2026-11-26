@@ -8,11 +8,9 @@ package api
 // /legion/v1/state`'s `wakesWaiting`, and of a claim view's `wake`, is no longer the moment the
 // pacing gave the wake, which was when it ran (contracts 53 and 193). It is the pacing's estimate,
 // at the read, of the moment it lets that wake's place out, as the queues stand
-// (wakepace.Place.Estimate). Any change of the queues or of the pace moves that moment; for
-// example, a wake ahead of it that leaves, or a message mark on its own claim, moves it earlier,
-// and a wake that joins ahead of it, the jitter of each turn ahead of it, a timer that fires late,
-// or, for a message wake, an ordinary wake that joins an empty second queue, which the share then
-// owes a turn, moves it later, so two reads can name two moments.
+// (wakepace.Place.Estimate). A change to the queues or to the pace can move that moment earlier or
+// later, so two reads can name two moments: for example, a wake ahead of it in its own queue that
+// leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later.
 // The outbox row of a `catch-up` wake stands held, with no due moment,
 // until the pacing lets its place out. No shape of the state or of a request moves, and the
 // plugin's one read of `dueAt`, the earliest of a state's wakes (pi-legion's wakesWaitingSummary),

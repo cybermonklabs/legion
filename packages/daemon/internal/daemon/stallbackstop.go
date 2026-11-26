@@ -501,7 +501,7 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 	supervise.EndRelaunchParked: {
 		did: "and queued the replacement launch",
 		end: "the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallDueWord +
-			": any change of the pacing's queues or pace can move that moment, for example a wake ahead of it leaving the pacing can move it earlier, and a wake joining ahead of it, the jitter the pacing adds to each wake it lets out ahead of it, or a timer that fires late can move it later. " +
+			": a change to the pacing's queues or to its pace can move that moment earlier or later, for example a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later. " +
 			"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out. What the pacing lets out then may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
 			"the lifecycle recheck every launch makes refusing this one, the tree's close dropping the queued launch, a take-back the store refuses when that launch comes due, a launch whose own write or start the daemon cannot make, " +
 			"and an operator's task that runs this launch before it is due are among the things that can change it",
