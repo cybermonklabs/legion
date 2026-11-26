@@ -463,6 +463,8 @@ var awaitingChildrenIgnores = map[TriggerKind]string{
 	TriggerTesterFailed:        "the tester's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE",
 	TriggerReviewApproved:      "a review GitHub records during the wait is recorded and starts no phase",
 	TriggerReviewRejected:      "a review GitHub records during the wait is recorded and starts no phase",
+	TriggerStepPassed:          "the completion of a step of a role the deployment defines is refused, HANDOFF_NOT_CURRENT_PHASE: no role works the parent while it waits",
+	TriggerStepFailed:          "the completion of a step of a role the deployment defines is refused, HANDOFF_NOT_CURRENT_PHASE: no role works the parent while it waits",
 	TriggerRetroCompleted:      "no retro runs before the parent is accepted, after its children",
 	TriggerPullRequestMerged:   "a merge during the wait is recorded on the pull request and read at the return",
 	TriggerSignOff:             "sign_off on a parent in awaiting_children is refused, WAITING_ON_CHILDREN",
