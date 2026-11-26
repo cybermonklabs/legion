@@ -61,7 +61,8 @@ func (w window) live() map[string]string {
 // their database time together against groupBudgetMs. delivery marks a read of the Delivery page:
 // the timeline's first paint at this head (timelineCases) and the base's (baseCases), whose body
 // no budget judges. storedFigures marks a read of an offered range of the eval list, which the
-// stored figures answer (checkStoredFiguresReads).
+// stored figures answer (checkStoredFiguresReads). codeStated marks a read whose window holds days
+// the code evals measured, whose answer states a value of each of them (checkCodeEvals).
 type paintCase struct {
 	name           string
 	path           string
@@ -73,6 +74,7 @@ type paintCase struct {
 	groupBudgetMs  float64
 	delivery       bool
 	storedFigures  bool
+	codeStated     bool
 }
 
 // measuredCase is one read as the instrument saw it: cataloguedOwn is how many statements of the
@@ -152,8 +154,8 @@ func headCases(project string, today time.Time, run int) []paintCase {
 	compare := url.Values{"compare_from": {c84.from.Format(time.RFC3339)}, "compare_to": {c84.to.Format(time.RFC3339)}, "limit": {"200"}}
 	repo := evalbench.Repos[0]
 	lists := []paintCase{
-		{name: "list-84d-compare", path: list(w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
-		{name: "list-84d-compare-repo", path: list(w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-84d-compare", path: list(w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, codeStated: true},
+		{name: "list-84d-compare-repo", path: list(w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, codeStated: true},
 		{name: "list-28d", path: list(w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
 		{name: "list-28d-repo", path: list(w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
 	}
@@ -246,9 +248,18 @@ func paint(ctx context.Context, r *report, o options) error {
 	r.result("catalog statements=%d calls=%d db_ms=%.1f", len(backgroundRun), calls(backgroundRun), dbMs(backgroundRun))
 
 	cases := headCases(o.project, today, o.run)
+	registry := false
 	switch o.mode {
 	case "base":
+		// The base holds the eval registry where its catalog says so: it is a commit of this
+		// branch before the code evals, and its first paint is the evals list, as this head's.
+		if registry, err = holdsRegistry(ctx, pool); err != nil {
+			return err
+		}
 		cases = baseCases(today)
+		if registry {
+			cases = registryBaseCases(o.project, today)
+		}
 	case "failure-day":
 		cases = timelineCases("failure-day-", today)
 	}
@@ -286,6 +297,13 @@ func paint(ctx context.Context, r *report, o options) error {
 	}
 	judgePaint(r, o, measured)
 	printHistories(r, o, measured)
+	if o.githubLog != "" {
+		if requests, err := readGitHubLog(o.githubLog); err != nil {
+			r.fail("k17 %v", err)
+		} else {
+			checkGitHubStub(r, requests, measured)
+		}
+	}
 	if o.runsFile != "" {
 		if err := recordRun(o.runsFile, runOf(o.run, measured)); err != nil {
 			r.fail("k8 record run %d in %s: %v", o.run, o.runsFile, err)
@@ -298,8 +316,13 @@ func paint(ctx context.Context, r *report, o options) error {
 	if err != nil {
 		return err
 	}
+	checkCodeResultReads(r, measured)
 	if o.mode == "base" {
-		baseControls(r, measured, indexes)
+		if registry {
+			checkBaseEvals(r, measured)
+		} else {
+			baseControls(r, measured, indexes)
+		}
 		return nil
 	}
 	checkRunJobsReads(r, o, measured, indexes)
@@ -308,6 +331,7 @@ func paint(ctx context.Context, r *report, o options) error {
 	}
 	checkFirstPaintReads(r, measured)
 	checkStoredFiguresReads(r, measured)
+	checkCodeEvals(r, measured)
 	// k13's named-jobs read and P0 list, k16's day rows and folds, k2, the probe, k16's fallback
 	// and its move of the default repository read the loaded database, which a restart of the
 	// server leaves as it was (the move puts the default back), so they are measured once, after

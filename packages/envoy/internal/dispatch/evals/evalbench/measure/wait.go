@@ -41,11 +41,16 @@ type heads struct {
 // (eval_days_serving), how many of its rebuilds are building, its day rows' builds, the projects
 // that hold day rows and how far each project's stored figures are built (eval_figures_built).
 // This head runs every one of these consumers. The base, main at the commit this head merges,
-// runs no refresher and runs the facts consumer and the fill where its catalog holds their tables
-// (readConsumers), which a merge of main can change.
+// runs the facts consumer and the fill where its catalog holds their tables, and the refresher
+// where its catalog holds the refresher's cursors (registry): a base before the eval registry runs
+// none, and a base that is a commit of this branch before the code evals runs all but the regroup
+// (readConsumers), which a merge of main can change. Where the database holds code_projects
+// (codeBuilt), the regroup's pass at the server's start has built a project's day rows of the code
+// evals when its row holds the digest of its groups.
 type consumerState struct {
 	heads       heads
 	legionFacts bool
+	registry    bool
 	facts       map[string]int64
 	projects    []string
 	computed    map[string]string
@@ -56,6 +61,7 @@ type consumerState struct {
 	builtBy     map[string]int64
 	dayProjects []string
 	built       map[string]time.Time
+	codeBuilt   map[string]bool
 	fill        *int64
 }
 
@@ -124,7 +130,7 @@ func wait(ctx context.Context, r *report, o options) error {
 		if len(seen) >= lagPolls {
 			previous = &seen[len(seen)-lagPolls]
 		}
-		missing := state.caughtUp(o.mode, build, previous)
+		missing := state.caughtUp(build, previous, o.project)
 		fmt.Printf("WAIT %s after %s: %s\n", time.Now().UTC().Format(time.RFC3339), time.Since(started).Round(time.Second), state.summary(build))
 		if len(missing) == 0 && held {
 			r.result("catchup mode=%s build=%s seconds=%.0f %s", o.mode, build, time.Since(started).Seconds(), state.summary(build))
@@ -143,8 +149,8 @@ func wait(ctx context.Context, r *report, o options) error {
 }
 
 // readConsumers reads the feeds' heads and the consumers' cursors, marks and walks. At the base it
-// first reads which of the Legion facts consumer and the keyword fill the server runs, by whether
-// the catalog holds their cursor tables, and reads those alone.
+// first reads which of the Legion facts consumer, the keyword fill and the refresher the server
+// runs, by whether the catalog holds their cursor tables, and reads those alone.
 func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumerState, error) {
 	state := consumerState{facts: map[string]int64{}, computed: map[string]string{}, days: map[string]int64{}, builtBy: map[string]int64{}}
 	if err := pool.QueryRow(ctx, `
@@ -153,11 +159,11 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	`).Scan(&state.heads.events, &state.heads.observations, &state.heads.changes); err != nil {
 		return consumerState{}, fmt.Errorf("read the feeds' heads: %w", err)
 	}
-	state.legionFacts = true
+	state.legionFacts, state.registry = true, true
 	fill := true
 	if mode == "base" {
-		if err := pool.QueryRow(ctx, `select to_regclass('issue_facts_cursor') is not null, to_regclass('search_text_versions_fill') is not null`).
-			Scan(&state.legionFacts, &fill); err != nil {
+		if err := pool.QueryRow(ctx, `select to_regclass('issue_facts_cursor') is not null, to_regclass('search_text_versions_fill') is not null,
+			to_regclass('eval_days_cursor') is not null`).Scan(&state.legionFacts, &fill, &state.registry); err != nil {
 			return consumerState{}, fmt.Errorf("read which consumers the base runs: %w", err)
 		}
 	}
@@ -192,7 +198,7 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 			return consumerState{}, fmt.Errorf("read the keyword fill's cursor: %w", err)
 		}
 	}
-	if mode == "base" {
+	if !state.registry {
 		return state, nil
 	}
 	if err := collectPairs(ctx, pool, `select name, position from eval_days_cursor`, state.days); err != nil {
@@ -256,6 +262,26 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	}); err != nil {
 		return consumerState{}, fmt.Errorf("read how far the stored figures are built: %w", err)
 	}
+	// The code survival results' regroup: whether each project's day rows of the code evals are
+	// built, where the database holds them.
+	var coded bool
+	if err := pool.QueryRow(ctx, `select to_regclass('code_projects') is not null`).Scan(&coded); err != nil {
+		return consumerState{}, fmt.Errorf("read whether the database holds the code survival results: %w", err)
+	}
+	if coded {
+		state.codeBuilt = map[string]bool{}
+		regrouped, err := pool.Query(ctx, `select project_key from code_projects where groups_digest is not null`)
+		if err != nil {
+			return consumerState{}, fmt.Errorf("read the projects whose code day rows are built: %w", err)
+		}
+		keys, err := pgx.CollectRows(regrouped, pgx.RowTo[string])
+		if err != nil {
+			return consumerState{}, fmt.Errorf("read the projects whose code day rows are built: %w", err)
+		}
+		for _, key := range keys {
+			state.codeBuilt[key] = true
+		}
+	}
 	return state, nil
 }
 
@@ -285,13 +311,15 @@ func collectPairs(ctx context.Context, pool *store.Pool, query string, into map[
 // its own), no rebuild building, a day row, and every project that holds day rows with its stored
 // figures built through the last end day of today (eval_figures_built, the mark the stored
 // figures' read reads), since a first paint measured before that would read the day rows, which
-// the stored figures are there to spare it. A day row keeps the build that last moved its values,
-// so a release whose rules move no value leaves them as they were. Production serves with the fill
-// caught up once its one backfill, at the deploy, is done, so evalbench's load writes the cursor
-// as caught up with the loaded log, and this waits for the fill to follow the events the server
-// wrote after the load: a paint measured while the fill still writes its batches would share the
-// database with them.
-func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
+// the stored figures are there to spare it. Where the database holds the code survival results
+// (codeBuilt), the regroup's pass at the server's start must have built codeProject's day rows of
+// the code evals, which its row of code_projects says by the digest of its groups. A day row keeps
+// the build that last moved its values, so a release whose rules move no value leaves them as they
+// were. Production serves with the fill caught up once its one backfill, at the deploy, is done,
+// so evalbench's load writes the cursor as caught up with the loaded log, and this waits for the
+// fill to follow the events the server wrote after the load: a paint measured while the fill still
+// writes its batches would share the database with them.
+func (s consumerState) caughtUp(build string, previous *heads, codeProject string) []string {
 	var missing []string
 	if previous == nil {
 		missing = append(missing, fmt.Sprintf("%d polls, the heads the cursors are held to", lagPolls+1))
@@ -320,7 +348,7 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 		missing = append(missing, fmt.Sprintf("the keyword fill's cursor (search_text_versions_fill.event_id) at %d, behind the newest event %d",
 			*s.fill, s.heads.events))
 	}
-	if mode == "base" {
+	if !s.registry {
 		return missing
 	}
 	if previous != nil {
@@ -371,6 +399,9 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	}
 	if len(s.builtBy) == 0 {
 		missing = append(missing, "a day row")
+	}
+	if s.codeBuilt != nil && !s.codeBuilt[codeProject] {
+		missing = append(missing, fmt.Sprintf("the regroup of %s's day rows of the code evals (its row of code_projects holds no digest)", codeProject))
 	}
 	return missing
 }
@@ -432,6 +463,9 @@ func (s consumerState) summary(build string) string {
 		builds = append(builds, fmt.Sprintf("%s=%d", other, count))
 	}
 	slices.Sort(builds)
+	if s.codeBuilt != nil {
+		line += fmt.Sprintf(" code_projects_built=%d", len(s.codeBuilt))
+	}
 	return line + fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d served=%d of %d rebuilding=%d figures_built=%d of %d day_rows_by_build=[%s]",
 		s.days, len(s.walks), done, served, len(s.serving), s.rebuilding, len(s.built), len(s.dayProjects), strings.Join(builds, " "))
 }

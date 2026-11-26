@@ -14,7 +14,11 @@
 #   job.sh base    the base's first paint (k8's and k13's negative controls), the base being main at
 #                  the commit this head merges: envoy-dispatch built at EVALBENCH_BASE, its
 #                  database migrated by it, and the generator's -base history, written by this
-#                  head's generator
+#                  head's generator. With EVALBENCH_BASE_FLAGS empty and EVALBENCH_BASE a commit of
+#                  this branch that holds the eval registry but not the code evals, it is k17's
+#                  control: the generator loads this head's history with its readings and none of
+#                  the code survival results (-code=false), and the paint is the evals list, which
+#                  must hold neither code eval
 #   job.sh tab     the Evals tab's paint and recompute in Chromium (k4 at the stated rate, k19 at
 #                  ten times; run.sh's tab): this head's server serving the web app built from the
 #                  checkout, over the full fixture, with track_commit_timestamp on, so the drive
@@ -56,8 +60,13 @@
 #   EVALBENCH_CHROMIUM     tab: a Chromium to drive in place of the one Playwright installs
 #   EVALBENCH_NODE         the node the run is on (job.yaml sets it from the pod's spec.nodeName),
 #                          printed with the machine's CPUs and memory
+#   EVALBENCH_BASE_FLAGS   base: the generator's flags that say the base's schema (-base: main
+#                          before the eval registry, whose history has no readings); set empty, a
+#                          base that holds the registry loads this head's history, as head does.
+#                          The base load always passes -code=false, the base having no code tables
 #   run.sh's EVALBENCH_PORT, EVALBENCH_CATCHUP, EVALBENCH_QUIET, EVALBENCH_CATALOG,
-#   EVALBENCH_PAINT_RUNS, EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG and EVALBENCH_RECOMPUTE_ARGS
+#   EVALBENCH_PAINT_RUNS, EVALBENCH_GITHUB_STUB (head and base: the GitHub stand-in of check k17),
+#   EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG and EVALBENCH_RECOMPUTE_ARGS
 #   pass through.
 set -euo pipefail
 
@@ -84,12 +93,18 @@ if [ "$mode" = tab ] && [ "$one_project" = 1 ]; then
   echo "job.sh: tab measures the full fixture; EVALBENCH_ONE_PROJECT is for head and base" >&2
   exit 2
 fi
+# The GitHub stand-in's throwaway App key is made by openssl, which run.sh needs only after the
+# load: a Job without it fails here, before the hour the load and the catch-up take.
+if [ "${EVALBENCH_GITHUB_STUB:-0}" = 1 ] && ! command -v openssl >/dev/null 2>&1; then
+  echo "job.sh: EVALBENCH_GITHUB_STUB=1 needs openssl, which makes the stand-in's throwaway App key" >&2
+  exit 2
+fi
 if [ -z "${PGBIN:-}" ]; then
   PGBIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)
 fi
 mkdir -p "$work/bin" "$work/pglog" "$work/sock"
 mark() { echo "MARK $(date -u +%FT%TZ) $*"; }
-mark "job.sh $mode: source $source_dir at $commit, scale ${EVALBENCH_SCALE:-1}, ten times ${EVALBENCH_TEN_TIMES:-0}, one project $one_project, now $now"
+mark "job.sh $mode: source $source_dir at $commit, scale ${EVALBENCH_SCALE:-1}, ten times ${EVALBENCH_TEN_TIMES:-0}, one project $one_project, now $now, base flags [${EVALBENCH_BASE_FLAGS--base}], GitHub stand-in ${EVALBENCH_GITHUB_STUB:-0}"
 # The machine the times are measured on: k8 and k16 hold the reads to their budgets on the node the
 # Job runs on, so the log names it.
 mark "machine: node ${EVALBENCH_NODE:-unnamed}, $(nproc) CPUs, $(awk -F': *' '/^model name/ { print $2; exit }' /proc/cpuinfo), $(awk '/^MemTotal/ { printf "%.1f GiB", $2 / 1048576 }' /proc/meminfo) of memory"
@@ -159,7 +174,8 @@ if [ "$mode" = base ]; then
   fi
   stamp=$base
   if [ "$one_project" != 1 ]; then
-    load_flags=(-base)
+    # shellcheck disable=SC2206 # EVALBENCH_BASE_FLAGS is flags, split on purpose.
+    load_flags=(${EVALBENCH_BASE_FLAGS--base} -code=false)
   fi
 fi
 (cd "$server_source/packages/envoy" && go build -ldflags "-X main.buildCommit=$stamp" -o "$work/bin/envoy-dispatch" ./cmd/dispatch)
@@ -223,7 +239,8 @@ sizes() {
   psql "$database_url" -Atc "
     select 'RESULT size when=$1 database=' || pg_size_pretty(pg_database_size(current_database()));
     select 'RESULT size when=$1 ' || case relkind when 'i' then 'index' else 'table' end || '=' || relname || ' rows_estimate=' || reltuples::bigint || ' total=' || pg_size_pretty(pg_total_relation_size(oid))
-    from pg_class where (relkind = 'r' and relname in ('events', 'issues', 'delivery_run_jobs', 'eval_readings', 'eval_days', 'issue_facts', 'session_titles'))
+    from pg_class where (relkind = 'r' and relname in ('events', 'issues', 'delivery_run_jobs', 'eval_readings', 'eval_days', 'issue_facts', 'session_titles',
+      'code_changes', 'code_pairs', 'code_days'))
       or (relkind = 'i' and relname = 'delivery_run_jobs_failed')
     order by relname"
 }

@@ -15,6 +15,14 @@
 // UTC midnight by default, so a load of the base and one of this head with one -now and one
 // -seed hold the same history at the same times.
 //
+// -code, on by default, writes INFRA's code survival results (dispatch://INFRA-3206, check k17):
+// 365 days of its default repository's chain at cybermonklabs/legion's measured rate, INFRA's two
+// code groups and the repository's row, so the server's regroup builds the two code evals' day
+// rows when it starts. -code=false leaves them out, for a database whose schema predates them: a
+// base that holds the eval registry but not the code evals (the load then writes this head's
+// history, with its readings, and no -base). -base and -one-project write none, whatever -code
+// says.
+//
 // -failure-day writes a failure day (evalbench.AddFailureDay) into a database this command has
 // loaded, and nothing else: -failure-day-runs failed deploy runs with -failure-day-jobs failed
 // jobs across them, by default INFRA's worst day (36 and 45), on the UTC day -failure-day days
@@ -26,8 +34,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -35,36 +45,72 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-func main() {
-	var spec evalbench.Spec
-	var day evalbench.FailureDay
-	var database, now string
-	flag.StringVar(&database, "database", "", "the Postgres URL to write into (required); the server must have migrated it")
-	flag.Uint64Var(&spec.Seed, "seed", 2916, "the seed of every random draw")
-	flag.Float64Var(&spec.Scale, "scale", 1, "the share of INFRA's stated rate to write, above 0 and at most 1")
-	flag.BoolVar(&spec.TenTimes, "ten-times", false, "write ten times the stated run rate")
-	flag.BoolVar(&spec.Base, "base", false, "write into a database of the base, main at the commit this head merges (git merge-base <head> origin/main), with no eval reading")
-	flag.BoolVar(&spec.OneProject, "one-project", false, "write the one-project fixture of the Evals tab's k22 and k24 (INFRA alone, its pull requests in the deploy repository and one other, no reading), into a database of this head or of the base head 82380570f8")
-	flag.StringVar(&spec.BuiltBy, "built-by", "", "the build the logged evals' day rows record: the server's stamped commit")
-	flag.StringVar(&now, "now", "", "the moment every history ends at, RFC 3339; the current UTC midnight by default")
-	flag.IntVar(&day.DaysAgo, "failure-day", 0, "write only a failure day into the loaded database, on the UTC day this many days before -now's, 1 to 84; 0 loads the fixture")
-	flag.IntVar(&day.Runs, "failure-day-runs", 36, "the failure day's failed deploy runs on main at INFRA's stated rate (INFRA's worst day: 36)")
-	flag.IntVar(&day.Jobs, "failure-day-jobs", 45, "the failed jobs across the failure day's runs at INFRA's stated rate, -failure-day-runs to three times it (INFRA's worst day: 45)")
-	flag.Parse()
-	spec.Now = time.Now().UTC().Truncate(24 * time.Hour)
+const usage = "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-code=false] [-base | -one-project] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]"
+
+// config is what the command line asks: the load, the failure day to add instead of it where
+// -failure-day names one, and the database to write into.
+type config struct {
+	spec     evalbench.Spec
+	day      evalbench.FailureDay
+	database string
+}
+
+// errUsage is the command line that names no database.
+var errUsage = errors.New(usage)
+
+// parseConfig reads the command line args, flag errors written to stderr. The load's Now is the
+// current UTC midnight where args name none.
+func parseConfig(args []string, stderr io.Writer) (config, error) {
+	var cfg config
+	var now string
+	var code bool
+	flags := flag.NewFlagSet("evalbench", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.StringVar(&cfg.database, "database", "", "the Postgres URL to write into (required); the server must have migrated it")
+	flags.Uint64Var(&cfg.spec.Seed, "seed", 2916, "the seed of every random draw")
+	flags.Float64Var(&cfg.spec.Scale, "scale", 1, "the share of INFRA's stated rate to write, above 0 and at most 1")
+	flags.BoolVar(&cfg.spec.TenTimes, "ten-times", false, "write ten times the stated run rate")
+	flags.BoolVar(&cfg.spec.Base, "base", false, "write into a database of the base, main at the commit this head merges (git merge-base <head> origin/main), with no eval reading")
+	flags.BoolVar(&cfg.spec.OneProject, "one-project", false, "write the one-project fixture of the Evals tab's k22 and k24 (INFRA alone, its pull requests in the deploy repository and one other, no reading), into a database of this head or of the base head 82380570f8")
+	flags.BoolVar(&code, "code", true, "write INFRA's code survival results (365 days of its default repository's chain, its two code groups and the repository's row); -base and -one-project write none, and a database whose schema predates them takes -code=false")
+	flags.StringVar(&cfg.spec.BuiltBy, "built-by", "", "the build the logged evals' day rows record: the server's stamped commit")
+	flags.StringVar(&now, "now", "", "the moment every history ends at, RFC 3339; the current UTC midnight by default")
+	flags.IntVar(&cfg.day.DaysAgo, "failure-day", 0, "write only a failure day into the loaded database, on the UTC day this many days before -now's, 1 to 84; 0 loads the fixture")
+	flags.IntVar(&cfg.day.Runs, "failure-day-runs", 36, "the failure day's failed deploy runs on main at INFRA's stated rate (INFRA's worst day: 36)")
+	flags.IntVar(&cfg.day.Jobs, "failure-day-jobs", 45, "the failed jobs across the failure day's runs at INFRA's stated rate, -failure-day-runs to three times it (INFRA's worst day: 45)")
+	if err := flags.Parse(args); err != nil {
+		return config{}, err
+	}
+	cfg.spec.NoCode = !code
+	cfg.spec.Now = time.Now().UTC().Truncate(24 * time.Hour)
 	if now != "" {
 		at, err := time.Parse(time.RFC3339, now)
 		if err != nil {
-			fail(fmt.Errorf("read -now %q as a moment: %w", now, err))
+			return config{}, fmt.Errorf("read -now %q as a moment: %w", now, err)
 		}
-		spec.Now = at.UTC()
+		cfg.spec.Now = at.UTC()
 	}
-	if database == "" {
-		fmt.Fprintln(os.Stderr, "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-base | -one-project] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]")
+	if cfg.database == "" {
+		return config{}, errUsage
+	}
+	return cfg, nil
+}
+
+func main() {
+	cfg, err := parseConfig(os.Args[1:], os.Stderr)
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		return
+	case errors.Is(err, errUsage):
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "evalbench: %v\n", err)
 		os.Exit(2)
 	}
+	spec, day := cfg.spec, cfg.day
 	ctx := context.Background()
-	opened, err := store.Open(ctx, database)
+	opened, err := store.Open(ctx, cfg.database)
 	if err != nil {
 		fail(fmt.Errorf("open the database: %w", err))
 	}
@@ -84,8 +130,8 @@ func main() {
 			added.Day.Format(time.DateOnly), added.Runs, added.Jobs, added.FailedJobs, time.Since(started).Seconds())
 		return
 	}
-	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t, one project: %t), ending at %s",
-		spec.Seed, spec.Scale, spec.TenTimes, spec.Base, spec.OneProject, spec.Now.Format(time.RFC3339))
+	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t, one project: %t, code survival results: %t), ending at %s",
+		spec.Seed, spec.Scale, spec.TenTimes, spec.Base, spec.OneProject, spec.WritesCode(), spec.Now.Format(time.RFC3339))
 	counts, err := evalbench.Load(ctx, opened, spec, logf)
 	if err != nil {
 		fail(err)

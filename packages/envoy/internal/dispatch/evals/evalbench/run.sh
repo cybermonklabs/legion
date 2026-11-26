@@ -25,7 +25,13 @@
 # rows and folds, the probe, k16's fallback, whose reads after a stale cut's first paint are held
 # to the first paint's budgets, and k16's move of the default repository away and back, timed to
 # the end of each refold (measure's own checks); after the runs this script greps the read path for
-# a read of events (k13) and judges the query keys of the list route (k16). failure-day is this head
+# a read of events (k13) and of the code survival results (k17) and judges the query keys of the
+# list route (k16). Where the fixture holds the code survival results, the catch-up also waits for
+# the regroup of INFRA's code day rows, each run's paint holds both code evals and the statements of
+# its reads name none of the results' tables, and, with EVALBENCH_GITHUB_STUB=1 below, no request to
+# GitHub falls in a paint (k17). The base is measured by the same list reads, with no budget, where
+# it holds the eval registry (job.sh's EVALBENCH_BASE_FLAGS empty, a base before the code evals),
+# whose answer holds neither code eval. failure-day is this head
 # over the fixture with a failure day added to it (evalbench's -failure-day), whose paint is the
 # Delivery timeline's alone, measured once, as the base's is. With EVALBENCH_PG_RESTART set it
 # measures the first paint once more after a Postgres restart, for information: it judges no
@@ -52,6 +58,21 @@
 # its restart would rebuild every family the measurement waits for. The database URL is a
 # superuser's: the instrument resets pg_stat_statements and turns the statement log on and off.
 #
+# With EVALBENCH_GITHUB_STUB=1, in measure alone, the server runs with a GitHub App instead, so that
+# the requests it makes to GitHub are on record (check k17, dispatch://INFRA-3206, R15: a page read
+# costs no request to GitHub, and a server with no App could make none): `measure ghstub` listens on
+# a loopback port, answers the App's installation and token calls and 404 to every other route, and
+# writes each request it is sent, with its time, method, path and Accept, as a JSON line to
+# $EVALBENCH_WORK/github.jsonl; the server gets a throwaway App key made here (openssl genrsa 2048)
+# as DISPATCH_APP_PEM_B64, DISPATCH_APP_CLIENT_ID=evalbench and the stand-in as
+# DISPATCH_GITHUB_API_BASE; and `measure paint -github-log` prints a FAIL line for each request the
+# log holds that came between the paint's first request and the answer of its last, and a RESULT
+# line with how many came outside it. The server's delivery reconcile, which would make a request at
+# a random moment of its first five minutes, is put off for a year (DISPATCH_TEST_HOOKS=1 and
+# DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=8760h): it is a loop of the server's own and no read of
+# the page, and one request of it in a paint's few seconds would fail a paint no read caused.
+# Without the variable the server runs as it did and paint reads no log.
+#
 # Environment:
 #   EVALBENCH_WORK        where the server's home, its logs and the measurement's output go (required)
 #   EVALBENCH_MEASURE     the built measure command (required by every command but migrate)
@@ -73,7 +94,8 @@
 #   EVALBENCH_BASE_TIMELINE   capture-base and pages: the capture's file
 #   EVALBENCH_PAGES       pages: the built timelinepages command
 #   EVALBENCH_NODE        the node the run is on, which measure's k16 lines name (job.yaml sets it
-#                         from the pod's spec.nodeName)
+#                         from the pod's spec.nodeName); run.sh passes it to measure as -node
+#   EVALBENCH_GITHUB_STUB  1 starts the GitHub stand-in above in measure (0)
 #
 # Every measurement prints a RESULT line, and every one that misses its budget or its rule a FAIL
 # line; the script exits 1 when any step failed.
@@ -132,6 +154,10 @@ token=evalbench-token
 mkdir -p "$work/home" "$work/web"
 server_pid=""
 status=0
+stub_pid=""
+# The settings the server and the paint take when the GitHub stand-in runs (start_github_stub).
+server_github=()
+paint_github=()
 # The identity the server reads people by: the Go tests' trusted header, or, for the tab, the
 # cookie a deployment uses, signed by dev sign-in (which serves a loopback origin alone).
 identity=(DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1)
@@ -146,7 +172,7 @@ start_server() {
   local log=$1
   (cd "$work/home" && exec env -i PATH="$PATH" HOME="$work/home" XDG_CONFIG_HOME="$work/home" XDG_DATA_HOME="$work/home" \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$token" "${identity[@]}" DISPATCH_LISTEN_HOST=127.0.0.1 \
-    DISPATCH_PORT="$port" DISPATCH_WEB_DIST="$web_dist" DISPATCH_NATS_DISABLED=1 "$server_bin" >>"$log" 2>&1) &
+    DISPATCH_PORT="$port" DISPATCH_WEB_DIST="$web_dist" DISPATCH_NATS_DISABLED=1 "${server_github[@]}" "$server_bin" >>"$log" 2>&1) &
   server_pid=$!
   local started=$SECONDS
   until curl -fsS "$url/healthz" >/dev/null 2>&1; do
@@ -183,9 +209,64 @@ stop_server() {
   echo "MARK $(date -u +%FT%TZ) server $server_pid stopped ($code)"
   server_pid=""
 }
+
+# start_github_stub starts the GitHub stand-in (measure ghstub) and waits until it has published
+# its port, and sets what the server and the paint are given for it: the throwaway App, whose key is
+# made here and kept in no file, and the log paint reads.
+start_github_stub() {
+  command -v openssl >/dev/null 2>&1 || {
+    echo "FAIL run.sh: EVALBENCH_GITHUB_STUB=1 needs openssl, which makes the throwaway App key"
+    exit 1
+  }
+  local pem port_file=$work/github.port
+  pem=$(openssl genrsa 2048 2>/dev/null | base64 -w0) || pem=""
+  [ -n "$pem" ] || {
+    echo "FAIL run.sh: openssl made no App key"
+    exit 1
+  }
+  rm -f "$port_file"
+  "$EVALBENCH_MEASURE" ghstub -log "$work/github.jsonl" -port-file "$port_file" 2>>"$work/github-stub.log" &
+  stub_pid=$!
+  local started=$SECONDS
+  until [ -s "$port_file" ]; do
+    if ! kill -0 "$stub_pid" 2>/dev/null; then
+      echo "FAIL run.sh: the GitHub stand-in exited before it listened; the end of $work/github-stub.log:"
+      tail -n 20 "$work/github-stub.log"
+      exit 1
+    fi
+    if [ $((SECONDS - started)) -gt 30 ]; then
+      echo "FAIL run.sh: the GitHub stand-in did not listen within 30 s; the end of $work/github-stub.log:"
+      tail -n 20 "$work/github-stub.log"
+      exit 1
+    fi
+    sleep 0.2
+  done
+  local stub_port
+  stub_port=$(tr -d '\n' <"$port_file")
+  server_github=(DISPATCH_APP_CLIENT_ID=evalbench "DISPATCH_APP_PEM_B64=$pem" "DISPATCH_GITHUB_API_BASE=http://127.0.0.1:$stub_port"
+    DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=8760h)
+  paint_github=(-github-log "$work/github.jsonl")
+  echo "MARK $(date -u +%FT%TZ) GitHub stand-in $stub_pid answering the App's calls on port $stub_port, logging to $work/github.jsonl"
+}
+
+# stop_github_stub stops the stand-in with SIGTERM, which it answers with its log whole and exit 0,
+# and prints how many requests the log holds; a stand-in that had died is a FAIL line.
+stop_github_stub() {
+  [ -n "$stub_pid" ] || return 0
+  kill -TERM "$stub_pid" 2>/dev/null || true
+  local code=0
+  wait "$stub_pid" || code=$?
+  stub_pid=""
+  if [ "$code" -ne 0 ]; then
+    echo "FAIL run.sh: the GitHub stand-in exited $code"
+    status=1
+  fi
+  echo "RESULT k17 github_stub requests_logged=$(wc -l <"$work/github.jsonl") log=$work/github.jsonl"
+}
 # Every exit stops a server still running and waits for it, so the caller's next step (job.sh's
-# stop of Postgres, the next measure) never runs beside it.
-trap 'if [ -n "$server_pid" ]; then kill -TERM "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi' EXIT
+# stop of Postgres, the next measure) never runs beside it, and the stand-in the same.
+trap 'if [ -n "$server_pid" ]; then kill -TERM "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi
+  if [ -n "$stub_pid" ]; then kill -TERM "$stub_pid" 2>/dev/null || true; wait "$stub_pid" 2>/dev/null || true; fi' EXIT
 
 if [ "$command" = migrate ]; then
   start_server "$work/server-migrate.log"
@@ -208,9 +289,12 @@ measure() {
   if [ -n "${EVALBENCH_NOW:-}" ]; then
     now=(-now "$EVALBENCH_NOW")
   fi
-  "$EVALBENCH_MEASURE" "$subcommand" -mode "$measure_mode" -database "$database_url" -url "$url" "${now[@]}" "$@" || status=1
+  "$EVALBENCH_MEASURE" "$subcommand" -mode "$measure_mode" -database "$database_url" -url "$url" -node "${EVALBENCH_NODE:-}" "${now[@]}" "$@" || status=1
 }
 
+if [ "$command" = measure ] && [ "${EVALBENCH_GITHUB_STUB:-0}" = 1 ]; then
+  start_github_stub
+fi
 start_server "$work/server-catchup.log"
 measure wait -timeout "${EVALBENCH_CATCHUP:-1h}"
 # status is 0 until the wait, so here it is the wait's own; stop_server sets it on a bad stop.
@@ -279,7 +363,7 @@ for run in $(seq 1 "$runs"); do
   fi
   start_server "$paint_log"
   measure paint -token "$token" -server-log "$paint_log" -pg-log "$EVALBENCH_PG_LOG" \
-    -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}" "${tagged[@]}"
+    -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}" "${tagged[@]}" "${paint_github[@]}"
   stop_server
 done
 if [ "$mode" = head ]; then
@@ -317,6 +401,22 @@ if [ "$mode" = head ]; then
     if [ -n "$hits" ]; then
       echo "FAIL k13 the read path names events:"
       printf '%s\n' "$hits"
+      status=1
+    fi
+    # k17: nor does it name the code survival results (dispatch://INFRA-3206, R15): the day rows
+    # and the stored figures hold what the page shows, so no file of the read path reads
+    # code_changes, code_pairs or code_days. This is the files' half of the rule, and `measure
+    # paint` holds the statements the paint ran to it, in their text and in their plans.
+    searched=0
+    results=$(grep -H -o -z -i -E '\b(from|join)[[:space:]]+code_(changes|pairs|days)\b' "${read_path[@]}" | tr '\0\n' '\n ') || searched=$?
+    if [ "$searched" -gt 1 ]; then
+      echo "FAIL k17 grep exited $searched, so a file of the read path was not read: ${read_path[*]}"
+      status=1
+    fi
+    echo "RESULT k17 read_path_files=${#read_path[@]} reads_of_code_results=$(printf '%s' "$results" | grep -c . || true)"
+    if [ -n "$results" ]; then
+      echo "FAIL k17 the read path names the code survival results:"
+      printf '%s\n' "$results"
       status=1
     fi
   else
@@ -365,8 +465,9 @@ if [ -n "${EVALBENCH_PG_RESTART:-}" ]; then
   }
   start_server "$work/server-cold.log"
   measure paint -info -token "$token" -server-log "$work/server-cold.log" -pg-log "$EVALBENCH_PG_LOG" \
-    -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}"
+    -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}" "${paint_github[@]}"
 fi
 stop_server
+stop_github_stub
 echo "MARK $(date -u +%FT%TZ) run.sh measure $mode exits $status"
 exit "$status"

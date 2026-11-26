@@ -21,7 +21,17 @@
 //     Every reading is measured before Now, so a server whose clock has reached Now (the bench's
 //     default Now is today's UTC midnight) takes each one; the readings write refuses a
 //     measured_at more than a day past its clock or before the floor (R18), and Load refuses a
-//     Now that would make it refuse one.
+//     Now that would make it refuse one;
+//   - the code survival results of INFRA's default repository (code.go, dispatch://INFRA-3206, check
+//     k17): 365 days of its first-parent chain at the rate cybermonklabs/legion's reference window
+//     measured, 63.4 commits a day, 58 percent of them changes that landed a pull request, and about
+//     27,967 pairs of a change and a later change that removed its lines in 90 days, all at the
+//     load's scale; INFRA's two code groups, in its delivery settings; the fingerprint of each day;
+//     the days that began to wait 33 days before Now's measured; and the repository's row checked
+//     on Now's day, so the server's run reads GitHub for none of it during the measurement. The
+//     code_projects table is left empty, so the regroup's pass at the server's start builds INFRA's
+//     day rows of the two code evals from these results, with no GitHub request and no App. Spec.NoCode
+//     leaves all of it out, and Base and OneProject write none.
 //
 // Base writes, into a database the base's envoy-dispatch migrated (main at the commit this head
 // merges), the history main's Delivery page reads, for k8's and k13's negative controls: the same
@@ -132,11 +142,21 @@ type Spec struct {
 	// build once the server's refresher has walked. Required where readings are written: neither
 	// under Base nor under OneProject.
 	BuiltBy string
+	// NoCode leaves out the code survival results (code.go): the load of a base that predates the
+	// code_* tables, and of one that holds the eval registry but not the code evals, writes none. A
+	// load of Base or OneProject writes none whatever NoCode says.
+	NoCode bool
 }
 
 // readings is whether the load writes the logged evals' readings.
 func (s Spec) readings() bool {
 	return !s.Base && !s.OneProject
+}
+
+// WritesCode is whether the load writes the code survival results: a load of this head's schema
+// that does not leave them out (NoCode).
+func (s Spec) WritesCode() bool {
+	return !s.NoCode && !s.Base && !s.OneProject
 }
 
 // scaled is count at the spec's scale, at least floor.
@@ -153,6 +173,7 @@ var countedTables = []string{
 	"projects", "issues", "events", "handoffs", "legion_observations", "legion_settings",
 	"delivery_pull_requests", "delivery_runs", "delivery_run_jobs",
 	"session_titles", "eval_versions", "eval_series", "eval_readings", "eval_days",
+	"code_repos", "code_days", "code_changes", "code_pairs", "code_projects",
 }
 
 // Load writes the fixture spec names into the database, which the server must have migrated and
@@ -196,6 +217,11 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 			logf("the base lacks %d of this head's %d derived tables, by its catalog: %s", len(lacks), len(evalfixture.DerivedTables), strings.Join(lacks, ", "))
 		}
 	}
+	if spec.WritesCode() {
+		if err := checkCodeSchema(ctx, pool); err != nil {
+			return nil, err
+		}
+	}
 	if err := checkEmpty(ctx, pool); err != nil {
 		return nil, err
 	}
@@ -212,6 +238,12 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		return nil, err
 	}
 	step("INFRA's delivery history")
+	if spec.WritesCode() {
+		if err := writeCode(ctx, pool, spec, history); err != nil {
+			return nil, err
+		}
+		step("INFRA's code survival results")
+	}
 	projects := []string{Project}
 	if !spec.OneProject {
 		for _, project := range SmallProjects {

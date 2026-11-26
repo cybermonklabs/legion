@@ -7,6 +7,7 @@
 //	measure paint -mode head -database <url> -url <server> -token <token> \
 //	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file> [-run <n> -runs-file <file>]
 //	measure runs  -runs <n> -runs-file <file>
+//	measure ghstub -log <file> -port-file <file> [-listen 127.0.0.1:0]
 //
 // -mode is head, base or failure-day: failure-day is this head over the fixture with a failure
 // day added to it (evalbench.AddFailureDay), whose paint is the Delivery timeline's alone; base is
@@ -18,8 +19,10 @@
 // served every family's rows under the running build (eval_days_serving) with no rebuild building
 // and built every project's stored figures through today's last end day, and the keyword fill's
 // cursor stands at the newest event, which evalbench's load leaves it at as of the load, so it has
-// only the server's own later events to follow (consumerState.caughtUp). At the base it waits for
-// those of the facts consumer and the fill the base's catalog holds the tables of. Where the
+// only the server's own later events to follow (consumerState.caughtUp), and, where the database
+// holds the code survival results, the regroup's pass at the server's start has built INFRA's day
+// rows of the code evals (code_projects.groups_digest set). At the base it waits for those of the
+// facts consumer, the fill and the refresher the base's catalog holds the tables of. Where the
 // server runs the fill it prints how long that took.
 //
 // paint is the first paint after a restart: the reads the page makes, each with the database time
@@ -54,8 +57,20 @@
 // and by k8's and k13's rules over their plans. runs then prints, for each read and each group of
 // reads, its database time in each run with the median and the maximum of the runs, and fails one
 // over its budget in any run (runs.go). -now is the day the paint's windows end on, the end of the
-// history the generator wrote (job.sh's EVALBENCH_NOW), and EVALBENCH_NODE, where the environment
-// sets it, the node the run is on, which the lines of k16's fallback and move name.
+// history the generator wrote (job.sh's EVALBENCH_NOW), and -node, which run.sh gives
+// EVALBENCH_NODE, the node the run is on, which the lines of k16's fallback and move name.
+//
+// -github-log names the log of the GitHub stand-in the server ran against (ghstub, which run.sh
+// starts under EVALBENCH_GITHUB_STUB=1, with a throwaway App whose API base is the stand-in): paint
+// then prints a FAIL line for each request the log holds that the stand-in received between the
+// paint's first request and the answer of its last (check k17, dispatch://INFRA-3206 R15: a page
+// read costs no request to GitHub), and a RESULT line with how many came inside the paint's window
+// and how many outside it. Whatever the server, paint prints a FAIL line for each statement of its
+// reads that names code_changes, code_pairs or code_days, whose rows no paint reads: the day rows
+// and the stored figures hold what the paint shows. At this head each read of the evals list holds
+// both code evals and, over 84 days, states a value of each. A base that holds the eval registry
+// (a commit of this branch before the code evals) is measured by the same list reads with no
+// budget, and its answer must hold neither code eval.
 //
 // The server runs background loops that touch the database between requests. Each read's
 // statements are told from theirs by a catalogue taken first: every statement the database ran in
@@ -76,19 +91,23 @@ import (
 	"time"
 )
 
-// report collects what one invocation measured: each line it printed, and the text of each FAIL
-// line (fails). tag, where it is set, follows the prefix of every RESULT and FAIL line: " run=3"
-// for the third of the first paint's runs. An -info invocation's prefix is INFO, and it writes a
-// rule it misses as an INFO-FAIL line, which no verdict counts (job.yaml's reads `^FAIL`).
+// report collects what one invocation measured: the text of each RESULT line (lines) and of each
+// FAIL line (fails) it printed. tag, where it is set, follows the prefix of every RESULT and FAIL
+// line: " run=3" for the third of the first paint's runs. An -info invocation's prefix is INFO, and
+// it writes a rule it misses as an INFO-FAIL line, which no verdict counts (job.yaml's reads
+// `^FAIL`).
 type report struct {
 	prefix string
 	tag    string
+	lines  []string
 	fails  []string
 }
 
 // result prints one measurement.
 func (r *report) result(format string, args ...any) {
-	fmt.Printf(r.prefix+r.tag+" "+format+"\n", args...)
+	line := fmt.Sprintf(format, args...)
+	r.lines = append(r.lines, line)
+	fmt.Printf("%s%s %s\n", r.prefix, r.tag, line)
 }
 
 // fail prints one measurement that missed its budget or its rule, and marks the run failed.
@@ -111,7 +130,7 @@ func (r *report) block(heading, text string) {
 	}
 }
 
-// options is one invocation's flags, and the node the environment names (EVALBENCH_NODE).
+// options is one invocation's flags.
 type options struct {
 	mode      string
 	database  string
@@ -129,11 +148,15 @@ type options struct {
 	runsFile  string
 	now       time.Time
 	node      string
+	githubLog string
 }
 
-const usage = "usage: measure wait|paint|runs -mode head|failure-day|base -database <url> -url <server> [flags]"
+const usage = "usage: measure wait|paint|runs|ghstub -mode head|failure-day|base -database <url> -url <server> [flags]"
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "ghstub" {
+		os.Exit(ghstub(os.Args[2:], os.Stderr))
+	}
 	if len(os.Args) < 2 || (os.Args[1] != "wait" && os.Args[1] != "paint" && os.Args[1] != "runs") {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -156,6 +179,8 @@ func main() {
 	flags.StringVar(&o.runsFile, "runs-file", "", "paint: the file each run's reads are appended to; runs: the file it reads them from")
 	flags.IntVar(&o.runs, "runs", 0, "runs: how many runs the file holds, numbered 1 to this")
 	now := flags.String("now", "", "paint: the UTC midnight the history the generator wrote ends at, RFC3339, which the paint's windows end on (job.sh's EVALBENCH_NOW); the current UTC midnight where unset")
+	flags.StringVar(&o.node, "node", "", "the node the run is on, which the lines of k16's fallback and move name (run.sh passes EVALBENCH_NODE)")
+	flags.StringVar(&o.githubLog, "github-log", "", "paint: the log of the GitHub stand-in the server ran against (ghstub), whose requests inside the paint's window are FAIL lines (check k17); none where the server ran with no stand-in")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		os.Exit(2)
 	}
@@ -168,7 +193,6 @@ func main() {
 		}
 		o.now = at.UTC().Truncate(24 * time.Hour)
 	}
-	o.node = os.Getenv("EVALBENCH_NODE")
 	if o.mode != "head" && o.mode != "base" && o.mode != "failure-day" {
 		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day or base, not %q\n", o.mode)
 		os.Exit(2)
