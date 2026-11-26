@@ -16,11 +16,7 @@ package graphstoretest
 // node reads as that node's own visibility, state, project or parties, whoever wrote it, so an
 // attribute a type declares under one of these names is stored under another name
 // (pmdoc/schemanodes/schemanodestest.StoreName).
-// The project and the parties a node carries come with the writers that state them
-// (S3c-documents for a document's node and S4 for a message's), so this slice holds the set to
-// the two every node already carries; the slice that brings the last of those writers restores
-// them here.
-func BaseAttributes() []string { return []string{"visibility", "state"} }
+func BaseAttributes() []string { return []string{"visibility", "state", "project", "parties"} }
 
 // WriteFunctions is the name of every function of graphstore a write of graph_nodes and
 // graph_tuples from outside that package goes through, a fresh slice for each caller: Write and
