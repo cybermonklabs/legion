@@ -68,7 +68,7 @@ func TestThePRChecksReadByCompletionReadsTheCompletionIndex(t *testing.T) {
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_runs"}) {
 		t.Fatalf("the read reads %v; want delivery_runs alone:\n%s", read, raw)
 	}
-	scan := indexScanOf(t, plan, raw, "delivery_runs", "delivery_runs_kind_completed_at")
+	scan := indexScanOf(t, plan, raw, "delivery_runs_kind_completed_at")
 	for _, key := range []string{"repo =", "kind =", "completed_at >=", "completed_at <="} {
 		if !strings.Contains(scan.Cond, key) {
 			t.Errorf("the read's index condition %q holds no %q:\n%s", scan.Cond, key, raw)

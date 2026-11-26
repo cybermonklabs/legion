@@ -148,8 +148,8 @@ func insertIdentityDocument(t *testing.T, database *store.Store, author string, 
 }
 
 // insertCreateEvent appends, at seq of IDEN-1, the artifact.created event of the document row id,
-// whose payload names the row as every release's create names it (api's
-// artifactCreatedEventPayload), and answers the event's id.
+// whose payload names the row as every release's create names it
+// (docs.ArtifactCreatedEventPayload), and answers the event's id.
 func insertCreateEvent(t *testing.T, database *store.Store, seq int, id string) int64 {
 	t.Helper()
 	var event int64

@@ -94,24 +94,27 @@ type PushImports interface {
 // Run delivers GitHub events from the durable consumer while this process holds the durable's
 // hold, and stands by for the hold while another process holds it, until ctx is cancelled; then
 // it stops delivering and releases the hold (heldDurable.stop) under intakeStopBudget from ctx's
-// end before it returns. Idle until the settings cache holds the rule of a source repository
-// (SettingsCache.routes). A push of a branch is one more message it routes (handlePushEnvelope), so
-// an intake idle for want of a rule hands the importer no push, and the importer's five-minute
-// pass imports the source then.
+// end before it returns. It binds the durable whether or not any project's delivery settings are
+// saved: a pull request's head row (recordPullRequestHead) and a push of a branch
+// (handlePushEnvelope) read no rule, and a deployment with none still compares its check results
+// with pull request heads (api/results_ci.go, NewestPullRequestHead). Only the delivery timeline's
+// own work reads the rules (route). It binds nothing before the settings cache's first read has
+// answered (SettingsCache.Read), whatever that read found: until then the cache holds nil, and a
+// deployment with settings would route a merge, a workflow run and the event freshness by no rule
+// and drop them. A Run whose ctx ends before that read returns at once, having bound and held
+// nothing.
 //
 // The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
 // setting rebinds it. Each message is routed by the rules the cache holds when its handler runs, so
-// a settings change -- another source repository, another workflow path -- takes effect as soon as
-// the cache has read it, with no restart and no rebind. route does all the filtering, from those
-// rules.
+// a settings change -- saved settings, another source repository, another workflow path -- takes
+// effect as soon as the cache has read it, with no restart and no rebind. route does all the
+// filtering, from those rules.
 //
 // Several envoy-dispatch processes run at once during a rolling release, of this build and of the
 // one before it, and exactly one of them delivers from the durable: the one holding its hold
 // (heldDurable). The others stand by, trying for the hold every durableBindInterval for the life
 // of the process, with no deadline, and take the durable over within seconds of the holder
-// releasing its hold, or of the hold lapsing when the holder dies. Two things wake a standby that
-// has nothing to route by yet: the cache storing rules, since an intake with none has nothing to do
-// with a message, and, once it has a rule, that ticker. A holder checks every
+// releasing its hold, or of the hold lapsing when the holder dies. A holder checks every
 // intakeHoldRenew that the durable still delivers to it, and stops delivering the moment its hold
 // is lost.
 //
@@ -123,7 +126,12 @@ type PushImports interface {
 // them. Routed rather than ignored because it is the only live-update path for the fork case,
 // which does reach it.
 func (in *Intake) Run(ctx context.Context) {
-	in.run(ctx, in.settings.Changed, in.settings.routes)
+	select {
+	case <-in.settings.Read():
+	case <-ctx.Done():
+		return
+	}
+	in.run(ctx)
 }
 
 // route dispatches one envelope payload by its kind field: a pull request to
@@ -135,19 +143,24 @@ func (in *Intake) Run(ctx context.Context) {
 // does not handle, is discarded before any GitHub call or write, whatever its other fields hold (a
 // CI settlement's hold arrays, cistore.Summary); only a pull request's, a workflow run's or a
 // push's string fields are read, as the flat string map its handler takes (flatPayload), and every
-// other member is skipped. handled reports whether the kind is one route hands to a handler of the
+// other member is skipped. rules is what the settings cache holds when the envelope arrives, with
+// no repository while no project's delivery settings are saved: a pull request is handed to its
+// handler either way, since its head row reads no rule, and a workflow run is the delivery
+// timeline's alone, so a run of a repository no source reads is discarded before any GitHub call
+// (routeWorkflowEnvelope). handled reports whether the kind is one route hands to a handler of the
 // delivery timeline, whatever that handler then decides, and repo the repository the envelope is
 // about, so deliver records the event's time on that repository's source (RecordEventAt) for a
-// pull request that was not merged as well. A push is no delivery fact: route hands it to its
-// handler and answers it not handled, with the handler's error, so it records no issue.deployed
-// and does not move any source's event freshness. A payload that is not a JSON object, and a kind
-// that is not a string, are errMalformedPayload.
+// pull request that was not merged as well, and on no source where none reads the repository. A
+// push is no delivery fact: route hands it to its handler and answers it not handled, with the
+// handler's error, so it records no issue.deployed and does not move any source's event freshness.
+// A payload that is not a JSON object, and a kind that is not a string, are errMalformedPayload.
 //
 // An envelope whose handler stored a fact the issue.deployed rule reads (a pull request's row, a
 // run, its jobs) ends with recordDeployed under its repository's rule, whether or not the handler
 // then failed: a run written before its jobs fetch failed may still be the run that shipped a pull
 // request stored earlier. A pull request ships only by a run of its own repository
-// (shippingRunJoin), so no other repository's rule is read.
+// (shippingRunJoin), so no other repository's rule is read. A handler stores such a fact only by a
+// rule, so one that reports it wrote had its repository's rule.
 func (in *Intake) route(ctx context.Context, rules *SourceRules, raw string) (handled bool, repo string, err error) {
 	if raw == "" {
 		return false, "", nil
@@ -219,9 +232,9 @@ func (in *Intake) recordDeployed(ctx context.Context, rule DeliverySettings) {
 // routeWorkflowEnvelope hands a workflow run to handleWorkflowEnvelope as the run kind its file is
 // in its repository's rule (dispatch://INFRA-978, D1): the runs this slice records are the source
 // repositories' own, each by its own rule, so a run of a repository no source reads is not fetched,
-// and neither is a run of a file its repository's rule does not name. The run is stored under the
-// repository's name as the rule holds it, which is the name the reconcile lists and stores it
-// under, whatever case the envelope wrote it in.
+// and neither is a run of a file its repository's rule does not name; with no rules (nil, or none
+// saved) no run is. The run is stored under the repository's name as the rule holds it, which is
+// the name the reconcile lists and stores it under, whatever case the envelope wrote it in.
 func (in *Intake) routeWorkflowEnvelope(ctx context.Context, rules *SourceRules, payload map[string]string) (bool, error) {
 	rule, ok := rules.For(payload["repo"])
 	if !ok {
@@ -317,6 +330,13 @@ func (t *intakeTuning) ackWait() time.Duration {
 // until a subscriber attaches, so a restart with events waiting loses none of them and none of
 // them count against MaxAckPending in the meantime.
 //
+// It asks for new messages only (DeliverNewPolicy), which a take-over that creates the durable
+// with no start recorded turns into an explicit start at the stream's next sequence (takeOver;
+// takeOverStart says why the start is explicit): the first bind of a deployment that never had the
+// durable must not hand the intake the stream's whole retained history, 72 hours of every GitHub
+// event Envoy relays, none of which it ever processed. Its consumer generation, 2, is the job
+// durable's too (jobConsumerConfig).
+//
 // FilterSubject, AckWait and MaxAckPending keep the values of the build before generations: that
 // build's processes, still running during a rolling release, update a durable whose three differ
 // from theirs in place on every settings poll, so a change to any of them waits until no such
@@ -328,6 +348,7 @@ func deliveryConsumerConfig(tuning *intakeTuning) natsgo.ConsumerConfig {
 		Durable:        bus.DispatchDeliveryDurable,
 		DeliverSubject: natsgo.NewInbox(),
 		FilterSubject:  githubIntakeSubject,
+		DeliverPolicy:  natsgo.DeliverNewPolicy,
 		AckPolicy:      natsgo.AckExplicitPolicy,
 		AckWait:        tuning.ackWait(),
 		MaxAckPending:  tuning.maxAckPending,
@@ -340,7 +361,7 @@ func deliveryConsumerConfig(tuning *intakeTuning) natsgo.ConsumerConfig {
 // consumerGenerationKey metadata. A take-over that finds a durable of a higher generation
 // recreates it with the deployed config rather than this build's (takeOverConfig), so while two
 // builds run, the older one never reverts what the newer one set.
-const consumerConfigGeneration = 1
+const consumerConfigGeneration = 2
 
 // consumerGenerationKey is the consumer metadata key that holds the generation of its config. A
 // durable without it was last created by a build before generations: generation 0.
@@ -352,18 +373,19 @@ func consumerGenerationMetadata() map[string]string {
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// rules the cache holds under the intake's messageTimeout, and acks: a malformed envelope has
-// nothing to retry, and a route error (a failed GitHub call, or that deadline passing) is caught
-// up by the next reconcile pass rather than by NATS redelivery -- see the package doc comment --
-// as a push the importer failed to take is by the importer's own five-minute pass. One route error
-// is not, and is the second case below. The deadline is what makes the ack wait
+// rules the cache holds, which hold no repository while no project's settings are saved, under the
+// intake's messageTimeout, and acks: a malformed envelope has nothing to retry, and a route error
+// (a failed GitHub call, or that deadline passing) is caught up by the next reconcile pass rather
+// than by NATS redelivery -- see the package doc comment -- as a push the importer failed to take
+// is by the importer's own five-minute pass. One route error is not, and is the second case below.
+// The deadline is what makes the ack wait
 // (intakeTuning.ackWait) a bound rather than a hope: without it one stuck GitHub call could hold an
 // in-flight slot past the ack wait and have the message redelivered underneath it. An envelope
 // route answers not handled (an empty payload, a kind route sends to no handler, or a push, which
-// is no delivery fact) is acknowledged with no
-// freshness write, and with no log line unless its handler failed. One it handles records the
-// event's time on the source that reads the envelope's repository, whatever its handler decided,
-// and on no source where none reads it.
+// is no delivery fact) is acknowledged with no freshness write, and with no log line unless its
+// handler failed. One it handles records the event's time on the source that reads the envelope's
+// repository, whatever its handler decided, and on no source where none reads it, so on none while
+// no settings are saved.
 //
 // The one message it does not ack is one whose handling the stop gave up (handling cancelled,
 // StopDelivering): that is handed back, so the next holder of the durable redoes it at once
@@ -438,9 +460,6 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		envelope = &decoded
 	}
 	rules := in.settings.Load()
-	if rules == nil {
-		return
-	}
 	handled, repo, err := in.route(ctx, rules, envelope.Payload)
 	switch {
 	case errors.Is(err, errMalformedPayload):
@@ -563,13 +582,15 @@ func headWriteDeliveriesSpent(logger *slog.Logger, msg *natsgo.Msg, allowed uint
 // envelope delivered again fails on the same name. A read of GitHub the App refused for any
 // other reason is no failure of this write at all: the row is written from the envelope
 // alone, incomplete and unstamped, and the reconcile's own pass reads it again.
+// The head write reads no rule, so it runs with no rules held (rules nil) and with no project's
+// settings saved as well.
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline
-// after that. A merge of a deploy repository whose body says it reverts a pull request is recorded
-// as a revert first, whoever authored it (recordRevert). The merge's author and excluded-repository
-// checks run on the envelope's own fields against the population, the union of every delivery-on
-// project's (SourceRules.Population), so a merge by anyone outside it costs no GitHub call of its
-// own but a revert's, and the task-label rule is its own repository's (IsPopulationPR). It reports
-// whether it stored the pull request's delivery row: a
+// after that, and only by the rules. A merge of a deploy repository whose body says it reverts a
+// pull request is recorded as a revert first, whoever authored it (recordRevert). The merge's
+// author and excluded-repository checks run on the envelope's own fields against the population,
+// the union of every delivery-on project's (SourceRules.Population), so a merge by anyone outside
+// it costs no GitHub call of its own but a revert's, and the task-label rule is its own
+// repository's (IsPopulationPR). It reports whether it stored the pull request's delivery row: a
 // head write is not one, and neither is a row it deleted or a pull request outside the population,
 // so neither ships with anything.
 func (in *Intake) handlePullRequestEnvelope(ctx context.Context, rules *SourceRules, payload map[string]string) (wrote bool, err error) {
@@ -591,7 +612,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, rules *SourceRu
 			return false, headErr
 		}
 	}
-	if payload["action"] != "closed" || payload["merged"] != "true" {
+	if rules == nil || payload["action"] != "closed" || payload["merged"] != "true" {
 		return false, nil
 	}
 	in.recordRevert(ctx, rules, repoFull, number, payload)

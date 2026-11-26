@@ -15,10 +15,14 @@
 #         82380570f8), which captures its timeline to /scratch/base-timeline.json, then job.sh head
 #         over the same fixture, which compares this commit's pages with that capture.
 # The log is the evidence: judge it by its RESULT and FAIL lines and its closing VERDICT line, never
-# by the Job's phase. The container exits 0 once it has printed that verdict, FAIL lines or not, so
-# a failed check never runs the measurement again; only a pod that ends before its verdict (a lost
-# machine, an eviction, a failed clone) is retried. Fill every ${…} variable (and only those, so
-# the script's own $HOME, $COMMIT and $BASE are left for the shell). LABEL_DOMAIN is the build
+# by the Job's phase. The VERDICT line names the scale and the rate the run had, and a run with no
+# FAIL line reads pass only at SCALE=1, INFRA's size, which k8 and k16 are judged at; at any other
+# scale it reads smoke, which shows the script and its rules work and judges no budget. The node
+# the pod ran on is printed too (EVALBENCH_NODE, from the pod's spec.nodeName). The container exits
+# 0 once it has printed that verdict, FAIL lines or not, so a failed check never runs the
+# measurement again; only a pod that ends before its verdict (a lost machine, an eviction, a failed
+# clone) is retried. Fill every ${…} variable (and only those, so the script's own $HOME, $COMMIT
+# and $BASE are left for the shell). LABEL_DOMAIN is the build
 # farm's label domain, the deployment's own, under which its policy reads a Job's session, cost,
 # branch and head; this public file names no domain, so the render refuses when it is unset, as it
 # refuses any variable unset. The sizes a mode takes, measured by INFRA-2916's runs at each rate
@@ -93,8 +97,7 @@ spec:
         - {name: ONE_PROJECT_BASE, value: "82380570f8dcebb7281fc54d7350c6794886dc98"}
         - {name: EVALBENCH_SCALE, value: "${SCALE}"}
         - {name: EVALBENCH_TEN_TIMES, value: "${TEN_TIMES}"}
-        - name: NODE_NAME
-          valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+        - {name: EVALBENCH_NODE, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
         volumeMounts:
         - {name: scratch, mountPath: /scratch}
         command: ["/bin/bash", "-c"]
@@ -103,7 +106,7 @@ spec:
           set -euo pipefail
           mkdir -p "$HOME" "$TMPDIR" "$GOCACHE" "$GOMODCACHE" "$BUN_INSTALL_CACHE_DIR"
           export EVALBENCH_NOW=$(date -u +%Y-%m-%dT00:00:00Z)
-          echo "MARK start $(date -u +%FT%TZ) commit=$COMMIT base=$BASE mode=$MODE scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES now=$EVALBENCH_NOW node=$NODE_NAME"
+          echo "MARK start $(date -u +%FT%TZ) commit=$COMMIT base=$BASE mode=$MODE scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES now=$EVALBENCH_NOW node=$EVALBENCH_NODE"
           git clone --filter=blob:none --no-checkout https://github.com/cybermonklabs/legion /scratch/src
           cd /scratch/src
           git fetch --depth 1 origin "$COMMIT"
@@ -128,11 +131,13 @@ spec:
           fi
           echo "MARK failures:"; grep '^FAIL' /scratch/out.txt || echo "MARK none"
           echo "MARK end $(date -u +%FT%TZ) rc=$rc"
-          # The verdict: a pass is job.sh exiting 0 with no FAIL line. The run is over once it is
-          # printed, so the container exits 0 and the Job retries no failed check.
+          # The verdict: a pass is job.sh exiting 0 with no FAIL line, at SCALE=1, INFRA's size, the
+          # size k8 and k16 judge their budgets at; a run at any other scale with no FAIL line is a
+          # smoke run, which judges no budget. The run is over once it is printed, so the container
+          # exits 0 and the Job retries no failed check.
           failures=$(grep -c '^FAIL' /scratch/out.txt || true)
-          if [ "$rc" -eq 0 ] && [ "$failures" -eq 0 ]; then verdict=pass; else verdict=fail; fi
-          echo "VERDICT $verdict mode=$MODE ten_times=$EVALBENCH_TEN_TIMES rc=$rc fail_lines=$failures"
+          if [ "$rc" -ne 0 ] || [ "$failures" -ne 0 ]; then verdict=fail; elif [ "$EVALBENCH_SCALE" = 1 ]; then verdict=pass; else verdict=smoke; fi
+          echo "VERDICT $verdict mode=$MODE rc=$rc fail_lines=$failures scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES node=$EVALBENCH_NODE"
           exit 0
         resources:
           requests: {cpu: "8", memory: ${MEMORY}, ephemeral-storage: ${EPHEMERAL}}

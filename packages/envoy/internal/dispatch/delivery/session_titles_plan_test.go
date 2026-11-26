@@ -70,11 +70,11 @@ func newSessionTitlesPlanFixture(t *testing.T) (*store.Pool, context.Context) {
 }
 
 // The session titles read reads session_titles by its primary key and no row of events: the title
-// a page shows is stored where it is stamped (dispatch://INFRA-2916, R13), and resolving it out of
-// events on each read cost 42 to 133 ms a paint. The plan is `EXPLAIN (ANALYZE, BUFFERS)` of the
-// read as ResolveSessionTitles sends it, and the read answers the titled session alone: no row for
-// a session that never stamped a title, none for one the events table never heard of, and nothing
-// from a person's actor that shares a session's id.
+// a page shows is stored where it is stamped (dispatch://INFRA-2916, R13), where resolving it out
+// of events read that table on each page read (resolveSessionTitlesQuery says what that cost). The
+// plan is `EXPLAIN (ANALYZE, BUFFERS)` of the read as ResolveSessionTitles sends it, and the read
+// answers the titled session alone: no row for a session that never stamped a title, none for one
+// the events table never heard of, and nothing from a person's actor that shares a session's id.
 func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 	t.Parallel()
 	pool, ctx := newSessionTitlesPlanFixture(t)
@@ -85,7 +85,7 @@ func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
 		t.Fatalf("the session titles read reads %v, which no index condition keys:\n%s", unkeyed, raw)
 	}
-	indexScanOf(t, plan, raw, "session_titles", "session_titles_pkey")
+	indexScanOf(t, plan, raw, "session_titles_pkey")
 	// Every scan carries an index condition (the check above); this holds the primary key's to
 	// its first column, the session.
 	explaintest.NewIndexKeys(pool).RequireIndexKeyed(t, plan, "session_titles_pkey", "the session titles read", explaintest.CondOptional)
@@ -104,6 +104,7 @@ func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 // and a transaction that appends a retitle and rolls back leaves the title as it was. The events
 // go through events.Broker.Append, the one server path that inserts an event.
 func TestARetitleChangesTheStoredTitleInTheEventsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const session = "ses_retitled_in_its_transaction"
 	seedTitlesIssue(t, ctx, pool)

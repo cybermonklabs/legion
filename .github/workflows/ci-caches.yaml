@@ -25,7 +25,7 @@ name: CI caches
 # .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
 # dispatch-browser-pr jobs call: those three build the Dispatch server and the real broker's
 # commands, whose packages the go-envoy entry's build of the listener and natsd alone does not
-# hold, and the two jobs of .github/workflows/ci-job-dispatch-two-builds.yaml, whose sizing step
+# hold, and the two jobs of .github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step
 # and twobuild test step build out of that same set), go-envoy-darwin-vet (envoy-go-build's
 # darwin vet, whose build cache is a directory of its own, the GOCACHE of that step's env) and
 # go-envoy-infra (envoy-infra-build and envoy-infra-go, and the build job of
@@ -401,11 +401,11 @@ jobs:
 
   # go-envoy-test, on go-envoy's Go and runners. A job of its own, so its restore comes before
   # every build that writes what it restores: it restores its newest entry, then builds the
-  # listener and natsd as the envoy job does and the test binary of every package, and saves. Its
-  # entry holds go-envoy's objects too, built here on its own entry: envoy-go's tests build the
-  # listener and natsd, and the browser lane's jobs that restore this family build commands of the
-  # same module. In one job with the envoy fill, this restore unpacked over that fill's build and
-  # needed the module cache made writable first.
+  # listener and natsd as the envoy job does and starts the test binary of every package, and
+  # saves. Its entry holds go-envoy's objects too, built here on its own entry: envoy-go's tests
+  # build the listener and natsd, and the browser lane's jobs that restore this family build
+  # commands of the same module. In one job with the envoy fill, this restore unpacked over that
+  # fill's build and needed the module cache made writable first.
   envoy-test:
     if: inputs.only != 'dispatch-builds'
     strategy:
@@ -413,10 +413,8 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Warm: 5.5 and 4.1 min a leg, save included (jobs 138290290807, 138290290989). Cold: 6.2 and
-    # 4.0 min before the save, the test binaries 5.1 and 3.2 min, leaving 3.5 GB to save, which
-    # took up to 1.9 min warm (probe run 45375660275, jobs 138381154602 and 138381154546). 30 is
-    # about four times the cold job with its save.
+    # Warm: 2.9 and 2.7 min a leg, save included. Cold: 4.5 and 4.2 min before an 8 s save (x64,
+    # arm64; scratch run 45722872215). 30 is about six times the cold job.
     timeout-minutes: 30
     outputs:
       # The key each leg saved, named by family and architecture as the daemon job's are.
@@ -457,19 +455,26 @@ jobs:
         run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
 
-      # envoy-go's set: the test binary of every package of the envoy module, the integration
-      # package's and the natslive build of internal/testnats among them. `go test -c` links each
-      # package's test binary and `-o /dev/null` writes none of them, so every object the restored
-      # build cache holds is made and no test runs: envoy-go's tests want the job's Postgres
-      # service and container images, which a cache fill has no reason to start.
-      - name: Build the test binary of every package of the envoy module
+      # envoy-go's set, the natslive build of its natslive step's five packages among it. Each
+      # binary is built and started as envoy-go's go test does, and `-run '^$'` runs no test, so
+      # no Postgres or image is needed. `go test -c` compiled each test main another way.
+      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-starts-each-test-binary
+      - name: Build and start the test binary of every package of the envoy module, running no test
         run: |
-          go test -c -o /dev/null ./...
-          go test -c -o /dev/null -tags natslive ./internal/testnats/
+          go test -count=1 -run '^$' ./...
+          go test -count=1 -run '^$' -tags natslive ./internal/testnats/ ./internal/bus/ ./internal/cipher/natscallout/ ./natsgrant/ ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Delete the build cache's entries neither envoy build used
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-test-working-set"
+
+      # No reader extracts a module again, so none reads a zip. A `!` path line would not exclude
+      # them: the save archives each directory it lists whole.
+      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-deletes-the-module-zips
+      - name: Delete the module zips, which no job that restores this entry reads
+        run: |
+          find "$(go env GOMODCACHE)/cache/download" -type f -name '*.zip' -printf '%s\n' -delete |
+          awk '{ n++; b += $1 } END { printf "deleted %d module zips, %d bytes\n", n, b }'
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -915,7 +920,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
           key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
           lookup-only: true
 
@@ -931,7 +935,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
           key: ${{ steps.dispatch-previous.outputs.cache-primary-key }}
 
       # The pin, read out of dispatch-two-builds' env, where that job's resolve step also checks
@@ -951,7 +954,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
           key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
           lookup-only: true
 
@@ -967,7 +969,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
           key: ${{ steps.dispatch-first-rollout.outputs.cache-primary-key }}
 
   # The entries of the two Dispatch builds this repository keeps no more, deleted on main once

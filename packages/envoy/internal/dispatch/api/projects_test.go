@@ -12,9 +12,11 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type projectResponse struct {
@@ -63,6 +65,7 @@ var seededSlugs = []string{
 // doc_block is a block of that document, with its series. A second create of the same key is
 // refused and writes no eval or section.
 func TestCreatingAProjectSeedsItsEvalsAndItsEvalsDocument(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "SEED", "name": "Seeded",
@@ -329,6 +332,7 @@ func TestCreatingATakenProjectKeyIsRefusedForABearerAndACookie(t *testing.T) {
 // anything: a seed run on the existing project first answered the create with that refusal, as
 // 500 INTERNAL. The project keeps the name it was created with.
 func TestCreatingATakenProjectKeyWhoseEvalsDocumentIsAFileIsRefusedProjectExists(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "FILED", "name": "Filed",
@@ -353,6 +357,90 @@ func TestCreatingATakenProjectKeyWhoseEvalsDocumentIsAFileIsRefusedProjectExists
 	if err := database.Pool.QueryRow(t.Context(), `select name from projects where key = 'FILED'`).Scan(&name); err != nil || name != "Filed" {
 		t.Fatalf("FILED is named %q (%v) after the refused create, want Filed", name, err)
 	}
+}
+
+// Two creates of one key that both read the key free are told apart by the insert's unique
+// violation, which comes after each has run its seed: the first commits the project, its evals-md
+// and that document's one artifact.created, and the second, which waits on the first's evals'
+// locks and then finds that document, answers 409 PROJECT_EXISTS and leaves no second document or
+// event. The test holds the project's documents' lock (docs.LockProjectArtifacts), which the seed
+// takes once it finds no evals-md, until one create waits on it and the other waits on that one,
+// so both have read the key free before either commits.
+func TestTwoCreatesOfOneKeyAtOnceMakeOneProjectAndOneEvalsDocument(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	ctx := t.Context()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = holder.Rollback(context.Background())
+		}
+	}
+	t.Cleanup(release)
+	var held uint32
+	if err := holder.QueryRow(ctx, `select pg_backend_pid()`).Scan(&held); err != nil {
+		t.Fatalf("read the holder's backend: %v", err)
+	}
+	if err := docs.LockProjectArtifacts(ctx, holder, "TWICE"); err != nil {
+		t.Fatalf("hold TWICE's documents' lock: %v", err)
+	}
+	answers := make(chan *httptest.ResponseRecorder, 2)
+	for _, name := range []string{"Twice", "Twice again"} {
+		go func() {
+			answers <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "TWICE", "name": name}, "alice")
+		}()
+	}
+	testwait.Until(t, "one create of TWICE waiting on the held documents' lock and the other on that create", func() ([2]int, bool) {
+		var waiting [2]int
+		if err := database.Pool.QueryRow(ctx, `
+			with first as (
+				select pid from pg_stat_activity
+				where datname = current_database() and $1::int = any(pg_blocking_pids(pid))
+			)
+			select (select count(*) from first),
+				(select count(*) from pg_stat_activity a
+				 where a.datname = current_database() and exists (select 1 from first f where f.pid = any(pg_blocking_pids(a.pid))))
+		`, int32(held)).Scan(&waiting[0], &waiting[1]); err != nil {
+			t.Fatalf("read the creates' waits: %v", err)
+		}
+		return waiting, waiting[0] == 1 && waiting[1] == 1
+	})
+	release()
+	codes := map[int]int{}
+	for range 2 {
+		response := testwait.Receive(t, "a create of TWICE", answers)
+		codes[response.Code]++
+		if response.Code == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"PROJECT_EXISTS"`) {
+			t.Errorf("the refused create of TWICE answered %s, want PROJECT_EXISTS", response.Body.String())
+		}
+		if response.Code != http.StatusCreated && response.Code != http.StatusConflict {
+			t.Errorf("a create of TWICE answered %d: %s", response.Code, response.Body.String())
+		}
+	}
+	if codes[http.StatusCreated] != 1 || codes[http.StatusConflict] != 1 {
+		t.Fatalf("the two creates of TWICE answered %v, want one 201 and one 409", codes)
+	}
+	var documents, created int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from artifacts where project_key = 'TWICE' and issue_key is null and slug = $1
+	`, evals.DocumentSlug).Scan(&documents); err != nil {
+		t.Fatalf("count TWICE's %s documents: %v", evals.DocumentSlug, err)
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events e join artifacts a on a.id = e.artifact_id
+		where e.type = 'artifact.created' and a.project_key = 'TWICE' and a.slug = $1
+	`, evals.DocumentSlug).Scan(&created); err != nil {
+		t.Fatalf("count the artifact.created events of TWICE's %s: %v", evals.DocumentSlug, err)
+	}
+	if documents != 1 || created != 1 {
+		t.Fatalf("TWICE holds %d %s documents and %d artifact.created events of them, want one of each", documents, evals.DocumentSlug, created)
+	}
+	t.Logf("two creates of TWICE released together answered %v; TWICE holds one %s and one artifact.created", codes, evals.DocumentSlug)
 }
 
 // Every route that takes a project key refuses a bad one with the same description of the rule,

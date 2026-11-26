@@ -143,7 +143,7 @@ func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 // leasedPass runs one reconcile pass under the lease, for the tick due at due. Its period is
 // duty.LeasePeriod of the interval this loop ticks on (tickInterval).
 func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, deliveryReconcileLease, due, duty.LeasePeriod(r.tickInterval()), r.runOnce)
+	duty.Exclusive(ctx, nil, leases, deliveryReconcileLease, due, duty.LeasePeriod(r.tickInterval()), r.runOnce)
 }
 
 // runOnce performs one reconcile pass: the pull-request head refresh, then — where delivery is
@@ -182,12 +182,11 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // and RecordDeployedEvents all read a setting (the population, a source repository, its workflow
 // paths) or run against a source repository's own grants.
 //
-// The intake's NATS consumer is gated on the settings for a reason of its own, not for the one
-// above: it binds its durable only once the settings cache holds a rule (Intake.Run), and the
-// durable is created with no start policy (deliveryConsumerConfig, so JetStream's DeliverAll), so
-// a first bind in a deployment that never had settings would deliver the stream's whole 72-hour
-// backlog
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// The intake's NATS consumer follows the same split: it binds its durable and writes every
+// `pull_request` envelope's head row whatever the settings say, and hands its delivery-timeline
+// work to the source repositories' rules (Intake.Run, route). Its first bind starts at the stream's
+// next sequence, so turning the intake on hands it none of the stream's 72-hour retained history
+// (heldDurable.takeOver, takeOverStart).
 //
 // It is the pass the lease runs (leasedPass), so it is one attempt at reading GitHub
 // (githubreads), recorded through RecordGitHubReads' recorder when it ends: the GitHub client

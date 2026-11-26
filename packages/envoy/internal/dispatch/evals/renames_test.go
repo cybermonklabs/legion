@@ -21,7 +21,7 @@ import (
 // each issue's stored facts.
 var renamedRowsStatements = []string{
 	`select concat_ws(' ', 'day', project_key, eval_id, writer, deploy_repo, series, repo, day, listed, n, sum, num, den, max,
-		samples::text, counts::text, via_repository) from eval_days`,
+		samples::text, last_value, last_at, last_recorded_at, last_reading, counts::text, via_repository) from eval_days`,
 	`select concat_ws(' ', 'member', project_key, family, deploy_repo, row_key, day, repo, shipped_by) from eval_day_members`,
 	`select concat_ws(' ', 'range', project_key, repo, days, end_day, eval_id, deploy_repo, encode(figures, 'hex')) from eval_range_figures`,
 	`select concat_ws(' ', 'day figures', project_key, repo, day, eval_id, deploy_repo, encode(figures, 'hex')) from eval_day_figures`,
@@ -49,6 +49,33 @@ func (r *refresherRig) renamedRows(t *testing.T) []string {
 	return lines
 }
 
+// ownerRows is each line of lines (renamedRows) of a day row or a member that stands under an owner
+// key (OwnerKey), with the key renamed where its repository is a name renamed holds, compared
+// without case as the boot's rename pass compares it, and the eval id of a day row with it: what the
+// pass writes of those rows, and nothing else of them.
+func ownerRows(lines []string, renamed map[string]string) []string {
+	var owned []string
+	for _, line := range lines {
+		fields := strings.Split(line, " ")
+		if (fields[0] != "day" && fields[0] != "member") || !strings.HasPrefix(fields[1], ":") {
+			continue
+		}
+		key := fields[1]
+		repo, rest, _ := strings.Cut(key[1:], "|")
+		for from, to := range renamed {
+			if strings.EqualFold(repo, from) {
+				fields[1] = ":" + to + "|" + rest
+				if fields[0] == "day" {
+					fields[2] = fields[1] + strings.TrimPrefix(fields[2], key)
+				}
+			}
+		}
+		owned = append(owned, strings.Join(fields, " "))
+	}
+	slices.Sort(owned)
+	return owned
+}
+
 // A repository renamed by a pair the boot reads is stored and read under its new name once the
 // boot's rename pass and the refresher's next passes have run: every day row, member, stored
 // figure and stored Legion fact that named the old name names the new one and holds what it held,
@@ -59,7 +86,10 @@ func (r *refresherRig) renamedRows(t *testing.T) []string {
 // rows, and deletes those it held under the old name. Three repositories are renamed: the deploy
 // repository, which every run and the settings name and every row of the evals that read the
 // deploy repository is kept under, a repository of pull requests alone, and the repository the
-// Legion issues own.
+// Legion issues own. Right after the pass, before a refresher pass writes a row again, the day
+// rows and members of the owner keys are the rows before with each key of an old name renamed
+// (ownerRows), the whole of what the pass writes of them: a row the pass deleted by mistake is
+// missing there, where the refresher's passes after it would write it again from its input.
 func TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -116,6 +146,13 @@ func TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName(t *testing.T) {
 	}
 	if pass := store.RewriteRenamedRepositories(ctx, pool, pairs); pass.Err() != nil || pass.Failures != 0 {
 		t.Fatalf("the boot's rename pass = %+v (%v), want no failure and nothing left", pass, pass.Err())
+	}
+	if got, want := ownerRows(r.renamedRows(t), nil), ownerRows(before, renamed); !slices.Equal(got, want) {
+		missing, extra := difference(want, got), difference(got, want)
+		t.Fatalf("right after the pass the rows of the owner keys are not the rows before under the renamed keys: %d missing, %d extra\nmissing: %s\nextra: %s",
+			len(missing), len(extra), strings.Join(first(missing, 20), "\n  "), strings.Join(first(extra, 20), "\n  "))
+	} else if slices.Equal(want, ownerRows(before, nil)) {
+		t.Fatalf("no row of an owner key names a renamed repository before the pass, so the test cannot tell the pass's rows")
 	}
 	passes, _ := r.settle(t)
 

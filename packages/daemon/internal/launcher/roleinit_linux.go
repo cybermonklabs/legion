@@ -533,17 +533,48 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 // roleNamespaceDrain for the role's processes to go before the SIGKILL below ends the namespace.
 // Without it a git or a jj the role left running would be killed outright and leave its lock in
 // the issue's shared clone, which stops every jj command of every role of the pod.
+//
+// The shim runs in role-init's own process group, not one of its own. Oh My Pi and every process
+// it starts without a group of its own are in the shim's group, and an orphan they leave (a `cmd
+// &` whose shell exits) comes to role-init, which reaps it. The cluster's gVisor keeps a count,
+// per process group, of the members whose parent is in another group of the session: it takes one
+// from that count when such a member is reaped, and adds none when a member is reparented
+// (gVisor's pkg/sentry/kernel: the count is `ancestors` in sessions.go, taken from on a reap in
+// task_exit.go, and left as it is by reparentLocked there). With the shim in a group of its own,
+// each orphan role-init reaped took the count of the shim's group one lower, until it read 0
+// while the shim still ran; gVisor then treated the group as orphaned, and a member stopped at
+// that moment brought SIGHUP and SIGCONT to the whole group, which ended the shim and Oh My Pi.
+// In role-init's group every such orphan is reaped by a parent in its own group, which takes
+// nothing from the count, and the group's one member with a parent outside it is role-init
+// itself, whose parent is the launcher: the group cannot read as orphaned while role-init lives.
+// Nothing here signals the shim's group: role-init, as its namespace's PID 1, signals every
+// process of the role with kill(-1) (signalGeneration), and the launcher signals role-init alone
+// (signalChild). A process of the role can signal the group itself, and role-init is in it: with
+// kill(0), or with the group's number, which is 1 in the role's PID namespace, role-init's own
+// pid, so `kill -- -<pgid>` there is kill(-1), which reaches every process of the role but
+// role-init. What a signal to the group does to role-init: SIGTERM and SIGINT start its stop, as
+// the launcher's stop does, SIGTERM to the whole role and no drain after the shim's exit; SIGCHLD
+// asks for a reap; each other signal the Go runtime ends a process on when it is sent
+// (roleInitDropped, SIGHUP and SIGQUIT among them) role-init catches and drops, so it ends only
+// the processes that take it as theirs, and role-init reports the shim's status and drains the
+// role as it does for any shim that exits on its own (`legion worker-shim` takes SIGHUP as its
+// stop). It catches them rather than ignoring them: an ignored signal stays ignored across exec,
+// in the shim and in Oh My Pi, and a caught one goes back to its default there. Every other
+// signal the Go runtime takes no action on. Oh My Pi sends no signal to its own group in its
+// normal run (its embedded shell refuses kill 0).
 func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signal) error {
 	cmd := exec.Command(cfg.Argv[0], cfg.Argv[1:]...)
 	cmd.Env = os.Environ()
 	cmd.Stdout, cmd.Stderr = cfg.Stdout, cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:                    true,
 		Cloneflags:                 syscall.CLONE_NEWUSER,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: roleUID, HostID: 0, Size: 1}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: roleUID, HostID: 0, Size: 1}},
 		GidMappingsEnableSetgroups: false,
 	}
+	dropped := make(chan os.Signal, len(roleInitDropped))
+	signal.Notify(dropped, roleInitDropped...)
+	defer signal.Stop(dropped)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("role-init: start the role's shim: %w", err)
 	}
@@ -559,6 +590,8 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 			if _, err := reapNamespace(cmd.Process.Pid); err != nil {
 				roleLogf(cfg, "role-init: %v", err)
 			}
+		case sig := <-dropped:
+			roleLogf(cfg, "role-init: dropped a signal sent to the role's process group (%v): it ends only the processes of the role that take it", sig)
 		case <-stopped:
 			// Every process of the role, a detached one included: this is its PID 1. The stop is
 			// forwarded once: the channel goes to nil so this arm, ready for good once the stop's
@@ -613,6 +646,15 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 	// this kill makes that certain before the launcher admits the role's next generation.
 	_ = syscall.Kill(-1, syscall.SIGKILL)
 	return nil
+}
+
+// roleInitDropped are the signals role-init catches and drops while its shim runs (runRoleShim):
+// each signal the Go runtime ends a process on when another process sends it, but SIGINT and
+// SIGTERM, which are role-init's stop. os/signal delivers SIGSEGV, SIGBUS, SIGFPE, SIGILL and
+// SIGTRAP to a channel only when they are sent, so a fault of role-init's own still ends it.
+var roleInitDropped = []os.Signal{
+	syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGILL, syscall.SIGTRAP,
+	syscall.SIGSYS, syscall.SIGSTKFLT, syscall.SIGBUS, syscall.SIGFPE, syscall.SIGSEGV,
 }
 
 // reportStatus writes the shim's own wait status to the launcher's pipe, so the daemon is told

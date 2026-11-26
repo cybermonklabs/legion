@@ -103,11 +103,12 @@
 --              as the build that serves the rows (eval_days_serving.built_by).
 --   state      `building`, then `flipped` once its flip committed, or `abandoned`: a rewrite of a
 --              settings change, a page that finds a repository's runs gone and a lost cursor
---              abandon the one building and begin it again, and one whose build has not moved it
---              for two days, a build no process runs, is abandoned. The staged rows of one that is
---              not building are deleted in short chunks.
+--              abandon the one building and begin it again, and one no pass of its build's walks
+--              has touched for evals.staleRebuild, a build no process runs, is abandoned. The
+--              staged rows of one that is not building are deleted in short chunks.
 --   staged     whether the rows it holds in the tables below are left: false once they are deleted.
---   began_at, updated_at   when it began, and when it last moved.
+--   began_at, updated_at   when it began, and when it last moved: each pass of its build's walks
+--              touches it while it builds.
 -- eval_rebuild_walks holds one row per walk of a rebuild: the delivery and CI rows (family
 -- `delivery`), one project's Legion rows (`legion`), and one project's stored figures (`figures`).
 --   next_day   the first day (of the figures, end day) it has not built, null while it is to begin.
@@ -125,13 +126,16 @@
 -- folded over the staged rows hold the stamps and the freshness the flip leaves.
 -- eval_rebuild_reverify holds each day of a family the building rebuild had already built (and,
 -- of the stored figures, each end day it had folded, family `figures`) whose stored rows, members
--- or figures a statement wrote or deleted since: statement-level triggers on eval_days and
--- eval_day_members below, and on the figure tables (20261120072042), record them, whatever
--- process's statement it was, an older build's during a roll among them, and record nothing
--- while no rebuild is building. The flip's pass builds every day it holds again, immediately
--- before the flip, which replaces what was staged of it: so the flip neither undoes a write in the
--- open nor writes it twice. The flip's own statements, which move the rebuild off building first,
--- record nothing.
+-- or figures a statement wrote or deleted since, and the day the rebuild staged a member on
+-- (eval_rebuild_members, op `u`) whose stored member a statement wrote or deleted since:
+-- statement-level triggers on eval_days and eval_day_members below, and on the figure tables
+-- (20261120072042), record them, whatever process's statement it was, an older build's during a
+-- roll among them, and record nothing while no rebuild is building. The rebuild builds every day
+-- it holds again before its flip, a batch a transaction, the last in the flip's pass, each staging
+-- in place of what was staged of its days and queuing, in its transaction, the end days of the
+-- figures of those days, which it folds again after them (evals' verifyQueued): so the flip
+-- neither undoes a write in the open nor writes it twice. The flip's own statements, which move
+-- the rebuild off building first, record nothing.
 --
 -- Twelve new tables, all empty, and seven statement-level triggers on eval_days and
 -- eval_day_members whose functions write a row only while a rebuild is building, which no
@@ -297,7 +301,7 @@ create table eval_rebuild_reverify (
 -- eval_rebuild_queue_days records each day of the computation's day rows a statement wrote or
 -- deleted (its transition table, touched) for each walk of the building rebuild that has built it:
 -- the delivery walk's and the project's Legion walk's, either of which a day row of the project can
--- be; the flip's pass builds both again.
+-- be; the rebuild builds both again before its flip.
 create function eval_rebuild_queue_days() returns trigger language plpgsql as $$
 begin
   if not exists (select 1 from eval_rebuilds where state = 'building') then
@@ -322,21 +326,32 @@ create trigger eval_days_rebuild_deleted after delete on eval_days
   referencing old table as touched for each statement execute function eval_rebuild_queue_days();
 
 -- eval_rebuild_queue_members records each day a statement wrote, deleted or moved a member to or
--- off (touched: the new rows, and the old ones of an update or a delete), for the walk of the
--- building rebuild of the member's family that has built it.
+-- off (touched: the new rows, and the old ones of an update or a delete), and the day the building
+-- rebuild staged each touched member on (op `u`), for the walk of the building rebuild of the
+-- member's family that has built it: a member that moves in the open after the rebuild staged it
+-- on another day leaves that day's staged rows counting it, which the rebuild builds again before
+-- its flip.
 create function eval_rebuild_queue_members() returns trigger language plpgsql as $$
 begin
   if not exists (select 1 from eval_rebuilds where state = 'building') then
     return null;
   end if;
   insert into eval_rebuild_reverify (rebuild_id, project_key, family, day)
-  select distinct walk.rebuild_id, touched.project_key, walk.family, touched.day
-  from touched
-  join eval_rebuilds rebuild on rebuild.state = 'building'
+  select distinct walk.rebuild_id, marked.project_key, walk.family, marked.day
+  from eval_rebuilds rebuild
+  cross join lateral (
+    select touched.project_key, touched.family, touched.day from touched
+    union all
+    select staged.project_key, staged.family, staged.day
+    from touched
+    join eval_rebuild_members staged on staged.rebuild_id = rebuild.id and staged.op = 'u'
+      and staged.project_key = touched.project_key and staged.family = touched.family
+      and staged.deploy_repo = touched.deploy_repo and staged.row_key = touched.row_key
+  ) marked
   join eval_rebuild_walks walk on walk.rebuild_id = rebuild.id
-    and walk.family = case when touched.family = 'legion' then 'legion' else 'delivery' end
-    and walk.project_key = case when walk.family = 'delivery' then '' else touched.project_key end
-  where walk.next_day > touched.day
+    and walk.family = case when marked.family = 'legion' then 'legion' else 'delivery' end
+    and walk.project_key = case when walk.family = 'delivery' then '' else marked.project_key end
+  where rebuild.state = 'building' and walk.next_day > marked.day
   on conflict do nothing;
   return null;
 end $$;

@@ -264,14 +264,23 @@ func unspelledBodyKey(raw json.RawMessage, keys bodyKeys, at string) error {
 // decodeEvalBody reads an eval write's JSON body into value, whose keys are keys
 // (evalRegisterBodyKeys, evalReadingsBodyKeys), and answers the body as sent. A body that is no
 // JSON value of value's type, or one holding a key keys does not spell exactly (unspelledBodyKey),
-// is 400 INVALID_JSON.
+// is 400 INVALID_JSON. The decoder's error carries a number of the body whole
+// (json.UnmarshalTypeError's Value), so the refusal names that number cut to a field's bound
+// (evals.BoundedField), which leaves room for the field and the type the error names after it, and
+// its whole text is cut to the most a refusal's text takes (evals.BoundedError, 1,024 bytes as JSON
+// writes it): a megabyte of digits would otherwise make a megabyte of answer, which the write's
+// Idempotency-Key keeps in one statement.
 func decodeEvalBody(r *http.Request, value any, keys bodyKeys) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if err := decodeJSON(r, &raw); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(raw, value); err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+		var typed *json.UnmarshalTypeError
+		if errors.As(err, &typed) {
+			typed.Value = evals.BoundedField(typed.Value)
+		}
+		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "%s", evals.BoundedError("invalid JSON body: "+err.Error()))
 	}
 	if err := unspelledBodyKey(raw, keys, ""); err != nil {
 		return nil, err
@@ -431,13 +440,14 @@ type evalReadingsBody struct {
 // evalReadingsResponse is the readings write's answer: the readings it stored, the eval's
 // definition, and whether this write registered it (R3). Total is how many readings the write
 // stored, and Items the first of them in the batch's order, as many as keep the answer within
-// evals.MaxAnswerBytes, the most the write's Idempotency-Key keeps in one statement, so that a
-// repeat under the key is answered this same answer however large the batch; Limit is how many
-// Items lists. The ids of the readings it leaves out are read from the eval's items route, each
-// reading's cols.id (evalItemRow). A definition takes at most evals.MaxVersionBytes, which leaves
-// most of the answer to the readings, but one reading may take more than the bound itself as JSON
-// (a note of some hundred kilobytes is within what one statement stores), so Items may list none
-// while Total counts every one.
+// evals.MaxAnswerBytes, so that the statement that keeps it under the write's Idempotency-Key
+// sends at most 256 KiB, as every statement of the write does, and a repeat under the key is
+// answered this same answer however large the batch; Limit is how many Items lists. The ids of the
+// readings it leaves out are read from the eval's items route, each reading's cols.id
+// (evalItemRow). A definition takes at most evals.MaxVersionBytes, which leaves most of the answer
+// to the readings, but one reading may take more than the bound itself as JSON (a note of some
+// hundred kilobytes is within what one statement stores), so Items may list none while Total
+// counts every one.
 type evalReadingsResponse struct {
 	Items      []evals.Reading  `json:"items"`
 	Total      int              `json:"total"`
@@ -498,10 +508,10 @@ type evalRegisterInput struct {
 // evalRegistered is what a register write left: the eval's newest definition, the newest version
 // of its series by name, and whether the write stored a new version of the definition or of a
 // series. SeriesTotal is how many series the eval holds, and Series the first of them, as many as
-// keep the answer within evals.MaxAnswerBytes, the most the write's Idempotency-Key keeps in one
-// statement, so that a repeat under the key is answered this same answer. A version, of the
-// definition or of a series, takes at most evals.MaxVersionBytes, so Series lists at least one
-// series of an eval that holds any.
+// keep the answer within evals.MaxAnswerBytes, so that the statement that keeps it under the
+// write's Idempotency-Key sends at most 256 KiB, as every statement of the write does, and a repeat
+// under the key is answered this same answer. A version, of the definition or of a series, takes
+// at most evals.MaxVersionBytes, so Series lists at least one series of an eval that holds any.
 type evalRegistered struct {
 	Definition  evals.Definition `json:"definition"`
 	Series      []evals.Series   `json:"series"`
@@ -934,8 +944,9 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 // (readEvalValues): each eval's values where the stored figures answer it, the indexes of those
 // they do not (unstated) with the day rows and the first days their values are folded from, the
 // indexes of those a narrowing builds at read time (narrowed) with the rows built for them
-// (atRead) and the keys of the filters they were narrowed by (applied), the oldest updated_at of
-// the stored rows read, and the refresher's age.
+// (atRead) and the keys of the filters they were narrowed by (applied), how far each family's
+// stored rows are whole through (built), the oldest updated_at of the stored rows read, and the
+// refresher's age.
 type evalValues struct {
 	entries  []evals.Entry
 	ranges   evalRanges
@@ -946,6 +957,7 @@ type evalValues struct {
 	atRead   []evals.WindowRow
 	applied  []string
 	firsts   map[string]map[string]time.Time
+	built    evals.Built
 	oldest   *time.Time
 	age      time.Duration
 	aged     bool
@@ -956,7 +968,9 @@ type evalValues struct {
 // that reads the deploy repository is stated from the rows kept for its project's repositories in
 // deployRepos, those recorded with the stored rows (evals.DeployRepoOf, evals.DeployReposIn), so a
 // move of a project's repositories is this selection. It reads each series' first day
-// (evals.FirstDaysIn). With a narrowing (evalNarrowing), each eval that counts pull requests
+// (evals.FirstDaysIn), and how far the stored rows of each computed eval's family are whole
+// through as of now's UTC day (evals.BuiltIn, one read of the serving records, made where an
+// eval's rows are a walk's). With a narrowing (evalNarrowing), each eval that counts pull requests
 // (evals.CountsPullRequests) has its rows of the ranges built at read time from the pull requests
 // the narrowing keeps, of repos where it names any (evals.Store.ComputeAtRead), and every other
 // eval is stated from its stored rows. For an offered range (evals.FiguresOffered: a window and a
@@ -982,7 +996,15 @@ func (s *server) readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.
 	if len(entries) == 0 {
 		return read, nil
 	}
+	projects := evalProjects(entries)
+	repos, err = evals.StoredRepos(ctx, tx, projects, repos)
+	if err != nil {
+		return evalValues{}, err
+	}
 	if read.firsts, err = evals.FirstDaysIn(ctx, tx, entries, deployRepos); err != nil {
+		return evalValues{}, err
+	}
+	if read.built, err = evals.BuiltIn(ctx, tx, entries, now); err != nil {
 		return evalValues{}, err
 	}
 	var narrowed, stored []evals.Entry
@@ -1050,7 +1072,11 @@ func (v *evalValues) earliest(at time.Time) {
 // rows of the evals the stored figures did not answer and the rows built at read time of those a
 // narrowing narrowed, each such series naming the filters it was narrowed by, through the one
 // fold of the day rows (evals.SeriesValuesOf), and reads nothing, so it runs once the snapshot v
-// was read in is committed.
+// was read in is committed. Every eval's values, the stored figures' and the
+// day rows' alike, are stated under one rule (evals.Built.Withhold): a window or a compare range
+// that holds a day before today its family's stored rows are not whole through answers no value,
+// as one before its series' first day does, until the walk has built the day (R12); the verdict
+// judges what is stated.
 func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	byEval := map[string][]evals.WindowRow{}
 	for _, row := range v.rows {
@@ -1075,11 +1101,12 @@ func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	}
 	items := make([]evalItem, len(v.entries))
 	for index, entry := range v.entries {
+		series := v.built.Withhold(entry.Definition, v.values[index], v.ranges.window, v.ranges.compare)
 		items[index] = evalItem{
 			Definition: entry.Definition,
 			Owner:      evalOwnerOf(entry.Definition),
-			Series:     v.values[index],
-			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(v.values[index])),
+			Series:     series,
+			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(series)),
 		}
 	}
 	freshness := evalFreshness{RowsUpdatedAt: v.oldest}
@@ -1360,12 +1387,13 @@ func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 }
 
 // answerPrefix is the longest leading part of items with which an eval write's answer takes at
-// most evals.MaxAnswerBytes as WriteJSON encodes it, the most the write's Idempotency-Key keeps in
-// one statement, so a repeat under the key is answered the first answer rather than
-// ANSWER_NOT_KEPT. answer is that answer listing none of items, every count in it as many digits
-// as it will hold; each item adds its JSON as the answer encodes it, and a comma before every one
-// but the first. Each item is encoded once, in order, and none past the first that passes the
-// bound, so a batch far past it is not encoded whole.
+// most evals.MaxAnswerBytes as WriteJSON encodes it, so that the statement that keeps it under the
+// write's Idempotency-Key sends at most 256 KiB, as every statement of the write does, and a
+// repeat under the key is answered the first answer rather than ANSWER_NOT_KEPT. answer is that
+// answer listing none of items, every count in it as many digits as it will hold; each item adds
+// its JSON as the answer encodes it, and a comma before every one but the first. Each item is
+// encoded once, in order, and none past the first that passes the bound, so a batch far past it
+// is not encoded whole.
 func answerPrefix[T any](answer any, items []T) ([]T, error) {
 	var encoded bytes.Buffer
 	if err := json.NewEncoder(&encoded).Encode(answer); err != nil {

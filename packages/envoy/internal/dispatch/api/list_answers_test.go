@@ -487,6 +487,14 @@ func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesLists(t *testing.T
 	beforeCount := commentWatermark(t, database, first.Key)
 
 	emptyIssuesAsAScenarioResetDoes(t, database)
+	// The comment list's counter starts again too, as a database restored under a running server
+	// starts it: the browser harness's reset does not empty comment_watermarks, which no foreign
+	// key reaches (migration 20261106020619), but a restore takes it back to the count the backup
+	// held, and an empty one holds none. Emptied, it stands where the new issue's own comment puts
+	// it, the count the first issue's list was read at.
+	if _, err := database.Pool.Exec(context.Background(), `truncate table comment_watermarks`); err != nil {
+		t.Fatalf("empty the comment lists' counters: %v", err)
+	}
 
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "RECYCL", "title": "The second issue of this key", "spec": "",

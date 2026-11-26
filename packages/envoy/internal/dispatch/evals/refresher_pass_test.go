@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,18 +15,22 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestAChangeLandingBetweenTwoPagesOfAPassIsWritten: a pass reads its feeds a page at a time, and a
 // day one page wrote is written again by a later page of the same pass when a change to it
 // committed after the first page read it. Over the hand-written Legion history of EVAL, EVAL-1's
-// hours move and a P0 issue opens, and a page of one change and one event writes the day EVAL-1
-// closed on and the unowned-p0 row of today; then EVAL-2, which closed on the same day, moves and
-// a second P0 issue opens, and the pages after it, of the same pass, rewrite both: the day holds
-// both issues' new hours and today's count is 2.
+// hours move and a P0 issue opens, each change moved into the log as the facts consumer's write
+// does, and a page of one change and one event writes the day EVAL-1 closed on, with EVAL-1's new
+// hours beside EVAL-2's old, and the unowned-p0 row of today; then EVAL-2, which closed on the same
+// day, moves and a second P0 issue opens, and the pages after it, of the same pass, rewrite both:
+// the day holds both issues' new hours and today's count is 2.
 func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -38,6 +44,9 @@ func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 		row.WorkHours = hours
 		history.rows[key] = row
 		r.writeFacts(t, history, key)
+		if _, err := delivery.DrainPending(ctx, r.database.Pool); err != nil {
+			t.Fatalf("move the facts' change into the log: %v", err)
+		}
 	}
 	openP0 := func(number int) {
 		t.Helper()
@@ -56,6 +65,10 @@ func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 		}
 		return safe
 	}
+	hoursOf := func() []float64 {
+		t.Helper()
+		return slices.Sorted(slices.Values(r.day(t, EvalID("EVAL", SlugLegionWorkTime), metrics.SeriesHours, "", history.d1).Samples))
+	}
 
 	pass := r.registry.newRefresh(r.build, r.now, r.batch)
 	if err := pass.load(ctx, r.seeds); err != nil {
@@ -68,6 +81,14 @@ func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 		t.Fatalf("the first page answered more %t, %v; want a full page", more, err)
 	}
 	first := pass.report.sorted()
+	wantFirst := []string{line(walkLegion, "EVAL", history.d1), line(SlugUnownedP0, "EVAL", refresherToday)}
+	slices.Sort(wantFirst)
+	if !slices.Equal(first, wantFirst) {
+		t.Fatalf("the first page wrote %v, want EVAL-1's close day and today's unowned-p0 row, %v", first, wantFirst)
+	}
+	if after := hoursOf(); !slices.Equal(after, []float64{4, 7}) {
+		t.Fatalf("after the first page the day holds the hours %v, want EVAL-1's new 7 beside EVAL-2's old 4", after)
+	}
 	moveHours("EVAL-2", 9)
 	openP0(51)
 	pages := 1
@@ -78,24 +99,25 @@ func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 		pages++
 	}
 
-	hours := r.day(t, EvalID("EVAL", SlugLegionWorkTime), metrics.SeriesHours, "", history.d1)
 	unowned := r.day(t, EvalID("EVAL", SlugUnownedP0), SeriesUnownedP0, "", refresherToday)
-	samples := slices.Sorted(slices.Values(hours.Samples))
-	if !slices.Equal(samples, []float64{7, 9}) || unowned.LastValue == nil || *unowned.LastValue != 2 {
+	if samples := hoursOf(); !slices.Equal(samples, []float64{7, 9}) || unowned.LastValue == nil || *unowned.LastValue != 2 {
 		t.Errorf("after %d pages the work time of %s holds %v and today's unowned-p0 count %v; want EVAL-1's 7 and EVAL-2's 9 hours, and 2",
 			pages, history.d1.Format("2006-01-02"), samples, showValue(unowned.LastValue))
 	}
-	t.Logf("the first page wrote %v; %d pages in all; the day holds %v hours, today's count %v", first, pages, samples, showValue(unowned.LastValue))
+	t.Logf("the first page wrote %v; %d pages in all; the day holds %v hours, today's count %v", first, pages, hoursOf(), showValue(unowned.LastValue))
 }
 
 // TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs: once every walk is done, the change the
-// changes cursor rests on passes its 24 hours and is pruned, as the refresher's own prune takes it
-// on a day with no newer change, and the next pass begins no rebuild and writes no day. The change
-// the cursor rests on leaving the log younger than its retention, as a reset log or a delete by
-// hand takes it, is a loss no one can name, and the pass after it begins a rebuild of every family,
-// whose walk builds the days of each. So is the change it rests on pruned after its retention when
-// no pass had committed for longer than the retention: while the refresher stood still the prune
-// may have taken changes after the cursor that no pass read.
+// cursors rest on (the day rows' and the stored figures', which a pass judges apart) passes its 24
+// hours and is pruned, as the refresher's own prune takes it on a day with no newer change, and the
+// next pass begins no rebuild and writes no day. The change the cursors rest on leaving the log
+// younger than its retention, as a reset log or a delete by hand takes it, is a loss no one can
+// name, and the pass after it begins a rebuild of every family, whose walk builds the days of each.
+// So is the change they rest on pruned after its retention when no pass had committed for longer
+// than the retention: while the refresher stood still the prune may have taken changes after the
+// cursors that no pass read, and its control is the same state with the last pass recent, which
+// begins no rebuild. Each case is judged by the rebuilds the pass began (eval_rebuilds) as well as
+// by the days it wrote, since a rebuild of the stored figures alone writes no day.
 func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -111,47 +133,57 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	if resting.Seq == 0 || resting.At == nil {
 		t.Fatalf("the changes cursor rests at %d recorded %v, want a change", resting.Seq, resting.At)
 	}
-
-	r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours' where seq <= $1`, resting.Seq)
-	r.exec(t, "age the cursor's change with it", `update eval_days_cursor set at = now() - interval '25 hours' where name = $1`, changesCursor)
-	pruned, err := delivery.PruneChanges(ctx, r.database.Pool)
-	if err != nil {
-		t.Fatalf("prune the log: %v", err)
+	rebuilds := func() int { return r.count(t, `select count(*) from eval_rebuilds`) }
+	// agedAndPruned makes every change the log holds, and the one each of the two cursors rests
+	// on, a day and an hour old, and prunes the log of them.
+	agedAndPruned := func() int64 {
+		t.Helper()
+		r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours'`)
+		r.exec(t, "age the cursors' changes with it", `update eval_days_cursor set at = now() - interval '25 hours' where name = any($1)`,
+			[]string{changesCursor, figuresCursor})
+		pruned, err := delivery.PruneChanges(ctx, r.database.Pool)
+		if err != nil {
+			t.Fatalf("prune the log: %v", err)
+		}
+		return pruned
 	}
-	if report, _ := r.pass(t); len(report.days) != 0 {
-		t.Errorf("the pass after the cursor's change was pruned in its time wrote %v, want nothing: no rebuild begins", report.sorted())
+
+	began := rebuilds()
+	pruned := agedAndPruned()
+	if report, _ := r.pass(t); len(report.days) != 0 || rebuilds() != began {
+		t.Errorf("the pass after the cursors' change was pruned in its time wrote %v and began %d rebuilds, want nothing: no rebuild begins", report.sorted(), rebuilds()-began)
 	}
 
 	r.exec(t, "log a change", `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'young')`)
-	if report, _ := r.pass(t); len(report.days) != 0 {
-		t.Fatalf("the pass reading a session group wrote %v, want nothing", report.sorted())
+	if report, _ := r.pass(t); len(report.days) != 0 || rebuilds() != began {
+		t.Fatalf("the pass reading a session group wrote %v and began %d rebuilds, want nothing", report.sorted(), rebuilds()-began)
 	}
 	r.exec(t, "delete the young change", `delete from delivery_changes where ref = 'young'`)
 	lost, _ := r.pass(t)
-	if !slices.Contains(lost.sorted(), line(walkLegion, "EVAL", legionHistoryDay(2))) {
-		t.Errorf("the pass after the cursor's young change vanished built %v, want a rebuild of every family begun, EVAL's Legion days among them", lost.sorted())
+	if !slices.Contains(lost.sorted(), line(walkLegion, "EVAL", legionHistoryDay(2))) || rebuilds() == began {
+		t.Errorf("the pass after the cursors' young change vanished built %v and began %d rebuilds, want a rebuild of every family begun, EVAL's Legion days among them",
+			lost.sorted(), rebuilds()-began)
 	}
 	t.Logf("pruned %d changes through the cursor's %d: the pass after wrote nothing; a young change vanished: the pass after wrote %d days",
 		pruned, resting.Seq, len(lost.days))
 
-	r.settle(t)
-	r.exec(t, "log a change for the cursor to rest on", `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'stall')`)
-	r.pass(t)
-	if cursors, _, err = r.registry.readRefresherCursors(ctx); err != nil {
-		t.Fatal(err)
+	for _, stalled := range []bool{false, true} {
+		r.settle(t)
+		r.exec(t, "log a change for the cursors to rest on", `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'stall')`)
+		r.pass(t)
+		agedAndPruned()
+		if stalled {
+			r.exec(t, "stamp the last pass 25 hours before the next", `update eval_days_cursor set updated_at = $1`, r.now.Add(-25*time.Hour))
+		}
+		began := rebuilds()
+		report, _ := r.pass(t)
+		wrote := slices.Contains(report.sorted(), line(walkLegion, "EVAL", legionHistoryDay(2)))
+		if rebuilt := rebuilds() > began; rebuilt != stalled || wrote != stalled {
+			t.Errorf("the pass after the cursors' change was pruned, with the last pass 25 hours old: %t, began %d rebuilds and wrote %v, want a rebuild begun, EVAL's Legion days among them, only where it was",
+				stalled, rebuilds()-began, report.sorted())
+		}
+		t.Logf("with the last pass 25 hours old: %t, the pass began %d rebuilds and wrote %d days", stalled, rebuilds()-began, len(report.days))
 	}
-	resting = cursors.changes
-	r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours' where seq <= $1`, resting.Seq)
-	r.exec(t, "age the cursor's change with it", `update eval_days_cursor set at = now() - interval '25 hours' where name = $1`, changesCursor)
-	if _, err := delivery.PruneChanges(ctx, r.database.Pool); err != nil {
-		t.Fatalf("prune the log: %v", err)
-	}
-	r.exec(t, "stamp the last pass 25 hours before the next", `update eval_days_cursor set updated_at = $1`, r.now.Add(-25*time.Hour))
-	stalled, _ := r.pass(t)
-	if !slices.Contains(stalled.sorted(), line(walkLegion, "EVAL", legionHistoryDay(2))) {
-		t.Errorf("the pass after 25 hours with no pass committed built %v, want a rebuild of every family begun, EVAL's Legion days among them", stalled.sorted())
-	}
-	t.Logf("after a stall past the retention the pass wrote %d days", len(stalled.days))
 }
 
 // TestARefresherCatchUpThatAPruneCrossesReadsItsCursorAsLost: the refresher's half of the Legion
@@ -256,11 +288,14 @@ func TestTheUnownedP0RowOfEachDayIsWrittenWithNoDeliverySettings(t *testing.T) {
 // stands above it. A write holds a lower event id open while EVAL-50 opens as a P0 and its
 // issue.created commits, which moves today's unowned-p0 count: the pass leaves today's row as it
 // was and says its horizon held an event back, since what holds the horizon back may end without a
-// wake. The loop, run while the write stays open, asks for its next pass horizonRetry after such a
-// pass, doubling the wait with each one in a row: its passes end 250 ms, 500 ms and 1 s apart, each
-// plus a pass's length, rather than RefresherGap apart. Once the lower write commits, the next pass
-// writes today's row with EVAL-50 counted.
+// wake. The loop, run while the write stays open, at a gap of loopGap, asks for its next pass
+// horizonRetry after such a pass, doubling the wait with each one in a row: it runs four passes,
+// which a loop that waited for its gap would not, and the three after the first are each at least
+// 250 ms, 500 ms and 1 s after the one before. Once the lower write commits, the next pass writes
+// today's row with EVAL-50 counted.
 func TestAnEventAboveTheSafeHorizonAsksForAPassSoon(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	ctx := t.Context()
 	r.settle(t)
@@ -320,22 +355,24 @@ func TestAnEventAboveTheSafeHorizonAsksForAPassSoon(t *testing.T) {
 		t.Errorf("the pass that left EVAL-50's issue.created (id %d) above its safe horizon says its horizon held none back", opened)
 	}
 
-	loop := r.startLoop(t, RefresherGap, make(chan struct{}, 1))
-	loop.awaitRan(t, 4, 5*time.Second)
+	loop := r.startLoop(t, make(chan struct{}, 1))
+	loop.awaitRan(t, 4)
 	ends := loop.passEnds()
 	var apart []time.Duration
 	for i, wait := range []time.Duration{horizonRetry, 2 * horizonRetry, 4 * horizonRetry} {
 		gap := ends[i+1].Sub(ends[i])
 		apart = append(apart, gap)
-		if gap < wait-5*time.Millisecond || gap > wait+400*time.Millisecond {
-			t.Errorf("pass %d below the open write ended %s after the one before it, want %s and a pass's length", i+2, gap, wait)
+		// A timer never fires early, so a pass sooner than the wait asked for is a retry the loop
+		// did not ask for; how much later one comes is the machine's, which no bound here judges.
+		if gap < wait-5*time.Millisecond {
+			t.Errorf("pass %d below the open write ended %s after the one before it, want at least %s", i+2, gap, wait)
 		}
 	}
 
 	if err := lower.Commit(ctx); err != nil {
 		t.Fatalf("commit the lower write: %v", err)
 	}
-	awaitAt(t, time.Now().Add(8*horizonRetry+3*time.Second), "today's unowned-p0 row holding EVAL-50", func() bool {
+	testwait.Eventually(t, "today's unowned-p0 row holding EVAL-50", func() bool {
 		count := r.day(t, evalID, SeriesUnownedP0, "", refresherToday)
 		return count.LastValue != nil && *count.LastValue == 1
 	})
@@ -465,9 +502,10 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 // its first input day whatever else the store holds. A store with delivery settings and a deploy
 // run that started at 08:00, and no project yet (a fresh deployment, or the browser suite's store
 // between a reset and its next seed), is walked from that run's day, and the pass ends with no
-// error. The tester saw such a pass refused in the browser suite's run of the Legion rows: "read
-// the pull requests of 2026-09-27: apply rows read from 2026-09-27T08:00:00Z hold no run of a
-// window from 2026-09-27T00:00:00Z".
+// error and the walk standing at the day after today, every day it had to build built. The tester
+// saw such a pass refused in the browser suite's run of the Legion rows: "read the pull requests of
+// 2026-09-27: apply rows read from 2026-09-27T08:00:00Z hold no run of a window from
+// 2026-09-27T00:00:00Z".
 func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -488,7 +526,342 @@ func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
 		values ('acme/deploy', 1, $1, 'abc123', $2::timestamptz, $2::timestamptz, $2::timestamptz,
 			$2::timestamptz + interval '10 minutes', 'success', 'https://github.com/acme/deploy/actions/runs/1', 'main', 'push', true)
 	`, string(delivery.DeliveryRunKindDeploy), started)
+	report, _ := r.pass(t)
+	walks, err := r.registry.readWalks(ctx)
+	if err != nil {
+		t.Fatalf("read the walks' records: %v", err)
+	}
+	if next := walks[walkKey{family: walkDelivery}].next; next == nil || !next.Equal(refresherToday.AddDate(0, 0, 1)) || report.walksLeft {
+		t.Errorf("after the pass the delivery walk stands at %v (days left %t), want the day after today, %s, built from the run's day",
+			next, report.walksLeft, refresherToday.AddDate(0, 0, 1).Format(time.DateOnly))
+	}
+}
+
+// holdingTracer counts the statements started on a context whose caller holds a connection of the
+// pool: those of a transaction opened under store.WithTransactionTracking.
+type holdingTracer struct {
+	held, total int
+	mu          sync.Mutex
+}
+
+func (h *holdingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.total++
+	if store.HoldsPooledConnection(ctx) {
+		h.held++
+	}
+	return ctx
+}
+
+func (h *holdingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// TestRefreshThroughRunsItsTransactionsUnderTransactionTracking: RefreshThrough runs the pass the
+// loop runs, whose transactions hold their connection on a tracked context (RunRefresher marks it,
+// store.WithTransactionTracking), so a read the pass takes from the pool while one of its
+// transactions is open is refused (store.ErrNestedAcquire) rather than left to wait for a
+// connection the transaction holds. Over a Legion history, RefreshThrough is given an untracked
+// context, and the statements its pass sends in its transactions are sent on a context that holds
+// a connection.
+func TestRefreshThroughRunsItsTransactionsUnderTransactionTracking(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedLegionEval(t)
+	tracer := &holdingTracer{}
+	traced := r.tracedStore(t, tracer)
+	if err := traced.RefreshThrough(t.Context(), RefresherDeps{Horizon: r.horizon, Build: r.build}, r.now); err != nil {
+		t.Fatalf("refresh through %s: %v", r.now.Format(time.RFC3339), err)
+	}
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	if tracer.held == 0 {
+		t.Errorf("none of the %d statements of RefreshThrough's passes was sent in a transaction on a tracked context", tracer.total)
+	}
+	t.Logf("%d of the %d statements were sent while the pass's transaction held its connection", tracer.held, tracer.total)
+}
+
+// TestAProjectMadeAfterAPassLoadedItsProjectsGetsTheDaysOfTheInputThatCountsForIt: a pass reads
+// the projects once (load) and then its pages, and the cursors pass the changes of a page when it
+// commits, so a project made between the two, whose issue a pull request is then moved to, has the
+// days that change names written for it or never, since no later change names them. Over the
+// delivery history, a page of a pass that loaded its projects before project NEWP was made, and
+// before a pull request of the main project was moved to an issue of it, writes the pull request's
+// merge day in NEWP.
+func TestAProjectMadeAfterAPassLoadedItsProjectsGetsTheDaysOfTheInputThatCountsForIt(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
+	r.settle(t)
 	r.pass(t)
+	ctx := t.Context()
+	main := deliveries.Project
+	issueProject := map[string]string{}
+	for project, keys := range deliveries.Issues {
+		for _, key := range keys {
+			issueProject[key] = project
+		}
+	}
+	var moved *delivery.DeliveryPullRequest
+	for i, pr := range deliveries.PullRequests {
+		if pr.IssueKey != nil && issueProject[*pr.IssueKey] == main && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+			slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author) {
+			moved = &deliveries.PullRequests[i]
+			break
+		}
+	}
+	if moved == nil {
+		t.Fatalf("the history holds no merged pull request of %s", main)
+	}
+	day := measures.Midnight(*moved.MergedAt)
+
+	pass := r.registry.newRefresh(r.build, r.now, r.batch)
+	if err := pass.load(ctx, r.seeds); err != nil {
+		t.Fatalf("load the pass: %v", err)
+	}
+	r.exec(t, "make project NEWP", `insert into projects (key, name, default_assignee) values ('NEWP', 'Made mid-pass', 'alice')`)
+	r.exec(t, "make an issue of NEWP", `
+		insert into issues (key, project_key, number, title, status, rank, created_by)
+		values ('NEWP-1', 'NEWP', 1, 'Work moved here', 'in_progress', '00000001', '{"kind":"user","id":"alice"}')`)
+	r.exec(t, "move "+PullRequestMember(moved.Repo, moved.Number)+" to NEWP", `update delivery_pull_requests set issue_key = 'NEWP-1' where repo = $1 and number = $2`,
+		moved.Repo, moved.Number)
+	if _, err := delivery.DrainPending(ctx, r.database.Pool); err != nil {
+		t.Fatalf("move the changes into the log: %v", err)
+	}
+	safe, err := r.horizon.Await(ctx)
+	if err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	for more := true; more; {
+		if more, err = pass.page(ctx, safe, refresherPage); err != nil {
+			t.Fatalf("the pass's page: %v", err)
+		}
+	}
+	if !slices.Contains(pass.report.sorted(), line(walkDelivery, "NEWP", day)) {
+		t.Errorf("the pass wrote %v, want %s's merge day %s written for NEWP, which counts it now", pass.report.sorted(), PullRequestMember(moved.Repo, moved.Number), day.Format(time.DateOnly))
+	}
+	if rows := r.count(t, `select count(*) from eval_days where project_key = 'NEWP' and day = $1 and n > 0`, day); rows == 0 {
+		t.Errorf("NEWP holds no day row with input on %s, where it counts %s", day.Format(time.DateOnly), PullRequestMember(moved.Repo, moved.Number))
+	}
+}
+
+// TestAProjectMadeAfterAPassLoadedItsProjectsHasItsFiguresFoldedByThatPass: the stored figures'
+// read of the change log (figureChanges) judges each change by the projects the pass loaded, and
+// the cursor passes the change once the read commits, so a project made since, whose figures
+// another process's pass has built, would have the figures of a write of no figures never folded.
+// Over a Legion history of EVAL, a pass loads its projects; project NEWP is then made and the
+// passes of another process (settle) seed it and build its figures; a build that writes no figures
+// writes a day row of NEWP's legion-work-time (upsertDays); and the first pass's read of the log
+// folds it: the stored figures are the fold of the day rows that stand.
+func TestAProjectMadeAfterAPassLoadedItsProjectsHasItsFiguresFoldedByThatPass(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	history := r.seedLegionEval(t)
+	r.settle(t)
+	r.pass(t)
+	ctx := t.Context()
+	stale := r.registry.newRefresh(r.build, r.now, r.batch)
+	if err := stale.load(ctx, r.seeds); err != nil {
+		t.Fatalf("load the pass: %v", err)
+	}
+	r.exec(t, "make project NEWP", `insert into projects (key, name, default_assignee) values ('NEWP', 'Made mid-pass', 'alice')`)
+	r.settle(t)
+	moved := r.day(t, EvalID("EVAL", SlugLegionWorkTime), metrics.SeriesHours, "", history.d1)
+	moved.ProjectKey, moved.EvalID = "NEWP", EvalID("NEWP", SlugLegionWorkTime)
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of NEWP's day row: %v", err)
+	}
+	if err := upsertDays(ctx, tx, []DayRow{moved}, "a-build-that-writes-no-figures"); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("write NEWP's day row: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit NEWP's day row: %v", err)
+	}
+	if _, err := delivery.DrainPending(ctx, r.database.Pool); err != nil {
+		t.Fatalf("move the change into the log: %v", err)
+	}
+	if err := stale.figureChanges(ctx, refresherPage); err != nil {
+		t.Fatalf("the first pass's read of the figures' changes: %v", err)
+	}
+	if r.count(t, `select count(*) from eval_day_figures where project_key = 'NEWP'`)+r.count(t, `select count(*) from eval_range_figures where project_key = 'NEWP'`) == 0 {
+		t.Error("the stored figures hold none of NEWP, whose day row was written with none folded")
+	}
+	expectTruth(t, "after the pass that loaded its projects before NEWP was made read NEWP's change", r.storedFigures(t), r.truthFigures(t))
+}
+
+// shippedMembersReads records the statements the registry sends that read the pull requests runs
+// shipped (shippedMembersQuery).
+type shippedMembersReads struct {
+	mu   sync.Mutex
+	sent []pgx.TraceQueryStartData
+}
+
+func (s *shippedMembersReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if data.SQL == shippedMembersQuery {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.sent = append(s.sent, data)
+	}
+	return ctx
+}
+
+func (s *shippedMembersReads) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// TestTheShippedMembersReadGoesInStatementsWithinTheBound: the read of the pull requests the runs of
+// a page shipped (shippedMembers) cuts its two lists, the projects and the runs, into statements of
+// at most statementBytes of parameters, as the read of where items were counted does (heldMembers).
+// Over 14,000 runs whose keys pass the bound twice over, the first and the last of which shipped a
+// pull request, it sends at least two statements, each within the bound, and answers both pull
+// requests.
+func TestTheShippedMembersReadGoesInStatementsWithinTheBound(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	runs := make([]string, 14000)
+	for i := range runs {
+		runs[i] = fmt.Sprintf("run:acme/deploy/%d-%s", i, "xxxxxxxxxxxxxxxx")
+	}
+	if _, err := r.database.Pool.Exec(ctx, `
+		insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
+		values ('EVAL', $1, 'acme/deploy', 'pull_request:acme/web#1', date '2026-11-01', 'acme/web', $2),
+		       ('EVAL', $1, 'acme/deploy', 'pull_request:acme/web#2', date '2026-11-02', 'acme/web', $3)
+	`, KindDelivery, runs[0], runs[len(runs)-1]); err != nil {
+		t.Fatalf("seed the members: %v", err)
+	}
+	sent := &shippedMembersReads{}
+	traced := r.tracedStore(t, sent)
+	held, err := traced.shippedMembers(ctx, []string{"EVAL"}, runs)
+	if err != nil {
+		t.Fatalf("read the pull requests the runs shipped: %v", err)
+	}
+	sent.mu.Lock()
+	defer sent.mu.Unlock()
+	if len(sent.sent) < 2 {
+		t.Errorf("the read went in %d statements, want at least two for runs whose keys pass the bound twice over", len(sent.sent))
+	}
+	for index, statement := range sent.sent {
+		if estimated := paramEstimate(t, statement.Args); estimated > statementBytes {
+			t.Errorf("statement %d takes an estimated %d bytes of parameters, past %d", index, estimated, statementBytes)
+		}
+	}
+	members := map[string]bool{}
+	for _, one := range held {
+		members[one.member] = true
+	}
+	if len(held) != 2 || !members["pull_request:acme/web#1"] || !members["pull_request:acme/web#2"] {
+		t.Errorf("the read answered %v, want the two pull requests the first and the last run shipped", held)
+	}
+}
+
+// TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading: a logged eval's
+// series begins on its first day with a value, as a write of the readings that stand leaves it, so
+// a window that starts before that day reads no data. A correction that moves the reading of the
+// series' first day to a later day empties that day's row, and the zero rows after it up to the
+// series' next reading, which the readings write deletes with it: the series then holds the rows a
+// write of the standing readings leaves, its first day (FirstDaysIn, the first day it states data
+// since) is the first reading's, and a window over a day the correction emptied reads no data
+// where a zero row left in place would read 0. A series a correction leaves with no value holds no
+// row of its all-repositories days.
+func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
+	reading := func(series, key string, value float64, measured time.Time, extra map[string]any) json.RawMessage {
+		fields := map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": value, "measured_at": measured}
+		for name, one := range extra {
+			fields[name] = one
+		}
+		return row(t, fields)
+	}
+	r := newRig(t)
+	web := map[string]any{"attributes": map[string]any{"repo": "acme/web"}}
+	written := r.write(t, "build-minutes", alice, reading("minutes", "a", 1, on(3, 9), nil), reading("minutes", "b", 2, on(8, 9), nil),
+		reading("minutes", "c", 3, on(12, 9), nil), reading("cache", "e", 4, on(15, 9), web), reading("minutes", "g", 5, on(10, 9), web))
+	evalID := written.Definition.EvalID
+	// The first reading of minutes moves from the 3rd to the 9th, the reading of acme/web in the
+	// middle of it from the 10th to the 11th, and the only one of cache, of acme/web too, is
+	// corrected to a reading with no value.
+	r.write(t, "build-minutes", alice, reading("minutes", "a", 1, on(9, 9), map[string]any{"replaces": written.Readings[0].ID}),
+		row(t, map[string]any{"series": "cache", "row_kind": "run", "row_key": "e", "value_absent_reason": "not measured", "measured_at": on(15, 9),
+			"replaces": written.Readings[3].ID}),
+		reading("minutes", "g", 5, on(11, 9), map[string]any{"replaces": written.Readings[4].ID, "attributes": map[string]any{"repo": "acme/web"}}))
+
+	// stored is the day, repository and n of each row of a series, the project's own rows first.
+	stored := func(of rig, series string) []string {
+		t.Helper()
+		rows, err := of.database.Pool.Query(ctx, `select to_char(day, 'YYYY-MM-DD') || ' ' || repo || ' ' || n from eval_days where eval_id = $1 and series = $2 order by repo collate "C", day`, evalID, series)
+		if err != nil {
+			t.Fatalf("read the rows of %s: %v", series, err)
+		}
+		days, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the rows of %s: %v", series, err)
+		}
+		return days
+	}
+	// The rows of a second database, whose readings were written as they now stand.
+	standing := newRig(t)
+	standing.write(t, "build-minutes", alice, reading("minutes", "b", 2, on(8, 9), nil), reading("minutes", "a", 1, on(9, 9), nil),
+		reading("minutes", "c", 3, on(12, 9), nil), reading("minutes", "g", 5, on(11, 9), web))
+	minutes := stored(r, "minutes")
+	if want := stored(standing, "minutes"); !slices.Equal(minutes, want) || len(minutes) == 0 || minutes[0] != "2026-10-08  1" {
+		t.Errorf("after the correction minutes holds the rows %v, want those of the readings as they stand, %v, which begin on the 8th and hold acme/web's reading of the 11th alone",
+			minutes, want)
+	}
+	if repoRows := slices.DeleteFunc(slices.Clone(minutes), func(row string) bool { return !strings.Contains(row, " acme/web ") }); !slices.Equal(repoRows, []string{"2026-10-11 acme/web 1"}) {
+		t.Errorf("after the correction minutes holds the rows %v of acme/web, want the one of the 11th: no zero row stands for a repository", repoRows)
+	}
+	if cache := stored(r, "cache"); len(cache) != 0 {
+		t.Errorf("after its one reading lost its value cache holds the rows %v, want none", cache)
+	}
+
+	page, err := r.registry.Current(ctx, []string{r.project}, "", 100, 0)
+	if err != nil {
+		t.Fatalf("read the evals of %s: %v", r.project, err)
+	}
+	index := slices.IndexFunc(page.Items, func(entry Entry) bool { return entry.Definition.Slug == "build-minutes" })
+	if index < 0 {
+		t.Fatalf("%s has no build-minutes eval", r.project)
+	}
+	entry := page.Items[index]
+	firsts, err := FirstDaysIn(ctx, r.database.Pool, []Entry{entry}, nil)
+	if err != nil {
+		t.Fatalf("read the first days of %s: %v", evalID, err)
+	}
+	if first := firsts[evalID]["minutes"]; !first.Equal(on(8, 0)) {
+		t.Errorf("minutes' first day is %v, want the 8th, its first reading's", first)
+	}
+	read := func(day time.Time) SeriesValues {
+		t.Helper()
+		window := Range{From: day, To: day.AddDate(0, 0, 1)}
+		rows, err := DayWindowIn(ctx, r.database.Pool, []string{r.project}, []Entry{entry}, nil, nil, window, nil)
+		if err != nil {
+			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
+		}
+		for _, values := range SeriesValuesOf(entry, rows, firsts[evalID], window, nil) {
+			if values.Series.Series == "minutes" {
+				return values
+			}
+		}
+		t.Fatalf("%s states no series minutes", evalID)
+		return SeriesValues{}
+	}
+	statesData := func(values SeriesValues) bool {
+		for _, value := range values.Window {
+			if value != nil {
+				return true
+			}
+		}
+		return false
+	}
+	if before := read(on(5, 0)); statesData(before) || before.DataSince == nil || *before.DataSince != "2026-10-08" {
+		t.Errorf("a window over the 5th, which the correction emptied, reads %v with data since %v, want no data, since the 8th", before.Window, before.DataSince)
+	}
+	if after := read(on(8, 0)); !statesData(after) {
+		t.Errorf("a window over the 8th, the series' first day, reads %v, want its first reading's values", after.Window)
+	}
 }
 
 // sourcesDay is the UTC day the three-source history happens on, the day before refresherToday.

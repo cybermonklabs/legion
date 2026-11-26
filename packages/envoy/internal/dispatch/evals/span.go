@@ -54,7 +54,8 @@ import (
 // of the days before it, the span's among them.
 //
 // What else rebuilds many days is no span. A database or a project first seen is walked, its days
-// built in the open a batch a pass, each day a commit of its own. A release, a lost change cursor
+// built in the open a batch a pass, each day of every key a commit of its own that moves its
+// serving record past it (walkWrite). A release, a lost change cursor
 // and a database whose rows' settings are not recorded rebuild the served rows aside and flip what
 // moved in one commit (rebuild.go); a page that writes days while one runs keeps their zero rows
 // (servingNext), and the triggers of the day rows queue them, a span's among them, for the rebuild
@@ -120,8 +121,12 @@ func (p *pageDays) projects() []string {
 	return slices.Sorted(maps.Keys(held))
 }
 
-// nameDelivery adds project's delivery and CI day of read to days, as the day's reads build it.
+// nameDelivery adds project's delivery and CI day of read to days, where days holds it not yet, as
+// the day's reads build it.
 func (r *refresh) nameDelivery(days *pageDays, read deliveryRead, project string) {
+	if _, found := days.days[projectDay{project: project, day: read.Day}]; found {
+		return
+	}
 	days.add(&namedDay{
 		project: project, day: read.Day, raw: read.Rows(project),
 		zeros: ZeroDeliveryDay(project, read.Day, read.rules).Rows,
@@ -669,14 +674,16 @@ type keptMove struct {
 }
 
 // writeNamed writes the days of one family a page names (days), and with them each day an item of
-// theirs left (nameLeft). Where the days move no series' first input day and kept names no change
-// of a day the stored rows are whole through, or no rebuild has flipped the family's rows yet (its
-// rebuild then builds every day itself), it writes every day in one transaction of their own
-// (writeProjectDays), by the stored first input days, with its zero rows where the stored rows are
-// whole through it (servingNext), and answers nil: one commit, which logs one change of each eval
-// the days moved. Otherwise it builds the span (span.go's rules) and answers the span write the
-// caller commits with its cursors, having written nothing.
-func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove) (*spanWrite, error) {
+// theirs left (nameLeft). Where the days move no series' first input day, kept names no change of
+// a day the stored rows are whole through (or no walk or rebuild has served the family's rows yet),
+// and withPage is not set (the page's commit publishes no default move beside them), it writes
+// every day in one transaction of their own (writeProjectDays), by the stored first input days,
+// with its zero rows where the stored rows are whole through it (servingNext), and answers nil:
+// one commit, which logs one change of each eval the days moved. Where withPage is set with no
+// span to build, it answers a span write of the named days alone, so the page's commit writes them
+// with its default move. Otherwise it builds the span (span.go's rules) and answers the span write
+// the caller commits with its cursors, having written nothing.
+func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove, withPage bool) (*spanWrite, error) {
 	if err := r.nameLeft(ctx, days); err != nil {
 		return nil, err
 	}
@@ -735,6 +742,20 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 		for _, key := range days.order {
 			day := days.days[key].finalize(firsts[key.project], computed(key.project, key.day))
 			written = append(written, day)
+		}
+		if withPage {
+			b := &spanWrite{family: family, build: r.build, projects: projects, spans: map[string]map[string]daySpan{}}
+			for _, day := range written {
+				if err := checkProjectDay(family.what, day, family.slugs, family.families); err != nil {
+					return nil, err
+				}
+				b.days = append(b.days, day)
+				b.report = append(b.report, builtDay{family: family.walk, project: day.Project, day: measures.Midnight(day.Day)})
+				for _, slug := range family.slugs {
+					b.widen(day.Project, EvalID(day.Project, slug), day.Day, day.Day)
+				}
+			}
+			return b, nil
 		}
 		if err := r.store.writeProjectDays(ctx, family, written, r.build, true); err != nil {
 			return nil, err
@@ -856,9 +877,11 @@ func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered 
 // transaction, and records in b what moved: each built row of a span day whose stored row holds
 // other values or is missing, each stored row of a span day of its key that the day no longer
 // builds, and the stored members of the days whose members the span built (covered). It
-// widens b's figure spans and its report by the days whose rows moved. Only the refresher writes
-// the computation's rows and members, one pass at a time (RefresherLease), so what it reads here
-// is what its transaction then writes over.
+// widens b's figure spans and its report by the days whose rows moved. The refresher lease allows
+// one refresher pass at a time, but two writers outside it change rows and members and can commit
+// between this read and the span write: the boot's repository rename pass renames an owner key
+// (store.RewriteRenamedRepositories), and a project's delete deletes the project's rows
+// (eval_days_project_deleted, migration 20261117100006).
 func (r *refresh) compareSpan(ctx context.Context, b *spanWrite, built spanBuilt, covered map[string]daySpan) error {
 	type scope struct {
 		evals, repos map[string]bool

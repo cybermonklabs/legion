@@ -86,12 +86,9 @@ func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 		{"day-figures", 13, dayRead("eval_id, day, fold_key, figures"), dayRead("eval_id, day, fold_key")},
 	}
 
-	found, skipped, err := storedFiguresReads(read)
+	found, err := storedFiguresReads(read)
 	if err != nil {
 		t.Fatalf("a list read that ran both stored-figures reads failed the probe: %v", err)
-	}
-	if len(skipped) != 0 {
-		t.Errorf("a list read that ran both stored-figures reads skipped %q; want nothing skipped", skipped)
 	}
 	if len(found) != len(want) {
 		t.Fatalf("the probe found %d stored-figures statements, want %d: %+v", len(found), len(want), found)
@@ -114,7 +111,7 @@ func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 		21: {"'{INFRA}'", `'{""}'`, "'{INFRA/a,INFRA/b}'", compare, window, "'2026-06-07 00:00:00+00'", compare},
 		22: {"'{INFRA}'", "''"},
 	})
-	found, _, err = storedFiguresReads(dayRows)
+	found, err = storedFiguresReads(dayRows)
 	if err == nil {
 		t.Fatalf("a list read that ran the day rows' union and neither stored-figures read passed the probe, finding %+v", found)
 	}
@@ -125,7 +122,65 @@ func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 	}
 	checks := &headChecks{r: &report{prefix: "RESULT"}}
 	checks.probe([]measuredCase{dayRows})
-	if checks.r.failed != 1 {
-		t.Errorf("a paint whose list read ran neither stored-figures read was judged %d failures; want 1, so the bench exits 1", checks.r.failed)
+	if len(checks.r.fails) != 1 {
+		t.Errorf("a paint whose list read ran neither stored-figures read was judged %d failures; want 1, so the bench exits 1", len(checks.r.fails))
+	}
+}
+
+// TestTheProbeFailsAListReadThatRanOneStoredFiguresReadAlone: every logged eval of the fixture has
+// a headline series, so a list read of an offered range runs both stored-figures reads, and one
+// that ran either alone no longer reads that half of the stored figures. The probe fails it naming
+// the read it did not run, where it once printed the missing read as skipped and passed. It fails a
+// statement whose select list holds no figures column too, whose narrow variant would measure the
+// statement as shipped again, where it once printed that variant as skipped.
+func TestTheProbeFailsAListReadThatRanOneStoredFiguresReadAlone(t *testing.T) {
+	window, compare := "'2026-11-22 00:00:00+00'", "'2026-08-30 00:00:00+00'"
+	rangeParams := []string{"'{INFRA}'", "''", "'{INFRA/a,INFRA/b}'", "'{INFRA/b}'", "'owner/deploy'", "'84'", window, "'84'", compare}
+	dayParams := []string{"'{INFRA}'", "''", compare, window, "'{INFRA/a}'", "'{INFRA/b}'", "'owner/deploy'"}
+	for _, read := range []struct {
+		name       string
+		statements map[int64]string
+		params     map[int64][]string
+		missing    string
+	}{
+		{"the range-figures read alone", map[int64]string{11: rangeFiguresRead, 12: figuresBuiltRead},
+			map[int64][]string{11: rangeParams, 12: {"'{INFRA}'", "''"}}, "from eval_day_figures"},
+		{"the day-figures read alone", map[int64]string{12: figuresBuiltRead, 13: dayFiguresRead},
+			map[int64][]string{12: {"'{INFRA}'", "''"}, 13: dayParams}, "from eval_range_figures"},
+		{"a range-figures read with no figures column", map[int64]string{11: strings.ReplaceAll(rangeFiguresRead, "fold_key, figures,", "fold_key,"), 13: dayFiguresRead},
+			map[int64][]string{11: rangeParams, 13: dayParams}, "figures column"},
+	} {
+		found, err := storedFiguresReads(listRead(read.statements, read.params))
+		if err == nil {
+			t.Errorf("a list read that ran %s passed the probe, finding %+v", read.name, found)
+			continue
+		}
+		if !strings.Contains(err.Error(), read.missing) {
+			t.Errorf("the probe's failure of a list read that ran %s does not name %q: %v", read.name, read.missing, err)
+		}
+	}
+}
+
+// TestEveryReadOfAnOfferedRangeIsHeldToTheStoredFigures: the reads of one repository's cut answer
+// from the stored figures as the reads of the project's own rows do (evals.FiguresOffered), so every
+// run fails a read of an offered range, with a repository or with none, that ran neither
+// stored-figures read, naming the read, where the probe once looked at list-84d-compare alone. A
+// Delivery read, which reads no stored figures, is not held to them.
+func TestEveryReadOfAnOfferedRangeIsHeldToTheStoredFigures(t *testing.T) {
+	window, compare := "'2026-11-22 00:00:00+00'", "'2026-08-30 00:00:00+00'"
+	stored := func(name string) measuredCase {
+		return measuredCase{paintCase: paintCase{name: name, storedFigures: true},
+			statements: map[int64]string{11: rangeFiguresRead, 13: dayFiguresRead}, params: map[int64][]string{
+				11: {"'{INFRA}'", "''", "'{INFRA/a,INFRA/b}'", "'{INFRA/b}'", "'owner/deploy'", "'84'", window, "'84'", compare},
+				13: {"'{INFRA}'", "''", compare, window, "'{INFRA/a}'", "'{INFRA/b}'", "'owner/deploy'"},
+			}}
+	}
+	dayRows := measuredCase{paintCase: paintCase{name: "list-84d-compare-repo", storedFigures: true},
+		statements: map[int64]string{21: dayRowsUnion}, params: map[int64][]string{21: {"'{INFRA}'", `'{"acme/infra"}'`, "'{INFRA/a}'", compare, window, compare, window}}}
+	delivery := measuredCase{paintCase: paintCase{name: "timeline-84d", delivery: true}, statements: map[int64]string{31: "select 1"}}
+	judged := &report{prefix: "RESULT"}
+	checkStoredFiguresReads(judged, []measuredCase{stored("list-84d-compare"), dayRows, stored("list-28d"), delivery})
+	if len(judged.fails) != 1 || !strings.Contains(judged.fails[0], "list-84d-compare-repo") {
+		t.Errorf("a paint whose list-84d-compare-repo read folded the day rows was judged %q; want one failure naming list-84d-compare-repo", judged.fails)
 	}
 }

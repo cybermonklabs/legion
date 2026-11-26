@@ -106,6 +106,9 @@ func TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers(t *testing.T
 				judge := series.Series + "." + stat
 				err := validateRegistration(Registration{Slug: slug, TargetJudges: Set([]string{judge})})
 				if err != nil {
+					if answer[slug][series.Series][stat] != nil {
+						t.Errorf("%s judged by %s: the measures answer states it, but the register write refused it: %v", slug, judge, err)
+					}
 					var refusal *Error
 					if !errors.As(err, &refusal) || refusal.Code != CodeFieldInvalid || refusal.Field != "target_judges[0]" {
 						t.Errorf("%s judged by %s: the register write answers %v, want it taken or refused %s naming target_judges[0]", slug, judge, err, CodeFieldInvalid)
@@ -128,4 +131,54 @@ func TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers(t *testing.T
 		t.Fatal("no judge of the six delivery targets was taken, so this test examined nothing")
 	}
 	t.Logf("%d judges of the six delivery targets taken and stated by the delivery answers, %d refused", taken, refused)
+}
+
+func TestVerdictAtInsideAndPastTheTarget(t *testing.T) {
+	t.Parallel()
+	for _, direction := range []struct {
+		name         string
+		inside, past float64
+	}{{DirectionHigherBetter, 11, 9}, {DirectionLowerBetter, 9, 11}} {
+		for _, inclusive := range []bool{true, false} {
+			for _, test := range []struct {
+				name  string
+				value *float64
+				met   *bool
+			}{{"at", new(10.0), &inclusive}, {"inside", &direction.inside, new(true)}, {"past", &direction.past, new(false)}, {"no value", nil, nil}} {
+				entry := Entry{
+					Definition: Definition{Direction: direction.name, Target: new(10.0), TargetInclusive: inclusive, TargetJudges: []string{"runs.sum"}},
+					Series:     []Series{{Series: "runs", SeriesComputation: SeriesComputation{Listed: true}}},
+				}
+				got := VerdictOf(entry, map[string]Statistics{"runs": {"sum": test.value}})
+				want := &Verdict{Target: 10, Direction: direction.name, Inclusive: inclusive, Met: test.met,
+					Judges: []Judge{{Judge: "runs.sum", Value: test.value, Met: test.met}}}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s inclusive=%t %s: verdict = %#v, want met=%v", direction.name, inclusive, test.name, got, want.Met)
+				}
+			}
+		}
+	}
+}
+
+// TestChangeFailureRateWithNoInputHasNoCounts: change-fail-rate's `per_deploy` statistics over no
+// part of its series, none at all or only another series' (deployment-rework-rate's), hold no
+// value, the counts included ("no data"). A stored zero row of the series is a day measured from
+// failures_measured_since on with no deploy, whose value is real (dispatch://INFRA-978, R9: 0
+// percent included): 0 failed of 0 deploys.
+func TestChangeFailureRateWithNoInputHasNoCounts(t *testing.T) {
+	t.Parallel()
+	none := Statistics{"rate": nil, "failed": nil, "total": nil}
+	for _, test := range []struct {
+		name  string
+		parts []measures.DayPart
+		want  Statistics
+	}{
+		{"no part", nil, none},
+		{"another series' part", []measures.DayPart{{Series: measures.SeriesReworkDeploys}}, none},
+		{"a zero row", []measures.DayPart{{Series: measures.SeriesPerDeploy}}, Statistics{"rate": new(0.0), "failed": new(0.0), "total": new(0.0)}},
+	} {
+		if got := changeFailRateStatistics(test.parts, Range{}); !reflect.DeepEqual(got, test.want) {
+			t.Errorf("change fail rate over %s = %v, want %v", test.name, got, test.want)
+		}
+	}
 }

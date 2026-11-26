@@ -56,8 +56,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -93,13 +98,13 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
       # the run shows which Postgres the tests below ran on.
       - name: Postgres service version
@@ -135,7 +140,7 @@ jobs:
       # model is out of the race build too, and runs in a job of its own, envoy-go-claim-model;
       # the API's nine source guards, and one_expression_guard_test.go beside them, carry that
       # tag as well and are deliberately not here: they read the module's source, the text-check
-      # job runs their twenty-two tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
+      # job runs their twenty-three tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
       # TEXT_CHECK_TESTS leave exactly those tests out of this step rather than have each of them
       # run twice. It comes before the unit step for the
       # reason the API package's own run did: run beside the other package binaries,

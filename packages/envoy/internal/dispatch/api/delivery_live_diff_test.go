@@ -1112,10 +1112,11 @@ func liveItemsOf(rows ...evalItemRow) evalItemsResponse {
 // TestAnEvalWhoseNumbersMovedIsTheOneItemSent: an evals view sends its list eval by eval, by id. A
 // reading that moves one eval's numbers sends that eval alone; a registered eval is upserted with
 // the total that counts it; a new version of a definition sends its eval whole; a day that turned
-// sends the window and the compare range with the numbers it moved. The refresher's age, which
-// every read measures afresh, sends nothing by itself, and goes with the freshness when the
-// folded rows' own age moves.
+// sends the window and the compare range with the eval whose numbers it moved, and no other. The
+// refresher's age, which every read measures afresh, sends nothing by itself, and goes with the
+// freshness when the folded rows' own age moves.
 func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
+	t.Parallel()
 	updated := liveEvalsWindow.To.Add(-time.Hour)
 	three := func(prSize float64, reviewVersion int) []evalListItem {
 		return []evalListItem{liveEval("deploy-frequency", 1, 3), liveEval("pr-size", 1, prSize), liveEval("review-time", reviewVersion, 30)}
@@ -1183,6 +1184,9 @@ func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
 	}
 	if set, _, _, _ := liveSections(delta); !slices.Equal(set, []string{"compare", "window"}) {
 		t.Errorf("set = %v, want the window and the compare range", set)
+	}
+	if got := liveUpsertIDs(t, delta, "items"); !slices.Equal(got, []string{"ACME/pr-size"}) || len(delta.Items["items"].Remove) != 0 {
+		t.Errorf("items.items = upsert %v, remove %v; want ACME/pr-size alone upserted, the eval whose mean the turned day moved", got, delta.Items["items"].Remove)
 	}
 }
 

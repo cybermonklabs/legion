@@ -17,9 +17,10 @@ import (
 // R21's property: the Legion day rows built from the stored rows (ReadLegionDay, which closes each
 // row at its day's end) equal the day rows built from the computation's facts read at a clock
 // time a minute before and a minute after the first UTC midnight past the history's end
-// (metrics.ProjectFactsClosed, grown to that clock time), with no input in between, for the day
-// before that midnight and the day after it. That the facts so grown are the computation run at
-// that clock time is metrics' own test (TestFactsClosedAtAnyMomentAreTheComputationAtThatMoment).
+// (metrics.ProjectFactsClosed, grown to that clock time), for the last two completed days with
+// closes. The filings come from the same population's events, not the stored filings table.
+// That the facts so grown are the computation run at that clock time is metrics' own test
+// (TestFactsClosedAtAnyMomentAreTheComputationAtThatMoment).
 //
 // A Legion day row counts an issue on the day it closes alone, so an open issue reaches no day
 // row: the open issues' facts grow across the midnight, and neither day's rows move with them.
@@ -50,8 +51,8 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 	}
 
 	midnight := measures.Midnight(now).AddDate(0, 0, 1)
-	days := []time.Time{midnight.AddDate(0, 0, -1), midnight}
-	counted, compared := 0, 0
+	days := []time.Time{midnight.AddDate(0, 0, -2), midnight.AddDate(0, 0, -1)}
+	compared := 0
 	for _, moment := range []time.Time{midnight.Add(-time.Minute), midnight.Add(time.Minute)} {
 		population, err := metrics.ReadProject(ctx, pool, project, moment)
 		if err != nil {
@@ -61,6 +62,7 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 		for key, closed := range metrics.ProjectFactsClosed(population, nil) {
 			facts[key] = closed.FactsAt(population.To)
 		}
+		filings := metrics.ProjectFilings(population)
 		open := 0
 		for _, fact := range facts {
 			if fact.ClosedAt == nil {
@@ -80,11 +82,26 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 					t.Errorf("the stored rows of %s count the open issue %s", day.Format(time.DateOnly), row.Issue)
 				}
 			}
-			computed := LegionDay{Project: project, Day: stored.Day, filed: stored.filed, repos: stored.repos}
+			computed := LegionDay{Project: project, Day: day}
+			var keys []string
+			for _, filing := range filings {
+				if measures.Midnight(filing.At).Equal(day) {
+					computed.filed = append(computed.filed, legionfacts.Filing{Project: project, IssueFiling: filing})
+					keys = append(keys, filing.Key)
+				}
+			}
 			for key, fact := range facts {
 				if fact.ClosedAt != nil && !fact.ClosedAt.Before(day) && fact.ClosedAt.Before(day.AddDate(0, 0, 1)) {
 					computed.closed = append(computed.closed, factsRow(project, key, fact))
+					keys = append(keys, key)
 				}
+			}
+			if len(computed.closed) == 0 || len(computed.filed) == 0 {
+				t.Fatalf("%s at %s: fixture has %d closes and %d filings; each comparison needs both", day, moment, len(computed.closed), len(computed.filed))
+			}
+			computed.repos, err = legionfacts.ReadRepos(ctx, pool, keys)
+			if err != nil {
+				t.Fatalf("resolve repositories for computed input on %s: %v", day, err)
 			}
 			slices.SortFunc(computed.closed, func(a, b legionfacts.Row) int {
 				if order := b.ClosedAt.Compare(*a.ClosedAt); order != 0 {
@@ -98,15 +115,11 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 					moment.UTC(), day.Format(time.DateOnly), fromStored, fromComputed)
 			}
 			compared++
-			counted += len(fromStored.Members)
 			t.Logf("at %s, %s: %d issues counted, %d rows, the computation answering %d open issues that reach no day",
 				moment.UTC(), day.Format(time.DateOnly), len(fromStored.Members), len(fromStored.Rows), open)
 		}
 	}
-	if counted == 0 {
-		t.Fatalf("no day of %v counts an issue, so the rows compared are empty: this test examined nothing", days)
-	}
-	t.Logf("%d days compared on both sides of %s, %d counted issues among them", compared, midnight.UTC(), counted)
+	t.Logf("%d nonempty day comparisons on both sides of %s", compared, midnight.UTC())
 }
 
 // factsRow is the computation's facts of one issue as the stored row holds them, which embeds

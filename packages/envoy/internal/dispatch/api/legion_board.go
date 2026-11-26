@@ -237,7 +237,9 @@ type legionBoardCard struct {
 	// slot belongs to the tree's root, and a child works under it. Null for a root, an issue
 	// holding its own slot, and a tree whose root holds none.
 	TreeSlot *int `json:"tree_slot"`
-	// SlotSince is when the issue was admitted to its own slot; null with no slot of its own.
+	// SlotSince is when Dispatch first recorded the slot the issue holds of its own, which is the
+	// admission only where the sampler was reading the daemon then (observe); null with no slot of
+	// its own.
 	SlotSince *time.Time `json:"slot_since"`
 	// WaitingPlace is the issue's place in the daemon's waiting line, from 1; null for an issue
 	// the line does not name.
@@ -364,8 +366,8 @@ type legionBoardIssue struct {
 	// own read takes them through (legion.IssueState), so a card and that read agree on the
 	// issue's phase, its slot and the roles in a turn.
 	state legion.IssueState
-	// slotSince is when the newest slot observation was recorded, which is when the issue was
-	// admitted to that slot (observe).
+	// slotSince is when the newest slot observation was recorded: the first read of the daemon
+	// that carried that slot, which need not be the admission (observe).
 	slotSince time.Time
 	// title and priority are Dispatch's, empty for an issue Dispatch does not hold; the parent
 	// Dispatch records is p.parents, which holds every issue of the project and not only the
@@ -519,10 +521,12 @@ func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 }
 
 // observe takes one newest observation into the issue: its state, by the one per-issue rule
-// (legion.IssueState.Observe), and for its slot also when that slot was recorded, which is when
-// the issue was admitted to it, since a row is written only where the value moved. A card shows
-// that moment only beside a slot the issue holds (card), so a slot value of another shape, which
-// the state reads as no slot, shows none.
+// (legion.IssueState.Observe), and for its slot also when that slot was recorded. A row is written
+// only where the value moved, so that is the first read of the daemon that carried the slot: the
+// admission when the sampler was already reading the daemon then, and otherwise a later read, such
+// as the first one after the project's daemon is configured. A card shows that moment only beside
+// a slot the issue holds (card), so a slot value of another shape, which the state reads as no
+// slot, shows none.
 func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time) {
 	issue.state.Observe(field, value, at)
 	if field == legion.FieldSlot {

@@ -152,8 +152,17 @@ func (r *refresh) figureChanges(ctx context.Context, limit int) error {
 		}
 		spans, versioned := map[string]map[string]daySpan{}, map[string][]string{}
 		for _, change := range changes {
+			if change.Kind != delivery.ChangeKindEvalDays && change.Kind != delivery.ChangeKindEvalVersions {
+				continue
+			}
+			// A project made since the pass loaded its projects is one too (refresh.knows): the
+			// cursor passes its changes once this page commits.
+			known, err := r.knows(ctx, change.Repo)
+			if err != nil {
+				return err
+			}
 			switch {
-			case !r.known[change.Repo]:
+			case !known:
 			case change.Kind == delivery.ChangeKindEvalDays && change.TOld != nil && change.TNew != nil:
 				if spans[change.Repo] == nil {
 					spans[change.Repo] = map[string]daySpan{}
@@ -1091,7 +1100,7 @@ func FoldFirstPaintsAtBoot(ctx context.Context, pool *store.Pool, leases duty.Le
 		}
 		if !held {
 			var failed error
-			ran := duty.Exclusive(ctx, leases, RefresherLease, time.Time{}, 0, func(ctx context.Context) {
+			ran := duty.Exclusive(ctx, nil, leases, RefresherLease, time.Time{}, 0, func(ctx context.Context) {
 				var cuts []staleCut
 				if cuts, failed = owedFirstPaints(ctx, pool); failed != nil {
 					return

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // latestChange is the change log's newest seq, which a test reads after its setup so its
@@ -125,6 +126,17 @@ func nextNotification(t *testing.T, ctx context.Context, conn *pgx.Conn, wait ti
 		if waitCtx.Err() != nil && ctx.Err() == nil {
 			return nil
 		}
+		t.Fatalf("wait for a notification: %v", err)
+	}
+	return notification
+}
+
+// notified is the next notification conn receives, for a notification the test knows is coming:
+// its one bound is testwait's (testwait.Context), so a slow one fails nothing.
+func notified(t *testing.T, conn *pgx.Conn) *pgconn.Notification {
+	t.Helper()
+	notification, err := conn.WaitForNotification(testwait.Context(t))
+	if err != nil {
 		t.Fatalf("wait for a notification: %v", err)
 	}
 	return notification
@@ -591,6 +603,10 @@ func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
 // 20261123010254, as 20261120111107 for the singleton), so no reader begins anything for it: no day
 // row, delivery window or intake reads either column. A save that moves a value logs and announces
 // its change, carrying the project, whoever makes it.
+//
+// Postgres hands a listener the notifications of committed transactions in commit order, so a
+// sentinel sent after the save has committed is the next notification on the channel unless the
+// save announced one first: the silence is read with no wait of the test's own.
 func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
@@ -606,8 +622,12 @@ func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
 	if changes := changesAfter(t, ctx, pool, before); len(changes) != 0 {
 		t.Errorf("the same settings saved by another person logged %+v, want nothing", changes)
 	}
-	if notification := nextNotification(t, ctx, listener, time.Second); notification != nil {
-		t.Errorf("the same settings saved by another person announced %q on %s, want nothing", notification.Payload, SettingsChannel)
+	const sentinel = "sentinel"
+	if _, err := pool.Exec(ctx, `select pg_notify($1, $2)`, SettingsChannel, sentinel); err != nil {
+		t.Fatalf("send the sentinel on %s: %v", SettingsChannel, err)
+	}
+	if notification := notified(t, listener); notification.Payload != sentinel {
+		t.Fatalf("the same settings saved by another person announced %q on %s before the sentinel, want nothing", notification.Payload, SettingsChannel)
 	}
 
 	settings.PRChecksRollupJobName = new("checks-complete")
@@ -618,8 +638,8 @@ func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
 	if len(changes) == 0 || slices.ContainsFunc(changes, func(c Change) bool { return c.Kind != ChangeKindSettings || c.Repo != deliveryProject }) {
 		t.Errorf("a new roll-up job saved by another person logged %+v, want settings changes of %s alone", changes, deliveryProject)
 	}
-	if notification := nextNotification(t, ctx, listener, 10*time.Second); notification == nil || notification.Payload != deliveryProject {
-		t.Errorf("a new roll-up job announced %+v on %s, want the project %s", notification, SettingsChannel, deliveryProject)
+	if notification := notified(t, listener); notification.Payload != deliveryProject {
+		t.Errorf("a new roll-up job saved by another person announced %q on %s, want the project %s", notification.Payload, SettingsChannel, deliveryProject)
 	}
 }
 

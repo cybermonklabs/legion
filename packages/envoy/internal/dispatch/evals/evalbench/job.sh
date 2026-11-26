@@ -44,7 +44,8 @@
 #   EVALBENCH_BASE_SOURCE  a tree of the base; by default a worktree of the checkout at
 #                          EVALBENCH_BASE, made under EVALBENCH_WORK
 #   EVALBENCH_SCALE (1), EVALBENCH_SEED (2916), EVALBENCH_TEN_TIMES (0), EVALBENCH_NOW (the current
-#                          UTC midnight): the generator's -scale, -seed, -ten-times and -now
+#                          UTC midnight): the generator's -scale, -seed, -ten-times and -now; the
+#                          paint's windows end on EVALBENCH_NOW's day too (run.sh)
 #   EVALBENCH_ONE_PROJECT (0), EVALBENCH_BASE_TIMELINE (EVALBENCH_WORK/base-timeline.json): the
 #                          one-project fixture and k22's capture, at head and base
 #   EVALBENCH_FAILURE_DAY (7; 0 adds none), EVALBENCH_FAILURE_DAY_RUNS (36),
@@ -53,6 +54,8 @@
 #   EVALBENCH_PGPORT (55432), EVALBENCH_SHARED_BUFFERS (1GB), PGBIN (the newest
 #                          /usr/lib/postgresql/*/bin)
 #   EVALBENCH_CHROMIUM     tab: a Chromium to drive in place of the one Playwright installs
+#   EVALBENCH_NODE         the node the run is on (job.yaml sets it from the pod's spec.nodeName),
+#                          printed with the machine's CPUs and memory
 #   run.sh's EVALBENCH_PORT, EVALBENCH_CATCHUP, EVALBENCH_QUIET, EVALBENCH_CATALOG,
 #   EVALBENCH_PAINT_RUNS, EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG and EVALBENCH_RECOMPUTE_ARGS
 #   pass through.
@@ -87,22 +90,31 @@ fi
 mkdir -p "$work/bin" "$work/pglog" "$work/sock"
 mark() { echo "MARK $(date -u +%FT%TZ) $*"; }
 mark "job.sh $mode: source $source_dir at $commit, scale ${EVALBENCH_SCALE:-1}, ten times ${EVALBENCH_TEN_TIMES:-0}, one project $one_project, now $now"
+# The machine the times are measured on: k8 and k16 hold the reads to their budgets on the node the
+# Job runs on, so the log names it.
+mark "machine: node ${EVALBENCH_NODE:-unnamed}, $(nproc) CPUs, $(awk -F': *' '/^model name/ { print $2; exit }' /proc/cpuinfo), $(awk '/^MemTotal/ { printf "%.1f GiB", $2 / 1048576 }' /proc/meminfo) of memory"
 
 # Postgres, its data on the run's own volume. pg_stat_statements is the instrument (track_utility
-# off, so a transaction's begin and commit are not statements of their own), and the jsonlog file
-# holds each statement the instrument turns the log on for, with its query id and parameters. Its
-# timestamps are in UTC (log_timezone), the zone the instrument reads them in: Go reads a zone
-# abbreviation it does not know at offset 0, so a log in another zone would shift each statement
-# away from the read it ran in (capture.go's readStatementLog). The durability settings only speed
-# the load; nothing the measurement reads depends on them. The tab's drive reads each write's
+# off, so a transaction's begin and commit are not statements of their own, and track_planning on,
+# so a statement's planning counts in its database time), and the jsonlog file holds each
+# statement the instrument turns the log on for, with its query id and parameters. Its timestamps
+# are in UTC (log_timezone), the zone the instrument reads them in: Go reads a zone abbreviation it
+# does not know at offset 0, so a log in another zone would shift each statement away from the read
+# it ran in (capture.go's readStatementLog). The migration and the load run with fsync, full-page
+# writes and synchronous commit off (postgresql.auto.conf, which a reload reads), which only speeds
+# them; the measurement runs with all three back on, as a served database runs, since the writes it
+# times (a stale cut's first paint, a move's refold) wait on them. wal_level stays minimal, which
+# a restart alone changes and which spares only the WAL of a table written in the transaction that
+# made it. The tab's drive reads each write's
 # commit time (pg_xact_commit_timestamp), which track_commit_timestamp keeps. The trap is set
 # before Postgres starts, so every exit from here on stops it.
 pg_options="-p $port -k $work/sock \
   -c listen_addresses=127.0.0.1 -c max_connections=200 -c shared_buffers=${EVALBENCH_SHARED_BUFFERS:-1GB} \
   -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=top -c pg_stat_statements.track_utility=off \
+  -c pg_stat_statements.track_planning=on \
   -c compute_query_id=on -c logging_collector=on -c log_destination=jsonlog -c log_directory=$work/pglog \
   -c log_filename=postgres.log -c log_rotation_age=0 -c log_rotation_size=0 -c log_timezone=UTC \
-  -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c wal_level=minimal -c max_wal_senders=0 \
+  -c wal_level=minimal -c max_wal_senders=0 \
   -c max_wal_size=4GB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off"
 if [ "$mode" = tab ]; then
   pg_options="$pg_options -c track_commit_timestamp=on"
@@ -114,6 +126,20 @@ trap stop_postgres EXIT
 database_url="postgres://postgres@127.0.0.1:$port/evalbench?sslmode=disable"
 psql "postgres://postgres@127.0.0.1:$port/postgres" -Atc 'select version()'
 psql "postgres://postgres@127.0.0.1:$port/postgres" -Atc 'create database evalbench'
+# durability sets fsync, full_page_writes and synchronous_commit on or off and prints them, each
+# ALTER SYSTEM a statement of its own, since none runs in a transaction block.
+durability() {
+  local change=(-c "alter system set fsync = off" -c "alter system set full_page_writes = off" -c "alter system set synchronous_commit = off")
+  if [ "$1" = on ]; then
+    change=(-c "alter system reset fsync" -c "alter system reset full_page_writes" -c "alter system reset synchronous_commit")
+  fi
+  psql "postgres://postgres@127.0.0.1:$port/postgres" -Atq "${change[@]}" -c "select pg_reload_conf()"
+  if [ "$1" = on ]; then
+    psql "postgres://postgres@127.0.0.1:$port/postgres" -Atq -c "checkpoint"
+  fi
+  mark "durability $1: $(psql "postgres://postgres@127.0.0.1:$port/postgres" -At -c "select string_agg(name || '=' || setting, ' ' order by name) from pg_settings where name in ('fsync', 'full_page_writes', 'synchronous_commit')")"
+}
+durability off
 
 # The generator and the instruments are this head's in every mode; the server is the mode's.
 cd "$source_dir/packages/envoy"
@@ -202,6 +228,7 @@ sizes() {
     order by relname"
 }
 sizes loaded
+durability on
 mark "loaded"
 status=0
 if [ "$mode" = tab ]; then

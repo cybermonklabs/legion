@@ -186,8 +186,8 @@ func documentIntroduction(project, name string) string {
 		"The heading of a section is the eval's slug, and the block under it is the eval's method: what the number counts, " +
 		"how, and what can make it wrong. Dispatch adds a section when an eval is registered, and a register write that " +
 		"carries `doc_text` replaces the method of its eval. On a computed eval a register write sets only how the number " +
-		"is judged and who answers for it: its target, the `min_n` of pr-ci's job series, its owner, its links, its state and " +
-		"its method. The code its source names defines the rest.\n"
+		"is judged and who answers for it: its target, the `min_n` of pr-ci's job series, its owner role and person, its issue, " +
+		"its links, its state and what replaced it, and its method. The code its source names defines the rest.\n"
 }
 
 // writeMethod makes method, as actor writes it, the method block of the eval slug names, under

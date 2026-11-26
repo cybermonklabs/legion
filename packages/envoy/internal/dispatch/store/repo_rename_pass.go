@@ -43,7 +43,13 @@ import (
 // It never writes repo_projects, the event log, the text of documents, comments, asks and
 // messages, the reference tables read from that text (refs, block_refs, graph_edges),
 // architecture_snapshots.files, a daemon's own readings (legion_current, legion_observations) or
-// github_rate_limits, whose scope names no repository.
+// github_rate_limits, whose scope names no repository. Nor does it write the eval registry's rows
+// built from the fields it writes: the repositories and deploy repositories of the day rows, their
+// members and the stored figures (eval_days, eval_day_members, eval_range_figures and
+// eval_day_figures, repo and deploy_repo), the settings the rows stand built under
+// (eval_days_settings) and a rebuild's staged rows, which the refresher builds again from the
+// renamed fields once their changes wake it; nor the eval readings' attributes (eval_readings),
+// which hold what their writers sent, and the logged evals' day rows kept from them.
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.
@@ -64,8 +70,9 @@ import (
 const repoRenameLockNamespace int32 = 0x524E414D
 
 // repoRenameLockTimeout is how long a statement of the pass waits for a lock: the advisory lock
-// of a line that another process is writing, or a row that a request holds. A line that waits
-// longer fails and is logged, and the next boot writes it.
+// of a line that another process is writing, the table lock a line takes first
+// (repoRenameLine.lock) while a writer of that table runs, or a row that a request holds. A line
+// that waits longer fails and is logged, and the next boot writes it.
 const repoRenameLockTimeout = `set local lock_timeout = '5s'`
 
 // repoRenamesLeftTimeout bounds each count of the rows left on an old name, the one before the
@@ -179,8 +186,9 @@ func countRepoRenamesLeftBounded(ctx context.Context, pool *Pool, renames []repo
 }
 
 // rewriteRepoRenameLine runs line's statements for each pair in one transaction and commits it,
-// and answers the rows it wrote and the rows it deleted. It logs its writes and its deletions only
-// once they are committed, so a line that fails logs nothing but its error.
+// and answers the rows it wrote and the rows it deleted: after the pass's lock, the line's lock
+// where it has one, and then its steps. It logs its writes and its deletions only once they are
+// committed, so a line that fails logs nothing but its error.
 func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine, renames []repoRename) (int64, int64, error) {
 	// A line is a transaction like any other, so it is marked like any other: nothing it runs may
 	// take a second pooled connection while it is open.
@@ -195,6 +203,11 @@ func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine,
 	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, 0)`, repoRenameLockNamespace); err != nil {
 		return 0, 0, fmt.Errorf("take the pass's lock: %w", err)
+	}
+	if line.lock != "" {
+		if _, err := tx.Exec(ctx, line.lock); err != nil {
+			return 0, 0, fmt.Errorf("lock the line's tables: %w", err)
+		}
 	}
 	type written struct {
 		field string
@@ -330,6 +343,9 @@ func (r repoRename) tokenReplacement() string {
 type repoRenameLine struct {
 	// fields names the line's fields, as the ERROR line of a line that failed names them.
 	fields string
+	// lock, where it is set, is a statement the line runs once, after the pass's lock and before
+	// its first step, that takes a table lock its steps must hold before any row lock of theirs.
+	lock string
 	// steps are the line's statements for one pair, in the order they run.
 	steps func(r repoRename) []repoRenameStep
 }
@@ -488,14 +504,16 @@ func ownerCollisions(r repoRename, table, owner string, keys ...string) repoRena
 // (evals.FoldFirstPaintsAtBoot).
 //
 // It runs just before the line writes eval_days_defaults, and reads the default rows that write
-// moves for update, so it holds their locks before it writes a mark: the order evals.publishDefaults
-// takes them in, the defaults and then the marks in one transaction, so a refresher of another
-// process that publishes a move beside the pass waits for the line rather than deadlocking with
-// it. A later run finds no default left on the old name, so it marks no cut through a default and
-// leaves the mark of such a cut, and its refold, as the run before it left them; it marks again
-// only the cuts of a project that still holds stored figures of the old name, which the refold of
-// the old name's cut deletes. A project that published the new name before the rename has no cut
-// marked for its default.
+// moves for update, in the byte order of their keys, so it holds their locks before it writes a
+// mark: the place and the order the eval tables' lock order gives the defaults (evals/defaults.go),
+// which evals.publishDefaults keeps too, every default row in the byte order of its key and then
+// the marks, in one transaction. So a refresher of another process that publishes a move beside
+// the pass waits for the line, or the line for it, and the two never wait on each other in a cycle,
+// however many projects publish the old name. A later run finds no default left on the old name,
+// so it marks no cut through a default and leaves the mark of such a cut, and its refold, as the
+// run before it left them; it marks again only the cuts of a project that still holds stored
+// figures of the old name, which the refold of the old name's cut deletes. A project that
+// published the new name before the rename has no cut marked for its default.
 //
 // Its where is false: a mark holds no field the pass writes, and the mark of the old name's cut
 // names the old name until the refresher's refold clears it, so the count of the rows left reads no
@@ -506,7 +524,7 @@ func markRenamedCuts(r repoRename) repoRenameStep {
 		table: "eval_figure_cuts_stale",
 		where: "false",
 		sql: `with moved as (
-				select project_key from eval_days_defaults where ` + named + ` for update
+				select project_key from eval_days_defaults where ` + named + ` order by project_key collate "C" for update
 			), old as (
 				select project_key, ` + r.from() + ` as repo from moved
 				union select project_key, repo from eval_range_figures where ` + named + `
@@ -612,6 +630,18 @@ var repoRenameLines = []repoRenameLine{
 	// deletes, so after the day rows the line deletes each owner row of the old name whose renamed
 	// key stands, unlogged: keys the owner write counted already.
 	//
+	// So the line writes owner rows before day rows, where the change trigger, the one other
+	// writer of both, writes the owner row of a key in the statement that writes the key's day
+	// rows, after them. The line therefore takes eval_days' own lock first (lock), in share row
+	// exclusive mode, before any owner row: the place the eval tables' lock order gives eval_days
+	// (evals/defaults.go). The lock waits for each running transaction that wrote day rows, such as
+	// a refresher of another process that the changes of the lines above woke during a roll, and
+	// holds off every later write of day rows until the line commits, while reads go on; so no
+	// writer of day rows holds a row the line waits for, or waits for an owner row the line wrote. A
+	// rebuild's stage writes owner rows and no day row (evals' recordOwners), so it and the line
+	// wait for each other in turn. The lock waits under the pass's lock timeout
+	// (repoRenameLockTimeout), as every lock of the pass does.
+	//
 	// The published defaults (eval_days_defaults) take the new name in the same transaction, so
 	// the refresher sees no move of a default and marks no cut stale itself. But a project's own
 	// Legion rows of an issue whose chain names no repository are stored under
@@ -620,12 +650,14 @@ var repoRenameLines = []repoRenameLine{
 	// writes log names them, so their stored figures stay in the old name's cut and the new
 	// name's holds none of them. So the line, just before it writes the defaults, marks both cuts
 	// of each project whose default it moves stale, every eval of them (markRenamedCuts), with
-	// those default rows locked first, the order evals.publishDefaults takes them in (defaults,
-	// then marks), so a refresher of another process publishing beside it waits rather than
-	// deadlocks. The refresher's next pass folds every marked cut again (evals.refoldStaleCuts,
-	// which every pass runs), and a read of a marked cut folds the day rows until then.
+	// those default rows locked first, in the byte order of their keys, as the eval tables' lock
+	// order has them and evals.publishDefaults takes them (every default, then the marks), so a
+	// refresher of another process publishing beside it waits rather than deadlocks. The
+	// refresher's next pass folds every marked cut again (evals.refoldStaleCuts, which every pass
+	// runs), and a read of a marked cut folds the day rows until then.
 	{
 		fields: "eval_days.project_key, eval_day_members.project_key, eval_days_owed.project_key, eval_day_owners.owner, eval_days_defaults.repo",
+		lock:   `lock table eval_days in share row exclusive mode`,
 		steps: func(r repoRename) []repoRenameStep {
 			steps := []repoRenameStep{
 				ownerCollisions(r, "eval_day_owners", "owner"),

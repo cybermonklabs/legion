@@ -88,7 +88,7 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 		}
 		every = append(every, day)
 	}
-	prsRead, deploysRead, earlierRead, checksRead, shipped := 0, 0, 0, 0, 0
+	prsRead, deploysRead, earlierRead, checksRead, pushesRead, shipped := 0, 0, 0, 0, 0, 0
 	for _, days := range [][]time.Time{every, others} {
 		prs, err := delivery.ListPullRequestsOnDays(ctx, pool, days)
 		if err != nil {
@@ -149,18 +149,18 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 				t.Errorf("%s: the delivery rows the read of %d days builds of the day differ from those it builds of every deploy run created from the day on",
 					what, len(days))
 			}
-			prsRead, deploysRead, earlierRead, checksRead = prsRead+len(ownPRs), deploysRead+len(ownDeploys.Started.Runs),
-				earlierRead+len(ownDeploys.Earlier.PullRequests), checksRead+len(ownCI.Checks.Runs)
+			prsRead, deploysRead, earlierRead, checksRead, pushesRead = prsRead+len(ownPRs), deploysRead+len(ownDeploys.Started.Runs),
+				earlierRead+len(ownDeploys.Earlier.PullRequests), checksRead+len(ownCI.Checks.Runs), pushesRead+len(ownCI.Deploys.Runs)
 			for _, prs := range ownDeploys.ShippedBy(delivery.MergedRows{PullRequests: ownPRs, ApplyRuns: walked[settings.DeployRepo].Runs,
 				ApplyJobs: walked[settings.DeployRepo].Jobs}, settings) {
 				shipped += len(prs)
 			}
 		}
 	}
-	if deploysRead == 0 || earlierRead == 0 || checksRead == 0 || shipped == 0 {
-		t.Fatalf("the days read %d deploy runs, %d earlier pull requests, %d PR-checks runs and %d shipped pull requests, and each must be some for the comparison to compare them",
-			deploysRead, earlierRead, checksRead, shipped)
+	if prsRead == 0 || deploysRead == 0 || earlierRead == 0 || checksRead == 0 || pushesRead == 0 || shipped == 0 {
+		t.Fatalf("the days read %d pull requests, %d deploy runs, %d earlier pull requests, %d PR-checks runs, %d push runs and %d shipped pull requests, and each must be some for the comparison to compare them",
+			prsRead, deploysRead, earlierRead, checksRead, pushesRead, shipped)
 	}
-	t.Logf("%d days read at once and %d every other: %d pull requests, %d deploy runs shipping %d, %d earlier pull requests and %d PR-checks runs, each day's as its own reads read it",
-		len(every), len(others), prsRead, deploysRead, shipped, earlierRead, checksRead)
+	t.Logf("%d days read at once and %d every other: %d pull requests, %d deploy runs shipping %d, %d earlier pull requests, %d PR-checks runs and %d push runs, each day's as its own reads read it",
+		len(every), len(others), prsRead, deploysRead, shipped, earlierRead, checksRead, pushesRead)
 }

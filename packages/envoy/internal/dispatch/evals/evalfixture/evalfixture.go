@@ -7,8 +7,9 @@
 // The modes:
 //
 //   - Legion (-legion): legiontest's Legion history, at least the asked number of finished issues,
-//     with phase, slot and claim observations that start partway through it (LegionSpec), and the
-//     project's legion_settings row, which names the project's daemon.
+//     with phase, slot and claim observations that start partway through it (LegionSpec), two
+//     drops and a child in design that legiontest's trees lack (observedCases), and the project's
+//     legion_settings row, which names the project's daemon.
 //     It answers the two day-aligned windows k6 reads (Windows): one that starts before the
 //     project's first observation and one that starts after its first slot and claim
 //     observations.
@@ -45,6 +46,7 @@
 package evalfixture
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -122,6 +124,104 @@ func LegionSpec(project string, issues int, now time.Time, offset int) legiontes
 		Spacing: treeSpacing, Unobserved: trees / 2, Queued: true, IssueOffset: offset,
 		Parked: true, Merged: true, Filings: true,
 	}
+}
+
+// observedCases writes into the Legion history legiontest wrote three cases its trees lack, which
+// the method texts of the Legion evals state and k6 compares. Two are drops: when the daemon stops
+// reporting an issue, its sampler writes `null` for every field of the issue at one moment, and the
+// phase and the slot the issue held run on through it to the next observation that names a phase.
+// The newest tree's root is dropped from the second hour of its tree to the third, holding its
+// slot in `admitted` (design) with its architect's claim `working`, and the tree's first child from
+// the sixth hour to the eighth, holding its slot in `implementing` with its implementer's claim
+// `working`; each drop ends at a read that carries the issue again with the phase, the slot and the
+// claim it held. The third is a child in design: the same child observed in `admitted` from the
+// tenth hour to the eleventh, holding its slot. The hours count from the root's creation, and a
+// case is written only where the issue holds, from the case's first hour to its last, the phase,
+// the slot and the claim the case needs, so a history of another shape is refused rather than left
+// without the case.
+func observedCases(ctx context.Context, pool *store.Pool, history legiontest.Fixture) error {
+	if len(history.Roots) == 0 {
+		return errors.New("the history holds no tree, so no drop and no child in design can be written into it")
+	}
+	root := history.Roots[0]
+	var start time.Time
+	var child string
+	if err := pool.QueryRow(ctx, `
+		select r.created_at, coalesce((select c.key from issues c where c.parent_key = r.key order by c.number limit 1), '')
+		from issues r
+		where r.key = $1`, root).Scan(&start, &child); err != nil {
+		return fmt.Errorf("read the newest tree of %s: %w", history.Project, err)
+	}
+	hour := func(hours int) time.Time { return start.Add(time.Duration(hours) * time.Hour) }
+	// held is the value of the issue's newest observation of field recorded at or before at,
+	// `null` where it has none.
+	held := func(issue, field string, at time.Time) (string, error) {
+		var value string
+		if err := pool.QueryRow(ctx, `
+			select coalesce((
+				select value::text from legion_observations
+				where project = $1 and issue_key = $2 and field = $3 and observed_at <= $4
+				order by observed_at desc, id desc limit 1), 'null')`,
+			history.Project, issue, field, at).Scan(&value); err != nil {
+			return "", fmt.Errorf("read the %s %s of %s held at %s: %w", history.Project, field, issue, at.Format(time.RFC3339), err)
+		}
+		return value, nil
+	}
+	var issues, fields, values []string
+	var moments []time.Time
+	record := func(issue, field, value string, at time.Time) {
+		issues, fields, values, moments = append(issues, issue), append(fields, field), append(values, value), append(moments, at)
+	}
+	for _, one := range []struct {
+		issue, phase string
+		from, to     time.Time
+		// claim is the role whose claim is `working` through a drop, "" for the child in design.
+		claim string
+	}{
+		{root, legion.PhaseAdmitted, hour(2), hour(3), "architect"},
+		{child, legion.PhaseImplementing, hour(6), hour(8), "implementer"},
+		{child, legion.PhaseImplementing, hour(10), hour(11), ""},
+	} {
+		named := []string{legion.FieldPhase, legion.FieldSlot}
+		want := map[string]string{legion.FieldPhase: fmt.Sprintf("%q", one.phase)}
+		if one.claim != "" {
+			named = append(named, legion.ClaimFieldPrefix+one.claim)
+			want[legion.ClaimFieldPrefix+one.claim] = `"working"`
+		}
+		holding := map[string]string{}
+		for _, field := range named {
+			first, err := held(one.issue, field, one.from)
+			if err != nil {
+				return err
+			}
+			last, err := held(one.issue, field, one.to)
+			if err != nil {
+				return err
+			}
+			if first != last || first == "null" || (want[field] != "" && first != want[field]) {
+				return fmt.Errorf("%s's %s reads %s at %s and %s at %s, and the case written there needs %s held through both: the history is not of the shape whose cases this mode writes",
+					one.issue, field, first, one.from.Format(time.RFC3339), last, one.to.Format(time.RFC3339), cmp.Or(want[field], "a slot"))
+			}
+			holding[field] = first
+		}
+		if one.claim == "" {
+			record(one.issue, legion.FieldPhase, fmt.Sprintf("%q", legion.PhaseAdmitted), one.from)
+			record(one.issue, legion.FieldPhase, holding[legion.FieldPhase], one.to)
+			continue
+		}
+		for _, field := range named {
+			record(one.issue, field, "null", one.from)
+			record(one.issue, field, holding[field], one.to)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into legion_observations (project, issue_key, field, value, observed_at)
+		select $1, issue, field, value::jsonb, at
+		from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[]) as written(issue, field, value, at)`,
+		history.Project, issues, fields, values, moments); err != nil {
+		return fmt.Errorf("write the drops and the child in design of %s: %w", history.Project, err)
+	}
+	return nil
 }
 
 // Window is one range of whole UTC days, [From, To), as the eval routes read one.
@@ -255,6 +355,9 @@ func writeLegion(ctx context.Context, pool *store.Pool, project string, issues i
 	spec := LegionSpec(project, issues, now, offset)
 	history, err := legiontest.Write(ctx, pool, spec)
 	if err != nil {
+		return LegionResult{}, err
+	}
+	if err := observedCases(ctx, pool, history); err != nil {
 		return LegionResult{}, err
 	}
 	if _, err := legion.PutSettings(ctx, pool, project, StateURL, actor); err != nil {

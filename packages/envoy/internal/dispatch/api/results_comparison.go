@@ -262,16 +262,20 @@ const noDefaultBranchNamed = ""
 //
 // The two facts a result states are kept apart and read apart. Where its commit stands is one
 // question, answered against the bases, and whether the check's words moved is another,
-// answered by the digest the result recorded beside the digest the check carries now. A result
-// at the compared commit under an older wording is both, and one word for both would hide
-// which of the two a reader is looking at.
+// answered by the digest and the changed version the result recorded beside those the check
+// carries now: the words moved when the digests differ and the versions differ too. A check's
+// changed version moves with every change of its words. The one case where its digest moves
+// while its changed version stays is refs.BlockIndexing.KeepRespelled keeping a block whose text
+// recorded at that version another renderer version spelled and which reads as its text now, the
+// same words in a new spelling. A result at the compared commit under an older wording is both,
+// and one word for both would hide which of the two a reader is looking at.
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
 	check.ComparedWith = compared.bases
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
 		result := &check.Results[index]
-		moved := check.SHA256 != result.CheckSHA256
+		moved := check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion
 		result.CheckWordsMoved = &moved
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands

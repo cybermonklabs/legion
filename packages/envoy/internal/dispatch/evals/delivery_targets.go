@@ -26,6 +26,7 @@ import (
 // states, and PipelineSlugs the evals the Pipeline answer reads: the same six, whose targets it
 // states and two of which judge its lead-time cards, and pr-ci, whose job series' min_n ranks its
 // slowest jobs (PipelineMinN).
+// Targets of cards outside these six are judged on the Evals tab, which shows every card.
 var (
 	DeliveryTargetSlugs = []string{SlugDeployFrequency, SlugChangeFailRate, SlugMergeToProduction, SlugPROpenToMerge, SlugDeployRunSuccess, SlugUnownedP0}
 	PipelineSlugs       = append(slices.Clone(DeliveryTargetSlugs), SlugPRCI)

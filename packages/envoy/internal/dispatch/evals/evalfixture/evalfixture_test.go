@@ -60,11 +60,14 @@ func refresh(t *testing.T, database *store.Store) *evals.Store {
 
 // TestTheLegionModeWritesAHistoryObservedFromPartway: -legion writes at least the finished issues
 // it is asked for, observations that begin partway through the history (some issues observed, some
-// not, the first observation the one the result names), a root that waited for its slot, finished
-// issues that sat parked in `icebox` and in `backlog`, a merged pull request for each issue the
-// merger closed, filings by a worker into its tree, by a worker outside any tree and by the
-// controller, the project's legion_settings row, and two whole-day windows on either side of the
-// first observation that hold every finished issue between them.
+// not, the first observation the one the result names), a root that waited for its slot, a drop
+// (a `null` phase observation) of an issue holding its slot in `admitted` and one of an issue
+// holding its slot in another phase, each while a role's claim is `working`, a child observed in
+// `admitted` while it holds its slot, finished issues that sat parked in `icebox` and in
+// `backlog`, a merged pull request for each issue the merger closed, filings by a worker into its
+// tree, by a worker outside any tree and by the controller, the project's legion_settings row, and
+// two whole-day windows on either side of the first observation that hold every finished issue
+// between them.
 func TestTheLegionModeWritesAHistoryObservedFromPartway(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
@@ -104,6 +107,30 @@ func TestTheLegionModeWritesAHistoryObservedFromPartway(t *testing.T) {
 				where s.project = p.project and s.issue_key = p.issue_key and s.field = 'slot')`)
 	if queued == 0 {
 		t.Error("no issue was admitted before it took its slot, so slot wait reads zero for every issue")
+	}
+	// newest is the newest observation of the issue's field (a LIKE pattern) recorded before a drop d.
+	newest := func(field string) string {
+		return `(select o.value from legion_observations o where o.project = d.project and o.issue_key = d.issue_key
+			and o.field like '` + field + `' and o.observed_at < d.observed_at order by o.observed_at desc, o.id desc limit 1)`
+	}
+	drops := func(phase string) int {
+		return count(t, database, `
+			select count(*) from legion_observations d
+			where d.project = 'LEGK' and d.field = 'phase' and d.value = 'null' and `+newest("phase")+` = $1::jsonb
+				and `+newest("slot")+` <> 'null'::jsonb
+				and exists (select 1 from legion_observations w where w.project = d.project and w.issue_key = d.issue_key
+					and w.field like 'claim.%' and w.value = '"working"' and w.observed_at < d.observed_at
+					and not exists (select 1 from legion_observations n where n.project = w.project and n.issue_key = w.issue_key
+						and n.field = w.field and n.observed_at > w.observed_at and n.observed_at < d.observed_at))`, fmt.Sprintf("%q", phase))
+	}
+	inDesign, implementing := drops("admitted"), drops("implementing")
+	designChildren := count(t, database, `
+		select count(*) from legion_observations d join issues i on i.key = d.issue_key
+		where d.project = 'LEGK' and d.field = 'phase' and d.value = '"admitted"' and i.parent_key is not null
+			and `+newest("slot")+` <> 'null'::jsonb`)
+	if inDesign == 0 || implementing == 0 || designChildren == 0 {
+		t.Errorf("%d drops in design and %d in implementing, each with a claim working, and %d children observed in admitted holding a slot: want some of each",
+			inDesign, implementing, designChildren)
 	}
 	if url := count(t, database, `select count(*) from legion_settings where project = 'LEGK' and state_url = $1`, evalfixture.StateURL); url != 1 {
 		t.Errorf("%d legion_settings rows name %s, want one", url, evalfixture.StateURL)

@@ -40,8 +40,8 @@ type deliveryPipelineResponse struct {
 // deliveryPipelineStatus is whether each lead-time card of the Pipeline meets its eval's target:
 // merge-to-production's and pr-open-to-merge's verdict of the card's figures over the shown days
 // (evals.LeadTimeStatistics, deliveryVerdict), so the page states the eval's own verdict rather
-// than comparing a figure with the target itself. Null where the eval's target is off or no figure
-// it judges has a value.
+// than comparing a figure with the target itself. Null where the eval's target is off, or where no
+// figure it judges misses the target and one has no value (evals.VerdictOf).
 type deliveryPipelineStatus struct {
 	MergeToProduction *bool `json:"merge_to_production"`
 	OpenedToMerge     *bool `json:"opened_to_merge"`
@@ -51,8 +51,11 @@ type deliveryPipelineStatus struct {
 // timing, its slowest jobs and the jobs that failed in the last 24 hours, both lists never null,
 // and the timed results over the shown days a job needed to be ranked among the slowest: the
 // min_n of pr-ci's job series in the deploy repository's project (the one whose default
-// repository it is), or measures.SlowestMinResults where it names none or that project holds no
-// pr-ci eval yet (evals.PipelineMinN), so the page says what it ranked by.
+// repository it is), or measures.SlowestMinResults where no project or more than one publishes
+// the deploy repository as its default or that project holds no pr-ci eval yet
+// (evals.PipelineMinN), and 1 where that min_n is null, no minimum, since a job needs a timed
+// result to have a median to rank by (measures.FoldSlowestJobs); so the page says what it ranked
+// by.
 type deliveryPipelinePRChecks struct {
 	Run               measures.Timing       `json:"run"`
 	SlowestJobs       []measures.JobTiming  `json:"slowest_jobs"`
@@ -246,7 +249,7 @@ func deliveryPipelineCompute(rules *delivery.SourceRules, pop pipelinePopulation
 		Days:       days,
 		ComputedAt: now,
 		PRChecks: deliveryPipelinePRChecks{
-			Run: run, SlowestJobs: slowest, SlowestMinResults: minN, FailingJobs: failing,
+			Run: run, SlowestJobs: slowest, SlowestMinResults: max(minN, 1), FailingJobs: failing,
 		},
 		StagingE2E:        stagingE2E,
 		StagingApply:      stagingApply,

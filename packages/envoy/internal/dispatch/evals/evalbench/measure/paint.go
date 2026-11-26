@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,11 +27,11 @@ import (
 
 // The budgets of the first paint (spec R8 and R16): database time for 84 days with an 84-day
 // compare range and for 28 days with none, the compressed body of each read of the evals' first
-// paint, and the server time of the first paint that reads one repository, from its stored cut. The
-// body budget is the evals' alone: the root's R3 keeps the row-level merge timeline out of the
-// first paint (it pages, dispatch://INFRA-2918 R13), so a read of the Delivery page
-// (paintCase.delivery) has its body measured and judged by no budget, and its database time
-// judged as every read's is.
+// paint, and the server time of each read of the evals' first paint, with no repository and with
+// one (R16's first paint of 0.4 s, dispatch://INFRA-979/spec#b-r14). The body budget is the evals'
+// alone: the root's R3 keeps the row-level merge timeline out of the first paint (it pages,
+// dispatch://INFRA-2918 R13), so a read of the Delivery page (paintCase.delivery) has its body
+// measured and judged by no budget, and its database time judged as every read's is.
 const (
 	budget84Ms     = 150
 	budget28Ms     = 60
@@ -59,7 +60,8 @@ func (w window) live() map[string]string {
 // and its budgets, none where zero. A read of a group is judged with the group's other reads too,
 // their database time together against groupBudgetMs. delivery marks a read of the Delivery page:
 // the timeline's first paint at this head (timelineCases) and the base's (baseCases), whose body
-// no budget judges.
+// no budget judges. storedFigures marks a read of an offered range of the eval list, which the
+// stored figures answer (checkStoredFiguresReads).
 type paintCase struct {
 	name           string
 	path           string
@@ -70,49 +72,71 @@ type paintCase struct {
 	group          string
 	groupBudgetMs  float64
 	delivery       bool
+	storedFigures  bool
 }
 
-// measuredCase is one read as the instrument saw it.
+// measuredCase is one read as the instrument saw it: cataloguedOwn is how many statements of the
+// background catalogue it ran itself, which its own time counts (ownAndBackground).
 type measuredCase struct {
 	paintCase
-	t0, t1     time.Time
-	status     int
-	body       []byte
-	serverMs   float64
-	all        []statement
-	own        []statement
-	background []statement
-	plans      map[int64]string
-	statements map[int64]string
-	params     map[int64][]string
+	t0, t1        time.Time
+	status        int
+	body          []byte
+	serverMs      float64
+	all           []statement
+	own           []statement
+	background    []statement
+	cataloguedOwn int
+	plans         map[int64]string
+	statements    map[int64]string
+	params        map[int64][]string
 }
 
-// dbMs is the database time of statements.
+// dbMs is the database time of statements: their planning and their execution.
 func dbMs(statements []statement) float64 {
 	total := 0.0
 	for _, one := range statements {
-		total += one.execMs
+		total += one.planMs + one.execMs
 	}
 	return total
 }
 
-// gzipSize is how many bytes body takes compressed, at gzip's default level, as a server that
-// compresses its answers sends it.
+// planMs is the planning time of statements, the part of dbMs before their execution.
+func planMs(statements []statement) float64 {
+	total := 0.0
+	for _, one := range statements {
+		total += one.planMs
+	}
+	return total
+}
+
+// gzipLevel is the level the server compresses its answers at: gzip.BestSpeed, its
+// compressors' one level (api/response_compression.go, gzipWriters), which sends about a ninth
+// more bytes than the default level 6, so a body is judged by the bytes that go on the wire.
+const gzipLevel = gzip.BestSpeed
+
+// gzipSize is how many bytes body takes compressed at gzipLevel, as the server sends it to a
+// caller that takes gzip.
 func gzipSize(body []byte) int {
 	var packed bytes.Buffer
-	writer := gzip.NewWriter(&packed)
+	writer, _ := gzip.NewWriterLevel(&packed, gzipLevel)
 	_, _ = writer.Write(body)
 	_ = writer.Close()
 	return packed.Len()
 }
 
-// headCases are this head's first paint: the list read at 84 days with an 84-day compare range
-// and at 28 days with none, each with no repository and with the deploy repository, and the
-// evals view the page keeps itself current over; then the Delivery timeline's (timelineCases). The
-// reads with no repository are answered from the stored figures of the project's own rows, and
-// those with the deploy repository from the stored figures of that repository's cut
-// (evals.FiguresOffered), under the same database budget as the read of the same range with none.
-func headCases(project string, today time.Time) []paintCase {
+// headCases are this head's first paint in run run of the first paint's runs (k8; 0 for a paint
+// measured once, read as 1): the list read at 84 days with an 84-day compare range and at 28 days
+// with none, each with no repository and with the deploy repository, and the evals view the page
+// keeps itself current over; then the Delivery timeline's (timelineCases). The reads with no
+// repository are answered from the stored figures of the project's own rows, and those with the
+// deploy repository from the stored figures of that repository's cut (evals.FiguresOffered),
+// under the same database budget as the read of the same range with none, and each under the
+// server budget of the first paint. R8 holds each list read to its budget on the first read after
+// a restart, so the four list reads take turns at the head: run n starts with the
+// ((n-1) mod 4)th of them and goes on in order, so over k8's eight runs each of them, the 28-day
+// reads among them, is the first read after a restart twice.
+func headCases(project string, today time.Time, run int) []paintCase {
 	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
 	list := func(w window, compare *window, repo string) string {
 		query := url.Values{"from": {w.from.Format(time.RFC3339)}, "to": {w.to.Format(time.RFC3339)}, "limit": {"200"}}
@@ -127,14 +151,17 @@ func headCases(project string, today time.Time) []paintCase {
 	}
 	compare := url.Values{"compare_from": {c84.from.Format(time.RFC3339)}, "compare_to": {c84.to.Format(time.RFC3339)}, "limit": {"200"}}
 	repo := evalbench.Repos[0]
-	return append([]paintCase{
-		{name: "list-84d-compare", path: list(w84, &c84, ""), budgetMs: budget84Ms},
-		{name: "list-84d-compare-repo", path: list(w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs},
-		{name: "list-28d", path: list(w28, nil, ""), budgetMs: budget28Ms},
-		{name: "list-28d-repo", path: list(w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs},
-		{name: "view-evals-84d-compare", kind: "evals", budgetMs: budget84Ms,
-			view: map[string]any{"kind": "evals", "project": project, "window": w84.live(), "query": compare.Encode()}},
-	}, timelineCases("", today)...)
+	lists := []paintCase{
+		{name: "list-84d-compare", path: list(w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-84d-compare-repo", path: list(w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-28d", path: list(w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-28d-repo", path: list(w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+	}
+	first := (max(run, 1) - 1) % len(lists)
+	cases := slices.Concat(lists[first:], lists[:first])
+	cases = append(cases, paintCase{name: "view-evals-84d-compare", kind: "evals", budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true,
+		view: map[string]any{"kind": "evals", "project": project, "window": w84.live(), "query": compare.Encode()}})
+	return append(cases, timelineCases("", today)...)
 }
 
 // timelineCases are the Delivery timeline's first paint at this head (packages/dispatch/web
@@ -177,7 +204,9 @@ func baseCases(today time.Time) []paintCase {
 // paint measures the first paint (the package comment) and, at this head and outside -info,
 // k2, k13 and k16 after it, in its first run alone where the paint is one of several (-run); in
 // mode failure-day, the timeline's first paint alone, its run-jobs reads and the failure day the
-// database holds.
+// database holds. Its windows end at the day of -now, where the history the generator wrote ends
+// (job.sh's EVALBENCH_NOW), whatever day the clock has reached since: a run that crosses a
+// midnight reads the windows of the history it loaded, and its paint line names both days.
 func paint(ctx context.Context, r *report, o options) error {
 	database, err := store.Open(ctx, o.database)
 	if err != nil {
@@ -196,8 +225,9 @@ func paint(ctx context.Context, r *report, o options) error {
 			r.fail("statement-log %v", err)
 		}
 	}()
-	today := time.Now().UTC().Truncate(24 * time.Hour)
-	r.result("paint mode=%s project=%s today=%s quiet_seconds=%.0f catalog_seconds=%.0f", o.mode, o.project, today.Format(time.DateOnly), o.quiet.Seconds(), o.catalog.Seconds())
+	today := o.now
+	r.result("paint mode=%s project=%s today=%s wall_clock_day=%s quiet_seconds=%.0f catalog_seconds=%.0f", o.mode, o.project,
+		today.Format(time.DateOnly), time.Now().UTC().Format(time.DateOnly), o.quiet.Seconds(), o.catalog.Seconds())
 
 	// The catalogue of the server's background statements: a window with no request in it.
 	time.Sleep(o.quiet)
@@ -215,7 +245,7 @@ func paint(ctx context.Context, r *report, o options) error {
 	}
 	r.result("catalog statements=%d calls=%d db_ms=%.1f", len(backgroundRun), calls(backgroundRun), dbMs(backgroundRun))
 
-	cases := headCases(o.project, today)
+	cases := headCases(o.project, today, o.run)
 	switch o.mode {
 	case "base":
 		cases = baseCases(today)
@@ -277,9 +307,11 @@ func paint(ctx context.Context, r *report, o options) error {
 		return failureDayLine(ctx, r, pool, today)
 	}
 	checkFirstPaintReads(r, measured)
-	// k13's named-jobs read and P0 count, k16's day rows and folds, k2, the probe and k16's
-	// fallback read the loaded database, which a restart of the server leaves as it was, so they
-	// are measured once, after the first run's paint.
+	checkStoredFiguresReads(r, measured)
+	// k13's named-jobs read and P0 list, k16's day rows and folds, k2, the probe, k16's fallback
+	// and its move of the default repository read the loaded database, which a restart of the
+	// server leaves as it was (the move puts the default back), so they are measured once, after
+	// the first run's paint.
 	if o.run > 1 {
 		return nil
 	}
@@ -289,6 +321,7 @@ func paint(ctx context.Context, r *report, o options) error {
 	checks.k2()
 	checks.probe(measured)
 	checks.fallback(measured, catalog)
+	checks.move()
 	return nil
 }
 
@@ -302,12 +335,17 @@ func calls(statements []statement) int64 {
 }
 
 // measure runs one read of the paint, with pg_stat_statements reset before it, and reads what it
-// cost.
+// cost: its statements, told apart from the server's background by the catalogue and by the
+// backends the statement log shows them running on (ownAndBackground).
 func measure(ctx context.Context, pool *store.Pool, client *http.Client, o options, one paintCase, catalog map[int64]bool) (measuredCase, error) {
 	got := measuredCase{paintCase: one, serverMs: -1}
 	serverFrom, err := fileSize(o.serverLog)
 	if err != nil {
 		return got, fmt.Errorf("read the server log %s: %w", o.serverLog, err)
+	}
+	logFrom, err := fileSize(o.pgLog)
+	if err != nil {
+		return got, fmt.Errorf("read the statement log %s: %w", o.pgLog, err)
 	}
 	if err := resetStatements(ctx, pool); err != nil {
 		return got, err
@@ -328,15 +366,82 @@ func measure(ctx context.Context, pool *store.Pool, client *http.Client, o optio
 	if got.all, err = snapshotStatements(ctx, pool); err != nil {
 		return got, err
 	}
-	for _, statement := range got.all {
-		if catalog[statement.queryID] || writes(statement.query) {
-			got.background = append(got.background, statement)
-		} else {
-			got.own = append(got.own, statement)
-		}
+	snapshot := time.Now()
+	executions, err := readStatementLog(o.pgLog, logFrom)
+	if err != nil {
+		return got, err
 	}
+	got.own, got.background, got.cataloguedOwn = ownAndBackground(got.all, catalog, executions, got.t0.Add(-100*time.Millisecond), got.t1, snapshot)
 	got.serverMs, err = serverTime(o.serverLog, serverFrom, one)
 	return got, err
+}
+
+// ownAndBackground splits all, every statement pg_stat_statements counted from the reset before a
+// read to the snapshot after it, into the read's own and the server's background, and answers how
+// many statements of the catalogue the read ran itself. A statement that writes is background
+// (writes), and a statement the catalogue does not hold is the read's own. A statement the
+// catalogue holds is the read's own as far as the read ran it: the read's backends are those the
+// statement log (executions) shows running one of its own statements between start and end, the
+// read's span, and of the catalogued statement's executions the log shows between start and
+// snapshot, those on the read's backends are the read's and the rest a background loop's, which
+// runs on a connection of its own while the read holds its own. Its calls and its time are split
+// between the two sides by that count; one the log shows on no backend of the read is background
+// whole. So a statement a background loop also runs, which a read once lost from its time whole
+// because the catalogue holds its query id, counts for the read where the read ran it.
+func ownAndBackground(all []statement, catalog map[int64]bool, executions []logged, start, end, snapshot time.Time) (own, background []statement, cataloguedOwn int) {
+	ownIDs, readPIDs := map[int64]bool{}, map[int64]bool{}
+	for _, one := range all {
+		if !catalog[one.queryID] && !writes(one.query) {
+			ownIDs[one.queryID] = true
+		}
+	}
+	for _, execution := range executions {
+		if ownIDs[execution.queryID] && !execution.at.Before(start) && !execution.at.After(end) {
+			readPIDs[execution.pid] = true
+		}
+	}
+	for _, one := range all {
+		switch {
+		case writes(one.query):
+			background = append(background, one)
+		case !catalog[one.queryID]:
+			own = append(own, one)
+		default:
+			ours, theirs := 0, 0
+			for _, execution := range executions {
+				if execution.queryID != one.queryID || execution.at.Before(start) || execution.at.After(snapshot) {
+					continue
+				}
+				if readPIDs[execution.pid] {
+					ours++
+				} else {
+					theirs++
+				}
+			}
+			switch {
+			case ours == 0:
+				background = append(background, one)
+			case theirs == 0:
+				own = append(own, one)
+				cataloguedOwn++
+			default:
+				share := float64(ours) / float64(ours+theirs)
+				own = append(own, scaled(one, share))
+				background = append(background, scaled(one, 1-share))
+				cataloguedOwn++
+			}
+		}
+	}
+	return own, background, cataloguedOwn
+}
+
+// scaled is one with its calls, its time, its rows and its buffers scaled by share, the part of its
+// executions one side of a read made (ownAndBackground).
+func scaled(one statement, share float64) statement {
+	part := func(n int64) int64 { return int64(math.Round(float64(n) * share)) }
+	one.calls, one.rows, one.hit, one.read = part(one.calls), part(one.rows), part(one.hit), part(one.read)
+	one.planMs, one.execMs = one.planMs*share, one.execMs*share
+	return one
 }
 
 // writeStatement matches a statement that writes: an insert, update, delete or merge, at its head or
@@ -476,12 +581,12 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 		total += own
 		plans += len(one.plans)
 		gz := gzipSize(one.body)
-		r.result("paint case=%s status=%d db_ms=%.2f statements=%d calls=%d background_statements=%d background_db_ms=%.2f db_ms_everything_in_flight=%.2f server_ms=%.0f client_ms=%.1f body_bytes=%d gzip_bytes=%d plans=%d",
-			one.name, one.status, own, len(one.own), calls(one.own), len(one.background), dbMs(one.background), dbMs(one.all),
+		r.result("paint case=%s status=%d db_ms=%.2f plan_ms=%.2f statements=%d calls=%d catalogued_own_statements=%d background_statements=%d background_db_ms=%.2f db_ms_everything_in_flight=%.2f server_ms=%.0f client_ms=%.1f body_bytes=%d gzip_bytes=%d plans=%d",
+			one.name, one.status, own, planMs(one.own), len(one.own), calls(one.own), one.cataloguedOwn, len(one.background), dbMs(one.background), dbMs(one.all),
 			one.serverMs, float64(one.t1.Sub(one.t0).Microseconds())/1000, len(one.body), gz, len(one.plans))
 		for _, statement := range one.own {
-			r.result("statement case=%s queryid=%d calls=%d exec_ms=%.3f rows=%d shared_hit=%d shared_read=%d", one.name, statement.queryID,
-				statement.calls, statement.execMs, statement.rows, statement.hit, statement.read)
+			r.result("statement case=%s queryid=%d calls=%d plan_ms=%.3f exec_ms=%.3f rows=%d shared_hit=%d shared_read=%d", one.name, statement.queryID,
+				statement.calls, statement.planMs, statement.execMs, statement.rows, statement.hit, statement.read)
 			text := statement.query
 			if logged, held := one.statements[statement.queryID]; held {
 				text = logged
@@ -492,7 +597,7 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 			}
 		}
 		for _, statement := range one.background {
-			r.result("background case=%s queryid=%d calls=%d exec_ms=%.3f %s", one.name, statement.queryID, statement.calls, statement.execMs, oneLine(statement.query))
+			r.result("background case=%s queryid=%d calls=%d plan_ms=%.3f exec_ms=%.3f %s", one.name, statement.queryID, statement.calls, statement.planMs, statement.execMs, oneLine(statement.query))
 		}
 		if o.info {
 			continue
@@ -569,12 +674,31 @@ func eventsRead(text, plan string) (reads, byID bool) {
 	return true, !actorWord.MatchString(text)
 }
 
-// checkFirstPaintReads is k13's first clause: no statement of this head's first paint of the evals
-// resolves a session title out of events (eventsRead) or scans issues. A read of events by its id
-// alone is listed for information. The Delivery timeline's reads (paintCase.delivery) are k13's
-// run-jobs rule's (checkRunJobsReads), and not this clause's.
+// populationTables is the tables that hold a project's population, the items its day rows are
+// folded from: its issues and their events, its pull requests, deploy runs and their jobs, its
+// readings, and the Legion facts, filings, observations, handoffs and session titles its Legion
+// evals read. A first paint of the evals reads the stored figures and the day rows they fold, and
+// reads none of these but by the two narrow reads checkFirstPaintReads lets pass.
+var populationTables = []string{"issues", "events", "delivery_pull_requests", "delivery_runs", "delivery_run_jobs", "eval_readings",
+	"issue_facts", "issue_filings", "legion_observations", "handoffs", "session_titles"}
+
+// openP0Scans are the two scans of issues a read of the evals' first paint may make: through
+// issues_open_p0, the partial index of the open P0 issues alone, which the list the unowned-p0
+// rows are written from reads (k13's P0 list holds it to that index) and the live hub reads to
+// keep that eval current. It holds a few hundred issues of every project, not one project's
+// population.
+var openP0Scans = []string{"Index Scan issues_open_p0", "Index Only Scan issues_open_p0"}
+
+// checkFirstPaintReads is k8's population clause ("no read of the page reads a project's
+// population, which each plan shows") and k13's first clause: no statement of this head's first
+// paint of the evals scans a table of the population (populationTables), but for a read of events
+// by its id alone, which is listed for information, where any other read of events, or one of an
+// event's actor, resolves a session title out of events (eventsRead), and a read of issues through
+// issues_open_p0 (openP0Scans). Every other scan of issues fails, an index scan as well as a
+// sequential one, as does any scan of the other tables. The Delivery timeline's reads
+// (paintCase.delivery) are k13's run-jobs rule's (checkRunJobsReads), and not this clause's.
 func checkFirstPaintReads(r *report, measured []measuredCase) {
-	examined, titleReads, idReads, issueScans := 0, 0, 0, 0
+	examined, titleReads, idReads, populationReads := 0, 0, 0, 0
 	for _, one := range measured {
 		if one.delivery {
 			continue
@@ -582,23 +706,60 @@ func checkFirstPaintReads(r *report, measured []measuredCase) {
 		for queryID, plan := range one.plans {
 			examined++
 			text := one.statements[queryID]
-			switch reads, byID := eventsRead(text, plan); {
-			case reads && byID:
-				idReads++
-				r.result("k13-events-by-id case=%s queryid=%d scans=%q: %s", one.name, queryID, relations(plan)["events"], oneLine(text))
-			case reads:
-				titleReads++
-				r.fail("k13 case=%s queryid=%d reads events other than by its id, or an event's actor: %s", one.name, queryID, oneLine(text))
-			}
-			if seqScanned(plan, "issues") {
-				issueScans++
-				r.fail("k13 case=%s queryid=%d scans issues: %s", one.name, queryID, oneLine(text))
+			scans := relations(plan)
+			for _, table := range populationTables {
+				switch table {
+				case "events":
+					switch reads, byID := eventsRead(text, plan); {
+					case reads && byID:
+						idReads++
+						r.result("k13-events-by-id case=%s queryid=%d scans=%q: %s", one.name, queryID, scans["events"], oneLine(text))
+					case reads:
+						titleReads++
+						r.fail("k13 case=%s queryid=%d reads events other than by its id, or an event's actor: %s", one.name, queryID, oneLine(text))
+					}
+				case "issues":
+					for _, scan := range scans[table] {
+						if !slices.Contains(openP0Scans, scan) {
+							populationReads++
+							r.fail("k8 case=%s queryid=%d reads the population: it scans issues by %q, not through issues_open_p0 alone: %s", one.name, queryID, scan, oneLine(text))
+						}
+					}
+				default:
+					if len(scans[table]) > 0 {
+						populationReads++
+						r.fail("k8 case=%s queryid=%d reads the population: it scans %s (%q): %s", one.name, queryID, table, scans[table], oneLine(text))
+					}
+				}
 			}
 		}
 	}
-	r.result("k13 first_paint_statements_examined=%d title_reads_of_events=%d reads_of_events_by_id=%d scans_of_issues=%d", examined, titleReads, idReads, issueScans)
+	r.result("k13 first_paint_statements_examined=%d title_reads_of_events=%d reads_of_events_by_id=%d population_reads=%d", examined, titleReads, idReads, populationReads)
 	if examined == 0 {
 		r.fail("k13: no statement of the first paint examined")
+	}
+}
+
+// checkStoredFiguresReads is the rule every read of an offered range of the eval list
+// (paintCase.storedFigures) is held to in every run: it runs both stored-figures reads of
+// evals.ReadStoredFiguresIn (storedFiguresReads), the range-figures read and the day-figures read,
+// the reads with a repository as well as those with none, so a read that stopped reading one of
+// the two, or both, fails by name.
+func checkStoredFiguresReads(r *report, measured []measuredCase) {
+	for _, one := range measured {
+		if !one.storedFigures {
+			continue
+		}
+		found, err := storedFiguresReads(one)
+		if err != nil {
+			r.fail("k16 stored-figures case=%s: %v", one.name, err)
+			continue
+		}
+		ids := make([]string, len(found))
+		for index, statement := range found {
+			ids[index] = fmt.Sprintf("%s=%d", statement.name, statement.queryID)
+		}
+		r.result("k16 stored-figures case=%s reads=[%s]", one.name, strings.Join(ids, " "))
 	}
 }
 
@@ -613,13 +774,16 @@ var titleRead = regexp.MustCompile(`(?is)\bactor\b.*\bfrom events\b`)
 // control that examined nothing shows nothing of the base, so each fails then: k8's with no read
 // measured, or with a page that shows no history (no pull request attributed to an issue on the
 // timeline, or none in the measures: historyOf), k13's with no statement examined or none of them
-// a read of delivery_run_jobs.
+// a read of delivery_run_jobs. k8's control fails too where the base's first paint costs no more
+// database time than this head's 84-day budget: k8's negative control is that the base passes it
+// (564 ms at the commit before the change), and a base within the budget shows no read the change
+// brought under it.
 //
 // Where a background loop of the base resolves session titles with the same statement its
-// timeline does, that statement is in the background catalogue and out of each read's own time.
-// The control therefore also names every catalogued statement that ran while a read was in flight
-// and reads an event's actor out of events, and states the paint's time with everything in flight
-// beside its own.
+// timeline does, that statement is in the background catalogue, and each read's own time counts
+// it only where the read ran it (ownAndBackground). The control therefore also names every
+// catalogued statement left in the background that reads an event's actor out of events, and
+// states the paint's time with everything in flight beside its own.
 func baseControls(r *report, measured []measuredCase, failed map[string]bool) {
 	attributed, measuresPRs := 0, 0
 	for _, one := range measured {
@@ -659,8 +823,11 @@ func baseControls(r *report, measured []measuredCase, failed map[string]bool) {
 	}
 	r.result("k8-control base_first_paint_db_ms=%.2f db_ms_everything_in_flight=%.2f this_heads_budget_ms=%d exceeds=%t reads_measured=%d", total, inFlight, budget84Ms, total > budget84Ms, len(measured))
 	r.result("k13-control statements_examined=%d statements_reading_events_other_than_by_id=%d catalogued_title_reads=%d run_jobs_reads=%d run_jobs_reads_without_a_name=%d", examined, readsEvents, catalogued, jobReads, unnamed)
-	if len(measured) == 0 {
+	switch {
+	case len(measured) == 0:
 		r.fail("k8-control: no read of the base's first paint was measured")
+	case total <= budget84Ms:
+		r.fail("k8-control: the base's first paint costs %.2f ms of database time, within this head's budget of %d ms, so the negative control shows no read the change brought under the budget", total, budget84Ms)
 	}
 	switch {
 	case examined == 0:

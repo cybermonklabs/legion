@@ -186,6 +186,15 @@ func (bound windowBound) parsed() (*time.Time, error) {
 // delivery.ErrNoSettings, which the routes and the live views refuse as DELIVERY_NOT_CONFIGURED. A
 // delivery-on project whose sources are an events source alone gives no repository: its read counts
 // the population's pull requests and no run.
+//
+// Each source repository's rule is the one its stored day rows stand built under
+// (evals.BuiltSettingsIn): the production rule and the deploy cards' jobs as the refresher recorded
+// them with the repository's rows (eval_days_rules), and the saved ones where it has recorded none
+// yet. The Evals tab reads the same, so between a save of a source's rule and the refresher's commit
+// that brings the rows to it the timeline, the measures, the Pipeline and a deploy run's drill-down
+// answer the old rule, and from that commit on the new one: one page shows one state. Which
+// repositories they read, the population and every field the record does not keep (the workflows,
+// the bookkeeping) are the saved settings'.
 func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.SourceRules, error) {
 	projects, err := delivery.ListProjectSettings(ctx, q)
 	if err != nil {
@@ -193,6 +202,35 @@ func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.Sourc
 	}
 	if !slices.ContainsFunc(projects, func(project delivery.ProjectSettings) bool { return project.Delivery }) {
 		return nil, delivery.ErrNoSettings
+	}
+	saved := delivery.DeployRules(projects)
+	repos := make([]string, len(saved))
+	for i, rule := range saved {
+		repos[i] = rule.DeployRepo
+	}
+	built, err := evals.BuiltSettingsIn(ctx, q, repos)
+	if err != nil {
+		return nil, err
+	}
+	recorded := make(map[string]*delivery.DeliverySettings, len(built))
+	for i, rule := range built {
+		recorded[delivery.RuleKey(repos[i])] = rule
+	}
+	for _, project := range projects {
+		if !project.Delivery {
+			continue
+		}
+		for i, source := range project.Sources {
+			repo, ok := delivery.SourceRepoOf(source, project.DefaultRepo)
+			if !ok {
+				continue
+			}
+			if rule := recorded[delivery.RuleKey(repo)]; rule != nil {
+				source.ProductionJobNames, source.ProductionApplyStepName = rule.ProductionJobNames, rule.ProductionApplyStepName
+				source.StagingE2EJobName, source.StagingApplyJobName = rule.StagingE2EJobName, rule.StagingApplyJobName
+				project.Sources[i] = source
+			}
+		}
 	}
 	return delivery.NewSourceRules(projects), nil
 }
@@ -504,19 +542,21 @@ func (s *server) readDeliveryRows(ctx context.Context, rules *delivery.SourceRul
 	sources := rules.All()
 
 	// Independent reads, side by side. They never shared a transaction (each is its own
-	// statement on the pool, so each already read its own snapshot), so running them at once
-	// loses no consistency they had. Each takes one connection under a hold mark of its own
-	// (store.ForConcurrentRead): on the request's shared mark one read's open cursor would refuse
-	// the rest. The run jobs depend on the runs, so they follow the runs within the runs' own read.
+	// statement on the pool, or, the target evals' read, a read-only snapshot of its own,
+	// evals.Store.DeployRepoEvals), so running them at once loses no consistency they had. Each
+	// takes one connection under a hold mark of its own (store.ForConcurrentRead): on the
+	// request's shared mark one read's open cursor would refuse the rest. The run jobs depend on
+	// the runs, so they follow the runs within the runs' own read.
 	//
 	// A timeline request of one source repository therefore holds up to nine of the shared pool's
 	// connections (store.sharedPoolSize), and three more for each further source repository, for the
 	// length of its longest read (each repository's runs read their two lists of jobs side by side,
 	// and its earlier rows their pull requests beside their runs, within their own read). That is
-	// fine because none of them holds a lock or opens a transaction, so none waits on another
-	// caller or makes another caller wait on it: the deadlock the pool's guard exists to prevent
-	// needs a caller already holding a connection, which ForConcurrentRead refuses. A read past
-	// the pool's free connections waits for one, as any request does.
+	// fine because none of them takes a lock past the one any read takes of the tables it reads, a
+	// read-only snapshot no more than a statement does, so none waits on another caller or makes
+	// another caller wait on it: the deadlock the pool's guard exists to prevent needs a caller
+	// already holding a connection, which ForConcurrentRead refuses. A read past the pool's free
+	// connections waits for one, as any request does.
 	applies := make([]delivery.RunsWithJobs, len(sources))
 	deploys := make([]delivery.Deploys, len(sources))
 	waiting := make([][]delivery.WaitingPullRequest, len(sources))

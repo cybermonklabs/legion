@@ -574,9 +574,10 @@ func (r *reading) sampledOf(key string) []phaseSpan {
 // read that no longer carried the issue's phase, which the sampler writes when the daemon stops
 // reporting the issue: it names no phase and ends none, so the phase before it runs on through it
 // to the next mark that names one, or to the issue's end, and the issue's bars still add up to its
-// work time (the spec's "Parked and pre-work hours in phase time", which the base reads so since
-// 22bd759ecb). Both readers of the marks take them from here, the timeline (sampledOf) and the
-// recorded wait on a person (personStretches).
+// work time (the method texts of legion-phase-time and legion-work-time: "The phase and the slot
+// that the issue held run on through a drop until the next observation that names a phase"). Both
+// readers of the marks take them from here, the timeline (sampledOf) and the recorded wait on a
+// person (personStretches).
 func phaseMarks(marks []mark) []mark {
 	var named []mark
 	for _, recorded := range marks {
@@ -593,8 +594,8 @@ func phaseMarks(marks []mark) []mark {
 // them, so a `null` slot mark beside a `null` phase mark is the daemon dropping the issue, not the
 // issue giving its slot up: the slot is held on through it, to the first read that carries the
 // issue again, its next phase mark that names a phase, which releases the slot unless the same
-// read names one (dispatch://INFRA-1077's e2a409a4f5, "an issue the daemon drops keeps the slot it
-// held").
+// read names one (the method texts of legion-phase-time and legion-work-time: "When the daemon
+// stops reporting an issue ... that is a drop, not a release").
 //
 // It is measured once per issue and kept, as sampledOf keeps its timeline: two rules read it, the
 // timeline's split of `admitted` (sampledOf) and the design phase's start before observations

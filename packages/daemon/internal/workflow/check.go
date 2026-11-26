@@ -147,12 +147,15 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s%s: %s.\n", checkTaskLead, issue.Key, issue.Title)
 	fmt.Fprintf(&text, "Repository %s, pull request #%d, merge commit %s. Look %d, woken by %s.", check.Repo, check.Number, merge, check.Looks, wokenBy(cause, detail))
+	openedAt := check.OpenedAt.UTC().Format(time.RFC3339Nano)
+	fmt.Fprintf(&text, " The check opened at `%s`: your report names it with check_opened_at `%s`.",
+		openedAt, openedAt)
 	if last {
 		text.WriteString(" This is the last look: no look follows.")
 	}
 	text.WriteString("\nDo what the deployment instructions say to reach production and read whether production carries the merge. " +
 		"Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. " +
-		"Then report with the legion tool's handoff_complete and a verdict, committing nothing: " +
+		"Then report with the legion tool's handoff_complete, check_opened_at from this task and a verdict, committing nothing: " +
 		"pass only once you drove the changed path in production and observed every one of those requirements, and recorded the issue's after_merge check with dispatch result at the merge commit, its observed naming each requirement and what you saw of it and what woke this look, and put the line that command prints in the pull request body; " +
 		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect: a defect with a clear fix goes to the controller topic your Legion addressing line names, with its evidence posted as a comment on the controller's report issue; a defect that needs a decision is a dispatch ask on that report issue, whose reference you then publish to the controller topic. Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit, and name the message or the ask in its observed, in the line you put in the pull request body and in the summary.")
 	if last {
@@ -353,7 +356,10 @@ func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *recor
 // whether that retry has one attempt left of the budget the failure spent (the daemon's outbox,
 // supervise.RequestRetry.OneAttemptLeft) or starts a fresh run, the failure having spent none; or,
 // once the check's last look lost its role, that the check closed as not run. The count of failed
-// looks in a row closes it, which is what the backoff doubles by (failedLookRetry).
+// looks in a row closes it, which is what the backoff doubles by (failedLookRetry). A claim that
+// failed on OpenAI's cyber-policy refusal is retried by no look, since no start of the daemon's
+// own launches its agent again (supervise.ErrHeldForCyberPolicy), so its notice says only that
+// it does not start again by itself (noStartOfItsOwn) where the look would be named.
 func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck) string {
 	said := deathReason(fact, false)
 	if said == "" {
@@ -364,6 +370,9 @@ func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck
 	}
 	if !check.Open() {
 		return said + "; that was the check's last look, so the check closed as " + string(check.Outcome)
+	}
+	if clause := noStartOfItsOwn(fact); clause != "" {
+		return fmt.Sprintf("%s; %s (failed looks in a row: %d)", said, clause, check.FailedLooks)
 	}
 	how := "with a fresh run, since its failure spent no budget"
 	if fact.Budgets.Spent(fact.Limits) {

@@ -217,7 +217,10 @@ func planInfra(spec Spec) infraHistory {
 					break
 				}
 			}
-			// An open P0 is mostly in hand; one in ten has no owner, which unowned-p0 counts.
+			// An open P0 is mostly in hand: nine in ten are in progress. The tenth keeps the status
+			// drawn above and has no owner, which unowned-p0 counts, unless it is in progress
+			// (claimed) or a todo a route holds; two in three of them have none, so about one open P0
+			// in fifteen.
 			if p0[i] && rng.Float64() < 0.9 {
 				issue.status, issue.reached = "in_progress", 3
 			}

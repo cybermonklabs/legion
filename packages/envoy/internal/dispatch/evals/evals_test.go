@@ -22,16 +22,16 @@ import (
 // evalsTestParallelism is how many of this package's tests run at once when the command line names
 // no -parallel. Every test calls t.Parallel except those that change or read back something the
 // whole process shares, or hold a bound of the wall clock that other tests' load would move, which
-// stay serial and run before the rest: the catalogue a later release changes (withCatalogue), the
-// default logger, whose records the refresher's loop (startLoop) and a rebuild's flip are read
-// from, a loop run in real time against its gaps and latency bounds (startLoop), samples of the
-// change log's lock taken every millisecond (SampleAdvisoryHolds, intakeBlockers), a vacuum waited
-// for under allVisibleBound, which commits in other databases hold back, the fold pool's 200 ms
-// window, and the timings an environment variable asks for. Each parallel test has a database and
-// pools of its own (storetest.Open's clone). go test's default of GOMAXPROCS is four on CI's arm
-// runner, but hundreds on a dev box, where every test's database and pools at once would open more
-// connections than the test server allows (testlimits.ServerConnections); four is CI's default, so
-// the cap changes nothing there.
+// stay serial, run before the rest and say why on their first line (`// Not parallel:`): the
+// catalogue a later release changes (withCatalogue), the default logger, whose records the
+// refresher's loop is read from (startLoop), samples of the change log's lock taken every
+// millisecond and the intake's statements timed behind a correction (SampleAdvisoryHolds,
+// intakeBlockers), the fold pool's 200 ms window of folds running at once, and the timings an
+// environment variable asks for. Each parallel test has a database and pools of its own
+// (storetest.Open's clone). go test's default of GOMAXPROCS is four on CI's arm runner, but
+// hundreds on a dev box, where every test's database and pools at once would open more connections
+// than the test server allows (testlimits.ServerConnections); four is CI's default, so the cap
+// changes nothing there.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const evalsTestParallelism = 4
@@ -137,6 +137,23 @@ func (r rig) entries(t *testing.T, evalIDs ...string) []Entry {
 		entries[index] = entry
 	}
 	return entries
+}
+
+// current answers one page of up to 200 of the current entries of projects, by project and slug,
+// as the list read holds them (CurrentIn, in a snapshot of its own), failing the test when the
+// read fails.
+func (r rig) current(t *testing.T, projects ...string) Page[Entry] {
+	t.Helper()
+	tx, err := r.registry.BeginSnapshot(t.Context())
+	if err != nil {
+		t.Fatalf("begin the read of the evals of %v: %v", projects, err)
+	}
+	defer tx.Rollback(t.Context())
+	page, err := CurrentIn(t.Context(), tx, projects, "", 200, 0)
+	if err != nil {
+		t.Fatalf("read the evals of %v: %v", projects, err)
+	}
+	return page
 }
 
 // document answers the text and the blocks of the project's evals-md, failing the test when the

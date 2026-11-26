@@ -21,13 +21,15 @@
 # default (k8), each run a fresh start of the server, with each run's RESULT and FAIL lines tagged
 # run=<n>, and then prints one line per read and per group of reads with the median and the
 # maximum of the runs, failing any read over its budget in any run (`measure runs`). The rest is
-# measured once. Run 1's paint is followed by k2, k13's named-jobs read and P0 count, k16's day
-# rows and folds, the probe and k16's fallback (measure's own checks); after the runs this script
-# greps the read path for a read of events (k13) and prints the query keys of the list route
-# (k16). failure-day is this head over the fixture with a failure day added to it (evalbench's
-# -failure-day), whose paint is the Delivery timeline's alone, measured once, as the base's is.
-# With EVALBENCH_PG_RESTART set it measures the first paint once more after a Postgres restart, for
-# information, judging no budget.
+# measured once. Run 1's paint is followed by k2, k13's named-jobs read and P0 list, k16's day
+# rows and folds, the probe, k16's fallback, whose reads after a stale cut's first paint are held
+# to the first paint's budgets, and k16's move of the default repository away and back, timed to
+# the end of each refold (measure's own checks); after the runs this script greps the read path for
+# a read of events (k13) and judges the query keys of the list route (k16). failure-day is this head
+# over the fixture with a failure day added to it (evalbench's -failure-day), whose paint is the
+# Delivery timeline's alone, measured once, as the base's is. With EVALBENCH_PG_RESTART set it
+# measures the first paint once more after a Postgres restart, for information: it judges no
+# budget, and what it misses prints as INFO-FAIL lines, which fail no step.
 #
 # tab is the Evals tab in Chromium (evalbench/tab, through the Playwright packages/dispatch locks),
 # at the run rate its last argument names, which its lines carry: once the consumers have caught
@@ -65,9 +67,13 @@
 #   EVALBENCH_TAB, EVALBENCH_DISPATCH_DIR, EVALBENCH_WEB_DIST   tab: the evalbench/tab directory,
 #                         packages/dispatch, and the built web app the server serves
 #   EVALBENCH_RECOMPUTE_ARGS  tab: more flags for tab/recompute.ts (its phases' sizes)
-#   EVALBENCH_NOW, EVALBENCH_BASE_TIMELINE   capture-base and pages: the history's end, and the
-#                         capture's file
+#   EVALBENCH_NOW         the UTC midnight the loaded history ends at: measure paint's -now (job.sh
+#                         sets it; the current UTC midnight where unset), and the history's end of
+#                         capture-base and pages
+#   EVALBENCH_BASE_TIMELINE   capture-base and pages: the capture's file
 #   EVALBENCH_PAGES       pages: the built timelinepages command
+#   EVALBENCH_NODE        the node the run is on, which measure's k16 lines name (job.yaml sets it
+#                         from the pod's spec.nodeName)
 #
 # Every measurement prints a RESULT line, and every one that misses its budget or its rule a FAIL
 # line; the script exits 1 when any step failed.
@@ -160,10 +166,14 @@ start_server() {
 }
 
 # stop_server stops the server with SIGTERM and waits for its exit, which is 0 or 143 when it
-# shut down cleanly.
+# shut down cleanly. A server that had exited already is a FAIL line too, not an exit of the
+# script under set -e with none.
 stop_server() {
   [ -n "$server_pid" ] || return 0
-  kill -TERM "$server_pid"
+  if ! kill -TERM "$server_pid" 2>/dev/null; then
+    echo "FAIL run.sh: the server $server_pid had exited before it was stopped"
+    status=1
+  fi
   local code=0
   wait "$server_pid" || code=$?
   if [ "$code" -ne 0 ] && [ "$code" -ne 143 ]; then
@@ -173,7 +183,9 @@ stop_server() {
   echo "MARK $(date -u +%FT%TZ) server $server_pid stopped ($code)"
   server_pid=""
 }
-trap 'if [ -n "$server_pid" ]; then kill -TERM "$server_pid" 2>/dev/null || true; fi' EXIT
+# Every exit stops a server still running and waits for it, so the caller's next step (job.sh's
+# stop of Postgres, the next measure) never runs beside it.
+trap 'if [ -n "$server_pid" ]; then kill -TERM "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi' EXIT
 
 if [ "$command" = migrate ]; then
   start_server "$work/server-migrate.log"
@@ -183,16 +195,20 @@ fi
 
 # measure runs one subcommand of the measure command against the running server, in the mode of
 # the head the server is: measure's own, this head's for tab and pages, the base's for
-# capture-base, whose consumers hold no day rows of this head's to wait for.
+# capture-base, whose consumers hold no day rows of this head's to wait for; and with the day the
+# loaded history ends on where job.sh names it.
 case "$command" in
   measure) measure_mode=$mode ;;
   capture-base) measure_mode=base ;;
   *) measure_mode=head ;;
 esac
 measure() {
-  local subcommand=$1
+  local subcommand=$1 now=()
   shift
-  "$EVALBENCH_MEASURE" "$subcommand" -mode "$measure_mode" -database "$database_url" -url "$url" "$@" || status=1
+  if [ -n "${EVALBENCH_NOW:-}" ]; then
+    now=(-now "$EVALBENCH_NOW")
+  fi
+  "$EVALBENCH_MEASURE" "$subcommand" -mode "$measure_mode" -database "$database_url" -url "$url" "${now[@]}" "$@" || status=1
 }
 
 start_server "$work/server-catchup.log"
@@ -288,14 +304,16 @@ if [ "$mode" = head ]; then
       "$dispatch_src/evals/figures_refresher.go" "$dispatch_src/evals/figures.go"
       "$dispatch_src/evals/statistics.go" "$dispatch_src/evals/delivery_targets.go" "$dispatch_src/evals/evals.go")
     # grep exits 1 when no line matches and above 1 when it could not read a file, which would
-    # leave a file of the read path unread.
+    # leave a file of the read path unread; pipefail hands that status on through tr. Each file is
+    # read as one record (-z), so a statement that breaks its line between `from` and `events` is
+    # found too, and each match is printed with its file on one line.
     searched=0
-    hits=$(grep -n -i -E '\b(from|join)[[:space:]]+events\b' "${read_path[@]}") || searched=$?
+    hits=$(grep -H -o -z -i -E '\b(from|join)[[:space:]]+events\b' "${read_path[@]}" | tr '\0\n' '\n ') || searched=$?
     if [ "$searched" -gt 1 ]; then
       echo "FAIL k13 grep exited $searched, so a file of the read path was not read: ${read_path[*]}"
       status=1
     fi
-    echo "RESULT k13 read_path_files=${#read_path[@]} lines_reading_events=$(printf '%s' "$hits" | grep -c . || true)"
+    echo "RESULT k13 read_path_files=${#read_path[@]} reads_of_events=$(printf '%s' "$hits" | grep -c . || true)"
     if [ -n "$hits" ]; then
       echo "FAIL k13 the read path names events:"
       printf '%s\n' "$hits"
@@ -305,7 +323,11 @@ if [ "$mode" = head ]; then
     echo "FAIL k13 EVALBENCH_SOURCE names no checkout, so the read path was not read"
     status=1
   fi
-  # k16: the list route's query keys, from the route table's own OpenAPI document.
+  # k16: the list route's query keys, from the route table's own OpenAPI document. The route takes
+  # the header's filters, the window, the compare range and the repository, and no other facet
+  # (R16): beside them it takes only the page (limit, offset), the kind of eval the list holds (the
+  # section of the Evals tab, which selects evals and filters no row) and the session a credential
+  # acts for, which every route takes. Any other key fails.
   if keys=$("$server_bin" openapi | python3 -c '
 import json, sys
 operation = json.load(sys.stdin)["paths"]["/api/v1/projects/{key}/evals"]["get"]
@@ -318,6 +340,17 @@ print(" ".join(sorted(p["name"] for p in operation.get("parameters", []) if p.ge
         status=1
         ;;
     esac
+    facets=""
+    for key in $keys; do
+      case " from to compare_from compare_to repo limit offset kind session " in
+        *" $key "*) ;;
+        *) facets="$facets $key" ;;
+      esac
+    done
+    if [ -n "$facets" ]; then
+      echo "FAIL k16 the list route takes a facet beside the window, the compare range and the repository:$facets"
+      status=1
+    fi
   else
     echo "FAIL k16 the list route's query keys could not be read from $server_bin openapi"
     status=1

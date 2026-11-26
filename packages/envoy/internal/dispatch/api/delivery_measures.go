@@ -167,8 +167,8 @@ func deliveryVerdictOf(entries map[string]evals.Entry, slug string, figures map[
 }
 
 // deliveryVerdict is whether figures, a delivery answer's own statistics of slug's eval, meet that
-// eval's target (deliveryVerdictOf): null where there is no verdict, or no figure it judges has a
-// value.
+// eval's target (deliveryVerdictOf): null where there is no verdict, or where no figure it judges
+// misses the target and one has no value (evals.VerdictOf).
 func deliveryVerdict(entries map[string]evals.Entry, slug string, figures map[string]evals.Statistics) *bool {
 	return verdictMet(deliveryVerdictOf(entries, slug, figures))
 }

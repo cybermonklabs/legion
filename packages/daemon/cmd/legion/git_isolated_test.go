@@ -52,18 +52,21 @@ func assertGitAlonesCommit(t *testing.T, set ...string) {
 // GIT_CONFIG_NOSYSTEM=1 asks git for an isolated configuration, as a hermetic test does: legion git
 // adds no trailer, so the commit is git alone's, its id too.
 func TestACommitUnderAnIsolatedConfigurationGetsNoTrailer(t *testing.T) {
+	t.Parallel()
 	assertGitAlonesCommit(t, "GIT_CONFIG_NOSYSTEM=1")
 }
 
 // GIT_CONFIG_GLOBAL=/dev/null, with GIT_CONFIG_NOSYSTEM unset, asks git for an isolated
 // configuration too: the commit is git alone's.
 func TestACommitUnderGitConfigGlobalDevNullGetsNoTrailer(t *testing.T) {
+	t.Parallel()
 	assertGitAlonesCommit(t, "GIT_CONFIG_GLOBAL=/dev/null")
 }
 
 // GIT_CONFIG_NOSYSTEM=false is a value git reads as false, so it asks for no isolated
 // configuration: the commit gets both lines after the message's own.
 func TestACommitUnderGitConfigNoSystemFalseKeepsItsTrailers(t *testing.T) {
+	t.Parallel()
 	_, got := isolatedCommit(t, true, "GIT_CONFIG_NOSYSTEM=false")
 	if want := isolatedMessage + "\nOmp-Session: isolated-session\nLegion-Role: implementer\n"; got != want {
 		t.Fatalf("message = %q, want %q", got, want)

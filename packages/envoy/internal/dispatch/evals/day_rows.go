@@ -17,12 +17,12 @@ import (
 )
 
 // The computed day rows' write (dispatch://INFRA-2916, R12), shared by every family of computed
-// evals: one project's rows of one UTC day and the items they counted (ProjectDay), written in one
-// transaction (writeProjectDay), as a walk writes a day of the delivery and CI evals
-// (delivery_days.go) or of the Legion evals (legion_days.go), or the days a page names, of every
-// project, in one transaction (writeProjectDays), and the statements that write the rows
-// themselves (upsertDays, deleteStaleDays), which the unowned-p0 write (WriteUnownedP0Day) writes
-// its row through too.
+// evals: projects' rows of UTC days and the items they counted (ProjectDay), written in one
+// transaction (writeProjectDays), as a walk writes one day of the delivery and CI evals of every
+// project and owner key (delivery_days.go) or of one project's Legion evals (legion_days.go) with
+// the walk's records (writeDays, refresh.walkWrite), and a page the days it names, of every
+// project, and the statements that write the rows themselves (upsertDays, deleteStaleDays), which
+// the unowned-p0 write (WriteUnownedP0Day) writes its row through too.
 
 // Member is one item a project's day counted, as eval_day_members records it beside the day: its
 // family (KindDelivery, KindCI or KindLegion), the deploy repository it was counted under ("" for
@@ -105,6 +105,14 @@ func (s *Store) writeProjectDay(ctx context.Context, family dayFamily, day Proje
 // the triggers of eval_days and eval_day_members queue the days for it to build again (migration
 // 20261117100021).
 func (s *Store) writeProjectDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool) error {
+	return s.writeDays(ctx, family, days, builtBy, figures, nil)
+}
+
+// writeDays is writeProjectDays with then, where it is not nil, written in the same transaction
+// after the rows, the members and the figures: a walk's records of the day it wrote
+// (refresh.walkWrite, recordWalkIn), so the commit that writes a day of every key a project reads
+// is the one that says the stored rows are whole through it (eval_days_serving).
+func (s *Store) writeDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool, then func(tx pgx.Tx) error) error {
 	if len(days) == 0 {
 		return nil
 	}
@@ -120,18 +128,23 @@ func (s *Store) writeProjectDays(ctx context.Context, family dayFamily, days []P
 		if err := writeDayMembersIn(ctx, tx, days, family.families); err != nil {
 			return err
 		}
-		if !figures {
+		if figures {
+			written := map[string]daySpan{}
+			for _, day := range days {
+				written[day.Project] = written[day.Project].widen(measures.Midnight(day.Day))
+			}
+			spans := make(map[string]map[string]daySpan, len(written))
+			for project, span := range written {
+				spans[project] = slugSpans(project, family.slugs, span)
+			}
+			if err := foldFiguresInTx(ctx, tx, builtBy, spans); err != nil {
+				return err
+			}
+		}
+		if then == nil {
 			return nil
 		}
-		written := map[string]daySpan{}
-		for _, day := range days {
-			written[day.Project] = written[day.Project].widen(measures.Midnight(day.Day))
-		}
-		spans := make(map[string]map[string]daySpan, len(written))
-		for project, span := range written {
-			spans[project] = slugSpans(project, family.slugs, span)
-		}
-		return foldFiguresInTx(ctx, tx, builtBy, spans)
+		return then(tx)
 	}); err != nil {
 		return err
 	}
@@ -556,9 +569,9 @@ const upsertMembersStatement = `
 `
 
 // The statements of a write of days that find what the days no longer hold (leftDaysOwedStatement's
-// and goneMembersDeleteStatement's members, deleteStaleDaysStatement's and
-// deleteStaleSettingsDaysStatement's rows) each find it as the stored keys of the days written
-// except the given ones (`gone`), materialized, so the set operation runs once whatever plan the
+// and goneMembersDeleteStatement's members, deleteStaleDaysStatement's rows) each find it as the
+// stored keys of the days written except the given ones (`gone`), materialized, so the set
+// operation runs once whatever plan the
 // statement is given, and joined back to the table by its primary key: a set operation reads each
 // side once, and the join back probes the key once per row that left. Written as `not in (…)` over
 // the given list, the filter ran the list again for each stored row once the list outgrew
@@ -625,12 +638,15 @@ const leftDays = `
 	), left_days as (
 		select project_key, family, day, written_day from held where day <> written_day
 		union
-		select held.project_key, run.family, run.day, held.written_day
+		select run.project_key, run.family, run.day, held.written_day
 		from held cross join lateral (
-			select run.family, run.day from eval_day_members run
-			where run.project_key = held.project_key and run.family = $10 and run.deploy_repo = held.deploy_repo
-				and run.row_key = held.shipped_by
-			limit 1
+			select run.project_key, run.family, run.day from eval_day_members run
+			where run.project_key = any(array(
+				select held.project_key
+				union all
+				select owner from eval_day_owners where lower(repo) = lower(held.deploy_repo)
+			)) and run.family = $10 and run.deploy_repo = held.deploy_repo and run.row_key = held.shipped_by
+			offset 0
 		) as run
 		where held.shipped_by <> '' and held.shipped_by is distinct from held.shipped_now
 	)
@@ -710,7 +726,7 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 // the evals slugs names, of every deploy repository, that the day does not hold: the rows the day
 // no longer builds. A day holds exactly the rows its builders build from its input, beside the
 // zero row of each all-repositories series it has no input of from that series' first input day on
-// (refresh.writeDelivery), so a row whose input left (a repository whose last pull request moved
+// (refresh.buildDelivery), so a row whose input left (a repository whose last pull request moved
 // away, a card the settings no longer make, a job no run reports any more) goes, as a whole walk
 // over the same inputs and settings holds no such row; the all-repositories zero rows the day
 // keeps are among its rows (ProjectDay.WithZeros). The eval_days trigger logs the delete
