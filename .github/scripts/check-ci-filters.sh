@@ -670,10 +670,13 @@ with warnings.catch_warnings(record=True) as caught:
     if os.environ["CI_FILTERS_MODE"] == "generate":
         import ci_ts_listing
         ci_ts_listing.start()
+    if os.environ.get("CI_EARLY_GO") == "1":
+        ci_filter_coverage.start_early()
     started = time.monotonic()
     try:
         import ci_job_reads
     except ci_filter_coverage.RepositoryInputError as exc:
+        ci_filter_coverage.stop_early()
         print(f"::{token}::", flush=True)
         ci_filter_coverage.print_annotation(exc.annotation())
         sys.exit(1)
