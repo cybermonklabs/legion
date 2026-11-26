@@ -760,11 +760,14 @@ export default defineConfig({
     // a trace of a green run and leave the failure none. Locally, with `retries: 0`, the first
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
     //
-    // The trace records every action, the network, the console and the sources, and leaves out
-    // two things: the screencast, a stream of JPEG frames of the page (`screenshots: false`), and
-    // the DOM snapshot Playwright takes before and after each action (`snapshots: false`). So a
-    // failed row's trace lists what the row did with no view of the page; the `screenshot` below
-    // is that view. A trace is recorded on every first attempt and kept for the few that fail, so
+    // The trace records every action, the console and the sources, and leaves out three things:
+    // the screencast, a stream of JPEG frames of the page (`screenshots: false`), the DOM snapshot
+    // Playwright takes before and after each action (`snapshots: false`), and the network, which
+    // Playwright 1.64.1 records only beside the DOM snapshots (its tracing starts the HAR tracer
+    // `if (options.snapshotDom)`, node_modules/.bun/playwright-core@1.64.1/node_modules/
+    // playwright-core/lib/coreBundle.js:26932-26933). So a failed row's trace lists what the row
+    // did with no view of the page and no request; the `screenshot` below is the page's view. A
+    // trace is recorded on every first attempt and kept for the few that fail, so
     // what recording costs, every row pays, and the shard machines are CPU-bound, so that CPU is
     // the lane's machine time. The screencast: inbox.e2e.ts's 28 rows in the chromium project, on
     // one worker in an issue pod at a8a344b7 (dispatch://INFRA-1109/artifact/measurement-md),

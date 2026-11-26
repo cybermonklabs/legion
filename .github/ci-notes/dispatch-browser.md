@@ -1057,13 +1057,14 @@ it. The trace it carries is of the attempt that failed: the config's
 attempt failed. A green run's upload is small.
 
 A failed row leaves its trace and the failure screenshot here. The trace holds the row's
-actions, network, console and sources, and has no DOM view: the config records it with
+actions, console and sources. It has no DOM view and no network: the config records it with
 `snapshots: false` and `screenshots: false`, since a trace is recorded on every row's first
 attempt and either one costs every row on a CPU-bound machine (the config's comment gives
-the measurements). The screenshot is the one picture of the page at the failure. A trace with
-the DOM comes from a local run of that row with `snapshots: true` in the config's `trace`
-option. `--trace on` alone does not give one: it replaces the option's mode and keeps its
-`snapshots: false`.
+the measurements), and Playwright 1.64.1 records a trace's network only beside its DOM
+snapshots. The screenshot is the one picture of the page at the failure. A trace with the DOM
+and the network comes from a local run of that row with `snapshots: true` in the config's
+`trace` option. `--trace on` alone does not give one: it replaces the option's mode and keeps
+its `snapshots: false`.
 
 ## The alone job, and what it keeps the same as the shard job
 
