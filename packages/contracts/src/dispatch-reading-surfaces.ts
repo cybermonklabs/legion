@@ -118,6 +118,9 @@ export type DispatchReadingSurface =
   | "outline-crumb"
   | "issue-pin"
   | "plan-task-line"
+  | "lens-fact-line"
+  | "lens-chain-line"
+  | "lens-chip"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -677,6 +680,54 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "plan-task-line",
+  },
+  // The new issue page's lines under a lens's, a risk's and a constraint's row, drawn as plain
+  // words: a risk's early warning and prevention, a standard's reference and where a measurement
+  // was taken, each read from one stored attribute; and a chain entry's words, the whole words of
+  // the row a lens stands under.
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/lenses/LensLines.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/lenses/LensChain.test.tsx",
+      test: "a fact line reads a dispatch:// reference the page published by its target's name",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page on, a risk's Early warning and Prevention lines, a standard's reference line and a measurement's Taken at line",
+    reason: `A fact line is one line under its row, one stored attribute read to its plain words. Where it names a lens, a risk, a constraint or a finding the tree read holds, that name is a chip that links the node's row, which the outline's own step names (decision 388), and the words around it are drawn as plain words. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "lens-fact-line",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/lenses/LensChain.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/lenses/LensChain.test.tsx",
+      test: "a chain entry reads a dispatch:// reference the page published by its target's name",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page on, a lens's Show the whole chain, an entry's words",
+    reason: `A chain entry names its lens by the whole words of the row the lens stands under, on one line beside the lens's kind, read to their plain words with each store address as its kind's word. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "lens-chain-line",
+  },
+  // A chip of those lines and of the chain: a lens, a check or a constraint a lens line names, a
+  // node a fact line names, and the lens a chain stopped at.
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/lenses/NodeLink.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/lenses/LensChain.test.tsx",
+      test: "a lens line's chip reads a dispatch:// reference the page published by its target's name",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page on, a lens's Triggered by and Triggered chips, a risk's Prevented by chips, a statement's Constrained by chips, a fact line's chip, and the chip a lens's chain ends on",
+    reason: `A chip names a lens, a check or a constraint on one line by its whole words - a lens by its kind's words, a check and a constraint by the words of its row, each store address in them as its kind's word - and a fact line's chip names a node by the words the line names it by, as a link to the node's row where a view draws it. The page's word for a kind is drawn as it is. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "lens-chip",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.

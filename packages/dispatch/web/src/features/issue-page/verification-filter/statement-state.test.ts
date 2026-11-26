@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { Artifact, CheckBlock, IssueDetails } from "../../../api/types";
+import type { Artifact, CheckBlock, IssueCoverage, IssueDetails } from "../../../api/types";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
@@ -844,13 +844,62 @@ test("every statement of the whole tree is read as the Verification filter reads
 
 // R17's covered count is the issue's: every statement of the issue's spec is a row of the
 // coverage read, whichever of them the view has loaded, and one is covered where a check of the
-// issue or of an issue under it serves it.
-test("the issue's covered count is the coverage read's rows a check serves, out of every row", () => {
-  expect(issueCovered([{ checks: 1 }, { checks: 0 }, { checks: 3 }])).toEqual({
+// issue or of an issue under it serves it. While a document of the issue is still being indexed,
+// the read's counts may not hold what serves a statement yet, so it answers that document's line
+// in place of any count.
+test("the issue's covered count is the coverage read's rows a check serves, or its owed line while indexing", () => {
+  const coverageOf = (checks: readonly number[], gaps: readonly string[] = []): IssueCoverage => ({
+    gaps: [...gaps],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: checks.map((count, at) => ({
+      block_id: `r${at + 1}`,
+      checks: count,
+      gaps: [],
+      plan_tasks: 0,
+      ref: `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-r${at + 1}`,
+      text: `Statement ${at + 1}.`,
+    })),
+    spec_artifact_id: "artifact-spec",
+  });
+  const owed =
+    "verification.md version 2 is still being indexed; its coverage shows once that ends.";
+
+  expect(issueCovered(coverageOf([1, 0, 3], ["r2 has no check"]))).toEqual({
     covered: 2,
+    kind: "count",
     total: 3,
   });
-  expect(issueCovered([])).toEqual({ covered: 0, total: 0 });
+  expect(issueCovered(coverageOf([0, 0], [owed]))).toEqual({ kind: "owed", notes: [owed] });
+  expect(issueCovered(undefined)).toEqual({ covered: 0, kind: "count", total: 0 });
+});
+
+// A statement nested inside another statement in the spec is read as its own statement in
+// document order, with its own checks and state apart from its parent's.
+test("a statement nested under another statement is read in document order with its own checks", () => {
+  const c1 = passing("c1");
+  const c1a = passing("c1a");
+  const c1a1 = check({
+    block_id: "c1a1",
+    pass_stands: { answer: "no" },
+    results: [result({ check_block_id: "c1a1", failed: 1, id: "fail-1a1", verdict: "fail" })],
+  });
+  const c2 = passing("c2");
+  const r1a1 = statementNode("r1a1", "Grandchild statement.", [checkNode(c1a1)]);
+  const r1a = statementNode("r1a", "Child statement.", [checkNode(c1a), r1a1]);
+  const r1 = statementNode("r1", "Parent statement.", [checkNode(c1), r1a]);
+  const r2 = statementNode("r2", "Sibling statement.", [checkNode(c2)]);
+  const read = reading([r1, r2], [c1, c1a, c1a1, c2]);
+
+  expect(
+    read.statements.map((held) => [held.node.id, held.state, held.checks.map((one) => one.node.id)])
+  ).toEqual([
+    [r1.id, "met", [checkNode(c1).id]],
+    [r1a.id, "met", [checkNode(c1a).id]],
+    [r1a1.id, "not_met", [checkNode(c1a1).id]],
+    [r2.id, "met", [checkNode(c2).id]],
+  ]);
+  expect(statementCounts(read.statements)).toEqual({ met: 3, not_met: 1, unknown: 0 });
 });
 
 // While the results read is still out the page has read nothing of how the check stands, so it
