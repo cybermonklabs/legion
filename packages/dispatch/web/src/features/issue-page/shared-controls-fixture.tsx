@@ -2,16 +2,14 @@ import { act, type RenderResult } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { displayTree } from "../../__tests__/display-trees";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { artifact as specDocument } from "../../__tests__/proof-document";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import type {
   Agent,
   ArchitectureTree,
+  Artifact,
   ArtifactApproval,
-  ArtifactApprovalWithTrees,
-  ArtifactWithTrees,
   Ask,
   AskRead,
   Priorities,
@@ -293,10 +291,8 @@ export const SPEC_ID = "artifact-spec";
 export const DECISIONS_ID = "artifact-decisions";
 export const VERIFICATION_ID = "artifact-verification";
 
-/** A document of the issue (`ApprovalSteps.test.tsx`'s `doc`). Its approval's reason comes with
- *  the reading of it the issue read sends (`reason_tree`), which the step's reason line draws,
- *  so a case that draws one has the renderer warmed first (`warmMarkdownRenderer`). */
-export function doc(id: string, name: string, approval?: ArtifactApproval): ArtifactWithTrees {
+/** A document of the issue (`ApprovalSteps.test.tsx`'s `doc`). */
+export function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
   return {
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
@@ -310,16 +306,8 @@ export function doc(id: string, name: string, approval?: ArtifactApproval): Arti
     session_id: null,
     slug: name.replace(".", "-"),
     versions: [],
-    ...(approval === undefined ? {} : { approval: withReasonTree(approval) }),
+    ...(approval === undefined ? {} : { approval }),
   };
-}
-
-/** `approval` with the reading of its reason the server would send beside it. */
-function withReasonTree(approval: ArtifactApproval): ArtifactApprovalWithTrees {
-  if (approval.reason === undefined) return approval;
-  const tree = displayTree(approval.reason);
-  if (tree === undefined) throw new Error("the engine read no reason: warm the renderer first");
-  return { ...approval, reason_tree: tree };
 }
 
 /** An open blocking question the live session asked, as the Inbox hands it (`AskCard.test.tsx`'s

@@ -1227,12 +1227,15 @@ test("the look keeps the hint and the targets off screen, and a picker row has n
   // The row draws its detail line, and nothing in the list carries a title for it.
   expect(within(row).getByText(shortForm(route))).toBeInTheDocument();
   expect(list.querySelectorAll("[title]")).toHaveLength(0);
+  // Nor does a row's kind icon draw an svg `<title>`, which a browser shows as a tooltip.
+  expect(list.querySelectorAll("svg title")).toHaveLength(0);
 
   // The space closes the `#` door, and an `@` query lists the planner's session row.
   await user.keyboard(" @Plan");
   const parties = await within(composerBox()).findByRole("listbox", { name: "References" });
   const session = await within(parties).findByRole("option", { name: /^Planner/ });
   expect(parties.querySelectorAll("[title]")).toHaveLength(0);
+  expect(parties.querySelectorAll("svg title")).toHaveLength(0);
   expect(session).toHaveAccessibleDescription(PLANNER.id);
   expect(session).not.toHaveAccessibleName(new RegExp(PLANNER.id));
   const line = within(session).getByText(PLANNER.id);
