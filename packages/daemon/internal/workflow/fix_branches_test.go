@@ -415,3 +415,51 @@ func TestATestingMoveAtAHeadOfNoPullRequestSaysWhy(t *testing.T) {
 		}
 	})
 }
+
+// No fix opens beside a fix whose way is pending. Fix 1 runs beside the running tester, whose start
+// is bound to its branch B1, and ends with no commit while the tester still runs, so its way waits
+// for the tester's end. A second check, k-ci2, fails at the head meanwhile: no fix 2 opens, and the
+// failure has no row yet, so the fix rule reads it again at the next fact. The tester's pass takes
+// fix 1's way (3, each step keeps its result), and the fix rule at the tail of that same fact opens
+// fix 2 for k-ci2. The tester's start kept B1 to its end, and no deletion of fix 1's branches is
+// queued. The control, kept: with the seam openBesidePendingWay, fix 2 opens while fix 1's way is
+// pending, which the subtest asserts.
+func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
+	pending := func(t *testing.T, engine *Engine) *fixRig {
+		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.fixEnds(fixHead)
+		if fix := r.latestFix(); fix.State != record.FixEnded || fix.Way != 0 {
+			t.Fatalf("fix 1 after its end beside the running tester = %+v, want ended with its way pending", fix)
+		}
+		r.fails(fixHead, "k-ci2")
+		return r
+	}
+	t.Run("fix 2 opens only after the tester's end takes fix 1's way", func(t *testing.T) {
+		r := pending(t, returnEngine())
+		assertStrings(t, "the fixes while fix 1's way is pending", r.fixes(), []string{fixOf(1, "ended", "k-ci")})
+		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			row, err := r.engine.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, "a", "k-ci2", fixHead)
+			if err == nil && row != nil {
+				err = fmt.Errorf("k-ci2's failure while fix 1's way is pending has a row %+v, want none", *row)
+			}
+			return err
+		})
+		if got, want := r.besideMarks(2), "0 "+besideFix1(t, claim.RoleTester); got != want {
+			t.Fatalf("the tester's start names %q, want %q: started before fix 1, bound to its branch beside fix 1 until it ends", got, want)
+		}
+
+		r.move(TriggerTesterPassed, "", record.PhaseRow{})
+
+		r.assertWayTaken(wayOn)
+		assertStrings(t, "the fixes after the tester's end", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
+		assertStrings(t, "the deletions", r.deletions(), nil)
+	})
+	t.Run("the control: openBesidePendingWay opens fix 2 while the way is pending", func(t *testing.T) {
+		engine := returnEngine()
+		engine.openBesidePendingWay = true
+		r := pending(t, engine)
+		assertStrings(t, "the fixes while fix 1's way is pending", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
+	})
+}
