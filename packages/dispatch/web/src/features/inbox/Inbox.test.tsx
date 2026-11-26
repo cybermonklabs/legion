@@ -2544,11 +2544,18 @@ test("a snooze out when the control is drawn for another ask holds the row of th
 });
 
 // ----------------------------------------------------------------------------------------
-// The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px:
-// those that drive a card in its row render the list of cards as the Peek drawer mounts it
-// (`renderInbox`'s `pane: false`: its own filter, `onFilterChange` and the dialog's key scope),
-// since that is the one screen that draws cards, and the page reads one row at a time at every
-// width. The tests below widen the window to the column; the reading view below its width is
+// The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px,
+// and those that drive a card in its row draw the list of cards, the one screen that draws cards,
+// since the page reads one row at a time at every width. Two ways:
+//
+// - `renderInbox`'s `pane: false` mounts the list as the Peek drawer does (its own filter,
+//   `onFilterChange` and the dialog's key scope): every row that writes a filter or presses a key
+//   goes this way.
+// - Ten rows render `<Inbox pane={false} />` in a router of their own. They only read a starting
+//   filter from the address: they write no filter and press no key, so the drawer's props would
+//   change nothing they check.
+//
+// The tests below widen the window to the column; the reading view below its width is
 // `Inbox.reading-view.test.tsx`'s.
 // ----------------------------------------------------------------------------------------
 
