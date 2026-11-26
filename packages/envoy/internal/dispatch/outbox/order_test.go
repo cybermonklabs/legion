@@ -1296,38 +1296,43 @@ func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRe
 		t.Fatalf("create the function that counts the claim's reads: %v", err)
 	}
 	var fetched int64
+	var runs int
+	var agreed bool
 	var readings []int64
-	if err := tx.QueryRow(ctx, `select seq, fetched, blocks, ids, readings from pg_temp.claim_reads($1, $2, $3, $4)`,
-		claim.sql, claim.args[0], claim.args[1], claimReadRuns).Scan(&seqRead, &fetched, &indexBlocks, &kept, &readings); err != nil {
+	if err := tx.QueryRow(ctx, `select seq, fetched, blocks, ids, runs, agreed, readings from pg_temp.claim_reads($1, $2, $3, $4)`,
+		claim.sql, claim.args[0], claim.args[1], claimReadRuns).Scan(&seqRead, &fetched, &indexBlocks, &kept, &runs, &agreed, &readings); err != nil {
 		t.Fatalf("count what the claim read from events: %v\n%s", err, claim.sql)
 	}
-	if len(readings) >= claimReadRuns {
-		t.Fatalf("no two runs in a row of the claim fetched the same blocks from the indexes of events in %d runs, which read %v: a reset of this backend's caches costs the run it falls in, and with this many in a row the figure is nobody's measurement",
-			claimReadRuns, readings)
+	if !agreed {
+		t.Fatalf("no two runs in a row of the claim read the same in %d runs, which fetched %v blocks from the indexes of events: a reset of this backend's caches costs the run it falls in, and with this many in a row the figure is nobody's measurement",
+			runs, readings)
 	}
+	t.Logf("the claim's reads held still on run %d of at most %d, which fetched %v blocks from the indexes of events",
+		runs, claimReadRuns, readings)
 	return seqRead + fetched, seqRead, indexBlocks, kept
 }
 
 // claimReadRuns bounds the runs claimReads takes to get two in a row that agree. Two is the usual
-// answer: a reset costs one run, and only a second reset in the next run costs another. Twelve
-// floods of 1,000 catalog changes each, 700 ms apart through the whole test, left every call
-// taking two or three on 2026-11-26, and an idle server takes two.
+// answer: a reset costs one run, and only a reset in the run after it costs a third. On 2026-11-26
+// every measurement held still on run 2 on a quiet server, and on run 2 or 3 under twelve floods
+// of 1,000 catalog changes each, 700 ms apart through the whole test.
 const claimReadRuns = 8
 
 // claimReadsSQL creates claimReads' function in the session's own schema, inside claimReads'
 // transaction, whose rollback drops it. The function runs claim with size and lanes as its $1 and
 // $2, as the scan passes them, until two runs in a row read the same rows and blocks of events or
 // it has run it tries times, and answers what the last run read: seq_tup_read, idx_tup_fetch and
-// the blocks fetched from the indexes of events, each the difference across that run, the ids it
-// returned, in order, and readings, which is empty where two runs agreed and holds every run's
-// blocks where none did, so that the caller can print them.
-// pg_stat_xact_user_tables holds no row for events until the transaction has read it, so each
-// reading sums over the rows it does hold, which answers 0 rather than no row at all. A dynamic
-// EXECUTE is planned on each run with the values it is given, as the scan's own statement is on
-// each of its first five runs on a connection, and claim's first column is the event's id.
+// the blocks fetched from the indexes of events, each the difference across that run, and the ids
+// it returned, in order; with how many runs it took, whether two in a row agreed, and every run's
+// blocks, which the caller prints. pg_stat_xact_user_tables holds no row for events until the
+// transaction has read it, so each reading sums over the rows it does hold, which answers 0 rather
+// than no row at all. A dynamic EXECUTE is planned on each run with the values it is given, as the
+// scan's own statement is on each of its first five runs on a connection, and claim's first column
+// is the event's id.
 const claimReadsSQL = `
 	create function pg_temp.claim_reads(claim text, size bigint, lanes text[], tries int,
-		out seq bigint, out fetched bigint, out blocks bigint, out ids bigint[], out readings bigint[])
+		out seq bigint, out fetched bigint, out blocks bigint, out ids bigint[],
+		out runs int, out agreed boolean, out readings bigint[])
 	language plpgsql as $fn$
 	declare
 		seq_before bigint;
@@ -1338,7 +1343,9 @@ const claimReadsSQL = `
 		claimed record;
 	begin
 		readings := '{}';
+		agreed := false;
 		for run in 1..tries loop
+			runs := run;
 			select coalesce(sum(seq_tup_read), 0), coalesce(sum(idx_tup_fetch), 0),
 			       (select coalesce(sum(pg_stat_get_xact_blocks_fetched(indexrelid)), 0)
 			          from pg_index where indrelid = 'events'::regclass)
@@ -1353,11 +1360,11 @@ const claimReadsSQL = `
 			          from pg_index where indrelid = 'events'::regclass) - blocks_before
 			  into seq, fetched, blocks
 			  from pg_stat_xact_user_tables where relname = 'events';
+			readings := readings || blocks;
 			if seq + fetched = last_rows and blocks = last_blocks then
-				readings := '{}';
+				agreed := true;
 				return;
 			end if;
-			readings := readings || blocks;
 			last_rows := seq + fetched;
 			last_blocks := blocks;
 		end loop;
