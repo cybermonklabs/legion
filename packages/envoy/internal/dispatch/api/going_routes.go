@@ -131,7 +131,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		capExceeded(w, "words", length, contracts.GoingWordsMax)
 		return
 	}
-	project := strings.TrimSpace(input.Project)
+	project := input.bodyProject()
 	if project != "" && !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return

@@ -32,7 +32,7 @@ func keyedSeedRequest(t *testing.T, seed privateSeed, caller privateCaller, meth
 	return response
 }
 
-// wantKeyedRefusal fails unless response is the refusal of a repeat heldAnswerHidden neither runs
+// wantKeyedRefusal fails unless response is the refusal of a repeat heldAnswerRefusal neither runs
 // nor replays: 409 KEY_COMMITTED, not replayed, holding none of first's answer.
 func wantKeyedRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, first string) {
 	t.Helper()
@@ -46,7 +46,7 @@ func wantKeyedRefusal(t *testing.T, what string, response *httptest.ResponseReco
 
 // TestAKeyedRepeatOfACreateIsPlacedByTheProjectItsBodyNames: a key belongs to a person whatever
 // credential they write through (requestKeyLogin), so a repeat is held to what its caller sees now
-// (heldAnswerHidden), and a create, whose address names no object, is placed by the project its
+// (heldAnswerRefusal), and a create, whose address names no object, is placed by the project its
 // body names, as its first request's check places it (refuseOutsideCallerProjects). PRIV is
 // private, so no caller here sees every object, and each is placed by the project alone:
 //
@@ -61,7 +61,7 @@ func wantKeyedRefusal(t *testing.T, what string, response *httptest.ResponseReco
 //     key, SECR is made private by SQL, which takes it from that token's sight, and the token's
 //     retry is refused the same way, never answered SECR's row.
 //
-// Control: heldAnswerHidden refusing every repeat of a route whose address names no object, under
+// Control: heldAnswerRefusal refusing every repeat of a route whose address names no object, under
 // which each "replays" row answers 409 KEY_COMMITTED and the test fails; and placing a stored answer
 // by the names in its JSON, under which the project create's retry replays SECR's row.
 func TestAKeyedRepeatOfACreateIsPlacedByTheProjectItsBodyNames(t *testing.T) {
