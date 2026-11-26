@@ -59,12 +59,14 @@ func requireTraceScope() error {
 // The check finds the agent in the process table, never from the process that connects: the
 // generation's role-init (the manager's active child), its shim (roleShim), and the oldest direct
 // child of the shim that runs the agent's executable. A command the agent runs is a descendant of
-// the agent and never a direct child of the shim, because no process of the shim makes itself a
-// subreaper, so an orphan goes to role-init. An orphan that runs `legion worker-shim` is younger
-// than the real shim, and roleShim takes the oldest. The shim's other children (the secrets
-// renewer, the working copy's adoption, the CodeGraph warm-up) run other executables, and Oh My
-// Pi's own helpers are the agent's children. While a start wrapper (`/bin/sh -c … legion-start`)
-// runs, the shim's child runs another executable, so nothing is the agent until the wrapper's exec.
+// the agent and never a direct child of the shim, because a shim under role-init never makes
+// itself a subreaper, so an orphan goes to role-init: only the controller pod's single-role shim
+// is told to (reapingShim), and that form runs no session peer check. An orphan that runs `legion
+// worker-shim` is younger than the real shim, and roleShim takes the oldest. The shim's other
+// children (the secrets renewer, the working copy's adoption, the CodeGraph warm-up) run other
+// executables, and Oh My Pi's own helpers are the agent's children. While a start wrapper
+// (`/bin/sh -c … legion-start`) runs, the shim's child runs another executable, so nothing is the
+// agent until the wrapper's exec.
 //
 // The first connection whose check finds the agent pins it, by its pid and its start time, under
 // the check's own lock. Every later connection must come from that pid, and the pid must still

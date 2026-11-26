@@ -1729,19 +1729,34 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 //     the turn is the first of them's: the pinned Oh My Pi runs one admitted prompt at a time, and
 //     a later send it answered busy carried nothing that turn reads. So a resend that rendered an
 //     opening the first prompt did not carry adds none to what the turn's confirmation credits.
-//   - Otherwise, while a send of the pending task is in flight, the turn is that send's (the
-//     INFRA-264 race, where the prompt's own turn starts before its acknowledgement), and its
-//     confirmation credits what that send carries, the pending delivery's own news (startSend says
-//     why that is the send's). A turn of another input's that starts while the send is still
-//     adopting the working copy or minting its identity is taken the same way, and the send's own
-//     outcome takes it back with its credit wherever the prompt does not then run: a refused or
-//     lost send, a busy answer or a result that ran no turn, a let-go while the send or its prompt
-//     is outstanding (untellInFlight), and a turn's end after a restart that no result answered
-//     (RetireDelivery). Where the prompt does run, its news was read, so the credit stands.
-//   - A send in flight under another id carried another delivery's news, or this task's under an
-//     id it has left — a retired task that a newer one replaced while its send was out, or one
-//     taken back under a new id since — so the turn is taken for the task's, and credits nothing
-//     of it: told twice, never credited for a prompt that was not this delivery's.
+//   - Otherwise, while a send of the pending task is in flight and no answer has made it moot
+//     (sendUnanswered), the turn is that send's (the INFRA-264 race, where the prompt's own turn
+//     starts before its acknowledgement), and its confirmation credits what that send carries,
+//     the pending delivery's own news (startSend says why that is the send's). A turn of another
+//     input's that starts while the send is still adopting the working copy or minting its
+//     identity is taken the same way, and the send's own outcome takes it back with its credit
+//     wherever the prompt does not then run: a refused or lost send, a busy answer or a result
+//     that ran no turn, a let-go while the send or its prompt is outstanding (untellInFlight),
+//     and a turn's end after a restart that no result answered (RetireDelivery). Where the prompt
+//     does run, its news was read, so the credit stands.
+//   - A send in flight under another id, its answer still to come, carried another delivery's
+//     news, or this task's under an id it has left — a retired task that a newer one replaced
+//     while its send was out, or one taken back under a new id since — so the turn is taken for
+//     the task's, and credits nothing of it: told twice, never credited for a prompt that was not
+//     this delivery's.
+//   - A send whose answer has come (sending.resulted) is read as no send at all, under any id, so
+//     a turn that starts after that answer is the task's only by the bullet below. The answer has
+//     said what became of the prompt: a result that ran a turn says which turn that was
+//     (promptResulted), and a no-turn answer takes the task back under a new id (promptFailed,
+//     takeBackPending) or, where that write fails, leaves it under the send's own id with its
+//     confirmation cleared, so the pending task's own send is read by its answer too, not by its
+//     id alone. Taken for the task's, such a turn would confirm a task with nothing left to come
+//     that could take the confirmation back: a let-go in that turn would vouch for it
+//     (confirmationInDoubt), and the end of the turn a busy answer named would retire the task as
+//     served (settle). A resend that an earlier prompt's result marked answered, that result's
+//     turn having ended in a provider error, is read the same way, though the resend's own turn
+//     can still run after that one: nothing confirms the task, the retry sends it again, and the
+//     resend's result is fenced, as when the resend's acknowledgement is read before that result.
 //   - Otherwise the turn is taken for the task's while the wait for an acknowledged prompt's turn
 //     is armed, or while a restart's question stands for a task it may take (askFirst,
 //     askFirstNeverTakes), and it credits the copy the delivery holds: the copy the earlier
@@ -1752,9 +1767,9 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 	switch {
 	case m.awaitsResult():
 		return m.turnNews(), true
-	case m.send != nil && p != nil && m.send.id == p.ID:
+	case m.sendUnanswered() && p != nil && m.send.id == p.ID:
 		return p.News, true
-	case m.send != nil:
+	case m.sendUnanswered():
 		return nil, true
 	}
 	_, awaiting := m.timers[TimerTurn]
@@ -1780,6 +1795,16 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 // really is its own would serve no run. The result lands on the heels of the agent_end of the
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
+//
+// The same holds while the send of the task's prompt is in flight and no answer has made it moot
+// (sending.resulted): its own result or its refusal after the acknowledgement, or a
+// turn-reporting result of any prompt of the task (resultPending's send window). A turn that
+// starts then is taken for the task's (turnAnswers), and its end can be decided before the send's
+// acknowledgement, which reaches the machine on the send's own goroutine (sending). A task
+// retired at that end would have its prompt's result dropped as stale (fence), and with it the
+// final credit of the news the prompt carried, which would then be owed and sent again, or the
+// provider error that leaves the work owed (providerErrored). The send's outcome and the prompt's
+// result say which turn it was, as they do for a prompt acknowledged first.
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
@@ -2287,34 +2312,35 @@ func (m *Machine) moveTelling(from, to string) bool {
 }
 
 // confirmationInDoubt is whether the pending task's confirmation is one a let-go cannot vouch for:
-// it stands while the send of the task's prompt is in flight (Machine.send) or a prompt of the
-// task still waits on its result (awaitsResult). untellInFlight states the rule and why; this is
-// its one reading, which interrupted makes for the claim's handshake too. It reads the send and
-// the prompts outstanding, so it is read before the let-go forgets them (letGo, forgetSend;
-// interrupted).
+// it stands while a send is in flight whose answer is still to come (sendUnanswered) or a prompt
+// of the task still waits on its result (awaitsResult). untellInFlight states the rule and why;
+// this is its one reading, which interrupted makes for the claim's handshake too. It reads the
+// send and the prompts outstanding, so it is read before the let-go forgets them (letGo,
+// forgetSend; interrupted).
 func (m *Machine) confirmationInDoubt() bool {
 	p := m.claim.Pending
-	return (m.send != nil || m.awaitsResult()) && p != nil && !p.ConfirmedAt.IsZero()
+	return (m.sendUnanswered() || m.awaitsResult()) && p != nil && !p.ConfirmedAt.IsZero()
 }
 
 // untellInFlight is the rule for a confirmation a let-go cannot vouch for (confirmationInDoubt).
-// The pending task's confirmation is uncertain at a let-go while the send of its prompt is in
-// flight (Machine.send) or any prompt of the task still waits on its result (awaitsResult). A turn
-// that starts then is taken for the task's (beginTurn): with the send in flight, the INFRA-264
-// race, and with an acknowledged prompt outstanding, however late the turn starts. Either way the
-// turn may be another input's, an Envoy notice's, and what would say so is still to come: the
-// send's busy answer (refused), or the prompt's own answer, a busy answer or a late refusal that
-// ran no turn (promptResulted, lateRefused, takeBackPending), each of which takes the confirmation
-// back. The let-go forgets the send and the prompts outstanding (letGo, forgetSend; interrupted),
-// so that answer is fenced out (fenceOutcome, fence) and never takes anything back. So the let-go
-// takes back what the confirmation told (moveTelling): the record goes back to untold, the record
-// of this let-go joins it rather than replacing it (recordEnd, joined), and the next prompt
-// carries its sentence again. Where the turn was the task's own, the agent is told twice, which
-// is the accepted cost: told twice, never not at all. A confirmation whose prompt's result has
-// come stands: that result says a turn ran the prompt (promptResulted), so the agent read the
-// sentence the prompt carried, and a let-go after it, in that turn or later, keeps the record
-// told. The take-back of the task gives the claim's handshake's confirmation back by the same
-// reading (interrupted).
+// The pending task's confirmation is uncertain at a let-go while a send is in flight whose answer
+// is still to come (sendUnanswered) or any prompt of the task still waits on its result
+// (awaitsResult). A turn that starts then is taken for the task's (beginTurn): with a send in
+// flight, the INFRA-264 race, and with an acknowledged prompt outstanding, however late the turn
+// starts. Either way the turn may be another input's, an Envoy notice's, and what would say so is
+// still to come: the send's busy answer (refused), or the prompt's own answer, a busy answer or a
+// late refusal that ran no turn (promptResulted, lateRefused, takeBackPending), each of which
+// takes the confirmation back. The let-go forgets the send and the prompts outstanding (letGo,
+// forgetSend; interrupted), so that answer is fenced out (fenceOutcome, fence) and never takes
+// anything back. So the let-go takes back what the confirmation told (moveTelling): the record
+// goes back to untold, the record of this let-go joins it rather than replacing it (recordEnd,
+// joined), and the next prompt carries its sentence again. Where the turn was the task's own, the
+// agent is told twice, which is the accepted cost: told twice, never not at all. A confirmation
+// whose prompt's result has come stands, whether or not the outcome of that prompt's send has
+// been read yet (sending.resulted): that result says a turn ran the prompt (promptResulted), so
+// the agent read the sentence the prompt carried, and a let-go after it, in that turn or later,
+// keeps the record told. The take-back of the task gives the claim's handshake's confirmation
+// back by the same reading (interrupted).
 //
 // It reports whether a telling moved, and it is idempotent: once it has run, no record is told by
 // the pending id. recordEnd and interrupted both call it, and whichever of them a let-go runs first

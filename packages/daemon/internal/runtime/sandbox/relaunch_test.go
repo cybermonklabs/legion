@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"maps"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -28,12 +26,14 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -1354,14 +1354,17 @@ func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
 // probe path already reads it. The timeout carries it too, so the operator reads one line instead
 // of going to the cluster for the condition the daemon had in its store all along.
 func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
-	// Not parallel: the error reads the controller's condition from the runtime's store when the
-	// boot timeout runs out (waitedOut), so the store must catch up with the patch inside that
-	// span, which other tests' load would move.
+	t.Parallel()
 	blocked := metav1.Condition{
 		Type: conditionReady, Status: metav1.ConditionFalse, Reason: "PodSchedulingBlocked",
 		Message: "0/3 nodes are available: 3 Insufficient cpu.",
 	}
+	// The error reads the controller's condition from the runtime's store when the wait for the
+	// new pod runs out (waitedOut), so the launch's waits run on the rig's fake clock, moved past
+	// that wait's boot timeout only once the store holds the condition.
+	fc := clocktest.New(rigNow)
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
+	g.r.clock = fc
 	g.hold.Store(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
@@ -1389,7 +1392,21 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 		return true, patched, g.dyn.Tracker().Update(sandboxGVR, patched, testNamespace)
 	})
 
-	_, err := g.r.Spawn(g.ctx, workerSpec(t))
+	result := make(chan error, 1)
+	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
+	name := SandboxName(workerToken)
+	g.eventually("the store to hold the controller's condition", func() bool {
+		u, err := g.r.storedObject(name)
+		if err != nil || u == nil {
+			return false
+		}
+		conditions, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
+		return len(conditions) > 0
+	})
+	awaitArmedAt(t, fc, "the launch's wait for its new pod", fc.Now().Add(g.r.bootTimeout), nil)
+	fc.Advance(g.r.bootTimeout)
+
+	err := testwait.Receive(t, "the launch", result)
 
 	if err == nil {
 		t.Fatal("Spawn returned no error though its pod never came")
@@ -1408,9 +1425,8 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 // boot with two stores nothing was feeding.
 func TestBootRefusesWhenTheAPIServerRefusesTheConnection(t *testing.T) {
 	t.Parallel()
-	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	address := dead.URL
-	dead.Close()
+	// An API server at a port the test holds and nothing listens on: every dial is refused.
+	address := "http://" + testport.Refused(t)
 	boot, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -1957,7 +1973,10 @@ func startSupervisedSandboxRole(
 // That start may have begun the new generation even though start returns an error, so relaunch,
 // which owns the child it started, sends a Stop for the issued generation before returning. This
 // holds both where Resume has no previous locator and where its previous locator names the same
-// pod: the Stop names the issued generation, never the previous one, which is the caller's.
+// pod: the Stop names the issued generation, never the previous one, which is the caller's. The
+// start deadline runs on the rig's fake clock (g.r.clock), which the test moves past it only once
+// the launcher holds the Start: on the wall clock's one second, a loaded CI runner once got the
+// deadline's error without the launcher ever receiving the Start (run 45723523570).
 func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t *testing.T) {
 	t.Parallel()
 	for name, previous := range map[string]bool{
@@ -1976,11 +1995,29 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 			if previous {
 				prev = &first
 			}
-			if _, err := g.r.Resume(g.ctx, prev, spec); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
-				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
-			}
+			// The launch's wait for its role launcher reads the launcher ready only once the
+			// runtime holds the launcher's first state, which wakes no wait: on the fake clock no
+			// recheck follows a first check that came before it, so Resume starts after it.
+			g.eventually("the runtime to hold the scripted launcher's first state", func() bool {
+				_, ready := g.r.launchers.state(spec.Claim, first.Sandbox.PodUID)
+				return ready
+			})
+			fc := clocktest.New(rigNow)
+			g.r.clock = fc
+			resumed := make(chan error, 1)
+			go func() { _, err := g.r.Resume(g.ctx, prev, spec); resumed <- err }()
 			if start := delayed.start(t, 2); start.Generation != 2 {
 				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
+			}
+			// The start deadline is the launcher wait's, the boot timeout from the wait's start at
+			// the fake clock's moment, plus the termination grace. It moves only once the runtime has
+			// finished writing the Start (written): an end of the deadline inside the write closes the
+			// connection, as a write the context cuts does, and the Stop that follows would find no
+			// launcher.
+			delayed.written()
+			fc.Advance(g.opts.BootTimeout + g.opts.TerminationGrace)
+			if err := testwait.Receive(t, "the Resume", resumed); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
+				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
 			}
 			if stop := delayed.stop(t, 2); stop.Generation != 2 {
 				t.Fatalf("Stop = generation %d, want the Start's generation 2", stop.Generation)
@@ -2044,8 +2081,17 @@ func TestAnOKStartAnswerNamingAnotherGenerationIsStoppedNotTakenAsARefusal(t *te
 // the Start's generation. Its hello says of looking a session up by its id what the rig's own fake
 // launchers' do (withResumesBySession).
 type scriptedStartLauncher struct {
-	starts chan shimwire.LauncherStart
-	stops  chan shimwire.LauncherStop
+	session *launcherSession
+	starts  chan shimwire.LauncherStart
+	stops   chan shimwire.LauncherStop
+}
+
+// written returns once the runtime has finished writing the frame the scripted launcher last read
+// and stopped watching that write's context: requestSession holds the session's lock through both,
+// and the launcher reads the frame only while the write holds it.
+func (d *scriptedStartLauncher) written() {
+	d.session.mu.Lock()
+	defer d.session.mu.Unlock()
 }
 
 func (g *rig) scriptedStartLauncher(
@@ -2065,8 +2111,9 @@ func (g *rig) scriptedStartLauncher(
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	scripted := &scriptedStartLauncher{
-		starts: make(chan shimwire.LauncherStart, 2),
-		stops:  make(chan shimwire.LauncherStop, 4),
+		session: session,
+		starts:  make(chan shimwire.LauncherStart, 2),
+		stops:   make(chan shimwire.LauncherStop, 4),
 	}
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
 	go func() {
@@ -2104,30 +2151,36 @@ func (g *rig) scriptedStartLauncher(
 	return scripted
 }
 
+// start is the scripted launcher's first Start of generation, failing the test when none comes
+// before the test binary's deadline (testwait.Context).
 func (d *scriptedStartLauncher) start(t *testing.T, generation uint64) shimwire.LauncherStart {
 	t.Helper()
+	ended := testwait.Context(t)
 	for {
 		select {
 		case command := <-d.starts:
 			if command.Generation == generation {
 				return command
 			}
-		case <-time.After(time.Second):
-			t.Fatalf("no generation-%d Start", generation)
+		case <-ended.Done():
+			t.Fatalf("no generation-%d Start before the test binary's deadline", generation)
 		}
 	}
 }
 
+// stop is the scripted launcher's first Stop of generation, failing the test when none comes
+// before the test binary's deadline (testwait.Context).
 func (d *scriptedStartLauncher) stop(t *testing.T, generation uint64) shimwire.LauncherStop {
 	t.Helper()
+	ended := testwait.Context(t)
 	for {
 		select {
 		case command := <-d.stops:
 			if command.Generation == generation {
 				return command
 			}
-		case <-time.After(time.Second):
-			t.Fatalf("no generation-%d Stop", generation)
+		case <-ended.Done():
+			t.Fatalf("no generation-%d Stop before the test binary's deadline", generation)
 		}
 	}
 }
