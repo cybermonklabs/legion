@@ -91,7 +91,7 @@ jobs:
       # The script's --timeout is this step's one guard. Six times the beforeAll's worst reading
       # (249 s) is 1 495 s, past the job's whole limit, so the room one hang has sizes it: the job's
       # `timeout-minutes: 20` (1 200 s), less 93 s from the job's start to this step's (the slowest
-      # of the 522 green jobs of this step's job in CI runs 45738744348 to 45800390301, job
+      # of this step's job's 539 green jobs in 522 CI runs, 45738744348 to 45800390301, job
       # 139830372600 of run 45796362921), less the file's beforeAll at its worst, 249 s, less its
       # two other rows at the slowest row's worst each, 104 s, less 2 s for the steps that run after
       # a failed step (the ci-ok report and the post steps), less the 30 s kept for the afterAll's
@@ -115,7 +115,7 @@ jobs:
       # The script's --timeout is this step's one guard. Six times the beforeAll's worst reading
       # (249 s) is 1 495 s, past the job's whole limit, so the room one hang has sizes it: the job's
       # `timeout-minutes: 20` (1 200 s), less 255 s from the job's start to this step's (the slowest
-      # of the same 522 green jobs, job 139700617228 of run 45757721731), less the file's beforeAll
+      # of the same 539 green jobs, job 139700617228 of run 45757721731), less the file's beforeAll
       # at its worst, 249 s, less its two other rows at the slowest row's worst each, 127 s, less
       # 2 s for the steps that run after a failed step (the ci-ok report and the post steps), less
       # the 30 s kept for the afterAll: 537 s, of which the guard takes 530 s. Readings, at the
@@ -134,7 +134,7 @@ jobs:
       # `--timeout` of its command line. Six times the beforeAll's worst reading (249 s) is 1 495 s,
       # past the job's whole limit, so the room one hang has sizes that guard: the job's
       # `timeout-minutes: 20` (1 200 s), less 339 s from the job's start to this step's (the slowest
-      # of the same 522 green jobs, job 139700617228 of run 45757721731), less the describe's
+      # of the same 539 green jobs, job 139700617228 of run 45757721731), less the describe's
       # beforeAll at its worst, 249 s (the `-t` runs the freeze row alone, so no other row's time is
       # spent), less 2 s for the steps that run after a failed step (the ci-ok report and the post
       # steps), less the 30 s kept for the afterAll's stop and the teardown: 580 s, all of which the
@@ -150,7 +150,7 @@ jobs:
       # The script's --timeout is this step's one guard. Six times the beforeAll's worst reading
       # (249 s) is 1 495 s, past the job's whole limit, so the room one hang has sizes it: the job's
       # `timeout-minutes: 20` (1 200 s), less 371 s from the job's start to this step's (the slowest
-      # of the same 522 green jobs, job 139700617228 of run 45757721731), less the file's beforeAll
+      # of the same 539 green jobs, job 139700617228 of run 45757721731), less the file's beforeAll
       # at its worst, 249 s, less its other row at the worst on record, 131 s, less 2 s for the steps
       # that run after a failed step (the ci-ok report and the post steps), less the 30 s kept for
       # the afterAll's stop and the teardown: 417 s, of which the guard takes 410 s. Readings, at
