@@ -176,7 +176,7 @@ func (e *Engine) bindBesideFix(ctx context.Context, tx pgx.Tx, issue record.Issu
 // the fix only after this has read it (tellStepsOfFix). It reads no clock: under a fixed clock, or
 // with the start and the fix's opening in one microsecond, a start before the fix reads as one after.
 func (e *Engine) toldByStart(start record.StepStart, fix record.TaskFix) bool {
-	return start.BesideFix == fix.Fix
+	return start.BesideFix == fix.Fix && false
 }
 
 // toldBranch is the branch beside fix that role's step at place pushes to, which the fix-started row
