@@ -165,15 +165,20 @@ const TYPED = {
   statement: "Marrowind",
 } as const;
 
-/** The page opened on issue `key` with every branch unfolded, so a node's row is drawn wherever
- *  the tree places it. The unfolding ends by leaving the focus for the page
- *  (`unfoldEveryBranch`), and an opening that had not placed its focus yet would take it back
- *  for its row, so the page's opening lands first (`expectOpeningLanded`). */
-async function openOutline(page: Page, key: string): Promise<void> {
-  await gotoIssue(page, `/issues/${key}`);
+/** Unfolds every branch of the page a load has just drawn. The unfolding ends by leaving the
+ *  focus for the page (`unfoldEveryBranch`), and an opening that had not placed its focus yet
+ *  would take it back for its row, so the page's opening lands first (`expectOpeningLanded`). */
+async function unfoldOnceOpened(page: Page): Promise<void> {
   await expectIssuePageDrawn(page);
   await expectOpeningLanded(page);
   await unfoldEveryBranch(page);
+}
+
+/** The page opened on issue `key` with every branch unfolded, so a node's row is drawn wherever
+ *  the tree places it. */
+async function openOutline(page: Page, key: string): Promise<void> {
+  await gotoIssue(page, `/issues/${key}`);
+  await unfoldOnceOpened(page);
 }
 
 /** The first load of issue `key`, by route, read once the page has gone quiet. The server first
@@ -593,13 +598,10 @@ test("a person writes a criterion under the words they are reading @phone", asyn
       })
       .toBe(true);
 
-    // (3) The same after a reload, and Spec draws it as a row, its count one higher. The reload
-    // is a load, so the page's opening lands before the unfolding leaves the focus for the page.
+    // (3) The same after a reload, and Spec draws it as a row, its count one higher.
     await page.reload();
     await issueRead(page);
-    await expectIssuePageDrawn(page);
-    await expectOpeningLanded(page);
-    await unfoldEveryBranch(page);
+    await unfoldOnceOpened(page);
     await expect
       .poll(() => parentOfRow(page, criterion), {
         message: "after a reload the criterion does not stand under the comment",
@@ -613,8 +615,8 @@ test("a person writes a criterion under the words they are reading @phone", asyn
     );
     // The outline drawn again places its opening once its reads have answered, so its load
     // settles here, before (5)'s unfolding leaves the focus for the page. The load is read
-    // without the view's pressed mark, which a phone's one control does not carry for
-    // Conversation (`expectActivePreset`).
+    // without `expectActivePreset`, which cannot read Conversation on a phone: the one control
+    // there carries no pressed mark, and draws no count after Conversation's name.
     const outline = watchApiRequests(page);
     await pickPreset(page, PRESET_NAMES.conversation);
     await expectIssuePageDrawn(page);
@@ -1053,8 +1055,8 @@ test("a node is edited where it lives and an open editor survives a schema chang
       .toEqual({ check: TYPED.check, criterion: TYPED.criterion, statement: TYPED.statement });
 
     // (3) A comment and the answered question take no caret; the child's check says it is edited
-    // on its own issue.
-    await unfoldEveryBranch(page);
+    // on its own issue. The reload above is a load, so the unfolding waits for its opening.
+    await unfoldOnceOpened(page);
     await expectNoCaret(
       page,
       await focusRow(page, seeded.thread.row),
@@ -1789,8 +1791,8 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
       "the folded overtaken question counts its criterion"
     ).toBe(heldUnder(answer, key, foldedQuestion, { margin }));
     // The branches the page holds open, read once two reads of the tree's rows agree.
-    const drawnOpen = await settledValue("the branches drawn open", () => treeItemsDrawn(page));
-    const branches = drawnOpen.filter(
+    const items = await settledValue("the tree's rows", () => treeItemsDrawn(page));
+    const branches = items.filter(
       (item) => item.expanded === "true" && item.readId !== null && item.readId !== foldedQuestion
     );
     for (const branch of branches) {
