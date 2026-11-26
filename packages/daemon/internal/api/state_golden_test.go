@@ -64,6 +64,7 @@ advertise_host: legion-daemon.internal.example
 postgres_dsn: postgres://legion:fixture-dsn-password@postgres.internal.example:5432/legion
 state_dir: /var/lib/legion
 admission_cap: 4
+admission_p0_bound: 4
 daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
@@ -239,6 +240,9 @@ func populatedState(t *testing.T) State {
 	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
 	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
 	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
+	// When Dispatch recorded the person's approval of LEGION-200's version 5, which LEGION-207's
+	// spec step stands open on.
+	basisApprovedAt := time.Date(2026, 9, 20, 15, 2, 41, 0, time.UTC)
 	// When the controller paused the project, nine minutes before the state was read.
 	pausedSince := time.Date(2026, 9, 22, 9, 9, 0, 0, time.UTC)
 	// The two flags the line's members write: LEGION-212 kept the slot it took when the daemon
@@ -322,6 +326,13 @@ func populatedState(t *testing.T) State {
 		Admission: Admission{
 			Cap:    5,
 			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
+			// LEGION-212 is the one P0 issue among them, by its own priority, and holds its slot
+			// outside the cap (the P0 start's entry); the P0 bound stands at 3, set live over legion.yaml's
+			// 4 by the controller, so every key of the bound's view is in the record.
+			P0Holders: new(1),
+			P0Bound: &P0BoundView{Bound: new(3), Configured: new(4), Live: &P0BoundLiveView{Bound: new(3),
+				SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"}, SetAt: time.Date(2026, 9, 22, 9, 10, 0, 0, time.UTC),
+				Reason: "the P0 issues outran the gateway"}},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -414,7 +425,7 @@ func populatedState(t *testing.T) State {
 							// asks each role, and the daemon replaces the pod once every asked role has
 							// answered, no turn runs and no claim's activity report holds it
 							// (internal/daemon's roundEnd.holding), or at the round's bound
-							// (pod_update_grace_minutes) whatever the roles answered, an operator's
+							// (pod_update_grace_minutes) whatever the roles answered, a holding
 							// suspension excepted. This one has answered, and reported the head it
 							// pushed. The reasons are the round's own, so every claim of the pod
 							// carries the same text: what the worker answering is told to act on.
@@ -463,8 +474,9 @@ func populatedState(t *testing.T) State {
 							ServingGeneration: 3,
 							// Two turns of this claim ended in a provider error in a row, and the
 							// task went out again behind the daemon's own sentence. It bounds
-							// nothing: the controller is told once at six, and nothing fails a
-							// claim for it.
+							// nothing: the provider-errors notice goes once at six
+							// (internal/daemon's providerErrorRunReached says to whom), and nothing
+							// fails a claim for it.
 							ProviderErrorRun: 2,
 							// The task this worker holds, as every agent surface reads it: that one
 							// is held, the phase it was queued for and when, and nothing of its
@@ -724,7 +736,10 @@ func populatedState(t *testing.T) State {
 			// does not carry it, it stands in neither `active` nor `waiting`, and its word is
 			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
 			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
-			// no memory group.
+			// no memory group. Its architect registered its spec on the ancestor LEGION-200's
+			// version 6 while a person's approval of that version was still asked for, so its one
+			// gated step waits, closed, on that open request (`pending_on_basis`), which `basis`
+			// names with its ask id, and it names no person's approval of its own document.
 			"LEGION-214": {
 				Key:           "LEGION-214",
 				Generation:    1,
@@ -734,6 +749,18 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				Workers:       map[claim.Role]PhaseView{},
+				GatedSteps: []GatedStepView{{
+					Step:           record.DesignStepSpec,
+					ArtifactID:     "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+					CurrentVersion: 2,
+					Status:         GatedStepPendingOnBasis,
+					Basis: &GatedStepBasis{
+						Issue:      "LEGION-200",
+						ArtifactID: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+						Version:    6,
+						AskID:      "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75",
+					},
+				}},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
@@ -782,14 +809,23 @@ func populatedState(t *testing.T) State {
 					LastWake:    &CheckWakeView{Kind: "issue.deployed", Detail: "run 38230245571 completed 2026-09-22T09:10:44Z", At: time.Date(2026, 9, 22, 9, 10, 51, 0, time.UTC)},
 					NextWakeAt:  time.Date(2026, 10, 6, 8, 40, 12, 0, time.UTC),
 				},
-				// A root whose spec a person approved at the version Dispatch holds: the status
-				// that lets the tree's work past the step.
+				// A view root whose architect registered its spec on a person's approval of
+				// version 5 of its ancestor LEGION-200's spec: the step stands open on that basis
+				// (`open_on_basis`), its `approvedVersion` is the version registered, which no person
+				// approved, and `basis` names the ancestor's approval, who gave it and when.
 				GatedSteps: []GatedStepView{{
 					Step:            record.DesignStepSpec,
 					ArtifactID:      "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
 					CurrentVersion:  4,
 					ApprovedVersion: &mergedApproval,
-					Status:          GatedStepApproved,
+					Status:          GatedStepOpenOnBasis,
+					Basis: &GatedStepBasis{
+						Issue:      "LEGION-200",
+						ArtifactID: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+						Version:    5,
+						Approver:   "user:alice",
+						ApprovedAt: &basisApprovedAt,
+					},
 				}},
 			},
 			// LEGION-218 and LEGION-219 are the two reviewing roots whose round waits on GitHub's
@@ -1150,6 +1186,22 @@ func populatedState(t *testing.T) State {
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
 	}
+	// Every root of the fixture carries whether its tree runs (`treeRuns`, record.TreeRuns), and
+	// LEGION-209, a child, carries no such key. LEGION-208's tree and LEGION-210's run, its root
+	// held or not, and so does LEGION-212's, whose root a person answered and which waits in the
+	// line for its resume, and so do the trees of the reviewing roots LEGION-218 and LEGION-219,
+	// whose rounds wait on GitHub. LEGION-211's tree has not been opened, since its root waits in
+	// the line for that; LEGION-214's tree is no live tree; and LEGION-207's has finished and
+	// lingers. So the fixture carries both values, each on a root whose shape is the one
+	// record.TreeRuns answers it for.
+	for key, runs := range map[string]bool{
+		"LEGION-208": true, "LEGION-210": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true,
+		"LEGION-211": false, "LEGION-214": false, "LEGION-207": false,
+	} {
+		issue := state.Issues[key]
+		issue.TreeRuns = &runs
+		state.Issues[key] = issue
+	}
 	// Every issue the workflow records carries its own Dispatch priority, null for none: the line's
 	// two members carry theirs where they are written above, and every other recorded issue has
 	// none. A member's line priority is then the one the projection gives it, record.PriorityOf of
@@ -1159,6 +1211,22 @@ func populatedState(t *testing.T) State {
 			continue
 		}
 		issue.Priority = &noPriority
+		state.Issues[key] = issue
+	}
+	// The priority Dispatch resolves each issue to (the P0 start's entry): LEGION-211's is its own
+	// P1; LEGION-207, which has no priority of its own, takes P2 from OTHER-5, an ancestor in
+	// another project, which `priorityFrom` names; and LEGION-214 has none of its own and none
+	// above it, which Dispatch sends as a null, a known none. Every other issue stands as a
+	// Dispatch release before dispatch://INFRA-5793 left it, with no resolved priority at all, so
+	// the fixture holds every reading of the field: a number of the issue's own, an inherited
+	// number, a known none, and none sent.
+	resolvedP1, resolvedP2, resolvedNone := PriorityView(record.P1), PriorityView(record.P2), PriorityView(record.NoPriority)
+	for key, resolved := range map[string]struct {
+		priority *PriorityView
+		from     string
+	}{"LEGION-211": {&resolvedP1, ""}, "LEGION-207": {&resolvedP2, "OTHER-5"}, "LEGION-214": {&resolvedNone, ""}} {
+		issue := state.Issues[key]
+		issue.ResolvedPriority, issue.PriorityFrom = resolved.priority, resolved.from
 		state.Issues[key] = issue
 	}
 	for key, issue := range state.Issues {
@@ -1239,19 +1307,23 @@ func TestStateGolden(t *testing.T) {
 // repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
 // own state, asked through the route itself. The caller is served at the recorded contract at or
-// below the one it states (recordedContractAtOrBelow), which the mark's `caller` names: its
-// `repositories` block in the shape contract 152 gave it, written from the same entries
-// (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
-// row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
-// intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
-// podHoldContract's row does too, and every other key as a caller at shapedAnswersContract is
-// served it, since no other row of stateNarrowings stands between shapedAnswersContract and
-// repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
-// contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
-// view's `updateState` and `paused`. The mark's `daemon` names this daemon's own contract, which
-// an entry moves, so it is taken out before the golden is compared or written and held to that
-// number here, as TestStateGolden takes out its marks; the `caller` is 199, which no entry moves,
-// and stays.
+// below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
+// block in the shape contract 152 gave it, written from the same entries
+// (withoutRepositoriesLive), each assignment without its `plan` (withoutAssignmentPlans,
+// assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
+// intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
+// root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
+// (withoutGateBasis, gateBasisContract's row), the three other rows of stateNarrowings above the
+// contract it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no
+// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row)
+// and no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row),
+// and every other key as a caller at shapedAnswersContract is served it, since no other
+// row of stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// shapedAnswersContract's row and pauseContract's stand at or below the contract it is served at,
+// which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
+// `paused`. The mark's `daemon` names this daemon's own contract, which an entry moves, so it is
+// taken out before the golden is compared or written and held to that number here, as
+// TestStateGolden takes out its marks; the `caller` is 199, which no entry moves, and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
@@ -1378,8 +1450,9 @@ func TestHealthGolden(t *testing.T) {
 // to a session-facing body refuses the whole of it at every plugin whose answer side predates
 // INFRA-1048, and is dropped at every plugin after it, which loses the field rather than the
 // state. `suspendedBy` is the key this change was tempted to add, and it belongs to the
-// operator claim routes alone; the guard beside `legion-api.test.ts`'s schema tests holds the
-// same property on the schema side.
+// operator claim routes and to four of the six agent actions alone
+// (AgentActionResponse), which no plugin below the contract that added them calls; the guard
+// beside `legion-api.test.ts`'s schema tests holds the same property on the schema side.
 func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 	// The body where the key does live, so a guard over nothing cannot pass for a clean one.
 	operator, err := json.Marshal(OperatorClaims{Claims: []OperatorClaim{
@@ -1992,8 +2065,19 @@ func TestTask310RouteGoldens(t *testing.T) {
 	})
 	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", IssueStatusResponse{})
+	golden(t, "issue-pod-update.json", PodUpdateResponse{
+		Round:   "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22",
+		Reasons: "the project's controller asked for the replacement of this pod",
+		Opened:  true,
+	})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
-	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
+	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
+	golden(t, "agent-stop.json", AgentActionResponse{State: string(supervise.StateRetired)})
+	golden(t, "agent-retry.json", AgentActionResponse{State: string(supervise.StateLaunching)})
+	golden(t, "agent-suspend.json", AgentActionResponse{
+		State: string(supervise.StateSuspended), SuspendedBy: string(supervise.SuspendedByController),
+	})
+	golden(t, "agent-resume.json", AgentActionResponse{State: string(supervise.StateLaunching)})
 	golden(t, "gate-register.json", GateRegisterResponse{})
 	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})

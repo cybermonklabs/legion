@@ -93,19 +93,20 @@ controller posts a report on what Legion finished, closed and is running. That s
 daemon's status repair, which puts back the Dispatch status of any issue Legion works whose status
 is not the status of the phase it stands in, so a longer interval slows that repair as well. A free
 slot is never a reason for the controller to take an issue: it takes only what a person hands over
-and the clear defects Legion's agents report.
+and the clear defects Legion's agents report that no tree owns.
 
-No Legion agent files an issue for a problem it finds outside its own issue. A defect with a clear
-fix in code the agent's own tree touches or depends on is fixed in that tree's pull request, while
-the agent is there. Any other goes to the controller with its evidence, and the controller gives it
-to the running tree whose code it is. Only when no tree owns that code does it file the issue with
-the `legion` label, so Legion works it without asking you. A problem that needs a decision of
-yours goes into a Dispatch ask on
-Legion's daily report issue instead, naming the issue it came from and where the fix belongs (the
-repository or layer, and saying so when it is not Legion), with its evidence and a recommendation,
-and you decide whether it needs an issue. The controller files that issue, with the `legion` label
-only when your answer asks Legion to work it. An architect also files the children of its own
-issue.
+No Legion agent files an issue for a problem it finds outside its own issue. The agent fixes a
+defect with a clear fix itself, in its own pull request or a separate pull request of its tree, in
+whichever repository the defect is. It writes the defect to the architect of the tree whose code it
+is, as a Dispatch comment that mentions that architect's role, only when its fix would collide with
+that tree's open pull request or its token does not reach the repository. Only when no tree owns
+that code does the controller file the issue with the `legion` label, so Legion works it without
+asking you; the controller passes no message from one agent to another. A problem that needs a
+decision of yours goes into a Dispatch ask on Legion's daily report issue instead, naming the
+issue it came from and where the fix belongs (the repository or layer, and saying so when it is
+not Legion), with its evidence and a recommendation, and you decide whether it needs an issue.
+The controller files that issue, with the `legion` label only when your answer asks Legion to work
+it. An architect also files the children of its own issue.
 
 The only statuses the controller sets are `todo`, `backlog` and `icebox` (`triage` is set by
 whoever files an issue). It reads pull requests as the review App, and never touches a tree's work.
@@ -141,16 +142,31 @@ gate and asks you nothing. The architect above it reviews each version of the ch
 question only you can answer goes up to the root's architect, which asks it on the root. Until the
 child's first phase starts, the architect above it keeps the child.
 
-**The children do the work first.** An issue's first phase does not start while Dispatch shows an
-open child under it, a child the architect has filed and not released yet included; the architect
-is told so once, with a notice naming each open child and the Dispatch status that holds it. A
-parent's own first phase can start once the last of them has left the workflow, and its pull
-request then builds on a base that already carries their merges. For the same reason the daemon
-refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
-workflow. A child's own architect starts with the child's first phase, so the children it files
-run beside the child's own work. Where its task has an acceptance step, the child is accepted only
-after its last round, on a head that the step before its acceptance passed and at which its checks
-pass.
+**The children do the work first.** An issue starts no phase of its own while Dispatch shows an
+open child under it, a child the architect has filed and not released yet included. Before its
+first phase, the architect is told so once, with a notice naming each open child and the Dispatch
+status that holds it. A parent's own first phase can start once the last of them has left the
+workflow, and its pull request then builds on a base that already carries their merges.
+
+The rule holds after the first phase too. A child filed under an issue whose phases have started
+holds its next phase, and the daemon stops a phase that is under way and tells its worker to push
+what it has and stop. The issue then waits in `awaiting_children`: it holds no admission slot,
+Dispatch shows it `in_progress`, and no role of it works: the architect's `sign_off`,
+`request_backward_move` and `stop_task` on it are refused (`WAITING_ON_CHILDREN`). Once no child
+under it is open, it goes back by itself to the phase it held, a held test, review or acceptance
+as the first step of its plan after the implementer's (`testing` on the default steps) unless its
+pull request merged during the wait, with a task that names the children that merged during
+the wait. The return asks for no merge of the base into its branch, which takes its base under the
+rules of any other pull request. Every test round of a parent runs on its head merged with the tip
+of the pull request's base branch, once that tip carries each needed child's merge, in the
+tester's own checkout and pushed nowhere, and each result names that base commit. A parent is
+accepted on its head once each check a role runs has a pass there that names a base commit
+carrying the merge of every child the check needs, and the architect sends one whose pass names an
+older commit, or none, back to `testing` (`implementing` where no tester step comes before
+acceptance, with a reason that tells the implementer to run those checks as the tester would).
+The daemon also refuses a parent's acceptance, and a root's close, while an issue beneath it is
+still in the workflow. A child's own architect starts with the child's first phase, so a child it
+files stops the child's phase in this way.
 
 ## Phase workers
 
@@ -169,11 +185,12 @@ working copy and no bookmark reaches, such as a side head, is not kept.
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
+| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open, a held test, review or acceptance as the first step of its plan after the implementer's (`testing` on the default steps) unless its pull request merged during the wait. | none |
 | `planning` | planner | Writes the implementation plan into the issue's `plan.md` document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow, and an open child moves it to `awaiting_children`. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -240,8 +257,11 @@ requires an approving review the merger waits and tells the architect which revi
 The implementer then writes the pull request body's `Look at first` and `Not proven / risk` lines
 at each round, and before each completion, its retro's included, answers and resolves each bot
 review thread still open, naming each one it declined to the architect. With no acceptance step,
-the last step passing starts the retro; a parent that gets there while an issue beneath it is
-still in the workflow is held before its retro until the last one leaves.
+the last step passing starts the retro; a parent that gets there while something holds its
+acceptance is held before its retro, and its architect is told what holds it: an issue beneath it
+still in the workflow, a root of another tree whose design rests on its approval and is still in
+the workflow, or an open Dispatch child of it, one never released included. Legion starts the
+retro by itself once none of them holds it.
 `dispatch steps --issue <KEY>` prints each run of each step of an issue.
 
 ## Admission and the `legion` label
@@ -253,6 +273,14 @@ child, so a tree of four started issues holds four of them. The number of slots 
 in the daemon's configuration, four by default; an issue that finds no free slot waits in line, and
 a labelled `todo` root takes its place in that line by its Dispatch priority and then in the
 project board's order.
+
+A P0 issue, one Dispatch resolves to P0 (its own priority, else the priority of the nearest issue
+above it on its Dispatch parent chain that has one), needs no free slot: it starts at the next
+admission pass outside the cap, and the cap counts only the issues holding a slot that are not P0.
+Every other hold on a start still holds it. `admission_p0_bound` can limit how many P0 issues hold a
+slot at once to a whole number from 1 to 2147483647; it has no value unless the configuration gives
+one, and a person can set or clear it while the daemon runs with `legion project set-p0-bound` and
+`clear-p0-bound`. At the bound, a P0 issue waits first in the line.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase. An issue holds one of the cap's slots while it
@@ -286,6 +314,9 @@ a `blocked_by` link to an issue that is not `done`, in another project or in thi
 Legion tree or by none, or an open child the daemon has released into the tree and runs.
 A wait on an open child the architect filed and has not released is not one, because releasing
 that child is the tree's own work.
+A parent whose phases started and that an open child holds is different: its phase stops, and it
+waits in `awaiting_children` with no slot and in no line until no child under it is open, as
+"The children do the work first" above says.
 
 An issue holding a slot starts its next phase whatever the cap says, and a start into `accepting`,
 `retro` or `merging`, which hold none, runs at once. An issue that holds none and is owed a start
@@ -303,27 +334,40 @@ never under `admission.active`, which is how you tell it from an issue a person 
 in none of the three.
 
 The line is ordered by Dispatch priority first, and `legion state` prints it in the order the
-daemon promotes it: the issues at P0, then at P1, P2 and P3, and then the issues with no priority.
-An issue waits at its own priority, else at its tree root's, and after P3 when neither has one.
-Within one priority the line has two parts: the issues whose work came back, oldest first by the
-moment it came back, and then the issues that have not started, by the Dispatch rank of each
-issue's tree root and then its own. So an issue whose work came back goes ahead of every issue of
-its priority that has not started, and never ahead of an issue of a higher priority. A re-rank on
-the board moves an issue inside its priority's second part, and never ahead of an issue of its
-priority whose work came back; a change of the issue's priority in Dispatch moves it to the
-place of its new priority at the daemon's next admission pass. Priority orders the line and
-nothing else: it takes no slot back from work that runs, an issue that still waits on another
-issue is placed by its priority and passed over while that wait lasts, and an issue that already
-holds its slot is placed by its priority and resumes whatever the cap says. The members of a
-re-admitted tree stay out of the line until their root's promotion, whatever their own priority.
+daemon promotes it: P0, then P1, P2 and P3, and then issues with no priority.
+An issue waits at the priority Dispatch resolves for it (its own, or the nearest ancestor's on its
+Dispatch parent chain that has one), and after P3 when Dispatch resolves none.
+With an older Dispatch release that sends no `resolved_priority`, an issue waits at its own
+priority, else at its tree root's, for the order of the line alone, and that fallback never makes
+an issue P0.
+Within one priority, the line has two parts.
+First stand the issues whose work came back, oldest first by the moment it came back.
+Next stand the issues that have not started, ordered by the Dispatch rank of each issue's tree
+root and then its own.
+An issue whose work came back goes ahead of every issue of its priority that has not started, and
+never ahead of an issue of a higher priority.
+A re-rank on the board moves an issue inside its priority's second part, and never ahead of an
+issue of its priority whose work came back.
+A priority change in Dispatch moves the issue to its new priority at the next admission pass.
+A P0 start needs no free regular slot.
+Priority takes no slot back from work that runs.
+An issue that still waits on another issue stands at its priority and is passed over while that
+wait lasts.
+An issue that already holds its slot stands at its priority and resumes whatever the cap says.
+The members of a re-admitted tree stay out of the line until their root's promotion, whatever
+their own priority.
 Every issue the workflow records carries `priority` in `legion state --json`, its own Dispatch
-priority: 0 for P0 to 3 for P3, or null for none. Each waiting issue carries `waitingLine` there:
-its `place` and the line's `length`, its `priority`, the one that placed it (its own, else its
-tree root's, or null for an issue that waits after P3), its `part` (`returned` or `starting`) and
-`kind`, its `partPlace` and `partLength` within its priority and part, `holdsSlot` where it
-already holds its admission slot and so resumes whatever the cap says, the key that placed it
-within its part — `since`, the moment the work came back, or `rootRank`, `ownRank` and `rootKey`
-for an issue that has not started — and `reason`, the daemon's own sentence for that place.
+priority (0 for P0 to 3 for P3, or null for none).
+It also carries `resolvedPriority` (the priority Dispatch resolves for it, 0 to 3 or null, absent
+when Dispatch sent none) and `priorityFrom` (the issue key it inherits from, absent when the
+priority is its own or none).
+Each waiting issue carries `waitingLine` there: its `place` and the line's `length`, its
+`priority` (the priority that placed it, 0 for P0 to 3 for P3, or null for an issue that waits
+after P3), its `part` (`returned` or `starting`) and `kind`, its `partPlace` and `partLength`
+within its priority and part, `holdsSlot` where it already holds its admission slot and so resumes
+whatever the cap says, the key that placed it within its part (`since` when work came back, or
+`rootRank`, `ownRank` and `rootKey` for an issue that has not started), and `reason`, the daemon's
+own sentence for that place.
 Every issue that is not working now carries
 `why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
@@ -405,13 +449,14 @@ no new run of the tree. A root you parked, by contrast, starts a new run when yo
 ## The design gate
 
 By default (`gates.design: [spec]`), no phase starts until a person approves the root issue's
-spec. The architect settles the spec's decision blocks with you first, then asks for approval with a
-summary of what the tree will do. Where the tree builds a page you open, or changes one a lot, the
-architect shows you that page first — pictures, or a page you can click — and gets your answer
-before it asks you to approve the spec; a small change, such as a label or a style fix, usually
-carries no pictures, unless the architect is unsure what you want. You approve from the document's
-header or from the approval question in your Dispatch Inbox; **Request changes** sends it back with
-your reason.
+spec, or the ancestor's spec that the root's spec is a view on (the last paragraph of this
+section). The architect settles the spec's decision blocks with you first, then asks for approval
+with a summary of what the tree will do. Where the tree builds a page you open, or changes one a
+lot, the architect shows you that page first — pictures, or a page you can click — and gets your
+answer before it asks you to approve the spec; a small change, such as a label or a style fix,
+usually carries no pictures, unless the architect is unsure what you want. You approve from the
+document's header or from the approval question in your Dispatch Inbox; **Request changes** sends
+it back with your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone
 approves the new version. Your own answer to a decision block in the approved spec is the one
@@ -430,12 +475,23 @@ behalf, and the approval Dispatch records at your answer is yours, in your name.
 `gates.design` is a list, so a deployment can ask for more than one document of the root issue:
 `decisions` is the issue's decisions document, `criteria` its Verification document, and `spec`
 its primary document. The daemon keeps one gate record for each step listed, and the tree starts
-only once a person has approved every one of them; each closes on its own document's next
-version. Under a list that names `spec` and not `criteria`, the default among them, the architect
-can also register the root's Verification document as `criteria`: that tree then waits for both
-documents, and one approval of a request made with `--include-verification` opens both. A
-deployment that does not want the gate sets `gates.design: []`, and the tree starts as soon as the
-architect has written its spec.
+only once each of them is open on a person's approval, of its own document or of an ancestor's;
+each closes on its own document's next version. Under a list that names `spec` and not
+`criteria`, the default among them, the architect can also register the root's Verification
+document as `criteria`: that tree then waits for both documents, and one approval of a request
+made with `--include-verification` opens both. A deployment that does not want the gate sets
+`gates.design: []`, and the tree starts as soon as the architect has written its spec.
+
+A root under an approved ancestor can have a spec that is a view on the ancestor's spec: it
+delivers parts of the ancestor's requirements and states none of its own. Its architect then
+registers the step on your approval of the ancestor's version, and the step opens with no approval
+of the root's own spec. Where that version still waits for your approval, the step opens when you
+approve it. `legion state` shows such a step as `open_on_basis` or `pending_on_basis`
+([Troubleshooting](/legion/legion/troubleshooting/#a-tree-waits-on-a-person)). The ancestor's own
+acceptance, and its root's close, wait until each root that rests on its approval is done or out of
+the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) and until no Dispatch child of it is open
+(`SIGNOFF_CHILD_OPEN`), and the ancestor's architect is told when a root starts or stops resting on
+it (`resting-root`).
 
 ## Handoffs on the Dispatch issue
 
@@ -522,7 +578,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   head, and keeps its turn, its background jobs, its process and its session. In `merging` the
   merger is asked: the merge is its own, and it resolves the conflict itself. The architect is told
   once with a `checks-red` notice naming the phase the issue stays in and the role asked. In
-  `implementing` only the implementer is told.
+  `implementing` only the implementer is told. A parent that waits in `awaiting_children` is asked
+  nothing, and once it is back in a phase this rule reads it as any other issue.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
@@ -678,9 +735,10 @@ that result's line on the pull request; `pending`,
 when production does not carry the merge yet, or an observation a requirement names has not
 happened yet; or `fail`, a requirement observed as not met, one still unobserved at the last
 look whether or not production carries the merge, or a defect, naming the issue, the pull
-request, the merge commit, what it drove and what failed. A defect with a clear fix goes to the
-controller, which gives it to the tree that owns that code and files an issue only when none does.
-One that needs a decision is a Dispatch ask on Legion's
+request, the merge commit, what it drove and what failed. A defect with a clear fix goes to its
+owner, as a Dispatch comment that mentions the architect of the tree whose code it is, or to the
+controller, which files an issue only when no tree owns that code.
+Only one that needs a decision is a Dispatch ask on Legion's
 daily report issue, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
 Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
@@ -696,19 +754,19 @@ next look. A time less than 60 seconds ahead becomes 60 seconds ahead, and a tim
 check's own bound starts no look of its own, because the look at that bound already stands.
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
-A look is bounded at two hours, and a look nobody reported — its two hours or an operator's
-hold — starts the next look two hours later. An agent whose claim fails, in a look or after it
-ended, backs the check off: the next look comes two hours later after the first such look, and
-twice as long after each failed look in a row after it (four hours, eight, and so on, never past
-the check's bound), until a look the agent reports sets it back to two hours. That look tries the
-agent once more, with one attempt left of the budget its failure spent, so an agent that cannot
-start is launched once a look rather than a whole budget's worth of times; a failure that spent no
-budget, a provider error's, starts a fresh run. The architect is told of each such failure, with
-its cause, how the agent's last pod ended and when the next look tries it. An operator's
-`legion claims retry` or the controller's fresh session gives the agent its whole budget again.
-A look that began before
-a pause of the project ended counts its two hours from the resume, or from its agent's last ready
-after the resume where that is later, and counts nothing while that agent is still starting.
+A look is bounded at two hours, and a look nobody reported — its two hours or a hold the
+operator or the controller put on the agent — starts the next look two hours later. An agent
+whose claim fails, in a look or after it ended, backs the check off: the next look comes two
+hours later after the first such look, and twice as long after each failed look in a row after it
+(four hours, eight, and so on, never past the check's bound), until a look the agent reports sets
+it back to two hours. That look tries the agent once more, with one attempt left of the budget its
+failure spent, so an agent that cannot start is launched once a look rather than a whole budget's
+worth of times; a failure that spent no budget, a provider error's, starts a fresh run. The
+architect is told of each such failure, with its cause, how the agent's last pod ended and when the
+next look tries it. An operator's `legion claims retry`, or the controller's retry or fresh session,
+gives the agent its whole budget again. A look that began before a pause of the project ended
+counts its two hours from the resume, or from its agent's last ready after the resume where that is
+later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen
 days, by default): the look at that bound is the last, and a `pending` there closes the check
 as not run, which the agent writes on the pull request. `legion state` prints how many checks

@@ -1638,12 +1638,14 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  test("dispatch_review's description, which --help prints, names the codes Dispatch refuses it with and /healthz", () => {
+  test("dispatch_review's description, which --help prints, names the codes Dispatch and the broker refuse it with, the sign-in that sends it through the proxy, and /healthz", () => {
     const { description } = specFor("dispatch_review");
 
     for (const words of [
       "403 OAUTH_SCOPE_REQUIRED",
       "403 SIGN_IN_REQUIRED",
+      "agent-secrets login",
+      "400 invalid_request",
       "409 REVIEW_VERSION_MOVED",
       "/healthz",
     ]) {
