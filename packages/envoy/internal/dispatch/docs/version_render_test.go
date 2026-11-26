@@ -1516,3 +1516,61 @@ func TestTheDecisionsQueryTakesItsNodes(t *testing.T) {
 		t.Errorf("no definition builds the record of the decisions query, want its versions to hold their record's digest")
 	}
 }
+
+// TestAVersionWrittenBeforeTheCutoverKeepsItsStoredBytes holds R15's boundary for a document no
+// query record covers: "every version written before [the cutover] keeps the bytes it holds". The
+// document is notes.md of KEEP-1, an issue that has not converted, whose version 1 a build before
+// the cutover wrote, as that release stores one: its artifacts and artifact_versions rows by SQL,
+// with no version_renders row, which the version insert's trigger (document_block_versions_owe)
+// leaves owing its block index. The reconciliation, as this head's boot runs it, then states that
+// version. The version takes no version_renders row, and RenderVersion answers its stored bytes
+// from the source stored: only a version this build's writer wrote renders from the tree.
+func TestAVersionWrittenBeforeTheCutoverKeepsItsStoredBytes(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	const notes = "# Notes\n\nThe words a build before the cutover wrote.\n"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('KEEP', 'Kept bytes', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('KEEP-1', 'KEEP', 1, 'An issue that has not converted', '{"kind":"user","id":"alice"}', 'U')`); err != nil {
+		t.Fatalf("seed the issue KEEP-1: %v", err)
+	}
+	var id string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('KEEP-1', 'KEEP', 'notes-md', 'notes.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning id::text`).Scan(&id); err != nil {
+		t.Fatalf("create notes.md of KEEP-1: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')`, id, notes); err != nil {
+		t.Fatalf("write version 1 of notes.md as a build before the cutover writes it: %v", err)
+	}
+
+	drainOwed(t, database, service)
+	var stated *int
+	if err := database.Pool.QueryRow(ctx, `
+		select stated_version from document_block_versions where artifact_id = $1`, id).Scan(&stated); err != nil {
+		t.Fatalf("read what the reconciliation stated of notes.md: %v", err)
+	}
+	if stated == nil || *stated != 1 {
+		t.Fatalf("the reconciliation stated version %v of notes.md, want version 1: the case reads a version a pass of this build stated", stated)
+	}
+	var rows int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from version_renders where artifact_id = $1 and number = 1`, id).Scan(&rows); err != nil {
+		t.Fatalf("count the version_renders rows of notes.md@v1: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("version 1 of notes.md, written before the cutover, holds %d version_renders rows after the pass that stated it, want none (R15)", rows)
+	}
+	rendering, err := RenderVersion(ctx, database.Pool, renderWho, id, 1)
+	if err != nil {
+		t.Fatalf("render version 1 of notes.md: %v", err)
+	}
+	if rendering.Source != StoredBytes || rendering.Markdown != notes {
+		t.Errorf("version 1 of notes.md renders %q from %s, want its stored bytes %q from %s", rendering.Markdown, rendering.Source, notes, StoredBytes)
+	}
+}

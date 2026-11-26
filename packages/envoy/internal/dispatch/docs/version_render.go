@@ -992,11 +992,11 @@ func queueVersionRenderCut(b *store.WriteBatch, version statedVersion, owed bool
 // queryOfBand is the query whose record can cover the versions of an issue's document of each band
 // (refs.DocumentBandSQL, the one statement of which document plays which part): the spec, the
 // Verification document and the plan. A document of any other band - the issue room's own
-// fragment, an upload, a project's document - is covered by no query's record, and its versions
-// render from the tree with no digest (R15), but for the decisions query node, a document of the
-// last band whose node is a query node (rendersFrom). Of a document of one of these bands, a
-// query's record covers only a query version this build's version write made (madeQueryVersion);
-// every other version answers its stored bytes.
+// fragment, an upload, a project's document - is covered by no query's record, and the versions
+// this build's writer wrote of it render from the tree with no digest (R15), but for the decisions
+// query node, a document of the last band whose node is a query node (rendersFrom). Of a document
+// of one of these bands, a query's record covers only a query version this build's version write
+// made (madeQueryVersion); every other version answers its stored bytes.
 var queryOfBand = map[string]string{
 	string(refs.RankBandSpec):         graphstore.QuerySpec,
 	string(refs.RankBandVerification): graphstore.QueryVerification,
@@ -1012,20 +1012,23 @@ type statedVersion struct {
 
 // rendersFrom reports whether a version a pass stated renders from the tree, and the issue and
 // the query whose record covers it, of the document's issue, its band and the query of its node,
-// "" where that node is no query node, and of whether the version is a query version this build's
-// version write made (madeQueryVersion). A query version so made renders from the tree with its
-// record's digest, the record of its node's query. A version of a document whose node is no query
-// node, of a band no query covers - the issue room's own fragment, an upload, a project's document -
-// renders from the tree with no digest (R15): of is its issue, if any, with no query. Every other
-// version - one of a document of a query's band whose node is no query node, an issue's that has
-// not converted, and one of a query node's document that this build's version write did not make -
-// renders from its stored bytes, and takes no row.
-func rendersFrom(issue, band, query string, made bool) (queryOf, bool) {
+// "" where that node is no query node, of whether the version is a query version this build's
+// version write made (madeQueryVersion), and of whether this build's writer wrote the version
+// (written: the transaction queued it, or it holds the version_renders row its write left). A query
+// version so made renders from the tree with its record's digest, the record of its node's query.
+// A version this build's writer wrote of a document whose node is no query node, of a band no query
+// covers - the issue room's own fragment, an upload, a project's document - renders from the tree
+// with no digest (R15): of is its issue, if any, with no query. Every other version - one of such a
+// document that a build before the cutover wrote, which keeps the bytes it holds (R15), one of a
+// document of a query's band whose node is no query node, an issue's that has not converted, and
+// one of a query node's document that this build's version write did not make - renders from its
+// stored bytes, and takes no row.
+func rendersFrom(issue, band, query string, made, written bool) (queryOf, bool) {
 	switch {
 	case query != "":
 		return queryOf{issue: issue, query: query}, issue != "" && made
 	case queryOfBand[band] == "":
-		return queryOf{issue: issue}, true
+		return queryOf{issue: issue}, written
 	}
 	return queryOf{}, false
 }
@@ -1072,14 +1075,17 @@ func (l *Ledger) phaseTx() pgx.Tx {
 // is none; whether the store holds the version's node present, at the address graphstore.VersionID
 // gives it and at any state but gone, since a node held gone is no present node (graphcensus reads
 // a row at its address as a later row at a freed address), and whether that node holds
-// definition_version; whether the store holds the version's row; and what the version's node
-// takes of its document (graphstore.VersionOwnerColumns), as ReadVersionOwner reads it.
+// definition_version; whether the store holds the version's row, and whether it holds the
+// version's version_renders row, which only this build's writer writes (rendersFrom's written); and
+// what the version's node takes of its document (graphstore.VersionOwnerColumns), as
+// ReadVersionOwner reads it.
 var statedDocumentsStatement = `
 	select s.id::text, s.number, coalesce(d.issue_key, ''), ` + refs.DocumentBandSQL("d") + `,
 	       coalesce((select q.attributes->>'` + graphstore.AttributeQuery + `' from graph_nodes q
 	                 where q.kind = '` + graphstore.KindArtifact + `' and q.id = d.ref_key and q.supertag = '` + graphstore.SupertagQuery + `'), ''),
 	       n.id is not null, coalesce(n.attributes ? '` + graphstore.AttributeDefinitionVersion + `', false),
 	       exists (select 1 from artifact_versions v where v.artifact_id = s.id and v.number = s.number),
+	       exists (select 1 from version_renders r where r.artifact_id = s.id and r.number = s.number),
 	       ` + graphstore.VersionOwnerColumns("s.id") + `
 	from unnest($1::uuid[], $2::int[]) as s (id, number)
 	join artifacts d on d.id = s.id
@@ -1127,7 +1133,9 @@ func madeQueryVersion(held, defined, queued bool, owner graphstore.VersionOwner,
 // upload's repair of a role left null (api's storeArtifact), writes the role the row's slug already
 // gives it (refs.DocumentBandSQL). The owner it reads of a version the transaction queued is the
 // one the store holds before the batch, which is the one that version's writer read in the read
-// phase (ReadVersionOwner), and so the one its node takes.
+// phase (ReadVersionOwner), and so the one its node takes. A version of a stored document is this
+// build's writer's where the transaction queued it or it holds its version_renders row
+// (rendersFrom's written); one a build before the cutover wrote holds neither.
 func (l *Ledger) readCovered(ctx context.Context, tx pgx.Tx, versions []statedVersion) (map[statedVersion]queryOf, error) {
 	covered := map[statedVersion]queryOf{}
 	var ids []string
@@ -1143,7 +1151,7 @@ func (l *Ledger) readCovered(ctx context.Context, tx pgx.Tx, versions []statedVe
 		if query != "" {
 			owner.Query, owner.DefinitionVersion = true, graphstore.QueryDefinitionVersion
 		}
-		if of, renders := rendersFrom(address.IssueKey, string(address.Band), query, madeQueryVersion(false, false, true, owner, version.number)); renders {
+		if of, renders := rendersFrom(address.IssueKey, string(address.Band), query, madeQueryVersion(false, false, true, owner, version.number), true); renders {
 			covered[version] = of
 		}
 	}
@@ -1158,12 +1166,12 @@ func (l *Ledger) readCovered(ctx context.Context, tx pgx.Tx, versions []statedVe
 	for rows.Next() {
 		var version statedVersion
 		var issue, band, query string
-		var held, defined, stored bool
+		var held, defined, stored, rendered bool
 		var owner graphstore.VersionOwner
-		if err := rows.Scan(append([]any{&version.artifactID, &version.number, &issue, &band, &query, &held, &defined, &stored}, owner.Targets()...)...); err != nil {
+		if err := rows.Scan(append([]any{&version.artifactID, &version.number, &issue, &band, &query, &held, &defined, &stored, &rendered}, owner.Targets()...)...); err != nil {
 			return nil, fmt.Errorf("read which query's record covers the versions the passes stated: %w", err)
 		}
-		if of, renders := rendersFrom(issue, band, query, madeQueryVersion(held, defined, !stored, owner, version.number)); renders {
+		if of, renders := rendersFrom(issue, band, query, madeQueryVersion(held, defined, !stored, owner, version.number), !stored || rendered); renders {
 			covered[version] = of
 		}
 	}
