@@ -237,7 +237,6 @@ function priorityRow(help: string): string {
 test("Settings gives p0 only where its box is ticked, and the command sets P0 only under a token that holds it", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
   test.setTimeout(240_000);
   // The person is the row's own (`rowPerson`): Settings lists one person's tokens, and the row
   // reads that list empty before it makes its two.
