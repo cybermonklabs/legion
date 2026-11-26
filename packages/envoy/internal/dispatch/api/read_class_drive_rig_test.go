@@ -278,14 +278,65 @@ func TestTheDriveJudgesOnlyTheWritesNoRollbackUndid(t *testing.T) {
 	}
 }
 
+// The drive accepts a write a rollback undid only on the results route and only to the tables its
+// writer writes (readMayRollBack); a simple-protocol string that opens, writes and commits is
+// judged by its write. The rows that must fail are the control: a rolled-back write on another
+// route, a rolled-back write of another table on the results route, and a commit hidden after a
+// write in one string.
+func TestTheDriveAcceptsARolledBackWriteOnlyOnTheResultsRouteAndItsTables(t *testing.T) {
+	t.Parallel()
+	statement := func(sql string) drivenStatement {
+		writes, readable := driveWritesOf(sql)
+		return drivenStatement{sql: sql, writes: writes, readable: readable, conn: 1}
+	}
+	rolledBack := func(write string) []drivenStatement {
+		return []drivenStatement{statement("begin"), statement(write), statement("rollback")}
+	}
+	const heads = "insert into pull_request_heads (repo, number) values ($1, $2)"
+	for _, row := range []struct {
+		name       string
+		route      string
+		statements []drivenStatement
+		fails      bool
+	}{
+		{"a rolled-back write of the results writer's table on the results route", rolledBackRoute, rolledBack(heads), false},
+		{"a rolled-back write of each of its tables", rolledBackRoute, slices.Concat(
+			rolledBack("insert into pull_request_texts (repo, number) values ($1, $2)"),
+			rolledBack("delete from pull_request_reads_owed where repo = $1"),
+			rolledBack("insert into branch_commits (repo, branch, sha) values ($1, $2, $3)")), false},
+		{"a rolled-back write of the same table on another route", http.MethodGet + " /api/v1/issues/{key}", rolledBack(heads), true},
+		{"a rolled-back write of another table on the results route", rolledBackRoute,
+			rolledBack("update issues set title = $2 where key = $1"), true},
+		{"a write and its commit in one string on the results route", rolledBackRoute,
+			[]drivenStatement{statement("begin; " + heads + "; commit")}, true},
+	} {
+		recorder := &errorRecorder{TB: t}
+		requireReadsWrites(recorder, row.name, row.route, row.statements)
+		if failed := len(recorder.errors) > 0; failed != row.fails {
+			t.Errorf("%s: the drive failed=%t (%q), want failed=%t", row.name, failed, recorder.errors, row.fails)
+		}
+	}
+}
+
+// errorRecorder is a testing.TB whose Errorf records the failure instead of failing the test, so
+// a test can hold a judgment's failure as its control.
+type errorRecorder struct {
+	testing.TB
+	errors []string
+}
+
+func (r *errorRecorder) Errorf(format string, args ...any) {
+	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+func (r *errorRecorder) Helper() {}
+
 // readMayWrite is whether a read may write table with verb, statement being the whole statement.
 // A read writes nothing but the spec's closed list, wherever the write runs: the insert that
 // spends a broker token's proof, a personal token's last use, the inserts of the display trees,
 // the route roster and the event horizon (writesOf reads an upsert as the insert it is), a
 // project's term statistics, GitHub's rate limits, and a compaction's rewrite and delete of a
-// document's updates. A write a transaction the read opened rolls back stores nothing and is no
-// write of the read's (unrolled): a read-only caller's results read makes the writes of its
-// read-throughs so (delivery.HeadAnswers).
+// document's updates. A write a rollback undid is held to readMayRollBack.
 func readMayWrite(verb, table, statement string) bool {
 	switch table {
 	case "dpop_proofs", "text_trees", "route_roster", "event_horizon":
@@ -314,17 +365,45 @@ func writesIn(statements []drivenStatement) []string {
 	return written
 }
 
-// requireReadsWrites fails what for every write of statements a read may not make (readMayWrite),
-// and for every statement holding a write this test cannot read a table for. A write that a
-// rollback of its transaction undid is no write (unrolled). It answers every write it saw, as
-// "<verb> <table>", each undone one as "rolled back <verb> <table>".
-func requireReadsWrites(t *testing.T, what string, statements []drivenStatement) []string {
+// rolledBackRoute is the one route whose read may make writes a rollback undoes: a read-only
+// caller's results read makes the writes of its read-throughs with the writer's own code in a
+// transaction it rolls back (delivery.HeadAnswers), and rolledBackTables is every table that
+// writer's code writes.
+const rolledBackRoute = http.MethodGet + " /api/v1/issues/{key}/results"
+
+var rolledBackTables = []string{"pull_request_heads", "pull_request_texts", "pull_request_reads_owed", "branch_commits"}
+
+// readMayRollBack is whether a read of route may make a write of table that a rollback undid:
+// only the results read, only to its writer's tables (rolledBackRoute, rolledBackTables), and
+// otherwise only a write the read may make anyway (readMayWrite). A rolled-back write still takes
+// row locks, fires triggers and draws sequence values, so no other route is given it.
+func readMayRollBack(route, verb, table, statement string) bool {
+	if route == rolledBackRoute && slices.Contains(rolledBackTables, table) {
+		return true
+	}
+	return readMayWrite(verb, table, statement)
+}
+
+// requireReadsWrites fails what, a read of route, for every write of statements a read may not
+// make (readMayWrite), every write a rollback undid that the route may not make
+// (readMayRollBack), and every statement holding a write this test cannot read a table for. It
+// answers every write it saw, as "<verb> <table>", each undone one as
+// "rolled back <verb> <table>".
+func requireReadsWrites(t testing.TB, what, route string, statements []drivenStatement) []string {
 	t.Helper()
 	kept, undone := unrolled(statements)
 	var written []string
 	for _, statement := range undone {
+		if !statement.readable {
+			t.Errorf("%s: the window holds a write this test cannot read a table for, rolled back: %s", what, oneLine(statement.sql))
+		}
 		for _, write := range statement.writes {
 			written = append(written, "rolled back "+write)
+			verb, table, _ := strings.Cut(write, " ")
+			if !readMayRollBack(route, verb, table, statement.sql) {
+				t.Errorf("%s: the window holds %s %s, rolled back, which a read of %s may not make: only %s may, and only to %v: %s",
+					what, verb, table, cmp.Or(route, "this route"), rolledBackRoute, rolledBackTables, oneLine(statement.sql))
+			}
 		}
 	}
 	for _, statement := range kept {
@@ -344,8 +423,12 @@ func requireReadsWrites(t *testing.T, what string, statements []drivenStatement)
 
 // transactionControl is the word a statement controls its backend's transaction with: begin,
 // savepoint, release, commit, rollback, or rollback to (a savepoint), and "" for any other
-// statement.
+// statement, and for one holding a write or one this test cannot read: a simple-protocol string
+// such as `begin; insert ...; commit` is judged by its writes, and none is hidden as control.
 func transactionControl(statement string) string {
+	if writes, readable := driveWritesOf(statement); len(writes) > 0 || !readable {
+		return ""
+	}
 	words := strings.Fields(strings.ToLower(statement))
 	switch {
 	case len(words) == 0:

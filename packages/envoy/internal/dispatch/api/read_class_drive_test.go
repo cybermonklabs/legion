@@ -587,7 +587,7 @@ func (w *driveWorld) precheck(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: GET %s answered %d %s", what, target, response.Code, response.Body.String())
 		}
-		requireReadsWrites(t, what, statements)
+		requireReadsWrites(t, what, "", statements)
 		return statements
 	}
 	count := func(statements []drivenStatement, pattern *regexp.Regexp) (all, unmarked int) {
@@ -650,7 +650,7 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 		statements := w.tracer.window(t, what, func() { answer = w.rig.serve(readOnly.request(t, target)) })
 		tally.windows++
 		tally.statements += len(statements)
-		for _, write := range requireReadsWrites(t, what, statements) {
+		for _, write := range requireReadsWrites(t, what, name, statements) {
 			tally.writes[write]++
 			if write == "insert text_trees" && !slices.Contains(tally.treesStored, name) {
 				tally.treesStored = append(tally.treesStored, name)

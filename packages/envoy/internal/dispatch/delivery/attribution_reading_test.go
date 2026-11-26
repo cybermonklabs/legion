@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // readingCorpusPath is the corpus of the reading in the database (attribution_keys): each text
@@ -895,25 +896,21 @@ func TestARemakeOfKeysCannotStoreTheKeysOfOlderTexts(t *testing.T) {
 		_, err := RemakeKeys(context.Background(), pool)
 		remade <- err
 	}()
+	// RemakeKeys either waits on the writer's open update or has ended; the wait is bounded by the
+	// test binary's deadline, as every wait of the package is (testwait).
 	var remakeErr error
-	ended, deadline := false, time.Now().Add(time.Minute)
-	for !ended {
+	ended := testwait.UntilPolling(t, 10*time.Millisecond, "RemakeKeys to wait on the writer's open update or end", func() (bool, bool) {
+		select {
+		case remakeErr = <-remade:
+			return true, true
+		default:
+		}
 		waiting, err := storetest.LockWaiters(ctx, writer)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			break
-		}
-		select {
-		case remakeErr = <-remade:
-			ended = true
-		case <-time.After(10 * time.Millisecond):
-			if time.Now().After(deadline) {
-				t.Fatal("RemakeKeys neither ended nor waited on the writer's open update within a minute")
-			}
-		}
-	}
+		return false, waiting > 0
+	})
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

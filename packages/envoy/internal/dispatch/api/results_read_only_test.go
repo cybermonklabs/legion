@@ -1535,18 +1535,22 @@ func parityInProcess(stack *parityStack) string {
 // parityStored is every row of each table a writer's results read writes, whole, one row a line in
 // one order, and how many events it holds: the pull request heads and their texts, the branch
 // answers, the reads owed and the claims of a commit's read-through every process shares. Two
-// columns are left out, each a reader's wall clock that two reads never share and that orders
-// nothing: a head's github_read_at and its texts' read_at. A row's github_read_order stays, so a
-// read that took a place in the order of reads leaves its mark here.
+// columns are each a reader's wall clock, which two reads never share and which orders nothing: a
+// head's github_read_at and its texts' read_at. Their values are left out and whether each is set
+// is kept, since a null github_read_at decides the upsert's guard, a trigger and the readers, so a
+// write that only sets or clears the mark changes the snapshot. A row's github_read_order stays,
+// so a read that took a place in the order of reads leaves its mark here.
 func parityStored(t *testing.T, database *store.Store) string {
 	t.Helper()
 	var stored string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select coalesce(string_agg(row, E'\n' order by row), '')
 		from (
-			select 'pull request head ' || (to_jsonb(head) - 'github_read_at')::text as row from pull_request_heads head
+			select 'pull request head ' || ((to_jsonb(head) - 'github_read_at')
+				|| jsonb_build_object('github_read_marked', head.github_read_at is not null))::text as row from pull_request_heads head
 			union all
-			select 'texts ' || (to_jsonb(texts) - 'read_at')::text from pull_request_texts texts
+			select 'texts ' || ((to_jsonb(texts) - 'read_at')
+				|| jsonb_build_object('read_marked', texts.read_at is not null))::text from pull_request_texts texts
 			union all
 			select 'owed read ' || to_jsonb(owed)::text from pull_request_reads_owed owed
 			union all
