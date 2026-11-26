@@ -7079,7 +7079,7 @@ the attempt's own budget is derived from `worker_boot_timeout_seconds` whenever 
 Ending the attempt, its Sandbox deleted, the daemon logs `boot probe is waiting on capacity; running it again` with `probe=worker image`, the pod's name and the scheduler's own reason in `detail` (`probe pod
 legion-probe-<project>-<digest12> is Unschedulable: 0/83 nodes are available: 25 Insufficient cpu …`) and `retryIn`, the probe's longest interval, 5 min.
 It then creates the probe Sandbox again, as many times as it takes:
-such a wait is counted against none of the probe's six attempts (`bootprobe.Run`, `Outcome.Waiting`), since a full pool says nothing about the image and a daemon that exited would not make room.
+such a wait is counted against none of the probe's six attempts (`bootprobe.Run`, `Outcome.Waiting`), since nodes with no room say nothing about the image and a daemon that exited would not make room.
 The daemon stays up through it, but serves nothing yet:
 the probe runs before the API is served (`plan.probe` precedes `serve` in `internal/daemon/daemon.go`), so `legion state` answers nothing while the probe waits, and the log is where the wait shows.
 Once a probe pod is placed and passes, the `pool-capacity` row of [The deployment's capability report](#the-deployments-capability-report) records how many attempts waited and the scheduler's last reason, open until `capabilities.decided.pool-capacity` names a reason;

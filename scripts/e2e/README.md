@@ -2201,9 +2201,9 @@ Nothing outside `legion` is touched.
 What the run had to learn about production (AWS, `LEGION_E2E_RUNTIME_IDENTITY_KIND=aws-iam-role`):
 
 - **Nothing ties a pod to a node.**
-  Every issue pod owns its volume and carries no affinity, so the scheduler bin-packs it wherever the pool has room for its reservation, and Karpenter adds a node under the `legion` NodePool's floor, `karpenter.k8s.aws/instance-cpu` Gt 3 (set in the cluster's own infrastructure code), when none has.
+  Every issue pod owns its volume and carries no affinity, so the scheduler bin-packs it wherever a node of the cluster has room for its reservation, and Karpenter adds a node when none has.
   Under the tree-volume layout before LEGION-632 every pod of a tree had to join the node of the tree's first pod, and a `c7a.medium`'s 8 pod slots, 7 of them daemonsets, left no room for a second:
-  that is what the floor was set for, and it now only decides the smallest node the pool adds.
+  that is what the `legion` NodePool's floor, `karpenter.k8s.aws/instance-cpu` Gt 3 (set in the cluster's own infrastructure code), was set for while Legion's pods ran on that NodePool.
 
 - gVisor on production reports `4.19.0-gvisor` from `uname -r`.
 
@@ -2369,11 +2369,12 @@ Its verdict is one line, just before the evidence line:
 or `stage 4b e2e: BLOCKED (check <check>)` when the checkpoint could not run and the teardown checks (`transcripts`, `namespace-clean`, `production-audit`) passed, which makes the run no verdict on the change while the checkpoints before it stand, and gets no notes.
 Capacity is such a stop.
 No pod asks for or keeps off a node: each issue pod carries its own disk and the issue pod's one cpu and memory reservation, shared by its six roles (docs/kubernetes.md "Issue sizing:
-one reservation per pod"), so `preflight` counts the `legion` pool's room in pods of that reservation under the run's resources (`lib/stage4b-room.jq`) and ends BLOCKED `capacity: …` when it cannot place the run's four pods at once:
+one reservation per pod"), so `preflight` counts the room for the run's four pods at once in pods of that reservation under the run's resources (`lib/stage4b-room.jq`):
 tree 1's root and its two children beside tree 2's root.
-Its room is what each Ready, schedulable pool node, neither tainted `karpenter.sh/disrupted` nor being deleted, has free beside every non-terminal pod placed on it, of any namespace, plus the pods the pool's cpu and memory limits still leave room for beside what it already runs (a pool with no limit bounds nothing).
+It counts on the nodes the run's pods may use: each Ready, schedulable node, neither tainted `karpenter.sh/disrupted` nor being deleted, that carries every label of the run's `runtime.kubernetes.scheduling.node_selector` (every node, as the run sets none) with RuntimeClass `gvisor`'s `scheduling.nodeSelector` over it, and whose `NoSchedule` and `NoExecute` taints the run's tolerations or the RuntimeClass's tolerate, with what it has free beside every non-terminal pod placed on it, of any namespace: admission adds the RuntimeClass's scheduling to every pod that runs under it.
+No one NodePool's limits bound those pods and the cluster may add nodes, so the room bounds nothing, except that `preflight` ends BLOCKED `capacity: …` when no node admits the run's pods at all.
 A wait that needs a tree's pods placed names that tree (or the reachability pod) as its subject.
-If it times out while one of its subject's pods is Pending Unschedulable, and Karpenter's newest event of any reason for that pod's uid, no older than its Unschedulable transition, is its FailedScheduling finding every instance type over the pool's limits (a newer Nominated or other Karpenter event supersedes it), it ends BLOCKED `capacity: …`, naming the pod with its evidence:
+If it times out while one of its subject's pods is Pending Unschedulable, and Karpenter's newest event of any reason for that pod's uid, no older than its Unschedulable transition, is its FailedScheduling finding every instance type over the limits of the NodePool it names, whatever its name (a newer Nominated or other Karpenter event supersedes it), it ends BLOCKED `capacity: …`, naming the pod with its evidence:
 the limit event's time and message, the pod's PodScheduled condition, and the default scheduler's newest FailedScheduling message for it.
 A wrong classification can only read BLOCKED, never PASS, and the line shows it.
 A wait with no subject, a starved pod outside the subject, any other timeout, and any check that fails outright stay FAIL.
@@ -2423,7 +2424,7 @@ A pass proves that and no more:
 - Run it from the release tag the deployment pins and with `LEGION_E2E_IMAGE` set to the worker image it pins:
   the daemon's boot probe, its launch and the pod's shape are that release's.
 
-- The rest of `runtime.kubernetes` (namespace, pool, scheduling, the controller and the deployment's other keys) is Stage 4b's own, never the deployment's, so pair the run with `legion config check` on the deployment's whole `legion.yaml` at that release.
+- The rest of `runtime.kubernetes` (namespace, scheduling, the controller and the deployment's other keys) is Stage 4b's own, never the deployment's, so pair the run with `legion config check` on the deployment's whole `legion.yaml` at that release.
 
 - A Secret or ConfigMap volume is compared by its kind and object name, not its `items`.
 
@@ -2490,17 +2491,17 @@ neither protects a lane's own [`lib/built-from.sh`](#libbuilt-fromsh)
 A second lane's pack landing mid-read reads as this lane's own tree having changed, failing `prerequisites` or the build's own revision check for a reason that has nothing to do with the change under test.
 Run concurrent lanes from separate checkouts (`jj workspace add`, or separate clones) of the same commit.
 
-**Two lanes can race the legion pool's own capacity preflight, and that is a finding, not a bug to fix here.**
-`prerequisites` reads the legion NodePool's current room (`pool_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only if that one read already can't fit `run_pods_at_once` pods (4, the cap:
+**Two lanes can race for the cluster's capacity, and that is a finding, not a bug to fix here.**
+`preflight` reads the room on the nodes the run's pods may use (`run_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only when no node admits the run's pods: it counts no NodePool's limits, so it never refuses for want of room for `run_pods_at_once` pods (4, the cap:
 tree 1's root and its two children beside tree 2's root).
-Two lanes starting close together can each read room enough for itself alone
+Two lanes starting close together both pass it
 — the read is not a reservation — so a true shortfall surfaces only once both are actually scheduling.
-That is never silent: every pod-placement wait is wrapped (`on_tree`/`on_issue`), so a wait stalled on the pool's own limits while its subject pod is still Pending, or after its claim has given up, ends its checkpoint `BLOCKED: capacity: …`, naming the pod the scheduler could not place
-— the same outcome a single lane gets today when the pool is simply full.
+That is never silent: every pod-placement wait is wrapped (`on_tree`/`on_issue`), so a wait stalled on a NodePool's limits while its subject pod is still Pending, or after its claim has given up, ends its checkpoint `BLOCKED: capacity: …`, naming the pod the scheduler could not place
+— the same outcome a single lane gets today when that NodePool is simply full.
 A pod that starves and is placed before its own claim's launch budget runs out, with the wait still timing out for some other reason, reads FAIL:
 neither path has evidence of a starvation that never reached either threshold.
-Running two lanes at once therefore needs either enough spare legion-pool capacity for both (8 pods' worth of reservations between them) or tolerance for the slower lane landing `BLOCKED` on capacity;
-widening the pool is infrastructure, not this change.
+Running two lanes at once therefore needs either enough spare capacity in the NodePool the run's pods use for both (8 pods' worth of reservations between them) or tolerance for the slower lane landing `BLOCKED` on capacity;
+widening that NodePool is infrastructure, not this change.
 
 **What the run touches in production**, all of it removed by the `EXIT`/`INT`/`TERM`/`HUP` trap of the run that owns it.
 A signal to the whole process group does not stop the removal:
@@ -2597,13 +2598,13 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `preflight`
 
   the runtime identity is the daemon's restricted IAM role and cannot list Secrets;
-  the Sandbox CRD and the `legion` NodePool's instance-cpu floor;
-  the pool's room for the run's four pods at once (tree 1's root and its two children, tree 2's root), counted in issue pods of the run's `issue` reservation (`lib/stage4b-room.jq`):
-  what each Ready, schedulable, undisrupted pool node has free beside every non-terminal pod on it, of any namespace, plus the pods the pool's cpu and memory limits still leave room for, below which the run ends BLOCKED `capacity: …`;
-  whether the NodePool's instance-cpu and instance-memory bounds let two of the run's pods share a node, which decides what `issue-independence` asserts of their nodes;
+  the Sandbox CRD;
+  the room for the run's four pods at once (tree 1's root and its two children, tree 2's root) on the nodes the run's pods may use, counted in issue pods of the run's `issue` reservation (`lib/stage4b-room.jq`):
+  what each Ready, schedulable, undisrupted node that the run's `node_selector` selects (every node, as the run sets none) with RuntimeClass `gvisor`'s node selector over it, and whose `NoSchedule` and `NoExecute` taints the run's tolerations or the RuntimeClass's tolerate, has free beside every non-terminal pod on it, of any namespace; a failed read of the nodes, the pods or the RuntimeClass ends the run BLOCKED; the room bounds nothing, since no one NodePool's limits bound the run's pods, and the run ends BLOCKED `capacity: …` only when no node is admitted;
+  whether one of those nodes' allocatable holds two of the run's pods, which `issue-independence` notes beside their nodes;
   the run's Dispatch bearer reads `whoami` as an agent session, and an invalid bearer is refused 401;
   LEGSMOKE has no todo root; the stream carries both halves of intake;
-  a throwaway pod on the Legion pool reaches Dispatch, the listener, the gateway and NATS, each within three tries 5 s apart (a fresh node's first outbound connection can fail while it settles), and a service that never answers fails the check with every try's error
+  a throwaway pod placed as the run's Sandbox pods are reaches Dispatch, the listener, the gateway and NATS, each within three tries 5 s apart (a fresh node's first outbound connection can fail while it settles), and a service that never answers fails the check with every try's error
 
 - `pod-watch`
 
@@ -2668,7 +2669,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   each pod has a disk of its own, `<pod>-issue`, Bound and owned by that pod, and the three are three;
   and no pod can read another issue's workspace, each way between the root's pod and child 1's (`ls` of the other's workspace path answers `No such file or directory`, while the same path exists in its own pod).
   Their nodes are recorded (`issue-independence-pods.txt`);
-  two or more are asserted only when preflight read the NodePool's instance bounds as holding no two of the run's pods, otherwise the count is noted.
+  no count of them is asserted, since preflight's read of whether one of the nodes the run's pods may use holds two of them never says two cannot share a node, and the count is noted.
   Tree 3 is then set todo, and the state reads the cap full of the four issues the daemon has started — tree 1's root, both its children and tree 2's root — with tree 3 alone in `admission.waiting`: a slot is one issue the daemon has started, so one tree's children fill a cap beside another tree's root.
   Tree 1's planner is then told to plan.
   Tree 2's planner has held for the driver: a tree 2 that left planning before the driver sent it anything fails here by name.
@@ -3077,7 +3078,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   — each stop deleted the member's Sandbox once its pod was gone, the children's at their parks and the root's at its production check's close;
   then every node any pod of tree 1 ran on (read from the pod watch:
   the root's, the children's, the replacements the fence and the stream move made, the pod the production check's last look brought back) is released
-  — the node is gone after the pool's consolidation, or, when another pod keeps it, Pending or Running, the node stays carrying no pod of tree 1:
+  — the node is gone after its NodePool's consolidation, or, when another pod keeps it, Pending or Running, the node stays carrying no pod of tree 1:
   a pod of another project (a production daemon running beside the run), the run's repository cache (`legion.dev/cache=true`, no tree's, alive as long as the daemon), or a pod of another tree of the run;
   a pod of tree 1, or of the run with no tree label other than the cache, holds the wait, one that has Succeeded or Failed counts for nothing, and a pod with no project label is no Legion pod (`node_pods_judged`, lib's `node-released.test.ts`).
   The note says which it saw where, and a timeout lists what the node still held with each pod's project and tree label.
