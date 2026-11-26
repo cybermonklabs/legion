@@ -342,9 +342,9 @@ func TestProbeImageRefusesRoleReferencesTheImageWouldRefuseBeforeAnyPod(t *testi
 }
 
 // The probe is a Sandbox named for the project and the image, running the image's Go `legion
-// probe-image` with the daemon's contract on the Legion pool; it passes on the OK line confirming
-// that contract — which names no model: Legion's probe makes no model round trip — and it deletes
-// its Sandbox when it is done.
+// probe-image` with the daemon's contract on the cluster's general nodes; it passes on the OK line
+// confirming that contract — which names no model: Legion's probe makes no model round trip — and
+// it deletes its Sandbox when it is done.
 func TestProbeImagePassesOnTheOKLineConfirmingTheContract(t *testing.T) {
 	t.Parallel()
 	g := newProbeRig(t, nil)

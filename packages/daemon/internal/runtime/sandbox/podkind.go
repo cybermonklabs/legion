@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -50,6 +51,10 @@ type podKind interface {
 	// resources are the reservation every container of the pod carries, its init containers'
 	// included (Options.Resources).
 	resources(r *Runtime) corev1.ResourceRequirements
+	// serviceAccount is the ServiceAccount the pod runs as, "" for the namespace's default: the
+	// one its template names (podTemplate) and the one a live pod of the kind is held to
+	// (accountDrift).
+	serviceAccount(r *Runtime) string
 	// initContainers are the pod's init containers, and initVolumes the volumes only they mount,
 	// besides the pod's own volume and config home.
 	initContainers(r *Runtime, l launch) []corev1.Container
@@ -153,6 +158,10 @@ func (issuePod) container() string { return runtime.IssuePodContainer }
 
 // resources is the one issue-pod reservation.
 func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Issue }
+
+// serviceAccount is the operator's runtime.kubernetes.pod.service_account, every pod's but the
+// controller's.
+func (issuePod) serviceAccount(r *Runtime) string { return r.pod.ServiceAccount }
 
 func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
 	return claim.NewToken(project, issue, role)
@@ -539,6 +548,13 @@ func (controllerPod) container() string { return runtime.ControllerPodContainer 
 
 // resources is the controller's pod's reservation.
 func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Controller }
+
+// serviceAccount is runtime.kubernetes.pod.controller_service_account where the operator names one,
+// and the account every other pod runs as (service_account) where not, so a deployment that names
+// no controller account runs its controller as it always did.
+func (controllerPod) serviceAccount(r *Runtime) string {
+	return cmp.Or(r.pod.ControllerServiceAccount, r.pod.ServiceAccount)
+}
 
 func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {
 	return claim.ControllerToken(project), nil
