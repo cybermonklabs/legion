@@ -237,11 +237,11 @@ runtime:
 // members of its metadata endpoint. It is appended to settingsFixtureFile, as the settings tests
 // append each block of theirs to it (TestSettingsOfTheSandboxShowsEachMember), rather than
 // written into that file, where a block of its own would be a second `sandbox` key beside each
-// one those tests append. The third state body carries it (stateCarryingEveryDeclaredValue), so
-// the fixture bodies realise the microvm block and its keys, which no body of the maximal file
-// alone carries (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture). No record holds them:
-// no reader types a key of the block below its top level (withoutUntypedSettings). Names and
-// hosts are placeholders.
+// one those tests append. stateCarryingEveryDeclaredValue, a body of this case's own, carries
+// it, so the fixture bodies realise the microvm block and its keys, which no body of the maximal
+// file alone carries (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture). No record holds
+// them: no reader types a key of the block below its top level (withoutUntypedSettings). Names
+// and hosts are placeholders.
 const sandboxSettingsBlock = `    sandbox:
       canary_issues: [LEGION-208]
       microvm:
@@ -252,16 +252,17 @@ const sandboxSettingsBlock = `    sandbox:
           identity_provider: https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example
 `
 
-// stateCarryingTheRestOfTheShape is the second state body, and it carries what populatedState
-// cannot: an issue waiting on a person for a design gate, which is the `waitingOn` of a kind
-// the first body has none of; an issue whose wait a person declined to answer, which is the
-// value contract 68 added to `answeredBy` and the one this change's serving-down of a value is
-// for; a status write the daemon owes Dispatch; a repository cache whose health read failed;
-// the project's last pause, which a state carries only while no pause stands, and populatedState
-// carries the one that stands (contract 178); and the settings of a tmux deployment
-// (shapeSettingsFile). Every key of these is a key the state route writes, so the records
-// describe each of them, the settings keys no reader types apart (withoutUntypedSettings), and a
-// serving-down that forgets one is caught where a thinner sample would pass.
+// stateCarryingTheRestOfTheShape is a state body of this case's own, and it carries what
+// populatedState cannot: an issue waiting on a person for a design gate, which is the
+// `waitingOn` of a kind the first body has none of; an issue whose wait a person declined to
+// answer, which is the value contract 68 added to `answeredBy` and the one this change's
+// serving-down of a value is for; a status write the daemon owes Dispatch; a repository cache
+// whose health read failed; the project's last pause, which a state carries only while no pause
+// stands, where pausedState carries the one that stands and populatedState carries neither
+// (contract 178); and the settings of a tmux deployment (shapeSettingsFile). Every key of these
+// is a key the state route writes, so the records describe each of them, the settings keys no
+// reader types apart (withoutUntypedSettings), and a serving-down that forgets one is caught
+// where a thinner sample would pass.
 func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	t.Helper()
 	since := time.Date(2026, 9, 22, 7, 30, 0, 0, time.UTC)
@@ -350,11 +351,12 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	}
 }
 
-// stateCarryingEveryDeclaredValue is the third state body. It carries every value answers.go's
-// EnumeratedFields declares above the floor, at every key path of the state the table declares
-// the value at, which the first two bodies do not carry between them. The value comparison
-// (shapeProblems) reads only the values a served body carries, so a value no body carries is held
-// to no record at any contract (TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody).
+// stateCarryingEveryDeclaredValue is a state body of this case's own. It carries every value
+// answers.go's EnumeratedFields declares above the floor, at every key path of the state the
+// table declares the value at, which the bodies before it in stateFixtures do not carry between
+// them. The value comparison (shapeProblems) reads only the values a served body carries, so a
+// value no body carries is held to no record at any contract
+// (TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody).
 //
 // The values are written here, and not read from the table: a value the table gains with no body
 // that carries it is then red in that census, and an edit of the table alone cannot carry it
@@ -366,19 +368,21 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
 // merge states, so the twelve issues carry all eight words at both key paths. The project's pause
 // waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
-// where populatedState's pause waits on an implementer alone. Its repositories block names five
-// live repositories, both role Apps installed on each, whose caches stand in the five states a
-// cache can be in, so `repositories.live.*.cache.state` carries every word of that field, which
-// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates). The intake's
-// open give-ups list one record of each reason, so `intakeGiveUps.newest.*.reason` carries every
-// word, where populatedState's three records carry three of the five.
+// where pausedState's pause waits on an architect, implementers and a reviewer alone. Its
+// repositories block names five live repositories, both role Apps installed on each, whose
+// caches stand in the five states a cache can be in, so `repositories.live.*.cache.state`
+// carries every word of that field, which arrived with the block at repositoriesLiveContract
+// (answers.go's liveCacheStates). The intake's open give-ups list one record of each reason, so
+// `intakeGiveUps.newest.*.reason` carries every word, where populatedState's three records carry
+// three of the five.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
-// `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
-// that file alone with `dispatch_token_broker` turned on, and stay so because the state golden is
-// written from them, and the second body's are a tmux file's. They carry `dispatch_token_broker`
-// too, turned on in the loaded configuration, since the file names `dispatch_token_file`, which
-// the loader refuses beside the setting.
+// `type` (sandboxSettingsBlock), which no other body carries: populatedState's and pausedState's
+// settings are that file alone with `dispatch_token_broker` turned on, and stay so because the
+// state golden is written from them, and operatorClaimState's and
+// stateCarryingTheRestOfTheShape's are a tmux file's. They carry `dispatch_token_broker` too,
+// turned on in the loaded configuration, since the file names `dispatch_token_file`, which the
+// loader refuses beside the setting.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)

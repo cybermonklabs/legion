@@ -155,7 +155,7 @@ const schemas: Record<string, z.ZodType> = {
   "state-operator-claim.json": LegionStateResponse,
   "state-paused.json": LegionStateResponse,
   "state-last-pause.json": LegionStateResponse,
-  // Written by internal/projection's own golden test: what the state route projects while the
+  // That composition's too, over a seed of its own: what the state route serves while the
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
   // Written by internal/api's TestStateNarrowedRepositoriesGolden: the state route's body for a
@@ -2017,8 +2017,9 @@ test("the state says which contract it was built at", () => {
   expect(LegionStateResponse.parse(older).contract).toEqual({ daemon: contract });
 
   // A narrowed body carries no mark, and parses: the readers of this schema are never served one
-  // — a caller below 75 reads with the schema of its own contract — and the state as
-  // internal/projection answers it, before the route marks it, carries none either.
+  // — a caller below 75 reads with the schema of its own contract — and the state fixtures carry
+  // none either, since the composition test that writes them takes the route's marks off
+  // (apifixture.WithoutContractMarks).
   expect(LegionStateResponse.safeParse(golden).error?.issues ?? []).toEqual([]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).contract).toBeUndefined();
 
@@ -2541,14 +2542,15 @@ test("the state golden carries each issue's repository and the repositories its 
 // (codegraph among them: the image carries the tooling and a pod's launch loads it with extension
 // discovery on; claude-code too, since one worker image carries the claude-envoy plugin and the
 // pin a pod installs Claude Code from for a role whose worker_backends names it) and withheld
-// rows, and the six live rows unchecked — no session has reported, so
-// the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
-// never absent from a state. `installed` left the status set at contract 25: it was codegraph's
-// until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
-// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
-// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
-// live row carries none.
+// rows, and the live rows as the sessions reported them: what LEGION-208's implementer proved
+// (`subagents`, present), what it found broken (`github`, open) and a row no session has
+// reported, which the deployment renders `unchecked` with its citation (`web-search`,
+// contract 21). The report is never absent from a state. `installed` left the status set at
+// contract 25: it was codegraph's until LEGION-629, and no row has carried it since. Each
+// deployment row carries `source` (contract 25): `configuration` (what legion.yaml alone
+// decides) or `boot` (what boot measured), or, on `repository-cache-room`, `caches`
+// (contract 213), what the repository caches' last health reads said of their room: the
+// golden's one cache ran out of room, so that row is open too. A live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
