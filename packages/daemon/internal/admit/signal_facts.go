@@ -65,10 +65,10 @@ import (
 //     its launch generation and the request's own id, marked counted where the configured model
 //     selector takes its model and with whether the report said its host reports each 429 its
 //     transport retries (record.Store.KeepModelRequests), with no mark of a write of its own: the
-//     architect's rule decides whether the report runs the pass (signalFactMoved), and the
+//     series-moved pass rule decides whether the report runs the pass (signalFactMoved), and the
 //     deadline is set again from it either way.
 //   - intake.TurnEdge: the start or end of a turn of a claim, which the claim itself records, so
-//     nothing is kept; where the claim's issue holds a slot, the architect's rule decides whether
+//     nothing is kept; where the claim's issue holds a slot, the series-moved pass rule decides whether
 //     it runs the pass, as for a report. A claim of an issue that holds none moves no series.
 //   - intake.SignalSettingChanged: a person's change of the switch or of a limit, which Apply keeps
 //     itself (keepSignalSetting) since the fact answers whether it moved the setting.

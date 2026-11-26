@@ -22,9 +22,13 @@ type SignalSettings interface {
 
 // SignalSwitch is a project's settings of admission by signals: whether it is on, and the limit of
 // each series that has one, by its name of signals.Names(). A series with no limit holds nothing.
+// stored is the store's settings it was read from (StoreSignalSettings), with who set each and
+// why, which the state shows beside the reading without reading them again; zero for settings of
+// another source.
 type SignalSwitch struct {
 	On     bool
 	Limits map[string]float64
+	stored store.SignalSettings
 }
 
 // StoreSignalSettings is the settings a person set (store.SignalSettingsTx), the daemon's own: a
@@ -37,7 +41,7 @@ func (StoreSignalSettings) SignalSwitch(ctx context.Context, tx pgx.Tx, project 
 	if err != nil {
 		return SignalSwitch{}, err
 	}
-	sw := SignalSwitch{On: settings.On(), Limits: map[string]float64{}}
+	sw := SignalSwitch{On: settings.On(), Limits: map[string]float64{}, stored: settings}
 	for _, series := range signals.Names() {
 		if limit, set := settings.Limit(series); set {
 			sw.Limits[series] = limit
@@ -163,18 +167,22 @@ func (l *LiveSignals) Read(ctx context.Context, tx pgx.Tx, at time.Time) (signal
 // never as the minute before; its refusals count from its end, as signals.RefusalsNext counts a
 // minute's.
 func (l *LiveSignals) Reading(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, error) {
-	reading, _, err := l.read(ctx, tx, at)
+	reading, _, _, err := l.read(ctx, tx, at)
 	return reading, err
 }
 
-// read is Reading, and the provider's minutes its headroom and refusals read, from the start of
-// the hour before at to the end of the minute under way, which the state shows beside them.
-func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, record.ProviderMinutes, error) {
+// read is Reading, the provider's minutes its headroom and refusals read, from the start of the
+// hour before at to the end of the minute under way, and the store's settings its switch and
+// limits were read from (SignalSwitch), which the state shows beside them.
+func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, record.ProviderMinutes, store.SignalSettings, error) {
 	a := l.admission
 	var minutes record.ProviderMinutes
 	settings, err := l.settings.SignalSwitch(ctx, tx, a.project)
 	if err != nil {
-		return LiveReading{}, minutes, fmt.Errorf("read the settings of admission by signals: %w", err)
+		return LiveReading{}, minutes, store.SignalSettings{}, fmt.Errorf("read the settings of admission by signals: %w", err)
+	}
+	fail := func(err error) (LiveReading, record.ProviderMinutes, store.SignalSettings, error) {
+		return LiveReading{}, minutes, store.SignalSettings{}, err
 	}
 	reading := LiveReading{At: at, On: settings.On}
 	limit := func(name string) *float64 {
@@ -192,7 +200,7 @@ func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at time.Time) (LiveRe
 
 	holders, idleSince, err := a.idleHolders(ctx, tx, at)
 	if err != nil {
-		return LiveReading{}, minutes, err
+		return fail(err)
 	}
 	idle := SeriesReading{Name: signals.Idle, Value: signals.IdleAt(signals.Coverage{}, holders, idleSince, at, signals.DefaultIdleAfter)}
 	if bound := limit(signals.Idle); bound != nil {
@@ -202,29 +210,29 @@ func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at time.Time) (LiveRe
 
 	queue, err := l.queue(ctx, tx, at, limit(signals.Queue))
 	if err != nil {
-		return LiveReading{}, minutes, err
+		return fail(err)
 	}
 	add(queue)
 
 	headroom, refusals, minutes, err := l.provider(ctx, tx, at, limit(signals.Provider), limit(signals.Refusals))
 	if err != nil {
-		return LiveReading{}, minutes, err
+		return fail(err)
 	}
 	add(headroom)
 	add(refusals)
 
 	kills, err := l.kills(ctx, tx, at, limit(signals.Kills))
 	if err != nil {
-		return LiveReading{}, minutes, err
+		return fail(err)
 	}
 	add(kills)
 
 	approvals, err := a.store.ApprovalsOf(ctx, tx, a.project)
 	if err != nil {
-		return LiveReading{}, minutes, err
+		return fail(err)
 	}
 	add(SeriesReading{Name: signals.Approvals, Value: approvals.Value(), Absent: approvals.Unrecorded})
-	return reading, minutes, nil
+	return reading, minutes, settings.stored, nil
 }
 
 // spanCoverage is the coverage of a series counted over span whose input the daemon began keeping

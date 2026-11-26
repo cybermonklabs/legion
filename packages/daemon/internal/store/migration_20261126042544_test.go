@@ -21,7 +21,7 @@ const modelRequestsRelease = "the release that keeps each model request its proj
 // write would keep it (keepClaimTurn), since the turns that ended before the table carry no row a
 // read of the provider's record could tell from a turn that never ran. Each table refuses an empty
 // key, a count below 0 and a refusal of no class.
-// Its way back drops the three tables and the provider's row of signal_inputs, leaves every other
+// Its way back drops the four tables and the provider's row of signal_inputs, leaves every other
 // input's row and deletes this version row, so a roll-forward runs the file again.
 func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgain(t *testing.T) {
 	ctx := context.Background()
@@ -31,7 +31,7 @@ func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgai
 		_, err := store.Pool().Exec(ctx, statement, args...)
 		return err
 	}
-	const tables = `select count(*)::text from information_schema.tables where table_name in ('model_requests', 'signal_token_limits', 'claim_turns')`
+	const tables = `select count(*)::text from information_schema.tables where table_name in ('model_requests', 'model_request_minutes', 'signal_token_limits', 'claim_turns')`
 	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"0"}) {
 		t.Fatalf("the provider's tables before the migration = %v, want none", got)
 	}
@@ -53,8 +53,8 @@ func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgai
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the model requests: %v", err)
 	}
-	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"3"}) {
-		t.Fatalf("the provider's tables after the migration = %v, want the three", got)
+	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"4"}) {
+		t.Fatalf("the provider's tables after the migration = %v, want the four", got)
 	}
 	const turns = `select claim || ' ' || generation || ' ' || plugin_contract || ' ' || to_char(started_at at time zone 'UTC', 'HH24:MI') || ' ' || coalesce(ended_at::text, 'running')
 		from claim_turns order by claim`
@@ -106,7 +106,7 @@ func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgai
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("roll forward after the way back: %v", err)
 	}
-	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"3"}) {
-		t.Fatalf("the provider's tables after the roll-forward = %v, want the three again", got)
+	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"4"}) {
+		t.Fatalf("the provider's tables after the roll-forward = %v, want the four again", got)
 	}
 }

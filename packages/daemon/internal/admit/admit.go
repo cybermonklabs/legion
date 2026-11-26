@@ -314,7 +314,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // (release), and so do the controller tick and the facts passFact names. Any other fact that
 // wrote nothing runs none (promoteWritten). Each keep of a signal's input marks its write where
 // it changed a row, so it runs the pass; a report of model requests and a turn edge mark it only
-// where the architect's rule finds a series moved (signalFactMoved). A firing of the signal
+// where the series-moved pass rule finds a series moved (signalFactMoved). A firing of the signal
 // deadline (intake.SignalDeadline) runs its pass only where it is the committed deadline and due
 // (deadlineRuns); an early one is left unspent, so its timer applies it again.
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {

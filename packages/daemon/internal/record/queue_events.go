@@ -36,33 +36,48 @@ type OpenQueuePull struct {
 // still in the queue, and never by the project's whole history. A pull request with no exit stays
 // however old its entry is. A timeline older than that, read late, is so deleted as it is kept.
 func (s *Postgres) KeepQueueEvents(ctx context.Context, tx pgx.Tx, project string, events []signals.QueueEvent, now time.Time) error {
+	batch := &pgx.Batch{}
 	for i, e := range events {
 		if e.ID <= 0 || e.Repo == "" || e.PullRequest <= 0 {
 			return fmt.Errorf("keep queue event %+v of %s: it needs a positive event id, a repository and a pull request", e, project)
 		}
-		tag, err := tx.Exec(ctx, `insert into queue_events (project, event_id, repo, pull_request, at, enters, position)
+		batch.Queue(`insert into queue_events (project, event_id, repo, pull_request, at, enters, position)
 			values ($1, $2, $3, $4, $5, $6, $7)
 			on conflict (project, event_id) do update set repo = excluded.repo where queue_events.repo <> excluded.repo`,
 			project, e.ID, e.Repo, e.PullRequest, e.At.UTC(), e.Enters, i)
-		if err != nil {
-			return fmt.Errorf("keep queue event %d (%s#%d) of %s: %w", e.ID, e.Repo, e.PullRequest, project, err)
+	}
+	// One round trip keeps every event, each statement's rows marked in the order queued.
+	if batch.Len() > 0 {
+		results := tx.SendBatch(ctx, batch)
+		for _, e := range events {
+			tag, err := results.Exec()
+			if err != nil {
+				_ = results.Close()
+				return fmt.Errorf("keep queue event %d (%s#%d) of %s: %w", e.ID, e.Repo, e.PullRequest, project, err)
+			}
+			noteRowsWritten(ctx, tag)
 		}
-		noteRowsWritten(ctx, tag)
+		if err := results.Close(); err != nil {
+			return fmt.Errorf("keep the queue events of %s: %w", project, err)
+		}
 	}
 	if _, err := tx.Exec(ctx, `delete from queue_events
 		where project = $1 and (repo, pull_request) in (
-			select repo, pull_request from (
-				select distinct on (repo, pull_request) repo, pull_request, enters, at
-				from queue_events
-				where project = $1
-				order by repo, pull_request, at desc, position desc, event_id desc
-			) newest
+			select repo, pull_request from (`+newestQueueEvents+`) newest
 			where not enters and at <= $2)`,
 		project, now.UTC().Add(-signals.QueueExitSpan)); err != nil {
 		return fmt.Errorf("forget the queue events of %s that left the queue 6 hours before %s: %w", project, now, err)
 	}
 	return nil
 }
+
+// newestQueueEvents is the newest kept event of each pull request of project $1, by GitHub's time,
+// then its place in GitHub's timeline, then its id: its repository, number, direction and time,
+// which says whether the pull request stands in the queue and since when it left.
+const newestQueueEvents = `select distinct on (repo, pull_request) repo, pull_request, enters, at
+	from queue_events
+	where project = $1
+	order by repo, pull_request, at desc, position desc, event_id desc`
 
 // QueueEventsAt returns the merge-queue timeline events of project that the queue signal at at
 // reads through signals.WaitsOf: every kept event of each pull request that stands in the queue
@@ -72,12 +87,7 @@ func (s *Postgres) KeepQueueEvents(ctx context.Context, tx pgx.Tx, project strin
 // bounded by the window and not by the project's history.
 func (s *Postgres) QueueEventsAt(ctx context.Context, tx pgx.Tx, project string, at time.Time) ([]signals.QueueEvent, error) {
 	rows, err := tx.Query(ctx, `
-		with newest as (
-			select distinct on (repo, pull_request) repo, pull_request, enters
-			from queue_events
-			where project = $1
-			order by repo, pull_request, at desc, position desc, event_id desc
-		),
+		with newest as (`+newestQueueEvents+`),
 		relevant as (
 			select repo, pull_request from newest where enters
 			union
@@ -110,13 +120,7 @@ func (s *Postgres) QueueEventsAt(ctx context.Context, tx pgx.Tx, project string,
 // queue (an open wait), in repository and number order: the pull requests the boot reads the
 // timeline of when GitHub's live mergeQueue snapshot no longer shows them.
 func (s *Postgres) OpenQueuePulls(ctx context.Context, tx pgx.Tx, project string) ([]OpenQueuePull, error) {
-	rows, err := tx.Query(ctx, `
-		select repo, pull_request from (
-			select distinct on (repo, pull_request) repo, pull_request, enters
-			from queue_events
-			where project = $1
-			order by repo, pull_request, at desc, position desc, event_id desc
-		) newest
+	rows, err := tx.Query(ctx, `select repo, pull_request from (`+newestQueueEvents+`) newest
 		where enters
 		order by repo, pull_request`, project)
 	if err != nil {

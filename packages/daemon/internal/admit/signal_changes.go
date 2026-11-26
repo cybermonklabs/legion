@@ -21,7 +21,7 @@ import (
 // whether it gave out or took back a slot, the entries of what it computed against the newest
 // entry of each series and kind (writeSignalChanges, passChanges): each hold that changed, with the
 // value of that series beside it, and each other value that moved by its series' step from the
-// last one written. The newest entries are the last committed pass's, which the architect's rule
+// last one written. The newest entries are the last committed pass's, which the series-moved pass rule
 // for a report and a turn edge compares with too (signalsMoved). No clock writes an entry: only a
 // pass that runs does.
 
@@ -88,8 +88,8 @@ func valueEntryDue(series SeriesReading, newest store.SeriesEntries) bool {
 	return math.Abs(series.Value.Value-*last.Value) >= signalSteps[series.Name]*(1-1e-9)
 }
 
-// signalsMoved is the architect's rule for a report of model requests and the edge of a slot
-// holder's turn (design "The pass triggers", option (a)): whether reading moved what the last
+// signalsMoved is the series-moved pass rule, which decides whether a report of model requests or
+// the edge of a slot holder's turn runs an admission pass: whether reading moved what the last
 // committed pass recorded (newest, the record's newest entries of each series): a series whose
 // hold differs from the hold that pass recorded, or one of the five series but the provider's
 // headroom whose value qualifies for a value entry against its last written value
@@ -205,11 +205,7 @@ func (a *Admission) keepSignalSetting(ctx context.Context, tx pgx.Tx, change sto
 // whole minutes of the hour before the minute under way.
 func (l *LiveSignals) State(ctx context.Context, tx pgx.Tx, at time.Time) (store.SignalsReading, error) {
 	a := l.admission
-	reading, minutes, err := l.read(ctx, tx, at)
-	if err != nil {
-		return store.SignalsReading{}, err
-	}
-	settings, err := store.SignalSettingsTx(ctx, tx, a.project)
+	reading, minutes, settings, err := l.read(ctx, tx, at)
 	if err != nil {
 		return store.SignalsReading{}, err
 	}

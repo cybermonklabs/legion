@@ -91,7 +91,7 @@ func noteRowsWritten(ctx context.Context, tag pgconn.CommandTag) {
 }
 
 // NoteSignalsMoved keeps the mark of RecordsWritten for a fact whose kept input of a signal moved
-// what an admission pass records, by the architect's rule admission alone decides (admit's
+// what an admission pass records, by the series-moved pass rule admission alone decides (admit's
 // signalsMoved): a hold of a series against the last committed pass's, or a value a pass would
 // write against the last written one. A report of model requests and the edge of a slot holder's
 // turn keep their input with no mark of their own, so a fact that moved neither runs no pass. A

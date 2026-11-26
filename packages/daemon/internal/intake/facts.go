@@ -507,8 +507,9 @@ func (f DispatchAskTurn) namedIssue() (string, bool) { return f.Key, true }
 
 // AskTurnOf is the event of an ask fact carries for the approvals signal and its sequence in the
 // issue's Dispatch event log, for a fact of an ask event that carries one; false for any other.
-// Admission keeps an ask by it, and the boot's read folds an issue's events by it, so both read an
-// event of an ask as the one decoder made it.
+// Admission keeps an ask by it, so every reader of an ask event reads it as the one decoder made
+// it. The boot's read folds no event: it takes each open ask with whose turn it is as Dispatch's
+// read of the issue's asks answers it (the daemon's readIssueAsks).
 func AskTurnOf(fact Fact) (signals.AskEvent, int64, bool) {
 	var turn signals.AskEvent
 	var mark record.EventMark
@@ -684,7 +685,7 @@ func (SignalDeadline) namedIssue() (string, bool) { return "", false }
 // (daemon's turnEdgeEventID), so one edge is one fact.
 //
 // Admission keeps nothing of it, since the claim is the record, and, where the claim's issue holds
-// a slot, runs its pass only where the architect's rule finds a series moved against the last
+// a slot, runs its pass only where the series-moved pass rule finds a series moved against the last
 // committed pass (admit's signalsMoved), setting the project's deadline again either way. The
 // workflow does nothing with it.
 type TurnEdge struct {
@@ -1147,8 +1148,9 @@ type DispatchDefaultAssignee struct {
 func (DispatchDefaultAssignee) namedIssue() (string, bool) { return "", false }
 
 // ApprovalsBootRead is one boot read of Dispatch for the approvals signal, never decoded from an
-// event: the asks of the project's issues with an ask open, each as its issue's events leave it,
-// those issues' assignees, and the project's default assignee as Dispatch's read of the project's
+// event: the open asks of the project's issues with an ask open, each with the person it was
+// handed to and whose turn it is as Dispatch's read of the issue's asks answers them, those
+// issues' assignees, and the project's default assignee as Dispatch's read of the project's
 // open asks answers it (record.ApprovalsRead), applied as one fact. A failed read carries why in
 // ReadError and nothing read, so the approvals signal reads as not recorded with that reason until
 // a read succeeds; a read that succeeded clears it (record.Store.SetSignalInputReadError).

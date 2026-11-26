@@ -28,7 +28,7 @@ func (w *workflowRuntime) retryApprovalsBootRead(ctx context.Context, bootID int
 // readApprovalsOnce is one read of what the approvals signal needs as it stands in Dispatch, which
 // id names (the boot and its read), outside the fact lock, applied as one intake.ApprovalsBootRead:
 //
-//   - the project's issues, listed once (dispatch.Client.ListIssues): each issue's assignee at the
+//   - the project's issues, listed once (dispatch.ApprovalReads.ListIssues): each issue's assignee at the
 //     sequence its listing stands at, so an ask opened later on an issue nobody has changed since
 //     is read against the assignee it has;
 //   - the project's open asks of issues and its default assignee, read in one statement of

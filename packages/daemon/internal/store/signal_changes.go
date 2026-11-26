@@ -3,9 +3,12 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // The record of changes of admission by signals (S6 of dispatch://INFRA-5899): per project, one
@@ -116,10 +119,10 @@ type SeriesEntries struct {
 
 // NewestSeriesEntriesTx is, by series name of signals.Names(), the newest value entry and holds
 // entry of each series of project, read through tx: what the last committed pass wrote of each,
-// which the next pass and the state compare with.
+// which the next pass and the state compare with. It reads one row of the index of each series
+// and kind (newestSeriesEntries), however long the project's record is.
 func NewestSeriesEntriesTx(ctx context.Context, tx pgx.Tx, project string) (map[string]SeriesEntries, error) {
-	rows, err := tx.Query(ctx, `select distinct on (what, signal, part) `+signalChangeColumns+`
-		from signal_changes where project = $1 and what in ('value', 'holds') order by what, signal, part, id desc`, project)
+	rows, err := tx.Query(ctx, newestSeriesEntries, project)
 	if err != nil {
 		return nil, fmt.Errorf("read the newest entries of each series of %s: %w", project, err)
 	}
@@ -148,6 +151,26 @@ func NewestSeriesEntriesTx(ctx context.Context, tx pgx.Tx, project string) (map[
 	}
 	return newest, nil
 }
+
+// newestSeriesEntries is the statement NewestSeriesEntriesTx reads: for each kind it compares and
+// each series, the newest entry of that series and kind of the project $1, each a probe of
+// signal_changes_newest (project, what, signal, part, id) that stops at its first row, rather
+// than a read of every entry the project ever wrote.
+var newestSeriesEntries = func() string {
+	var probes []string
+	for _, what := range []SignalChangeKind{SignalChangeValue, SignalChangeHolds} {
+		for _, series := range signals.Names() {
+			signal, part := SignalPart(series)
+			ofPart := "part is null"
+			if part != "" {
+				ofPart = "part = '" + part + "'"
+			}
+			probes = append(probes, fmt.Sprintf(`(select %s from signal_changes where project = $1 and what = '%s' and signal = '%s' and %s order by id desc limit 1)`,
+				signalChangeColumns, what, signal, ofPart))
+		}
+	}
+	return strings.Join(probes, " union all ")
+}()
 
 // SignalChangesTx is project's newest n entries, newest first, read through tx: the state's
 // `admission.signalChanges` with n SignalChangesShown, never nil.

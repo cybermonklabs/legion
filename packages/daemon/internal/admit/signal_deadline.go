@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -28,7 +29,7 @@ const SignalHeldStartLine = "admission: a signal held a start"
 
 // UseLiveSignals registers live, the daemon's live signals whose reader is the pass's gate
 // (UseSignals), for what admission keeps beside each pass: the record of changes of what the pass
-// computed of each series (writeSignalChanges), whose newest entries the architect's rule for a
+// computed of each series (writeSignalChanges), whose newest entries the series-moved pass rule for a
 // report of model requests and a turn edge reads (signalsMoved), and the project's one deadline,
 // which each pass computes again (commitDeadline) and hands to arm once the fact that changed it
 // commits. A firing of the deadline (intake.SignalDeadline) runs a pass only where it is still the
@@ -109,7 +110,7 @@ func (a *Admission) commitDeadline(ctx context.Context, tx pgx.Tx, reading LiveR
 	return nil
 }
 
-// signalFactMoved is the architect's rule for a fact that keeps an input of a signal with no mark
+// signalFactMoved is the series-moved pass rule for a fact that keeps an input of a signal with no mark
 // of its own (a report of model requests, a turn edge): it reads the live signals at the
 // admission's clock, sets the deadline again from them, and keeps the mark that runs the pass
 // (record.NoteSignalsMoved) only where they moved against the last committed pass, the record's
@@ -186,24 +187,30 @@ func (a *Admission) logSignalHolds(ctx context.Context, gate passGate, moves *pa
 // daemon's runtime builds at each boot from the committed deadline and stops at its shutdown
 // (Stop). A deadline of a fence below the one armed is a stale callback and replaces nothing.
 type DeadlineTimer struct {
-	now   func() time.Time
-	after func(time.Duration, func()) func() bool
+	clock deadlineClock
 	fire  func(record.SignalDeadline)
 
 	mu      sync.Mutex
 	armed   record.SignalDeadline
-	stop    func() bool
+	timer   clock.Timer
 	stopped bool
+}
+
+// deadlineClock is the narrowing of clock.Clock a DeadlineTimer reads and waits on, so the real
+// clock and a test's clocktest.Fake both fit it.
+type deadlineClock interface {
+	Now() time.Time
+	AfterFunc(d time.Duration, f func()) clock.Timer
 }
 
 // NewDeadlineTimer is a timer that fires fire at each deadline it is armed for, on the wall clock.
 func NewDeadlineTimer(fire func(record.SignalDeadline)) *DeadlineTimer {
-	return newDeadlineTimer(time.Now, func(delay time.Duration, run func()) func() bool { return time.AfterFunc(delay, run).Stop }, fire)
+	return newDeadlineTimer(clock.Real(), fire)
 }
 
-// newDeadlineTimer is NewDeadlineTimer on a clock and a one-shot timer of the caller's.
-func newDeadlineTimer(now func() time.Time, after func(time.Duration, func()) func() bool, fire func(record.SignalDeadline)) *DeadlineTimer {
-	return &DeadlineTimer{now: now, after: after, fire: fire}
+// newDeadlineTimer is NewDeadlineTimer on c, which a test moves.
+func newDeadlineTimer(c deadlineClock, fire func(record.SignalDeadline)) *DeadlineTimer {
+	return &DeadlineTimer{clock: c, fire: fire}
 }
 
 // Arm replaces the timer with one for deadline, or with none where deadline is unset. A deadline
@@ -215,15 +222,15 @@ func (t *DeadlineTimer) Arm(deadline record.SignalDeadline) {
 	if t.stopped || deadline.Fence < t.armed.Fence {
 		return
 	}
-	if t.stop != nil {
-		t.stop()
-		t.stop = nil
+	if t.timer != nil {
+		t.timer.Stop()
+		t.timer = nil
 	}
 	t.armed = deadline
 	if !deadline.Set {
 		return
 	}
-	t.stop = t.after(max(deadline.Due.Sub(t.now()), 0), func() {
+	t.timer = t.clock.AfterFunc(max(deadline.Due.Sub(t.clock.Now()), 0), func() {
 		t.mu.Lock()
 		current := !t.stopped && t.armed == deadline
 		t.mu.Unlock()
@@ -238,8 +245,8 @@ func (t *DeadlineTimer) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.stopped = true
-	if t.stop != nil {
-		t.stop()
-		t.stop = nil
+	if t.timer != nil {
+		t.timer.Stop()
+		t.timer = nil
 	}
 }

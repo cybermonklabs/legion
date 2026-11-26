@@ -320,7 +320,7 @@ func hostToken(t *testing.T, issue string, role claim.Role) claim.Token {
 
 // signalEvent is one source event of plan section 4's list: what drives it through the daemon,
 // the series whose live value its committed pass reads, and that value; passes is how many
-// committed passes it runs, by the pass rule and the architect's rule for a report and a turn edge.
+// committed passes it runs, by the pass rule and the series-moved pass rule for a report and a turn edge.
 // holds, where set, is whether the series holds admission once the event's last pass committed,
 // as the live signals read it and as that pass wrote it in the record of changes.
 type signalEvent struct {
@@ -437,7 +437,7 @@ func signalEvents() []signalEvent {
 // path with no tick: the merge queue's timeline the outbox applies, each Dispatch event decoded
 // as its consumer decodes it, a kill the launcher session hands the kill holder, a host's report
 // of model requests, and a slot holder's turn edge the supervisor tells the runtime. Each commits
-// the passes the pass rule and the architect's rule give it, and its last committed pass reads the
+// the passes the pass rule and the series-moved pass rule give it, and its last committed pass reads the
 // input it kept; a turn's end moves no series, so it runs none and sets the deadline at the hour
 // its holder is idle. A kill delivered again commits no pass, nor does a fact whose transaction
 // rolls back. It fails where a source event has no row.

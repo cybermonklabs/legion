@@ -3,8 +3,8 @@ package admit
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
-	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
@@ -33,45 +34,6 @@ func committedDeadline(t *testing.T, pool *pgxpool.Pool) record.SignalDeadline {
 // clockAt is the fixed clock's day at hh:mm:ss.
 func clockAt(hh, mm, ss int) time.Time {
 	return time.Date(fixedNow.Year(), fixedNow.Month(), fixedNow.Day(), hh, mm, ss, 0, time.UTC)
-}
-
-// fakeTimers stands in for time.AfterFunc: each timer armed waits for the test to fire it.
-type fakeTimers struct {
-	mu      sync.Mutex
-	pending []*fakeTimer
-}
-
-type fakeTimer struct {
-	delay   time.Duration
-	fire    func()
-	stopped bool
-}
-
-func (f *fakeTimers) after(delay time.Duration, fire func()) func() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	timer := &fakeTimer{delay: delay, fire: fire}
-	f.pending = append(f.pending, timer)
-	return func() bool {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		was := !timer.stopped
-		timer.stopped = true
-		return was
-	}
-}
-
-// live is each timer armed and not stopped.
-func (f *fakeTimers) live() []*fakeTimer {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var live []*fakeTimer
-	for _, timer := range f.pending {
-		if !timer.stopped {
-			live = append(live, timer)
-		}
-	}
-	return live
 }
 
 // The project's one deadline (plan section 4, the table's rows of TestSignalDeadline): from the
@@ -140,7 +102,7 @@ func TestSignalDeadline(t *testing.T) {
 		}
 		got, deadline := next(fixedNow)
 		want := map[string]string{signals.Idle: "12:15:00", signals.Queue: "12:10:00", signals.Provider: "12:01:00", signals.Refusals: "12:31:00", signals.Kills: "12:25:00"}
-		if !mapsEqual(got, want) || deadline != "provider at 12:01:00" {
+		if !maps.Equal(got, want) || deadline != "provider at 12:01:00" {
 			t.Errorf("the next crossings at 12:00 = %v, deadline %s; want %v, deadline provider at 12:01:00", got, deadline, want)
 		}
 		if committed := committedDeadline(t, pool); !committed.Set || !committed.Due.Equal(clockAt(12, 1, 0)) {
@@ -148,7 +110,7 @@ func TestSignalDeadline(t *testing.T) {
 		}
 		got, deadline = next(clockAt(12, 12, 0))
 		want = map[string]string{signals.Idle: "12:15:00", signals.Queue: "12:20:00", signals.Refusals: "12:31:00", signals.Kills: "12:25:00"}
-		if !mapsEqual(got, want) || deadline != "idle at 12:15:00" {
+		if !maps.Equal(got, want) || deadline != "idle at 12:15:00" {
 			t.Errorf("the next crossings at 12:12 with no new event = %v, deadline %s; want %v, deadline idle at 12:15:00 (the queue's wait grows to its limit at 12:20)",
 				got, deadline, want)
 		}
@@ -252,12 +214,12 @@ func TestSignalDeadline(t *testing.T) {
 			t.Errorf("the firing at its moment, under the early one's id, ran %d passes, want 1", got-passes)
 		}
 
-		timers := &fakeTimers{}
-		timer := newDeadlineTimer(func() time.Time { return fixedNow }, timers.after, func(record.SignalDeadline) {})
+		fake := clocktest.New(fixedNow)
+		timer := newDeadlineTimer(fake, func(record.SignalDeadline) {})
 		timer.Arm(record.SignalDeadline{Due: clockAt(12, 40, 0), Set: true, Fence: 7})
 		timer.Arm(record.SignalDeadline{Due: clockAt(12, 25, 0), Set: true, Fence: 6})
-		if live := timers.live(); len(live) != 1 || live[0].delay != 40*time.Minute {
-			t.Errorf("after an older deadline's callback, the timers armed are %d, want the newest one alone, 40 minutes away", len(live))
+		if armed := fake.Armed(); len(armed) != 1 || !armed[0].Equal(clockAt(12, 40, 0)) {
+			t.Errorf("after an older deadline's callback, the timers armed are %v, want the newest one alone, at 12:40", armed)
 		}
 	})
 	// fire: a crossing due with no other event runs exactly one pass, of a deadline, which starts
@@ -297,11 +259,11 @@ func TestSignalDeadline(t *testing.T) {
 		committed := committedDeadline(t, pool)
 		restarted := newLiveTest(t, 2, nil, on(map[string]float64{signals.Kills: 1}))
 		restarted.at(clockAt(12, 5, 0))
-		timers := &fakeTimers{}
-		timer := newDeadlineTimer(func() time.Time { return clockAt(12, 5, 0) }, timers.after, func(record.SignalDeadline) {})
+		fake := clocktest.New(clockAt(12, 5, 0))
+		timer := newDeadlineTimer(fake, func(record.SignalDeadline) {})
 		timer.Arm(committedDeadline(t, pool))
-		if live := timers.live(); len(live) != 1 || live[0].delay != 20*time.Minute {
-			t.Errorf("the timer rebuilt at 12:05 holds %d timers, want one 20 minutes away, at the committed 12:25", len(live))
+		if armed := fake.Armed(); len(armed) != 1 || !armed[0].Equal(clockAt(12, 25, 0)) {
+			t.Errorf("the timer rebuilt at 12:05 holds %v, want one 20 minutes away, at the committed 12:25", armed)
 		}
 		applyThrough(t, pool, restarted.admission, "daemon", "boot-again", intake.DaemonBooted{Boot: 2})
 		if got := committedDeadline(t, pool); got != committed {
@@ -311,19 +273,19 @@ func TestSignalDeadline(t *testing.T) {
 	// stop: the daemon's stop cancels the timer, which fires nothing after it, and arms nothing
 	// again.
 	t.Run("stop", func(t *testing.T) {
-		timers := &fakeTimers{}
+		fake := clocktest.New(fixedNow)
 		var fired []record.SignalDeadline
-		timer := newDeadlineTimer(func() time.Time { return fixedNow }, timers.after, func(d record.SignalDeadline) { fired = append(fired, d) })
+		timer := newDeadlineTimer(fake, func(d record.SignalDeadline) { fired = append(fired, d) })
 		timer.Arm(record.SignalDeadline{Due: clockAt(12, 25, 0), Set: true, Fence: 3})
-		armed := timers.live()
+		armed := fake.Armed()
 		timer.Stop()
-		if len(armed) != 1 || len(timers.live()) != 0 {
-			t.Fatalf("the stop left %d of %d timers armed, want none", len(timers.live()), len(armed))
+		if len(armed) != 1 || len(fake.Armed()) != 0 {
+			t.Fatalf("the stop left %d of %d timers armed, want none", len(fake.Armed()), len(armed))
 		}
-		armed[0].fire()
 		timer.Arm(record.SignalDeadline{Due: clockAt(12, 40, 0), Set: true, Fence: 4})
-		if len(fired) != 0 || len(timers.live()) != 0 {
-			t.Errorf("after the stop %d deadlines fired and %d timers are armed, want none of either", len(fired), len(timers.live()))
+		fake.Advance(time.Hour)
+		if len(fired) != 0 || len(fake.Armed()) != 0 {
+			t.Errorf("after the stop %d deadlines fired and %d timers are armed, want none of either", len(fired), len(fake.Armed()))
 		}
 	})
 }
@@ -335,21 +297,8 @@ func (f handlerFunc) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (in
 	return f(ctx, tx, fact)
 }
 
-// mapsEqual says whether two maps of words hold the same.
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for key, value := range a {
-		if b[key] != value {
-			return false
-		}
-	}
-	return true
-}
-
-// The architect's rule for a report of model requests and a turn edge (design "The pass
-// triggers"): each keeps its fact and sets the deadline again, and runs the pass only where a
+// The series-moved pass rule for a report of model requests and a turn edge (signalsMoved): each
+// keeps its fact and sets the deadline again, and runs the pass only where a
 // series' hold moved against the last committed pass's or one of the five but the headroom
 // qualifies for a value entry against its last written value.
 func TestSignalReportPredicate(t *testing.T) {

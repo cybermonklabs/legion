@@ -270,7 +270,7 @@ var FactSources = map[string]FactSource{
 	"DispatchDefaultAssignee": {Way: FactUnrecorded, From: "each move of the project's default assignee (Dispatch's settings.project_default_assignee.updated, " +
 		"which the Dispatch durable hears from this release on): the replay reads a window's settings events into its own approvals signal " +
 		"(SignalRecord's readAsks), and injects none until it supplies the signals to the pass"},
-	"ApprovalsBootRead": {Way: FactUnrecorded, From: "the boot's read of Dispatch's open asks, their issues' events and the project's default assignee " +
+	"ApprovalsBootRead": {Way: FactUnrecorded, From: "the boot's read of Dispatch's open asks, their issues' assignees and the project's default assignee " +
 		"(intake.ApprovalsBootRead), which no recorded window holds a line of: the replay reads a window's events and settings into its own " +
 		"approvals signal, and injects none until it supplies the signals to the pass"},
 	"ModelRequests": {Way: FactUnrecorded, From: "each report of a host's model requests (POST /legion/v1/claims/model-requests, intake.ModelRequests), " +

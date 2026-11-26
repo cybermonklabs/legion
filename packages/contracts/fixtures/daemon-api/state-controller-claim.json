@@ -73,7 +73,8 @@
         "first": "LEGION-211"
       },
       "line": "slots: 1 of 2 in use: 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-10-06T18:02Z). Started work without a slot: 0 wait only for a slot, 0 in all. 0 holders rank below LEGION-211, which waits for a slot."
-    }
+    },
+    "signalChanges": []
   },
   "issues": {
     "LEGION-208": {

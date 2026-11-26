@@ -19,6 +19,14 @@
 --     it kept the row, so a changed selector reads no row again), and for a refused request who
 --     refused it ('own', 'provider' or 'unknown', kept apart; the signal counts 'unknown' as own).
 --     No prompt, answer or text of an error is kept.
+--   - model_request_minutes is one row per project and UTC minute that holds a kept request: the
+--     sums of that minute's requests as ProviderMinutes reads them, the uncached input tokens of
+--     the counted ones, the refusals by the project's own limit (an unknown one among them) and by
+--     the provider, and whether one of its requests came in a batch that said its host does not
+--     report the 429s its transport retries (true until a later migration keeps that word, as no
+--     batch said it then). Each request a write keeps adds to its minute's row in the same
+--     statement, and a request kept already adds nothing, so a read of an hour reads 60 rows rather
+--     than every request of the hour; the same prune deletes both.
 --   - signal_token_limits is one row per project and moment the daemon's configured token limit
 --     (signal_token_limit_per_minute) took a value: each boot writes one where the limit differs
 --     from the latest row's, null for none. A minute is read against the row in force at its start,
@@ -36,7 +44,7 @@
 -- last turn's start after its last turn's end, as store's keepClaimTurn opens a turn), since its
 -- start was written before the table existed and its end will be written after.
 --
--- The migration adds three tables and changes none that an earlier release reads, so a daemon of
+-- The migration adds four tables and changes none that an earlier release reads, so a daemon of
 -- the release before runs over the migrated database, as a rollback leaves it: it keeps nothing
 -- here and moves no row.
 --
@@ -44,13 +52,14 @@
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
 -- paragraph (migrations.WayBack), run with every daemon that shares the database stopped and before
 -- the release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. Dropping the
--- three tables, deleting the provider's row of signal_inputs and deleting this version row lets the
+-- four tables, deleting the provider's row of signal_inputs and deleting this version row lets the
 -- roll-forward apply this migration anew and record a fresh kept_since at its first boot, from
 -- which the provider's signals count again, rather than read the requests of a release that kept
 -- none since as a quiet hour.
 --
 -- begin;
 -- drop table if exists model_requests;
+-- drop table if exists model_request_minutes;
 -- drop table if exists signal_token_limits;
 -- drop table if exists claim_turns;
 -- delete from signal_inputs where input = 'provider';
@@ -70,6 +79,15 @@ create table model_requests (
     primary key (project, claim, generation, id)
 );
 create index model_requests_by_time on model_requests (project, ended_at);
+create table model_request_minutes (
+    project    text        not null check (project <> ''),
+    minute     timestamptz not null,
+    uncached   bigint      not null check (uncached >= 0),
+    own        bigint      not null check (own >= 0),
+    provider   bigint      not null check (provider >= 0),
+    unreported boolean     not null default true,
+    primary key (project, minute)
+);
 create table signal_token_limits (
     project     text        not null check (project <> ''),
     since       timestamptz not null,

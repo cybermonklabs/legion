@@ -7,6 +7,7 @@ Real output of GitHub's REST timeline API for `cybermonklabs/legion`, captured o
 ```sh
 gh api --paginate 'repos/cybermonklabs/legion/issues/5150/timeline?per_page=100' \
   --jq '[.[] | if .event=="added_to_merge_queue" or .event=="removed_from_merge_queue" or .event=="merged" then {id, event, created_at, url} else {event} end]' \
+  | jq -s 'add' \
   > timeline-5150.json
 
 gh api --paginate 'repos/cybermonklabs/legion/issues/4910/timeline?per_page=100' \

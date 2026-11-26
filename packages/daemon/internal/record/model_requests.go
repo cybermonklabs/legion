@@ -53,10 +53,23 @@ func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project str
 			class := string(request.Refusal)
 			refusal = &class
 		}
-		batch.Queue(`insert into model_requests (project, claim, generation, id, session, model, ended_at, uncached, counted, refusal, retried_refusals_reported)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) on conflict (project, claim, generation, id) do nothing`,
+		// The request is added to its minute's sums (model_request_minutes) only where this
+		// statement kept it, so a request kept already adds nothing.
+		batch.Queue(`with kept as (
+				insert into model_requests (project, claim, generation, id, session, model, ended_at, uncached, counted, refusal, retried_refusals_reported)
+				values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) on conflict (project, claim, generation, id) do nothing
+				returning uncached, counted, refusal
+			)
+			insert into model_request_minutes (project, minute, uncached, own, provider, unreported)
+			select $1, $12, case when counted then coalesce(uncached, 0) else 0 end,
+				case when refusal in ($13, $14) then 1 else 0 end, case when refusal = $15 then 1 else 0 end, not $11::boolean
+			from kept
+			on conflict (project, minute) do update set uncached = model_request_minutes.uncached + excluded.uncached,
+				own = model_request_minutes.own + excluded.own, provider = model_request_minutes.provider + excluded.provider,
+				unreported = model_request_minutes.unreported or excluded.unreported`,
 			project, string(report.Token), int64(report.Generation), request.ID, request.Session, request.Model, request.EndedAt,
-			request.UncachedInputTokens, counts(request.Model), refusal, report.RetriedRefusalsReported)
+			request.UncachedInputTokens, counts(request.Model), refusal, report.RetriedRefusalsReported,
+			request.EndedAt.UTC().Truncate(time.Minute), string(claim.RefusalOwn), string(claim.RefusalUnknown), string(claim.RefusalProvider))
 	}
 	if batch.Len() > 0 {
 		if err := tx.SendBatch(ctx, batch).Close(); err != nil {
@@ -65,6 +78,9 @@ func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project str
 	}
 	if _, err := tx.Exec(ctx, "delete from model_requests where project = $1 and ended_at < $2", project, reach); err != nil {
 		return fmt.Errorf("forget the model requests of %s before %s: %w", project, reach, err)
+	}
+	if _, err := tx.Exec(ctx, "delete from model_request_minutes where project = $1 and minute < $2", project, reach); err != nil {
+		return fmt.Errorf("forget the minutes of the model requests of %s before %s: %w", project, reach, err)
 	}
 	return nil
 }
@@ -148,7 +164,9 @@ func (m ProviderMinutes) RetriesUnreported() (time.Time, bool) {
 // its uncached input tokens of the models the project counts, its refusals by the project's own
 // limit (an unknown refusal among them, as the replay counts it) and by the provider, and the token
 // limit in force when it began (0 for none, under which its headroom is not recorded). Each request
-// counts in the minute it ended in.
+// counts in the minute it ended in, as KeepModelRequests sums it into that minute's row
+// (model_request_minutes), so the read is of at most one row a minute; to is a minute's start, as
+// every reader passes it.
 //
 // A minute is held only where every request of it is known to have been reported: from the first
 // whole minute at or after the moment the daemon began keeping the requests (the provider's row
@@ -190,11 +208,8 @@ func (s *Postgres) ProviderMinutes(ctx context.Context, tx pgx.Tx, project strin
 	for minute := first; minute.Before(to); minute = minute.Add(time.Minute) {
 		read.minutes[minute.Unix()] = signals.Minute{Limit: limits.at(minute)}
 	}
-	rows, err := tx.Query(ctx, `select floor(extract(epoch from ended_at) / 60)::bigint * 60,
-			coalesce(sum(uncached) filter (where counted), 0)::bigint,
-			count(*) filter (where refusal in ('own', 'unknown')), count(*) filter (where refusal = 'provider'),
-			bool_or(not retried_refusals_reported)
-		from model_requests where project = $1 and ended_at >= $2 and ended_at < $3 group by 1`, project, first, to)
+	rows, err := tx.Query(ctx, `select extract(epoch from minute)::bigint, uncached, own, provider, unreported
+		from model_request_minutes where project = $1 and minute >= $2 and minute < $3`, project, first, to)
 	if err != nil {
 		return read, fmt.Errorf("read the model requests of %s from %s to %s: %w", project, first, to, err)
 	}
