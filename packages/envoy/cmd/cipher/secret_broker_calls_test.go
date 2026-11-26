@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // recordBrokerCalls puts a recorder in front of the broker AGENT_SECRETS_URL names for the rest
@@ -46,7 +47,9 @@ func recordBrokerCalls(t *testing.T) func() []string {
 
 // TestNoSecretFormAsksTheBrokerForACredential: every secret form, on each store, asks the broker
 // for its settings and for a reread and for nothing else: no request (POST /v1/requests) and no
-// grant route, which is how a credential leaves the broker.
+// grant route, which is how a credential leaves the broker. On a store with no restore call (a
+// 1Password vault) the restore form refuses, naming secretstore.ErrNoRestore, and asks the broker
+// for its settings alone.
 func TestNoSecretFormAsksTheBrokerForACredential(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.recordBrokerCalls, t.Setenv at secret_broker_calls_test.go:39); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
@@ -67,8 +70,13 @@ func TestNoSecretFormAsksTheBrokerForACredential(t *testing.T) {
 			t.Run(form.args[0], func(t *testing.T) {
 				before := len(calls())
 				useStdin(t, form.stdin)
-				if _, stderr, code := runSecret(form.args...); code != 0 {
-					t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
+				noRestore := form.args[0] == "restore" && !store.restores()
+				want := 0
+				if noRestore {
+					want = 1
+				}
+				if _, stderr, code := runSecret(form.args...); code != want || noRestore && !strings.Contains(stderr, secretstore.ErrNoRestore.Error()) {
+					t.Fatalf("exit %d, stderr %q; want %d", code, stderr, want)
 				}
 				made := calls()[before:]
 				if len(made) == 0 {

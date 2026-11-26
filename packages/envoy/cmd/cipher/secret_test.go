@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
@@ -565,7 +566,8 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 
 // TestEverySecretFormNamesTheSourceItUses: every secret form, on each store, prints exactly one
 // line naming the credential it signs in to the store with, and prints it before its first call of
-// the store.
+// the store. On a store with no restore call (a 1Password vault) the restore form refuses, naming
+// secretstore.ErrNoRestore, and needs no call of the store to do so.
 func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
@@ -584,11 +586,19 @@ func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
 		} {
 			t.Run(form.args[0], func(t *testing.T) {
 				useStdin(t, form.stdin)
+				noRestore := form.args[0] == "restore" && !store.restores()
 				prefix := "agent-secrets secret " + form.args[0] + ": using "
 				stderr := &usingWatch{prefix: prefix, calls: store.calls, callsBefore: -1}
 				started := store.calls()
-				if code := cmdSecret(form.args, io.Discard, stderr); code != 0 {
-					t.Fatalf("exit %d, stderr %q; want 0", code, stderr.String())
+				want := 0
+				if noRestore {
+					want = 1
+				}
+				if code := cmdSecret(form.args, io.Discard, stderr); code != want {
+					t.Fatalf("exit %d, stderr %q; want %d", code, stderr.String(), want)
+				}
+				if noRestore && !strings.Contains(stderr.String(), secretstore.ErrNoRestore.Error()) {
+					t.Fatalf("stderr %q; want the restore refused: %s", stderr.String(), secretstore.ErrNoRestore)
 				}
 				var using int
 				for _, line := range strings.Split(stderr.String(), "\n") {
@@ -599,7 +609,7 @@ func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
 				if using != 1 {
 					t.Fatalf("stderr %q holds %d lines starting %q, want exactly one", stderr.String(), using, prefix)
 				}
-				if made := store.calls() - started; stderr.callsBefore != started || made == 0 {
+				if made := store.calls() - started; stderr.callsBefore != started || made == 0 && !noRestore {
 					t.Fatalf("the form made %d store calls before the line naming its credential and %d in all; want none before it, and at least one", stderr.callsBefore-started, made)
 				}
 			})

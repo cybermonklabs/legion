@@ -77,7 +77,9 @@ func readValue(t *testing.T, w secretstore.Writer, id string) string {
 	return value
 }
 
-// held is how many secrets of id the store holds, those scheduled for deletion included.
+// held is how many secrets of id the store holds, those scheduled for deletion included. A store
+// whose names are not unique lists a name more than one secret holds once, with Duplicates naming
+// each (secretstore.Listing.Duplicates), so that listing counts each secret it names.
 func held(t *testing.T, w secretstore.Writer, prefix, id string) int {
 	t.Helper()
 	listings, err := w.List(context.Background(), prefix, secretstore.ReadOptions{IncludeDeleted: true})
@@ -87,7 +89,7 @@ func held(t *testing.T, w secretstore.Writer, prefix, id string) int {
 	n := 0
 	for _, ls := range listings {
 		if ls.ID == id {
-			n++
+			n += max(1, len(ls.Duplicates))
 		}
 	}
 	return n

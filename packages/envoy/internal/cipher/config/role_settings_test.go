@@ -102,11 +102,14 @@ var settingRoles = map[string]settingRole{
 	"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY": givesNone("a test-only host"),
 	"BROKER_JUDGE_TEST_SKIP_CHECKS":       givesNone("a test-only switch"),
 
-	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
-	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),
-	"BROKER_MEMORY_SECRETS_FILE":    givesNone("a file path"),
-	"BROKER_AIRLOCK_CLUSTER_RANGES": givesNone("address ranges"),
-	"BROKER_PROXY_PRIVATE_UPSTREAM": givesNone("a host and a URL"),
+	"BROKER_SECRETS_KMS_KEY_ARN":        givesNone("a KMS key"),
+	"BROKER_SECRETS_KMS_KEY_NAME":       givesNone("a KMS key"),
+	"BROKER_MEMORY_SECRETS_FILE":        givesNone("a file path"),
+	"BROKER_ONEPASSWORD_VAULT":          givesNone("a 1Password vault id"),
+	"BROKER_ONEPASSWORD_TOKEN_FILE":     givesNone("a file path"),
+	"BROKER_ONEPASSWORD_DAILY_REQUESTS": givesNone("a request count"),
+	"BROKER_AIRLOCK_CLUSTER_RANGES":     givesNone("address ranges"),
+	"BROKER_PROXY_PRIVATE_UPSTREAM":     givesNone("a host and a URL"),
 
 	"BROKER_SERVICES": givesARole(
 		"a BROKER_SERVICES entry names its login service",

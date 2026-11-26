@@ -11,7 +11,9 @@
 //
 // The refusal and the rows are held twice: as the default build prints them, from every store the
 // registry holds, and as exactly the AWS and GCP stores' parts make them (their two ProfileHints,
-// their two HelpRows), so that half keeps holding once a later store adds its own.
+// their two HelpRows), so that half keeps holding once a later store adds its own. The default
+// build also holds the 1Password store, whose clause comes after main's two and whose rows after
+// main's (withOnePassword).
 package main
 
 import (
@@ -26,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/onepassword"
 )
 
 // recordedOnMain is the directory of this file's records.
@@ -46,9 +49,26 @@ func readRecord(t *testing.T, name string) []byte {
 	return data
 }
 
-// TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints, byte for
-// byte, the refusal main printed, which names the variables each store's own tools read; and the
-// refusal the AWS and GCP stores' two hints make (profileRefusal) is that same line.
+// withOnePassword is a record of main's refusal or rows as the default build prints it, which
+// holds the 1Password store beside the AWS and GCP ones: the refusal with that store's clause
+// before its final full stop, its Rank being the last, and the rows followed by that store's rows.
+func withOnePassword(t *testing.T, record string, refusal bool) string {
+	t.Helper()
+	if !refusal {
+		return record + onepassword.Backend{}.HelpRows()
+	}
+	hint, ok := onepassword.Backend{}.ProfileHint()
+	before, found := strings.CutSuffix(record, ".\n")
+	if !ok || !found {
+		t.Fatalf("UNKNOWN: the 1Password store gives no clause (%t), or the record %q ends in no full stop", ok, record)
+	}
+	return before + "; " + hint.Clause + ".\n"
+}
+
+// TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints the refusal
+// main printed, which names the variables each store's own tools read, with the 1Password store's
+// clause before its final stop (withOnePassword); and the refusal the AWS and GCP stores' two hints
+// make (profileRefusal) is main's line byte for byte.
 func TestProfileRefusalRecordedOnMain(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { clientConfig = nil })
@@ -58,8 +78,8 @@ func TestProfileRefusalRecordedOnMain(t *testing.T) {
 	if code != exitUsageError {
 		t.Fatalf("secret list --profile x exited %d (stderr %q), want %d", code, stderr.String(), exitUsageError)
 	}
-	if !bytes.Equal(stderr.Bytes(), want) {
-		t.Errorf("secret list --profile x printed\n%q\nrecorded on main\n%q", stderr.String(), want)
+	if printed := withOnePassword(t, string(want), true); stderr.String() != printed {
+		t.Errorf("secret list --profile x printed\n%q\nwant main's refusal with the 1Password clause\n%q", stderr.String(), printed)
 	}
 	var hints []secretstore.ProfileHint
 	for _, b := range []secretstore.Backend{aws.Backend{}, gcp.Backend{}} {
@@ -104,11 +124,12 @@ func usageStoreRows(t *testing.T) string {
 }
 
 // TestUsageStoreRowsRecordedOnMain: the usage's environment table prints the store rows main
-// printed, byte for byte, and the AWS and GCP stores' two HelpRows are those rows.
+// printed, followed by the 1Password store's (withOnePassword), and the AWS and GCP stores' two
+// HelpRows are main's rows byte for byte.
 func TestUsageStoreRowsRecordedOnMain(t *testing.T) {
 	want := string(readRecord(t, "usage-store-rows.txt"))
-	if rows := usageStoreRows(t); rows != want {
-		t.Errorf("usage()'s store rows are\n%s\nrecorded on main\n%s", rows, want)
+	if rows, printed := usageStoreRows(t), withOnePassword(t, want, false); rows != printed {
+		t.Errorf("usage()'s store rows are\n%s\nwant main's, then the 1Password store's\n%s", rows, printed)
 	}
 	if rows := (aws.Backend{}).HelpRows() + (gcp.Backend{}).HelpRows(); rows != want {
 		t.Errorf("the AWS and GCP stores' HelpRows are\n%s\nrecorded on main\n%s", rows, want)

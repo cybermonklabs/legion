@@ -121,7 +121,7 @@ func (s *Store) list(ctx context.Context, call string, want func(o Overview, kep
 	}
 	overviews, err := s.client.List(ctx)
 	if err != nil {
-		return false, fmt.Errorf("list 1Password vault %s: %w", s.vault, err)
+		return false, failure("list 1Password vault "+s.vault, err)
 	}
 	at := s.now()
 	var ids []string
@@ -142,7 +142,7 @@ func (s *Store) list(ctx context.Context, call string, want func(o Overview, kep
 			return false, fmt.Errorf("an item of 1Password vault %s was deleted between its List and its read; the next read lists the vault again", s.vault)
 		}
 		if err != nil {
-			return false, fmt.Errorf("read the changed items of 1Password vault %s: %w", s.vault, err)
+			return false, failure("read the changed items of 1Password vault "+s.vault, err)
 		}
 	}
 	s.mu.Lock()
@@ -314,7 +314,7 @@ func (s *Store) Describe(ctx context.Context, id string, opts secretstore.ReadOp
 		case errors.Is(err, secretstore.ErrNotFound):
 			ids = nil
 		case err != nil:
-			return secretstore.Listing{}, fmt.Errorf("read %s from 1Password vault %s: %w", id, s.vault, err)
+			return secretstore.Listing{}, failure("read "+id+" from 1Password vault "+s.vault, err)
 		default:
 			s.mu.Lock()
 			for _, item := range items {
@@ -398,4 +398,28 @@ func (s *Store) held(id string, fresh bool) (string, bool, error) {
 		return "", true, fmt.Errorf("item %s of 1Password vault %s has no credential: %w", id, s.vault, secretstore.ErrNotFound)
 	}
 	return item.Credential, true, nil
+}
+
+// titled lists the vault and reads in full, in one Get, every item titled title, active and
+// archived, and answers each with its state and a cipher map of its own, in the order of their
+// ids. It is the writer's read of one name, which it makes fresh for each write.
+func (s *Store) titled(ctx context.Context, title string) ([]Item, error) {
+	s.refreshing.Lock()
+	defer s.refreshing.Unlock()
+	if _, err := s.list(ctx, callRead, func(o Overview, _ Item, _ bool) bool { return o.Title == title }); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var items []Item
+	for _, id := range slices.Sorted(maps.Keys(s.listed)) {
+		o := s.overview(s.listed[id])
+		item, kept := s.kept[id]
+		if o.Title != title || !kept {
+			continue
+		}
+		item.State, item.Cipher = o.State, maps.Clone(item.Cipher)
+		items = append(items, item)
+	}
+	return items, nil
 }

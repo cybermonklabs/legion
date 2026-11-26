@@ -1862,7 +1862,7 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 		edit func(map[string]string)
 		want string
 	}{
-		"an unknown store": {func(e map[string]string) { e["BROKER_SECRETS_STORE"] = "vault" }, `BROKER_SECRETS_STORE must be one of aws-secrets-manager, gcp-secret-manager, memory, got "vault"`},
+		"an unknown store": {func(e map[string]string) { e["BROKER_SECRETS_STORE"] = "vault" }, `BROKER_SECRETS_STORE must be one of aws-secrets-manager, gcp-secret-manager, memory, onepassword, got "vault"`},
 		"gcp with the ARN set": {func(e map[string]string) {
 			e["BROKER_SECRETS_KMS_KEY_ARN"] = validEnv()["BROKER_SECRETS_KMS_KEY_ARN"]
 		}, "BROKER_SECRETS_KMS_KEY_ARN is not read with BROKER_SECRETS_STORE=gcp-secret-manager; it is a variable of BROKER_SECRETS_STORE=aws-secrets-manager"},

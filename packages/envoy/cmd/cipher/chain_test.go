@@ -115,8 +115,10 @@ func (b *chainBroker) selfReadCount() int {
 }
 
 // storeSettings is GET /v1/settings of a broker on the store whose registry ID is store ("aws",
-// "gcp" or "memory"), naming google as its Google exchange audience where it is not empty. A
-// memory broker names a file no test reads: the chain reads the broker alone.
+// "gcp", "memory" or "onepassword"), naming google as its Google exchange audience where it is not
+// empty. A memory broker names a file no test reads: the chain reads the broker alone. A store with
+// no case here panics, rather than answer the settings of a broker from before the store field,
+// which the CLI reads as AWS's.
 func storeSettings(store, google string) map[string]any {
 	settings := map[string]any{}
 	switch store {
@@ -130,6 +132,14 @@ func storeSettings(store, google string) map[string]any {
 			"gcp_project": testGCPProject}
 	case "memory":
 		settings = map[string]any{"store": memory.Name, "secrets_prefix": policytest.Prefix, "memory_secrets_file": "/srv/agent-secrets/memory.json"}
+	case "onepassword":
+		s := onePasswordSettings()
+		settings = map[string]any{"store": s.Store, "secrets_prefix": s.SecretsPrefix}
+		for name, value := range s.Fields {
+			settings[name] = value
+		}
+	default:
+		panic("storeSettings: no settings for the store " + store + "; add its case")
 	}
 	if google != "" {
 		settings["google_exchange_audience"] = google

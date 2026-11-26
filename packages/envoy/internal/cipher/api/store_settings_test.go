@@ -13,6 +13,9 @@ import (
 const (
 	gcpKeyName = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 	awsKeyARN  = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+	// onePasswordVault is the vault the 1Password store's settings name: an id of 1Password's
+	// form, no real vault's.
+	onePasswordVault = "vault0000000000000000000aa"
 )
 
 // storeEnv is one store's configuration in these tests, by its registry ID: its prefix, the
@@ -27,6 +30,9 @@ var storeEnvs = map[string]storeEnv{
 	"aws":    {policytest.Prefix, map[string]string{"BROKER_SECRETS_KMS_KEY_ARN": awsKeyARN}, "kms_key_arn", awsKeyARN},
 	"gcp":    {"projects/000000000000/secrets/agent-secrets-", map[string]string{"BROKER_SECRETS_KMS_KEY_NAME": gcpKeyName}, "kms_key_name", gcpKeyName},
 	"memory": {policytest.Prefix, map[string]string{"BROKER_MEMORY_SECRETS_FILE": "memory-secrets.json"}, "memory_secrets_file", "memory-secrets.json"},
+	"onepassword": {"agent-secrets-", map[string]string{
+		"BROKER_ONEPASSWORD_VAULT": onePasswordVault, "BROKER_ONEPASSWORD_TOKEN_FILE": "onepassword-token", "BROKER_ONEPASSWORD_DAILY_REQUESTS": "900",
+	}, "onepassword_vault", onePasswordVault},
 }
 
 // storeDeps is the Deps fields of the store whose registry ID is id, configured as storeEnvs

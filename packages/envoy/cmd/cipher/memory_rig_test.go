@@ -266,6 +266,8 @@ func (s memoryTypeStore) storeName() string { return "memory store file " + s.ri
 
 func (s memoryTypeStore) madeBeforeValue() bool { return false }
 
+func (s memoryTypeStore) restores() bool { return true }
+
 // calls is how many calls of kind call ("" for every kind) the writers opened so far were asked.
 func (r *memoryRig) calls(call string) int {
 	r.mu.Lock()

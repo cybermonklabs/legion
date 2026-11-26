@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	sdk "github.com/1password/onepassword-sdk-go"
 
@@ -46,12 +47,22 @@ func NewSDKClient(ctx context.Context, token, vault string) (Client, error) {
 	return sdkClient{client: client, items: client.Items(), vault: vault}, nil
 }
 
-// sdkError marks err, an SDK call's error, with the class this package reads: ErrRateLimited for
-// the SDK's RateLimitExceededError. Its text stays the SDK's.
+// sdkDeniedWords are the words of the SDK's message, which its errors carry as plain text (its
+// errors.go names only DesktopSessionExpired and RateLimitExceeded), that mark a refusal of the
+// sign-in, matched case-insensitively. They are provisional until the live run on the test vault
+// records the SDK's own message for a read-only token's write.
+var sdkDeniedWords = []string{"forbidden", "permission", "unauthorized", "not authorized"}
+
+// sdkError marks err, an SDK call's error, with the class this package reads (failure.go):
+// ErrRateLimited for the SDK's RateLimitExceededError, and ErrDenied for a message that holds one
+// of sdkDeniedWords. Its text stays the SDK's, which failure never prints.
 func sdkError(err error) error {
 	var limited *sdk.RateLimitExceededError
 	if errors.As(err, &limited) {
 		return fmt.Errorf("%w: %w", ErrRateLimited, err)
+	}
+	if containsAny(strings.ToLower(err.Error()), sdkDeniedWords) {
+		return fmt.Errorf("%w: %w", ErrDenied, err)
 	}
 	return err
 }

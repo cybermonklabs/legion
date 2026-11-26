@@ -21,7 +21,7 @@ import (
 // release build has. Each call is one op command with JSON output, run through run.
 type opClient struct {
 	vault string
-	run   func(*exec.Cmd) error
+	run   secretstore.RunChild
 }
 
 // NewOpClient is the client that runs the first op on PATH on vault, each command through run,
@@ -36,7 +36,7 @@ type opClient struct {
 // No value is ever an argument of op, which any process of the machine can read: a credential
 // and every cipher field go on op's standard input, as an item JSON template (`op item create
 // --help` and `op item edit --help`, op 2.41.1).
-func NewOpClient(vault string, run func(*exec.Cmd) error) Client {
+func NewOpClient(vault string, run secretstore.RunChild) Client {
 	return opClient{vault: vault, run: run}
 }
 
@@ -53,14 +53,28 @@ func (e *opError) Error() string { return e.command + ": " + e.err.Error() }
 
 func (e *opError) Unwrap() error { return e.err }
 
-// opMissingItem is what op 2.41.1 writes on its standard error for an item the vault does not
-// hold: `"<item>" isn't an item in the "<vault>" vault.`
+// What op 2.41.1 writes on its standard error for an item the vault does not hold: `"<item>"
+// isn't an item in the "<vault>" vault.` And, provisional until the live run on the test vault
+// records op's own texts, the words of a refusal of the sign-in and of one at 1Password's request
+// limit, matched case-insensitively.
 const opMissingItem = "isn't an item"
 
-// op runs op with args, stdin on its standard input (nothing, /dev/null, when nil: never this
-// command's own standard input, which can be a secret's value on its way in), and answers what it
-// wrote on its standard output.
+var (
+	opDeniedWords  = []string{"forbidden", "permission", "not allowed", "unauthorized"}
+	opLimitedWords = []string{"rate limit", "too many requests"}
+)
+
+// op runs op with args (runOp) through the client's runner.
 func (c opClient) op(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	return runOp(ctx, c.run, stdin, args...)
+}
+
+// runOp runs op with args through run, stdin on its standard input (nothing, /dev/null, when nil:
+// never this command's own standard input, which can be a secret's value on its way in), and
+// answers what it wrote on its standard output. A failure is an opError, marked ErrDenied or
+// ErrRateLimited where op's standard error says so (opDeniedWords, opLimitedWords), whose text
+// names the command and op's exit status alone.
+func runOp(ctx context.Context, run secretstore.RunChild, stdin []byte, args ...string) ([]byte, error) {
 	path, err := exec.LookPath("op")
 	if err != nil {
 		return nil, errors.New("no op is on PATH: install the 1Password CLI, then sign in with it")
@@ -71,10 +85,41 @@ func (c opClient) op(ctx context.Context, stdin []byte, args ...string) ([]byte,
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := c.run(cmd); err != nil {
-		return nil, &opError{command: "op " + strings.Join(args[:2], " "), err: err, stderr: stderr.String()}
+	if err := run(cmd); err != nil {
+		failed := &opError{command: opCommand(args), err: err, stderr: stderr.String()}
+		said := strings.ToLower(failed.stderr)
+		switch {
+		case containsAny(said, opLimitedWords):
+			return nil, fmt.Errorf("%w: %w", ErrRateLimited, failed)
+		case containsAny(said, opDeniedWords):
+			return nil, fmt.Errorf("%w: %w", ErrDenied, failed)
+		}
+		return nil, failed
 	}
 	return stdout.Bytes(), nil
+}
+
+// opCommand is the command args run, as an error names it: "op" and the words before the first
+// flag or argument that names an item ("op item list", "op whoami").
+func opCommand(args []string) string {
+	words := []string{"op"}
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") || i == 2 {
+			break
+		}
+		words = append(words, a)
+	}
+	return strings.Join(words, " ")
+}
+
+// containsAny reports whether s holds one of words.
+func containsAny(s string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // opObject is one JSON object op answers, kept whole, so a write gives op back every key this

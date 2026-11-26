@@ -904,8 +904,9 @@ func typeArgs(secretType string) []string {
 }
 
 // typeStore is a store the secret forms write, as these tests set it up and read it back: Secrets
-// Manager (a awstest.Local behind awstest.Use), Secret Manager (a gcptest.FakeSecretManager) or
-// the memory store (a memory secrets file, memoryTypeStore).
+// Manager (a awstest.Local behind awstest.Use), Secret Manager (a gcptest.FakeSecretManager), the
+// memory store (a memory secrets file, memoryTypeStore) or a 1Password vault
+// (onePasswordTypeStore).
 type typeStore interface {
 	// put holds the secret name with tags and value, as a writer other than this client stores it.
 	put(t *testing.T, name string, tags map[string]string, value string)
@@ -937,6 +938,9 @@ type typeStore interface {
 	// (secretstore.Create.MadeBeforeValue): GCP's makes it empty, says by when the value must come,
 	// and discards it, asking the broker to reread, where no value comes.
 	madeBeforeValue() bool
+	// restores is whether the store has a call that restores a deleted secret: a 1Password vault
+	// has none, and its restore refuses naming the app's Archive (secretstore.ErrNoRestore).
+	restores() bool
 	// loseTagWriteAnswer makes the nth tag write from now on (1 for the next) apply and then lose
 	// its answer, as a connection that drops after the store acted; refuseTagWrite makes it refused
 	// as access denied, a definite refusal, so the store did not act. A tag write is a TagResource
@@ -1002,6 +1006,10 @@ var storeRigs = map[string]func(t *testing.T) storeRig{
 	"memory": func(t *testing.T) storeRig {
 		store := newMemoryTypeStore(t)
 		return storeRig{store: store, settings: memorySettings(store.rig.path), answer: memoryServedBy(store.rig.path)}
+	},
+	"onepassword": func(t *testing.T) storeRig {
+		store := newOnePasswordTypeStore(t)
+		return storeRig{store: store, settings: onePasswordSettings(), answer: store.servedBy(t)}
 	},
 }
 
@@ -1187,6 +1195,8 @@ func (s awsTypeStore) storeName() string {
 
 func (s awsTypeStore) madeBeforeValue() bool { return false }
 
+func (s awsTypeStore) restores() bool { return true }
+
 func (s awsTypeStore) retag(t *testing.T, name string, set map[string]string, remove ...string) {
 	t.Helper()
 	id := aws.String(policytest.ID(name))
@@ -1342,6 +1352,8 @@ func (s gcpTypeStore) afterEachWrite(f func()) {
 func (s gcpTypeStore) tagReadPermission() string { return "secretmanager.secrets.get" }
 
 func (s gcpTypeStore) madeBeforeValue() bool { return true }
+
+func (s gcpTypeStore) restores() bool { return true }
 
 func (s gcpTypeStore) storeName() string { return "GCP Secret Manager project " + testGCPProject }
 

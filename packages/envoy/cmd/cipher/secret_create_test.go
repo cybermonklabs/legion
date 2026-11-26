@@ -61,13 +61,14 @@ func (h hungCreate) CreateSecret(ctx context.Context, in *secretsmanager.CreateS
 
 // TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline: a store call of the create that the
 // store never answers - GCP's AddSecretVersion, AWS's one CreateSecret, the memory store's one
-// create (memory.Writer.HangNext) - ends at the deadline on each such call, and the create fails as
-// on any store error rather than waiting for it: on GCP, where a call that ran out of time may have
-// stored the value or may still, it lists the versions, finds none, keeps the secret, says a late
-// add may still land and names the command that checks it, deleting nothing, and asks the broker to
-// reread the name; on AWS and the memory store, whose create makes the secret with its value in one
-// call, it says that the store may hold the secret or not and names the command that says which.
-// Each exits 1 well before the store would answer. It runs on every store the registry holds.
+// create (memory.Writer.HangNext), 1Password's one Create - ends at the deadline on each such call,
+// and the create fails as on any store error rather than waiting for it: on GCP, where a call that
+// ran out of time may have stored the value or may still, it lists the versions, finds none, keeps
+// the secret, says a late add may still land and names the command that checks it, deleting
+// nothing, and asks the broker to reread the name; on AWS, the memory store and 1Password, whose
+// create makes the secret with its value in one call, it says that the store may hold the secret
+// or not and names the command that says which. Each exits 1 well before the store would answer.
+// It runs on every store the registry holds.
 func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, b := range backends.All() {
@@ -105,6 +106,12 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 				t.Cleanup(memory.SwapHooks(memory.Hooks{Opened: func(w *memory.Writer) { w.HangNext("create") }}))
 				broker = startSecretBrokerWith(t, rig.settings, rig.answer)
 				want = append(want, "context deadline exceeded", "did not answer within 300ms", "the store may hold NEW_TEST, made with its value, or no NEW_TEST at all", "`agent-secrets secret show NEW_TEST` says which")
+			case "onepassword":
+				rig := storeRigs["onepassword"](t)
+				held = rig.store
+				rig.store.(onePasswordTypeStore).rig.hangCreate = true
+				broker = startSecretBrokerWith(t, rig.settings, rig.answer)
+				want = append(want, "1Password did not answer within 300ms", "may hold NEW_TEST", "`agent-secrets secret show NEW_TEST`")
 			default:
 				t.Fatalf("the registry holds the store %s, which this test has no hung call for", store)
 			}
@@ -148,7 +155,7 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 				if rereads, _ := broker.recorded(); len(rereads) != 0 {
 					t.Fatalf("rereads %v; want none, the create having made nothing", rereads)
 				}
-			case "memory":
+			case "memory", "onepassword":
 				if held.has(t, "NEW_TEST") {
 					t.Fatal("the create whose store call ran out of time made NEW_TEST")
 				}
