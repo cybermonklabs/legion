@@ -284,41 +284,39 @@ func (c *called) Unwrap() error { return c.err }
 // otherwise that text, or the class alone where printable does not pass err, unwrapping to err.
 // A context's end (contextEnd) printable does not pass prints its own fixed text in place of its
 // class, beside any URL, so a call its context's cancel, its context's deadline or its client's
-// Timeout ended says which. A context cancelled with a cause of its own (context.WithCancelCause)
-// ends net/http's call with that cause (context.Cause), which is none of the three, and prints as
-// its class.
+// Timeout ended says which. A context ended with a cause of its own (context.WithCancelCause,
+// context.WithTimeoutCause) ends net/http's call with that cause (context.Cause). Where printable
+// does not pass it, a cause that wraps one of the three still prints that one's text, since
+// contextEnd walks the cause's chain, and a cause that is none of them and wraps none of them
+// prints as its class.
 func Cause(err error, raw string) error {
-	if err == nil {
-		return nil
-	}
-	ue, checked, ok := printable(err, raw)
-	return causeOf(err, ue, checked, ok, "the broker")
+	return printedCause(err, raw, func(named string) bool { return callClean(raw, named) }, "the broker")
 }
 
 // CauseAt is Cause for a client that calls one fixed URL of its own, callURL, built from raw (the
-// configured endpoint) and a route and query the client holds: printable passes a *url.Error that
-// names callURL exactly, as it passes one naming raw followed by a broker route, so a clean
-// endpoint's failure prints its own text (a TLS failure's x509 cause, a refused dial's address)
-// and not its class alone. raw must still be clean, and callURL must begin with raw, so an
-// endpoint holding a credential prints the class alone; a URL net/http names other than callURL,
-// a redirect's target, prints the class alone too.
+// configured endpoint) and a route and query the client holds: it passes a *url.Error that names
+// callURL exactly, as it passes one naming raw followed by a broker route, so a clean endpoint's
+// failure prints its own text (a TLS failure's x509 cause, a refused dial's address) and not its
+// class alone. raw must still be clean, and callURL must begin with raw, so an endpoint holding a
+// credential prints the class alone; a URL net/http names other than callURL, a redirect's
+// target, prints the class alone too.
 func CauseAt(err error, raw, callURL string) error {
+	return printedCause(err, raw, func(named string) bool {
+		return callClean(raw, named) || named == callURL && ownCall(raw, callURL)
+	}, "the endpoint")
+}
+
+// printedCause is Cause's and CauseAt's answer for err beside raw, accepted saying which URL a
+// *url.Error may name for its failure to print (printableAt). Where none of err's text may print,
+// it prints a context's end's fixed text (contextEnd), and otherwise the class (class), server
+// being who answered an HTTP status; where some may, the error the *url.Error wraps, or err
+// itself, when its own text is the text printableAt checked, and that text over err otherwise. It
+// unwraps to err.
+func printedCause(err error, raw string, accepted func(named string) bool, server string) error {
 	if err == nil {
 		return nil
 	}
-	ue, checked, ok := printableAt(err, raw, func(named string) bool {
-		return callClean(raw, named) || named == callURL && ownCall(raw, callURL)
-	})
-	return causeOf(err, ue, checked, ok, "the endpoint")
-}
-
-// causeOf is what Cause and CauseAt answer for err, given what printable or printableAt read of
-// it: the *url.Error it holds (ue), the text that may print (checked) and whether any may (ok).
-// Where ok is false it prints a context's end's fixed text (contextEnd), and otherwise the class
-// (class), server being who answered an HTTP status; where ok is true, the error the *url.Error
-// wraps, or err itself, when its own text is checked, and checked over err otherwise. It unwraps
-// to err.
-func causeOf(err error, ue *url.Error, checked string, ok bool, server string) error {
+	ue, checked, ok := printableAt(err, raw, accepted)
 	switch {
 	case !ok:
 		if text, ended := contextEnd(err); ended {

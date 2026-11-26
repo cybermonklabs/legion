@@ -495,6 +495,55 @@ func TestCausePrintsAContextsEndAsItsFixedText(t *testing.T) {
 	}
 }
 
+// A context ended with a cause of its own ends net/http's call with that cause. Beside a URL
+// Cause will not print, a cause that wraps context.Canceled or context.DeadlineExceeded prints
+// that one's text, and one that is none of them and wraps none of them prints as its class, the
+// shape of Dispatch's own WithTimeoutCause for a related-issue embedding (api/suggestions.go).
+func TestCausePrintsAContextsOwnCauseByWhatItWraps(t *testing.T) {
+	const dirty = "http://tokuser9f3:hunter2pw@127.0.0.1:1"
+	call := hangingServer(t) + "/v1/sessions?include=unresponsive"
+	get := func(ctx context.Context) error {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, call, nil)
+		if err != nil {
+			t.Fatalf("build the fixture's request: %v", err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err == nil {
+			response.Body.Close()
+			t.Fatal("the server that never answers answered")
+		}
+		return err
+	}
+	wrapsCanceled, cancel := context.WithCancelCause(t.Context())
+	cancel(fmt.Errorf("made-up shutdown: %w", context.Canceled))
+	wrapsDeadline, stopDeadline := context.WithTimeoutCause(t.Context(), 50*time.Millisecond, fmt.Errorf("made-up bound: %w", context.DeadlineExceeded))
+	defer stopDeadline()
+	ownCancel, cancelOwn := context.WithCancelCause(t.Context())
+	cancelOwn(errors.New("made-up shutdown"))
+	ownDeadline, stopOwn := context.WithTimeoutCause(t.Context(), 50*time.Millisecond, errors.New("made-up allowance ended"))
+	defer stopOwn()
+	for _, row := range []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{"a cancel's cause wrapping context.Canceled", wrapsCanceled, "context canceled"},
+		{"a deadline's cause wrapping context.DeadlineExceeded", wrapsDeadline, "context deadline exceeded"},
+		{"a cancel's cause of its own", ownCancel, ClassRequestFailed},
+		{"a deadline's cause of its own", ownDeadline, ClassRequestFailed},
+	} {
+		var ue *url.Error
+		err := get(row.ctx)
+		if !errors.As(err, &ue) {
+			t.Fatalf("%s: the fixture's error %v is no *url.Error", row.name, err)
+		}
+		moved := &url.Error{Op: ue.Op, URL: dirty + "/v1/sessions?include=unresponsive", Err: ue.Err}
+		if got := Cause(moved, dirty).Error(); got != row.want {
+			t.Errorf("%s: Cause = %q, want %q (net/http's error: %q)", row.name, got, row.want, ue.Err)
+		}
+	}
+}
+
 // stoppedLike is a timeout whose text a caller wrote, holding net/http's or the context package's
 // words and more.
 type stoppedLike struct{ text string }
