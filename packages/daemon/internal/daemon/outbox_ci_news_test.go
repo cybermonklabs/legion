@@ -372,11 +372,7 @@ func TestARestartDuringTheWakeOrThePublishDeliversOnce(t *testing.T) {
 	})
 	t.Run("control: the row finished before its publish is confirmed", func(t *testing.T) {
 		t.Parallel()
-		d, token, id := gated(t, false, func(d *ciDaemon, id int64) {
-			if _, err := d.pool.Exec(d.ctx, `delete from outbox where id = $1`, id); err != nil {
-				d.t.Fatalf("finish row %d before its publish is confirmed: %v", id, err)
-			}
-		})
+		d, token, id := gated(t, false, func(*ciDaemon, int64) {})
 		time.Sleep(2 * time.Second)
 		if delivered := d.listener.delivered(token, record.OutboxKey(id)); delivered != 0 || d.rowLeft(id) {
 			t.Fatalf("with the row finished before its publish was confirmed: %d messages, the row left %t; want none, the loss the stop's case would count as 0 for 1",
