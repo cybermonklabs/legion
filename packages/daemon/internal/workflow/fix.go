@@ -514,34 +514,12 @@ func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w W
 	for _, check := range facts.Failed {
 		sentences += fmt.Sprintf(" Check %s failed at %s too: CI job of the check ended %s.", check, facts.Head, facts.Cases[check])
 	}
-	sentences += fixReports(w, rows, fix) + owedMergeSentence(facts) + fixPushSentence(issue, fix, facts.Branch, facts.FixDir)
+	// The reports of the steps that failed to the fix's own step before it started wait on its row
+	// (record.TaskFix.Reports, besideFix): this task is the first thing that can name the entry its
+	// start raises, so it speaks them, in the words a running fix's message carries.
+	sentences += fix.Reports + owedMergeSentence(facts) + fixPushSentence(issue, fix, facts.Branch, facts.FixDir)
 	standing.lines = copyLine + sentences + strings.TrimPrefix(standing.lines, copyLine)
 	return task(fixing, standing, record.PhaseRow{}, pr, ""), nil
-}
-
-// fixReports is what the task of fix says of a step that failed to the fix's own step while the
-// fix read its job (besideFix's GotReport): the report of each step of w after the fix's place
-// whose row is completed and names a handoff record, in the words the row of a report sent to a
-// running fix carries (reportToFix). Such a step's report reaches the fix no other way: its row
-// is queued for the entry of a fix that has none until its start raises one, and the standing
-// text names only the steps before the fix's place. "" where the fix got no report.
-func fixReports(w Walk, rows []record.PhaseRow, fix record.TaskFix) string {
-	if !fix.GotReport {
-		return ""
-	}
-	sentences := ""
-	for i, at := range w.steps() {
-		role := RoleFor(at)
-		if i+1 <= fix.Place || role == "" {
-			continue
-		}
-		row := record.PhaseRowOf(rows, role)
-		if row.HandoffRecord == "" {
-			continue
-		}
-		sentences += fmt.Sprintf(" The %s of step %d reports: %s. Its report is %s. It is part of your fix.", role, i+1, row.Summary, row.HandoffRecord)
-	}
-	return sentences
 }
 
 // owedMergeSentence is what a fix's task says of the merge forward its implementer owes
@@ -1310,22 +1288,27 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 		}
 	}
 	end := endOfTransition(w, trigger, step.at, row.To, handoff)
+	// The failed step's branch beside the fix is the one its start was bound to, read before its
+	// run ends.
+	stepStart, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
+	if err != nil {
+		return false, err
+	}
 	gotReport := false
 	if end.ReturnedTo != nil {
 		if gotReport = open && *end.ReturnedTo == fix.Place; gotReport {
 			fix.GotReport = true
+			// A fix that still reads its job has raised no entry, so no message can name it: the
+			// report waits on the fix's row, and the task of its start speaks it (fixTask).
+			if fix.State == record.FixReading {
+				fix.Reports += " " + reportSentence(step, handoff, stepStart.PushBranch)
+			}
 		} else {
 			fix.ReturnTo = earlierReturn(fix.ReturnTo, *end.ReturnedTo)
 		}
 		if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
 			return false, err
 		}
-	}
-	// The failed step's branch beside the fix is the one its start was bound to, read before its
-	// run ends.
-	stepStart, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
-	if err != nil {
-		return false, err
 	}
 	if _, err := e.endRun(ctx, tx, issue.Key, step.place, end, func(start record.StepStart) record.StepRecord {
 		return stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
@@ -1335,15 +1318,9 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	if !open {
 		return true, e.afterFix(ctx, tx, issue, w, &rowMove{trigger: trigger, target: target, handoff: handoff, pr: pr, why: why})
 	}
-	if gotReport {
-		// The fix's entry is the one its start raised, and a fix that still reads its job has
-		// none: its start, in the fact of its job's read, raises the entry and composes the task
-		// that carries this report (fixReports). So a report that comes while the fix reads its
-		// job is queued for nobody, and the start speaks it instead.
-		if fix.State == record.FixRunning {
-			if err := e.reportToFix(ctx, tx, issue, w, *fix, step, handoff, pr, stepStart.PushBranch); err != nil {
-				return false, err
-			}
+	if gotReport && fix.State == record.FixRunning {
+		if err := e.reportToFix(ctx, tx, issue, w, *fix, step, handoff, pr, stepStart.PushBranch); err != nil {
+			return false, err
 		}
 	}
 	from := issue.Phase
@@ -1356,22 +1333,29 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	return true, nil
 }
 
-// reportToFix gives fix, which runs, the report of step, a step beside it that failed and returned
-// the task to the fix's own step (besideFix), handoff being that step's completion: one step-report
-// row to the implementer, for the fix's work (its number and entry), so the outbox wakes a released
-// fix and finishes the row undelivered once the fix ended, naming branch, the step's own branch beside
-// the fix that its start was bound to, where its commits are ("" for none), which the fix takes
-// before its end push.
+// reportSentence is what the fix is told of the report of step, a step beside it that failed and
+// returned the task to the fix's own step, handoff being that step's completion, and branch the
+// step's own branch beside the fix that its start was bound to, where its commits are ("" for
+// none), which the fix takes before its end push: the one wording of the message a running fix
+// gets (reportToFix) and of the task of the start of a fix that got the report before (fixTask).
+func reportSentence(step standing, handoff record.PhaseRow, branch string) string {
+	body := fmt.Sprintf("The %s of step %d reports: %s. Its report is %s. It is part of your fix.", step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)
+	if branch != "" {
+		body += fmt.Sprintf(" Its commits are on its own branch %s: take them before your end push, as your task says.", branch)
+	}
+	return body
+}
+
+// reportToFix gives fix, which runs, the report of step (reportSentence): one step-report row to
+// the implementer, for the fix's work (its number and entry), so the outbox wakes a released fix
+// and finishes the row undelivered once the fix ended.
 func (e *Engine) reportToFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix, step standing, handoff record.PhaseRow,
 	pr *record.PullRequest, branch string) error {
 	addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, nil)
 	if err != nil {
 		return err
 	}
-	body := fmt.Sprintf("The %s of step %d reports: %s. Its report is %s. It is part of your fix.", step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)
-	if branch != "" {
-		body += fmt.Sprintf(" Its commits are on its own branch %s: take them before your end push, as your task says.", branch)
-	}
+	body := reportSentence(step, handoff, branch)
 	number := 0
 	if pr != nil {
 		number = pr.Number
