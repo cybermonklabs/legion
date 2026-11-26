@@ -2725,10 +2725,19 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 // BROKER_PROFILES_FILE and the profile, and BROKER_EXCHANGE_RESULT_WORKFLOWS only when it is set.
 // cmd/cipherd runs it on every broker before ProxyMintedRules, and `profiles check` runs it with no
 // result entries.
-func ResultsEntryRules(rules proxyrules.Rules, resultWorkflows bool) error {
+//
+// readsAsBlock is whether the file reads that profile's proxy block as the broker before the kinds
+// read it (policy.Profiles.LegacyProxy of the name, which answers a block of no kind, aws or
+// azure): a file that declares no kind serves such a block behind a kind of its own, so the block
+// is no binding of the rules and rules.Lookup answers nothing for it. The results profile is
+// refused there as it is in a file that declares kinds, since the broker mints and holds that
+// name whatever else the file's blocks do.
+func ResultsEntryRules(rules proxyrules.Rules, readsAsBlock, resultWorkflows bool) error {
 	name := oauthwire.AirlockResultsName
 	entry := rules.Lookup(name)
 	switch {
+	case readsAsBlock:
+		return fmt.Errorf("the profile %s of %s must be of kind %s, a capability the broker mints and holds, and its proxy block is one this file reads as the broker before the kinds did", name, profilesFileSetting, proxyrules.WayDPoP)
 	case entry == nil && resultWorkflows:
 		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the profile %s, and %s holds no profile of that name", name, profilesFileSetting)
 	case entry != nil && (entry.Inline == nil || entry.Way != proxyrules.WayDPoP):

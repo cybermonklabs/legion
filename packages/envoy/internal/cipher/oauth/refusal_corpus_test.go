@@ -155,6 +155,7 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusAccount, "public,DSP,OPS", "PUB"}, policySource},
 	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "PUB"}, policySource},
 	{"%w: %s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on", []any{exchange.ErrRestrictedOneProject, corpusPerson, 2}, policySource},
+	{"%w: %s's machine login was decided with member kind %d", []any{exchange.ErrApproverKindUnknown, corpusPerson, int(exchange.ApproverUnknown)}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 

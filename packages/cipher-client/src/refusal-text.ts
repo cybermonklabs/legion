@@ -98,6 +98,8 @@ const POLICY_SENTINELS = {
   projectsNoPerson: "exchange: a token that names no person names no project",
   twoEntries: "exchange: two entries list this identity",
   restrictedOneProject: "exchange: a restricted member's machine login names exactly one project",
+  approverKindUnknown:
+    "exchange: the machine login's approver is of no member kind the decision was told",
 } as const;
 
 function policy(sentinel: keyof typeof POLICY_SENTINELS, format: string, ...slots: string[]) {
@@ -269,6 +271,15 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
   policy(
     "restrictedOneProject",
     "%s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on",
+    PERSON_SLOT,
+    NUMBER
+  ),
+  // A machine login decided with no word on what kind of member its approver is
+  // (`exchange.ApproverUnknown`), which no caller of the policy means to ask for: the broker
+  // asks Dispatch before it decides, so this says the broker asked nothing.
+  policy(
+    "approverKindUnknown",
+    "%s's machine login was decided with member kind %d",
     PERSON_SLOT,
     NUMBER
   ),

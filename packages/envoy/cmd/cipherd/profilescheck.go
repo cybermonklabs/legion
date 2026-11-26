@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -219,7 +220,7 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 	// (config.MintedEntryRules), and, given the destinations, the boot's whole check of the blocks
 	// against them (config.ProxyMintedRules), of which those rules are the first part.
 	rules := now.FileRules()
-	if err := config.ResultsEntryRules(rules, false); err != nil {
+	if err := config.ResultsEntryRules(rules, now.LegacyProxy(oauthwire.AirlockResultsName) != nil, false); err != nil {
 		fmt.Fprintf(stderr, "%s: %s: %v\n", profilesCheckName, path, err)
 		return 1
 	}

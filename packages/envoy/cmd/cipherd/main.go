@@ -264,7 +264,7 @@ func main() {
 	// profile DISPATCH_RESULTS_TOKEN is of kind dpop, and result entries need it; each dpop block
 	// binds one exact host, a private destination's, with an allow list, in Authorization alone,
 	// and no kind binds that host; each destination needs a dpop block to bind its host.
-	fatal(config.ResultsEntryRules(fileRules, len(cfg.ExchangeResultWorkflows) > 0))
+	fatal(config.ResultsEntryRules(fileRules, profiles.LegacyProxy(oauthwire.AirlockResultsName) != nil, len(cfg.ExchangeResultWorkflows) > 0))
 	fatal(config.ProxyMintedRules(fileRules, cfg.ProxyPrivateUpstreams))
 	// And the results entry this broker grants and serves result grants under (resultEntryDigest):
 	// the profile and the destination the checks above passed, hashed once, which the token
