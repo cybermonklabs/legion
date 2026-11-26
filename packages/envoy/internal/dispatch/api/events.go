@@ -137,11 +137,11 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // for the old one. That is what the browser harness does between scenarios - it empties `issues`
 // and restarts each project's numbering, so every scenario's issues take the keys of the last
 // one's (packages/dispatch/e2e/seed.ts) - and it is the reading a restored database gives a
-// process that outlived the restore. The comment list is held to the same rule by a counter that
-// never comes back with the key (migration 20261106020619); the feed's column does come back, so
-// the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
-// tells the event relay an event log that was reset under its cursor from one that merely went
-// quiet (events.EventLogWasReset).
+// process that outlived the restore. So the row's birth stamp is hashed in beside the column, as
+// the comment list's validator hashes it beside its own counters, which a new issue under the key
+// reaches again too (commentListETag). It is the same fact, read the same way, that tells the
+// event relay an event log that was reset under its cursor from one that merely went quiet
+// (events.EventLogWasReset).
 func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
@@ -478,13 +478,15 @@ type postKey struct {
 // reply_block.text of a message reply's message.answered and of its message.edited written
 // before the delete, and the reply_block.text of a comment reply's comment.created or
 // comment.answered and of each later event of that reply written before the delete but its
-// comment.deleted. A reply's own delete event, message.deleted or comment.deleted, carries no
-// text of the post it answers whenever it is written (deleteEventReplyBlock), and an event of
-// the reply written after the delete carries no text of it. Each is part of an event of the post
-// that quoted it, and only the quoted post's own events are marked here. So are the document
-// events of an accepted suggestion, which are no event of the post: the accept's
-// artifact.version, and an artifact.renamed written before the delete, which carries every
-// version, keep the name the accept gave the version.
+// comment.deleted. So do the reply_block.quote and reply_block.occurrence of those events, the
+// words of the post the reply quotes. A reply's own delete event, message.deleted or
+// comment.deleted, carries no text, quote or occurrence of the post it answers whenever it is
+// written (deleteEventReplyBlock), and an event of the reply written after the delete carries none
+// of them (refs.ReplyBlocks). Each is part of an event of the post that quoted it, and only the
+// quoted post's own events are marked here. So are the document events of an accepted
+// suggestion, which are no event of the post: the accept's artifact.version, and an
+// artifact.renamed written before the delete, which carries every version, keep the name the
+// accept gave the version.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.
