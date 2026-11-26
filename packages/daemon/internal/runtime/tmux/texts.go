@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
@@ -171,11 +172,13 @@ func checkTexts(spec runtime.SpawnSpec, env map[string]string, workDir string, l
 
 // build writes the extension root beside the daemon's copy of the folder, removing what an earlier
 // build of the launch's generation left, and the settings layer in it. It runs once no process of
-// the claim runs, so it first removes every other generation's directory the daemon's copies left
-// beside the launch's own, `<state>/texts/<claim>/<generation>`, with the root an earlier launch
-// loaded: at spec build the daemon removes only earlier copies, since a process of the claim may
-// still load a root (specs.armTexts), and the daemon removes the whole `<state>/texts/<claim>`
-// directory once the claim has no process.
+// the claim runs, so it first removes every other generation's directory beside the launch's own,
+// `<state>/texts/<claim>/<generation>`, with the root an earlier launch loaded. The daemon removes
+// the whole `<state>/texts/<claim>` directory with each write of the claim with no process, the
+// write of this launch's try among them, so another generation's directory here is one a removal
+// the daemon could not finish left; the daemon's spec build removes the folder's earlier copies and
+// no root (specs.armTexts). A pane's own user can write under that directory, so each removal
+// follows no link and waits on nothing (rolefile.RemoveTree).
 func (c *checkedTexts) build() (TextsLaunch, error) {
 	generation := filepath.Dir(c.root)
 	launches := filepath.Dir(generation)
@@ -187,11 +190,11 @@ func (c *checkedTexts) build() (TextsLaunch, error) {
 		if _, err := strconv.ParseUint(entry.Name(), 10, 64); err != nil || entry.Name() == filepath.Base(generation) {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(launches, entry.Name())); err != nil {
+		if err := rolefile.RemoveTree(filepath.Join(launches, entry.Name())); err != nil {
 			return TextsLaunch{}, fmt.Errorf("remove the texts of an earlier launch: %w", err)
 		}
 	}
-	if err := os.RemoveAll(c.root); err != nil {
+	if err := rolefile.RemoveTree(c.root); err != nil {
 		return TextsLaunch{}, fmt.Errorf("remove the texts root of an earlier launch: %w", err)
 	}
 	root, err := texts.BuildRoot(c.folder, c.envoyRoot, c.legionRoot, filepath.Dir(c.root), filepath.Base(c.root))

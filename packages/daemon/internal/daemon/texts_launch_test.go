@@ -754,11 +754,12 @@ func TestTheLaunchReadsTheFolderAsItStandsThen(t *testing.T) {
 	}
 }
 
-// A launch removes the copies the claim's earlier launches made and none of their roots: a process
-// of the claim may still load an earlier generation's root, and only the runtime knows, once its
-// refusal of a live claim has passed, that none does (tmux's checkedTexts.build). A launch at a
-// generation whose copy is already there writes that copy anew, so a file the folder no longer
-// holds is not left in it.
+// A launch removes the copies the claim's earlier launches made and none of their roots, which are
+// the runtime's to remove (tmux's checkedTexts.build): the try's write of the claim with no process
+// removes its whole texts directory before the build (pruning), so an earlier launch's copy or root
+// is one a prune that could not finish left. A launch at a generation whose copy is already there,
+// as a start that forgot its session builds again, writes that copy anew, so a file the folder no
+// longer holds is not left in it.
 func TestALaunchRemovesTheEarlierCopiesAndLeavesTheirRoots(t *testing.T) {
 	t.Parallel()
 	folder := reviewerFolder(t, "The folder's reviewer.\n")

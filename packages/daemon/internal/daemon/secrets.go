@@ -18,10 +18,13 @@ import (
 // pruning is store with a claim's secret files — its gh directory (runtime.GHConfigDir) with them —
 // and its texts directory (textsCopies: folder copies and tmux extension roots) removed whenever
 // the claim is written with no process — suspended, failed, retired, or between one launch and the
-// next. The runtime writes a pane's files and roots and leaves the last launch's behind; the
-// daemon, which knows when a claim's process ends, removes them. A launch builds its spec and
-// writes its files after the claim is persisted without a locator, and no write of the claim runs
-// between that build and the persist of its locator, so a launch's own files are never removed.
+// next (pruneClaim). A project pause's stop writes the claim through its own transaction instead
+// (supervise.Deps.PauseStopped), which prunes the same way once it has committed
+// (projectPause.stopped). The runtime writes a pane's files and roots and leaves the last launch's
+// behind; the daemon, which knows when a claim's process ends, removes them. A launch builds its
+// spec and writes its files after the claim is persisted without a locator, and no write of the
+// claim runs between that build and the persist of its locator, so a launch's own files are never
+// removed.
 func pruning(store supervise.Store, stateDir string, log *slog.Logger) supervise.Store {
 	return pruningStore{Store: store, stateDir: stateDir, log: log}
 }
@@ -38,7 +41,7 @@ func (s pruningStore) PutClaim(ctx context.Context, c supervise.Claim) error {
 	if err := s.Store.PutClaim(ctx, c); err != nil {
 		return err
 	}
-	s.written(c)
+	pruneClaim(s.stateDir, c, s.log)
 	return nil
 }
 
@@ -47,7 +50,7 @@ func (s pruningStore) AdmitClaim(ctx context.Context, c supervise.Claim) (superv
 	if err != nil {
 		return supervise.Claim{}, err
 	}
-	s.written(bound)
+	pruneClaim(s.stateDir, bound, s.log)
 	return bound, nil
 }
 
@@ -55,7 +58,7 @@ func (s pruningStore) PutClaimAndDelivery(ctx context.Context, c supervise.Claim
 	if err := s.Store.PutClaimAndDelivery(ctx, c, d); err != nil {
 		return err
 	}
-	s.written(c)
+	pruneClaim(s.stateDir, c, s.log)
 	return nil
 }
 
@@ -63,7 +66,7 @@ func (s pruningStore) RetireDelivery(ctx context.Context, c supervise.Claim, del
 	if err := s.Store.RetireDelivery(ctx, c, deliveryID); err != nil {
 		return err
 	}
-	s.written(c)
+	pruneClaim(s.stateDir, c, s.log)
 	return nil
 }
 
@@ -72,15 +75,19 @@ func (s pruningStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds
 	if err != nil {
 		return nil, err
 	}
-	s.written(c)
+	pruneClaim(s.stateDir, c, s.log)
 	return freed, nil
 }
 
-func (s pruningStore) written(c supervise.Claim) {
-	if c.Locator == nil {
-		removeSecretFiles(runtime.SecretsDir(s.stateDir), s.log, func(name string) bool { return ownedBy(name, c.Token) })
-		removeTextsDirs(textsDir(s.stateDir), s.log, func(name string) bool { return name == string(c.Token) })
+// pruneClaim is the prune of one write of c that landed: where c records no process (no locator),
+// its secret files under stateDir go, its gh directory with them, and so does its texts directory
+// `<state>/texts/<claim>`. A claim with a process keeps them all, since that process may load them.
+func pruneClaim(stateDir string, c supervise.Claim, log *slog.Logger) {
+	if c.Locator != nil {
+		return
 	}
+	removeSecretFiles(runtime.SecretsDir(stateDir), log, func(name string) bool { return ownedBy(name, c.Token) })
+	removeTextsDirs(textsDir(stateDir), log, func(name string) bool { return name == string(c.Token) })
 }
 
 // pruneAllBut is boot's half: every file in the secrets directory and every entry in the texts

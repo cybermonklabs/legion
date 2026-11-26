@@ -898,3 +898,105 @@ func TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
 		r.wantWork(t, 1, "after the stop made again")
 	})
 }
+
+// A pause's stop writes its claim through the stop transaction, which the pruning store never
+// sees, and prunes as that store does once the transaction has answered that it committed: the
+// architect, stopped with no process, loses its secret files, its gh directory with them, and
+// `<state>/texts/<claim>`, while another claim's files stay. That holds for a commit whose reply
+// was lost and that the store then says landed. A stop whose commit never landed removes nothing,
+// and the stop made again prunes. A stop whose outcome the store cannot say removes nothing
+// either, even once the store says it committed and the commit's hooks have run: by then a later
+// launch of the claim may have written its own files there. The stop the machine makes again with
+// the claim's next write prunes.
+func TestAPauseStopPrunesTheFilesOfAClaimWithNoProcessOnceItCommits(t *testing.T) {
+	t.Parallel()
+	architect, other := mustClaimToken(t, pauseIssue, claim.RoleArchitect), mustClaimToken(t, pauseIssue, claim.RoleTester)
+	// seed writes the architect's files and another claim's under the rig's state directory, and
+	// answers want, which fails unless the state directory holds them all (pruned false) or the
+	// other claim's alone (pruned true).
+	seed := func(t *testing.T, r *pauseStopRig) (want func(pruned bool, when string)) {
+		t.Helper()
+		stateDir := r.pauses.stateDir
+		for _, token := range []claim.Token{architect, other} {
+			claimSecrets(t, stateDir, token)
+			claimTexts(t, stateDir, token, t.TempDir())
+		}
+		secrets, texts, others := secretEntries(t, stateDir), treeListing(t, textsDir(stateDir)), treeListing(t, textsCopies(stateDir, other))
+		return func(pruned bool, when string) {
+			t.Helper()
+			if !pruned {
+				if got := secretEntries(t, stateDir); !slices.Equal(got, secrets) {
+					t.Errorf("%s the secrets directory holds %v, want %v", when, got, secrets)
+				}
+				if got := treeListing(t, textsDir(stateDir)); !slices.Equal(got, texts) {
+					t.Errorf("%s the texts directory holds %v, want %v", when, got, texts)
+				}
+				return
+			}
+			if got, kept := secretEntries(t, stateDir), []string{string(other), string(other) + "-gh", string(other) + "-grant"}; !slices.Equal(got, kept) {
+				t.Errorf("%s the secrets directory holds %v, want only %s's: %v", when, got, other, kept)
+			}
+			if got := secretFiles(t, textsDir(stateDir)); !slices.Equal(got, []string{string(other)}) {
+				t.Errorf("%s the texts directory holds %v, want only %s's", when, got, other)
+			}
+			if got := treeListing(t, textsCopies(stateDir, other)); !slices.Equal(got, others) {
+				t.Errorf("%s %s's texts directory holds %v, want %v", when, other, got, others)
+			}
+		}
+	}
+	t.Run("committed", func(t *testing.T) {
+		r := newPauseStopRig(t)
+		want := seed(t, r)
+		if err := r.stop(); err != nil {
+			t.Fatalf("the stop with no fault = %v, want nil", err)
+		}
+		want(true, "after the stop committed")
+	})
+	t.Run("reply_lost", func(t *testing.T) {
+		r := newPauseStopRig(t)
+		want := seed(t, r)
+		fired := r.fault.Cut(pauseStopMatch, testdb.CutAfterCommit)
+		err := r.stop()
+		testdb.Met(t, fired)
+		if err != nil {
+			t.Fatalf("the stop whose commit landed and whose reply was lost = %v, want nil", err)
+		}
+		want(true, "after the stop the store says committed")
+	})
+	t.Run("rollback", func(t *testing.T) {
+		r := newPauseStopRig(t)
+		want := seed(t, r)
+		fired := r.fault.Cut(pauseStopMatch, testdb.CutBeforeCommit)
+		err := r.stop()
+		testdb.Met(t, fired)
+		if err == nil {
+			t.Fatal("the stop whose commit never landed = nil, want its failure")
+		}
+		want(false, "after a commit that never landed")
+		if err := r.stop(); err != nil {
+			t.Fatalf("the stop made again with no fault = %v, want nil", err)
+		}
+		want(true, "after the stop made again")
+	})
+	t.Run("unknown", func(t *testing.T) {
+		r := newPauseStopRig(t)
+		want := seed(t, r)
+		fired := r.fault.Cut(pauseStopMatch, testdb.CutAfterCommitRefusing)
+		err := r.stop()
+		testdb.Met(t, fired)
+		if !errors.Is(err, store.ErrCommitOutcomeUnknown) {
+			t.Fatalf("the stop whose outcome the store cannot say = %v, want ErrCommitOutcomeUnknown", err)
+		}
+		want(false, "before the store answers")
+		r.fault.Refuse(false)
+		testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
+			"the stop's line and wakes once the store says it committed", func() bool {
+				return len(r.releasedLines()) == 1 && r.wakes() == 1 && r.published() >= 1
+			})
+		want(false, "once the store said the stop committed and its hooks ran")
+		if err := r.stop(); err != nil {
+			t.Fatalf("the stop the machine makes again = %v, want nil", err)
+		}
+		want(true, "after the stop made again")
+	})
+}

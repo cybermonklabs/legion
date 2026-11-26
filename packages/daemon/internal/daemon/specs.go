@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -158,20 +159,25 @@ func textsDir(stateDir string) string {
 
 // textsCopies is `<state>/texts/<claim>`, where a launch of claim's arm keeps its copy of the
 // arm's folder of texts, `<generation>/folder` (armTexts), beside which the tmux runtime builds the
-// launch's extension root, `<generation>/root`. Each launch of such an arm removes the copies an
-// earlier one left and none of the roots, which a process of the claim that still runs may load;
-// the tmux runtime removes an earlier generation's root once it knows none runs
-// (tmux's checkedTexts.build), and the daemon removes the whole `<state>/texts/<claim>` directory
-// once the claim has no process (pruning, pruneAllBut).
+// launch's extension root, `<generation>/root`. The daemon removes the whole directory, roots
+// included, with each write of the claim with no process that lands (pruning, and a pause's stop
+// transaction, projectPause.stopped), and at boot for each claim that has none (pruneAllBut). The
+// try of each launch writes the claim with no process at its new generation before the spec is
+// built (supervise's writeTry), so a spec build meets only what that try's earlier build copied —
+// a start that forgot its session builds again, as does a resume handed to the agent's own lookup
+// — and what a prune that could not remove an entry left (removeTextsDirs). The spec build removes
+// those copies (removeTextsCopies), and the tmux runtime every other generation's directory and
+// its own generation's root (tmux's checkedTexts.build).
 func textsCopies(stateDir string, token claim.Token) string {
 	return filepath.Join(textsDir(stateDir), string(token))
 }
 
 // removeTextsCopies removes from copies (textsCopies) each generation's copy of the folder,
 // `<generation>/folder`, and then each directory that leaves empty, a generation's and copies
-// itself, so a claim no root was built for keeps nothing. A root stays where it is during the
-// launch's spec build; the whole `<state>/texts/<claim>` directory goes once the claim has no
-// process (pruning, pruneAllBut).
+// itself, so a claim no root was built for keeps nothing. A root it leaves is the runtime's to
+// remove when it builds the launch's own (tmux's checkedTexts.build). Under the tmux runtime a
+// pane's own user can write there, so the copy goes without following a link in it
+// (rolefile.RemoveTree).
 func removeTextsCopies(copies string) error {
 	generations, err := os.ReadDir(copies)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -185,7 +191,7 @@ func removeTextsCopies(copies string) error {
 			continue
 		}
 		dir := filepath.Join(copies, generation.Name())
-		if err := os.RemoveAll(filepath.Join(dir, "folder")); err != nil {
+		if err := rolefile.RemoveTree(filepath.Join(dir, "folder")); err != nil {
 			return err
 		}
 		if err := removeIfEmpty(dir); err != nil {
@@ -647,18 +653,18 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, bool, error) {
 
 // armTexts is spec, c's launch, as the arm among its Variants that names a folder of texts makes
 // it (runtime.Variant.Texts; the loader lets no two experiments give one role a folder), and spec
-// itself where no arm does. It removes the copies the claim's earlier launches made
-// (removeTextsCopies), reads the folder as it stands now (texts.Read) and checks it: every role
-// part it holds against Legion's own text at that path and as a part some role the experiment
-// reaches reads (texts.CheckRoleParts over partReadBy), and every agent and skill its texts name
-// against the names the worker image ships, as the boot read them (texts.CheckReferences; a boot
-// that read none can check no name). It then copies what it read to `<generation>/folder` under
-// textsCopies, and reads each of the launch's role parts the folder holds from that copy
-// (prompts.PartNames names the part of each path), so the prompt the runtime composes later holds
-// the bytes checked here whatever the folder holds by then. A claim with an operator prompt file
-// keeps that file as its whole role prompt, and still reads the folder's agents, skills and
-// dispatch-first, which the runtime lays out from the copy. The launch logs what it read
-// (textsReports.read).
+// itself where no arm does. It removes the copies of the folder an earlier build left
+// (removeTextsCopies; textsCopies says which can be there), reads the folder as it stands now
+// (texts.Read) and checks it: every role part it holds against Legion's own text at that path and
+// as a part some role the experiment reaches reads (texts.CheckRoleParts over partReadBy), and
+// every agent and skill its texts name against the names the worker image ships, as the boot read
+// them (texts.CheckReferences; a boot that read none can check no name). It then copies what it
+// read to `<generation>/folder` under textsCopies, and reads each of the launch's role parts the
+// folder holds from that copy (prompts.PartNames names the part of each path), so the prompt the
+// runtime composes later holds the bytes checked here whatever the folder holds by then. A claim
+// with an operator prompt file keeps that file as its whole role prompt, and still reads the
+// folder's agents, skills and dispatch-first, which the runtime lays out from the copy. The launch
+// logs what it read (textsReports.read).
 //
 // spec.Texts carries the folder's facts and its fallback (runtime.Texts.Fallback): the launch's
 // prompt with Legion's role parts, and its arms, with the folder's arm dropped whole: its Variants

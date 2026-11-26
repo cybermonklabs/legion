@@ -61,8 +61,7 @@ func TestTheClaimPruneTakesTheGhDirectoryOfAClaimWrittenWithNoProcess(t *testing
 	writeFile(t, filepath.Join(config.ProviderEnvDir(stateDir), "ANTHROPIC_API_KEY"))
 	writeFile(t, runtime.SecretFilePath(stateDir, runtime.DispatchTokenFileName))
 
-	store := pruningStore{stateDir: stateDir, log: quietLogger()}
-	store.written(supervise.Claim{Token: ended})
+	pruneClaim(stateDir, supervise.Claim{Token: ended}, quietLogger())
 
 	want := []string{runtime.DispatchTokenFileName, string(live), string(live) + "-gh", string(live) + "-grant", "provider-env"}
 	if got := secretEntries(t, stateDir); !slices.Equal(got, want) {
@@ -81,9 +80,9 @@ func TestTheClaimPruneTakesTheGhDirectoryOfAClaimWrittenWithNoProcess(t *testing
 	}
 
 	// A claim written with a process keeps everything.
-	store.written(supervise.Claim{Token: live, Locator: &runtime.Locator{
+	pruneClaim(stateDir, supervise.Claim{Token: live, Locator: &runtime.Locator{
 		Runtime: runtime.RuntimeTmux, Claim: live, Incarnation: "4242:1", Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
-	}})
+	}}, quietLogger())
 	if got := secretEntries(t, stateDir); !slices.Equal(got, want) {
 		t.Fatalf("after the live claim's write the secrets directory holds %v, want %v", got, want)
 	}
@@ -237,8 +236,7 @@ func TestThePruneTakesAGhDirectoryWithoutFollowingALinkInIt(t *testing.T) {
 			t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
 			var logged bytes.Buffer
-			store := pruningStore{stateDir: stateDir, log: bufferedLogger(&logged)}
-			store.written(supervise.Claim{Token: ended})
+			pruneClaim(stateDir, supervise.Claim{Token: ended}, bufferedLogger(&logged))
 
 			if body, err := os.ReadFile(precious); err != nil || string(body) != "kept\n" {
 				t.Fatalf("%s, in the directory the planted links name, is %q (%v), want it kept", precious, body, err)
@@ -507,9 +505,7 @@ func TestTheTextsPruneRemovesARootWithoutFollowingALinkInIt(t *testing.T) {
 			name string
 			run  func(stateDir string)
 		}{
-			{"the claim's write", func(stateDir string) {
-				pruningStore{stateDir: stateDir, log: quietLogger()}.written(supervise.Claim{Token: ended})
-			}},
+			{"the claim's write", func(stateDir string) { pruneClaim(stateDir, supervise.Claim{Token: ended}, quietLogger()) }},
 			{"boot", func(stateDir string) { pruneAllBut(stateDir, nil, quietLogger()) }},
 		} {
 			t.Run(tc.name+", by "+prune.name, func(t *testing.T) {

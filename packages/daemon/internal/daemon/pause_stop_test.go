@@ -34,9 +34,9 @@ var pauseOperator = store.PauseActor{Kind: store.PauseByOperator}
 
 // pauseRig is project LEGION on a database of its own as a pause's stop finds it: LEGION-208
 // recorded in implementing, a claim of each role the test names live on it, and the daemon's half
-// of the pause over that store (projectPause) with an hour's backstop, on the wall clock, writing
-// a JSON log the tests read. Its pause service has no Effects: these tests make the stops the
-// machines would make by hand.
+// of the pause over that store (projectPause) with an hour's backstop and a state directory of its
+// own, on the wall clock, writing a JSON log the tests read. Its pause service has no Effects:
+// these tests make the stops the machines would make by hand.
 type pauseRig struct {
 	t      *testing.T
 	ctx    context.Context
@@ -65,7 +65,7 @@ func newPauseRig(t *testing.T, roles ...claim.Role) *pauseRig {
 		t.Fatal(err)
 	}
 	r.pauses = &projectPause{store: st, records: projectRecords{Store: records, project: "LEGION"}, pods: podRecords, project: "LEGION", token: "legion",
-		backstop: time.Hour, now: time.Now, log: log, workflow: &workflowRuntime{}}
+		backstop: time.Hour, now: time.Now, log: log, stateDir: t.TempDir(), workflow: &workflowRuntime{}}
 	if r.pauses.service, err = pause.New(pause.Options{Store: st, Records: records, Project: "LEGION", Config: config.Config{}, Log: log}); err != nil {
 		t.Fatal(err)
 	}

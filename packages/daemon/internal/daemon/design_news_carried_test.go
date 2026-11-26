@@ -434,7 +434,7 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 				pauses := &projectPause{
 					store: st, records: projectRecords{Store: r.records, project: "LEGION"},
 					pods: pods, project: "LEGION", token: "legion", now: time.Now,
-					log: quietLogger(), workflow: &workflowRuntime{},
+					log: quietLogger(), stateDir: t.TempDir(), workflow: &workflowRuntime{},
 				}
 				r.sup.deps.Paused = flag.Paused
 				r.sup.deps.PauseStopped = pauses.stopped

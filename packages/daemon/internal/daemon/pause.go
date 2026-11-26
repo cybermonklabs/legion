@@ -72,6 +72,9 @@ type projectPause struct {
 	backstop time.Duration
 	now      func() time.Time
 	log      *slog.Logger
+	// stateDir is the daemon's state directory, under which a claim the stop transaction wrote
+	// with no process loses its files once that transaction has committed (pruneClaim).
+	stateDir string
 	// workflow is the runtime this half belongs to, whose outbox lanes and admission pass the
 	// resume wakes and applies. supervisor is set by openSupervision before any machine exists:
 	// the catch-up reads its machines and the resume posts to them. The API, the only caller of
@@ -99,7 +102,7 @@ func newProjectPause(ctx context.Context, cfg config.Config, st *store.Store, to
 		return nil, err
 	}
 	p := &projectPause{ctx: ctx, store: st, records: projectRecords{Store: record.NewStore(), project: cfg.Project}, pods: pods, project: cfg.Project,
-		token: token, backstop: releaseBackstop(cfg), now: clock.Now, log: log, workflow: w}
+		token: token, backstop: releaseBackstop(cfg), now: clock.Now, log: log, stateDir: cfg.StateDir, workflow: w}
 	// The service reads the rows the pause holds and whether a controller is registered, and no
 	// issue record, so it reads the store as it is (pause.Options.Records).
 	if p.service, err = pause.New(pause.Options{Store: st, Records: record.NewStore(), Project: cfg.Project, Config: cfg,
@@ -186,6 +189,15 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // and that the store says committed still does each once, and the run made again, which writes
 // none of those rows and changes no holder, does none of them a second time. It writes no log line
 // of the stop itself: the machine writes supervise.PauseRoleStoppedMessage once it lands.
+//
+// The stop is a claim write the pruning store never sees (pruning), so once its transaction has
+// answered that it committed, a claim it wrote with no process loses its secret files and its
+// texts directory here, as one the plain write takes does (pruneClaim). The prune is no hook of
+// the commit: the hooks of a commit whose outcome the store could not say run once it can
+// (store.OnCommit), by when a later launch of the claim may have written its own files. A stop
+// that answers an error, that one included, removes nothing: the machine owes it and makes it
+// again with its next claim write, which prunes once it commits where the claim still has no
+// process, and the next boot prunes what is left (pruneAllBut).
 func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supervise.PauseStop) error {
 	at := p.now().UTC()
 	if err := store.Transact(ctx, p.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -198,6 +210,7 @@ func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supe
 	}); err != nil {
 		return fmt.Errorf("write %s stopped for pause %d: %w", c.Token, stop.Pause, err)
 	}
+	pruneClaim(p.stateDir, c, p.log)
 	return nil
 }
 
