@@ -23,7 +23,7 @@ import { parseNodeReference } from "../web/src/features/refs/routes";
 import { wordsOf as readingWords } from "../web/src/features/refs/tree-fragment";
 import { pageStateText } from "../web/src/theme/classes";
 import { answerAsk, getIssue } from "./api";
-import { seedWholeIssue } from "./issue-layout-seed";
+import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
 import { readTree } from "./issue-layout-seed-support";
 import { contentsPane, gotoIssue, issuePage, issueRead, openDetails, phase } from "./issue-page";
 import {
@@ -755,7 +755,7 @@ async function expectFoldedCounts(
 ): Promise<void> {
   const undrawn = noteOwed(criteria) ? undefined : UNDRAWN_KINDS;
   await foldEachBranch(page, answer, key, READER, {
-    held: () => ({ margin, undrawn }),
+    held: { margin, undrawn },
     including: "an overtaken node and what stands under it included",
   });
 }
@@ -1742,50 +1742,25 @@ async function expectQuestionReached(page: Page, read: SeededPage): Promise<void
   await expectFocusedOnScreen(page, read, overtaken, "the overtaken question's /asks/<id> address");
 }
 
-/** `q` focuses the overtaken question as it does any open question: from a question it goes to the
- *  next one in the tree's order, and from any other row to the first. The press is made on the
- *  question, the spec's own or the proposed one, that the page draws right before the overtaken
- *  one, read from the drawn rows. The seed draws the open question first, so the press is made on
- *  a row that is no question only on a page that draws no question before the overtaken one. */
+/** `q` from the open question, which the seed draws right before the overtaken one
+ *  (`seedNodeStates`), focuses the overtaken one, as it focuses any open question: from a question
+ *  `q` goes to the next one in the tree's order. */
 async function expectQReaches(page: Page, read: SeededPage): Promise<void> {
   const { answer, plain, seeded, traffic } = read;
   const overtaken = questionReadId(answer, seeded, "overtakenQuestion");
   await gotoSettled(page, traffic, plain);
-  const overtakenId = await drawnRowId(page, overtaken, "the overtaken question");
-  // `drawnRowId` opened every branch, so one read of the rows holds every question's.
-  const items = await treeItemsDrawn(page);
-  const otherQuestions = new Set(
-    (["openQuestion", "proposedQuestion"] as const).flatMap((which) => {
-      const readId = questionReadId(answer, seeded, which);
-      const item = items.find((drawn) => drawn.readId === readId);
-      return item === undefined ? [] : [item.id];
-    })
+  const start = await drawnRowId(
+    page,
+    questionReadId(answer, seeded, "openQuestion"),
+    "the open question"
   );
-  const drawnIds = items.map((item) => item.id).filter((id) => id !== "");
-  const overtakenAt = drawnIds.indexOf(overtakenId);
-  expect(overtakenAt, "the overtaken question is not among the drawn rows").toBeGreaterThanOrEqual(
-    0
-  );
-  const questionBefore = drawnIds
-    .slice(0, overtakenAt)
-    .filter((id) => otherQuestions.has(id))
-    .at(-1);
-  const startId =
-    questionBefore ?? drawnIds.find((id) => id !== overtakenId && !otherQuestions.has(id));
-  if (startId === undefined) {
-    throw new Error(
-      "the outline draws neither an open question before the overtaken one nor a row that is no question"
-    );
-  }
-  await focusRow(page, startId);
+  await focusRow(page, start);
   await page.keyboard.press("q");
   await expectFocusedOnScreen(
     page,
     read,
     overtaken,
-    questionBefore === undefined
-      ? `q from the row ${startId}, which is no question`
-      : "q from the question before the overtaken one"
+    "q from the question before the overtaken one"
   );
 }
 
@@ -1989,9 +1964,9 @@ interface ReaderReading {
 
 /** What `foldEachBranch` reads each branch's count against besides the reader's read. */
 interface BranchCounts {
-  /** What the count of the row drawn for `readId` reads besides that node (`HeldRow`); nothing
+  /** What the count of each branch's row reads besides that row's node (`HeldRow`); nothing
    *  besides it where this is not given. */
-  readonly held?: (readId: string) => HeldRow;
+  readonly held?: HeldRow;
   /** What a failure names the count as including, after what the reader's read holds under the
    *  branch; nothing more where this is not given. */
   readonly including?: string;
@@ -1999,15 +1974,15 @@ interface BranchCounts {
 
 /**
  * Folds each branch the page draws open, one at a time, reads the count its row draws once it is
- * folded beside what `answer` holds under it (`heldUnder`, with `held`'s `HeldRow` for its read
- * id), and opens it again: each branch's count, as the reader's own read makes it.
+ * folded beside what `answer` holds under it (`heldUnder`, with `held`), and opens it again:
+ * each branch's count, as the reader's own read makes it.
  */
 async function foldEachBranch(
   page: Page,
   answer: IssueTreeRead,
   key: string,
   who: string,
-  { held = () => ({}), including }: BranchCounts = {}
+  { held, including }: BranchCounts = {}
 ): Promise<FoldedCount[]> {
   // The page opens with every node drawn, so one read of its rows holds every branch.
   const branches = (await treeItemsDrawn(page)).filter(
@@ -2027,7 +2002,7 @@ async function foldEachBranch(
     expect(
       count,
       `${who}'s fold of ${branch.id} does not count what ${who}'s tree read holds under it${besides}`
-    ).toBe(heldUnder(answer, key, readId, held(readId)));
+    ).toBe(heldUnder(answer, key, readId, held));
     counts.push({ count, id: branch.id, readId: branch.readId });
     await row.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
     await expect(row, `${who}'s fold of ${branch.id} does not open again`).toHaveAttribute(
@@ -2039,25 +2014,26 @@ async function foldEachBranch(
 }
 
 /**
- * Reads issue `key` on `page` as its reader, with `traffic`, the page's one watcher: the page as
- * it opens, every node drawn whole and unfolded, its text and the nodes it draws; each branch's
- * count once its row folds it, beside the count the reader's own tree read and comments read
- * make; each view, its control's count beside the count its own view read makes where the page
- * holds that read, the Decisions count leaving out each decision whose block id `restating` names,
- * since a decision that restates a person's answer is drawn and counted nowhere on the page
- * (INFRA-1196's decisions 513 and 521); and with `graphText`, Graph's text, where the page draws a
- * Graph control (`graphGate`).
+ * Reads the whole issue `whole` on `page` as its reader, with `traffic`, the page's one watcher:
+ * the page as it opens, every node drawn whole and unfolded, its text and the nodes it draws;
+ * each branch's count once its row folds it, beside the count the reader's own tree read and
+ * comments read make; each view, its control's count beside the count its own view read makes
+ * where the page holds that read, the decision that restates a person's answer left out
+ * (`restating`); and with `graphText`, Graph's text, where the page draws a Graph control
+ * (`graphGate`).
  */
 async function readAsReader(
   page: Page,
   traffic: ApiRequests,
-  key: string,
+  whole: WholeIssueSeed,
   who: string,
-  {
-    graphText = false,
-    restating = [],
-  }: { readonly graphText?: boolean; readonly restating?: readonly string[] } = {}
+  { graphText = false }: { readonly graphText?: boolean } = {}
 ): Promise<ReaderReading> {
+  const { key } = whole;
+  // The whole issue's second decision settles its answered question (`from_ask`) and shaped
+  // nothing, so it restates the person's answer (INFRA-1196's decisions 513 and 521), and the
+  // page counts it nowhere.
+  const restating = whole.decisions[1];
   const tree = treeAnswerOf(page);
   const views: Record<(typeof VIEWS)[number], TreeAnswerWatch> = {
     decisions: viewAnswerOf(page, "decisions"),
@@ -2073,7 +2049,7 @@ async function readAsReader(
     (await treeItemsDrawn(page)).flatMap((item) => (item.readId === null ? [] : [item.readId]))
   );
   const texts = [{ text: await issuePage(page).innerText(), where: "the outline" }];
-  const folded = await foldEachBranch(page, answer, key, who, { held: () => ({ margin }) });
+  const folded = await foldEachBranch(page, answer, key, who, { held: { margin } });
   const filters = { decisions: 0, plan: 0, spec: 0, verification: 0 };
   for (const view of VIEWS) {
     const name = PRESET_NAMES[view];
@@ -2088,23 +2064,14 @@ async function readAsReader(
     };
     if (noteOwed(viewed)) {
       const held = await heldAnswer(views[view], `${who}'s ${name} view read`);
-      const restated =
-        view === "decisions"
-          ? new Set(
-              (held.nodes ?? []).flatMap((node) =>
-                node.role === "query" &&
-                node.supertag === "decision" &&
-                restating.includes(blockIdOfNode(node))
-                  ? [node.id]
-                  : []
-              )
-            ).size
-          : 0;
+      const counted = (held.nodes ?? []).filter(
+        (node) => node.supertag !== "decision" || blockIdOfNode(node) !== restating
+      );
       await expect
         .poll(() => filterCount(page, view), {
           message: `${who}'s ${name} control does not count what ${who}'s own view read holds`,
         })
-        .toBe(viewCount(held, view) - restated);
+        .toBe(viewCount({ ...held, nodes: counted }, view));
     }
     let count = Number.NaN;
     await expect
@@ -2282,12 +2249,7 @@ async function bobsReading(
     const traffic = watchApiRequests(page);
     await page.setViewportSize(DESKTOP);
     // His texts are read for a reserved node's words, Graph's among them (`expectNothingReserved`).
-    // The whole issue's second decision settles its answered ask (`from_ask`) and shaped nothing,
-    // so it restates the person's answer.
-    const his = await readAsReader(page, traffic, key, "bob", {
-      graphText: true,
-      restating: [seeded.whole.decisions[1]],
-    });
+    const his = await readAsReader(page, traffic, seeded.whole, "bob", { graphText: true });
     const statementTwo = seeded.whole.requirements[1] ?? "";
     const references = await statementTwoReferences(
       page,
@@ -2335,10 +2297,7 @@ test("a node reserved for its author is on its author's page and on nobody else'
 
     // Then as alice, who reads each node she reserved, marked as hers alone: each where
     // Conversation draws it as a row, and her reserved constraint in Graph (`RESERVED_IN_GRAPH`).
-    // The whole issue's second decision restates the person's answer, as in bob's reading.
-    const her = await readAsReader(page, traffic, key, "alice", {
-      restating: [seeded.whole.decisions[1]],
-    });
+    const her = await readAsReader(page, traffic, seeded.whole, "alice");
     for (const name of RESERVED_NODES) {
       if (RESERVED_IN_GRAPH[name] === true) continue;
       const row = await drawnRow(page, reserved.get(name) ?? "", `her reserved ${name}`);

@@ -240,7 +240,11 @@ export function PlanFilterBody({
       });
     // The view's overtaken tasks have no place in the order (`planOrder`), so they stand after
     // every step, each once, and the tree draws each as a row there, marked.
-    rows.push(...[...inView.values()].filter(isOvertaken));
+    rows.push(
+      ...[...inView.values()]
+        .filter(isOvertaken)
+        .map((node) => ({ ...node, facts: [...node.facts] }))
+    );
     return { ...root, children: rows, held: heldBy(rows) };
   }, [entries, inView, root]);
   // The same tasks, which the chart draws as rows after every bar.

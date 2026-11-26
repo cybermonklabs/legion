@@ -348,10 +348,10 @@ function axisStep(minutes: number): number {
 }
 
 /**
- * The chart's rows over `entries`: each step's bar, starting where every task it needs but an
- * overtaken one has ended and as long as `lengthOf` its task, and each cycle `cycleLength` long
- * after whatever its tasks need from outside it, an overtaken task aside, since the order cannot
- * say more of tasks that need each other.
+ * The chart's rows over `entries`: each step's bar, starting where every task it needs has ended
+ * and as long as `lengthOf` its task, and each cycle `cycleLength` long after whatever its tasks
+ * need from outside it, an overtaken task aside, since the order cannot say more of tasks that
+ * need each other.
  */
 function placeBars(
   entries: readonly PlanEntry[],

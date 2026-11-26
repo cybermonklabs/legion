@@ -588,6 +588,24 @@ test("a decision stands in its part with its state from the tree read until the 
   }
 });
 
+// The Decisions view's parts are made from the Decisions view read's nodes (spec R2). Conversation's
+// tree read is paged: on a large issue its first page ends before the last decisions of the spec
+// (measured on a preview of 776d9d85: INFRA-1196's first page held 467 nodes with 462 remaining,
+// and no node of a person's answered question and the agent's decision under it, which the
+// decisions view held). A decision the view read holds stands in its part with its state, whether
+// or not the tree the page has read so far holds its node.
+test("a decision the view read holds stands in its part where the tree read has not reached it yet", async () => {
+  const children = [statement("s1"), decisionNode("first")];
+  const tied = { decision: { links: [shaped(specRef("s1"))] } };
+  const view = treeAnswer([decision("first", tied), decision("later", tied)]);
+  const parts = await entriesOf(children, view, [], [], treeAnswer([decision("first", tied)]));
+
+  expect(
+    [...idsOf(parts).review].sort(),
+    "the review list holds each waiting decision the Decisions view read holds"
+  ).toEqual([D("first"), D("later")].sort());
+});
+
 // The seam's reads are refreshed by the events that change them alone, as every read of the page
 // is: mounted over reads older than the app's 30 s `staleTime` (`main.tsx`), as Decisions pressed
 // a minute after the load mounts it, the seam sends no request of its own.

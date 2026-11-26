@@ -22,7 +22,7 @@ import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
-import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
+import { type Gate, TREE_PATH, type TreeAnswerWatch } from "./issue-page-t-tree";
 import { isLiveSocket } from "./live-socket-watch";
 
 /**
@@ -40,7 +40,7 @@ import { isLiveSocket } from "./live-socket-watch";
  *   the server.
  * - **The readers**: the rows `[data-node-row]` of the four types, each line `[data-lens-line]`
  *   under a row's words (its label `[data-page-chrome]`, its chips `[data-node-chip]` with their
- *   words `[data-chip-name]`, and its stored words `[data-author-text]`), the focused row's act
+ *   words `[data-chip-name]`, and its stored words `[data-author-text]`), each row's act
  *   `[data-row-lens]`, the menu it opens (`role="menu"`, each `role="menuitem"` holding a kind's
  *   words `[data-lens-kind-words]` and its standard `[data-lens-kind-standard]`) with its line
  *   `[data-lens-menu-line]`, a lens's chain (`[data-lens-show-chain]`, each entry
@@ -404,7 +404,7 @@ export function lensLines(row: Locator): Promise<LensLine[]> {
   }, SELECTORS);
 }
 
-/** The focused row's Lens act, which opens the menu of lens kinds. */
+/** A row's Lens act, which opens the menu of lens kinds. */
 export function lensAct(row: Locator): Locator {
   return row.locator("[data-row-lens]");
 }
@@ -517,15 +517,12 @@ export async function lensCatalogue(): Promise<LensKind[]> {
 // What the page received of the tree read.
 // ---------------------------------------------------------------------------------------------
 
-/** The tree read's path, whatever issue it reads (`GET /api/v1/issues/{key}/tree`). */
-const TREE_ROUTE = /^\/api\/v1\/issues\/[^/]+\/tree$/;
-
 /** Whether `response` is an answer of the tree read with no view that the page could read. */
 function treeReadAnswer(response: Response): boolean {
   const url = new URL(response.url());
   return (
     response.request().method() === "GET" &&
-    TREE_ROUTE.test(url.pathname) &&
+    TREE_PATH.test(url.pathname) &&
     url.searchParams.get("view") === null &&
     response.ok()
   );

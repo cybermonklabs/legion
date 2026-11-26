@@ -1,8 +1,9 @@
 /** the rows count the tree and view reads the page sends the server and draw each filter from
  *  the view it answers */
 
+import type { IssueTreeRead } from "../web/src/api/types";
 import { coverageNotes, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
-import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { createIssueArtifact, getIssue, getIssueCoverage } from "./api";
 import { seedNoChildren, seedWholeIssue } from "./issue-layout-seed";
 import { closeDetails, gotoIssue, issuePage, openDetails, phase, presetCount } from "./issue-page";
@@ -367,6 +368,34 @@ test("each filter draws its view read's rows, and each decision that shaped a st
   }
 });
 
+/**
+ * The nodes of view read `answer` that restate a person's answer, by the read ids the row
+ * counts by and the ids it draws them by (`treeIdOf`), read from the facts the seed wrote and the
+ * read answers on each: a `decision` block whose `from_ask` (`decision.asks`) names an ask the
+ * asks read holds as answered, with no `shaped` tie of its own (`decision.links`), which is how a
+ * seed writes the old decisions document's section that restates an answer (part U's spec R5).
+ * Part U draws no row for such a node and counts it nowhere (INFRA-1196's decisions 513 and 521).
+ */
+function restatingSections(
+  answer: IssueTreeRead,
+  reads: TreeIdReads
+): { readonly drawn: ReadonlySet<string>; readonly read: ReadonlySet<string> } {
+  const answered = new Set(
+    (reads.asks ?? []).flatMap((ask) => (ask.state === "answered" ? [ask.id] : []))
+  );
+  const idOf = treeIdOf(answer, reads);
+  const read = new Set(
+    (answer.nodes ?? []).flatMap((node) =>
+      node.supertag === "decision" &&
+      (node.decision?.links ?? []).length === 0 &&
+      (node.decision?.asks ?? []).some((ask) => answered.has(ask))
+        ? [node.id]
+        : []
+    )
+  );
+  return { drawn: new Set([...read].map(idOf)), read };
+}
+
 // c-views for Decisions, owed until the server serves the tree read's Decisions view
 // (`decisionsViewServedGate`, read before Decisions is pressed): the Decisions filter draws its
 // view read's rows, as Spec, Verification and Plan draw theirs, which is how the root issue
@@ -403,7 +432,18 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
         nodes: await drawnNodes(page),
       }));
       const answer = await heldAnswer(decisions, `the ${view} view read`);
-      const expected = viewNodeIds(answer, "decisions", reads);
+      // A section that restates a person's answer is no row and is counted nowhere (decisions 513
+      // and 521), so the rows and the count are the view read's but those sections.
+      const restating = restatingSections(answer, reads);
+      const expected = viewNodeIds(answer, "decisions", reads).filter(
+        (node) => !restating.drawn.has(node.id)
+      );
+      // Each once, by its read id, as `viewCount` counts the view's nodes.
+      const counted = new Set(
+        (answer.nodes ?? []).flatMap((node) =>
+          node.role === "query" && restating.read.has(node.id) ? [node.id] : []
+        )
+      ).size;
       expect(
         idSet(drawn.nodes.map((node) => node.id)),
         `${where}, the rows are the view read's nodes of root R2's row kinds`
@@ -415,7 +455,7 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
       expect(
         drawn.count?.trim(),
         `${where}, the control counts the view read's own ${R2_COUNTED_KINDS.decisions.join(", ")}`
-      ).toBe(String(viewCount(answer, "decisions")));
+      ).toBe(String(viewCount(answer, "decisions") - counted));
       await releaseFilter(page, "decisions");
     });
   }

@@ -215,9 +215,9 @@ export function DecisionsRow({
             waits on. A decision waits on the reader where it is an entry of the review list,
             which draws its state in the decisions' violet: one rule decides the list, and a
             second decides the mark on a row. An ask waits as the conversation says. The node an
-            address names stands in no state here and is drawn for its context: in its grey, with
-            no reader's ink on its author, and a child issue by its key, as the outline's row
-            draws one. It stands before the words, as the outline's does, and the row's name
+            address names stands in no state here and is drawn for its context: in its grey,
+            with no reader's ink on its author, and a child issue by its key, as the outline's
+            row draws one. It stands before the words, as the outline's does, and the row's name
             reads it after them (`rowNameIds`). */}
         <RowMargin
           author={author}
