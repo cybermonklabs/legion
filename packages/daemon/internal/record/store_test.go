@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -83,13 +84,13 @@ func issueFixture(key string) Issue {
 	}
 }
 
-// written is got with the movement and the merge history taken off, after holding it to what
-// PutIssue promises of those columns: moved_at is not null and no write of the record names it
-// (PutIssue's own carve-out, which keeps a stale copy from writing a movement away), so a row read
-// back always carries the moment it was written, which no fixture can name; and merge_history is
-// no write of PutIssue's either, so a row PutIssue inserted reads NONE, its default, until
-// PutMergeSnapshot marks it. Every comparison below is of the fields PutIssue writes, so the two
-// are checked here, once, and left out of them.
+// written is got with the movement taken off, after holding it to what PutIssue promises of that
+// column and of the merge: moved_at is not null and no write of the record names it (PutIssue's
+// own carve-out, which keeps a stale copy from writing a movement away), so a row read back always
+// carries the moment it was written, which no fixture can name; and the merge snapshot is no write
+// of PutIssue's either, so a row PutIssue wrote reads none until PutMergeSnapshot writes it. Every
+// comparison below is of the fields PutIssue writes, so the two are checked here, once, and the
+// movement is left out of them.
 func written(t *testing.T, got *Issue) *Issue {
 	t.Helper()
 	if got == nil {
@@ -98,15 +99,15 @@ func written(t *testing.T, got *Issue) *Issue {
 	if got.MovedAt.IsZero() {
 		t.Fatalf("issue %s reads back carrying no movement: moved_at is not null and every row is stamped when it is written", got.Key)
 	}
-	if got.MergeHistory != MergeHistoryNone || got.Merge.Merged() {
-		t.Fatalf("issue %s reads back with the merge history %q and the merge %+v, want NONE and none: PutIssue writes neither", got.Key, got.MergeHistory, got.Merge)
+	if got.Merge.Merged() {
+		t.Fatalf("issue %s reads back with the merge %+v, want none: PutIssue writes none", got.Key, got.Merge)
 	}
 	// tree_generation is written at the insert, from the record or its generation, and by an update
 	// only where it moves the issue to another tree (TestAWholeTreeRerunRaisesTheTreeGeneration and
 	// TestARootAHandOverMadeStartsItsTreeGenerationAtItsOwn hold it), so it is left out of the
 	// comparisons of the fields PutIssue writes on every write.
 	bare := *got
-	bare.MovedAt, bare.MergeHistory, bare.TreeGeneration = time.Time{}, "", 0
+	bare.MovedAt, bare.TreeGeneration = time.Time{}, 0
 	return &bare
 }
 
@@ -2382,7 +2383,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "members_owed", "priority",
-			"merge_number", "merge_head", "merge_sha", "merge_base", "merge_repo", "merged_at", "merge_history", "close_wait_since",
+			"merge_number", "merge_head", "merge_sha", "merge_base", "merge_repo", "merged_at", "close_wait_since",
 			"close_wait", "closed_on_checks_at", "next_change", "next_changes", "merger_completion_owed", "standing_told_at", "tree_generation"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
@@ -2999,11 +3000,95 @@ func TestAChangeGenerationKeepsTheGate(t *testing.T) {
 	}
 }
 
+// Every clear deletes the pull requests of the issues it covers that are not open, and records each
+// deleted row's clock in cleared_pull_requests the same way. ACME-2 holds only the clock of a
+// cleared acme/widgets#42, and ACME-1 a closed row of acme/widgets#42: the issue's own clear, its
+// tree's and its next change's of ACME-1 each leave one row of #42, which names ACME-1, keeps the
+// later of the two clocks and takes the clear's own time. ACME-3 holds an open row of #43, which
+// each clear of ACME-3 keeps, with no clock written. Each clear runs on its own copy of the seed.
+//
+// The test holds that the clears agree, not that they share one statement: an identical copy of
+// the statement passes it too. Its red run declares ClearChangeGeneration with a body that deletes
+// the issue's pull requests that are not open and records no clock, so the row the next change's
+// clear leaves still names ACME-2. A next change's clear with a clock statement of its own, which
+// keeps the existing row's issue on a conflict, fails the same way. A clear whose predicate lacks
+// state <> 'open' deletes ACME-3's open row, and its case fails.
+func TestEveryClearRecordsTheClockTheSameWay(t *testing.T) {
+	ctx := context.Background()
+	records := NewStore()
+	const repo = "acme/widgets"
+	seeded := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	// ACME-2's clock is the later of the two, so the row a clear of ACME-1 leaves keeps it.
+	clockOfA, clockOfB, clearedAt := seeded, seeded.Add(time.Hour), seeded.Add(2*time.Hour)
+	seed := func(t *testing.T, tx pgx.Tx) {
+		for _, key := range []string{"ACME-1", "ACME-2", "ACME-3"} {
+			issue := issueFixture(key)
+			issue.Parent = nil
+			must(t, records.PutIssue(ctx, tx, issue))
+		}
+		must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-1", Repo: repo, Number: 42, Branch: "legion/ACME-1",
+			HeadSHA: "head-1", HeadUpdatedAt: clockOfA, State: PullRequestClosed}))
+		must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-3", Repo: repo, Number: 43, Branch: "legion/ACME-3",
+			HeadSHA: "head-3", HeadUpdatedAt: clockOfA, State: PullRequestOpen}))
+		_, err := tx.Exec(ctx, `insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at) values ($1, 42, 'ACME-2', $2, $3)`,
+			repo, clockOfB, seeded)
+		must(t, err)
+	}
+	clockText := func(repo string, number int, issue string, at, cleared time.Time) string {
+		return fmt.Sprintf("%s#%d %s clock %s cleared %s", repo, number, issue, at.UTC().Format(time.RFC3339), cleared.UTC().Format(time.RFC3339))
+	}
+	clocks := func(t *testing.T, tx pgx.Tx) []string {
+		rows, err := tx.Query(ctx, "select repo, number, issue, head_updated_at, cleared_at from cleared_pull_requests order by repo, number")
+		must(t, err)
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var repo, issue string
+			var number int
+			var at, cleared time.Time
+			must(t, rows.Scan(&repo, &number, &issue, &at, &cleared))
+			got = append(got, clockText(repo, number, issue, at, cleared))
+		}
+		must(t, rows.Err())
+		return got
+	}
+	for _, clear := range []struct {
+		name  string
+		clear func(tx pgx.Tx, issue string) error
+	}{
+		{"ClearGeneration", func(tx pgx.Tx, issue string) error { return records.ClearGeneration(ctx, tx, issue, clearedAt) }},
+		// Each issue is its own tree's root, so its tree's clear covers it alone.
+		{"ClearTreeGeneration", func(tx pgx.Tx, issue string) error { return records.ClearTreeGeneration(ctx, tx, issue, clearedAt) }},
+		{"ClearChangeGeneration", func(tx pgx.Tx, issue string) error { return records.ClearChangeGeneration(ctx, tx, issue, clearedAt) }},
+	} {
+		for _, tc := range []struct {
+			issue                string
+			clocks, pullRequests []string
+		}{
+			{issue: "ACME-1", clocks: []string{clockText(repo, 42, "ACME-1", clockOfB, clearedAt)}, pullRequests: []string{"ACME-3 43 open"}},
+			{issue: "ACME-3", clocks: []string{clockText(repo, 42, "ACME-2", clockOfB, seeded)}, pullRequests: []string{"ACME-1 42 closed", "ACME-3 43 open"}},
+		} {
+			t.Run(clear.name+" of "+tc.issue, func(t *testing.T) {
+				st := migratedStore(t)
+				inTx(t, st, func(tx pgx.Tx) { seed(t, tx) })
+				inTx(t, st, func(tx pgx.Tx) { must(t, clear.clear(tx, tc.issue)) })
+				inTx(t, st, func(tx pgx.Tx) {
+					if got := clocks(t, tx); !reflect.DeepEqual(got, tc.clocks) {
+						t.Errorf("the cleared pull requests after %s of %s = %v, want %v", clear.name, tc.issue, got, tc.clocks)
+					}
+					if got := rowsText(t, tx, `select issue || ' ' || number::text || ' ' || state from pull_requests order by issue`); !reflect.DeepEqual(got, tc.pullRequests) {
+						t.Errorf("the pull requests after %s of %s = %v, want %v: a clear deletes only what is not open", clear.name, tc.issue, got, tc.pullRequests)
+					}
+				})
+			})
+		}
+	}
+}
+
 // The merge snapshot is the record of the issue's merge: one writer sets it, and nothing else of
 // the record moves it. It stands after each clear of a generation — the issue's own, its tree's,
-// and a next change's — and after a whole new record of the issue, as a re-entry writes one, and
-// so does the merge history PutMergeSnapshot marks with it. A snapshot of an older merge changes
-// nothing, and a later one replaces it.
+// and a next change's — and after a whole new record of the issue, as a re-entry writes one. A
+// snapshot of an older merge changes nothing, and a later one replaces it.
 func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -3029,8 +3114,8 @@ func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 			t.Fatalf("record the merge = %t, %v, want it written", written, err)
 		}
 	})
-	if got := read(); got.Merge != merge || got.MergeHistory != MergeHistoryAnswered {
-		t.Fatalf("the issue after its merge holds %+v and %q, want %+v and ANSWERED", got.Merge, got.MergeHistory, merge)
+	if got := read(); got.Merge != merge {
+		t.Fatalf("the issue after its merge holds %+v, want %+v", got.Merge, merge)
 	}
 	for _, write := range []struct {
 		name  string
@@ -3063,8 +3148,8 @@ func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 		}},
 	} {
 		inTx(t, st, func(tx pgx.Tx) { must(t, write.write(tx)) })
-		if got := read(); got.Merge != merge || got.MergeHistory != MergeHistoryAnswered {
-			t.Fatalf("the issue after %s holds %+v and %q, want its snapshot %+v and ANSWERED", write.name, got.Merge, got.MergeHistory, merge)
+		if got := read(); got.Merge != merge {
+			t.Fatalf("the issue after %s holds %+v, want its snapshot %+v", write.name, got.Merge, merge)
 		}
 	}
 	later := Merge{Number: 42, Head: strings.Repeat("f", 40), SHA: strings.Repeat("9", 40), Base: "main", Repo: issue.Repo, MergedAt: mergedAt.Add(time.Hour)}

@@ -134,8 +134,8 @@ func execAll(t *testing.T, store *Store, statements ...string) {
 // its phase, its status and its generation. After it a write of verifying is taken, and before it
 // refused, and a hold from verifying is refused after it as before, since no role works the phase.
 // Each production check it finds reads generation 0, which binds no generation, and relook 0. Each
-// issue reads its tree's generation as its own generation, and none of the wait's columns, no merge
-// snapshot and no class of merge history. A delivery it finds starts no working copy anywhere.
+// issue reads its tree's generation as its own generation, and none of the wait's columns and no
+// merge snapshot. A delivery it finds starts no working copy anywhere.
 //
 // The negative control is the migration without verifying in issues_phase_check: the write of
 // verifying after it is refused, and this test fails at it.
@@ -193,70 +193,17 @@ func TestTheMigrationAddsVerifyingAndKeepsEveryRow(t *testing.T) {
 	if got := rowsAsText(t, store, `select issue || ' ' || generation || ' ' || relook_seq from production_checks`); !reflect.DeepEqual(got, []string{"LEGION-301 0 0"}) {
 		t.Fatalf("the production checks after the migration = %v, want the one found at generation 0 and relook 0", got)
 	}
-	const fresh = `select key || ' ' || (tree_generation = generation)::text || ' ' || coalesce(merge_history, 'null') || ' ' ||
+	const fresh = `select key || ' ' || (tree_generation = generation)::text || ' ' ||
 		num_nulls(merge_number, merge_head, merge_sha, merge_base, merge_repo, merged_at, close_wait_since, close_wait,
 			closed_on_checks_at, next_change, standing_told_at) || ' ' || next_changes || ' ' || merger_completion_owed::text
 		from issues where key <> 'LEGION-399' order by key`
 	for _, row := range rowsAsText(t, store, fresh) {
-		if !strings.HasSuffix(row, " true null 11 0 false") {
-			t.Errorf("issue row %q after the migration, want its tree's generation at its own generation, no class of merge history, none of the snapshot's or the wait's columns, no next change and no completion owed", row)
+		if !strings.HasSuffix(row, " true 11 0 false") {
+			t.Errorf("issue row %q after the migration, want its tree's generation at its own generation, none of the snapshot's or the wait's columns, no next change and no completion owed", row)
 		}
 	}
 	if _, err := store.Pool().Exec(ctx, "select start_at from pending_task_deliveries"); err != nil {
 		t.Fatalf("read where a delivery starts its working copy after the migration: %v", err)
-	}
-}
-
-// The column of an issue's merge history is added with no default, so every issue the upgrade
-// finds reads null, unclassified, until the evidence pass reads what its surviving facts prove: a
-// generation-1 issue and a later one, with no pull request, an open one and a merged one, each
-// read the same. No generation, no repository name and no row the migration reads grants ANSWERED.
-// An issue recorded after it starts at NONE, and a class that is none of the three is refused.
-//
-// The negative control is the migration that marks the generation-1 records ANSWERED: the
-// generation-1 issues read a mark nothing proved, and this test fails at them.
-func TestTheMigrationDoesNotCertifyLegacyHistory(t *testing.T) {
-	ctx := context.Background()
-	store := emptyStore(t)
-	migrateThrough(t, store, doneByChecksVersion-1)
-	pullRequest := func(issue, state string, number int) string {
-		return fmt.Sprintf(`insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,
-			failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, head_counted, planned_red,
-			review_seen, state, checked_head, required_workflows, required_workflows_head, mergeability, merge_state, base, base_moved, merge_sha)
-			values ('%s', 'acme/widgets', %d, 'legion/%s', 'h4', now(), '[]', '[]', 0, 0, '[]', 1, '', '', false, 0, '%s', '', '[]', '',
-			'MERGEABLE', 'clean', 'main', '', '%s')`, issue, number, issue, state, map[bool]string{true: strings.Repeat("a", 40)}[state == "merged"])
-	}
-	var seeds []string
-	for i, seed := range []struct {
-		generation int
-		pr         string
-	}{{1, ""}, {1, "open"}, {1, "merged"}, {4, ""}, {4, "open"}, {4, "merged"}} {
-		key := fmt.Sprintf("LEGION-%d", 400+i)
-		seeds = append(seeds, fmt.Sprintf(`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch, github_repo)
-			values ('%s', '%s', 'LEGION', '%s', 'done', %d, 'done', 'A', 1, 'acme/widgets', 'main', 'acme/widgets')`, key, key, key, seed.generation))
-		if seed.pr != "" {
-			seeds = append(seeds, pullRequest(key, seed.pr, 400+i))
-		}
-	}
-	execAll(t, store, seeds...)
-
-	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate through the done-by-checks migration: %v", err)
-	}
-
-	if got := rowsAsText(t, store, `select key || ' ' || coalesce(merge_history, 'null') from issues order by key`); !reflect.DeepEqual(got, []string{
-		"LEGION-400 null", "LEGION-401 null", "LEGION-402 null", "LEGION-403 null", "LEGION-404 null", "LEGION-405 null",
-	}) {
-		t.Fatalf("the merge history of the issues the upgrade found = %v, want each unclassified until the evidence pass", got)
-	}
-	execAll(t, store, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-		values ('LEGION-410', 'LEGION-410', 'LEGION', 'new', 'admitted', 1, 'todo', 'A', 1)`)
-	if got := rowsAsText(t, store, `select coalesce(merge_history, 'null') from issues where key = 'LEGION-410'`); !reflect.DeepEqual(got, []string{"NONE"}) {
-		t.Fatalf("an issue recorded after the migration reads the merge history %v, want NONE", got)
-	}
-	if _, err := store.Pool().Exec(ctx, `update issues set merge_history = 'MERGED' where key = 'LEGION-410'`); err == nil ||
-		!strings.Contains(err.Error(), "issues_merge_history_check") {
-		t.Fatalf("a merge history that is no class = %v, want issues_merge_history_check to refuse it", err)
 	}
 }
 
