@@ -204,9 +204,10 @@ type outbox struct {
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions, the check of its workspace and the decline
 // that check can record, a finished issue's drop of the record of its pods' disks, a stop's wait
-// for a stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open
-// resume that refuses one, a project pause's stop of a role and which pause stopped a role, and
-// the end of a pause's hold of a pod a deletion took.
+// for a stored claim's machine, a workflow tree close's cleanup, the reopen of a tree past its
+// linger for a retro after a close, a delivery wake and the open resume that refuses one, a
+// project pause's stop of a role and which pause stopped a role, and the end of a pause's hold of
+// a pod a deletion took.
 type outboxTrees interface {
 	Pool() *store.Pool
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
@@ -228,6 +229,7 @@ type outboxTrees interface {
 	StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
+	ReopenTreeForRetro(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error)
 	TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error)
 	OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (id, pause int64, found bool, err error)
 	CancelPodBackstopsOf(ctx context.Context, project, issue string, role claim.Role) error
@@ -983,6 +985,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.checkLook(ctx, row, value)
 	case record.CheckBound:
 		return r.checkBound(ctx, row)
+	case record.RetroBound:
+		return r.retroBound(ctx, row, value)
 	case record.HookPrompt:
 		return r.hookPrompt(ctx, row, value)
 	case record.UpdateAsk:
@@ -2148,7 +2152,7 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 		return 0, err
 	}
 	if view.Released() {
-		if _, wakeable, err := r.wakeableIssue(ctx, view.Issue); err != nil || !wakeable {
+		if _, wakeable, err := r.wakeableIssue(ctx, view.Issue, view.Token); err != nil || !wakeable {
 			return 0, err
 		}
 	}
@@ -2463,13 +2467,27 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// A check start (CheckLook) runs after the close: its issue holds no phase, its generation may
 	// be a later run's and its tree may linger, so it is fenced on the open check — the instance the
 	// row names — and its look (checkLookHolds) where a phase start is fenced on the generation and
-	// the phase.
+	// the phase. So are the two starts of the retro Legion runs after a close (INFRA-5602): the
+	// start of the retro's agent (RetroRun), its task's or the wake of the agent the idle release
+	// released, is fenced on the run's open retro and its agent (retroHolds), and the wake of a tree
+	// root's architect for a finding that retro publishes (RetroWake) on the tree's open retros
+	// (retroWakeHolds).
 	var check *record.ProductionCheck
-	if payload.CheckLook > 0 {
+	retroStart := payload.RetroRun > 0 || payload.RetroWake
+	switch {
+	case payload.CheckLook > 0:
 		if check, err = r.checkLookHolds(ctx, row, payload, issue); err != nil || check == nil {
 			return err
 		}
-	} else {
+	case payload.RetroRun > 0:
+		if holds, err := r.retroHolds(ctx, row, payload, issue); err != nil || !holds {
+			return err
+		}
+	case payload.RetroWake:
+		if holds, err := r.retroWakeHolds(ctx, row, payload, issue); err != nil || !holds {
+			return err
+		}
+	default:
 		if payload.Generation != issue.Generation {
 			r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
 				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
@@ -2522,7 +2540,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// moved phase took over while the row waited — the pause holds a wake's row for as long as
 		// it stands — is that path's to start again, not the wake's: the row finishes here, above
 		// StartedBy, so it records no start against the claim (decision 10 of dispatch://INFRA-3759).
-		if payload.WakeKind != "" && found {
+		// A wake of the retro after a close (retroStart: its agent's, or the tree root's architect
+		// for a finding of it) is the one wake of a claim the daemon took over: the close or the
+		// linger suspended that claim, and the retro's open record, which fenced the row above, is
+		// what says it is wanted back (P6 and P7 of dispatch://INFRA-5602).
+		if payload.WakeKind != "" && !retroStart && found {
 			if held := machine.Claim(); held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByDaemon {
 				r.log.Info("outbox wake start of a role the daemon took over; finished without acting", "row", row.ID,
 					"issue", issue.Key, "role", payload.Role, "wake", payload.WakeKind, "pause", payload.Pause)
@@ -2547,8 +2569,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// status and not its root's, because a child carried into a tree of its own stands in the
 		// workflow while the tree it left lingers, and the tree is what the guard below reads. A
 		// production check's look is exempt — it is the one start an issue out of the workflow
-		// still runs — which the enclosing payload.CheckLook == 0 gives it.
-		if payload.CheckLook == 0 {
+		// still runs — which the enclosing payload.CheckLook == 0 gives it, and so are the starts
+		// of the retro after a close (retroStart), which runs after the close too: its record, which
+		// fenced the row above, holds it to an issue out of the workflow.
+		if payload.CheckLook == 0 && !retroStart {
 			if record.OutOfWorkflow(issue.Status) {
 				r.log.Info("outbox start of an issue that has left the workflow; finished without acting", "row", row.ID,
 					"issue", issue.Key, "status", issue.Status, "role", payload.Role)
@@ -2570,9 +2594,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// stood: a start that reaches its claim after the close (queued before it and backing
 			// off) finishes without acting and records no start, so the close's suspend still
 			// applies. Re-admission starts the member again (admit's startMidPhaseMembers). A
-			// check start is the one start a lingering tree runs: a look of a closed issue's
+			// check start is one start a lingering tree runs: a look of a closed issue's
 			// production check, which resumes the role that check records
-			// (record.ProductionCheck.Role) the linger suspended.
+			// (record.ProductionCheck.Role) the linger suspended. The starts of a retro after a
+			// close are the other (retroStart): the retro's agent, and the root's architect a
+			// finding of it wakes.
 			//
 			// One start waits on its backoff rather than finishing: the first start of a child's own
 			// architect that finds no claim (childArchitectFirstStart), for as long as its tree
@@ -2620,13 +2646,23 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// An operator's suspension holds its claim until the operator resumes it: the start, and the
 		// task it gives, wait on the row's backoff. StartedBy refuses the same in the claim's own
-		// decision. A check start does not wait: its look cannot run, and ends (checkLookHeld).
+		// decision. A check start does not wait: its look cannot run, and ends (checkLookHeld). A
+		// retro's start waits as a phase start does: should the hold last to the retro's bound,
+		// the bound ends the retro, and the row's next try finishes (retroHolds).
 		if found {
 			if held := machine.Claim(); held.RuleHolds() {
 				if payload.CheckLook > 0 {
 					return r.checkLookHeld(ctx, row, payload, *check)
 				}
 				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
+			}
+		}
+		// A retro's start in a tree past its linger reopens the tree's lifecycle first, once the
+		// linger's cleanup is confirmed, so the claim it resumes, relaunches or creates below binds
+		// the reopened epoch (P8 of dispatch://INFRA-5602, reopenTreeForRetro).
+		if retroStart {
+			if err := r.reopenTreeForRetro(ctx, row, issue); err != nil {
+				return err
 			}
 		}
 		if !found {
@@ -2657,7 +2693,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// it was given that entry. A check start's look
 		// and check instance travel the same way, and are what say the completion this task's
 		// turn reports is a report on that look rather than a phase completion
-		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
+		// (supervise.Claim.ServingCheck, api/handoff.go), and so does a retro start's run, which
+		// says that completion is the report of the retro after the close of that run
+		// (supervise.Claim.ServingRetro). The row travels as well: the claim
 		// writes it with the delivery, so a retry of this row (a
 		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
 		// task again neither while it is pending nor once the claim has retired it
@@ -2693,8 +2731,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
-				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt}, RetroRun: supervise.RetroRun(payload.RetroRun),
+				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -2717,10 +2755,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// The role owns the issue's phase this start is for: the rule resumes it, unless an
 			// operator suspended it meanwhile, when the task's delivery below waits instead. A check
 			// start resumes the role the check records the close or the linger suspended, in a Sandbox the
-			// resume relaunches (runtime/sandbox's relaunch).
+			// resume relaunches (runtime/sandbox's relaunch), and a retro's start resumes the retro's
+			// agent the close, the linger or an idle release suspended, or the root's architect the
+			// tree's close did.
 			reason := fmt.Sprintf("start row %d of %s (phase %q)", row.ID, issue.Key, payload.Phase)
-			if payload.CheckLook > 0 {
+			switch {
+			case payload.CheckLook > 0:
 				reason = fmt.Sprintf("start row %d of %s (production check look %d)", row.ID, issue.Key, payload.CheckLook)
+			case payload.RetroRun > 0:
+				reason = fmt.Sprintf("start row %d of %s (the retro after the close of run %d)", row.ID, issue.Key, payload.RetroRun)
+			case payload.RetroWake:
+				reason = fmt.Sprintf("start row %d of %s (a finding of a retro after a close in its tree)", row.ID, issue.Key)
 			}
 			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
 				return fmt.Errorf("resume claim %s: %w", token, err)
@@ -2753,7 +2798,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// worker or a child's own architect, which supervise's exit retires), or an operator
 			// stopped it. So the workspace is provisioned, which brings back one a linger removed,
 			// before the kept session relaunches (a new one once supervise's Machine.forgetSession
-			// has dropped it).
+			// has dropped it). A check start and a retro's start relaunch so the role their record
+			// names, in a tree past its linger in the lifecycle reopened above.
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
 			}
@@ -2771,10 +2817,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// operator stopped, as the operator's retry of its phase relaunches it — since the retry sends
 		// the kept task itself. A confirmed task on a claim not working is over: the decision above
 		// retired it here, or retires it first when a launch whose outcome was uncertain is released
-		// and spawned again, after this start, so the row's task goes in its place. A check start names
-		// no phase, so it is never one of these: each look's task is delivered, its row id its
-		// delivery's, and a delivery with no phase is held by nothing (supervise's phaseHolds), so
-		// the task reaches the role the check records whatever the issue's phase.
+		// and spawned again, after this start, so the row's task goes in its place. A check start
+		// and a retro's start name no phase, so neither is ever one of these: each look's task, and
+		// the retro's, is delivered, its row id its delivery's, and a delivery with no phase is held
+		// by nothing (supervise's phaseHolds), so the task reaches the role the record names
+		// whatever the issue's phase.
 		held, gave := machine.Claim(), false
 		if (payload.ResumeTask || supervise.FailedOrRetired(state)) && keepsStartTask(held, payload) {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
@@ -2846,8 +2893,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (supervise's reserveWake), so one start row is one wake either way. This holds for every
 		// architect, a root's or a child's own. A start queued for news alone
 		// (record.SuperviseRequest.News) is no re-admission of either, and tells the architect its
-		// news and nothing else.
-		if !payload.News && supervise.SaidReady(state) && payload.Role == claim.RoleArchitect {
+		// news and nothing else; nor is the wake of a closed tree's root architect for a finding of
+		// a retro after a close (RetroWake), whose tree runs no work to catch up on and whose task
+		// says what woke it.
+		if !payload.News && !payload.RetroWake && supervise.SaidReady(state) && payload.Role == claim.RoleArchitect {
 			if err := r.settleKept(ctx, row, payload, gave); err != nil {
 				return err
 			}
@@ -4151,8 +4200,11 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 	return nil
 }
 
+// linger is a tree's linger coming due (record.LingerClose): the expiry is applied once, under the
+// event workflow.LingerEventID names, which the end of the last retro after a close of a tree past
+// its linger reads to tell an expiry that already closed the tree from one still to come.
 func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload record.LingerClose) error {
-	_, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("linger:%s:%d", row.Issue, payload.Generation), intake.LingerExpired{
+	_, err := intake.ApplyFact(ctx, r.pool, "outbox", workflow.LingerEventID(row.Issue, payload.Generation), intake.LingerExpired{
 		Issue: row.Issue, Generation: payload.Generation,
 	}, r.handlers...)
 	if err != nil {
@@ -4302,6 +4354,146 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 	}
 	r.log.Info("production check start finishes without acting", "row", row.ID, "issue", row.Issue, "look", payload.CheckLook, "why", why)
 	return nil, nil
+}
+
+// retroHolds is whether a start of the retro Legion runs after a close (record.SuperviseRequest.
+// RetroRun) still has that retro to start: the run's record (record.RunRetro) holds a retro after
+// the close open, its agent is the claim the row starts, and the issue is out of the workflow. It
+// fences the start of the retro's task, which the close queues, and the wake of the retro's agent
+// an idle release released (P7 of dispatch://INFRA-5602), which carries the run too. A run with no
+// record (an earlier run's row, whose record the later run's replaced), a retro its report or its
+// bound ended, an issue back in the workflow (the todo that took it back ended the retro in the
+// same transaction) or a start of a role that is not the retro's agent leave the row nothing to
+// start, and it finishes without acting, logged with why, as a check start whose look is gone does
+// (checkLookHolds).
+func (r *outbox) retroHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (bool, error) {
+	agent, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	if err != nil {
+		return false, fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+	}
+	retro, err := r.runRetro(ctx, row.Issue, payload.RetroRun)
+	if err != nil {
+		return false, err
+	}
+	var why string
+	switch {
+	case retro == nil:
+		why = "the issue has no record of the run"
+	case record.InWorkflow(issue):
+		why = fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
+	case !retro.AfterClose():
+		why = "no retro after a close was opened on the run"
+	case !retro.Open():
+		why = fmt.Sprintf("the retro ended %s, by its %s", retro.Outcome, retro.EndedBy)
+	case retro.Agent != agent:
+		why = fmt.Sprintf("the retro is %s's", retro.Agent)
+	default:
+		return true, nil
+	}
+	r.log.Info("retro start finishes without acting", "row", row.ID, "issue", row.Issue, "run", payload.RetroRun, "role", payload.Role,
+		"wake", payload.WakeKind, "why", why)
+	return false, nil
+}
+
+// retroWakeHolds is whether the wake of a tree root's architect for a finding of a retro after a
+// close (record.SuperviseRequest.RetroWake, P6 of dispatch://INFRA-5602) still has that retro to be
+// woken for: the row's issue is its tree's root, at the generation the row names, the tree has
+// left the workflow or lingers (record.Stopped), and a retro after the close of an issue of the
+// tree is open. A tree re-admitted since (its root running again, at a later generation) starts
+// its architect itself, and a tree whose last such retro ended has nothing more for it to hear:
+// either leaves the row nothing to start, and it finishes without acting, logged with why.
+func (r *outbox) retroWakeHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (bool, error) {
+	var why string
+	switch {
+	case !claim.IsTreeRoot(issue.Key, issue.Tree):
+		why = "the issue is no tree's root"
+	case payload.Generation != issue.Generation:
+		why = fmt.Sprintf("the root is at generation %d", issue.Generation)
+	case !record.Stopped(issue):
+		why = fmt.Sprintf("the tree runs again (%s, %s)", issue.Phase, issue.Status)
+	default:
+		open, err := r.openRetrosOfTree(ctx, issue.Tree)
+		if err != nil {
+			return false, err
+		}
+		if len(open) > 0 {
+			return true, nil
+		}
+		why = "no retro after a close of the tree is open"
+	}
+	r.log.Info("retro wake of the root architect finishes without acting", "row", row.ID, "issue", row.Issue, "wake", payload.WakeKind,
+		"why", why)
+	return false, nil
+}
+
+// reopenTreeForRetro reopens the lifecycle of issue's tree for a start of a retro after a close
+// that a fence let through (retroHolds, retroWakeHolds), where the tree is past its linger: the
+// linger's end retired every claim of the tree and confirmed its cleanup, so no claim launches
+// there until a lifecycle is open again (P8 of dispatch://INFRA-5602, store.Store.ReopenTreeForRetro).
+// A tree still open changes nothing, and a cleanup reserved and not yet confirmed is a wait
+// (treelifecycle.ErrCleanupReserved): the row runs again once the release confirms, and reopens
+// then. The workflow closes the tree again when the last retro after a close of it ends.
+func (r *outbox) reopenTreeForRetro(ctx context.Context, row record.OutboxRow, issue record.Issue) error {
+	lifecycle, reopened, err := r.trees.ReopenTreeForRetro(ctx, r.project, issue.Tree)
+	if err != nil {
+		return fmt.Errorf("reopen the lifecycle of tree %s for the retro start of row %d: %w", issue.Tree, row.ID, err)
+	}
+	if reopened {
+		r.log.Info("outbox retro start reopened the lifecycle of a tree past its linger", "row", row.ID, "issue", issue.Key,
+			"tree", issue.Tree, "epoch", lifecycle.Epoch)
+	}
+	return nil
+}
+
+// retroBound is the bound of a retro after a close coming due (record.RetroBound): the retro of the
+// run the row names ends as one nobody reported (intake.RetroBoundEnded), which the workflow applies
+// only while that retro is open and its bound has come, so a retro reported in time changes
+// nothing. The record is read first, as a look's bound reads its check (checkLook): a row of a run
+// whose retro after its close is not open — its report ended it, or the run is one a later run's
+// record replaced — finishes without acting. The event is the issue and the run, so the row run
+// again is a duplicate of the fact it applied.
+func (r *outbox) retroBound(ctx context.Context, row record.OutboxRow, payload record.RetroBound) error {
+	retro, err := r.runRetro(ctx, row.Issue, payload.Generation)
+	if err != nil {
+		return err
+	}
+	if retro == nil || !retro.Open() {
+		r.log.Info("retro bound finishes without acting: the retro after the close is not open", "row", row.ID, "issue", row.Issue,
+			"run", payload.Generation)
+		return nil
+	}
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("retro-bound:%s:%d", row.Issue, payload.Generation),
+		intake.RetroBoundEnded{Issue: row.Issue, Generation: payload.Generation}, r.handlers...); err != nil {
+		return fmt.Errorf("end the retro after the close of %s run %d at its bound: %w", row.Issue, payload.Generation, err)
+	}
+	return nil
+}
+
+// runRetro is issue's record of run (record.RunRetro), nil for none, and openRetrosOfTree every
+// open retro after a close of tree's issues: each read in a transaction of its own just before the
+// executor acts on a row, as productionCheck reads a check.
+func (r *outbox) runRetro(ctx context.Context, issue string, run uint64) (*record.RunRetro, error) {
+	var retro *record.RunRetro
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		retro, err = r.records.RunRetro(ctx, tx, issue, run)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read the record of run %d of %s: %w", run, issue, err)
+	}
+	return retro, nil
+}
+
+func (r *outbox) openRetrosOfTree(ctx context.Context, tree string) ([]record.RunRetro, error) {
+	var open []record.RunRetro
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		open, err = r.records.OpenRetrosOfTree(ctx, tx, tree)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read the open retros after a close of tree %s: %w", tree, err)
+	}
+	return open, nil
 }
 
 // checkLookHeld is a check start that met an operator's suspension of the check's own role

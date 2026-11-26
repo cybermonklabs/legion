@@ -728,9 +728,9 @@ func TestARetroAfterTheLingerReopensAndClosesTheTree(t *testing.T) {
 // person sets a root done while its implementer's turn of implementing runs. The close keeps that
 // claim working, so its turn finishes, and the retro's start, which the outbox runs behind the
 // running turn, queues the retro's task on the claim rather than stopping or replacing the turn.
-// Once the turn ends the retro's task is sent, and the next turn is on it. The issue's run starts
-// through the workflow's own transition out of planning, so the close reads that run as one with
-// no retro.
+// Once the turn ends the retro's task is sent, and the next turn is on it. The issue is recorded
+// mid-run, in planning, with its run's start on record, and the planner's completion moves it to
+// implementing, so the close reads that run as one that started and had no retro.
 func TestARetroTaskFollowsTheRunningTurnOfTheSparedAgent(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -739,6 +739,12 @@ func TestARetroTaskFollowsTheRunningTurnOfTheSparedAgent(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208",
 		Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
+	// An issue recorded mid-run stands for one the migration filled: its run's start is on record.
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.MarkRunStarted(ctx, tx, issue.Key, issue.Generation, issue.Tree, time.Now().Add(-time.Hour).UTC())
+	}); err != nil {
+		t.Fatalf("mark the run of %s started: %v", issue.Key, err)
+	}
 	holdSlot(t, pool, issue.Key)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds

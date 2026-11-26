@@ -207,8 +207,8 @@ type IdleView struct {
 	// RetroHolds is whether a retro Legion runs after a close is open for the issue, or for any
 	// issue of its tree where the issue is the tree's root (record.RunRetro.Open): the retro's
 	// agent, and for a root the architect a finding wakes, hold the pod, so the pod gate treats
-	// the issue as the workflow's to run while it stands (Standing.RetroHolds). The store fills it
-	// (INFRA-5602's task t4).
+	// the issue as the workflow's to run while it stands (Standing.RetroHolds). The store's idle
+	// view fills it.
 	RetroHolds bool
 }
 

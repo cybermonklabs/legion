@@ -63,20 +63,58 @@ func (s *Store) openTreeLifecycle(ctx context.Context, project, tree string, aut
 // those opens, so there is nothing for the transaction to hold.
 func runNothing(context.Context, pgx.Tx) error { return nil }
 
-// errRunRetroNotImplemented is what the store methods of INFRA-5602's retro after a close answer
-// until task t4 writes them (ReopenTreeForRetro, PodRecords.RetroWakeClaimByToken).
-var errRunRetroNotImplemented = errors.New("run_retros: not implemented until INFRA-5602 t4")
-
 // ReopenTreeForRetro reopens the lifecycle of project's tree for the retro Legion runs after a
-// close, where the tree's linger has ended and its cleanup has retired every claim (the retro's
-// agent must launch in a lifecycle the workflow runs). It answers the lifecycle and whether this
-// call reopened it: a tree absent from the table, or one already open under the workflow,
-// reopens nothing; a cleanup reserved and not yet confirmed is a wait (treelifecycle.ErrCleanupReserved),
-// so the reopen follows the cleanup's confirmation; a tree an operator holds is refused
-// (treelifecycle.ErrAuthorityHeld). This is the stub of INFRA-5602's task t4: it answers an error
-// that names the task.
+// close, where the tree's linger has ended and its cleanup has retired every claim: the retro's
+// agent, and the root architect a finding of it wakes, launch only in a lifecycle the workflow
+// runs (Store.AdmitClaim, Store.CheckLaunch), and nothing else opens a tree past its linger again
+// but a re-admission, which no closed issue gets. The reopen is the next epoch under the
+// workflow, as admission's re-admission opens one (treelifecycle.Open), and the workflow closes
+// it again once the last retro after a close of the tree ends (its closeTreeAfterRetros), whose
+// tree_close reserves this epoch's cleanup.
+//
+// It answers the lifecycle and whether this call reopened it. A tree absent from the table
+// reopens nothing, and neither does one open under the workflow: its linger has not ended, so
+// the start runs in the epoch the tree holds. A cleanup reserved and not yet confirmed is a wait
+// (treelifecycle.ErrCleanupReserved): the release that confirms it retires the claims a reopen
+// would launch into, so the reopen follows the confirmation, on the start row's backoff. A tree
+// the operator holds is refused (treelifecycle.ErrAuthorityHeld): the workflow records nothing
+// that acts on such a tree's claims.
+//
+// It runs under the shared serializer (treelifecycle.Serialize), the lock every other writer of a
+// lifecycle takes, so it orders against the cleanup's reservation and confirmation and against a
+// re-admission's open.
 func (s *Store) ReopenTreeForRetro(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
-	return treelifecycle.Lifecycle{}, false, errRunRetroNotImplemented
+	var lifecycle treelifecycle.Lifecycle
+	var reopened bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		lifecycle, reopened = treelifecycle.Lifecycle{}, false
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+			return err
+		}
+		current, found, err := treelifecycle.Read(ctx, tx, project, tree)
+		if err != nil || !found {
+			return err
+		}
+		if !current.CleanupStarted {
+			if current.Authority != treelifecycle.AuthorityWorkflow {
+				return fmt.Errorf("reopen tree lifecycle %s for a retro after a close: %w", tree, treelifecycle.ErrAuthorityHeld)
+			}
+			lifecycle = current
+			return nil
+		}
+		if current.CleanupConfirmedAt.IsZero() {
+			return fmt.Errorf("reopen tree lifecycle %s for a retro after a close: %w", tree, treelifecycle.ErrCleanupReserved)
+		}
+		if lifecycle, err = treelifecycle.Open(ctx, tx, project, tree, treelifecycle.AuthorityWorkflow); err != nil {
+			return err
+		}
+		reopened = true
+		return nil
+	})
+	if err != nil {
+		return treelifecycle.Lifecycle{}, false, err
+	}
+	return lifecycle, reopened, nil
 }
 
 // AdmitClaim binds a new or reactivated claim to an open lifecycle and writes both in one short

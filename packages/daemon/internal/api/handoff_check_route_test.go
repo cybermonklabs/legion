@@ -306,6 +306,10 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoRetroOrLookIsRefused(t *tes
 	// queued behind the running turn; once that turn ends, the retro's own turn reports it.
 	t.Run("a turn of another phase after the close", func(t *testing.T) {
 		h, facts, implementer := closedBehindAnImplementingTurn(t)
+		// The setup's own routes applied facts (the owner's plan); what this subtest holds is
+		// every fact recorded after them.
+		before := len(facts.recorded())
+		since := func() []intake.Fact { return facts.recorded()[before:] }
 		machine, ok := h.supervisor.Machine(implementer.token)
 		if !ok {
 			t.Fatal("no machine for the implementer")
@@ -327,7 +331,7 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoRetroOrLookIsRefused(t *tes
 				t.Fatalf("the refusal of the implementing turn's completion is %q, want it to say %q", message, want)
 			}
 		}
-		if got := facts.recorded(); len(got) != 0 {
+		if got := since(); len(got) != 0 {
 			t.Fatalf("facts = %#v, want none: the implementing turn's completion records nothing", got)
 		}
 		if row := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer); row != nil && row.Completed() {
@@ -344,7 +348,7 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoRetroOrLookIsRefused(t *tes
 		completion(t, h.complete(retroReportBy(implementer.grant(t))))
 		want := intake.RetroReport{Issue: "LEGION-208", Claim: implementer.token, Generation: 1, Summary: "the retro of the closed run",
 			PlanRating: record.PlanRating{Rating: retroRating, Reason: retroReason}}
-		if got := facts.recorded(); len(got) != 1 || got[0] != want {
+		if got := since(); len(got) != 1 || got[0] != want {
 			t.Fatalf("facts after the retro's own turn = %#v, want the one report %#v", got, want)
 		}
 	})

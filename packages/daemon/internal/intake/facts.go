@@ -1666,8 +1666,7 @@ func (f CheckBound) namedIssue() (string, bool) { return f.Issue, true }
 // run the route read the claim as serving, so a report of a retro that a later run replaced is
 // refused rather than recorded against the newer one. Summary is what the agent says it found.
 // The workflow ends the retro's row as passed and writes the rating onto the retro's step record,
-// and writes no status. The route and the engine's case for it land in INFRA-5602's tasks t3 and
-// t4; the type stands here so that every list of facts holds it from the start.
+// and writes no status (workflow's retroReported).
 type RetroReport struct {
 	Issue      string
 	Claim      claim.Token

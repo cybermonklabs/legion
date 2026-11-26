@@ -427,7 +427,8 @@ func (s *Store) IssueReleaseCheck(ctx context.Context, project, issue string, ro
 // hold a process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
 // (record.OutOfWorkflow), which the store does not restate; the gate itself is the one every
 // other path that acts on a released pod reads (pods.InWorkflowNotLingering), down to the
-// issue's own linger, which this read missed.
+// issue's own linger, which this read missed, and to a pod a retro after a close holds
+// (retroHoldsPod), whose release the gate takes as it takes an issue's in the workflow.
 //
 // The decision carries the cause of a cancel, because a pod taken up again reads the same here
 // as it does at a role stop and a deployment's records must say so once, and the roles whose
@@ -456,12 +457,12 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string
-		var lingering, rootLingering bool
+		var lingering, rootLingering, retroHolds bool
 		err = tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
-			root.generation, root.phase, root.status, root.linger_until is not null
+			root.generation, root.phase, root.status, root.linger_until is not null, `+retroHoldsPod+`
 			from issues i join issues root on root.key = i.tree where i.key = $1 and i.tree = $2`,
 			release.Issue, release.Tree).Scan(&issueGeneration, &issuePhase, &status, &lingering,
-			&rootGeneration, &rootPhase, &rootStatus, &rootLingering)
+			&rootGeneration, &rootPhase, &rootStatus, &rootLingering, &retroHolds)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -469,7 +470,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 			return err
 		}
 		live := pods.InWorkflowNotLingering(
-			pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
+			pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering, RetroHolds: retroHolds},
 			pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
 			outOfWorkflow)
 		if uint64(issueGeneration) != release.IssueGeneration || uint64(rootGeneration) != release.TreeGeneration || !live {
@@ -483,11 +484,12 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// teardown: it wakes the claim this release suspended, as any start wakes one, and the
 		// role comes back with its news in the pod that replaces this one. The release reads
 		// every other queued start row where IssueSuspension reads only a production check's
-		// look, and needs no other narrowing: the read above has already returned a cancel for
-		// an issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an
-		// issue still in the workflow under a live tree, where the outbox's start fence declines
-		// nothing and a queued start row really is a start. The cause is the one a role stop
-		// reads for it.
+		// look and the retro after a close's starts, and needs no other narrowing: the read above
+		// has already returned a cancel for an issue that is not pods.InWorkflowNotLingering, so
+		// this predicate runs only for an issue still in the workflow under a live tree, where the
+		// outbox's start fence declines nothing and a queued start row really is a start, or for
+		// a pod a retro after a close holds, where the starts queued are the retro's own and its
+		// wakes, which the outbox runs. The cause is the one a role stop reads for it.
 		overtaken, err := releaseOvertaken(ctx, tx, project, release.Issue, mark)
 		if err != nil {
 			return err

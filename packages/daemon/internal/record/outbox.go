@@ -1329,14 +1329,14 @@ type SuperviseRequest struct {
 	// start for news, for a slot or for the wake of a root architect (RetroWake): the validation
 	// refuses any other row that carries it. A release before this field refuses a row that
 	// carries it (DisallowUnknownFields), and the way back of migration 20261125213821_run_retros
-	// deletes such rows. The outbox's fence on it lands in INFRA-5602's task t4.
+	// deletes such rows. The outbox fences it on the run's record (the daemon's retroHolds).
 	RetroRun uint64 `json:"retroRun,omitempty"`
 	// RetroWake marks the wake of a root architect whose claim the tree's close suspended, made
 	// while a retro after a close is open in its tree, so that the architect hears the finding
 	// the retro's agent published to its role topic. It is a start of the architect with a wake
 	// kind (WakeKind) and no phase, no entry, no look and no retro run, for neither news nor a
 	// slot, and the validation refuses any other row that carries it; the outbox lets it through
-	// the guard that drops a wake for a claim the daemon suspended (INFRA-5602's task t4). A
+	// the guard that drops a wake for a claim the daemon suspended (the daemon's retroWakeHolds). A
 	// release before this field refuses a row that carries it, and the way back of migration
 	// 20261125213821_run_retros deletes such rows.
 	RetroWake bool `json:"retroWake,omitempty"`

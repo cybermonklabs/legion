@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -135,15 +136,18 @@ func (a *completionAnswer) answered() int {
 	return a.status
 }
 
-// answerCompletion records a phase completion or a production check report (checkReport), and
-// answers the grant it redeemed — the zero grant for a call refused before it redeemed one — and
-// the request as it decoded it, for the route's line (handoffComplete). The grant is redeemed and
-// the record read before the two are told apart, so an invalid grant is refused before a field
-// only one of them requires. Which of the two a call is, is what the caller's own
-// live assignment says: a claim whose worker took a look of its issue's production check
-// (supervise.Claim.ServingCheck) reports on that look, so the report lands where the check's own
-// refusals are written — CHECK_NOT_OPEN when the issue has no open check, CHECK_ROLE_MISMATCH
-// when the caller is not the role the check records — and every other call is a phase completion.
+// answerCompletion records a phase completion, a production check report (checkReport) or the
+// report of the retro Legion runs after an issue's close (retroReport), and answers the grant it
+// redeemed — the zero grant for a call refused before it redeemed one — and the request as it
+// decoded it, for the route's line (handoffComplete). The grant is redeemed and the record read
+// before the three are told apart, so an invalid grant is refused before a field only one of them
+// requires. Which of the three a call is, is what the caller's own live assignment says: a claim
+// whose worker took a look of its issue's production check (supervise.Claim.ServingCheck) reports
+// on that look, so the report lands where the check's own refusals are written — CHECK_NOT_OPEN
+// when the issue has no open check, CHECK_ROLE_MISMATCH when the caller is not the role the check
+// records — a claim whose worker took the task of the retro after its issue's close
+// (supervise.Claim.ServingRetro, or the retro's own turn that was running at the close:
+// servedRetroRun) reports that retro, and every other call is a phase completion.
 // The issue's phase is not what decides it: under `production_check: tester` a merged close
 // spares the tester's claim and opens a look behind its running testing turn, and that turn's own
 // verdict — pass or fail, which a check report also names — would be recorded as a report on
@@ -156,7 +160,8 @@ func (a *completionAnswer) answered() int {
 // when the entry its claim serves differs from the role's phases row, and otherwise by the engine,
 // which records instead a completion that arrives after the daemon moved the issue on by an event
 // (workflow's leftItsPhase). A completion of a done issue, which runs no phase, by a session
-// working no look is neither of the two: CHECK_LOOK_NOT_SERVED.
+// working neither a look nor the retro after the close is none of the three: CHECK_LOOK_NOT_SERVED,
+// naming whose report the issue takes (doneNotServed).
 func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant credential.Grant, req HandoffCompleteRequest) {
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
 		return
@@ -192,40 +197,38 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return
 	}
-	// The run, the phase entry and the production check look this completion belongs to are the
-	// task's that the worker took, which the claim answers (supervise.Claim.ServingRun,
-	// ServingEntry, ServingCheck) and nothing on the request says. The claim is read once,
-	// here, and the route, the run, the entry and the queued task the refusals name all come
-	// from that one read: Claim() waits for the decision in flight, so two reads can straddle one
-	// and answer from different decisions — a run taken before a delivery was confirmed beside
-	// the entry that confirmation left.
+	// The run, the phase entry, the production check look and the retro after a close this
+	// completion belongs to are the task's that the worker took, which the claim answers
+	// (supervise.Claim.ServingRun, ServingEntry, ServingCheck, ServingRetro) and nothing on the
+	// request says. The claim is read once, here, and the route, the run, the entry and the queued
+	// task the refusals name all come from that one read: Claim() waits for the decision in flight,
+	// so two reads can straddle one and answer from different decisions — a run taken before a
+	// delivery was confirmed beside the entry that confirmation left.
 	c := machine.Claim()
 	// A completion is a check report when the caller's own live assignment is a look of its
-	// issue's production check (the doc above), and a phase completion otherwise.
+	// issue's production check, the retro's report when it is the retro after the issue's close
+	// (the doc above), and a phase completion otherwise.
 	if look := c.ServingCheck(); look.Look > 0 {
 		s.checkReport(w, r, grant, position.check, look, req)
 		return
 	}
-	// A done issue runs no phase, so a completion from a session working no look of its
-	// production check is neither of the two, and the cause is named here rather than left to
-	// the phase path below: that path holds an implementer's and a merger's completion to a
-	// commit (MISSING_FIELD), which the plugin's done branch never sends, since it sends what a
-	// check report sends (pi-shared's legion-phase-ops.ts, completeHandoff). A late implementer
-	// or merger turn after the close lands here, an architect's on a done root does, and so does
-	// a look a restart of the daemon left unrecorded on its claim. Nothing of this call is
-	// recorded either way, so the answer is the whole of it, and it says who reports here and
-	// who has nothing to: the check names one role, and only a turn of that role's own look task
-	// reports on it.
+	if run := servedRetroRun(c, grant.Claim, position.retro); run > 0 {
+		s.retroReport(w, r, grant, position.retro, run, req)
+		return
+	}
+	// A done issue runs no phase, so a completion from a session working neither a look of its
+	// production check nor the retro after its close is none of the three, and the cause is named
+	// here rather than left to the phase path below: that path holds an implementer's and a
+	// merger's completion to a commit (MISSING_FIELD), which the plugin's done branch never sends,
+	// since it sends what a check report or a retro's report sends (pi-shared's
+	// legion-phase-ops.ts, completeHandoff). A late implementer or merger turn after the close
+	// lands here, the turn of another phase the retro's agent was in at the close among them (its
+	// retro's task follows that turn), an architect's on a done root does, and so does a look a
+	// restart of the daemon left unrecorded on its claim. Nothing of this call is recorded either
+	// way, so the answer is the whole of it, and it says who reports here and who has nothing to
+	// (doneNotServed).
 	if issue.Phase == phase.Done {
-		whose := "it has no open production check, so there is nothing here for any role to report"
-		if position.check != nil && position.check.Open() {
-			whose = fmt.Sprintf(
-				"its production check is the %s's, and only a turn of that role's own look task reports on it, naming the look and a verdict of pass, pending or fail; every other role has nothing to report here",
-				position.check.Role)
-		}
-		s.writeFailure(w, r, http.StatusConflict, "CHECK_LOOK_NOT_SERVED", fmt.Sprintf(
-			"%s is done: no phase of it is open, and this session works no look of its production check. This completion reported on nothing and recorded nothing: %s.",
-			grant.Issue, whose))
+		s.writeFailure(w, r, http.StatusConflict, "CHECK_LOOK_NOT_SERVED", doneNotServed(grant.Issue, position.check, position.retro))
 		return
 	}
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
@@ -1012,4 +1015,176 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		return
 	}
 	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
+}
+
+// servedRetroRun is the run of the retro Legion runs after an issue's close that a completion from
+// claim c, whose token is caller, reports, and 0 for none. It is the retro whose task the claim's
+// worker took (supervise.Claim.ServingRetro), or the retro's own turn that was running at the close
+// (P4 of dispatch://INFRA-5602): that turn took the task of the retro phase before the close,
+// which names no retro after a close, and the record of the retro the close kept names its phase
+// entry (record.RunRetro.Entry), so a completion of the claim of the retro's agent serving that
+// run and that entry is that retro's report. Without it, the close of an issue in its retro
+// would refuse the very report the close kept the turn for.
+func servedRetroRun(c supervise.Claim, caller claim.Token, retro *record.RunRetro) uint64 {
+	if run := c.ServingRetro(); run > 0 {
+		return uint64(run)
+	}
+	if retro != nil && retro.Open() && retro.Entry > 0 && retro.Agent == caller &&
+		c.ServingRun() == retro.Generation && c.ServingEntry() == retro.Entry {
+		return retro.Generation
+	}
+	return 0
+}
+
+// retroReport records the report of the retro Legion runs after the close of the issue's run, the
+// retro the caller's own live assignment is (servedRetroRun), as intake.RetroReport (P2, s2 and s3
+// of dispatch://INFRA-5602): the summary of what the retro found and the rating of the plan the run
+// ran, and nothing else. Every refusal below is written before the fact is applied — the apply
+// marks the event processed before any handler runs (intake.ApplyFact) — so a refused report
+// changes nothing, leaves the retro open, and the report sent again, corrected, is recorded:
+//
+//   - RETRO_NOT_OPEN: the issue holds no retro after a close of that run — none was opened, or a
+//     later run's replaced it — or that retro ended at its 24-hour bound
+//     (workflow.RetroAfterCloseBound) or at a todo that took the issue into a new run, each named.
+//     A retro its own report ended is left to the apply, so the same report sent again is answered
+//     as already received, as a phase completion's is.
+//   - RETRO_AGENT_MISMATCH: the grant is not the claim of the retro's agent (record.RunRetro.Agent).
+//   - RETRO_VERDICT_UNEXPECTED: a verdict, which no retro gives: its report rates the plan.
+//   - RETRO_COMMIT_UNEXPECTED: a commit, since the retro after a close pushes nothing.
+//   - HANDOFF_RECORD_MISMATCH: a handoff record, which a retro ends without, as the phase path
+//     refuses one for a phase that ends with none.
+//   - CHECK_WAKE_UNEXPECTED: a wakeAt, which belongs to a production check's pending report.
+//   - INVALID_RETURN_TO, RETURN_TO_NEEDS_FAIL: a returnTo (returnToRefusal), since the retro after a
+//     close moves the issue nowhere.
+//   - PLAN_RATING_INPUT: a rating or a reason of the wrong form (planRatingOf), and
+//     PLAN_RATING_REQUIRED: no rating at all. The report of a retro is what rates the plan, so it is
+//     required whatever contract the caller's plugin declared: a plugin from before the rating
+//     sends no report of a retro after a close, and that retro ends at its bound.
+//
+// No GitHub read is made and no status is written: the retro pushed nothing, and the issue stays as
+// its close left it. The event is the issue and the run, so the report sent again is answered
+// HANDOFF_ALREADY_RECORDED, and one the workflow refuses under the fact's lock (the retro ended in
+// between, or its agent is another claim) leaves the event unspent.
+func (s *server) retroReport(w http.ResponseWriter, r *http.Request, grant credential.Grant, retro *record.RunRetro, run uint64, req HandoffCompleteRequest) {
+	if retro == nil || retro.Generation != run || (retro.EndedAt != nil && retro.EndedBy != record.RetroEndReport) {
+		s.writeFailure(w, r, http.StatusConflict, "RETRO_NOT_OPEN", retroNotOpen(grant.Issue, run, retro))
+		return
+	}
+	if grant.Claim != retro.Agent {
+		s.writeFailure(w, r, http.StatusConflict, "RETRO_AGENT_MISMATCH", fmt.Sprintf(
+			"the retro after the close of %s run %d is the %s's, and this completion is the %s's: only that agent reports it; nothing was recorded",
+			grant.Issue, run, agentRole(retro.Agent), grant.Role))
+		return
+	}
+	what := fmt.Sprintf("this report of the retro after the close of %s run %d", grant.Issue, run)
+	if req.Verdict != "" {
+		s.writeFailure(w, r, http.StatusBadRequest, "RETRO_VERDICT_UNEXPECTED", fmt.Sprintf(
+			"%s names verdict %q, and a retro gives none: it rates the plan in planRating and planReason; send it again without the verdict, and nothing was recorded",
+			what, req.Verdict))
+		return
+	}
+	if req.Commit != "" {
+		s.writeFailure(w, r, http.StatusBadRequest, "RETRO_COMMIT_UNEXPECTED", fmt.Sprintf(
+			"%s names commit %s, and the retro after a close pushes nothing; send it again without the commit, and nothing was recorded", what, req.Commit))
+		return
+	}
+	if req.HandoffID != "" || req.HandoffVersion != 0 {
+		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
+			"%s names a handoff record, and a retro ends with none: send it again without handoffId and handoffVersion; this completion changed nothing", what))
+		return
+	}
+	if req.WakeAt != nil {
+		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_WAKE_UNEXPECTED", fmt.Sprintf(
+			"%s names wakeAt, which belongs to the pending report of a production check's look and to nothing else; send it again without a time, and nothing was recorded", what))
+		return
+	}
+	if refusal := returnToRefusal(req, false, what); refusal != nil {
+		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
+	rating, refusal := planRatingOf(req)
+	if refusal == nil && rating == nil {
+		refusal = intake.PlanRatingRequired(what)
+	}
+	if refusal != nil {
+		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
+	result, err := s.apply(r.Context(), "api", fmt.Sprintf("retro-after-close:%s:%d", grant.Issue, run), intake.RetroReport{Issue: grant.Issue,
+		Claim: grant.Claim, Generation: run, Summary: req.Summary, PlanRating: *rating})
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
+		return
+	}
+	if result.Duplicate {
+		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_ALREADY_RECORDED", fmt.Sprintf(
+			"the report of the retro after the close of %s run %d was already received; this call changed nothing", grant.Issue, run))
+		return
+	}
+	if result.Refusal != nil {
+		s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+		return
+	}
+	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
+}
+
+// retroNotOpen is why a report of the retro after the close of key's run is refused, retro being
+// the newest record of key that holds a retro after a close (nil for none): the issue holds none,
+// the one it holds is another run's, or it ended, by what and how.
+func retroNotOpen(key string, run uint64, retro *record.RunRetro) string {
+	switch {
+	case retro == nil:
+		return fmt.Sprintf("%s holds no retro after a close, and this report is of run %d's; nothing was recorded", key, run)
+	case retro.Generation != run:
+		return fmt.Sprintf("the retro after the close of %s is run %d's, and this report is of run %d's; nothing was recorded", key, retro.Generation, run)
+	}
+	how := "by its report"
+	switch retro.EndedBy {
+	case record.RetroEndBound:
+		how = fmt.Sprintf("at its bound, %s, with no report", retro.BoundAt.UTC().Format(time.RFC3339))
+	case record.RetroEndTodo:
+		how = "when the issue was set back to todo"
+	}
+	return fmt.Sprintf("the retro after the close of %s run %d ended %s %s, and takes no report now; nothing was recorded", key, run, retro.Outcome, how)
+}
+
+// doneNotServed is the refusal of a completion of key, a done issue, from a session that works
+// neither a look of its production check nor the retro Legion runs after its close
+// (CHECK_LOOK_NOT_SERVED). It says nothing was recorded and whose report the issue takes, so a
+// report of either from any other session says who has one to make: the check's role, which
+// reports on a look with a verdict, and the retro's agent, which reports the retro with a rating
+// of the plan (s4 and s20 of dispatch://INFRA-5602). A retro that ended at its bound is named as
+// ended, so its agent's late report reads as late rather than as one nobody asked for. An issue
+// with neither has nothing for any role to report.
+func doneNotServed(key string, check *record.ProductionCheck, retro *record.RunRetro) string {
+	var whose []string
+	if check != nil && check.Open() {
+		whose = append(whose, fmt.Sprintf(
+			"its production check is the %s's, and only a turn of that role's own look task reports on it, naming the look and a verdict of pass, pending or fail",
+			check.Role))
+	}
+	if retro != nil && retro.Open() {
+		whose = append(whose, fmt.Sprintf(
+			"the retro Legion runs after its close (of run %d) is the %s's, and only a turn of that agent's own retro task reports it, with planRating and planReason and no verdict",
+			retro.Generation, agentRole(retro.Agent)))
+	}
+	says := strings.Join(whose, "; ") + "; every other role has nothing to report here"
+	if len(whose) == 0 {
+		says = "it has no open production check and no open retro after its close, so there is nothing here for any role to report"
+		if retro != nil && retro.EndedBy == record.RetroEndBound {
+			says = fmt.Sprintf("it has no open production check, and the retro Legion ran after its close (of run %d) ended at its bound, %s, with no report, so there is nothing here for any role to report",
+				retro.Generation, retro.BoundAt.UTC().Format(time.RFC3339))
+		}
+	}
+	return fmt.Sprintf("%s is done: no phase of it is open, and this session works no look of its production check and no retro after its close. This completion reported on nothing and recorded nothing: %s.",
+		key, says)
+}
+
+// agentRole is the role of agent's claim token, as a refusal names whose report a retro is, or the
+// token itself where it names no role.
+func agentRole(agent claim.Token) string {
+	if role, ok := agent.Role(); ok {
+		return string(role)
+	}
+	return string(agent)
 }

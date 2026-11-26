@@ -21,7 +21,9 @@ import (
 // (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
 // (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
 // moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
-// is recorded, and its production check, nil while none was ever opened.
+// is recorded, its production check, nil while none was ever opened, and the record of its newest
+// run that holds a retro Legion opened after the issue's close (record.RunRetro.AfterClose), open
+// or ended, nil while no close opened one.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -33,6 +35,7 @@ type completionPosition struct {
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
+	retro          *record.RunRetro
 }
 
 // handoffPosition reads key's position (completionPosition) for the completing role, whose phases
@@ -81,10 +84,30 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		if err != nil {
 			return err
 		}
+		retro, err := retroAfterClose(ctx, s.records, tx, key)
+		if err != nil {
+			return err
+		}
 		position = completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
 			lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
-			pullRequest: pr, check: check}
+			pullRequest: pr, check: check, retro: retro}
 		return nil
 	})
 	return position, err
+}
+
+// retroAfterClose is the record of key's newest run that holds a retro Legion opened after the
+// issue's close (record.RunRetro.AfterClose), nil for none: the retro whose report the issue takes
+// while it is open, and whose end a later completion is told of.
+func retroAfterClose(ctx context.Context, records record.Store, tx pgx.Tx, key string) (*record.RunRetro, error) {
+	runs, err := records.RunRetros(ctx, tx, key)
+	if err != nil {
+		return nil, err
+	}
+	for _, run := range runs {
+		if run.AfterClose() {
+			return &run, nil
+		}
+	}
+	return nil, nil
 }
