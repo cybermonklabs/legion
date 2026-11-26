@@ -1977,7 +1977,8 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
 // decision that leaves the review list by no act of the reader on this list - a Change sent
 // from another page, a read that says another person kept it, even after a Keep of the
 // reader's that Dispatch refused, or that it was replaced - keeps the focus where it now
-// stands: under Your decisions, or in the foot, which unfolds for it.
+// stands: under Your decisions for the reader's own Change, under Decided by others for
+// another person's Keep (decision 502), or in the foot, which unfolds for it.
 test("a decision that leaves the review list by no act of the reader keeps the focus", async () => {
   const whole = wholeIssue();
   // The address names the decision, and a Change on it arrives in the tree read.
@@ -2009,7 +2010,10 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   await act(async () => rowOf(kept, D("second")).focus());
   await act(async () => kept.client.setQueryData(viewKey(KEY, "decisions"), keptByBob));
   await waitFor(() => expect(rowsOfPart(kept, "review")).toEqual([D("first")]));
-  expect(rowsOfPart(kept, "yours")).toContain(D("second"));
+  expect(
+    rowsOfPart(kept, "others"),
+    "the decision bob kept does not stand under Decided by others"
+  ).toContain(D("second"));
   expect(
     words(rowOf(kept, D("second")).querySelector("[data-node-margin] [data-node-state]"))
   ).toBe(`${NODE_STATE_WORDS.decision.kept} bob`);
@@ -2065,7 +2069,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
 
 // R6, the class of the review list's case above (the tester's round 2): an entry that moves to
 // another part of the list by no act of the reader keeps the focus where it now stands. Another
-// person answers the open question the reader is on, which moves it under Your decisions; the
+// person answers the open question the reader is on, which moves it under Decided by others; the
 // decisions view, read again, ties the foot's decision the reader is on to a statement, which
 // moves it to the review list. Each row is drawn again in its new part, and the focus is on it
 // there, not on the page.
@@ -2091,7 +2095,12 @@ test("an entry that moves to another part by no act of the reader keeps the focu
         : child
     ),
   });
-  await waitFor(() => expect(rowsOfPart(answered, "yours")).toContain("q-open"));
+  await waitFor(() =>
+    expect(
+      rowsOfPart(answered, "others"),
+      "the question bob answered does not stand under Decided by others"
+    ).toContain("q-open")
+  );
   expect(rowsOfPart(answered, "open_questions")).toEqual([]);
   await waitFor(() => expect(focusedRow(answered)).toBe("q-open"));
   answered.unmount();
@@ -3281,9 +3290,10 @@ test("a Change its author edited draws its words, then · edited, and one nobody
   expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
 
-// R2: the view draws four parts. What another person answered is no part of its own: it stands
-// under Your decisions with the reader's own, newest first, and its answer names that person.
-test("another person's answer stands under Your decisions with their name", () => {
+// R2, decision 502: what another person answered stands in a part of its own, under "Decided by
+// others", after the reader's own decisions, and its answer names that person. Where the reader
+// made every decision, the list draws no such part, and the view is R2's four parts.
+test("another person's answer stands under Decided by others with their name", () => {
   const view = renderBody({
     children: [
       answeredAsk("a-mine", { at: "2026-11-14T09:00:00Z", text: "Mine." }),
@@ -3294,9 +3304,46 @@ test("another person's answer stands under Your decisions with their name", () =
       }),
     ],
   });
-  expect(rowsOfPart(view, "yours")).toEqual(["a-mine", "a-bobs"]);
-  expect(words(rowOf(view, "a-bobs").querySelector("[data-answer-author]"))).toBe("bob");
-  expect(view.container.querySelector('[data-decisions-part="others"]')).toBeNull();
+  expect(
+    rowsOfPart(view, "yours"),
+    "Your decisions holds another person's answer, or not the reader's own"
+  ).toEqual(["a-mine"]);
+  expect(
+    rowsOfPart(view, "others"),
+    "another person's answer does not stand under Decided by others"
+  ).toEqual(["a-bobs"]);
+  expect(
+    [...view.container.querySelectorAll("[data-decisions-part]")].map((part) =>
+      part.getAttribute("data-decisions-part")
+    ),
+    "Decided by others does not stand after the reader's own decisions"
+  ).toEqual(["yours", "others"]);
+  const others = view.container.querySelector('[data-decisions-part="others"]');
+  expect(
+    words(others?.querySelector(`[data-decisions-heading] [${PAGE_CHROME_ATTRIBUTE}]`)),
+    "the others part's heading does not read Decided by others"
+  ).toBe(DECISIONS_WORDS.parts.others);
+  expect(
+    words(others?.querySelector("[data-decisions-count]")),
+    "the others part does not count its one entry"
+  ).toBe("1");
+  expect(
+    words(rowOf(view, "a-bobs").querySelector("[data-answer-author]")),
+    "another person's answer does not name bob"
+  ).toBe("bob");
+  view.unmount();
+
+  const own = renderBody({
+    children: [answeredAsk("a-mine", { at: "2026-11-14T09:00:00Z", text: "Mine." })],
+  });
+  expect(
+    rowsOfPart(own, "yours"),
+    "the reader's own answer does not stand under Your decisions"
+  ).toEqual(["a-mine"]);
+  expect(
+    own.container.querySelector('[data-decisions-part="others"]'),
+    "a list where the reader made every decision draws an others part"
+  ).toBeNull();
 });
 
 // The tester's F16: a key with nowhere to go says so at the row it was pressed on, and the

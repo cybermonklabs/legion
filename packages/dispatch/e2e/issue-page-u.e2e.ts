@@ -27,6 +27,7 @@ import {
   rowWords,
   unfoldEveryBranch,
 } from "./issue-page-g";
+import { withIssuePage } from "./issue-page-option";
 import { waitingCount } from "./issue-page-p";
 import {
   type DrawnPart,
@@ -54,6 +55,7 @@ import {
   blockRowId,
   decisionRowId,
   decisionsPages,
+  decisionsPartHeading,
   decisionsViewServedGate,
   type FilterReading,
   heldDecisionsRead,
@@ -80,6 +82,7 @@ import {
 } from "./issue-page-u";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic";
+import { asUser } from "./users";
 
 /**
  * The decision rows of the new issue page:
@@ -92,9 +95,11 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  * (`e2e/issue-page-i.ts`), `waitingCount` (`e2e/issue-page-p.ts`), the readers of the Decisions
  * view (`e2e/issue-page-q.ts`), `watchApiRequests` (`e2e/traffic.ts`), the helpers of
  * `e2e/issue-page-t.ts`, the reads of the tree read the rows share with the seeds
- * (`e2e/issue-layout-seed-support.ts`) and the rows' own (`e2e/issue-page-u.ts`).
+ * (`e2e/issue-layout-seed-support.ts`) and the rows' own (`e2e/issue-page-u.ts`). Row 5 opens a
+ * second reader beside alice: bob signs in to a context of his own with `asUser`
+ * (`e2e/users.ts`), and `withIssuePage` (`e2e/issue-page-option.ts`) turns the page on for him.
  *
- * The rows are the four of the Verification document's browser checks, by their titles:
+ * The rows are five of the Verification document's browser checks, by their titles:
  *
  * 1. `c-decisions`: "every decision the page draws is a node with the review state the model
  *    holds", on `seedDecisionsFilter` and `seedReviewList`.
@@ -105,6 +110,9 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  *    the check's (3) and (4) alone and says so in an annotation (`ROW_THREE_CASE`).
  * 4. `c-pages`: "each part of the Decisions view pages 20 entries at a time", on
  *    `seedReviewList` with 25 decisions more at the foot (`writeFootDecisions`).
+ * 5. Decision 502's row, which the Verification document names from its v43: "a decision another
+ *    person made stands under Decided by others", on `seedDecisionsFilter`, read by bob and then
+ *    by alice.
  *
  * Each row checks its gates first, each with `owedUnless`, and skips where one is not on the
  * base, with an `owed` annotation naming the gate and the decisions that make it owed; it never
@@ -116,8 +124,8 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  * decision nodes of the tree read (`decisionNodesGate`, over the decisions read
  * `decisionsReadOf` keeps). The first three are read before anything else once the page is open,
  * the fourth once the page has received its decisions read, which the page sends once Decisions
- * is pressed, or as it opens on the Decisions view, as rows 3 and 4 open it. Every row is tagged
- * `@owed`, and each skips on the first of its gates the server on the base does not meet.
+ * is pressed, or as it opens on the Decisions view, as rows 3, 4 and 5 open it. Every row is
+ * tagged `@owed`, and each skips on the first of its gates the server on the base does not meet.
  */
 
 /** How long row 1 may take: two seeded issues, each read through all four filters. */
@@ -134,7 +142,12 @@ const ROW_THREE_MS = 360_000;
  *  twice, and its foot's pages drawn once by the pointer and once by the keyboard. */
 const ROW_FOUR_MS = 240_000;
 
-/** The four parts of the Decisions view, in the order it draws them (`data-decisions-part`). */
+/** How long row 5 may take: one seeded issue, its Decisions view loaded by two readers. */
+const ROW_FIVE_MS = 240_000;
+
+/** The four parts of the Decisions view row 1 reads, in the order it draws them
+ *  (`data-decisions-part`): alice made every decision of row 1's seeds, so the view draws no
+ *  part for what others decided (`others`, row 5). */
 const DECISIONS_PARTS = ["open_questions", "review", "yours", "agents"] as const;
 type DecisionsPart = (typeof DECISIONS_PARTS)[number];
 
@@ -1347,5 +1360,116 @@ test("each part of the Decisions view pages 20 entries at a time @owed", async (
       },
       footOf(reloaded.parts)
     );
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Row 5: a decision another person made stands under "Decided by others".
+// ---------------------------------------------------------------------------------------------
+
+// Decision 502, owed as rows 1 to 4 are: on `treeReadGate`, `decisionsViewServedGate`,
+// `convertedGate` and `decisionNodesGate`, each read from alice's page as it opens on the
+// Decisions view. On `seedDecisionsFilter`, whose asks alice answered or declined and whose fifth
+// decision she kept, bob opens the same view at 1440 px in a context of his own: none of alice's
+// four decisions stands under Your decisions, and all four stand under "Decided by others", after
+// the review list and before the foot, each answer naming alice. alice's own view still draws
+// them under "Your decisions", and no part for others. c-unit's `another person's answer stands
+// under Decided by others with their name` covers the part's count, its place after the reader's
+// own and a reader who made every decision.
+// SLOW(>=2s): two readers' contexts each load the seeded issue.
+test("a decision another person made stands under Decided by others @owed", async ({ browser }) => {
+  test.setTimeout(ROW_FIVE_MS);
+  await phase(browser, seedDecisionsFilter, async (page, seeded) => {
+    const { key } = seeded;
+    owedUnless(await treeReadGate(page, key));
+    owedUnless(await decisionsViewServedGate(page, key));
+    owedUnless(await convertedGate(page, key));
+    const decisions = decisionsReadOf(page, key);
+    const traffic = watchApiRequests(page);
+    await gotoIssue(page, presetPath(key, "decisions"));
+    await expectIssuePageDrawn(page);
+    const answer = await readTree(key, null);
+    owedUnless(decisionNodesGate(answer, await heldDecisionsRead(key, decisions)));
+    expect(answer.converted, "the tree read answers converted: true").toBe(true);
+
+    // alice's four decisions the seed made, by the ids their rows carry: the decision she kept,
+    // the question she declined, and the two she answered, whose answers name her.
+    const reads = await idReadsOf(key);
+    const answered = [askRowId(reads, seeded.optionedAskId), askRowId(reads, seeded.answeredAskId)];
+    const hers = [
+      blockRowId(key, answer, "decision", seeded.keptBlock),
+      askRowId(reads, seeded.declinedAskId),
+      ...answered,
+    ];
+    // What a reader's Decisions view draws, as it holds still: the parts it draws in order, the
+    // rows of the reader's own part and of what others decided, that part's heading, and who
+    // each of alice's answers names.
+    const viewOf = async (reader: Page) => {
+      const parts = await decisionsPartsDrawn(reader);
+      const rows = await drawnRows(reader);
+      return {
+        authors: answered.map((id) => rowOf(rows, id)?.answerAuthor ?? null),
+        heading: await decisionsPartHeading(reader, "others"),
+        others: parts.find((one) => one.part === "others")?.rows ?? [],
+        parts: parts.map((one) => one.part),
+        yours: parts.find((one) => one.part === "yours")?.rows ?? [],
+      };
+    };
+
+    const bob = await asUser(browser, "bob");
+    try {
+      await withIssuePage(bob, "bob");
+      const bobPage = await bob.newPage();
+      await bobPage.setViewportSize({ height: 900, width: 1440 });
+      const bobTraffic = watchApiRequests(bobPage);
+      await gotoIssue(bobPage, presetPath(key, "decisions"));
+      await expectIssuePageDrawn(bobPage);
+      const bobs = await steadily(
+        bobPage,
+        bobTraffic,
+        `${key}'s Decisions view as bob reads it`,
+        () => viewOf(bobPage)
+      );
+
+      // (1) bob made none of the seed's decisions: his view draws no part of his own, or one
+      // that holds none of alice's.
+      expect(
+        bobs.yours.filter((id) => hers.includes(id)),
+        "none of alice's four decisions stands under Your decisions"
+      ).toEqual([]);
+      // (2) All four stand under "Decided by others", a part the view draws after the review
+      // list and before the foot, and each of her answers names her.
+      expect(
+        {
+          authors: bobs.authors,
+          heading: bobs.heading,
+          missing: hers.filter((id) => !bobs.others.includes(id)),
+          order: bobs.parts.filter(
+            (part) => part === "review" || part === "others" || part === "agents"
+          ),
+        },
+        "all four stand under Decided by others, after the review list and before the foot"
+      ).toEqual({
+        authors: answered.map(() => "alice"),
+        heading: DECISIONS_WORDS.parts.others,
+        missing: [],
+        order: ["review", "others", "agents"],
+      });
+    } finally {
+      await bob.close();
+    }
+
+    // (3) alice's own view of the same issue still draws her decisions under "Your decisions",
+    // and draws no part for what others decided.
+    const alices = await steadily(page, traffic, `${key}'s Decisions view as alice reads it`, () =>
+      viewOf(page)
+    );
+    expect(
+      {
+        missing: hers.filter((id) => !alices.yours.includes(id)),
+        others: alices.parts.includes("others"),
+      },
+      "alice's own view draws her decisions under Your decisions, and no part for others"
+    ).toEqual({ missing: [], others: false });
   });
 });
