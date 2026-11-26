@@ -1301,8 +1301,8 @@ Closing the terminal leaves the project without one, and the daemon logs
    suspended every member of its tree. The first boot starts each such member that is still in
    Legion's work again in its phase. The command prints each one with its phase and how its tree
    left, and changes nothing. Set any of them to backlog before the boot to keep it stopped. The
-   repository's `docs/kubernetes.md` ("Rolling back the release that stores no tree") gives the
-   one-shot pod that runs it in the cluster.
+   repository's `docs/kubernetes.md` ("Before the pin that carries the release that stores no
+   tree moves") gives the one-shot pod that runs it in the cluster.
 
    **After the first upgrade to a release that takes each issue's repository from Dispatch,** a
    `legion.yaml` that still sets `projects.<KEY>.repo` is refused at load with

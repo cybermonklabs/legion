@@ -3509,7 +3509,9 @@ Its Dispatch runs dispatch://INFRA-4731's status-change route before the daemon 
 A roll forward after a rollback converts again from the state the earlier release left, its rows included.
 That conversion also marks each claim the earlier release wrote whose issue holds its own gate, before the daemon builds any claim's machine, so an architect an operator started on a root while the rollback held is that tree's root again, and the operator's close of the tree is accepted.
 
-**Before the pin that carries this release is applied: list the members that its first boot brings back.**
+#### Before the pin that carries the release that stores no tree moves: the members its first boot brings back
+
+This step is part of the upgrade to that release, not of its rollback.
 On the release before, a root that left Legion's work suspended the claims of every member of its tree, and only the root's re-admission brought the members back.
 This release keeps no tree, so a root's return resumes only the root itself (dispatch://INFRA-3320 R20).
 So the first boot's conversion brings back each such member that is still in Legion's work itself (step 8, `bringMembersBack` in `internal/daemon/tree_conversion.go`).

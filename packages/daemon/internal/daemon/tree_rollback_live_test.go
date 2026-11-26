@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -207,6 +209,9 @@ func treeEffects(t *testing.T, project, w string, architect claim.Token, artifac
 		string(record.OutboxKindMergeForward): {w, record.MergeForwardMessage{Step: record.MergeForwardAsk, Role: claim.RoleImplementer, Head: head, Base: "main",
 			Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}},
 		string(record.OutboxKindPlanRecord): {w, record.PlanRecord{ID: uuid.NewString(), Generation: generation, Source: "tree proof"}},
+		// The reconcile of w's news of its approved design, whose row names the tree's root and carries
+		// nothing (record.DesignNewsReconcile).
+		string(record.OutboxKindDesignChanges): {w, record.DesignNewsReconcile{}},
 		// What the release before cannot run, which the step deletes or strips.
 		"dispatch_status with an option": {w, option},
 	}
@@ -359,9 +364,10 @@ func (r *treeDaemon) rollbackStep() []string {
 	if err != nil {
 		t.Fatalf("psql is not on PATH, and the step's two blocks run it: %v", err)
 	}
+	libpq := libpqURL(t, r.world.DSN)
 	run := func(what, file string) []byte {
 		t.Helper()
-		printed, err := exec.Command(psql, r.world.DSN, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-At", "-F", "|", "-f", file).CombinedOutput()
+		printed, err := exec.Command(psql, libpq, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-At", "-F", "|", "-f", file).CombinedOutput()
 		if err != nil {
 			t.Fatalf("%s failed: %v\n%s", what, err, printed)
 		}
@@ -387,7 +393,7 @@ func (r *treeDaemon) rollbackStep() []string {
 	path := bin + ":" + filepath.Dir(psql) + ":/usr/bin:/bin"
 	command := exec.Command("bash", "-c", "[ \"$(command -v kubectl)\" = \"$1\" ] || { echo \"kubectl resolves to $(command -v kubectl), not the proof's\" >&2; exit 1; }\n"+named.Replace(loop),
 		"loop", filepath.Join(bin, "kubectl"))
-	command.Env = []string{"PATH=" + path, "DATABASE_URL=" + r.world.DSN, "KUBECONFIG=" + filepath.Join(dir, "no-kubeconfig"), "HOME=" + dir}
+	command.Env = []string{"PATH=" + path, "DATABASE_URL=" + libpq, "KUBECONFIG=" + filepath.Join(dir, "no-kubeconfig"), "HOME=" + dir}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("the step's relabel loop failed: %v\n%s", err, output)
 	}
@@ -432,6 +438,22 @@ func (r *treeDaemon) rollbackStep() []string {
 		run(fmt.Sprintf("block %d of INFRA-4728's step (the release before does not carry %d)", i+1, parentWaitMigration), file)
 	}
 	return held
+}
+
+// libpqURL is the URL of the database dsn names as psql reads it: dsn's database on the server of
+// LEGION_TEST_PG_DSN with no pool key, which psql refuses (testdb.DatabaseURL). dsn is the world's,
+// testdb.Database's pool URL, which the daemons and the proof's pools read.
+func libpqURL(t *testing.T, dsn string) string {
+	t.Helper()
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("the world's database URL does not parse: %v", err)
+	}
+	plain, err := testdb.DatabaseURL(os.Getenv("LEGION_TEST_PG_DSN"), strings.TrimPrefix(parsed.Path, "/"))
+	if err != nil {
+		t.Fatalf("the world's database as psql reads it: %v", err)
+	}
+	return plain
 }
 
 // TestTheTreeRollbackLive is k44. Each step prints `== <step>`, what it observed and `ok <step>`.
@@ -545,6 +567,14 @@ func TestTheTreeRollbackLive(t *testing.T) {
 			t.Fatalf("read the run of %s: %v", w, err)
 		}
 		effects := treeEffects(t, world.Project, w, r.world.token(t, w, claim.RoleArchitect), dispatchPrimaryArtifact(t, world.DispatchURL, w), generation)
+		var moved uint64
+		if err := r.pool.QueryRow(t.Context(), `select generation from issues where key = $1`, a2).Scan(&moved); err != nil {
+			t.Fatalf("read the run of %s: %v", a2, err)
+		}
+		// The release before runs reparent_seed (INFRA-4728's), so its effect is the seed of a2's change
+		// of parent in this release's shape, R18's, whose fields the rollback step strips.
+		effects[string(record.OutboxKindReparentSeed)] = treeEffect{a2, record.ReparentSeed{Parent: e, Tree: a, Ran: "it ran under " + a,
+			Generation: moved, Entry: 1, OldParent: a, Phase: phase.Planning, Slot: true}}
 		world.Queued = map[string]int64{}
 		for _, kind := range world.OutboxKinds {
 			effect, ok := effects[kind]
@@ -554,13 +584,6 @@ func TestTheTreeRollbackLive(t *testing.T) {
 			world.Queued[kind] = r.queue(effect)
 		}
 		r.queue(effects["dispatch_status with an option"])
-		var moved uint64
-		if err := r.pool.QueryRow(t.Context(), `select generation from issues where key = $1`, a2).Scan(&moved); err != nil {
-			t.Fatalf("read the run of %s: %v", a2, err)
-		}
-		seed := record.ReparentSeed{Parent: e, Tree: a, Ran: "it ran under " + a, Generation: moved, Entry: 1, OldParent: a,
-			Phase: phase.Planning, Slot: true}
-		r.queue(treeEffect{a2, seed})
 		for what, query := range map[string]string{
 			"a retention_end":                `select count(*) from outbox where kind = 'retention_end'`,
 			"a reparented notice":            `select count(*) from outbox where kind = 'notice' and payload->>'kind' = 'reparented'`,

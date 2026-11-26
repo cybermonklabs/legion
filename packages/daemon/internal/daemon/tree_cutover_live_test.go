@@ -98,8 +98,10 @@ func newTreeRig(t *testing.T, rule string) *treeRig {
 	scratch := startScratchDispatchOn(t, options)
 	world := &treeWorld{Project: "T" + randomSuffix(t)[:9], DSN: blockersDatabase(t), DispatchURL: scratch.base}
 	dispatchCall(t, scratch.base, http.MethodPost, "/api/v1/projects", map[string]string{"key": world.Project, "name": "Tree proof"}, nil)
-	dispatchCall(t, scratch.base, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": world.Project, "default": true}, nil)
+	// The project's default repository, through the route that holds it since #4457: Dispatch
+	// writes no repository mapping of its own (GET /api/v1/settings/repo-projects is read only).
+	dispatchCall(t, scratch.base, http.MethodPut, "/api/v1/projects/"+world.Project+"/default-repository",
+		map[string]any{"repo": "acme/widgets"}, nil)
 	path := filepath.Join(t.TempDir(), "world.json")
 	world.save(t, path)
 	return &treeRig{t: t, natsURL: natsURL, before: before, path: path}

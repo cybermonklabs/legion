@@ -594,14 +594,20 @@ func (r *treeDaemon) projectToken() string {
 // linger_close at the deadline, the tree close of its architect's claim and its workspace's
 // removal), the tree's cleanup reserved and not confirmed, each of handed, members still at work,
 // handed over (its handovers row and its hand-over status row, queued long after any run ends), and
-// the tree's draw of an experiment. Dispatch is the caller's: the person's close of the root and
-// the hand-over writes that landed.
+// the tree's draw of an experiment. The root's wait on its open children, which the release before
+// keeps while a child of it is open, ends with the close, and so does its task of the run, done at
+// the place it stood, as that release's leave writes both (workflow's endTaskWithLeave on main:
+// moveTask to done with leaveState's done for a close at done). Dispatch is the caller's: the
+// person's close of the root and the hand-over writes that landed.
 func (r *treeDaemon) seedLinger(root string, handed ...string) {
 	r.t.Helper()
 	generation := r.generation(root)
 	project := r.projectToken()
 	r.exec("the linger of "+root, `update issues set phase = 'done', status = 'done', dispatch_status = 'done',
-		linger_until = now() + interval '48 hours' where key = $1`, root)
+		linger_until = now() + interval '48 hours', children_wait_start = null, children_wait_task = null,
+		children_wait_reason = null, children_wait_since = null, children_wait_children = null where key = $1`, root)
+	r.exec("the task of "+root+" its close ends", `update plan_tasks set state = 'done', stopped_reason = ''
+		where issue = $1 and generation = $2 and state not in ('done', 'left')`, root, generation)
 	r.exec("the slots the close of "+root+" frees", `delete from slots where issue = any($1)`, append([]string{root}, handed...))
 	r.exec("the reserved cleanup of "+root, `update tree_lifecycles set cleanup_started = true where project = $1 and tree = $2`, project, root)
 	r.exec("the close rows of "+root, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values

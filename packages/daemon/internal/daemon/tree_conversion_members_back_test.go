@@ -14,20 +14,46 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// releaseBeforeMigrations are the migrations that main at 4e851eb1, the release before the one
-// that stores no tree, does not carry: the two of this release and the three of the branches it
-// stacks on. A store migrated with every migration but these is the store that release leaves.
-var releaseBeforeMigrations = []int{20261114064234, 20261114232555, 20261122154643, 20261122154644, 20261122154645}
+// releaseBeforeMigrations are this release's own migrations, the ones main, the release before the
+// one that stores no tree, does not carry. A store migrated with every migration but these is the
+// store main leaves.
+var releaseBeforeMigrations = []int{20261122154644, 20261122154645, 20261126035722}
 
-// oldestReleaseMigrations are the migrations that legion-v22.16.2, the oldest release a project's
-// daemon runs before the upgrade, does not carry: releaseBeforeMigrations and every migration main
-// added after it, issues.members_owed's 20261123224717 among them. A store migrated with every
-// migration but these is the store that release leaves.
-var oldestReleaseMigrations = append([]int{20261117034837, 20261119203047, 20261120012547, 20261120042902, 20261120055717,
-	20261120144241, 20261121170714, 20261123165139, 20261123212127, 20261123224717}, releaseBeforeMigrations...)
+// oldestReleaseNewest is the newest migration that legion-v22.16.2, the oldest release a project's
+// daemon runs before the upgrade, holds: 20261119003157_conflict_reads_and_merge_forward, the last
+// up.sql that `git show legion-v22.16.2:packages/daemon/internal/store/migrations/` lists.
+const oldestReleaseNewest = 20261119003157
+
+// oldestReleaseLacksBelowItsNewest are the migrations dated below oldestReleaseNewest that
+// legion-v22.16.2 does not hold, since each merged to main after that release: 20261114064234 and
+// 20261114232555 (INFRA-4728's design-gate basis and awaiting_children) and 20261117034837
+// (issue_plans). No migration merged later can join them, since its version is above that release's
+// newest.
+var oldestReleaseLacksBelowItsNewest = []int{20261114064234, 20261114232555, 20261117034837}
+
+// oldestReleaseMigrations are the migrations that legion-v22.16.2 does not carry: every embedded
+// migration above its newest (oldestReleaseNewest), this release's own among them, and the ones
+// dated below it that merged after it (oldestReleaseLacksBelowItsNewest). So a migration main adds
+// later is withheld with no change here. A store migrated with every migration but these is the
+// store that release leaves.
+func oldestReleaseMigrations(t *testing.T) []int {
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	withheld := slices.Clone(oldestReleaseLacksBelowItsNewest)
+	for _, migration := range all {
+		if migration.Version > oldestReleaseNewest {
+			withheld = append(withheld, migration.Version)
+		}
+	}
+	return withheld
+}
 
 // The members of the world the release before left (seedMembersBackWorld).
 const (
@@ -385,7 +411,7 @@ func TestTheFirstBootHoldsAMemberInAcceptingOnItsOpenChildAndStartsNoRoleOfIt(t 
 
 // `legion members-back` lists, before the upgrade, exactly the members that the first boot brings
 // back: it reads the store through the one reading that the conversion's step makes
-// (ListMembersBack, record.ReadMembersBack), on the schema of the release before, main at 4e851eb1,
+// (ListMembersBack, record.ReadMembersBack), on the schema of the release before, main,
 // and on that of legion-v22.16.2, which holds no issues.members_owed and whose root owing its
 // members is read by that column's migration's own mark. It gives the same answer once the store
 // has migrated to this release and before the boot, and a store whose conversion has run lists
@@ -399,8 +425,8 @@ func TestTheMembersBackListingIsTheMembersTheFirstBootBringsBack(t *testing.T) {
 		name, database string
 		withheld       []int
 	}{
-		{"main at 4e851eb1", "legion_members_back_listing", releaseBeforeMigrations},
-		{"legion-v22.16.2, with no members_owed", "legion_members_back_oldest", oldestReleaseMigrations},
+		{"main, the release before", "legion_members_back_listing", releaseBeforeMigrations},
+		{"legion-v22.16.2, with no members_owed", "legion_members_back_oldest", oldestReleaseMigrations(t)},
 	} {
 		t.Run(schema.name, func(t *testing.T) {
 			t.Parallel()
