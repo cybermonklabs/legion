@@ -18,7 +18,8 @@ import (
 // writes last, runs as soon as it returns. Run oldest first, legion's run came after the writes of
 // gh and git, and with programfile.Write's lock taken out the test met 13 refusals in one run of
 // its 450 and none in another. Once Install came to write jj after git, the first run, git's, no
-// longer followed its own write, and with the lock taken out the test met none in 450 again.
+// longer followed its own write: with the lock taken out, one run in ten met no refusal in 450,
+// and the other nine met 4 to 22.
 func TestTheScriptsInstallWritesRunWhileTheProcessForks(t *testing.T) {
 	legion, err := exec.LookPath("true")
 	if err != nil {
