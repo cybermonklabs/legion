@@ -46,8 +46,9 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
  *  sign-in revoke, and minting, changing or revoking a personal token. `p0` lets a credential make
  *  an issue's own priority 0 (`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`). A browser
  *  sign-in holds all three. A personal token holds `p0` only where its maker gave it, and may hold
- *  it alone: no mint gives `p0` by default. A credential holding `approve` holds `person` too, and
- *  no broker-issued token, shared token or service-account token holds `approve` or `p0`. */
+ *  it alone: no mint gives `p0` by default. A credential holding `approve` holds `person` too.
+ *  No broker-issued token, shared token or service-account token holds `p0`, and of the
+ *  broker-issued tokens only the approve-only token, which no machine holds, holds `approve`. */
 export const DISPATCH_SCOPES = ["person", "approve", "p0"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 

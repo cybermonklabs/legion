@@ -81,8 +81,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The caller's credential rides with the actor the create records, which carries none
-	// (model.Actor.Recorded), for the p0 check below.
+	// The caller's credential and the one project it names ride with the actor the create
+	// records, which carries neither (model.Actor.Recorded): the credential for the p0 check
+	// below, the project for the project checks.
 	caller, err := s.requestWriter(r, input.Actor)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
@@ -137,8 +138,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// that names none, which is answered as before. The dependency lock step, the parent's read
 	// and writeBlockedBy below read it again, because neither a blocked_by target's project nor
 	// the parent's is part of this address.
-	callerProject, scoped := s.callerProject(r)
-	if scoped && projectKeyPattern.MatchString(input.Project) {
+	callerProject := caller.callerProject
+	if callerProject != "" && projectKeyPattern.MatchString(input.Project) {
 		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, input.Project)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -155,7 +156,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// parent or a target that no issue holds, or of a private project that the credential does
 	// not name, gets here the 400 of a parent or a target that does not exist. The lock step and
 	// the reads under the locks ask again, the final check.
-	if scoped && (parentKey != "" || len(blockers) > 0) {
+	if callerProject != "" && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
