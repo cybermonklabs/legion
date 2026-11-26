@@ -915,7 +915,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
           key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
           lookup-only: true
 
@@ -931,7 +930,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
           key: ${{ steps.dispatch-previous.outputs.cache-primary-key }}
 
       # The pin, read out of dispatch-two-builds' env, where that job's resolve step also checks
@@ -951,7 +949,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
           key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
           lookup-only: true
 
@@ -967,7 +964,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
           key: ${{ steps.dispatch-first-rollout.outputs.cache-primary-key }}
 
   # The entries of the two Dispatch builds this repository keeps no more, deleted on main once
