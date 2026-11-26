@@ -572,6 +572,35 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {model.ScopePerson, model.ScopeApprove},
 }
 
+// approveScopeRoutes is every route an approve-only token may call, by "<method> <pattern>": the
+// token the secrets broker mints for a person's approve grant, binds to its own pod's key and spends
+// through its proxy, never released (model.Credential.ApproveOnly). It acts as its person with the
+// scopes person and approve (brokerApproveOnlyScopes), and every other row of the table, and GET
+// /ws/live beside it, answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
+// (refuseApproveOnlyToken), so a route added later stays closed to it until it is listed here.
+//
+// The list is the rows routeScopes gives approve, the routes that settle what a person settles,
+// less two: the mint and the change of a personal token, since a token they made or widened would
+// be an approve credential written to the box the session runs on, which is what the proxy exists
+// to keep off it. The revoke of a personal token stays. Beside them is the answer of an ask, which
+// checks approve in its handler for an approval request and refuses an approve-only token the
+// answer of every other ask, 403 APPROVE_ONLY_TOKEN, once the ask's kind is read
+// (ask_transitions.go). register refuses to mount a table whose list names a row it does not mount
+// (routesNotMounted).
+var approveScopeRoutes = []string{
+	"POST /api/v1/artifacts/{id}/reviews",
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
+	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
+	"POST /api/v1/credential-requests/{id}/approve",
+	"POST /api/v1/credential-requests/{id}/deny",
+	"POST /api/v1/credential-requests/machine-lookup",
+	"POST /api/v1/credential-grants/{id}/revoke",
+	"POST /api/v1/machine-logins/{id}/revoke",
+	"POST /api/v1/signins/{id}/revoke",
+	"DELETE /api/v1/me/agent-tokens/{id}",
+	"POST /api/v1/asks/{id}/answer",
+}
+
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
 // deployment leaves it out.
@@ -610,20 +639,24 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses, the OAuth scopes it stamps from routeScopes, and the read class it stamps from
-// readClasses. Register mounts the table and GET /api/v1 lists it, so the two can never disagree
-// about what the server serves. Every mutating row carries a Scope, and a GET row carries none
-// (project_scope.go); OAuthScopes is empty on every row any authenticated caller may reach; Read
-// is the GET row's entry of readClasses, and the zero entry, which classes nothing, on every other
-// row, so no row but a GET row is ever a read. Only the read-only gate reads Read
-// (refuseReadOnlyToken), never the route index or the OpenAPI document. The row's own five
-// columns are read through it by promotion. What the route takes and answers is routeShapes',
-// which only the OpenAPI emitter reads, so no row carries it.
+// writeClasses, the OAuth scopes it stamps from routeScopes, the read class it stamps from
+// readClasses, and whether an approve-only token may call it, which it stamps from
+// approveScopeRoutes. Register mounts the table and GET /api/v1 lists it, so the two can never
+// disagree about what the server serves. Every mutating row carries a Scope, and a GET row carries
+// none (project_scope.go); OAuthScopes is empty on every row any authenticated caller may reach;
+// Read is the GET row's entry of readClasses, and the zero entry, which classes nothing, on every
+// other row, so no row but a GET row is ever a read. Only the read-only gate reads Read
+// (refuseReadOnlyToken); ApproveOnly is true on the rows the approve list names and on no other,
+// and only the approve-only gate reads it (refuseApproveOnlyToken); neither reaches the route
+// index or the OpenAPI document. The row's own five columns are read through it by promotion.
+// What the route takes and answers is routeShapes', which only the OpenAPI emitter reads, so no
+// row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
 	OAuthScopes routeScopeSet
 	Read        readEntry
+	ApproveOnly bool
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -715,7 +748,7 @@ func (s *server) routes() []apiRoute {
 		{http.MethodGet, "/api/v1/projects/{key}/legion/daemon", authAny, "The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.getLegionSetting},
 		{http.MethodPut, "/api/v1/projects/{key}/legion/daemon", authAny, "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.putLegionSetting},
 		{http.MethodDelete, "/api/v1/projects/{key}/legion/daemon", authAny, "Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist.", s.deleteLegionSetting},
-		{http.MethodGet, "/api/v1/projects/{key}/legion/board", authAny, "The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.getLegionBoard},
+		{http.MethodGet, "/api/v1/projects/{key}/legion/board", authAny, "The Legion board of the project its path names, from what the sampler recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.getLegionBoard},
 		{http.MethodGet, "/api/v1/delivery/timeline", authAny, "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.", s.getDeliveryTimeline},
 		{http.MethodGet, "/api/v1/delivery/runs/{id}", authAny, "One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.", s.getDeliveryRun},
 		{http.MethodGet, "/api/v1/delivery/measures", authAny, "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.", s.getDeliveryMeasures},
@@ -932,7 +965,7 @@ func (s *server) routes() []apiRoute {
 		if row.Method == http.MethodGet {
 			read = readClasses[name]
 		}
-		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], read}
+		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], read, slices.Contains(approveScopeRoutes, name)}
 	}
 	return routes
 }

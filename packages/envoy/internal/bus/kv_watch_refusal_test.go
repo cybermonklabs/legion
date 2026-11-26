@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // watchRefusalBucket is the bucket the rows below watch.
@@ -105,31 +106,29 @@ func stopWatch(watcher jetstream.KeyWatcher) {
 	go DrainWatcher(watcher)
 }
 
-// watcherEnds reports whether watcher's updates close within bound, which they do only once its
-// subscription has ended: a watcher nobody stopped keeps them open for as long as its context lasts.
-func watcherEnds(watcher jetstream.KeyWatcher, bound time.Duration) bool {
-	timeout := time.After(bound)
+// watcherEnds reports whether watcher's updates close, which they do only once its subscription
+// has ended: a watcher nobody stopped keeps them open for as long as its context lasts. Its one
+// bound is the test binary's deadline less testwait's margin (testwait.Context), so a stopped
+// watcher that is slow to close on a loaded machine still ends, and one left running does not.
+func watcherEnds(t *testing.T, watcher jetstream.KeyWatcher) bool {
+	expired := testwait.Context(t).Done()
 	for {
 		select {
 		case _, open := <-watcher.Updates():
 			if !open {
 				return true
 			}
-		case <-timeout:
+		case <-expired:
 			return false
 		}
 	}
 }
 
-// watchAnswerSettle is how long a row gives a held watch to answer on a refusal recorded while it
-// is held, once the record shows the refusal: a watch the refusal answers takes it within
+// watchAnswerSettle is the window a row gives a held watch to answer on a refusal recorded while
+// it is held, once the record shows the refusal: a watch the refusal answers takes it within
 // microseconds of the record's signal, so a second tells that apart from a watch still waiting for
 // its own create on a loaded machine.
 const watchAnswerSettle = time.Second
-
-// watcherStopBound is how long a watcher the bus stopped may take to close its updates: the stop
-// is one unsubscribe, so five seconds tells a stopped watcher from one left running.
-const watcherStopBound = 5 * time.Second
 
 // A watch answers with the refusal of its own consumer create, or with its own watcher, and never
 // with the refusal of another consumer's create on the same bucket and connection. nats.go picks a
@@ -197,17 +196,19 @@ func TestAWatchIsAnsweredByItsOwnCreateAndNotByAnotherConsumersRefusal(t *testin
 					}
 					t.Fatalf("the watch answered %v before its own create was sent, on the refusal of another consumer's create", got.err)
 				}
-				deadline := time.After(refusalRecordWait)
+				deadline := testwait.Context(t).Done()
 				for !client.holdsRefusal(other, refusedAt) {
 					select {
 					case got := <-answered:
 						early(got)
 					case <-deadline:
 						close(held.release)
-						t.Fatalf("the server's refusal of %s was not recorded within %s", other, refusalRecordWait)
+						t.Fatalf("the server's refusal of %s was not recorded by the test's deadline", other)
 					case <-time.After(refusalRecordPoll):
 					}
 				}
+				// A window, not a wait: the watch must not answer on the other consumer's refusal,
+				// and watchAnswerSettle is how long the row watches for such an answer.
 				select {
 				case got := <-answered:
 					early(got)
@@ -249,6 +250,9 @@ func TestAWatchIsAnsweredByItsOwnCreateAndNotByAnotherConsumersRefusal(t *testin
 				refuse(t, client, watch.named)
 				var got watchBuilt
 				early := false
+				// A window, not a wait: either answer passes, and refusalRecordWait is how long the
+				// row gives the refusal to answer the held watch before it lets the watch's own
+				// create through.
 				select {
 				case got = <-answered:
 					early = true
@@ -269,9 +273,9 @@ func TestAWatchIsAnsweredByItsOwnCreateAndNotByAnotherConsumersRefusal(t *testin
 					stopWatch(got.watcher)
 					return
 				}
-				if !watcherEnds(built.watcher, watcherStopBound) {
+				if !watcherEnds(t, built.watcher) {
 					stopWatch(built.watcher)
-					t.Fatalf("the watch answered %v, and the watcher its own create then built was still running %s later, with nobody holding it", got.err, watcherStopBound)
+					t.Fatalf("the watch answered %v, and the watcher its own create then built was still running at the test's deadline, with nobody holding it", got.err)
 				}
 			})
 		})

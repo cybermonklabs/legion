@@ -211,7 +211,7 @@ a reader that trusts only a session the server saw proved reads that mark, and a
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, or the project scope `none` or a narrowed one in any shape but a read-only token's)
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, the project scope `none` or a narrowed one in any shape but a read-only token's, or the scope `approve` in any shape but an approve-only token's; `ciphertoken.ErrNotASession` holds the whole list)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
@@ -219,13 +219,14 @@ The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
-No broker-issued token holds the OAuth scope `approve` or `p0`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
+No broker-issued token a machine holds has the OAuth scope `approve` or `p0`, whatever its project scope: one acting for its person holds `person` alone, a Legion daemon's own token holds `legion-status` alone (below), and every other holds none (`brokerTokenActor`).
 Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
-So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses every broker-issued token at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
+So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses each of those tokens at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
 `403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
+The one broker-issued token that approves is an approve-only token (below), which no machine holds.
 The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
 a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
-The person makes those calls from their browser session, or with a personal token they gave `approve`.
+The person makes those calls from their browser session, with a personal token they gave `approve`, or from an agent session on a box where they signed in, through the secrets broker's proxy with an approve-only token (below), which no file on the box holds.
 A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
 
 The OAuth scope `p0` opens no route: it gates one value of one field.
@@ -289,6 +290,14 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries a read-only token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
+
+An approve-only token is the token the secrets broker mints for a person's approve grant: a session on a box where the person signed in trades that sign-in for the grant, holds only a placeholder, and sends each approval through the broker's proxy, which puts in the token, bound to the broker pod's own key, and never releases it.
+It holds the OAuth scope `approve` alone and the project scope `person`, and names a person and a session and no service and no project.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesApproveOnly` set, so Dispatch accepts such a token as its person with the scopes `person` and `approve`, never `p0`, and marks its credential approve-only (`model.Credential.ApproveOnly`).
+Dispatch serves it on the routes its approve list names (`approveScopeRoutes` in `internal/dispatch/api/routes_table.go`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
+Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseApproveOnlyToken`), before the route's scopes and everything else it does.
+The answer route serves every kind of ask, so `answerAsk` refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written: a question's answer, its free text among it, is no approval.
+A service whose verifier does not set the switch answers such a token `401`, and the NATS auth service refuses it as `not_a_session`.
 
 A job's token is the token the broker mints from a job entry: `BROKER_EXCHANGE_JOB_ACCOUNTS` for a pod, `BROKER_EXCHANGE_JOB_WORKFLOWS` for a GitHub Actions workflow, and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` for a machine.
 The entry names an identity, its projects and, where it fixes one, a session, and it names no person.
@@ -2781,6 +2790,39 @@ The rolling deploy keeps that correct — the release before this one serves eve
 — and the operator follow-up is that wait:
 a pod of this release takes the fill's time (about 35 s on production's shape) to become ready on the first boot after the deploy, and the boot logs each batch and the total.
 
+Migration `20261117100008_session_titles` creates `session_titles`, one row for each session that ever stamped a title: `session_id`, the primary key; `title`, the title its newest titled event stamped, which a check holds to a non-empty string; and `titled_at`, that event's `created_at`.
+`delivery.ResolveSessionTitles` reads it by primary key, one `session_id = any($1)` read of `session_titles_pkey` for a page's whole list, where it read `events` on every page read: the `distinct on` read before #3517 cost 42 to 133 ms of a Delivery answer over three projects and 812,386 events, and #3517's ordered read a session of `events_session_actor_created_at_idx` still read `events` each time.
+A session with no row is named by its id, as one with no titled event was.
+The table is new and declares no foreign key, so the migration locks only it and commits in milliseconds; the release before it neither reads nor writes it, and its census answers `0`.
+
+Migration `20261117100010_issues_unowned_p0` builds `issues_open_p0` on `issues (project_key) where priority = 0 and status <> 'done'`, the open P0 issues alone (161 rows in production on 2026-11-23, of 13,279 issues).
+`delivery.ListUnownedP0`, `delivery.CountUnownedP0` and `delivery.OpenP0Keys`, the live hub's set of open P0 keys, repeat the predicate, so the planner reads the index and no other row of `issues`: the whole index for every project's read, one range of `project_key` for one project's.
+No index of `issues` held `priority` before it, so the read of every project, `ListUnownedP0`'s and `OpenP0Keys`', scanned every issue of every project.
+A read of one project, which this change adds, would without it read every issue of that project, through `issues_project_key_number_key`, the unique key on `(project_key, number)`.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because every issue write, claim, route and status change writes `issues`:
+a concurrent build takes `SHARE UPDATE EXCLUSIVE`, which no read or write of an issue waits for.
+A failed build leaves an INVALID index of that name on `issues`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
+Its census answers `0`: an ordinary index refuses and rewrites no row.
+
+Migration `20261117100015_events_session_titles` creates `events_session_title`, the function and the constraint trigger `after insert on events`, `deferrable initially deferred`, that writes each titled event of a session actor into `20261117100008`'s table under `on conflict (session_id) do update … where excluded.titled_at > session_titles.titled_at`.
+So the newest titled event keeps the title, and an event that carries no title takes none away.
+Every event of one transaction has the transaction's start as its `created_at`, and of two titled events of one session in one transaction the one inserted first keeps the title, which is the order the read it replaces took.
+Two transactions of one session that start in the same microsecond also give their events one `created_at`: the one that commits first keeps the title, where the read it replaces could name the other, and a later titled event of the session replaces either.
+The row is written in the event's own transaction, at its commit: a reader sees the new title exactly when it sees the event, and the title row is locked after every lock the transaction's statements took.
+It is a trigger rather than a write in `events.Broker.Append` because a process of an earlier release over this schema, and every test that seeds events with a bare insert, write events without that code.
+A function and a trigger are the migration's only two statements, which exempts it from the census's table-size limit (`internal/pgmigrate/exempt.go`): neither reads a row of `events`.
+`create trigger` takes `SHARE ROW EXCLUSIVE` on `events`, which waits for every transaction that has inserted an event and holds new inserts back while it waits, under `pgmigrate.LockTimeout`'s five seconds a try.
+Its census answers `0`: a trigger runs only on later inserts and rewrites no row already stored.
+
+Migration `20261117100016_session_titles_backfill` creates `session_titles_backfill`, the one row that stands for the fill of `20261117100008`'s table for the events stored before `20261117100015`'s trigger: `session_id`, the keyset cursor, `''` before the first batch.
+It writes no `session_titles` row and reads no other table, so it locks only the table it creates; its census answers `0`.
+The fill is `store.FillSessionTitles`, which the boot runs after `store.FillDocumentSearch` and before the server listens (`cmd/dispatch/main.go`), not a migration, for `20261101182501`'s reason: one statement would read every session's events in one transaction while the trigger is live, and a write of a session the statement had already written would wait for the whole statement at its commit.
+Each batch is instead one short transaction that takes the next `store.SessionTitlesFillBatch` (1,000) sessions above the cursor, writes each one's newest title under the trigger's own guard, so a row the trigger wrote meanwhile is never replaced by an older one, moves the cursor and commits.
+The batch that takes no further session deletes the row, so a boot after the pass has finished reads one empty table and stops, and a database emptied of its rows owes no fill.
+A failure stops the boot (`slog.Error`, then exit 1): this release reads titles from `session_titles` alone, so a process serving with the table unfilled would name every earlier session by its id.
+Production runs one replica under `strategy: Recreate`, so no process serves while the migrations and the fill run, and the operator follow-up is that wait on the first boot of this release:
+`packages/envoy/scripts/session-titles-scale.sh` times the four migrations and the fill together on 1.5 million titled session events, more than 1.25 times production's newest event id on 2026-11-24, and they end inside the 60 s that leaves the compose deployer's 90 s room for the rest of the boot.
+
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
 with this table it applies what changed and counts a project again only where no pass of this build has counted it.
@@ -5012,7 +5054,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
   The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
-  Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  Twelve columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_children`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in `awaiting_children`, the open children the daemon lists it as blocked on, not blocker links), what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/issues/{key}/legion` (GET; cookie, trusted header, or bearer)
@@ -5026,7 +5068,7 @@ Each item below names a path with its method and identity, then its purpose.
   `roles` is `[{role, state}]`, one entry for each role with a claim, and `[]` when no role has one.
   `slot` is the index of the slot that the issue holds, or `null`.
   `waiting_line` is `{place, length}`, where `place` counts from 1 in the daemon's waiting line, or `null` when that line does not name the issue.
-  `blocked_by` lists the issues that block the issue, in the order the daemon stored them, and is `[]` when no issue blocks it.
+  `blocked_by` lists the issues that block the issue, in the order the daemon stored them, and is `[]` when no issue blocks it; for a parent in `awaiting_children` it names the open children that the daemon lists it as blocked on, not blocker links.
   `waiting_on` is the daemon's object exactly as stored, or `null`.
   `read` is the newest read of the daemon, `{at, ok, error}`, or `null` when no read was recorded.
   `runs_revision` counts the tuples of the issue's runs: it is `0` for an issue with no run.

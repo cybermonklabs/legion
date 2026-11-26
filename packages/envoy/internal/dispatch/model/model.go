@@ -39,7 +39,8 @@ const (
 // It is not in Scopes, and it must stay out. The browser's credential and the words a personal
 // token's scopes may hold both read Scopes, and neither may hold this scope: it is the daemon's
 // broker token's alone. A person-scoped broker token holds ScopePerson alone
-// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// (brokerPersonScopes), and the approve-only token ScopePerson and ScopeApprove
+// (brokerApproveOnlyScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
@@ -122,6 +123,15 @@ type Credential struct {
 	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
 	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
+	// ApproveOnly is a broker-issued token that holds only the scope approve
+	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
+	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
+	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
+	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes its approve list names
+	// (approveScopeRoutes) alone, answering it 403 APPROVE_ONLY_TOKEN on every other
+	// (refuseApproveOnlyToken), before anything else the route does. False for every other
+	// credential.
+	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time
