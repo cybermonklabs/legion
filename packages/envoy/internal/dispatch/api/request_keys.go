@@ -1275,20 +1275,24 @@ func (s *server) answerDrainedRepeat(
 // The stored row is placed as its first request was placed:
 //
 //   - by the object the route's address names (projectResolverFor), read as the server sees it and
-//     as the caller does: hidden when the server finds it and the caller does not, missing when
-//     the server does not find it. Both reads run whatever the first finds, so a hidden object and
-//     a missing one cost the same statements, as a read's cost never tells what a caller does not
-//     see (references_seen.go);
+//     as the caller does: hidden when the server finds it in a project and the caller does not find
+//     it, missing when the server finds no row at all. An object of no project - a session's file,
+//     a direct message, and what hangs on them - is a row the server finds, which no project's list
+//     keeps from any caller: neither hidden nor missing, it is answered from the key. Both reads run
+//     whatever the first finds, so a hidden object and a missing one cost the same statements, as a
+//     read's cost never tells what a caller does not see (references_seen.go);
 //   - by the project its body names, for a write whose address names none (keyedBodyProjects): the
 //     project the write's own handler reads from that body (bodyProject), the one its write check
 //     reads (refuseOutsideCallerProjects) or the key of the project a create makes. The body is
 //     the first request's, since the digest matched: hidden when that project exists and the
 //     caller does not see it. A repeat whose body was not kept (answerDrainedRepeat, body nil) is
 //     told to ask again, and the retry, which carries its body, is placed by it;
-//   - by its class otherwise: a session's row was held to that session before this layer
+//   - by its class otherwise, for a write whose address names no object the resolver knows and
+//     whose body names no project: a session's row was held to that session before this layer
 //     (withinSessionScope) or is the caller's own, a deployment's row was held to an open viewer
 //     (withinProjectScope) and belongs to no project, and a row that writes nothing answers from
-//     its own body. None is hidden.
+//     its own body. None is hidden. A session's write whose address names an object - a direct
+//     message's accept or reply - is placed by that object, as above.
 //
 // Where the route's recovery point names issues beside its addressed object (keyedRoute.
 // pointIssues: a status change's other steps), the stored row is hidden too while the caller does
@@ -1299,13 +1303,14 @@ func (s *server) answerDrainedRepeat(
 // KEY_COMMITTED (keyCommittedRefusal), in the words a write that landed and lost its answer gets. One
 // that was refused wrote nothing, and is answered that refusal's status and code again, marked
 // replayed, with a message that names nothing of its object (keyedRefusalReplayed). A repeat
-// whose object is missing - deleted since, or never held - is answered as a hidden one is, by the
-// same rule: a caller that does not see every object cannot be told which objects it saw, so a
-// replay of a deleted object's first answer would tell it "deleted" where a hidden one tells it
-// nothing. Never running a hidden repeat again is this slice's rule: the issue's loaders bind no
-// reader yet (loadIssue, loadIssueWithProgress), so a request run again for a caller that does not
-// see its issue would find it and write it a second time, and no create holds its caller to the
-// project its body names. Slice S3c-issues, whose loaders bind the reader, runs a hidden repeat
+// whose object is missing - its row deleted since, or never held - is answered as a hidden one is,
+// by the same rule: a caller that does not see every object cannot be told which objects it saw,
+// so a replay of a deleted object's first answer would tell it "deleted" where a hidden one tells
+// it nothing. An object that is there, of a project or of none, is not missing. Never running a
+// hidden repeat again is this slice's rule: the issue's loaders bind no reader yet (loadIssue,
+// loadIssueWithProgress), so a request run again for a caller that does not see its issue would
+// find it and write it a second time, and no create holds its caller to the project its body
+// names. Slice S3c-issues, whose loaders bind the reader, runs a hidden repeat
 // again under no key, which answers its object as missing and writes nothing.
 //
 // A repeat answered from the key gets the first answer whole, judged by the object its address or
@@ -1326,18 +1331,19 @@ func (s *server) heldAnswerRefusal(r *http.Request, pattern string, held heldReq
 	}
 	ctx, pool := r.Context(), s.deps.Store.Pool
 	name := r.Method + " " + pattern
-	// hidden is an object the server finds and the caller does not; missing is one nobody holds.
+	// hidden is an object the server finds in a project and the caller does not find; missing is a
+	// row the server does not find. A row of no project is neither.
 	hidden, missing := false, false
 	if resolve, addressed := s.projectResolverFor(pattern); addressed {
-		found, err := resolve(ctx, pool, r, refs.VisibilityArg(model.ServerReader))
+		project, found, err := resolve(ctx, pool, r, refs.VisibilityArg(model.ServerReader))
 		if err != nil {
 			return err
 		}
-		seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
+		_, seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
 		if err != nil {
 			return err
 		}
-		hidden, missing = found != "" && seen == "", found == ""
+		hidden, missing = project != "" && !seen, !found
 	} else if read, named := keyedBodyProjects[name]; named {
 		if body == nil {
 			key, _, _ := requestKeyHeader(r)
@@ -1501,8 +1507,8 @@ func (s *server) heldRequestNamed(r *http.Request, held heldRequestKey) (bool, e
 	for name, value := range values {
 		first.SetPathValue(name, value)
 	}
-	project, err := resolve(r.Context(), s.deps.Store.Pool, first, refs.VisibilityArg(reader))
-	return project != "", err
+	_, seen, err := resolve(r.Context(), s.deps.Store.Pool, first, refs.VisibilityArg(reader))
+	return seen, err
 }
 
 // heldRoute is the pattern of the mutating route (writeClasses) a held request's method and path
