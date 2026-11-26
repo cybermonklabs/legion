@@ -288,16 +288,29 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   /** What `f` steps through on the focused row: first the chips - the edges the row names, each
    *  a target of its own - then the links its words hold, which the row draws above its chips
    *  (`NodeRow.tsx`), then each other control of the row that no key here presses
-   *  (`pressedByAKey`). None of them is in the tab order, the tree being one tab stop, so this
-   *  key is how a reader reaches one; Enter on a link the key left the focus on follows it, and
-   *  Enter or Space on a button presses it. */
+   *  (`pressedByAKey`). Each kind is taken in the order the row reads in: its words and what it
+   *  draws under them, then its margin - the kind's tag, a child's key - which the row holds
+   *  first in the DOM so that on a phone it floats beside the words' first line. None of them is
+   *  in the tab order, the tree being one tab stop, so this key is how a reader reaches one;
+   *  Enter on a link the key left the focus on follows it, and Enter or Space on a button
+   *  presses it. */
   const rowStops = (): HTMLElement[] => {
     const row = rowElement();
     if (row === null) return [];
-    const chips = [...row.querySelectorAll<HTMLElement>("[data-node-chip] a[href]")];
-    const rest = [...row.querySelectorAll<HTMLElement>("a[href]")];
-    const controls = [...row.querySelectorAll<HTMLButtonElement>("button")].filter(
-      (control) => control.tabIndex < 0 && !control.disabled && !pressedByAKey(control)
+    const margin = row.querySelector("[data-node-margin]");
+    const inReadingOrder = <T extends HTMLElement>(found: Iterable<T>): T[] => {
+      const read: T[] = [];
+      const last: T[] = [];
+      for (const stop of found) (margin?.contains(stop) === true ? last : read).push(stop);
+      read.push(...last);
+      return read;
+    };
+    const chips = inReadingOrder(row.querySelectorAll<HTMLElement>("[data-node-chip] a[href]"));
+    const rest = inReadingOrder(row.querySelectorAll<HTMLElement>("a[href]"));
+    const controls = inReadingOrder(
+      [...row.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (control) => control.tabIndex < 0 && !control.disabled && !pressedByAKey(control)
+      )
     );
     return [...chips, ...rest.filter((link) => !chips.includes(link)), ...controls];
   };

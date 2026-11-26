@@ -1237,6 +1237,66 @@ test("f steps through a row's chips, links and then the controls no key presses"
   }
 });
 
+// A row holds its margin - the kind's tag, the author, the time - ahead of its words in the DOM,
+// so that on a phone the margin floats beside the words' first line (`NodeRow.tsx`). `f` still
+// steps through the row in the order it reads: the links its words hold, then the kind's link,
+// then the controls no key presses. Taken in the DOM's order, the kind's link came first.
+test("f steps through a row's controls in its reading order: the words' links before the kind's link", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const summary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-7",
+    project: "CORE",
+    status: "in_progress",
+    title: "Ship the flag",
+  });
+  const root = node({
+    children: [
+      // A statement of the spec, whose reference names its block, so its kind's tag is a link
+      // to it in Spec (`presetNodePath`).
+      node({
+        id: "spec#b-r1",
+        reference: `dispatch://${KEY}/spec#b-r1`,
+        statement: true,
+        text: "Ship it as dispatch://CORE-7 says.",
+        type: "requirement",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  /** Presses `f` and says what it left the focus on: a link of the words by its words, the kind's
+   *  link as "the kind", and any other control by its words. */
+  const stop = async (): Promise<string | null | undefined> => {
+    await user.keyboard("f");
+    const on = document.activeElement;
+    if (on?.matches("[data-node-tag-link]") === true) return "the kind";
+    return on?.closest("[data-node-words]") === null
+      ? on?.textContent
+      : `words: ${on?.textContent}`;
+  };
+  try {
+    const { container } = renderPageTree(root, "alice").view;
+    await waitFor(() => expect(focusedRow(container)).toBe("spec#b-r1"));
+    await waitFor(() => expect(container.textContent).toContain("CORE-7 Ship the flag"));
+    const tag = container.querySelector("[data-node-margin] a[data-node-tag-link]");
+    const words = container.querySelector("[data-node-words]");
+    expect(
+      tag !== null &&
+        words !== null &&
+        (tag.compareDocumentPosition(words) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      "the row does not hold its kind's link ahead of its words in the DOM"
+    ).toBe(true);
+    expect(await stop()).toBe("words: CORE-7 Ship the flag");
+    expect(await stop()).toBe("the kind");
+    expect(await stop()).toBe(CONTROL_LABELS.copy_reference);
+    expect(await stop()).toBe("words: CORE-7 Ship the flag");
+  } finally {
+    summary.mockRestore();
+  }
+});
+
 // Home on the first row moves the focus to no other row, and from a chip `f` stopped on, the row
 // already holds the focus through the chip: the row's own placing, which runs as a row takes the
 // focus, does not run. A reader who scrolled the row off the screen from there is brought back

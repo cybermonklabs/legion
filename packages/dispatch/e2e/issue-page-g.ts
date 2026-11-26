@@ -718,8 +718,10 @@ const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
  * naming it - a child issue's is its key - with its author and its time after it, in grey, and a
  * turn draws none. A requirement is a statement in the spec alone, with the statement's colour,
  * word and shape; one of any other document is a block, in a block's colour, whose tag says
- * "requirement" and draws no shape (decision 246). At 761 px and above the tag stands at the
- * right end of the words' first line.
+ * "requirement" and draws no shape (decision 246). At every width the tag stands at the right end
+ * of the words' first line and inside the screen, its left edge right of that line's last word,
+ * and the author and the time stand after it on that same line; a turn's author and time stand
+ * there too.
  */
 export function expectRowLayouts(
   layouts: readonly RowLayout[],
@@ -781,24 +783,30 @@ export function expectRowLayouts(
             : `${at} draws a statement's shape on its tag, and it is no statement`
         ).toBe(row.statement ? GLYPH_TOKENS.types.requirement : null);
       }
-      if (row.line.right > 0 && width > 760) {
+      if (row.line.right > 0) {
         expect(
           row.tag?.left ?? -1,
           `${at} draws its tag before the end of its words' first line`
         ).toBeGreaterThanOrEqual(row.line.right - 1);
+        expectOnFirstLine(row.tag?.top, row, `${at} draws its tag`);
         expect(
-          row.tag?.top ?? -1,
-          `${at} draws its tag above its first line`
-        ).toBeGreaterThanOrEqual(row.line.top - 8);
-        expect(row.tag?.top ?? 1e6, `${at} draws its tag under its first line`).toBeLessThan(
-          row.line.bottom
-        );
+          row.tag?.right ?? 1e6,
+          `${at} draws its tag past the right edge of the ${width} px screen`
+        ).toBeLessThanOrEqual(width);
       }
       if (row.byline !== null) {
-        const after =
-          row.byline.left >= (row.tag?.right ?? 0) - 1 || row.byline.top > (row.tag?.top ?? 0) + 1;
-        expect(after, `${at} draws its author and its time before its tag`).toBe(true);
+        expect(
+          row.byline.left,
+          `${at} draws its author and its time before its tag`
+        ).toBeGreaterThanOrEqual((row.tag?.right ?? 0) - 1);
       }
+    }
+    if (row.byline !== null && row.line.right > 0) {
+      expect(
+        row.byline.left,
+        `${at} draws its author and its time before the end of its words' first line`
+      ).toBeGreaterThanOrEqual(row.line.right - 1);
+      expectOnFirstLine(row.byline.top, row, `${at} draws its author and its time`);
     }
     if (row.author !== null && row.author.name !== READER) {
       expect(row.author.color, `${at} draws its author other than in grey`).toBe(row.quiet);
@@ -807,6 +815,13 @@ export function expectRowLayouts(
       expect(row.bylineColor, `${at} draws its time other than in grey`).toBe(row.quiet);
     }
   }
+}
+
+/** Holds that `top`, the top of a part of `row`'s margin, stands on the line of the words' first
+ *  line: no more than 8 px above that line's top, and above its bottom. */
+function expectOnFirstLine(top: number | undefined, row: RowLayout, what: string): void {
+  expect(top ?? -1, `${what} above its first line`).toBeGreaterThanOrEqual(row.line.top - 8);
+  expect(top ?? 1e6, `${what} under its first line`).toBeLessThan(row.line.bottom);
 }
 
 /** What rulings 4 and 5 read of one row (R1, R4, R5): the line of the kind's tag, the author and
@@ -913,13 +928,13 @@ export function rowGroups(page: Page): Promise<RowGroup[]> {
 }
 
 /**
- * Rulings 4 and 5 on every row one view draws. At 761 px and above a row that is not open draws
- * its kind, its author and its time on one line, and its state on a second line under it; at
- * 760 px and below that line stands under the row's words. No row draws the page's words for an
- * author nobody recorded. Each tie is a chip inside the box of the node's words, named by at most
- * 32 characters and by no address, slug or short form of one (`addresses`). A link in a node's
- * words is the words' own colour, a child's blocker the ink, each underlined in the bullets'
- * grey. On a phone a fold control is 24 px square at least (WCAG 2.5.8).
+ * The group of every row one view draws. At every width a row that is not open draws its kind,
+ * its author and its time on one line, and its state on a second line under it. No row draws the
+ * page's words for an author nobody recorded. Each tie is a chip inside the box of the node's
+ * words, named by at most 32 characters and by no address, slug or short form of one
+ * (`addresses`). A link in a node's words is the words' own colour, a child's blocker the ink,
+ * each underlined in the bullets' grey. On a phone a fold control is 24 px square at least (WCAG
+ * 2.5.8).
  */
 export function expectRowGroups(
   groups: readonly RowGroup[],
@@ -933,7 +948,7 @@ export function expectRowGroups(
       row.author,
       `${at} draws the page's words for an author nobody recorded on its row`
     ).not.toBe(CONTROL_LABELS.unknown_author);
-    if (row.group !== null && width > 760) {
+    if (row.group !== null) {
       if (!row.open) {
         expect(
           row.group.lines,
@@ -946,16 +961,6 @@ export function expectRowGroups(
           `${at} draws its state on the line of its kind, its author and its time`
         ).toBeGreaterThan(row.group.top + 8);
       }
-    }
-    if (row.group !== null && width <= 760) {
-      expect(
-        row.group.lines,
-        `${at} draws its kind, its author and its time on more than one line`
-      ).toBe(1);
-      expect(
-        row.group.top,
-        `${at} draws its kind, its author and its time beside its words and not under them`
-      ).toBeGreaterThanOrEqual(row.contentBottom - 1);
     }
     for (const chip of row.chips) {
       expect(

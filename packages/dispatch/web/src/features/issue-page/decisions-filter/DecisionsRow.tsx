@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -27,6 +27,7 @@ import {
   NodeOptions,
   RowActs,
   RowMargin,
+  rowNameIds,
   type Tone,
   useClamp,
   useRowOnScreen,
@@ -64,8 +65,8 @@ interface RowPerson {
  * It is a row of the outline, laid out by the outline's own classes (`NODE_ROW_LAYOUT`) and
  * read by the same marks (`[data-node-row]`, `[data-node-content]`, `[data-node-margin]`): its
  * bullet in its kind's colour, its words first, and its kind as one tag, who made it and when
- * on one line, at the right end of the first line from 761 px up and under the words on a
- * phone, with how it stands under them.
+ * on one line, at the right end of the first line at every width, with how it stands under
+ * them.
  *
  * An ask draws what its row in the conversation draws, by the same parts: its question, cut at
  * six lines once it is answered, its options, which are the choices of its answer while it is
@@ -177,6 +178,7 @@ export function DecisionsRow({
   // Where the reader writes: an open question's options and Answer set it (R16).
   const writer = useOutlineWriter();
   const press = useRowOnScreen(row, focused);
+  const ids = rowNameIds(useId());
   // An answered question and an agent's decision are cut at six lines, as an agent's words are
   // on every row; a question that waits on the reader and a decision that waits for their
   // review are drawn whole, since they are what the reader is asked to read (rulings 1 and 6).
@@ -200,6 +202,7 @@ export function DecisionsRow({
   });
   return (
     <div
+      aria-labelledby={ids.labelledBy}
       aria-level={level}
       className="relative my-0.5 min-w-0 outline-none"
       data-node-context={entry.kind === "named" ? "" : undefined}
@@ -220,7 +223,30 @@ export function DecisionsRow({
             className={`block size-[7px] rounded-full ${pageKindBullet[tone]}`}
           />
         </span>
-        <div className={NODE_ROW_LAYOUT.content} data-node-content="">
+        {/* The outline's own margin (`NodeRow.tsx`), given how the entry stands as its node's
+            state: the token of the one reading `entryStanding` gives the row and the panel alike.
+            So a decision shows its standing with the reader, not the tree's state, and "Kept
+            by" with the keeper this list holds. A decision waits on the reader where it is an
+            entry of the review list, which draws its state in the decisions' violet: one rule
+            decides the list, and a second decides the mark on a row. An ask waits as the
+            conversation says. The node an address names stands in no state here and is drawn
+            for its context: in its grey, with no reader's ink on its author, and a child issue
+            by its key, as the outline's row draws one. It stands before the words, as the
+            outline's does, and the row's name reads it after them (`rowNameIds`). */}
+        <RowMargin
+          author={author}
+          context={tone === "context"}
+          id={ids.margin}
+          node={{
+            ...node,
+            keptBy: entry.kind === "decision" ? entry.keptBy : undefined,
+            state: standing?.token,
+            waiting: entry.kind === "decision" ? review : node.waiting,
+          }}
+          tabStops={false}
+          tone={tone}
+        />
+        <div className={NODE_ROW_LAYOUT.content} data-node-content="" id={ids.content}>
           {/* A replaced decision's words are struck through and grey, beside the word that
               says so (the prototype's `.replaced`). */}
           <div
@@ -378,27 +404,6 @@ export function DecisionsRow({
             </p>
           )}
         </div>
-        {/* The outline's own margin (`NodeRow.tsx`), given how the entry stands as its node's
-            state: the token of the one reading `entryStanding` gives the row and the panel alike.
-            So a decision shows its standing with the reader, not the tree's state, and "Kept
-            by" with the keeper this list holds. A decision waits on the reader where it is an
-            entry of the review list, which draws its state in the decisions' violet: one rule
-            decides the list, and a second decides the mark on a row. An ask waits as the
-            conversation says. The node an address names stands in no state here and is drawn
-            for its context: in its grey, with no reader's ink on its author, and a child issue
-            by its key, as the outline's row draws one. */}
-        <RowMargin
-          author={author}
-          context={tone === "context"}
-          node={{
-            ...node,
-            keptBy: entry.kind === "decision" ? entry.keptBy : undefined,
-            state: standing?.token,
-            waiting: entry.kind === "decision" ? review : node.waiting,
-          }}
-          tabStops={false}
-          tone={tone}
-        />
         {threadRead === undefined ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>

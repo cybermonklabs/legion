@@ -48,6 +48,7 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
+import { accessibleNameOf, asBeforeTheMove, rowControls, tabStopsOf } from "../row-name-fixtures";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
@@ -2687,4 +2688,33 @@ test("nothing the body draws is hidden at a width", async () => {
       .map((element) => element.getAttribute("class"))
   ).toEqual([]);
   expect(view.container.querySelectorAll("[data-decisions-body] [hidden]").length).toBe(0);
+});
+
+// The Decisions row holds the outline's margin - the kind's tag, who decided and when, how it
+// stands - ahead of its words in the DOM, as the outline's row does, so that on a phone it floats
+// beside the words' first line (`NodeRow.tsx`). Its name still reads its words first, word for
+// word the name its text gave it before the margin stood first; named by its text in the DOM's
+// order, it would read the kind first. Its controls are the ones it had, in the order it reads
+// in - the link to the statement it informs, Keep, Change and the link to the entry in the
+// conversation, all under its words - and it takes no tab stop of its own.
+test("a Decisions row's name reads its words before its kind, and its controls are the ones it had", () => {
+  const view = renderBody(wholeIssue());
+  const row = rowOf(view, D("first"));
+  const before = asBeforeTheMove(row);
+  try {
+    const name = accessibleNameOf(row);
+    expect(name.startsWith("The decision first."), name).toBe(true);
+    expect(name.indexOf(NODE_TYPE_NAMES.decision, 1), name).toBeGreaterThan(0);
+    expect(name).toBe(accessibleNameOf(before));
+    expect(rowControls(row)).toEqual([
+      "The page draws s1.",
+      CONTROL_LABELS.keep_decision,
+      CONTROL_LABELS.change_decision,
+      `${DECISIONS_WORDS.in_conversation} ›`,
+    ]);
+    expect(tabStopsOf(row)).toEqual([]);
+  } finally {
+    before.remove();
+    view.unmount();
+  }
 });
