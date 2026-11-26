@@ -102,22 +102,27 @@ merge_of() {
   git_fixture -C "$fixture" rev-parse HEAD
 }
 
-for prefix in s t o q; do
+for prefix in s t o q w; do
   body "$prefix" > "$fixture/$prefix.txt"
 done
 git_fixture -C "$fixture" add -A
 git_fixture -C "$fixture" commit -q -m "the first commit"
 root=$(git_fixture -C "$fixture" rev-parse HEAD)
-# main's tip: a later commit of main that edits t2, which a stale priority pull request edits too.
+# main's tip: two later commits of main, one that edits t2, which two stale priority pull requests
+# edit too, and one that sets w5 as one of them, #16, also does.
 main=$(commit_on "$root" "main edits t2" t.txt "$(body t 2 't2 main')")
+main=$(commit_on "$main" "main sets w5 as #16 does" w.txt "$(body w 5 'w5 shared')")
 
 # The priority pull requests' heads. #12 forked before main's t2 and edits t2 and t5, so it
-# conflicts with main at t2 and lands t5 cleanly.
+# conflicts with main at t2 and lands t5 cleanly. #16 forked there too, edits t2, and sets w5 as
+# main does, which merges cleanly with main.
 p11=$(commit_on "$main" "priority edits s5" s.txt "$(body s 5 's5 priority')")
 p12=$(commit_on "$root" "stale priority edits t2 and t5" t.txt "$(body t 2 't2 stale' 5 't5 stale')")
 p13=$(commit_on "$main" "unapproved priority edits o5" o.txt "$(body o 5 'o5 unapproved')")
 p14=$(commit_on "$main" "queued priority edits q5" q.txt "$(body q 5 'q5 queued')")
 p15=$(commit_on "$main" "priority adds a directory d" d/inner.txt "inner")
+p16=$(commit_on "$root" "stale priority edits t2" t.txt "$(body t 2 't2 sixteen')")
+p16=$(commit_on "$p16" "stale priority sets w5" w.txt "$(body w 5 'w5 shared')")
 
 # Pull request #20's heads, one per case, and the run commit of each: its merge into main.
 m_conflict=$(merge_of "$main" "$(commit_on "$main" "edit s5" s.txt "$(body s 5 's5 mine')")")
@@ -126,13 +131,15 @@ m_new=$(merge_of "$main" "$(commit_on "$main" "add a file" new.txt "new")")
 m_far=$(merge_of "$main" "$(commit_on "$main" "edit s1" s.txt "$(body s 1 's1 mine')")")
 m_apart=$(merge_of "$main" "$(commit_on "$main" "edit t8" t.txt "$(body t 2 't2 main' 8 't8 mine')")")
 m_inside=$(merge_of "$main" "$(commit_on "$main" "edit t5" t.txt "$(body t 2 't2 main' 5 't5 mine')")")
+m_moved=$(merge_of "$main" "$(commit_on "$main" "take #12's t2, edit t5" t.txt "$(body t 2 't2 stale' 5 't5 mine')")")
+m_shared=$(merge_of "$main" "$(commit_on "$main" "edit w5" w.txt "$(body w 5 'w5 mine')")")
 m_rename=$(merge_of "$main" "$(rename_on "$main" "rename t to u" t.txt u.txt)")
 m_file=$(merge_of "$main" "$(commit_on "$main" "add a file d" d "a file")")
 m_unapproved=$(merge_of "$main" "$(commit_on "$main" "edit o5" o.txt "$(body o 5 'o5 mine')")")
 m_queue=$(merge_of "$main" "$(commit_on "$main" "edit q5" q.txt "$(body q 5 'q5 mine')")")
 
-# Merge groups: squash commits on the group's base. q11 is #11's squash in a group in front, and
-# g30 and g31 are one group of two pull requests.
+# Merge groups: squash commits on the group's base. q11 is #11's squash in a group in front, whose
+# queue branch the origin holds, and g30 and g31 are one group of two pull requests.
 g20=$(commit_on "$main" "edit s5 (#20)" s.txt "$(body s 5 's5 mine')")
 q11=$(commit_on "$main" "priority edits s5 (#11)" s.txt "$(body s 5 's5 priority')")
 g21=$(commit_on "$q11" "edit s5 after the priority (#21)" s.txt "$(body s 5 's5 mine after')")
@@ -140,10 +147,12 @@ g22=$(commit_on "$main" "a commit that names no pull request" new.txt "new")
 g30=$(commit_on "$main" "add a file (#30)" thirty.txt "thirty")
 g31=$(commit_on "$g30" "edit s5 (#31)" s.txt "$(body s 5 's5 mine')")
 
-for sha in "$p11" "$p12" "$p13" "$p14" "$p15" "$m_conflict" "$m_new" "$m_far" "$m_apart" "$m_inside" \
-  "$m_rename" "$m_file" "$m_unapproved" "$m_queue" "$g20" "$g21" "$g22" "$g31"; do
+for sha in "$p11" "$p12" "$p13" "$p14" "$p15" "$p16" "$m_conflict" "$m_new" "$m_far" "$m_apart" \
+  "$m_inside" "$m_moved" "$m_shared" "$m_rename" "$m_file" "$m_unapproved" "$m_queue" "$g20" \
+  "$g21" "$g22" "$g31"; do
   git_fixture -C "$fixture" push -q "$origin" "$sha:refs/fixture/$sha"
 done
+git_fixture -C "$fixture" push -q "$origin" "$q11:refs/heads/gh-readonly-queue/main/pr-11-$main"
 
 # The stand-in gh: the page its `after` cursor asks for, answer-first.json for the first.
 cat > "$work/bin/gh" <<GH
@@ -178,10 +187,10 @@ page() {
 # answer <node>...: the label read's answer, one page of those nodes.
 answer() { page answer-first.json false null "$@"; }
 
-# The priority pull requests: #11, #12 and #15 approved, #13 waiting for review, #14 queued.
+# The priority pull requests: #11, #12, #15 and #16 approved, #13 waiting for review, #14 queued.
 standard=("$(pull 11 "$p11" '"APPROVED"' false)" "$(pull 12 "$p12" '"APPROVED"' false)"
   "$(pull 13 "$p13" '"REVIEW_REQUIRED"' false)" "$(pull 14 "$p14" null true)"
-  "$(pull 15 "$p15" '"APPROVED"' false)")
+  "$(pull 15 "$p15" '"APPROVED"' false)" "$(pull 16 "$p16" '"APPROVED"' false)")
 
 pr_event() {
   jq -n --argjson number "$1" '{pull_request: {number: $number, base: {ref: "main"}}}' > "$work/event.json"
@@ -241,7 +250,7 @@ check "it names the priority pull request, its title escaped, the file and the r
 check "it names no other" "$(is "$(grep -c '^::error::' <<<"$err")" 1)"
 check "it reads the priority pull requests once" "$(is "$(gh_calls)" "$read_once")"
 check "it says the stale one already conflicts with the base" \
-  "$(has_line "$out" "#12 (priority work 12 at 100%) already conflicts with the base of pull request #20 in 1 file(s): those are its own to resolve, and count against pull request #20 only where pull request #20 edits them too.")"
+  "$(has_line "$out" "#12 (priority work 12 at 100%) already conflicts with the base of pull request #20 in 1 file(s): those are its own to resolve, and count against pull request #20 only where pull request #20 adds a conflict.")"
 check "and that it is no conflict of the pull request's" "$(contains "$out" "$(clean_line 12 "pull request #20")")"
 check "it does not check the one that is neither approved nor queued" "$(is "$(contains "$out$err" "#13")" false)"
 
@@ -249,8 +258,8 @@ echo "case: a pull request that edits no file a priority pull request edits pass
 run_check pull_request "$m_new"
 check "it passes" "$(is "$status" 0)"
 check "it merged each" "$(contains "$out" "$(clean_line 11 "pull request #20")")"
-check "it counts the four it checked" \
-  "$(has_line "$out" "pull request #20 lands no conflict on an approved or queued priority pull request: 4 checked.")"
+check "it counts the five it checked" \
+  "$(has_line "$out" "pull request #20 lands no conflict on an approved or queued priority pull request: 5 checked.")"
 check "it writes no error" "$(is "$err" "")"
 
 echo "case: a pull request that edits a priority pull request's file away from its lines passes"
@@ -271,6 +280,21 @@ echo "case: a new conflict in a file a stale priority pull request already confl
 run_check pull_request "$m_inside"
 check "it fails" "$(is "$status" 1)"
 check "it names #12 and the file" "$(has_line "$err" "$(conflict_line 12 t.txt)")"
+
+echo "case: a conflict moved to another place of a file a stale priority pull request conflicts on fails"
+# The pull request takes #12's t2, which ends #12's conflict with main there, and edits t5, which
+# #12 edits too: one conflict in t.txt in either merge, at another place.
+run_check pull_request "$m_moved"
+check "it fails" "$(is "$status" 1)"
+check "it names #12 and the file" "$(has_line "$err" "$(conflict_line 12 t.txt)")"
+
+echo "case: an edit of text the base and a stale priority pull request each added alike fails"
+# main and #16 both set w5 to the same text, which merges cleanly, while #16 conflicts with main
+# elsewhere; the pull request edits w5, which #16 would then have to resolve.
+run_check pull_request "$m_shared"
+check "it fails" "$(is "$status" 1)"
+check "it names #16 and the file" "$(has_line "$err" "$(conflict_line 16 w.txt)")"
+check "it names no other" "$(is "$(grep -c '^::error::' <<<"$err")" 1)"
 
 echo "case: a rename of the file a stale priority pull request conflicts on is not a conflict"
 run_check pull_request "$m_rename"
@@ -361,12 +385,21 @@ answer "${standard[@]}"
 check "it passes" "$(is "$status" 0)"
 check "it says why" "$(has_line "$out" "Every pull request of the merge group of #20 (#20) carries the label priority, and priority pull requests are not held to each other: nothing to check.")"
 
-echo "case: a priority pull request whose squash commit is in the group's base is no conflict"
-# #11 stands in the group in front; this group edits s5 again, which #11's head edits from main.
+echo "case: a queued priority pull request standing in a group in front lands first"
+# #11's group is in front: its queue branch's tip, q11, is this group's base, and this group edits
+# s5 again, which #11's head edits from main.
 group_event 21 "$q11"
+answer "$(pull 11 "$p11" '"APPROVED"' true)" "${standard[@]:1}"
 run_check merge_group "$g21"
+answer "${standard[@]}"
 check "it passes" "$(is "$status" 0)"
-check "it merged #11 as it already stands in the base" "$(contains "$out" "$(clean_line 11 "the merge group of #21")")"
+check "it says why" "$(has_line "$out" "#11 (priority work 11 at 100%) stands in a group in front of the merge group of #21, so it lands first.")"
+
+echo "case: an approved priority pull request that is not queued is held against, whatever queue branch names it"
+# The same group, with #11 approved and out of the queue: the leftover branch decides nothing.
+run_check merge_group "$g21"
+check "it fails" "$(is "$status" 1)"
+check "it names #11" "$(contains "$err" "^::error::the merge group of #21 conflicts with priority pull request #11 (priority work 11 at 100%25) in s.txt. ")"
 
 echo "case: a group of two pull requests, one of them labelled priority, is checked"
 group_event 31 "$main"

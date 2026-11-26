@@ -23,25 +23,29 @@
 # (reviewDecision APPROVED) or in the merge queue, read through GitHub's GraphQL API, whose budget
 # is apart from the REST one the rest of CI spends, a page of 100 at a time until the last. A
 # change whose every pull request carries the label passes: priority pull requests are not held to
-# each other. One of the change's own pull requests is passed over.
+# each other. One of the change's own pull requests is passed over, and in a merge group so is a
+# queued priority pull request that stands in a group in front of this one (the queue's branches
+# say which, below), since it lands first.
 #
-# What counts as the change's conflict with one of them, P: the conflicts of the change with P as P
-# would land on the change's base, which are two git merge-tree runs.
-#   1. P merged into the change's base: `git merge-tree --write-tree <base> <P's head>`, with the
-#      merge base git finds. Its tree is P as it would land now, conflict markers and all where P
-#      already conflicts with the base.
-#   2. The change merged with that tree, over the change's base: `git merge-tree --write-tree
-#      --merge-base=<base> <change's commit> <a commit of that tree>`. Any conflict here is the
-#      change's, and fails the check, naming P and the files.
-# So a priority pull request that has fallen behind its base does not fail every change built on
-# that base in the conflicts it already has with it, which are its own to resolve when it merges
-# the base, whatever lands next: a change that edits apart from those conflicts merges cleanly with
-# the markers, and one that edits inside one, or adds a conflict anywhere else, does not. When P is
-# up to date with the base, step 1's tree is P's own and step 2 is the plain merge of the change
-# with P. A P whose squash commit is already in a merge group's base (it stands in a group in front)
-# lands as no change in step 1. Every path of the change is merged, so file/directory, rename and
-# delete conflicts count as content ones do. The conflicted files are git's list; where git's list
-# is empty, those its conflict messages name; a conflict that names none fails all the same.
+# What counts as the change's conflict with one of them, P: the plain merge, `git merge-tree
+# --write-tree <change's commit> <P's head>`, and where that conflicts, the same merge of the
+# change's base, both between refs named `change` and `priority` so git labels both alike.
+#   * The base merges cleanly with P: every conflict of the change's merge is the change's.
+#   * The base conflicts with P too, as a priority pull request that has fallen behind main does:
+#     on 2026-11-26 the one approved, #4156, conflicted with main in 304 files, every change built
+#     on main carries those into its own merge, and they are P's to resolve when it merges main,
+#     whatever lands next. So a conflicted path of the change's merge is read against the same file
+#     of the base's merge (the file it was, where the change renamed it): a file the two merges
+#     leave alike holds the same conflicts; one with conflict markers is the change's unless the
+#     base's merge holds each of its conflicts as often, with the same two lines before and after
+#     it (so a conflict the change moves to another place of the file is the change's); one with
+#     none (a binary file's, modify/delete, file/directory) is the change's unless the base's merge
+#     lists the same stages for it, each with the same mode and blob. A conflict git lists no
+#     stage for counts by its message's type and paths, as often as git writes it.
+# A conflict the change adds anywhere, inside a file P already conflicts on or not, fails the
+# check, naming P and the files; where git names no file, it fails all the same. Every path is
+# merged, so file/directory, rename and delete conflicts count as content ones do. Two conflicts
+# that read alike, lines around them included, are one conflict to this reading.
 #
 # What it fetches: one fetch, of this public repository and with no credential, of the change's
 # commit and the head of each priority pull request left after the label read, with every commit
@@ -167,9 +171,11 @@ while :; do
   after=$next
 done
 # Each priority pull request, once, though a page boundary that moved between two reads lists it
-# twice: its number, title and head, and whether it is approved or queued.
+# twice: its number, title and head, whether it is in the merge queue, and whether it is approved
+# or queued.
 pulls=$(jq -s -c 'unique_by(.number)
-  | map({number, title, head: .headRefOid, landing: (.reviewDecision == "APPROVED" or .isInMergeQueue)})' \
+  | map({number, title, head: .headRefOid, queued: .isInMergeQueue,
+         landing: (.reviewDecision == "APPROVED" or .isInMergeQueue)})' \
   "$work/nodes")
 
 is_priority() { jq -e --argjson number "$1" 'any(.[]; .number == $number)' <<<"$pulls" > /dev/null; }
@@ -243,17 +249,38 @@ names() {
   echo "${joined%, }"
 }
 
-# merge <out> <argument>...: `git merge-tree --write-tree --name-only -z <argument>...`. Writes
-# <out>.tree, the tree of the result, and <out>.files, the paths left in conflict, NUL-separated
-# and sorted: git's list of conflicted files, or where that is empty the paths its CONFLICT
-# messages name, each with the `~<commit>` git adds to a path it moves aside taken off. Returns 0
-# for a clean merge, 1 for a conflicted one and 2 when git could not merge or its answer could not
-# be read, with git's words on stderr. It is called where `set -e` does not reach inside it, so
-# every step returns 2 on its own failure.
+# Both merges of a pull request run between refs of these two names, so git labels their conflict
+# markers, and the names of the paths it moves aside, alike: `change` is the change's commit or
+# its base, and `priority` the priority head.
+strip_label() { sed -z -E 's/~(change|priority)$//'; }
+
+# key_paths: the paths of each CONFLICT message record on stdin (its type, then its paths, joined
+# by \037; NUL-separated), NUL-separated on stdout.
+key_paths() {
+  local key
+  while IFS= read -r -d '' key; do
+    [[ $key == *$'\037'* ]] || continue
+    printf '%s' "${key#*$'\037'}" | tr '\037' '\0'
+    printf '\0'
+  done
+}
+
+# merge <out> <ours>: `git merge-tree --write-tree -z <ours> priority`, its conflicted file info in
+# full. Writes, each NUL-separated and sorted, its paths without the `~change` or `~priority` git
+# adds to a path it moves aside:
+#   <out>.tree      the tree of the result (a line);
+#   <out>.paths     every path its conflicted file info lists, once;
+#   <out>.entries   each entry of that info, `<path>\037<stage> <mode> <oid>`;
+#   <out>.contents  the path of each `CONFLICT (contents)` message;
+#   <out>.keys      each other CONFLICT message, its type and its paths joined by \037, as many
+#                   times as git writes it.
+# Returns 0 for a clean merge, 1 for a conflicted one and 2 when git could not merge or its answer
+# could not be read, with git's words on stderr. It is called where `set -e` does not reach inside
+# it, so every step returns 2 on its own failure.
 merge() {
-  local out=$1 status=0 fields=() i count kind
-  shift
-  git -C "$repo" merge-tree --write-tree --name-only -z "$@" > "$out" 2> "$out.err" || status=$?
+  local out=$1 status=0 fields=() i count kind key path
+  local entry_shape=$'^([0-7]+) ([0-9a-f]{40}) ([123])\t(.*)$'
+  git -C "$repo" merge-tree --write-tree -z "$2" priority > "$out" 2> "$out.err" || status=$?
   mapfile -d '' -t fields < "$out" || return 2
   # git answers 1 for a revision it cannot read too, so a merge counts only when its first field
   # is a tree.
@@ -262,25 +289,112 @@ merge() {
     return 2
   fi
   printf '%s\n' "${fields[0]}" > "$out.tree" || return 2
-  : > "$out.files" || return 2
+  : > "$out.paths" && : > "$out.entries" && : > "$out.contents" && : > "$out.keys" || return 2
   [ "$status" -eq 1 ] || return 0
-  # The conflicted paths, up to the empty field that ends their section; then the messages, each
-  # <count> <path>... <type> <text>.
+  : > "$out.raw-entries" && : > "$out.raw-contents" && : > "$out.raw-keys" || return 2
+  # The conflicted file info, `<mode> <oid> <stage>\t<path>` each, up to the empty field that ends
+  # it; then the messages, `<count> <path>... <type> <text>` each.
   for ((i = 1; i < ${#fields[@]} && ${#fields[i]} > 0; i++)); do
-    printf '%s\0' "${fields[i]}"
-  done > "$out.names" || return 2
-  if ! [ -s "$out.names" ]; then
-    for ((i++; i < ${#fields[@]}; i += count + 3)); do
-      count=${fields[i]}
-      [[ $count =~ ^[0-9]+$ ]] || return 2
-      kind=${fields[i + count + 1]:-}
-      if [[ $kind == CONFLICT* ]] && [ "$count" -gt 0 ]; then
-        printf '%s\0' "${fields[@]:i+1:count}"
-      fi
-    done > "$out.names" || return 2
-  fi
-  sed -z -E 's/~[0-9a-f]{40}$//' "$out.names" | sort -z -u > "$out.files" || return 2
+    [[ ${fields[i]} =~ $entry_shape ]] || return 2
+    path=$(printf '%s\0' "${BASH_REMATCH[4]}" | strip_label | tr -d '\0') || return 2
+    printf '%s\037%s %s %s\0' "$path" "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
+      >> "$out.raw-entries" || return 2
+  done
+  for ((i++; i < ${#fields[@]}; i += count + 3)); do
+    count=${fields[i]}
+    [[ $count =~ ^[0-9]+$ ]] || return 2
+    kind=${fields[i + count + 1]:-}
+    [[ $kind == CONFLICT* ]] || continue
+    if [ "$kind" = "CONFLICT (contents)" ] && [ "$count" -eq 1 ]; then
+      printf '%s\0' "${fields[i + 1]}" | strip_label >> "$out.raw-contents" || return 2
+    else
+      key=$kind
+      for path in "${fields[@]:i+1:count}"; do
+        key+=$'\037'$(printf '%s\0' "$path" | strip_label | tr -d '\0') || return 2
+      done
+      printf '%s\0' "$key" >> "$out.raw-keys" || return 2
+    fi
+  done
+  sort -z "$out.raw-entries" > "$out.entries" &&
+    sed -z 's/\x1f.*//' "$out.entries" | sort -z -u > "$out.paths" &&
+    sort -z -u "$out.raw-contents" > "$out.contents" &&
+    sort -z "$out.raw-keys" > "$out.keys" || return 2
   return 1
+}
+
+# entries_of <entries file> <path>: the `<stage> <mode> <oid>` entries of <path>, a line each.
+entries_of() {
+  local entry
+  while IFS= read -r -d '' entry; do
+    [ "${entry%%$'\037'*}" != "$2" ] || echo "${entry#*$'\037'}"
+  done < "$1"
+}
+
+# hunks <tree> <path>: each conflict of the file at <path> in <tree>, a line each, with the two
+# lines before it and the two after it: its lines joined by \037, and its marker lines without
+# git's labels, so a conflict reads the same in the change's merge and in its base's, and one at
+# another place of the file, among other lines, reads otherwise. Nothing for a path that is no
+# file in <tree> (a directory where git moved a file aside).
+hunks() {
+  [ "$(git -C "$repo" cat-file -t "$1:$2" 2> /dev/null)" = blob ] || return 0
+  git -C "$repo" cat-file blob "$1:$2" | awk '
+    function flush() { if (pending != "") print pending; pending = "" }
+    inside && (/^>>>>>>>$/ || /^>>>>>>> /) { pending = hunk "\037>>>>>>>"; after = 0; inside = 0; next }
+    inside && /^=======$/ { hunk = hunk "\037======="; next }
+    inside && (/^[|][|][|][|][|][|][|]$/ || /^[|][|][|][|][|][|][|] /) { hunk = hunk "\037|||||||"; next }
+    inside { hunk = hunk "\037" $0; next }
+    /^<<<<<<<$/ || /^<<<<<<< / { flush(); inside = 1; hunk = before2 "\037" before1 "\037<<<<<<<"; next }
+    pending != "" { pending = pending "\037" $0; if (++after == 2) flush() }
+    { before2 = before1; before1 = $0 }
+    END { flush() }'
+}
+
+# In a merge group, the priority pull requests of the groups in front of this one, which land
+# first. The queue keeps each group's branch, gh-readonly-queue/<base>/pr-<number>-<parent sha>, at
+# the group's head while it builds it, and takes a pull request out when its head moves. So a
+# queued priority pull request whose branch's tip is this group's base or below it, a squash
+# commit whose subject ends with its number, stands in front with the head read above. Read from
+# the public repository with no credential, which spends none of the API budget.
+ahead=()
+if [ "$event_name" = merge_group ]; then
+  if ! queue=$(gh_read git -C "$repo" ls-remote origin 'refs/heads/gh-readonly-queue/*'); then
+    fail "git could not list the merge queue's branches of $server/$repository.git, $unread"
+  fi
+  queue_ref='^([0-9a-f]{40})[[:space:]]+refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$'
+  while read -r line; do
+    [[ $line =~ $queue_ref ]] || continue
+    tip=${BASH_REMATCH[1]}
+    pull=${BASH_REMATCH[2]}
+    jq -e --argjson number "$pull" 'any(.[]; .number == $number and .queued)' <<<"$pulls" > /dev/null ||
+      continue
+    git -C "$repo" cat-file -e "$tip^{commit}" 2> /dev/null || continue
+    git -C "$repo" merge-base --is-ancestor "$tip" "$base" || continue
+    if [[ $(git -C "$repo" log -1 --format=%s "$tip") == *"(#$pull)" ]]; then
+      ahead+=("$pull")
+    fi
+  done <<<"$queue"
+fi
+
+# The change's own renames, so that a conflict at a path the change renamed is read against the
+# same file's conflict in its base's merge.
+declare -A renamed_from=()
+renames_read=''
+read_renames() {
+  local fields=() i
+  git -C "$repo" diff --find-renames --name-status -z "$base" "$head" > "$work/renames" ||
+    fail "git could not list the renames of $change, $unread"
+  mapfile -d '' -t fields < "$work/renames"
+  for ((i = 0; i < ${#fields[@]}; )); do
+    if [[ ${fields[i]} == R* ]]; then
+      renamed_from[${fields[i + 2]}]=${fields[i + 1]}
+      i=$((i + 3))
+    elif [[ ${fields[i]} == C* ]]; then
+      i=$((i + 3))
+    else
+      i=$((i + 2))
+    fi
+  done
+  renames_read=yes
 }
 
 checked=0
@@ -293,37 +407,87 @@ for candidate in "${candidates[@]}"; do
     echo "$name is a pull request of $change itself."
     continue
   fi
+  if [[ " ${ahead[*]} " == *" $pull "* ]]; then
+    echo "$name stands in a group in front of $change, so it lands first."
+    continue
+  fi
   checked=$((checked + 1))
   started=$SECONDS
-  # Step 1: the priority pull request as it would land on the change's base.
+  git -C "$repo" update-ref refs/heads/priority "$pull_head"
+  # The change merged with the priority pull request.
+  git -C "$repo" update-ref refs/heads/change "$head"
   status=0
-  merge "$work/landed" "$base" "$pull_head" || status=$?
-  [ "$status" -le 1 ] || fail "git could not merge $name into the base $base of $change, $unread"
-  if [ "$status" -eq 1 ]; then
-    echo "$name already conflicts with the base of $change in $(tr -cd '\0' < "$work/landed.files" | wc -c) file(s): those are its own to resolve, and count against $change only where $change edits them too."
-  fi
-  landed=$(GIT_AUTHOR_NAME=priority-conflicts GIT_AUTHOR_EMAIL=priority-conflicts@localhost \
-    GIT_COMMITTER_NAME=priority-conflicts GIT_COMMITTER_EMAIL=priority-conflicts@localhost \
-    git -C "$repo" commit-tree -m "#$pull as it would land on $base" "$(cat "$work/landed.tree")") ||
-    fail "git could not write a commit of $name as it would land on the base of $change, $unread"
-  # Step 2: the change merged with it, over the change's base.
-  status=0
-  merge "$work/merged" --merge-base="$base" "$head" "$landed" || status=$?
+  merge "$work/ours" change || status=$?
   case $status in
     0)
       echo "$name: no conflict with $change ($((SECONDS - started)) s)."
+      continue
       ;;
-    1)
-      conflicts=$((conflicts + 1))
-      if [ -s "$work/merged.files" ]; then
-        where="in $(names "$work/merged.files")"
-      else
-        where="in a conflict git names no file for"
-      fi
-      error "$change conflicts with priority pull request $name $where. A priority pull request merges first: wait for #$pull to merge, then $remedy."
-      ;;
+    1) ;;
     *) fail "git could not merge $change with $name, $unread" ;;
   esac
+  # The change's base merged with it: each conflict of that merge is the priority pull request's
+  # own with the base, and a conflict of the change's merge is the change's unless it is one of
+  # those.
+  git -C "$repo" update-ref refs/heads/change "$base"
+  status=0
+  merge "$work/before" change || status=$?
+  [ "$status" -le 1 ] || fail "git could not merge the base $base of $change with $name, $unread"
+  : > "$work/caused"
+  if [ "$status" -eq 0 ]; then
+    # The base merges cleanly with it, so every conflict of the change's merge is the change's.
+    cat "$work/ours.paths" "$work/ours.contents" >> "$work/caused"
+    key_paths < "$work/ours.keys" >> "$work/caused"
+  else
+    echo "$name already conflicts with the base of $change in $(tr -cd '\0' < "$work/before.paths" | wc -c) file(s): those are its own to resolve, and count against $change only where $change adds a conflict."
+    [ -n "$renames_read" ] || read_renames
+    git -C "$repo" diff --no-renames --name-only -z "$(cat "$work/before.tree")" "$(cat "$work/ours.tree")" |
+      sort -z -u > "$work/touched" || fail "git could not compare the two merges of $name, $unread"
+    # Each conflicted path of the change's merge, against the same file in the base's merge: the
+    # file it was, when the change renamed it, else the same path.
+    while IFS= read -r -d '' path; do
+      from=${renamed_from[$path]:-$path}
+      # A path whose merged file is the same in both merges holds the same conflicts.
+      if [ "$from" = "$path" ] && ! grep -qzxF -- "$path" "$work/touched"; then
+        continue
+      fi
+      # Conflict markers in the file (a content or an add/add conflict) are read conflict by
+      # conflict; a conflict with none, by its stages.
+      hunks "$(cat "$work/ours.tree")" "$path" | sort > "$work/hunks" ||
+        fail "git could not read $path of the merge of $change with $name, $unread"
+      if [ -s "$work/hunks" ]; then
+        # The change's unless the same file of the base's merge holds each of them as often,
+        # with the same lines around it.
+        if grep -qzxF -- "$from" "$work/before.paths"; then
+          hunks "$(cat "$work/before.tree")" "$from" | sort > "$work/known" ||
+            fail "git could not read $from of the merge of the base of $change with $name, $unread"
+        else
+          : > "$work/known"
+        fi
+        [ -z "$(comm -23 "$work/hunks" "$work/known")" ] || printf '%s\0' "$path" >> "$work/caused"
+      elif [ "$(entries_of "$work/ours.entries" "$path")" != "$(entries_of "$work/before.entries" "$from")" ]; then
+        # Any other conflict (a binary file's, modify/delete, file/directory): the change's unless
+        # the same file of the base's merge has the same stages, each with the same mode and blob.
+        printf '%s\0' "$path" >> "$work/caused"
+      fi
+    done < "$work/ours.paths"
+    # A conflict git lists no stage for, by its type and its paths, as often as git writes it.
+    comm -z -23 "$work/ours.keys" "$work/before.keys" | key_paths |
+      sort -z -u | comm -z -23 - "$work/ours.paths" >> "$work/caused"
+  fi
+  sort -z -u -o "$work/caused" "$work/caused"
+  if [ "$status" -eq 1 ] && ! [ -s "$work/caused" ]; then
+    echo "$name: no conflict with $change ($((SECONDS - started)) s)."
+    continue
+  fi
+  conflicts=$((conflicts + 1))
+  echo "$name: a conflict with $change ($((SECONDS - started)) s)."
+  if [ -s "$work/caused" ]; then
+    where="in $(names "$work/caused")"
+  else
+    where="in a conflict git names no file for"
+  fi
+  error "$change conflicts with priority pull request $name $where. A priority pull request merges first: wait for #$pull to merge, then $remedy."
 done
 
 [ "$conflicts" -eq 0 ] || exit 1

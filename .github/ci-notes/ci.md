@@ -1584,9 +1584,11 @@ A priority pull request that has fallen behind main does not fail every other ch
 conflicts it already has with main. The plain merge of a change with such a head carries every one
 of those conflicts, and on 2026-11-26 the one approved priority pull request, #4156, conflicted
 with main in 304 files, so a check of the plain merge would have failed every pull request of the
-repository. The script merges the change instead with the priority pull request as it would land
-on the change's base, conflict markers and all, so a conflict counts only where the change edits
-what the priority pull request edits, inside one of its conflicts with main or anywhere else.
+repository. Where the plain merge conflicts, the script merges the change's base with the
+priority pull request too and counts only the conflicts the change's merge adds to that one: a
+new conflict anywhere, inside a file the priority pull request already conflicts on or not, fails
+the check, and one the base's merge holds alike does not. The script's header says how it tells
+them apart.
 
 Both events, because they answer two questions. On a pull request the check tells the author at
 once, at the push. The merge group is the gate: a pull request that passed before a priority pull
@@ -1597,8 +1599,8 @@ files, and the remedy: wait for it to merge, then merge main and resolve the con
 
 What it costs: one ubuntu-24.04-arm job on every pull request push and every merge group, which
 is a standard runner of a public repository and bills nothing. Its timeout is 10 minutes; it
-fetches only when a priority pull request is approved or queued, and runs two git merge-tree
-merges for each.
+fetches only when a priority pull request is approved or queued, runs one git merge-tree merge
+for each, and a second where the first conflicts.
 
 ## What the priority-conflicts job's scopes are for
 
