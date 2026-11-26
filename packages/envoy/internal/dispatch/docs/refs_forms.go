@@ -326,11 +326,13 @@ func (drained formsDocumentDrain) count(tick *RefsFormsTick) {
 // older build writes then owes the row again (migration 20261117025904), and one this build
 // writes indexes the document and settles it.
 //
-// A document that is gone, or holds no markdown version, owes no text and is owed no block index:
-// its row is settled while it holds the enqueued_at it was listed with. An older build's removal
-// of a document deletes its edges, which owes this queue the document (migration
-// 20261117025906), and settles only refs_grammar_owed. So is a document of an issue room that no
-// pass over its room reads, one retired from it (latestDocumentVersion).
+// A document that is gone, holds no markdown version, or is an issue's decisions query node
+// (refs.DecisionsQuerySQL: holds no fragment of a room and no block, R15, so its stored rendering
+// is never indexed) owes no text and is owed no block index: its row is settled while it holds the
+// enqueued_at it was listed with. An older build's removal of a document deletes its edges, which
+// owes this queue the document (migration 20261117025906), and settles only refs_grammar_owed. So
+// is a document of an issue room that no pass over its room reads, one retired from it
+// (latestDocumentVersion).
 //
 // A document of an issue room is drained through its room's pass (drainFormsRoomDocument), since
 // no pass indexes one fragment of a room alone. rooms holds what each room this drain's pass
@@ -472,8 +474,10 @@ func (s *Service) roomPassDebt(ctx context.Context, room string) (string, error)
 // version and the room's pending settlement's marked_at, which indexOwedRoom reads again under the
 // tree artifact's owner lock. A document of a room that no pass over the room reads, since it is
 // retired from the room (roomLayoutSQL) or holds no markdown version, reads as no room's, at
-// version 0: it has no text to index. The tree artifact is read with its room whatever it holds,
-// since the room's references are written under it.
+// version 0: it has no text to index. So does an issue's decisions query node
+// (refs.DecisionsQuerySQL): it holds no fragment of a room and no block (R15), and its stored
+// rendering is never indexed. The tree artifact is read with its room whatever it holds, since the
+// room's references are written under it.
 func (s *Service) latestDocumentVersion(ctx context.Context, artifactID string) (owedDocument, error) {
 	document := owedDocument{id: artifactID}
 	var markedAt *time.Time
@@ -481,6 +485,7 @@ func (s *Service) latestDocumentVersion(ctx context.Context, artifactID string) 
 		select coalesce(placed.room::text, ''),
 		       case when placed.room is not null then `+roomRevisionSQL("placed.room")+`
 		            when placed.member is not null then 0
+		            when exists (select 1 from artifacts a where a.id = $1::uuid and `+refs.DecisionsQuerySQL("a")+`) then 0
 		            else coalesce((select max(v.number) from artifact_versions v
 		                           where v.artifact_id = $1::uuid and v.markdown is not null), 0) end,
 		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = coalesce(placed.room, $1::uuid))

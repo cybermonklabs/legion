@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -104,6 +105,85 @@ func QueueQueryMark(b *store.WriteBatch, issueKey string, event int64, marked *b
 		*marked = tag.RowsAffected() > 0
 		return nil
 	})
+}
+
+// roomQueryMarkStatement marks owed the queries of the issue whose tree is the room $1 (issue_trees),
+// as queryMarkStatementOf marks them, and answers the issue's key. Its causes are none for the
+// event - the write that queues it in a document's operation does not know whether its caller
+// appends one, as a node route's mark names none (QueueQueryMark with graphstore.NoEvent) - and,
+// for the sequence, the newest tuple the transaction sees as the statement runs, read off the log's
+// primary key: the write queues it last in its batch (writeLast), after the facts its caller appends
+// under the version's event, so that tuple is the write's own last one, whose writer the drain names
+// its versions after. A sequence this session never drew is no error here, as currval's would be.
+const roomQueryMarkStatement = `
+	insert into issue_query_marks (issue_key, greatest_event, greatest_seq)
+	select t.issue_key, null::bigint, coalesce((select seq from graph_tuples order by seq desc limit 1), 0)
+	from issue_trees t where t.artifact_id = $1
+	on conflict (issue_key) do update set
+		greatest_event = greatest(issue_query_marks.greatest_event, excluded.greatest_event),
+		greatest_seq = greatest(issue_query_marks.greatest_seq, excluded.greatest_seq)
+	returning issue_key`
+
+// markRoomQueries marks owed, at the end of the write phase of the transaction ctx joined
+// (writeLast), the queries of the issue whose room is room, where a write of one of the room's
+// documents ran the room's pass outside the room's settlement (indexDocumentInRoom) and that pass
+// stated a node or a tuple (stated): R14 has each accepted write of the room append a version of
+// each query whose answer changed, and such a pass can move the record of a query whose document
+// the write writes no version of - a requirement written into the plan moves the spec's. The
+// issue's queries are drained once the transaction has committed (Ledger.Commit, drainOwed), as a
+// settlement's are (queueSettledQueryMark), so the drain writes those versions, R7's fill of an
+// owed digest first. It marks once a transaction for a room, and nothing for a room the
+// transaction creates, whose issue holds no approval yet, nor where no ledger the caller joined
+// queues tx's writes: a background pass's ledger commits with no drain after it, and the
+// decisions step's ledger writes at once.
+func markRoomQueries(ctx context.Context, tx pgx.Tx, room string, stated graphstore.Uncaused) error {
+	ledger := queueFor(ctx, tx)
+	if ledger == nil || ledger.tx == nil || len(stated.Nodes)+len(stated.Tuples) == 0 || slices.Contains(ledger.markedRooms, room) {
+		return nil
+	}
+	if _, created := pendingArtifact(ctx, room); created {
+		return nil
+	}
+	ledger.markedRooms = append(ledger.markedRooms, room)
+	return writeLast(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("mark the queries of the issue of room "+room+" owed", roomQueryMarkStatement, room).Query(func(rows pgx.Rows) error {
+			for rows.Next() {
+				var issue string
+				if err := rows.Scan(&issue); err != nil {
+					return err
+				}
+				if !slices.Contains(ledger.marks, issue) {
+					ledger.marks = append(ledger.marks, issue)
+				}
+			}
+			return rows.Err()
+		})
+		return nil
+	})
+}
+
+// takeMarks is each issue whose queries the ledger's committed write phase marked owed
+// (markRoomQueries), once: the caller that drains them takes them.
+func (l *Ledger) takeMarks() []string {
+	marks := l.marks
+	l.marks = nil
+	return marks
+}
+
+// drainOwed drains the queries of each of issues (DrainOwedQueries), each issue's fill and drain in
+// transactions of their own, once the write that marked them has committed, and answers the events
+// they appended, in order, for the write's caller to publish after its own. A caller still holding
+// a pooled connection drains nothing, as it fills nothing (fillOwed), and the block-index tick
+// drains those marks (drainOwedQueryMarks).
+func (s *Service) drainOwed(ctx context.Context, issues []string) []model.Event {
+	if len(issues) == 0 || store.HoldsPooledConnection(ctx) {
+		return nil
+	}
+	var appended []model.Event
+	for _, issue := range issues {
+		appended = append(appended, s.DrainOwedQueries(ctx, issue)...)
+	}
+	return appended
 }
 
 // queryMark is one issue's mark as the drain reads it (queryMarkReadStatement): its two causes and
@@ -259,10 +339,13 @@ func (s *Service) finishRevision(ctx context.Context, tx pgx.Tx, issueKey string
 // version write runs (carryNewestApproval): where the version's text is the approved one's, as a
 // version of a record moved alone is, the restore's carry, and where it is not, carryVerdict's
 // cases; its reason names the results that arrived, each by its check's block id and its verdict
-// (arrivedResults), after the opening the daemon matches. A version whose record moved otherwise -
-// a result retracted, a check moved or retargeted - carries nothing, and the approval reads
-// changed since. Its reads run where it is called, the drain's read phase, and its writes are
-// queued after the move's.
+// (arrivedResults), after the opening the daemon matches. A version whose record digest is the one
+// the approval stands on (approvalPin) - one only the rendering moved, whose record the drain read
+// in its read phase (planRevisions) - carries by the record case instead (knownRecord,
+// carryNewestApprovalNaming), its artifact.approved before the version's artifact.version as every
+// carry the drain writes. A version whose record moved otherwise - a result retracted, a check
+// moved or retargeted - carries nothing, and the approval reads changed since. Its reads run where
+// it is called, the drain's read phase, and its writes are queued after the move's.
 func (s *Service) carryAppendedResults(ctx context.Context, tx pgx.Tx, issueKey string, revised queryRevision) error {
 	id, number := revised.document.id, revised.version.Number
 	if err := refuseSecondCarry(ctx, tx, id); err != nil {
@@ -271,6 +354,18 @@ func (s *Service) carryAppendedResults(ctx context.Context, tx pgx.Tx, issueKey 
 	newest, err := NewestReview(ctx, tx, id)
 	if err != nil || newest == nil || newest.State != "approved" {
 		return err
+	}
+	pin, err := approvalPin(ctx, tx, *newest)
+	if err != nil {
+		return err
+	}
+	if pin != nil && *pin == revised.record.Digest {
+		tree, err := pmdoc.ParseRendering(revised.markdown)
+		if err != nil {
+			return skipUnreadableVersion(id, number, err)
+		}
+		return carryNewestApprovalNaming(ctx, tx, s.events, id, number, revised.markdown, tree, *newest, s.serverURL, decisionStepCases{},
+			"", knownRecord(revised.record.Digest), eventSink(ctx))
 	}
 	approved, held, err := approvedRecord(ctx, tx, issueKey, revised.document.query, id, newest.Version)
 	if err != nil || !held || !appendsResultsAlone(approved, revised.record) {
@@ -285,7 +380,7 @@ func (s *Service) carryAppendedResults(ctx context.Context, tx pgx.Tx, issueKey 
 		return skipUnreadableVersion(id, number, err)
 	}
 	return carryNewestApprovalNaming(ctx, tx, s.events, id, number, revised.markdown, tree, *newest, s.serverURL, decisionStepCases{},
-		arrivedResultsChange(arrived), eventSink(ctx))
+		arrivedResultsChange(arrived), RecordCarry{}, eventSink(ctx))
 }
 
 // arrivedResults names each result node record holds that approved does not, in record's order,

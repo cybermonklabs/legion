@@ -1542,9 +1542,13 @@ func carryRestored(ctx context.Context, tx pgx.Tx, artifactID string, number int
 
 // owedDigestsStatement is each version of a document of the issue $1 whose record digest is owed
 // (version_renders.digest_owed), by document and number: its document and number, the cut its row
-// records, the query of its document's node, whose record covers it, and its stored markdown.
+// records, the query of its document's node, whose record covers it, its stored markdown, and the
+// record digest the version before it holds, the one a record carry to it stood on (recordUnmoved:
+// it carries only where that row holds the approval's pin, and nothing writes a filled digest
+// again).
 var owedDigestsStatement = `
-	select r.artifact_id::text, r.number, r.at, r.read_seq, n.attributes->>'` + graphstore.AttributeQuery + `', coalesce(v.markdown, '')
+	select r.artifact_id::text, r.number, r.at, r.read_seq, n.attributes->>'` + graphstore.AttributeQuery + `', coalesce(v.markdown, ''),
+	       (select p.record_sha256 from version_renders p where p.artifact_id = r.artifact_id and p.number = r.number - 1)
 	from artifacts a
 	join version_renders r on r.artifact_id = a.id and r.digest_owed
 	join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = a.ref_key and n.supertag = '` + graphstore.SupertagQuery + `'
@@ -1553,12 +1557,12 @@ var owedDigestsStatement = `
 	order by r.artifact_id, r.number`
 
 // owedCarriesStatement is each carried review of version $2 of the document $1 whose row of
-// artifact_review_carries holds no record digest yet: the carry the version's own write queued in
-// its batch (R14), which pinned the digest of the version's stored markdown. It orders no rows:
-// the fill repins the reviews it answers as one set (queueFilledDigest, `review_id = any(...)`),
-// so no review of them comes before another.
+// artifact_review_carries holds no record digest yet, with its reason: the carry the version's own
+// write queued in its batch (R14), which pinned the digest of the version's stored markdown. It
+// orders no rows: the fill repins the reviews it answers as one set (queueFilledDigest,
+// `review_id = any(...)`), so no review of them comes before another.
 const owedCarriesStatement = `
-	select c.review_id::text
+	select c.review_id::text, coalesce(r.reason, '')
 	from artifact_reviews r
 	join artifact_review_carries c on c.review_id = r.id
 	where r.artifact_id = $1 and r.version = $2 and c.record_sha256 is null`
@@ -1575,14 +1579,43 @@ const lostDigestsStatement = `
 
 // owedDigest is one version whose record digest is owed, as owedDigestsStatement reads it, with
 // the record the fill read at its row's cut and the carried reviews of its write's batch the fill
-// repins.
+// repins; stood is the record digest of the version before it.
 type owedDigest struct {
 	version  statedVersion
 	cut      refs.TreeCut
 	query    string
 	markdown string
+	stood    *string
 	record   QueryRecord
 	carries  []string
+}
+
+// owedCarry is one carried review owedCarriesStatement reads: its id and its reason.
+type owedCarry struct{ review, reason string }
+
+// repinnedCarries is the id of each of carries, the carried reviews of version's write's batch,
+// that the fill repins to version's record digest: every one but a record carry (IsRecordCarry)
+// whose version digests otherwise than the version before it, the digest its approval stood on
+// (recordUnmoved). Each such carry is logged as an error naming the document, the version and the
+// two digests, and stays unpinned, so every gate reads its approval stale. The write's rule decided
+// that carry in its read phase and must never be wrong; this is the backstop that holds it to its
+// claim.
+func repinnedCarries(version owedDigest, carries []owedCarry) []string {
+	repinned := make([]string, 0, len(carries))
+	for _, carry := range carries {
+		if IsRecordCarry(carry.reason) && (version.stood == nil || *version.stood != version.record.Digest) {
+			stood := ""
+			if version.stood != nil {
+				stood = *version.stood
+			}
+			slog.Error("dispatch: a record carry's version does not digest to the record its approval stood on, so its carried review stays unpinned and the approval reads stale",
+				"artifact", version.version.artifactID, "version", version.version.number, "review", carry.review,
+				"digest", version.record.Digest, "approved_digest", stood)
+			continue
+		}
+		repinned = append(repinned, carry.review)
+	}
+	return repinned
 }
 
 // readOwedDigests reads, through tx, each version of a document of the issue issueKey whose record
@@ -1594,7 +1627,7 @@ func readOwedDigests(ctx context.Context, tx pgx.Tx, issueKey string) ([]owedDig
 	}
 	owed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (owedDigest, error) {
 		var version owedDigest
-		err := row.Scan(&version.version.artifactID, &version.version.number, &version.cut.At, &version.cut.ReadSeq, &version.query, &version.markdown)
+		err := row.Scan(&version.version.artifactID, &version.version.number, &version.cut.At, &version.cut.ReadSeq, &version.query, &version.markdown, &version.stood)
 		return version, err
 	})
 	if err != nil {
@@ -1611,7 +1644,12 @@ func readOwedDigests(ctx context.Context, tx pgx.Tx, issueKey string) ([]owedDig
 // none of which gives the transaction an id. Its one batch then records each record's digest on
 // its version's row, clearing digest_owed, and repins each such carried review to it on its own row
 // of artifact_review_carries, with no event and no second review row (R14): the review's
-// content_sha256 cannot move, since the update trigger of artifact_reviews refuses it. A person's
+// content_sha256 cannot move, since the update trigger of artifact_reviews refuses it. A record
+// carry (IsRecordCarry) is repinned only where the record's digest is the one its approval stood
+// on, the version before it's (owedDigest.stood); where it is not, the write's rule was wrong
+// (recordUnmoved), and the carry stays unpinned (repinnedCarries), so every gate reads the
+// approval stale - its content_sha256 is the stored markdown's digest, and the version's is the
+// record's. That is a backstop that must never fire. A person's
 // approval of such a version given between the write's COMMIT and the fill is no carry: the fill
 // carries it at that version (carryApprovalBeforeFill), after the rows, so the carried review's
 // insert trigger pins the record's digest, and that carry appends its artifact.approved after the
@@ -1647,9 +1685,15 @@ func (s *Service) fillOwedDigests(ctx context.Context, issueKey string) ([]model
 		if err != nil {
 			return nil, fmt.Errorf("read the carried reviews of version %d of %s: %w", version.version.number, version.version.artifactID, err)
 		}
-		if version.carries, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		carries, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (owedCarry, error) {
+			var carry owedCarry
+			err := row.Scan(&carry.review, &carry.reason)
+			return carry, err
+		})
+		if err != nil {
 			return nil, fmt.Errorf("read the carried reviews of version %d of %s: %w", version.version.number, version.version.artifactID, err)
 		}
+		version.carries = repinnedCarries(*version, carries)
 	}
 	ctx, ledger := queueWrites(ctx, tx)
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
@@ -2382,13 +2426,16 @@ func renameBlockIDs(tree *pmdoc.Node, renamed map[string]string) {
 // digest that version's version_renders row records, null where it holds no row or holds none yet,
 // whether that row owes its digest, whether the document's block index stands at that version:
 // its document_block_versions row at that number, holding no mark of this build's
-// (store_owed_at), and which of its two rows of the re-index queue stand (refs_grammar_owed, by
-// their primary key): its own text's, kind artifact, and its scope's. They come in id order.
+// (store_owed_at), which of its two rows of the whole-grammar re-index queue stand
+// (refs_grammar_owed, by their primary key): its own text's, kind artifact, and its scope's, and
+// whether its row of the forms re-index queue stands (refs_forms_owed, kind artifact). They come
+// in id order.
 var revisedDocumentsStatement = `
 	select d.id::text, n.attributes->>'` + graphstore.AttributeQuery + `', d.name, v.number, coalesce(v.markdown, ''), r.record_sha256,
 	       coalesce(r.digest_owed, false), coalesce(b.version = v.number and b.store_owed_at is null, false),
 	       exists (select 1 from refs_grammar_owed o where o.kind = 'artifact' and o.id = d.id),
-	       exists (select 1 from refs_grammar_owed o where o.kind = 'scope' and o.id = d.id)
+	       exists (select 1 from refs_grammar_owed o where o.kind = 'scope' and o.id = d.id),
+	       exists (select 1 from refs_forms_owed o where o.kind = 'artifact' and o.id = d.id)
 	from issue_trees t
 	join artifacts d on d.issue_key = t.issue_key and d.kind = 'doc' and d.retired_at is null
 	join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = d.ref_key and n.supertag = '` + graphstore.SupertagQuery + `'
@@ -2426,15 +2473,16 @@ func LockQueryRooms(ctx context.Context, tx pgx.Tx, issueKey string) error {
 // queryDocument is one query document of a converted issue as revisedDocumentsStatement reads it:
 // its id, the query whose record covers it, its name, its newest version's number and markdown
 // with the digest that version's version_renders row records, whether that row owes it, whether
-// its block index stands at that version, and whether the re-index queue holds its own text's row
-// (textQueued) and its scope's (scopeQueued) before the drain writes anything.
+// its block index stands at that version, and whether the re-index queues hold its own text's row
+// (textQueued), its scope's (scopeQueued) and its forms row (formsQueued) before the drain writes
+// anything.
 type queryDocument struct {
-	id, query, name, markdown string
-	number                    int
-	digest                    *string
-	owed                      bool
-	indexed                   bool
-	textQueued, scopeQueued   bool
+	id, query, name, markdown            string
+	number                               int
+	digest                               *string
+	owed                                 bool
+	indexed                              bool
+	textQueued, scopeQueued, formsQueued bool
 }
 
 // queryRevision is a version a query document is owed (planRevisions): the document as its newest
@@ -2474,7 +2522,7 @@ func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevi
 	for rows.Next() {
 		var document queryDocument
 		if err := rows.Scan(&document.id, &document.query, &document.name, &document.number, &document.markdown, &document.digest, &document.owed, &document.indexed,
-			&document.textQueued, &document.scopeQueued); err != nil {
+			&document.textQueued, &document.scopeQueued, &document.formsQueued); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
 		}
@@ -2595,42 +2643,67 @@ func queueRevisionStand(b *store.WriteBatch, artifactID string, number, rule int
 }
 
 // restoreReindexQueue queues on b, after the stand of a version the drain wrote that no block pass
-// is owed (queueRevisionStand), the delete of the rows of the re-index queue (refs_grammar_owed)
-// that the version's insert made for document and that did not stand before it: of the two rows
-// every version insert owes its document (trigger artifact_versions_refs_grammar_owed, function
-// refs_grammar_owe_version, migrations 20261103205037 and 20261103205041), its own text's, kind
-// artifact, and its scope's. revisedDocumentsStatement read which of them stood, in the drain's
-// read phase (queryDocument's textQueued and scopeQueued). A row that stood is left: the insert's
-// trigger only moved its enqueued_at, and it is still owed for the reason it was owed.
+// is owed (queueRevisionStand), the delete of the re-index queue rows that the version's insert
+// made for document.
 //
-// Left in the queue, a row the insert made owes the document its block index again at the next
-// block-index tick, after the stand: the tick's text pass drains the artifact row by owing the
-// document an index (reindexOwedText, drainOwedDocument, oweDocumentIndex), and the scope row
-// does the same where the document's own text writes a `#id` (reindexScope). The coverage read then
-// lists the document owed and draws no gap until the tick after that indexes it. Neither row is owed
-// any work here. A version that stores the bytes of the version before it, whose index stood, holds
-// the text this build already read with the whole grammar at that version, and the same question
-// blocks, so its scope's `#id`s resolve as they did. A version of the decisions query holds no
-// block, no member and no reference the index reads (R15; api's queueDecisionsFirstVersion indexes
-// its version 1 handed no text), and no source's text belongs to it.
+// A decisions query node holds no fragment of a room and no block, so no block pass states its
+// versions, the tree holds no member of it (R15), and no source's text belongs to it: it owes
+// neither re-index queue anything, ever. Whatever stood before the insert, every row of it is
+// deleted from refs_grammar_owed (both artifact and scope) and from refs_forms_owed (its artifact
+// row, owed by trigger artifact_versions_refs_forms_owed, migration 20261117025904), through
+// queueSettleDecisionsQueryQueues.
+//
+// For every other query document, only the rows of refs_grammar_owed and refs_forms_owed that the
+// version's insert made and that did not stand before it are deleted: of the two rows every
+// version insert owes refs_grammar_owed (trigger artifact_versions_refs_grammar_owed, function
+// refs_grammar_owe_version, migrations 20261103205037 and 20261103205041), its own text's, kind
+// artifact, and its scope's, and the one row it owes refs_forms_owed (trigger
+// artifact_versions_refs_forms_owed, function refs_forms_owe_version, migrations 20261117025900
+// and 20261117025904), kind artifact. revisedDocumentsStatement read which of them stood, in the
+// drain's read phase (queryDocument's textQueued, scopeQueued and formsQueued). A row that stood
+// is left: the insert's trigger only moved its enqueued_at, and it is still owed for the reason it
+// was owed (for refs_forms_owed, a real debt of an older build's write).
+//
+// Left in either queue, a row the insert made owes the document its block index again at the next
+// tick, after the stand: the block-index tick's text pass drains refs_grammar_owed's artifact row
+// by owing the document an index (reindexOwedText, drainOwedDocument, oweDocumentIndex), and the
+// scope row does the same where the document's own text writes a `#id` (reindexScope); the forms
+// drain (RunRefsFormsReconciliation, drainFormsRoomDocument) drains refs_forms_owed's artifact row
+// by owing the document a block index (oweDocumentIndex) and running its room's pass. The coverage
+// read then lists the document owed and draws no gap until that pass commits. None of those rows is
+// owed any work here. A version that stores the bytes of the version before it, whose index stood,
+// holds the text this build already read with the whole grammar and its reference forms at that
+// version - or, where an older build wrote that version, still holds its own standing row in the
+// queue - and the same question blocks, so its scope's `#id`s resolve as they did. A version of
+// the decisions query holds no block, no member and no reference the index reads (R15; api's
+// queueDecisionsFirstVersion indexes its version 1 handed no text), and no source's text belongs
+// to it; left in refs_forms_owed, its artifact row would likewise draw a forms pass that reads no
+// text of it.
 //
 // The read is still true when the batch runs, because every writer that can add a row of one of
 // these documents holds the issue's owner lock, which the drain holds from its read phase to its
-// COMMIT (drainMark). The rows of a document are inserted by two triggers alone. The version
-// insert's trigger fires in a version write, and every version write of an issue's document holds
-// that issue's owner lock first (lockArtifactOwner; the conversion takes it with store.LockOwner,
-// and so does the drain). The asks' scope triggers (refs_grammar_owe_ask_scope, migration
-// 20261103205039) name the document an ask's block is on, new or old: an ask block of a converted
-// issue names the issue's room, its tree artifact (createAskBlock, the conversion's moveAsks), which
-// is no query document, so no new block names one of these documents; the old block names one in
-// the conversion's moveAsks, under the issue's owner lock, and the decisions step points an ask at
-// the spec (issueRestore.moveRows) under the spec's owner lock, which is the issue's. No ask names
-// the decisions query, which holds no block. The tick's text pass and refs.RebuildAll delete rows
-// with no owner lock; a row one of them deletes between the read and the batch is inserted again by
-// the version's own trigger and left standing, which costs the document one pass and loses nothing,
-// and a settle of theirs guarded by the enqueued_at it listed finds the time the trigger moved and
-// deletes nothing.
+// COMMIT (drainMark). The rows of a document are inserted by four trigger families alone. The two
+// version-insert triggers (refs_grammar_owe_version and refs_forms_owe_version) fire in a version
+// write, and every version write of an issue's document holds that issue's owner lock first
+// (lockArtifactOwner; the conversion takes it with store.LockOwner, and so does the drain). The
+// delete triggers on refs and block_refs that owe refs_forms_owed (migrations 20261117025906 and
+// 20261117025907) fire only in an index pass or document removal under the document owner's lock
+// (or in refs.RebuildAll's orphan sweep, which deletes only rows of gone documents). The asks'
+// scope triggers (refs_grammar_owe_ask_scope, migration 20261103205039) name the document an ask's
+// block is on, new or old: an ask block of a converted issue names the issue's room, its tree
+// artifact (createAskBlock, the conversion's moveAsks), which is no query document, so no new block
+// names one of these documents; the old block names one in the conversion's moveAsks, under the
+// issue's owner lock, and the decisions step points an ask at the spec (issueRestore.moveRows)
+// under the spec's owner lock, which is the issue's. No ask names the decisions query, which holds
+// no block. The ticks' passes and refs.RebuildAll delete rows with no owner lock; a row one of them
+// deletes between the read and the batch is inserted again by the version's own trigger and left
+// standing, which costs the document one pass and loses nothing, and a settle of theirs guarded by
+// the enqueued_at it listed finds the time the trigger moved and deletes nothing.
 func restoreReindexQueue(b *store.WriteBatch, document queryDocument) {
+	if document.query == graphstore.QueryDecisions {
+		queueSettleDecisionsQueryQueues(b, document.id)
+		return
+	}
 	kinds := make([]string, 0, 2)
 	if !document.textQueued {
 		kinds = append(kinds, "artifact")
@@ -2638,11 +2711,46 @@ func restoreReindexQueue(b *store.WriteBatch, document queryDocument) {
 	if !document.scopeQueued {
 		kinds = append(kinds, "scope")
 	}
-	if len(kinds) == 0 {
-		return
+	switch {
+	case len(kinds) > 0 && !document.formsQueued:
+		b.Queue(fmt.Sprintf("put the re-index queues of %s back as they stood before its version", document.id), `
+			with grammar as (delete from refs_grammar_owed where id = $1::uuid and kind = any($2::text[]))
+			delete from refs_forms_owed where id = $1::uuid and kind = 'artifact'`, document.id, kinds)
+	case len(kinds) > 0:
+		b.Queue(fmt.Sprintf("put the re-index queue of %s back as it stood before its version", document.id),
+			`delete from refs_grammar_owed where id = $1::uuid and kind = any($2::text[])`, document.id, kinds)
+	case !document.formsQueued:
+		b.Queue(fmt.Sprintf("put the forms re-index queue of %s back as it stood before its version", document.id),
+			`delete from refs_forms_owed where id = $1::uuid and kind = 'artifact'`, document.id)
 	}
-	b.Queue(fmt.Sprintf("put the re-index queue of %s back as it stood before its version", document.id),
-		`delete from refs_grammar_owed where id = $1::uuid and kind = any($2::text[])`, document.id, kinds)
+}
+
+// settleDecisionsQueryQueuesStatement deletes every row of the two re-index queues that names a
+// decisions query node $1: its artifact and scope rows of refs_grammar_owed (migration
+// 20261103205041's trigger) and its artifact row of refs_forms_owed (migration 20261117025904's).
+// A decisions query node holds no fragment of a room and no block (R15), its versions are never
+// indexed over their stored text, and no source's text belongs to it, so it owes neither queue a
+// row, ever.
+const settleDecisionsQueryQueuesStatement = `
+	with grammar as (delete from refs_grammar_owed where id = $1::uuid and kind in ('artifact', 'scope'))
+	delete from refs_forms_owed where id = $1::uuid and kind = 'artifact'`
+
+// queueSettleDecisionsQueryQueues queues on b the delete of every re-index queue row naming the
+// decisions query node artifactID (settleDecisionsQueryQueuesStatement), after its version insert
+// (restoreReindexQueue, SettleDecisionsQueryQueues).
+func queueSettleDecisionsQueryQueues(b *store.WriteBatch, artifactID string) {
+	b.Queue(fmt.Sprintf("clear the re-index queues of the decisions query %s", artifactID),
+		settleDecisionsQueryQueuesStatement, artifactID)
+}
+
+// SettleDecisionsQueryQueues clears, in tx (through write, so it joins ctx's ledger after the
+// version insert and its index), every row of refs_grammar_owed and refs_forms_owed naming the
+// decisions query node artifactID (settleDecisionsQueryQueuesStatement). Version 1's writers
+// (api's queueDecisionsFirstVersion and conversion's writeDecisionsQuery) call it after indexing
+// version 1, which settles the artifact rows and leaves the scope row the insert's trigger made.
+func SettleDecisionsQueryQueues(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return writeExec(ctx, tx, fmt.Sprintf("clear the re-index queues of the decisions query %s", artifactID),
+		settleDecisionsQueryQueuesStatement, artifactID)
 }
 
 // versionRenderAt renders the document artifactID as of at for the census of the rendered

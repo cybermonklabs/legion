@@ -1200,7 +1200,7 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	// The upload route writes its version itself and carries its approval through its own entry
 	// (the api package's storeArtifact calls CarryUploadedApproval), so that route's own guard
 	// call is what refuses it here.
-	if err := CarryUploadedApproval(joinedCtx, tx, service.events, artifactID, restored.Version.Number, "Context\n", nil, service.serverURL); !errors.Is(err, errApprovalCarriedTwice) {
+	if err := CarryUploadedApproval(joinedCtx, tx, service.events, artifactID, restored.Version.Number, "Context\n", nil, RecordCarry{}, service.serverURL); !errors.Is(err, errApprovalCarriedTwice) {
 		t.Fatalf("the upload route's carry over the same document in the same transaction = %v, want %v", err, errApprovalCarriedTwice)
 	}
 }

@@ -270,13 +270,16 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 // numbers of every artifact of the room, which any version written of any of them moves, and
 // markedAt the room's pending settlement's (keyed by the tree artifact), which every append to the
 // room moves. unreadable is set on a room liveAhead remembers because a fragment of it did not
-// read back (indexOwedRoom).
+// read back (indexOwedRoom). decisions is true for an issue's decisions query node
+// (refs.DecisionsQuerySQL), which holds no fragment of a room and no block (R15), so
+// indexOwedDocument reads no room and indexes it handed no text.
 type owedDocument struct {
 	id         string
 	version    int
 	markedAt   time.Time
 	room       string
 	unreadable bool
+	decisions  bool
 }
 
 // resident is the room a server holds document in: its issue room, or the document itself.
@@ -1026,7 +1029,8 @@ func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocume
 		            then coalesce((select max(v.number) from artifact_versions v
 		                           where v.artifact_id = b.artifact_id and v.markdown is not null), 0)
 		            else `+roomRevisionSQL("room.id")+` end,
-		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = coalesce(room.id, b.artifact_id))
+		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = coalesce(room.id, b.artifact_id)),
+		       room.id is null and exists (select 1 from artifacts a where a.id = b.artifact_id and `+refs.DecisionsQuerySQL("a")+`)
 		from (
 			(select artifact_id from document_block_versions
 			 where version is null and ($1::uuid is null or artifact_id > $1::uuid)
@@ -1053,7 +1057,7 @@ func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocume
 	for rows.Next() {
 		var document owedDocument
 		var markedAt *time.Time
-		if err := rows.Scan(&document.id, &document.room, &document.version, &markedAt); err != nil {
+		if err := rows.Scan(&document.id, &document.room, &document.version, &markedAt, &document.decisions); err != nil {
 			return nil, fmt.Errorf("scan a document owed a block index: %w", err)
 		}
 		if markedAt != nil {
@@ -1087,22 +1091,45 @@ func roomRevisionSQL(room string) string {
 // block index (drainOwedDocument), which is the whole of its re-index, and a `scope` row, which
 // names a document whose question blocks moved, through a re-index of every source whose text
 // belongs to that document (reindexScope). The last two name no text of their own, which is why
-// refs.ReindexOwed answers an error for either rather than settling such a row. Each row is
-// settled only while it still holds the enqueued_at it was listed with, so a write that lands
-// meanwhile leaves it owed for the next tick, which reads its newer text.
+// refs.ReindexOwed answers an error for either rather than settling such a row. An `artifact` or
+// `scope` row naming an issue's decisions query node (isDecisionsQuery) is settled here without
+// owing a block index or walking a scope: the node holds no fragment of a room and no block (R15),
+// no version of it is indexed over its stored text, and no source's text belongs to it, so a row
+// already in the database carries no real debt. Each row is settled only while it still holds the
+// enqueued_at it was listed with, so a write that lands meanwhile leaves it owed for the next tick,
+// which reads its newer text.
 func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, error) {
 	switch source.Kind {
 	case "comment", "ask", "message":
 		return refs.ReindexOwed(ctx, s.store.Pool, source, s.serverURL)
-	case "artifact":
-		return s.drainOwedDocument(ctx, source)
-	case "scope":
+	case "artifact", "scope":
+		decisions, err := isDecisionsQuery(ctx, s.store.Pool, source.ID)
+		if err != nil {
+			return false, err
+		}
+		if decisions {
+			return refs.SettleOwed(ctx, s.store.Pool, source)
+		}
+		if source.Kind == "artifact" {
+			return s.drainOwedDocument(ctx, source)
+		}
 		if err := s.reindexScope(ctx, source.ID); err != nil {
 			return false, err
 		}
 		return refs.SettleOwed(ctx, s.store.Pool, source)
 	}
 	return false, fmt.Errorf("re-index %s %s: not a kind the queue holds", source.Kind, source.ID)
+}
+
+// isDecisionsQuery reports whether artifactID names an issue's decisions query node
+// (refs.DecisionsQuerySQL), false for any other artifact or one that is gone.
+func isDecisionsQuery(ctx context.Context, q Queryer, artifactID string) (bool, error) {
+	var decisions bool
+	if err := q.QueryRow(ctx, `select exists (select 1 from artifacts a where a.id = $1::uuid and `+refs.DecisionsQuerySQL("a")+`)`,
+		artifactID).Scan(&decisions); err != nil {
+		return false, fmt.Errorf("read whether %s is a decisions query: %w", artifactID, err)
+	}
+	return decisions, nil
 }
 
 // oweDocumentIndex owes a document a block index, which is what a document's re-index with the
@@ -1318,7 +1345,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 	var markdown string
 	var blocks []model.ArtifactBlock
 	unreadable := false
-	if document.version != 0 {
+	if document.version != 0 && !document.decisions {
 		markdown, blocks, err = s.TextWithBlocks(ctx, document.id)
 		switch {
 		case ctx.Err() != nil:
@@ -1331,7 +1358,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 			return false, false, err
 		}
 	}
-	if s.roomHoldsUnstoredUpdate(document.id) {
+	if !document.decisions && s.roomHoldsUnstoredUpdate(document.id) {
 		return false, true, nil
 	}
 
@@ -1357,13 +1384,14 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 	var newest *int
 	var newestMarkdown *string
 	var newestAt *time.Time
-	var owed, cleared bool
+	var owed, cleared, decisions bool
 	var markedAt *time.Time
 	err = tx.QueryRow(queued, `
 		select v.number, v.markdown, v.created_at,
 		       b.version is null or `+refs.OwedMarkListed("b", "$2::integer")+`,
 		       b.store_owed_at is null or b.store_owed_rule <= $2::integer,
-		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = b.artifact_id)
+		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = b.artifact_id),
+		       exists (select 1 from artifacts a where a.id = b.artifact_id and `+refs.DecisionsQuerySQL("a")+`)
 		from document_block_versions b
 		left join lateral (
 			select number, markdown, created_at from artifact_versions
@@ -1371,7 +1399,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 			order by number desc limit 1
 		) v on true
 		where b.artifact_id = $1
-	`, document.id, s.markingRule).Scan(&newest, &newestMarkdown, &newestAt, &owed, &cleared, &markedAt)
+	`, document.id, s.markingRule).Scan(&newest, &newestMarkdown, &newestAt, &owed, &cleared, &markedAt, &decisions)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, nil
 	}
@@ -1417,7 +1445,13 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 		return false, false, nil
 	}
 	mismatched := false
+	var tree *pmdoc.Node
 	switch {
+	case decisions:
+		// An issue's decisions query node holds no fragment of a room and no block (R15): stand
+		// its block index with no blocks and no text, as version 1's index does, rather than
+		// indexing its stored rendering.
+		markdown, blocks, tree = "", nil, &pmdoc.Node{Type: "doc"}
 	case unreadable || markdown == "" && len(blocks) == 0:
 		markdown, blocks = stored, nil
 	case markdown != stored && markedAt != nil:
@@ -1440,7 +1474,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 	if err != nil {
 		return false, false, err
 	}
-	_, stated, err := s.indexRenderedVersion(queued, tx, document.id, refs.OneVersion(document.id, version, versionAt), nil, true, markdown, blocks, nil, nil)
+	_, stated, err := s.indexRenderedVersion(queued, tx, document.id, refs.OneVersion(document.id, version, versionAt), nil, true, markdown, blocks, tree, nil)
 	if err != nil {
 		return false, false, err
 	}

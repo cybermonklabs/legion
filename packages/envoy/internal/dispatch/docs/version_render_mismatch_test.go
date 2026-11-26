@@ -382,7 +382,7 @@ func renderStepCarryOfACarry(t *testing.T, rig *renderRig, service *Service) {
 	if err != nil {
 		t.Fatalf("write the node of the upload's version of %s: %v", refKey, err)
 	}
-	if err := CarryUploadedApproval(joined, tx, service.events, spec, version.Number, stored, nil, service.serverURL); err != nil {
+	if err := CarryUploadedApproval(joined, tx, service.events, spec, version.Number, stored, nil, RecordCarry{}, service.serverURL); err != nil {
 		t.Fatalf("carry the approval of %s to the upload's version: %v", refKey, err)
 	}
 	if err := causeInWritePhase(joined, tx, graphstore.Joined(stated, node), graphstore.NoEvent); err != nil {

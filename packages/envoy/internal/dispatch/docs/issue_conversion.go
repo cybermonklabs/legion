@@ -941,8 +941,9 @@ func (c *issueConversion) writeQueries(ctx context.Context) error {
 }
 
 // writeDecisionsQuery writes the issue's decisions query node and its row, a doc no fragment holds,
-// its empty first version with that version's node, and the version's index, caused at the
-// sentinel: no event records the conversion's own documents.
+// its empty first version with that version's node, and the version's index, clearing its re-index
+// queue rows (SettleDecisionsQueryQueues), caused at the sentinel: no event records the
+// conversion's own documents.
 func (c *issueConversion) writeDecisionsQuery(ctx context.Context) error {
 	actorJSON, err := json.Marshal(ConversionActor)
 	if err != nil {
@@ -988,6 +989,9 @@ func (c *issueConversion) writeDecisionsQuery(ctx context.Context) error {
 	_, indexed, err := c.s.indexDocument(ctx, c.tx, id, versions, "", renderedTree{tree: &pmdoc.Node{Type: "doc"}}, nil)
 	if err != nil {
 		return fmt.Errorf("index the decisions query of %s: %w", c.key, err)
+	}
+	if err := SettleDecisionsQueryQueues(ctx, c.tx, id); err != nil {
+		return fmt.Errorf("clear the re-index queues of the decisions query of %s: %w", c.key, err)
 	}
 	stated := graphstore.Joined(versionNode, indexed)
 	if err := graphstore.Caused(ctx, c.tx, stated, graphstore.NoEvent); err != nil {

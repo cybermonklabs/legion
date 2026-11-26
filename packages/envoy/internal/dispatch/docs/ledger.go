@@ -224,6 +224,12 @@ type Ledger struct {
 	// runs once the transaction has committed and its rooms' writes are published, and before its
 	// events are published (fillOwedDigests).
 	fills []string
+	// markedRooms is each issue room a write of this transaction ran the room's pass of outside the
+	// room's settlement and marked its issue's queries owed for (markRoomQueries), and marks each
+	// issue whose mark the write phase took, whose queries are drained once the transaction has
+	// committed, the fill of its owed digests first (drainOwed).
+	markedRooms []string
+	marks       []string
 	// deferred is each version this transaction queued that renders from the tree and that no pass
 	// of it stated - one whose write left its blocks to the block-index reconciliation, or left an
 	// issue room owed - whose version_renders row the write phase inserts with no time, no seq and
@@ -1568,11 +1574,14 @@ func collectVersionText(ctx context.Context, artifactID, markdown string) {
 // statements after it), then the steps registered to follow that batch (AfterWrites), and commits
 // it; then credits, releases and publishes what its document operations recorded (see Ledger),
 // which frees each room's writer slot; then fills the record digests its write phase left owed
-// (fillOwed), each issue's in a transaction of its own; then closes this process's instance of
+// (fillOwed), each issue's in a transaction of its own, and drains the queries of each issue its
+// write phase marked owed (markRoomQueries, drainOwed), each issue's fill and drain in
+// transactions of their own, the fill first; then closes this process's instance of
 // each issue room a document joined in it (closeJoinedRooms), publishes the events its document
-// operations appended and then those of the fills, so a caller's own events, published after
-// Commit returns, follow them, and stores the display trees of the versions' markdown
-// (storeVersionTrees). The fill follows the publish because it takes the issue's owner lock again,
+// operations appended and then those of the fills and the drains, so a caller's own events,
+// published after Commit returns, follow them, and stores the display trees of the versions'
+// markdown (storeVersionTrees). The fill and the drain follow the publish because each takes the
+// issue's owner lock again,
 // which the commit freed: another writer of the issue may hold that lock by then and wait for
 // this write's slot (joinLiveWrite), a wait Postgres cannot see, so a fill that held the slot
 // would wait on that writer for good. A statement of the write phase that fails, a callback
@@ -1585,7 +1594,11 @@ func (l *Ledger) Commit(ctx context.Context) error {
 		return err
 	}
 	l.publish()
-	l.events = append(l.events, l.service.fillOwed(ctx, l.takeFills())...)
+	// An issue whose queries the write phase marked is filled by its drain, which fills first.
+	marks := l.takeMarks()
+	fills := slices.DeleteFunc(l.takeFills(), func(issue string) bool { return slices.Contains(marks, issue) })
+	l.events = append(l.events, l.service.fillOwed(ctx, fills)...)
+	l.events = append(l.events, l.service.drainOwed(ctx, marks)...)
 	l.closeJoinedRooms(ctx)
 	l.publishEvents()
 	l.storeVersionTrees(ctx)

@@ -1492,12 +1492,15 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 	// repins it to the record (fillOwedDigests); a carry to a version that restores the approved
 	// text writes behind a row of the approval's digest the write phase holds to the version's
 	// record (carryRestored). Each version's move ran in its write, before the pass, so an open
-	// request names the version by now. A closed issue's version carries nothing.
+	// request names the version by now. A closed issue's version carries nothing. The record case
+	// weighs each version by the facts of the room's whole pass (roomPassRecord): a block written
+	// into one document's fragment can move another document's query.
 	if !st.issueClosed {
+		record := roomPassRecord(index)
 		for _, write := range writes {
 			document, version, fragment := write.fragment.document, write.result.version, write.fragment
 			if err := s.carryApproval(ctx, tx, document, version,
-				renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, eventSink(ctx)); err != nil {
+				renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, record, eventSink(ctx)); err != nil {
 				return err
 			}
 		}

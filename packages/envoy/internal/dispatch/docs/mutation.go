@@ -3223,12 +3223,13 @@ func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID 
 		// The document's newest approval carries to the version this writes by carryApproval's
 		// rules: every ask block of the version agrees with its node, and the version holds the
 		// approved text again or every difference from it is one of the carry cases
-		// (carryVerdict). It runs after the move, so an open request already names this version
-		// when the carry answers it in the approver's name, and its writes keep their place,
-		// before the version's artifact.version (R14), or, for a restore, behind the row it writes
-		// itself (carryRestored).
+		// (carryVerdict), or its record is the approved one by the facts its pass stated
+		// (versionWriteRecord, recordUnmoved). It runs after the move, so an open request already
+		// names this version when the carry answers it in the approver's name, and its writes keep
+		// their place, before the version's artifact.version (R14), or, for a restore, behind the
+		// row it writes itself (carryRestored).
 		if !spec.roomIndexed {
-			if err := s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx)); err != nil {
+			if err := s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, versionWriteRecord(ctx, spec.steps, result.blocks), eventSink(ctx)); err != nil {
 				return versionWriteResult{}, err
 			}
 		}

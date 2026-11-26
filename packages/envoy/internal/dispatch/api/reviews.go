@@ -721,6 +721,31 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if settled {
+		// A document of a converted issue stands approved by its digest, at whatever version its
+		// approval names. Where that version is before the latest one and the latest version's
+		// record digest is the one the approval stands on, the approval is carried to the latest
+		// version in the approver's name (docs.CarryApprovalToLatest), so the Legion daemon, which
+		// reads an approval at latest_version alone, reads it approved too; the carry answers an
+		// open request that names that version. Each named document is carried on its own.
+		carried := false
+		for _, document := range documents {
+			if err := docs.CarryApprovalToLatest(documentCtx, tx, s.deps.Events, document.ArtifactID, s.deps.ServerURL); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			_, queued := ledger.PendingReview(document.ArtifactID)
+			carried = carried || queued
+		}
+		if carried {
+			if err := ledger.Commit(r.Context()); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if err := s.attachApprovals(r.Context(), pool, []*model.Artifact{&artifact}); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
 		// The approval's reason is read where it stands: this answer carries what the request
 		// has just written, and the write beside it stored the tree.
 		WriteJSON(w, http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,
