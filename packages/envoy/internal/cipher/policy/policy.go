@@ -985,11 +985,12 @@ func setOf(profiles Profiles, secrets map[string]Secret, refused map[string]Refu
 // order, for each of those six it carries. The project, project-channels and judge tags are
 // written only by a secret that carries one, so the secrets of a deployment that tags none write
 // the bytes they wrote before the tag existed and no deployed version shifts. The guidance tag is
-// in no line (Secret.Guidance). A secret served as a profile, by its own name behind the proxy, or
-// by its own name with a scopes tag, adds one line more, "<Name>\tprofile=<digest>\n"
-// (Secret.ProfileDigest), rather than a field of the line above it, so every line a stored secret
-// served by its own name behind no proxy and with no scopes tag writes is byte-identical to the one
-// it wrote before profiles existed, and its Version does not shift.
+// in no line (Secret.Guidance). A secret served as a profile, or by its own name behind the proxy,
+// adds one line more, "<Name>\tprofile=<digest>\n" (Secret.ProfileDigest), rather than a field of
+// the line above it, so every line a stored secret served by its own name behind no proxy writes
+// is byte-identical to the one it wrote before profiles existed, and its Version does not shift.
+// Such a secret's own fingerprint, which a scopes tag gives it (scopesDigest), is written nowhere:
+// it holds the scopes tag alone, which the line above holds already.
 // Entries are ascending by the secret's name in the store
 // (the slug) — the exact order Load wrote before NewSet existed, so deployed plain-secret digests
 // do not shift. (Sorting by the uppercased Name would NOT be equivalent: '-' is 0x2D, '_' is
@@ -1039,7 +1040,7 @@ func NewSet(secrets map[string]Secret) *Set {
 		default:
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags, judge)
 		}
-		if s.secret.ProfileDigest != "" {
+		if s.secret.ProfileDigest != "" && (s.secret.Profile != nil || s.secret.Proxy != "") {
 			fmt.Fprintf(digest, "%s\tprofile=%s\n", s.secret.Name, s.secret.ProfileDigest)
 		}
 	}
