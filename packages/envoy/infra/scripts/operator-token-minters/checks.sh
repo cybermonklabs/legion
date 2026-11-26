@@ -125,13 +125,18 @@ held_list() {
 
 # --- Roles. ---
 
-# role_perms ROLE: sets ROLE_FILE to a file listing the role's permissions, from the previews'
-# custom roles or `gcloud iam roles describe`; returns 1 with ROLE_ERROR.
+# role_file ROLE: sets ROLE_FILE to the file under $WORK/roles that lists the role's permissions,
+# named by the role with each character outside A-Za-z0-9._- made _. role_perms and the previews'
+# custom roles (step-code-iam.sh) name it so. The shell makes the name: a run asks for a role's
+# file about a hundred times, and a process for each would cost more than the describes do.
+role_file() { ROLE_FILE="$WORK/roles/${1//[^A-Za-z0-9._-]/_}"; }
+# role_perms ROLE: sets ROLE_FILE (role_file) to a file listing the role's permissions, from the
+# previews' custom roles or `gcloud iam roles describe`, once a run; returns 1 with ROLE_ERROR.
 role_perms() {
-  ROLE_FILE="$WORK/roles/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+  role_file "$1"
   ROLE_ERROR=""
   if [ -e "$ROLE_FILE.error" ]; then
-    ROLE_ERROR="$(cat "$ROLE_FILE.error")"
+    ROLE_ERROR="$(<"$ROLE_FILE.error")"
     return 1
   fi
   [ ! -e "$ROLE_FILE" ] || return 0
@@ -147,4 +152,19 @@ role_perms() {
     return 1
   fi
   sort -u "$WORK/role.list" >"$ROLE_FILE"
+}
+# role_granted CHECK: sets GRANTED to those of CHECK's permissions (CHECK_PERMS, in that order) that
+# the role file ROLE_FILE (role_perms) lists, comma-separated, or "" for none. Each role file is
+# read into ROLE_LISTED once a run, so a preview's many bindings of one role start no process.
+declare -A ROLE_READ=() ROLE_LISTED=()
+role_granted() {
+  local permission
+  if [ -z "${ROLE_READ[$ROLE_FILE]:-}" ]; then
+    while IFS= read -r permission; do ROLE_LISTED["$ROLE_FILE $permission"]=1; done <"$ROLE_FILE"
+    ROLE_READ[$ROLE_FILE]=1
+  fi
+  GRANTED=""
+  for permission in ${CHECK_PERMS[$1]}; do
+    [ -z "${ROLE_LISTED["$ROLE_FILE $permission"]:-}" ] || GRANTED="${GRANTED:+$GRANTED,}$permission"
+  done
 }

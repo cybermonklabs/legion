@@ -4,9 +4,11 @@
 # operator-token-minters.test.sh puts first on PATH, each answering from the world directory a run
 # names. Sourced by the test, whose header says what each fake models.
 # fake writes the fake command $1 from the body on stdin, after the header every fake shares: the
-# world directory it reads, which each run names in OPERATOR_MINTERS_WORLD.
+# world directory it reads, which each run names in OPERATOR_MINTERS_WORLD. A fake starts the bash
+# this test runs under ($BASH) by its path: a run calls the fakes about 56 times, and an
+# `env bash` line would start env for each.
 fake() {
-  { printf '#!/usr/bin/env bash\nset -euo pipefail\nworld="${OPERATOR_MINTERS_WORLD:?the test names the world in OPERATOR_MINTERS_WORLD}"\n' && cat; } >"$fake_bin/$1"
+  { printf '#!%s\nset -euo pipefail\nworld="${OPERATOR_MINTERS_WORLD:?the test names the world in OPERATOR_MINTERS_WORLD}"\n' "$BASH" && cat; } >"$fake_bin/$1"
   chmod +x "$fake_bin/$1"
 }
 
@@ -29,11 +31,11 @@ case "${words[*]}" in
   "iam roles describe "*)
     role="${words[3]}"
     [ ! -e "$world/refuse-describe" ] || refuse iam.roles.describe "Permission 'iam.roles.get' denied on resource (or it may not exist)."
-    if ! jq -e --arg r "$role" 'has($r)' "$world/roles.json" >/dev/null; then
+    # One jq: the role's description when the role table holds it, else nothing (jq -e exits 4).
+    jq -e --arg r "$role" 'select(has($r)) | {name: $r, title: $r, stage: "GA", etag: "AA==", includedPermissions: .[$r]}' "$world/roles.json" || {
       echo "ERROR: (gcloud.iam.roles.describe) NOT_FOUND: The role named $role was not found." >&2
       exit 1
-    fi
-    jq --arg r "$role" '{name: $r, title: $r, stage: "GA", etag: "AA==", includedPermissions: .[$r]}' "$world/roles.json"
+    }
     ;;
   "projects describe $project")
     jq -n --arg p "$project" --arg n "$number" \
@@ -213,9 +215,10 @@ forbidden() {
 }
 # A world marked token-secret-data gives each token Secret data, as a real API server holds it;
 # every call then looks under the run's work directories ($TMPDIR/operator-token-minters.*) for
-# that data, and records where it finds it (row cp).
-secret_data_b64="$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"
+# that data, and records where it finds it (row cp). The data's base64 is worked out in that world
+# alone: every other call of this fake would start a base64 for nothing.
 if [ -e "$dir/token-secret-data" ]; then
+  secret_data_b64="$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"
   for work in "${TMPDIR:-/tmp}"/operator-token-minters.*/; do
     [ -d "$work" ] || continue
     found="$(grep -rlF -e "$secret_data_b64" -e SECRET-DATA-CANARY-7f3a "$work" 2>/dev/null || true)"

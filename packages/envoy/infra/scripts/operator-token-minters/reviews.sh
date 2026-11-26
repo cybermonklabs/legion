@@ -279,8 +279,11 @@ judge_reviews() {
   local principal label verdict error reason policy residual
   FOUND_SAS=() RESIDUAL_SAS=()
   csr_reset
+  # Only an allowed or errored review of a principal but the witness is judged; one awk picks them
+  # out, since most of a cluster's thousands of reviews are refused, and a shell read of each costs
+  # more than the run's other steps.
+  awk -F"$US" '$1 != "witness" && ($3 == "allowed" || $3 == "error")' "$WORK/review.rec" >"$WORK/review-judged.rec"
   while IFS="$US" read -r -u 4 principal label verdict error reason policy residual; do
-    [ "$principal" != witness ] || continue
     case "$verdict" in
       allowed)
         ! csr_part "$principal" "$label" "$reason" || continue
@@ -288,7 +291,7 @@ judge_reviews() {
         ;;
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
-  done 4<"$WORK/review.rec"
+  done 4<"$WORK/review-judged.rec"
   witness_held || { unknown "$1" "$WITNESS_ERROR"; return 1; }
 }
 # named_principal KIND NAMESPACE NAME: sets NAMED_PRINCIPAL to the principal a binding subject a live
@@ -738,8 +741,8 @@ binding_rights() {
   fi
 }
 # is_rights VALUE: whether VALUE is exactly one JSON array, as rights_json writes rights, by rec.jq's
-# one_array, the one place that rule is written. An empty VALUE, which a jq program that failed or
-# printed nothing leaves, is none, so a step never reads it as no rights.
+# is_one_array (through one_array), the one place that rule is written. An empty VALUE, which a jq
+# program that failed or printed nothing leaves, is none, so a step never reads it as no rights.
 is_rights() { printf '%s' "$1" | jq -s -L "$LIB" 'include "rec"; one_array(.; "rights") | empty' >/dev/null 2>&1; }
 # is_list FILE ERR: whether FILE holds one JSON object whose items is an array, as kubectl get -o json
 # writes a list. jq reads an empty answer, which a proxy that drops a response's body sends with exit
@@ -768,16 +771,31 @@ shape_error() {
   return 1
 }
 # with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
-# where both hold one, RIGHTS's label stays. Both reach jq on its stdin, never its command line. It
-# refuses anything but two JSON arrays (is_rights), an empty argument included, printing why and
-# returning 1: a step assigns its result, so under errexit the run stops there, UNKNOWN, rather
-# than go on without the rights the argument owed. Every rights value a step joins goes through it.
-# custom_rights, admission_rights and binding_rights check what they build with is_rights too, so a
-# failed build reads as their own UNKNOWN, naming those rights, rather than stopping the run.
+# where both hold one, RIGHTS's label stays. Both reach jq through files (process substitutions),
+# never its command line. It refuses anything but two JSON arrays (rec.jq's is_one_array, the rule
+# is_rights holds), an empty argument included, printing why and returning 1: a step assigns its
+# result, so under errexit the run stops there, UNKNOWN, rather than go on without the rights the
+# argument owed. Every rights value a step joins goes through it, about twenty times a run, so the
+# check and the join are one jq. custom_rights, admission_rights and binding_rights check what they
+# build with is_rights too, so a failed build reads as their own UNKNOWN, naming those rights,
+# rather than stopping the run.
 with_rights() {
-  if ! is_rights "$1" || ! is_rights "$2"; then
-    echo "with_rights takes two JSON arrays, and was given: $(printf '%.60s' "$1"), $(printf '%.60s' "$2")" >&2
-    return 1
-  fi
-  printf '%s\n%s\n' "$1" "$2" | jq -c -s '.[0] + .[1] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)'
+  local status=0
+  jq -n -c -L "$LIB" --slurpfile rights <(printf '%s' "$1") --slurpfile more <(printf '%s' "$2") '
+    include "rec";
+    if is_one_array($rights) and is_one_array($more) then
+      $rights[0] + $more[0] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)
+    else "" | halt_error(3) end' 2>"$WORK/with-rights.err" || status=$?
+  case "$status" in
+    0) return 0 ;;
+    # 2: an argument that is not JSON at all; 3: JSON, but not one array each.
+    2 | 3)
+      echo "with_rights takes two JSON arrays, and was given: $(printf '%.60s' "$1"), $(printf '%.60s' "$2")" >&2
+      return 1
+      ;;
+    *)
+      cat "$WORK/with-rights.err" >&2
+      return "$status"
+      ;;
+  esac
 }
