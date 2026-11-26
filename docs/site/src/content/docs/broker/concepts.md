@@ -1446,10 +1446,12 @@ follow the session that asked, so a person's other session sees the request but 
 grant, and a session that resumes on another box gets its own grant back even after another
 session of that person enrolled first.
 A claim is the one owner a grant follows.
-A role's next pod comes up under a session of its own, which the carry cannot follow, so the next
-enrollment of a claim also takes the grants and the pending requests a dormant enrollment of that
-claim still holds, after the carry has taken what its own session left; a pod of the claim that is
-still running keeps what it holds (`enroll.go`, `adopt`).
+A role's next pod resumes the claim's session, and the carry follows it there.
+A claim that comes back in a new session is one the carry cannot follow.
+So the next enrollment of a claim also takes the grants and the pending requests that a dormant
+enrollment of that claim still holds.
+It takes them after the carry has taken what its own session left.
+A pod of the claim that is still running keeps what it holds (`enroll.go`, `adopt`).
 The next pod can also come up before the pod before it is ended, when the daemon's revoke lands late
 or never and the old enrollment lives until its lease lapses.
 Then the end of the old enrollment, when it comes, hands what it holds to the running pod of the

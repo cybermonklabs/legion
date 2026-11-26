@@ -156,9 +156,9 @@ pass.
 
 The daemon starts each phase's worker itself, one phase at a time, and runs only the phases of the
 steps the issue's [plan](#the-plan-of-an-issue) names, in the order the plan names them; the table
-below lists them in the order of the default steps. A role keeps
-its session between its assignments until its issue leaves the workflow, so its next task reaches
-the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
+below lists them in the order of the default steps. A role keeps its session between its
+assignments, and also after its issue leaves the workflow, so its next task reaches the same
+session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
 minutes and no working copy or bookmark of its workspace holds a commit that origin does not hold,
 nor the working copy a change, and the next wake for one of its roles — a
@@ -535,8 +535,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue
-  moves to is raised, so a completion the role sends for the phase it lost
-  still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
+  moves to is raised. So the role's completion for the phase it lost still names that phase's
+  entry. The daemon records the first such completion, which moves nothing, and refuses a later one
+  with `HANDOFF_NOT_CURRENT_PHASE`.
   `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
   while the issue stands in that phase. A completion of another entry than the role's phases row
   names, from a role whose phase the issue is no longer in, is answered

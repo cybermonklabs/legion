@@ -210,8 +210,9 @@ the next of them:
 
 Each fact the read applies carries an id built from what GitHub showed, never from the time, so
 one observation is applied once however many reads see it, and the webhook arriving after it
-changes nothing. These reads share the implement App's hourly limit with every pane's `gh`: a
-rate-limit answer ends the start's reads there, and each issue's next handoff reads it. The
+changes nothing. These reads share the implement App's hourly limit with the `gh` of each
+implementer's and merger's pane. A rate-limit answer ends the start's reads there, and each issue's
+next handoff reads it. The
 implementer's completion of implementing reads its branch's open pull request with the implement
 App too, and is refused `HANDOFF_NO_PULL_REQUEST` when there is none and the record holds none
 merged.
@@ -1222,7 +1223,8 @@ To hand the controller back to a person, set `controller: operator`, drop
 and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
-Switching to `controller: daemon` again starts a fresh controller, not the old session.
+When you switch to `controller: daemon` again, the daemon relaunches the retired claim about a
+minute later, on the session it recorded.
 
 A daemon built before LEGION-592 cannot run against a database a `controller: daemon` daemon used:
 it lists the controller's claim as an issue keyed `""`, which every agent's plugin refuses. So to
@@ -1359,9 +1361,9 @@ Closing the terminal leaves the project without one, and the daemon logs
    began under its own deadlines. Until the stop lands the hold lives only in the daemon's memory,
    so before restarting
    the daemon wait until `legion claims list` shows the claim `suspended`, not merely
-   `suspensionHeld`. The resumed agent continues the same conversation in a new pod — and that
-   pod brings a disk of its own, so its workspace is provisioned afresh from the issue's branch
-   and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
+   `suspensionHeld`. The resumed agent continues the same conversation. It comes back in the
+   issue's pod where that pod is still there, with the workspace as the issue's roles left it. Let
+   the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
