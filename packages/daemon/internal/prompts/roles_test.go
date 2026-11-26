@@ -425,7 +425,7 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"### A check that failed",
 		"Read its log, and the same check on the base branch, and decide its cause.",
 		"A check that fails on the base too says nothing about this change either, and it still stops your merge",
-		"the base's fix is no reason to wait unless an issue that tracks it is claimed, `in_progress`, and its holder told you on Envoy that it is working on it now",
+		"the base's fix is no reason to wait unless an issue that tracks it is claimed, `in_progress`, and its holder said on Envoy that it works on it now",
 		"Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves",
 	} {
 		if !strings.Contains(merger, want) {

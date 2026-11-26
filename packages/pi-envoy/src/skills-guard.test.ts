@@ -210,7 +210,7 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // inert clause, or the wording of a rule:
 //
 // - 7: skills/dispatch-first/SKILL.md's secret-request sentence: the reason "is already in their
-//   Inbox, so", which skills/agent-secrets/SKILL.md says.
+//   Inbox, so it", which skills/agent-secrets/SKILL.md says.
 // - 3: the same skill's searched bullet, "each you did not, with its queries" for "each part you
 //   did not, with the queries you ran": the wording of a rule.
 // - 11: skills/dispatch/SKILL.md's description: its list "a message, comment, ask, artifact,
@@ -221,6 +221,8 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 //   rule.
 // - 14: skills/dispatch-writing-specs/SKILL.md's "A spec is a conversation, not a document you
 //   write and then ask about.", which the heading "The conversation" and its steps 2 and 3 say.
+//   This reverses the 2026-11-12 reading above, which kept that sentence as the conversation
+//   rule.
 // - 2: the same skill's ask-block bullet, "2 to 4 short options;" for "2 to 4 options, short and
 //   self-contained:": "self-contained" is what the clause after it says.
 // - 7: the same skill's measure bullet: "No unmeasured number goes in a premise.", which the
@@ -237,7 +239,7 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 //   requirement, plan_task and check.
 //
 // So 2,362 + 19 + 30 - 74 = 2,337. Counted as this test counts, over the staged skills, the three
-// stand at 2,337 words, 2 under the bound.
+// stand at 2,337 words, 3 under the bound.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))

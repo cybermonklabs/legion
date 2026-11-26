@@ -83,7 +83,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   Later phases push to that branch and edit that pull request.
 
 - No deferrals.
-  A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request, or a child in its repository.
+  A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request, or a child where it belongs.
   So is any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 

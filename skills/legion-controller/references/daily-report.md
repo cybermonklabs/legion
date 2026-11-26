@@ -20,7 +20,10 @@ legion({ op: "set_status", issue: "<report KEY>", status: "icebox" })
 
 ## When
 
-After the turn's own work, read the report issue, and post when its `Events:` show no `message.created` from today.
+After the turn's own work, read the report issue.
+When it reads `Status: done`, set it back to `icebox` with the `set_status` above, and say so in the day's report:
+a closed issue refuses the upload of the consolidation record (`skill://legion-controller/references/consolidation.md`), though comments and messages on it still post.
+Post when its `Events:` show no `message.created` from today.
 
 ## What
 
