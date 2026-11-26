@@ -98,7 +98,7 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 		// An operator's suspension and resume is a launch the machine charges nothing for: the
 		// resumed session starts with no end counted.
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		h.must(RequestResume{Claim: h.token})
+		h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 		h.wantState(StateLaunching)
 		h.wantEnds(0)
 
@@ -181,7 +181,7 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
 		h.wantState(StateSuspended)
 		resumes, spawns = h.startsSoFar()
-		h.must(RequestResume{Claim: h.token})
+		h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 
 		h.wantResumedSince(resumes, spawns, session)
 		h.wantEnds(1)

@@ -1948,13 +1948,14 @@ func interruptedTask(cause string) string {
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
-// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
-// with --fresh-session, or one no session store holds any more. Nothing in a new session says
-// that an older one existed, so a worker reading an empty transcript takes its task for a fresh
-// start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded,
-// and then the two things that outlive a session: the issue's branch, and the handoff records its
-// phases wrote on the Dispatch issue.
+// abandoned (forgetSession): one whose last turns the provider refused, one left behind by a
+// fresh session the operator or the controller asked for or by the operator's forget-session
+// (forgottenBy), or one no session store holds any more. Nothing in a new session says that an
+// older one existed, so a worker reading an empty transcript takes its task for a fresh start and
+// does again what is already pushed (item 4 of the refusal section of the phase-workflow spec). It
+// names the session that was left behind and why in the words the claim recorded, and then the
+// two things that outlive a session: the issue's branch, and the handoff records its phases wrote
+// on the Dispatch issue.
 //
 // The controller works no checkout and has no architect, so it is told neither: its sentence
 // (controllerAbandonedTask) names the session it replaces and why, and says that Envoy messages

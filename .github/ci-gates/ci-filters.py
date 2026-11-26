@@ -26,8 +26,8 @@ GATE = gate("ci_filters", "ci-filters", runs=[
                            "local action a step's `uses:` names, for the inputs it checks"),
     (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
     (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
-    (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
-                                             "ci-caches.yaml, which ci_filter_coverage.main() runs"),
+    (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and the "
+                                             "cache fill workflows, which ci_filter_coverage.main() runs"),
     (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
                                           "check-workflow-files.sh imports its repeated-key test"),
     (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
@@ -41,7 +41,8 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     (BROWSER_SITE, "ci_filter_coverage.py looks the dispatch_browser gate's step citations up in it"),
     (BROWSER_NIGHTLY, "dispatch-browser.yaml's other caller: a change to either must re-run this check, which "
                       "holds the dispatch_browser filter to that gate"),
-    (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to every workflow's restores"),
+    (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves, and ci-caches-changes.yaml's, to every "
+                     "workflow's restores"),
     (".github/workflows/**", "ci_workflow_rules.py reads every workflow of the directory: "
                              "check_one_merge_group_workflow, which refuses a new one and so has to run on the change "
                              "that adds it, check_cache_round_trip, which holds every restore of a filled family to "

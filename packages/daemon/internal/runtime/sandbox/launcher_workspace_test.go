@@ -19,6 +19,7 @@ import (
 // asked, and the one that said readsWorkspace is sent the read and its answer comes back to the
 // request (ServeLauncher's workspace-work-result case).
 func TestOnlyALauncherThatSaysItReadsAWorkspaceIsAskedToReadIt(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	serve := func(token claim.Token, hello shimwire.LauncherHello) (*launcherSession, net.Conn) {
 		t.Helper()
@@ -92,6 +93,7 @@ func TestOnlyALauncherThatSaysItReadsAWorkspaceIsAskedToReadIt(t *testing.T) {
 // and names the pod on its empty answer too. The control is a launcher that read one commit, whose
 // answer is that work in that pod.
 func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
+	t.Parallel()
 	const commit = "f2f134541b30dfa5160a5d1ce5e17b76c967c661"
 	for _, tc := range []struct {
 		name    string
@@ -168,6 +170,7 @@ func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
 // control is the pod a launch made, whose launcher says it reads no workspace: an error that names
 // that pod.
 func TestAReadOfAPodTheRuntimeCannotNameOrHoldsNoneOfIsAReadThatCouldNotBeMade(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	ctx := context.Background()
 	for _, tc := range []struct{ name, issue, says string }{

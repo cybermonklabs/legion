@@ -297,7 +297,7 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 		_, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator,
 			Session: old, SessionRun: supervise.SessionRun{TurnFinished: true}})
 		m, _ := sup.Machine(claim.ControllerToken("legion"))
-		if err := m.Handle(context.Background(), supervise.RequestResume{Claim: m.Claim().Token}); err != nil {
+		if err := m.Handle(context.Background(), supervise.RequestResume{Claim: m.Claim().Token, By: supervise.SuspendedByOperator}); err != nil {
 			t.Fatalf("the operator's resume: %v", err)
 		}
 		wantResumed(t, rt, logs)
