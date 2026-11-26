@@ -162,6 +162,24 @@ const twoRowsSelected: LayoutState = {
   name: "two-rows-selected",
 };
 
+/** The issues table searched for the stress issue by its title, which draws that issue's row and
+ *  its Labels cell, the stress issue's 13 labels, a list of R3. The table draws only the rows in
+ *  its window, and the plain load's window does not reach that row, so the plain load cannot be
+ *  held to the group. */
+const stressRowSearched: LayoutState = {
+  act: async (page) => {
+    const words = STRESS_TITLE.slice(0, 40);
+    await page.getByRole("searchbox", { name: "Search issues" }).fill(words);
+    await page
+      .locator("#project-issues-panel tr[data-issue-row]")
+      .filter({ hasText: words })
+      .first()
+      .waitFor();
+  },
+  name: "stress-row-searched",
+  requiredGroups: ["labels"],
+};
+
 /** The board with every card's labels opened by its "+N": the stress issue's card holds 13
  *  labels, past the cap, so they wrap inside the card. A state that opened nothing would read
  *  the folded board again, so the card must have had a "+N" to press. */
@@ -358,12 +376,12 @@ const additions: Readonly<
   machines: { minElements: shortPage(15) },
   "not-found": { minElements: shortPage(4) },
   person: { minElements: shortPage(27) },
-  // The Labels cell of the stress issue's row in the priority's issues table: its 13 labels.
-  priority: { requiredGroups: ["labels"] },
+  // No group is required of `priority`: the priority page's table has had no Labels column since
+  // main's c6e674809a21 (#4316), so the page draws no labels list to require.
   "project-document": { minElements: shortPage(49) },
   "project-documents": { minElements: shortPage(40) },
-  // The Labels cell of the stress issue's row: its 13 labels, a list of R3.
-  "project-issues": { requiredGroups: ["labels"], states: [twoRowsSelected] },
+  // The Labels cell of the stress issue's row, which the searched table draws.
+  "project-issues": { states: [twoRowsSelected, stressRowSearched] },
 };
 
 const reviewed: readonly LayoutRoute[] = reviewRoutes

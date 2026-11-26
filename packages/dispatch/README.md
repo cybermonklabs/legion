@@ -1231,7 +1231,8 @@ reader's choice in this browser draws another way (the new issue page, the proje
 the project page and its Architecture tab, which a project with an architecture source draws -
 over the review corpus and a stress layer that writes
 production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
-each state a route names (the Peek drawer open, rows or agents selected). At each width
+each state a route names (the Peek drawer open, rows or agents selected, the issues table searched
+for the stress issue, whose row the plain load's window does not draw). At each width
 `e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
 `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
 does for anything but a code block, one picture wider than the box, a data table or a board's
