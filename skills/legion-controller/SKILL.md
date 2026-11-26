@@ -80,7 +80,7 @@ Every move to `todo` you make is one of these:
 
 ## Findings, and the issues you file
 
-File an issue only when a person asks you to, for a clear defect as `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` says, and the report issue. Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
+File an issue only when a person asks you to, for a clear defect as `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` says, and the report issue. Any other problem is a finding: open a `dispatch ask` as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
 
 ## Daily report
 

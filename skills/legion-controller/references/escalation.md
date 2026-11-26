@@ -19,7 +19,7 @@ The architect decided against its own retry, so the issue stays at `phase: held`
 
 ## A child that looks independent
 
-Check the child and its parent in `read_state` and Dispatch. When it still looks independent, open an ask on the report issue naming the child, why, and the root you would file, with the options `File an issue`, `File it for Legion` and `Do not file`. Never label a child or cut its `child_of` link: that admits it as a root while its tree still records it. Only on a person's yes:
+Check the child and its parent in `read_state` and Dispatch. When it still looks independent, open an ask naming the child, why, and the root you would file, with the options `File an issue`, `File it for Legion` and `Do not file`. Never label a child or cut its `child_of` link: that admits it as a root while its tree still records it. Only on a person's yes:
 
 1. File the root with no `--parent`: `dispatch issue --project <PROJECT> --title '<title>' --spec-file -`, its spec citing the ask and carrying its `Filed for` line, with `--label legion` only when the answer asks Legion to run it. `<PROJECT>` is the issue key's prefix (`daemon.project`), not the lowercase token in role names.
 2. Park the child (`set_status` to `icebox`), with a comment naming the new root and the person's answer.

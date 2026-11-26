@@ -102,12 +102,11 @@ pull request, or in a child of the tree in that repository. An open issue that t
 reason to wait. Any other goes to the controller with its evidence, and the controller puts it on
 the issue that tracks it, or hands it to a running tree whose pull request can carry it, or else
 files the issue with the `legion` label, so Legion works it without asking you. A problem that
-needs a decision of yours goes into a Dispatch ask on
-Legion's daily report issue instead, naming the issue it came from and where the fix belongs (the
-repository or layer, and saying so when it is not Legion), with its evidence and a recommendation,
-and you decide whether it needs an issue. The controller files that issue, with the `legion` label
-only when your answer asks Legion to work it. An architect also files the children of its own
-issue.
+needs a decision of yours goes into a Dispatch ask instead, naming the issue it came from and where
+the fix belongs (the repository or layer, and saying so when it is not Legion), with its evidence
+and a recommendation, and you decide whether it needs an issue. The controller files that issue,
+with the `legion` label only when your answer asks Legion to work it. An architect also files the
+children of its own issue.
 
 The only statuses the controller sets are `todo`, `backlog` and `icebox` (`triage` is set by
 whoever files an issue). It reads pull requests as the review App, and never touches a tree's work.
@@ -684,8 +683,7 @@ look whether or not production carries the merge, or a defect, naming the issue,
 request, the merge commit, what it drove and what failed. A defect with a clear fix goes to the
 controller, which puts it on the issue that tracks it, hands it to a running tree whose pull
 request can carry it, or files it for Legion.
-One that needs a decision is a Dispatch ask on Legion's
-daily report issue, so you decide whether it needs an issue.
+One that needs a decision is a Dispatch ask, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
 Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
 stored microseconds unchanged. That field alone selects a report on that check: without it,
