@@ -232,10 +232,10 @@ func messageChars(request *agenttest.Request) int {
 }
 
 // requireHeldShown fails t unless the run ended its turn done with held, a reply the bar draws in
-// words words, held back as long and then, its rewrite drawing no reply, shown whole: saved held
-// back with its count and again whole as the answer, whose frame carries its prose and its count,
-// is not marked held and names no call, after the steps' calls of the held reply and its rewrite
-// alone and the held reply's one check.
+// words words, held back as long and then, its rewrite drawing no reply it shows, shown whole:
+// saved held back with its count and again whole as the answer, whose frame carries its prose and
+// its count, is not marked held and names no call, after the steps' calls of the held reply and
+// its rewrite alone and the held reply's one check.
 func requireHeldShown(t *testing.T, server *fakeServer, fake *agenttest.Model, held string, words int) {
 	t.Helper()
 	end, bodies := server.end(t)
@@ -362,6 +362,144 @@ func TestARewriteThatFailsShowsTheHeldReplyWhole(t *testing.T) {
 	warned := log.Lines("the rewrite of a reply held back as long drew no reply")
 	if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, "answered 400") {
 		t.Errorf("the log holds %q, want a warning naming run-1 and the status the chat model answered", warned)
+	}
+}
+
+// TestTheRewriteIsGivenTheWordsTheHeldReplyAndTheNoteAlone: at 52f1406a the rewrite was given the
+// run's whole conversation, and ran past its 20 s bound in 2 of 2 tries of the real model, so the
+// architect ruled (dispatch://INFRA-1588/comment/8a23ec38-289e-44c4-88a0-b332fd3f5453) that it is
+// given a short system message of the answer's rules, the person's words, the held reply and the
+// note of its count alone. A Standard run asked on an issue's page after an earlier turn of the
+// conversation reads the page's issue, then reads the issue's children in a step of its own, and
+// writes a long reply, given all of that. Its rewrite's request holds rewritePrompt as its system
+// message, then the person's words as every step gives them, the held reply as the model's own and
+// longTold after it, and nothing else - no earlier turn, no page, no read, no earlier step - and
+// sends no tool and no tool choice, at rewriteEffort.
+func TestTheRewriteIsGivenTheWordsTheHeldReplyAndTheNoteAlone(t *testing.T) {
+	const words, earlier = "what is the state of ACME-7's open children", "who holds ACME-7"
+	long, short := "[ACME-7](dispatch://ACME-7) waits on "+plainWords("long", 130), plainWords("short", 30)
+	children := agenttest.Call{Name: toolRead, Arguments: map[string]any{"ref": "dispatch://ACME-7/children"}}
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		switch {
+		case isCheck(request):
+			return verdict(noPlanPasses)
+		case strings.Contains(request.Text(), toldLong):
+			return agenttest.Reply{Text: short}
+		case len(request.ToolResults()) == 0:
+			return agenttest.Reply{Calls: []agenttest.Call{children}}
+		}
+		return agenttest.Reply{Text: long}
+	})
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+		return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"ACME-7","title":"Comet survey","children":[{"key":"ACME-9"}]}`)}
+	})
+	run := standardRun(words)
+	run.Context = json.RawMessage(`{"path":"/issues/ACME-7","project":"ACME","issue":"ACME-7","block":""}`)
+	run.Turns = []agentwire.Turn{{Run: "run-0", Words: earlier, Notes: []string{"Read ACME-7"}}}
+	workClaimed(t, fake.Model(), client, run)
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateDone || len(bodies) != 3 || len(bodies[0].Calls) != 1 || bodies[1].Text != long || bodies[1].LongWords == 0 ||
+		bodies[2].Text != short || bodies[2].LongWords != 0 {
+		t.Fatalf("the run ended %s with %q, saving %d model steps; want done, the read, the long reply held back and then the rewrite's", end.State, end.Reason, len(bodies))
+	}
+	steps := stepRequests(fake)
+	if len(steps) != 3 {
+		t.Fatalf("the run made %d steps' calls, want the read's, the long reply's and the rewrite's", len(steps))
+	}
+	if given := steps[1].Text(); !strings.Contains(given, earlier) || !strings.Contains(given, "Comet survey") || len(steps[1].ToolResults()) != 1 {
+		t.Fatalf("the long reply's step is given %q, want the earlier turn, the page's issue and the read's result", given)
+	}
+	want := []struct{ role, text string }{
+		{"system", rewritePrompt},
+		{"user", agenttest.Asked + words + "\n"},
+		{"assistant", long},
+		{"user", longTold(bodies[1].LongWords)},
+	}
+	rewrite := steps[2]
+	messages := rewrite.Messages()
+	if len(messages) != len(want) {
+		t.Fatalf("the rewrite is given %d messages, %v; want its system message, the person's words, the held reply and the note of its count alone", len(messages), messages)
+	}
+	for at, message := range messages {
+		if message["role"] != want[at].role || messageText(message) != want[at].text {
+			t.Errorf("the rewrite's message %d is %v %q, want %s %q", at, message["role"], messageText(message), want[at].role, want[at].text)
+		}
+	}
+	if effort, tools, choice := rewrite.Field("reasoning_effort"), rewrite.Field("tools"), rewrite.Field("tool_choice"); effort != rewriteEffort || tools != nil || choice != nil {
+		t.Errorf("the rewrite asks for effort %v with the tools %v and the tool choice %v, want %s and no tool", effort, tools, choice, rewriteEffort)
+	}
+}
+
+// TestARewriteThatAddsALinkShowsTheHeldReplyWhole: the rewrite shortens the held reply and adds
+// nothing to it, as the architect ruled
+// (dispatch://INFRA-1588/comment/8a23ec38-289e-44c4-88a0-b332fd3f5453). A rewrite whose reply
+// links an item the held reply does not - by a markdown link, by a bare dispatch:// reference, or
+// by an issue key written bare, which the server may store as the issue's link and the bar draw
+// as its chip (chips.LinkBareKeys) - ends the turn done with the held reply shown whole, as one
+// past its bound does, its own reply neither checked nor counted, and the log names the link.
+func TestARewriteThatAddsALinkShowsTheHeldReplyWhole(t *testing.T) {
+	held := "[ACME-7](dispatch://ACME-7) waits on " + plainWords("long", 130)
+	for name, rewritten := range map[string]string{
+		"a markdown link":  "[ACME-7](dispatch://ACME-7) waits on [ACME-9](dispatch://ACME-9) and " + plainWords("short", 20),
+		"a bare reference": "[ACME-7](dispatch://ACME-7) waits on dispatch://ACME-9 and " + plainWords("short", 20),
+		"a bare key":       "[ACME-7](dispatch://ACME-7) waits on ACME-9 and " + plainWords("short", 20),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var log logtest.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+			fake := agenttest.New(t, lengthScript(held, rewritten))
+			server, client := newFakeServer(t, keptPlan)
+			workRun(t, fake.Model(), client, "what does ACME-7 wait on")
+			requireHeldShown(t, server, fake, held, len(strings.Fields(held)))
+			warned := log.Lines("links what the held reply does not")
+			if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, "dispatch://ACME-9") {
+				t.Errorf("the log holds %q, want a warning naming run-1 and the link dispatch://ACME-9", warned)
+			}
+		})
+	}
+}
+
+// TestARewriteThatKeepsItsLinksIsShown: a rewrite whose every link is a link of the held reply ends
+// the turn done as the answer, checked as any reply in prose is, however it writes each link: an
+// issue by its dashboard path where the held reply wrote its reference, another by an autolink
+// where the held reply wrote a markdown link, and a time by the same address, with one of the held
+// reply's links left out; an issue key both write bare; and a key the held reply wrote bare, which
+// the server may link as it stores the reply, that the rewrite links.
+func TestARewriteThatKeepsItsLinksIsShown(t *testing.T) {
+	const at = "(dispatch-time:2026-11-18T11:35:00Z)"
+	for _, c := range []struct{ name, held, kept string }{
+		{
+			name: "links written another way",
+			held: "[ACME-7](dispatch://ACME-7) waits on [ACME-9](dispatch://ACME-9) and [ACME-12](dispatch://ACME-12), updated [5 days ago]" + at + ": " +
+				plainWords("long", 130),
+			kept: "[ACME-7](/issues/ACME-7) waits on <dispatch://ACME-9>, updated [5 days ago]" + at + ": " + plainWords("short", 20),
+		},
+		{
+			name: "a key both write bare",
+			held: "ACME-7 waits on its review: " + plainWords("long", 130),
+			kept: "ACME-7 waits on its review: " + plainWords("short", 20),
+		},
+		{
+			name: "a key the held reply wrote bare, linked",
+			held: "ACME-7 waits on its review: " + plainWords("long", 130),
+			kept: "[ACME-7](dispatch://ACME-7) waits on its review: " + plainWords("short", 20),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake := agenttest.New(t, lengthScript(c.held, c.kept))
+			server, client := newFakeServer(t, keptPlan)
+			workRun(t, fake.Model(), client, "what does ACME-7 wait on")
+			end, bodies := server.end(t)
+			if end.State != agentwire.StateDone || len(bodies) != 2 || bodies[0].Text != c.held || bodies[0].LongWords == 0 || bodies[1].Text != c.kept || bodies[1].LongWords != 0 {
+				t.Fatalf("the run ended %s with %q, saving %+v; want done, the reply held back and then the rewrite's", end.State, end.Reason, bodies)
+			}
+			if frame := server.lastReply(t); frame.Text != c.kept || frame.HeldLong {
+				t.Errorf("the answer's frame carries %q (held long %t), want the rewrite's reply", frame.Text, frame.HeldLong)
+			}
+			if steps, checks := len(stepRequests(fake)), len(checkRequests(fake)); steps != 2 || checks != 2 {
+				t.Errorf("the run made %d steps' calls and %d checks, want the held reply's and its rewrite's, each checked", steps, checks)
+			}
+		})
 	}
 }
 

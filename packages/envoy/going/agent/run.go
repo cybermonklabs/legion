@@ -112,11 +112,12 @@ type toolFrame struct {
 // agent's pacer held it, the tokens of its prompt, those of the provider's cache included, of its
 // reply, its reasoning among them, and of that reasoning, the tokens the pacer reserved for it
 // before it was made, and the tokens the pacer charged it in the end; a reply held back as long
-// and shown whole once its rewrite drew no reply (showHeld) says none, since no call wrote it
-// again. A reply in prose that the guard checked before it could end the turn (checkProse), held
-// back or not, also says what the check took: its milliseconds and its tokens; one it did not
-// check because Jev read the turn's words as Ask says so; each says what Jev read them as; and one
-// that would end the turn done says how many words the bar draws of it.
+// and shown whole once its rewrite drew no reply, or one that linked what it does not (showHeld),
+// says none, since no call wrote it again. A reply in prose that the guard checked before it
+// could end the turn (checkProse), held back or not, also says what the check took: its
+// milliseconds and its tokens; one it did not check because Jev read the turn's words as Ask says
+// so; each says what Jev read them as; and one that would end the turn done says how many words
+// the bar draws of it.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -140,10 +141,11 @@ type replyFrame struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 	// ReservedTokens is the tokens the pacer charged the call before it was made: the estimate of
 	// its prompt, its tool definitions among it, its level's output tokens and its level's
-	// reasoning tokens (Level.estimate), a rewrite's rewriteReasoningTokens in their place and no
-	// tool, since it sends none (rewrite), summed over its HTTP attempts, which a run whose
-	// deployment names no quota still counts. Set against input_tokens + output_tokens, it says
-	// how far the estimate is from what the call spent.
+	// reasoning tokens (Level.estimate), and for a rewrite the estimate of its short prompt
+	// (rewritePrompt, the person's words, the held reply and longTold), no tool, since it sends
+	// none, its level's output tokens and rewriteReasoningTokens (rewrite), summed over its HTTP
+	// attempts, which a run whose deployment names no quota still counts. Set against
+	// input_tokens + output_tokens, it says how far the estimate is from what the call spent.
 	ReservedTokens int `json:"reserved_tokens"`
 	// ChargedTokens is the tokens the pacer charged the call in the end: what it drew for the
 	// call's HTTP attempts, at most a minute's share each, and the tokens the call spent past
@@ -469,34 +471,37 @@ type stepOutcome struct {
 // content filter refused, or whose reply it stopped, saves nothing, and the step is made again
 // (withhold). The run's last model call, which is offered no tool, is told so at the end of its
 // system message (lastCallNote). The step after a reply held back as long is that reply's rewrite
-// (heldLast, length.go): its call is offered no tool, at rewriteEffort, within rewriteCallTime,
-// and the pacer reserves rewriteReasoningTokens for it (rewrite); a rewrite that draws no reply -
-// its bound ended it, or its call failed, was refused or was held back for the quota - ends the
-// turn done with the held reply shown whole (showHeld).
+// (heldLast, length.go): its call is given rewritePrompt, the person's words, the held reply and
+// longTold alone, not the run's conversation, is offered no tool, at rewriteEffort, within
+// rewriteCallTime, and the pacer reserves the tokens of that short prompt and
+// rewriteReasoningTokens for it (rewrite). A reply of the rewrite that links what the held reply
+// does not ends the turn done with the held reply shown whole, and any other reply of it ends the
+// turn as endProse ends it (endRewrite); a rewrite that draws no reply - its bound ended it, or
+// its call failed, was refused or was held back for the quota - ends the turn done with the held
+// reply shown whole too (missedRewrite).
 func (w *worker) step() stepOutcome {
-	messages, err := conversation(w.run, lastWhole(w.history), w.withheld, w.now)
-	if err != nil {
-		return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %v", codeAgentFailed, err)}
-	}
 	base := w.next
 	var finish string
 	var ends bool
 	var prose *proseReply
-	w.proposed.Store(false)
 	request := w.level.request(w.agent.config.Model, w.used)
-	system := w.system()
-	if request.Bounds.Calls == 1 {
-		system += "\n\n" + lastCallNote
-	}
-	request.System, request.Input = system, messages
 	held, rewrite := w.heldLast()
 	var estimate int
 	if rewrite {
-		estimate = w.rewrite(&request)
+		estimate = w.rewrite(&request, held)
 	} else {
+		messages, err := conversation(w.run, lastWhole(w.history), w.withheld, w.now)
+		if err != nil {
+			return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %v", codeAgentFailed, err)}
+		}
+		request.System, request.Input = w.system(), messages
+		if request.Bounds.Calls == 1 {
+			request.System += "\n\n" + lastCallNote
+		}
 		request.Tools = w.tools(base)
 		estimate = w.level.estimate(going.PromptChars(request.System, request.Input, request.Tools))
 	}
+	w.proposed.Store(false)
 	request.Model = w.agent.pacer.Paced(request.Model, func() int { return estimate }, w.charge)
 	request.OnStep = func(step agentloop.Step) error {
 		if w.agent.config.Hooks {
@@ -524,6 +529,8 @@ func (w *worker) step() stepOutcome {
 			return stepOutcome{state: agentwire.StateStopped, reason: w.level.cut(w.name), offers: []string{agentwire.OfferContinue}}
 		case w.proposed.Load():
 			return stepOutcome{state: agentwire.StateWaiting}
+		case prose != nil && rewrite:
+			return w.endRewrite(held, prose)
 		case prose != nil:
 			return w.endProse(prose)
 		case ends:
@@ -531,7 +538,7 @@ func (w *worker) step() stepOutcome {
 		}
 		return stepOutcome{}
 	case rewrite:
-		return w.showHeld(base, held, result, err)
+		return w.missedRewrite(base, held, result, err)
 	case errors.Is(err, errReplyFiltered):
 		return w.withhold("the provider's content filter stopped the reply")
 	case err != nil:

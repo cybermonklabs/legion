@@ -148,6 +148,13 @@ func lastWhole(history []agentwire.SavedStep) []agentwire.SavedStep {
 // time as the issue page shows it ("2 days ago").
 const nowLayout = "2006-01-02 15:04 UTC"
 
+// askedNow is how the model is given the person's words of the run: this line, then the words
+// and the end of their line, as every step gives them (conversation) and the rewrite of a reply
+// held back as long too (rewrite), and as a fake chat model reads a run's words (agenttest.Asked).
+func askedNow(words string) string {
+	return "The person asks now:\n" + words + "\n"
+}
+
 // conversation is what the next step of run gives the model, from history: one message of the
 // person's words, with the turns of the conversation before this run, the time now, the page they
 // asked from, the read of the page's issue the run made before its first model call (readPage)
@@ -173,7 +180,7 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, with
 		}
 		opening.WriteString("\n")
 	}
-	fmt.Fprintf(&opening, "The person asks now:\n%s\n", run.Words)
+	opening.WriteString(askedNow(run.Words))
 	fmt.Fprintf(&opening, "\nThe time now: %s.\n", now.UTC().Format(nowLayout))
 	if len(run.Context) > 0 && string(run.Context) != "null" {
 		fmt.Fprintf(&opening, "\nThe page the person asks from, %s:\n%s\n", storedDataNote, run.Context)

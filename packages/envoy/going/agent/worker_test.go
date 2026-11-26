@@ -1578,10 +1578,11 @@ func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
 
 // TestThePromptsExamplesNameNoItemOfTheEvalsSeed: the eval's run that answered with no read said
 // the planner is on DEMO-7, the key the prompt's examples named, which the eval's seed holds. Every
-// issue key the system prompt, the new-issue prompt, and the prompt and notes of the guard's check
-// of a reply in prose (noplan.go) name is of the project ACME, and neither the prompts nor the text
-// of a tool the agent is offered or find_tools answers - its description and its arguments' schema
-// - names a project, session or person of the eval's seed (going/eval/seed.json).
+// issue key the system prompt, the new-issue prompt, the rewrite's system message (rewritePrompt),
+// and the prompt and notes of the guard's check of a reply in prose (noplan.go) name is of the
+// project ACME, and neither the prompts nor the text of a tool the agent is offered or find_tools
+// answers - its description and its arguments' schema - names a project, session or person of
+// the eval's seed (going/eval/seed.json).
 func TestThePromptsExamplesNameNoItemOfTheEvalsSeed(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "eval", "seed.json"))
 	if err != nil {
@@ -1598,7 +1599,7 @@ func TestThePromptsExamplesNameNoItemOfTheEvalsSeed(t *testing.T) {
 	if len(seed.Projects) == 0 || len(seed.Sessions) == 0 || len(seed.People) == 0 {
 		t.Fatalf("the seed read as %d projects, %d sessions and %d people, want some of each", len(seed.Projects), len(seed.Sessions), len(seed.People))
 	}
-	prompt := systemPrompt + newIssuePrompt + noPlanPrompt + noPlanNote + newIssueNoPlanNote + lastCallNote
+	prompt := systemPrompt + newIssuePrompt + noPlanPrompt + noPlanNote + newIssueNoPlanNote + lastCallNote + rewritePrompt
 	keys := regexp.MustCompile(`\b[A-Z][A-Z0-9]*-\d+\b`).FindAllString(prompt, -1)
 	if len(keys) == 0 {
 		t.Fatal("the prompts name no issue key, so no example is checked")
