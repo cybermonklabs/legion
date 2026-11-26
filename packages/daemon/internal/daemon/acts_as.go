@@ -49,7 +49,7 @@ func ownerSlotRole(ctx context.Context, pool *store.Pool, records record.Store, 
 	}
 	var role claim.Role
 	var acts bool
-	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil || issue == nil {
 			return err

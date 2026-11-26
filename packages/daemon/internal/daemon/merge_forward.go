@@ -141,7 +141,7 @@ func (r *outbox) mergeForwardTold(ctx context.Context, issue, head string, agent
 	if !ok {
 		return nil
 	}
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.MarkMergeForwardTold(ctx, tx, issue, head, agent, mark)
 	}); err != nil {
 		return fmt.Errorf("record whom the merge-forward ask of %s reached: %w", issue, err)

@@ -2221,7 +2221,7 @@ func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.No
 	if !ok {
 		return nil
 	}
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.MarkOwnerStepTold(ctx, tx, issue, step, mark)
 	}); err != nil {
 		return fmt.Errorf("record whom the owner-step of %s reached: %w", issue, err)
@@ -2384,7 +2384,7 @@ func (r *outbox) slotHoldsApp(ctx context.Context, row record.OutboxRow, owner c
 // does a run with no plan rows: the owner does such a retro as itself.
 func (r *outbox) retroSteps(ctx context.Context, issue string) ([]record.PlanStep, error) {
 	var steps []record.PlanStep
-	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := r.records.Issue(ctx, tx, issue)
 		if err != nil || stored == nil {
 			return err
@@ -2405,7 +2405,7 @@ func (r *outbox) retroSteps(ctx context.Context, issue string) ([]record.PlanSte
 // the hold's retry tells its step or retro again (workflow's restart).
 func (r *outbox) ownerStepRuns(ctx context.Context, issue string, step record.NoticeStep) (bool, error) {
 	var runs bool
-	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := r.records.Issue(ctx, tx, issue)
 		if err != nil || stored == nil || stored.Hold != nil {
 			return err
@@ -3726,7 +3726,7 @@ func (r *outbox) slotCredential(ctx context.Context, issue string, payload recor
 // queued before row (record.Store.SlotWritePending), read in a read-only transaction of its own.
 func (r *outbox) slotWritePending(ctx context.Context, owner claim.Token, row int64) (bool, error) {
 	var pending bool
-	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		pending, err = r.records.SlotWritePending(ctx, tx, owner, row)
 		return err
