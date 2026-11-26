@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    The controller's liveness probe reads a 404 as gone only when its body is the Envoy
+    listener's own role refusal, a JSON object with an `error`, that names no unresponsive
+    holder. A 404 with any other body, such as a proxy's page, an empty body or JSON of
+    another shape, reads as unknown, which is never a death verdict, and its line says that the
+    body was not the listener's refusal. An earlier listener's refusal, with an `error` and no
+    `reason`, still reads as gone.
+time: 2026-11-25T01:31:40Z
+custom:
+    Issue: INFRA-2045
