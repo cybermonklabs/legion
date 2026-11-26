@@ -745,6 +745,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
+  // Where the panel at the side starts once the person widens it (A6): at the edge of the
+  // navigation that stands beside the page, so the navigation stays reachable. That is the
+  // sidebar's 20 rem, or the 3.5 rem of the rail the sidebar collapses to and of the new issue
+  // page's icon rail. Below `xl` the navigation is a header and a drawer above the page rather
+  // than a column beside it, so the panel keeps its side width there and offers no widening.
+  const wideInset = isCompactViewport
+    ? undefined
+    : iconRailShown || sidebarHidden
+      ? "3.5rem"
+      : "20rem";
   // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
   // open over the page at every width, as the Menu control opens it below `xl` on every page.
   const drawer = useDialog<HTMLElement>({
@@ -1086,13 +1096,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <>
             <div
               aria-hidden="true"
-              className={`fixed inset-0 z-20 ${backdrop50}`}
+              className={`fixed inset-0 ${place === "side" ? "z-[45]" : "z-20"} ${backdrop50}`}
               onClick={() => setNavigationOpen(false)}
             />
             <aside
               aria-label="Navigation"
               aria-modal="true"
-              className={`fixed inset-y-0 left-0 z-30 flex w-80 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto border-b p-5 shadow-2xl ${railBorder} ${railBg} ${railText}`}
+              className={`fixed inset-y-0 left-0 ${place === "side" ? "z-[46]" : "z-30"} flex w-80 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto border-b p-5 shadow-2xl ${railBorder} ${railBg} ${railText}`}
               ref={drawer.containerRef}
               role="dialog"
             >
@@ -1228,7 +1238,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           />
         </ErrorBoundary>
         <SearchPalette onClose={() => setPlace("closed")} open={barOpen} />
-        <SidePanel />
+        <SidePanel wideInset={wideInset} />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}

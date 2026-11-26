@@ -27,9 +27,19 @@ export function searchBox(page: Page): Locator {
   return bar(page).getByTestId("bar-box");
 }
 
-/** The line under the bar's box that says what Enter does where the box's words do not. */
+/** The box under the open conversation, wherever the conversation is on the screen: in the panel
+ *  at the side, where Enter on the line Ask hands its run, or in the bar over the page, where Do
+ *  keeps it and where Ctrl-K brings it back to. Both name it "Ask the command bar", and only one
+ *  of them is on the screen at a time. `searchBox` is the bar's alone and keeps to the search
+ *  before Enter. */
+export function conversationBox(page: Page): Locator {
+  return page.getByRole("textbox", { name: "Ask the command bar" });
+}
+
+/** The line under the conversation's box that says what Enter does where the box's words do not,
+ *  in the panel or in the bar, whichever draws the conversation. */
 export function boxHint(page: Page): Locator {
-  return bar(page).getByTestId("going-box-hint");
+  return page.getByTestId("going-box-hint");
 }
 
 export function answerPanel(page: Page): Locator {
@@ -104,7 +114,9 @@ export async function askAndWait(page: Page, words: string): Promise<void> {
   });
 }
 
-/** Types `words` in the bar's box and presses Enter on the line on top, which starts a run. */
+/** Types `words` in the bar's box and presses Enter on the line on top, which starts a run. For
+ *  the line Ask that is the one action the card's Open in panel is too: the run starts, the bar
+ *  closes and the conversation is in the panel at the side, so the run is waited for there. */
 export async function askTheAgent(page: Page, words: string): Promise<void> {
   await searchBox(page).fill(words);
   await expect(lineOnTop(page)).toBeVisible();
@@ -112,12 +124,28 @@ export async function askTheAgent(page: Page, words: string): Promise<void> {
   await expect(newestRun(page)).toBeVisible({ timeout: RUN_STEPS_MS });
 }
 
-/** Approves the newest run's waiting plan from the bar's empty box once the bar has read the plan,
- *  and waits for the run to end done. */
+/** Waits for the bar's Ask to have handed the conversation to the panel at the side: the bar
+ *  gone, the panel drawn, and the cursor in the panel's box. */
+export async function expectHandedToThePanel(page: Page): Promise<void> {
+  await expect(bar(page)).toHaveCount(0);
+  await expect(sidePanel(page)).toBeVisible();
+  await expect(conversationBox(page)).toBeFocused();
+}
+
+/** Brings the conversation from the panel back over the page with `Control+K`, the panel's own
+ *  key for it, and waits for the bar to hold it with the cursor in its box. */
+export async function bringOverThePage(page: Page): Promise<void> {
+  await page.keyboard.press("Control+k");
+  await expect(bar(page)).toBeVisible();
+  await expect(conversationBox(page)).toBeFocused();
+}
+
+/** Approves the newest run's waiting plan from the conversation's empty box once the page has read
+ *  the plan, and waits for the run to end done. */
 export async function approveAndFinish(page: Page): Promise<void> {
   await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", { timeout: RUN_STEPS_MS });
   await expect(planCard(page).last()).toHaveAttribute("data-state", "waiting");
-  await searchBox(page).focus();
-  await searchBox(page).press("Enter");
+  await conversationBox(page).focus();
+  await conversationBox(page).press("Enter");
   await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
 }

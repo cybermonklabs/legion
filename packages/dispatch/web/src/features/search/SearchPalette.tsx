@@ -945,10 +945,15 @@ function PaletteDialog({
     words: searchText,
   });
   const project = scope.context.project ?? "";
-  // Enter on a line of Ask or Do: a run of the agent on the words, which records the line pressed
-  // and which the bar stays open to show as the conversation.
+  // Enter on a line of Ask or Do: a run of the agent on the words, which records the line pressed.
+  // Ask - the line, and the card's Open in panel with it - is one action that hands the run to the
+  // panel at the side (`useAsk.openInPanel`) and lets the bar go, so the words, the level and the
+  // chip's context it starts with are the ones in the bar now, and it starts one run at most. Do
+  // stays in the bar, which shows its conversation and its plan, as it always did.
   const askWords = (words: string, pressed: GoingLine) => {
-    if (asking.enter(words, pressed)) {
+    const started =
+      pressed === "ask" ? asking.openInPanel(words, pressed) : asking.enter(words, pressed);
+    if (started) {
       setQuery("");
       setActive({ hits: "", id: null, left: false });
     }
@@ -1481,13 +1486,28 @@ function PaletteDialog({
                   {NO_MODEL_WORDS}
                 </p>
               ) : null}
+              {/* The short answer of the pause (R3), as a compact card above the hits and outside
+                  the list, with Open in panel; none under a filing line, whose Enter files the
+                  words and answers nothing, and no button on an answer to words typed past, nor
+                  on the last answer drawn again while the box is empty. */}
+              {shownAnswer === undefined || filingOnTop ? null : (
+                <AnswerPanel
+                  answer={shownAnswer}
+                  onOpenInPanel={
+                    stale || shownAnswer.replayed || searchText === ""
+                      ? undefined
+                      : () => askWords(searchText, "ask")
+                  }
+                  stale={stale}
+                />
+              )}
               {rows.length === 0 ? null : (
                 // The list takes the room its column leaves it once the parts above it (the
-                // Filters panel, the no-model line) and under it are drawn, which ends where the
-                // frame clips, and keeps one row's height (5rem) where that room is less: there
-                // the column scrolls, and the arrows' scroll into view brings the row into the
-                // column's view as well as the list's, so a window that holds the box and one row
-                // shows the row the reader is on whole, whatever stands above the list.
+                // Filters panel, the no-model line, the answer card) and under it are drawn, which
+                // ends where the frame clips, and keeps one row's height (5rem) where that room is
+                // less: there the column scrolls, and the arrows' scroll into view brings the row
+                // into the column's view as well as the list's, so a window that holds the box and
+                // one row shows the row the reader is on whole, whatever stands above the list.
                 <div
                   className="max-h-[60vh] min-h-20 flex-1 overflow-y-auto"
                   id="search-results"
@@ -1559,15 +1579,6 @@ function PaletteDialog({
                     />
                   ))}
                 </div>
-              )}
-              {/* The short answer of the pause (R3), in its own panel under the rows; none under
-                  a filing line, whose Enter files the words and answers nothing. */}
-              {shownAnswer === undefined || filingOnTop ? null : (
-                <AnswerPanel
-                  answer={shownAnswer}
-                  fullAnswer={activeRow?.kind === "line" && activeRow.line === "ask"}
-                  stale={stale}
-                />
               )}
               {searchText.length === 1 ? (
                 <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>

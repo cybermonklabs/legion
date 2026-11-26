@@ -6,6 +6,7 @@ import {
   continueRun,
   conversationWorking,
   goingState,
+  handOffToPanel,
   movePanel,
   newestRun,
   offersContinue,
@@ -36,6 +37,13 @@ export interface Asking {
    *  `line`, the line on top Enter was pressed on, where the words were sent from it; answers
    *  whether it did any. */
   readonly enter: (words: string, line?: GoingLine) => boolean;
+  /** Open in panel on the bar's card and Enter on its line Ask, one action: submits `words` once
+   *  as a run of the page's `context` at the level the bar is set to, with `line` as the line it
+   *  was pressed on, and hands the conversation to the panel at the side. It answers whether it
+   *  did, and does nothing - starts no run and leaves the bar where it is - for empty words, a
+   *  plan that waits, a run that works or a start that is out, so a press made twice, or on a
+   *  card of words that were typed past, cannot show a second conversation. */
+  readonly openInPanel: (words: string, line: GoingLine) => boolean;
   /** Esc in the box: stops the run that works where the box is empty, else moves the
    *  conversation as Esc does (`panelNext`). */
   readonly escape: (words: string) => void;
@@ -101,6 +109,24 @@ export function useAsk(context: GoingContextInput): Asking {
     listed(startRun(said, context, login, { line }));
     return true;
   };
+  const openInPanel = (words: string, line: GoingLine): boolean => {
+    const said = words.trim();
+    const newest = newestRun();
+    if (
+      said === "" ||
+      waits ||
+      runWaits ||
+      goingState().starting !== undefined ||
+      (newest !== undefined && shownState(newest) === "working")
+    ) {
+      return false;
+    }
+    if (!enter(said, line)) {
+      return false;
+    }
+    handOffToPanel();
+    return true;
+  };
   return {
     answering,
     enter,
@@ -111,6 +137,7 @@ export function useAsk(context: GoingContextInput): Asking {
       );
     },
     onContinue: (run, level) => listed(continueRun(run, context, login, level)),
+    openInPanel,
     planWaits: waits,
     retry: (words) => {
       enter(words);

@@ -47,6 +47,14 @@
  *  background is. The caret is hidden by `toHaveScreenshot`'s default (`caret: "hide"`), and a
  *  focus ring is the one the keys under review leave, which is the same on every run.
  *
+ *  HOW A ROW REACHES THE BAR. Enter on the line Ask hands the run to the panel at the side (the
+ *  approved choice of dispatch://INFRA-1588/ask/00f2a090-0324-49a1-b352-b04cb4ff4f50), so a row
+ *  that shoots the conversation over the page asks and then brings it back with Ctrl-K, the
+ *  panel's own key for that (`askIntoTheBar`): the bar holds the same conversation it held when
+ *  it started the run, and states 2, 3, 4 and 6 move it to the side with its key for their panel
+ *  shots, as before. State 10 is the handoff itself, the panel docked with the cursor in its box
+ *  and then widened to the content area. Do and File as a new issue keep to the bar.
+ *
  *  WHAT WOULD DRIFT BETWEEN TWO RUNS OF ONE STATE, and what is done about each:
  *
  *  - The clock. Each row installs the page's clock as `e2e/visual.e2e.ts` does
@@ -122,6 +130,8 @@ import {
   answerText,
   askTheAgent,
   bar,
+  bringOverThePage,
+  expectHandedToThePanel,
   lineOnTop,
   newestRun,
   openBar,
@@ -434,6 +444,15 @@ async function newConversation(page: Page): Promise<void> {
   await expect(searchBox(page)).toHaveAttribute("placeholder", "Search or ask…");
 }
 
+/** Asks `words` with Enter on the line Ask, which starts the run and hands the conversation to the
+ *  panel at the side, and brings the conversation back over the page with Ctrl-K, so the row reads
+ *  and shoots it in the bar. */
+async function askIntoTheBar(page: Page, words: string): Promise<void> {
+  await askTheAgent(page, words);
+  await expectHandedToThePanel(page);
+  await bringOverThePage(page);
+}
+
 /** The seven seeded issues, which the chart and the table read and nothing else. */
 function barKeys(issues: BarSeed): string[] {
   const { craters, dome, eyepiece, finder, mirror, mount, shutter } = issues;
@@ -486,7 +505,7 @@ const barRows: readonly BarRow[] = [
         expect((await marked).ok(), `the read mark of ${key}'s spec`).toBe(true);
       }
       await openTheBar(page, seed);
-      await askTheAgent(page, earlier);
+      await askIntoTheBar(page, earlier);
       await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
         timeout: RUN_STEPS_MS,
       });
@@ -526,6 +545,8 @@ const barRows: readonly BarRow[] = [
       await expect(bar(page).getByTestId("search-line-deciding")).toHaveCount(0);
       await expect(lineOnTop(page)).toContainText(`Ask ${words}`);
       await chipsRead(answerText(page), 1);
+      // The preview is a card above the hits, with its one button outside the list.
+      await expect(answerPanel(page).getByRole("button", { name: "Open in panel" })).toBeVisible();
       await expect(answerPanel(page).getByTestId("going-answer-item")).toHaveCount(0);
       await shoot(page, "01-typed");
     },
@@ -539,7 +560,7 @@ const barRows: readonly BarRow[] = [
       const words = "watch the sky over the observatory tonight";
       await script(seed, [{ turns: [endlessStream()], words }]);
       await openTheBar(page, seed);
-      await askTheAgent(page, words);
+      await askIntoTheBar(page, words);
       await expect(newestRun(page)).toHaveAttribute("data-state", "working");
       await expect(newestRun(page).getByTestId("going-thinking")).toBeVisible();
       await shoot(page, "02-thinking-bar");
@@ -592,7 +613,7 @@ const barRows: readonly BarRow[] = [
         },
       ]);
       await openTheBar(page, seed);
-      await askTheAgent(page, words);
+      await askIntoTheBar(page, words);
       const run = newestRun(page);
       const finished = '[data-testid="going-step"][data-running="false"]';
       // The fifth finished step folds at once: the two looks, the oldest, into the line above,
@@ -646,7 +667,7 @@ const barRows: readonly BarRow[] = [
         },
       ]);
       await openTheBar(page, seed);
-      await askTheAgent(page, words);
+      await askIntoTheBar(page, words);
       await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
         timeout: RUN_STEPS_MS,
       });
@@ -710,7 +731,7 @@ const barRows: readonly BarRow[] = [
       ]);
       await openTheBar(page, seed);
       await page.clock.setSystemTime(AT_4_40_PM);
-      await askTheAgent(page, chartWords);
+      await askIntoTheBar(page, chartWords);
       await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
         timeout: RUN_STEPS_MS,
       });
@@ -729,7 +750,7 @@ const barRows: readonly BarRow[] = [
       await shoot(page, "05-chart");
       await newConversation(page);
       await page.clock.setSystemTime(AT_4_45_PM);
-      await askTheAgent(page, tableWords);
+      await askIntoTheBar(page, tableWords);
       await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
         timeout: RUN_STEPS_MS,
       });
@@ -881,7 +902,7 @@ const barRows: readonly BarRow[] = [
         await expect(longEdit.getByTestId("going-plan-diff")).toHaveJSProperty("open", false);
       };
       await openTheBar(page, seed);
-      await askTheAgent(page, words);
+      await askIntoTheBar(page, words);
       await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", {
         timeout: RUN_STEPS_MS,
       });
@@ -990,7 +1011,7 @@ const barRows: readonly BarRow[] = [
       const message = planCard(page).getByTestId("going-plan-message");
       const reachesNoSession = new RegExp(`^Message to no session on ${eyepiece}(?!\\d)`);
       await openTheBar(page, seed);
-      await askTheAgent(page, words);
+      await askIntoTheBar(page, words);
       await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", {
         timeout: RUN_STEPS_MS,
       });
@@ -1063,7 +1084,7 @@ const barRows: readonly BarRow[] = [
         },
       ]);
       await openTheBar(page, seed);
-      await askTheAgent(page, asked);
+      await askIntoTheBar(page, asked);
       await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
         timeout: RUN_STEPS_MS,
       });
@@ -1119,7 +1140,7 @@ const barRows: readonly BarRow[] = [
       await page.keyboard.press("ArrowUp");
       await page.keyboard.press("Enter");
       await expect(level).toHaveText(/^Fast/);
-      await askTheAgent(page, bounded);
+      await askIntoTheBar(page, bounded);
       await expect(newestRun(page)).toHaveAttribute("data-state", "stopped_bound", {
         timeout: RUN_STEPS_MS,
       });
@@ -1148,7 +1169,7 @@ const barRows: readonly BarRow[] = [
       );
       await shoot(page, "09-bound");
       await newConversation(page);
-      await askTheAgent(page, stopped);
+      await askIntoTheBar(page, stopped);
       await expect(newestRun(page).getByTestId("going-step").first()).toHaveAttribute(
         "data-running",
         "false",
@@ -1168,7 +1189,7 @@ const barRows: readonly BarRow[] = [
       );
       await shoot(page, "09-stopped");
       await newConversation(page);
-      await askTheAgent(page, failed);
+      await askIntoTheBar(page, failed);
       await expect(newestRun(page)).toHaveAttribute("data-state", "failed", {
         timeout: RUN_STEPS_MS,
       });
@@ -1182,9 +1203,11 @@ const barRows: readonly BarRow[] = [
     state: "09",
   },
   {
-    // State 10. Scripts a run that reads one issue in a slow turn and answers with it as a link;
-    // the row moves the answer to the side with the header's button. The panel's header moves it
-    // back with an icon whose words are its tooltip, and its box holds the context chip.
+    // State 10. Scripts a run that reads one issue in a slow turn and answers with it as a link.
+    // Enter on the line Ask hands the run to the panel at the side, which takes the focus in its
+    // box, and the row shoots it docked. The panel's header moves it back with an icon whose words
+    // are its tooltip, its box holds the context chip, and a second icon widens it to the content
+    // area, with the navigation still beside it (A6): the second shot, which docks it again.
     reach: async (page, seed) => {
       const words = "what does the observatory dome need";
       const { dome } = seed.bar;
@@ -1199,12 +1222,10 @@ const barRows: readonly BarRow[] = [
       ]);
       await openTheBar(page, seed);
       await askTheAgent(page, words);
+      await expectHandedToThePanel(page);
       await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
         timeout: RUN_STEPS_MS,
       });
-      await bar(page).getByRole("button", { name: "Keep at the side" }).click();
-      await expect(bar(page)).toHaveCount(0);
-      await expect(sidePanel(page)).toBeVisible();
       await chipsRead(sidePanel(page).getByTestId("going-run-answer"), 1);
       await expect(
         sidePanel(page).getByRole("button", { name: "Open over the page" })
@@ -1214,8 +1235,14 @@ const barRows: readonly BarRow[] = [
         "What does the observatory dome need"
       );
       await shoot(page, "10-side-panel");
+      await sidePanel(page).getByRole("button", { name: "Widen the panel" }).click();
+      await expect(sidePanel(page)).toHaveAttribute("data-wide", "true");
+      await chipsRead(sidePanel(page).getByTestId("going-run-answer"), 1);
+      await shoot(page, "10-side-panel-wide");
+      await sidePanel(page).getByRole("button", { name: "Dock at the side" }).click();
+      await expect(sidePanel(page)).toHaveAttribute("data-wide", "false");
     },
-    shows: "the side panel",
+    shows: "the side panel, docked and widened",
     state: "10",
   },
   {
@@ -1230,12 +1257,12 @@ const barRows: readonly BarRow[] = [
         { turns: [read(seed.bar.eyepiece), endlessStream()], words: working },
       ]);
       await openTheBar(page, seed);
-      await askTheAgent(page, answered);
+      await askIntoTheBar(page, answered);
       await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
         timeout: RUN_STEPS_MS,
       });
       await newConversation(page);
-      await askTheAgent(page, working);
+      await askIntoTheBar(page, working);
       await expect(newestRun(page).getByTestId("going-step").first()).toHaveAttribute(
         "data-running",
         "false",

@@ -4,7 +4,14 @@ import userEvent from "@testing-library/user-event";
 
 import type { GoingPlanAnswer } from "../../api/types";
 import { goingState } from "./going-store";
-import { BoxFrame, BoxRow, boxHint, boxWords, ConversationHeader } from "./RunControls";
+import {
+  BoxFrame,
+  BoxRow,
+  boxHint,
+  boxWords,
+  ConversationHeader,
+  type PanelSize,
+} from "./RunControls";
 
 // The mode control (design v3, state 12): a small text button at the left of the box that names
 // the mode the next run takes, and its menu of the three modes, each with one line on what it is
@@ -292,4 +299,48 @@ test("the header is one set over the page and at the side, and names History whi
     "aria-pressed",
     "true"
   );
+});
+
+// The panel at the side widens to the app's content area and docks back (A6) with one icon button
+// between the move and Close, named for the press it makes; the bar, which has no width of its
+// own, is given no size and draws none.
+test("the header draws a width button only where it is given a size, named for the press it makes", async () => {
+  const user = userEvent.setup();
+  let toggled = 0;
+  const header = (size?: PanelSize) =>
+    render(
+      <ConversationHeader
+        history={false}
+        move="Open over the page"
+        onClose={() => {}}
+        onHistory={() => {}}
+        onMove={() => {}}
+        onNew={() => {}}
+        size={size}
+      />
+    );
+  const bar = header();
+  expect(within(bar.container).queryByTestId("going-size")).toBeNull();
+  bar.unmount();
+
+  const docked = header({ onToggle: () => (toggled += 1), wide: false });
+  const widen = within(docked.container).getByRole("button", { name: "Widen the panel" });
+  expect(widen).toHaveAttribute("title", "Widen the panel");
+  expect(widen.textContent).toBe("");
+  expect(widen.querySelector("svg")).not.toBeNull();
+  // It stands between the move and Close, in the same bordered square.
+  const move = within(docked.container).getByRole("button", { name: "Open over the page" });
+  const close = within(docked.container).getByRole("button", { name: "Close" });
+  expect(move.nextElementSibling).toBe(widen);
+  expect(widen.nextElementSibling).toBe(close);
+  expect(widen.className).toBe(move.className);
+  await user.click(widen);
+  expect(toggled).toBe(1);
+  docked.unmount();
+
+  const wide = header({ onToggle: () => (toggled += 1), wide: true });
+  const dock = within(wide.container).getByRole("button", { name: "Dock at the side" });
+  expect(dock).toHaveAttribute("title", "Dock at the side");
+  await user.click(dock);
+  expect(toggled).toBe(2);
 });

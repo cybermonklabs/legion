@@ -255,6 +255,10 @@ test("Enter before Jev answers runs Ask: a run of the words of no kind, which re
       words: "who looks after the astrolabe",
     });
     expect(input).not.toHaveProperty("kind");
+    // Ask is the one line that hands its run to the panel at the side, and asks the panel to take
+    // the focus once the bar's dialog has given it back.
+    expect(goingState().place).toBe("side");
+    expect(goingState().panelFocus).toBe(true);
   } finally {
     bar.unmount();
   }
@@ -272,6 +276,9 @@ test("Enter on the line Do runs the words recording the line do, the line on the
     const [input] = createGoingRun.mock.calls[0] ?? [];
     expect(input).toMatchObject({ line: "do", words: "mark the astrolabe started" });
     expect(input).not.toHaveProperty("kind");
+    // Do keeps its run in the bar, which shows its conversation and plan.
+    expect(goingState().place).not.toBe("side");
+    expect(goingState().panelFocus).toBe(false);
   } finally {
     bar.unmount();
   }
@@ -295,6 +302,7 @@ test("Enter on the second row, Ask, under Do runs the words recording the line a
       line: "ask",
       words: "mark the astrolabe started",
     });
+    expect(goingState().place).toBe("side");
   } finally {
     bar.unmount();
   }

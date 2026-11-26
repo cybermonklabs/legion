@@ -13,6 +13,7 @@ import {
   dangerText,
   linkHoverText,
   linkText,
+  secondaryButtonCompact,
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
@@ -80,21 +81,27 @@ function issueOf(href: string): string | undefined {
 }
 
 /**
- * Dispatch's short answer to the words in the bar (R3), in its own panel under the rows. Its
- * text shows at most 3 lines; Enter on the line Ask starts the run that gives the full answer,
- * which the panel's foot says while that line is the selected row (`fullAnswer`). The text is the
- * stream's `text` frames drawn through the page's markdown renderer as plain text: the server
- * escaped every punctuation byte of it, so no link, image, tag or code span comes of anything the
- * model wrote. The text's links are its `item` frames: an issue an item frame names is its chip
- * (design v3, state 4), once, in the text where the text writes its key - the one reference the
- * renderer reads in it - and beneath the text where it does not, as is every other item, by its
- * title, but for an item of an issue the text draws as its chip. The block, where the answer draws
- * one, follows the text, as its frame follows the text's; a table's column of issue keys links
- * each issue too (`TableBlock`), a key the server's steps put there from the run's own reads. Each
- * line below says what the stream said about the answer: that it was cut, that the server changed
- * it, that the model wrote none, that it rests on no source, how fresh the roster it read was, or
- * that it failed. A failure says why and its own next step (`errorText`), so the foot does not say
- * the full answer again.
+ * Dispatch's short answer to the words in the bar (R3), drawn as a compact card above the hits
+ * (the one layout C1 shows; the card never sits among the rows of the list, so no option of the
+ * listbox holds a button). Its text shows at most 3 lines, whatever the answer's length: the card
+ * is small by its layout, not by selecting, shortening or rewriting an answer, and the whole
+ * answer is the panel's. Under the text, `Open in panel` (`onOpenInPanel`) is a button of its own,
+ * which the bar offers only for an answer to the words in the box now - never for one typed past
+ * (`stale`), whose words are no longer the question - and which submits those words, as Enter on
+ * the line Ask does. Nothing the card draws writes anything or opens the panel by itself.
+ *
+ * The text is the stream's `text` frames drawn through the page's markdown renderer as plain
+ * text: the server escaped every punctuation byte of it, so no link, image, tag or code span
+ * comes of anything the model wrote. The text's links are its `item` frames: an issue an item
+ * frame names is its chip (design v3, state 4), once, in the text where the text writes its key -
+ * the one reference the renderer reads in it - and beneath the text where it does not, as is every
+ * other item, by its title, but for an item of an issue the text draws as its chip. The block,
+ * where the answer draws one, follows the text, as its frame follows the text's; a table's column
+ * of issue keys links each issue too (`TableBlock`), a key the server's steps put there from the
+ * run's own reads. Each line below says what the stream said about the answer: that it was cut,
+ * that the server changed it, that the model wrote none, that it rests on no source, how fresh the
+ * roster it read was, or that it failed. A failure says why and its own next step
+ * (`errorText`), which the button is.
  *
  * An answer to words the person has typed past (`stale`) is drawn as it stood when they typed
  * on, its links, block and lines with it, inside a dashed outline with its text muted, under a
@@ -108,30 +115,48 @@ function issueOf(href: string): string | undefined {
  */
 export function AnswerPanel({
   answer,
-  fullAnswer,
+  onOpenInPanel,
   stale,
 }: {
   readonly answer: GoingAnswer;
-  /** Whether Enter now starts the run of the words: the selected row is the line Ask. */
-  readonly fullAnswer: boolean;
+  /** Submits the words in the box as a run in the panel; undefined where the card offers none. */
+  readonly onOpenInPanel: (() => void) | undefined;
   /** Whether `answer` answers words the person has typed past. */
   readonly stale: boolean;
 }): ReactNode {
   const answering = !stale && !answerSettled(answer);
+  // A Dispatch with no answering model says its one sentence and offers no step.
+  const offered =
+    onOpenInPanel !== undefined && !stale && answer.error !== GOING_ERROR_NO_MODEL_CONFIGURED;
   return (
     <section
       aria-busy={answering}
       aria-label="Answer"
-      className={`min-h-16 max-h-[40vh] shrink overflow-y-auto border-t px-3 py-3 text-sm ${borderDefault}`}
+      className={`shrink-0 border-b ${borderDefault}`}
       data-run={answer.runId}
       data-state={stale ? "stale" : answer.state}
       data-testid="going-answer"
     >
-      <AnswerBody answer={answer} stale={stale} />
-      {fullAnswer && !stale && answer.error === undefined ? (
-        <p className={`mt-2 ${noteClassName}`} data-testid="going-answer-full">
-          ↵ for the full answer
-        </p>
+      {/* The text scrolls inside its own box, short of the button, so a tall block or a long
+          list of sources never pushes the button out of reach. Its padding keeps a link's focus
+          ring clear of the box's edge, which would clip it. */}
+      <div
+        className={`max-h-[28vh] overflow-y-auto px-3 pt-3 text-sm ${offered ? "pb-1" : "pb-3"}`}
+        data-testid="going-answer-body"
+      >
+        <AnswerBody answer={answer} stale={stale} />
+      </div>
+      {offered ? (
+        <div className="flex justify-end px-3 pt-1 pb-3">
+          <button
+            className={secondaryButtonCompact}
+            data-testid="going-answer-open"
+            onClick={onOpenInPanel}
+            type="button"
+          >
+            Open in panel
+          </button>
+        </div>
       ) : null}
     </section>
   );

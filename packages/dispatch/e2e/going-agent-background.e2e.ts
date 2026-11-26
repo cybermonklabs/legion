@@ -11,23 +11,25 @@ import {
 } from "./fake-models-helpers";
 import {
   askTheAgent,
-  bar,
+  conversationBox,
+  expectHandedToThePanel,
   newestRun,
   openBarOver,
   RUN_STEPS_MS,
-  searchBox,
+  sidePanel,
 } from "./going-locators";
 import { seedCoreIssue } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 
-// Check c16 of dispatch://INFRA-1588/artifact/verification-md (spec R10, R11, R1): Stop in the
-// header stops a run whose model never ends: the server goes away from the model call in flight,
-// the fake records no call after it, and the steps stay; Esc in the empty box while a run works
-// stops it too; a run whose bar is closed goes on, and a chip on the page reads working, then done
-// with Open; and a run that makes a plan, closed at once, ends with the chip that says a plan
-// waits, and the plan is in the Inbox, where Approve runs it. Negative control: a Stop that only
-// closes the client's stream, after which the server's model call goes on.
+// Check c16 of dispatch://INFRA-1588/artifact/verification-md (spec R10, R11, R1): an Ask run is
+// handed to the panel at the side, where Stop stops a run whose model never ends: the server goes
+// away from the model call in flight, the fake records no call after it, and the steps stay; Esc
+// in the panel's empty box while a run works stops it too and leaves the panel open; a run whose
+// panel is closed goes on, and a chip on the page reads working, then done with Open; and a run
+// that makes a plan, closed at once, ends with the chip that says a plan waits, and the plan is in
+// the Inbox, where Approve runs it. Negative control: a Stop that only closes the client's
+// stream, after which the server's model call goes on.
 
 /** Holds that the stop ended the run's model call in flight: the fake records that its caller
  *  went away, and no call of the run came after it. */
@@ -66,8 +68,9 @@ test("Stop beside the box stops a run at once, and its steps stay", async ({ bro
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, words);
+    await expectHandedToThePanel(page);
     await waitForAStep(page);
-    await bar(page).getByTestId("going-stop").click();
+    await sidePanel(page).getByTestId("going-stop").click();
     await expect(newestRun(page)).toHaveAttribute("data-state", "stopped_person", {
       timeout: RUN_STEPS_MS,
     });
@@ -84,7 +87,7 @@ test("Stop beside the box stops a run at once, and its steps stay", async ({ bro
 });
 
 // SLOW(>=2s): a run that never ends, stopped by Esc in the empty box.
-test("Esc in the empty box while a run works stops it, and the bar stays open", async ({
+test("Esc in the panel's empty box while a run works stops it, and the panel stays open", async ({
   browser,
 }) => {
   modelsLane();
@@ -95,13 +98,16 @@ test("Esc in the empty box while a run works stops it, and the bar stays open", 
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, words);
+    await expectHandedToThePanel(page);
     await waitForAStep(page);
-    await expect(searchBox(page)).toHaveValue("");
-    await searchBox(page).press("Escape");
+    await expect(conversationBox(page)).toHaveValue("");
+    await conversationBox(page).press("Escape");
     await expect(newestRun(page)).toHaveAttribute("data-state", "stopped_person", {
       timeout: RUN_STEPS_MS,
     });
-    await expect(bar(page)).toBeVisible();
+    // The panel stays, and the cursor stays in its box.
+    await expect(sidePanel(page)).toBeVisible();
+    await expect(conversationBox(page)).toBeFocused();
     await expectCallLeft(words);
   });
 });
@@ -129,8 +135,10 @@ test("a run whose bar is closed goes on, and the chip reads working, then done w
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, words);
-    await bar(page).getByTestId("going-close").click();
-    await expect(bar(page)).toHaveCount(0);
+    await expectHandedToThePanel(page);
+    // Close, not Esc: Esc in the empty box while the run works would stop it.
+    await sidePanel(page).getByTestId("going-close").click();
+    await expect(sidePanel(page)).toHaveCount(0);
     const chip = page.getByTestId("going-chip");
     await expect(chip).toHaveAttribute("data-state", "working");
     await expect(chip).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
@@ -169,9 +177,10 @@ test("a run that makes a plan, closed at once, ends with the chip saying a plan 
   await withAlice(browser, async (page) => {
     await openBarOver(page, "/");
     await askTheAgent(page, words);
+    await expectHandedToThePanel(page);
     // Close, not Esc: Esc in the empty box while the run works would stop it.
-    await bar(page).getByTestId("going-close").click();
-    await expect(bar(page)).toHaveCount(0);
+    await sidePanel(page).getByTestId("going-close").click();
+    await expect(sidePanel(page)).toHaveCount(0);
     const chip = page.getByTestId("going-chip");
     await expect(chip).toContainText("Needs you", { timeout: RUN_STEPS_MS });
     const waiting = page.getByTestId("inbox-going-plan");

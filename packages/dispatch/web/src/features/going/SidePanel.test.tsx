@@ -9,7 +9,14 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { GoingPlanAnswer, GoingRun } from "../../api/types";
-import { goingState, openConversation, resetGoingStore, setPlace } from "./going-store";
+import {
+  goingState,
+  handOffToPanel,
+  openConversation,
+  resetGoingStore,
+  setPlace,
+  setWide,
+} from "./going-store";
 import { SidePanel } from "./SidePanel";
 
 // The conversation kept at the side of the page (spec R1, R11; design v3, state 10): a panel
@@ -45,8 +52,9 @@ const started: GoingRun = {
 };
 
 /** The panel at the side of `PAGE`, beside `page`, alice signed in, on a client that keeps a read
- *  fresh for 30 s as the app's does (`main.tsx`). */
-function renderPanel(page: ReactNode = null): void {
+ *  fresh for 30 s as the app's does (`main.tsx`). `wideInset` is where the shell says the app's
+ *  content area starts, which is what lets the panel offer to widen. */
+function renderPanel(page: ReactNode = null, wideInset?: string): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
@@ -60,7 +68,7 @@ function renderPanel(page: ReactNode = null): void {
         initialEntries={[PAGE]}
       >
         {page}
-        <SidePanel />
+        <SidePanel wideInset={wideInset} />
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -458,6 +466,131 @@ test("an item's chip in the panel's answer opens the item in the page with the r
     stream.mockRestore();
     summary.mockRestore();
   }
+});
+
+// A link in the panel opens its item in the page and the conversation stays; the next request,
+// asked from the panel's box, is the follow-up of that conversation about the item the page now
+// shows (R1: the item the person opens is the context of the next request).
+test("a link in the panel's answer keeps the conversation, and the next request names the item it opened", async () => {
+  const user = userEvent.setup();
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    onFrame("reply", { labels: [], text: "The comet is [CORE-7](dispatch://CORE-7).", tools: [] });
+    onFrame("end", { offers: [], reason: "", state: "done" });
+    return Promise.withResolvers<void>().promise;
+  });
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "todo",
+    title: key === "CORE-7" ? "Track the comet" : "The page's issue",
+  }));
+  const start = spyOn(api, "createGoingRun").mockResolvedValue({
+    ...started,
+    continues: started.id,
+    id: "r-10",
+    words: "and the appendix",
+  });
+  try {
+    openConversation({
+      id: started.conversation,
+      newest_at: started.created_at,
+      runs: [{ ...started, finished_at: started.created_at, state: "done" }],
+    });
+    renderPanel(<Here />);
+    const chip = await within(screen.getByTestId("going-run-answer")).findByTestId("item-chip");
+    await waitFor(() => expect(chip).toHaveTextContent("Track the comet"));
+    await user.click(chip);
+    expect(screen.getByTestId("here")).toHaveTextContent("/issues/CORE-7");
+    expect(goingState().conversation).toEqual([started.id]);
+    expect(screen.getByTestId("going-run-answer")).toBeInTheDocument();
+
+    await user.type(
+      screen.getByRole("textbox", { name: "Ask the command bar" }),
+      "and the appendix{Enter}"
+    );
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      context: { issue: "CORE-7", project: "CORE" },
+      continues: started.id,
+      words: "and the appendix",
+    });
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+    summary.mockRestore();
+  }
+});
+
+// The panel widens to the app's content area and docks back (A6), where the shell says there is a
+// navigation beside the page to leave reachable. It is one panel throughout: the run, its
+// conversation and the words the person has typed and not sent are the ones they were, and the
+// button that did it keeps the focus, now named for the other press.
+test("Widen stands the panel at the navigation's edge and Dock puts it back, with the run and the unsent words kept", async () => {
+  const user = userEvent.setup();
+  const starts = answerStarts();
+  try {
+    renderPanel(null, "20rem");
+    const panel = screen.getByTestId("going-side-panel");
+    const box = screen.getByRole("textbox", { name: "Ask the command bar" });
+    await user.type(box, `${started.words}{Enter}`);
+    const run = await screen.findByTestId("going-run");
+    await user.type(box, "half a thought");
+
+    expect(panel).toHaveAttribute("data-wide", "false");
+    expect(panel.className).toContain("sm:w-[420px]");
+    expect(panel.style.left).toBe("");
+    const widen = within(panel).getByRole("button", { name: "Widen the panel" });
+    expect(widen).toHaveAttribute("title", "Widen the panel");
+    await user.click(widen);
+
+    expect(screen.getByTestId("going-side-panel")).toBe(panel);
+    expect(panel).toHaveAttribute("data-wide", "true");
+    expect(goingState().wide).toBe(true);
+    expect(panel.className).not.toContain("sm:w-[420px]");
+    expect(panel.style.left).toBe("20rem");
+    // The same button, named for the other press, still holding the focus.
+    const dock = within(panel).getByRole("button", { name: "Dock at the side" });
+    expect(dock).toBe(widen);
+    expect(dock).toHaveFocus();
+    expect(screen.getByTestId("going-run")).toBe(run);
+    expect(screen.getByRole("textbox", { name: "Ask the command bar" })).toBe(box);
+    expect(box).toHaveValue("half a thought");
+    expect(starts.start).toHaveBeenCalledTimes(1);
+
+    await user.click(dock);
+    expect(panel).toHaveAttribute("data-wide", "false");
+    expect(panel.className).toContain("sm:w-[420px]");
+    expect(panel.style.left).toBe("");
+    expect(goingState().wide).toBe(false);
+    expect(screen.getByTestId("going-run")).toBe(run);
+    expect(box).toHaveValue("half a thought");
+    expect(starts.start).toHaveBeenCalledTimes(1);
+  } finally {
+    starts.restore();
+  }
+});
+
+test("a shell with no navigation beside the page gives the panel no width button, and a stored wide state leaves it docked", () => {
+  renderPanel();
+  act(() => setWide(true));
+  const panel = screen.getByTestId("going-side-panel");
+  expect(within(panel).queryByTestId("going-size")).toBeNull();
+  expect(panel).toHaveAttribute("data-wide", "false");
+  expect(panel.className).toContain("sm:w-[420px]");
+});
+
+// The bar's Open in panel and its Enter on Ask end in one step, `handOffToPanel`, which draws the
+// panel and asks it for the focus. The bar's dialog gives the focus back as it goes, in a cleanup
+// of the same commit, so the panel takes it after that, in its box, and only once.
+test("a handoff from the bar puts the focus in the panel's box, and the request ends with it", () => {
+  renderPanel();
+  act(() => setPlace("over"));
+  expect(screen.queryByTestId("going-side-panel")).toBeNull();
+  act(() => handOffToPanel());
+  expect(screen.getByRole("textbox", { name: "Ask the command bar" })).toHaveFocus();
+  expect(goingState().panelFocus).toBe(false);
+  expect(goingState().place).toBe("side");
 });
 
 // The 420 px panel cut "Ask a follow-up…" to "Ask a follow-u" beside a long chip and Stop: the box

@@ -9,11 +9,12 @@ import { focusManager } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
-import { onRealTurns, realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import type { GoingEvent } from "../../api/types";
+import { goingState } from "../going/going-store";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { TABLE_ROWS } from "./blocks/TableBlock";
 import {
@@ -768,10 +769,11 @@ test("a Dispatch that does not answer asks nothing, lists no line, and says so o
   }
 });
 
-// The short answer (R3, design v3, state 1) is in its own panel under the rows, its text at most
-// 3 lines, and says "↵ for the full answer" while Enter would start the run of the words: while
-// the line Ask is the highlighted row.
-test("the short answer shows at most 3 lines, with ↵ for the full answer while the line Ask is highlighted", async () => {
+// The short answer (R3; C1 of the answer-surface mockups) is a compact card above the hits, never
+// in the list: its text shows at most 3 lines, whatever its length, and its one button, Open in
+// panel, is a button of its own outside the listbox and every option of it, so no option holds a
+// control. Nothing about the answer's length picks this layout or the button.
+test("the short answer is a card above the hits, its text at most 3 lines, with an Open in panel button outside the list", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const bar = renderBar();
@@ -787,19 +789,94 @@ test("the short answer shows at most 3 lines, with ↵ for the full answer while
     const text = await screen.findByTestId("going-answer-text");
     await waitFor(() => expect(text).toHaveTextContent("The first answer"));
     expect(text.className).toContain("line-clamp-3");
-    const panel = screen.getByTestId("going-answer");
-    // Under the rows, never among them.
-    expect(
-      screen.getByRole("listbox").compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).not.toBe(0);
-    expect(within(panel).getByTestId("going-answer-full")).toHaveTextContent(
-      "↵ for the full answer"
-    );
+    const card = screen.getByTestId("going-answer");
+    const list = screen.getByRole("listbox");
+    // Above the hits, never among them.
+    expect(card.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(list.contains(card)).toBe(false);
+    const open = within(card).getByRole("button", { name: "Open in panel" });
+    expect(list.contains(open)).toBe(false);
+    expect(screen.getAllByRole("option").some((option) => option.contains(open))).toBe(false);
+    // The card says nothing of Enter: the line Ask has its own key.
+    expect(screen.queryByTestId("going-answer-full")).toBeNull();
 
+    // Moving the highlight changes nothing of the card.
     await user.keyboard("{ArrowDown}");
-    expect(within(panel).queryByTestId("going-answer-full")).toBeNull();
+    expect(within(card).getByRole("button", { name: "Open in panel" })).toBe(open);
   } finally {
     bar.unmount();
+  }
+});
+
+// An answer to words the person has typed past is no question any more: its card, drawn as it
+// stood, offers no button, so an old preview cannot submit an old query. The card of the words in
+// the box now does, and its button is the line Ask's Enter: one run, of the words typed now, with
+// the line "ask", and the conversation handed to the panel at the side. Receiving the answer
+// started no run and opened no panel.
+test("Open in panel is offered only on the answer to the words in the box, and submits those words once", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const start = spyOn(api, "createGoingRun").mockResolvedValue({
+    context: null,
+    continues: null,
+    conversation: "c-1",
+    created_at: new Date().toISOString(),
+    finished_at: null,
+    id: "r-1",
+    issues: [],
+    level: "standard",
+    line: "ask",
+    mode: "ask",
+    standing_count: 0,
+    state: "queued",
+    stop_reason: null,
+    undoable: false,
+    undoable_count: 0,
+    undone_at: null,
+    undone_count: 0,
+    used: { calls: 0, tokens: 0, working_ms: 0 },
+    words: "astrolabes",
+  });
+  const follow = spyOn(api, "streamGoingRunEvents").mockImplementation(
+    () => Promise.withResolvers<void>().promise
+  );
+  const bar = renderBar();
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    send(streams[0], { data: { text: "The first answer" }, event: "text" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Open in panel" })).toBeInTheDocument()
+    );
+    // The answer arrived: nothing started and nothing opened.
+    expect(start).not.toHaveBeenCalled();
+    expect(goingState().place).not.toBe("side");
+
+    // One more letter makes that answer the earlier words': it stays drawn, and offers no button.
+    await user.keyboard("s");
+    await expectKeptFor("astrolabe");
+    expect(screen.queryByRole("button", { name: "Open in panel" })).toBeNull();
+    expect(start).not.toHaveBeenCalled();
+
+    // The answer to the words now brings the button back, and it submits those words.
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(2));
+    send(streams[1], { data: { text: "The second answer" }, event: "text" });
+    const open = await screen.findByRole("button", { name: "Open in panel" });
+    await user.click(open);
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      level: "standard",
+      line: "ask",
+      words: "astrolabes",
+    });
+    expect(start.mock.calls[0]?.[0]).not.toHaveProperty("continues");
+    expect(goingState().place).toBe("side");
+  } finally {
+    bar.unmount();
+    follow.mockRestore();
+    start.mockRestore();
   }
 });
 
@@ -840,7 +917,11 @@ test("a failed short answer says why in words with its next step, and never its 
         "aria-activedescendant",
         "search-option-line"
       );
-      expect(screen.queryByTestId("going-answer-full")).toBeNull();
+      // The failure's one next step, the full answer, is the button, but for a Dispatch with no
+      // answering model, which says its sentence and offers none.
+      expect(screen.queryByRole("button", { name: "Open in panel" }) === null).toBe(
+        code === GOING_ERROR_NO_MODEL_CONFIGURED
+      );
     }
   } finally {
     bar.unmount();

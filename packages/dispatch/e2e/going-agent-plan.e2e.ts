@@ -5,7 +5,7 @@ import {
   askTheAgent,
   bar,
   boxHint,
-  closeBar,
+  conversationBox,
   newestRun,
   openBar,
   openBarOver,
@@ -13,19 +13,21 @@ import {
   planOnPage,
   planRows,
   RUN_STEPS_MS,
-  searchBox,
+  sidePanel,
 } from "./going-locators";
 import { type Split, seedSplit } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 
 // Check c4 of dispatch://INFRA-1588/artifact/verification-md (spec R4, plan.md settlement 7): a
-// split request draws its plan on the page that shows its items - the issue list, the board, the
-// parent's Children tab, a document's page - and otherwise in the plan card; the person unticks a
-// row, which unticks the row that needs it, edits a title, and Enter runs the rest, so the store
-// holds exactly the approved changes; a row whose item another person changes waits again with
-// the new value; words revise the plan; and a plan whose conversation is not on the screen draws
-// on no page. Negative control: a runner that runs the unticked row, which the store then holds.
+// split request, asked with Enter on the line Ask and so kept in the panel at the side, draws its
+// plan on the page that shows its items - the issue list, the board, the parent's Children tab, a
+// document's page - and otherwise in the plan card of the panel; the person unticks a row, which
+// unticks the row that needs it, edits a title, and Enter in the panel's box runs the rest, so the
+// store holds exactly the approved changes; a row whose item another person changes waits again
+// with the new value; words revise the plan; and a plan whose conversation is not on the screen
+// draws on no page. Negative control: a runner that runs the unticked row, which the store then
+// holds.
 
 /** The split's plan: a new issue under the parent, a retitle of the second child, and a start of
  *  the first that needs the new issue. */
@@ -202,8 +204,8 @@ test("from the Inbox the plan is in the card: untick unticks what needs it, an e
     const title = card.getByRole("textbox", { name: "New title" });
     await title.fill("Raise the dome, the half that turns");
     await title.press("Enter");
-    await searchBox(page).focus();
-    await searchBox(page).press("Enter");
+    await conversationBox(page).focus();
+    await conversationBox(page).press("Enter");
 
     await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
     expect((await getIssue(split.second)).title).toBe("Raise the dome, the half that turns");
@@ -236,23 +238,23 @@ test("before the bar has read the waiting plan, the hint says so, Enter opens no
     await expect(planCard(page)).toHaveCount(0);
     // Words in the box: the hint under it names the read, and Enter keeps the words and starts
     // no run.
-    await searchBox(page).fill("keep the dome whole");
+    await conversationBox(page).fill("keep the dome whole");
     await expect(boxHint(page)).toContainText("Reading the plan");
-    await searchBox(page).press("Enter");
-    await expect(searchBox(page)).toHaveValue("keep the dome whole");
-    await searchBox(page).fill("");
-    await searchBox(page).press("Enter");
+    await conversationBox(page).press("Enter");
+    await expect(conversationBox(page)).toHaveValue("keep the dome whole");
+    await conversationBox(page).fill("");
+    await conversationBox(page).press("Enter");
 
     release();
     await expect(planCard(page)).toHaveAttribute("data-state", "waiting", {
       timeout: RUN_STEPS_MS,
     });
-    // The early Enter opened nothing: the bar is open on the page it opened over, and the run
-    // still waits.
-    await expect(bar(page)).toBeVisible();
+    // The early Enter opened nothing: the panel is open on the page the bar opened over, and the
+    // run still waits.
+    await expect(sidePanel(page)).toBeVisible();
     expect(page.url()).toBe(opened);
     await expect(newestRun(page)).toHaveAttribute("data-state", "waiting");
-    await searchBox(page).press("Enter");
+    await conversationBox(page).press("Enter");
     await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
   });
 });
@@ -289,8 +291,8 @@ test("a row whose item another person changes after the plan showed shows the ne
       (response) =>
         response.request().method() === "POST" && response.url().endsWith("/plan/approve")
     );
-    await searchBox(page).focus();
-    await searchBox(page).press("Enter");
+    await conversationBox(page).focus();
+    await conversationBox(page).press("Enter");
     expect((await approval).ok()).toBe(true);
     answered();
     const changed = planRows(planCard(page)).filter({
@@ -319,9 +321,9 @@ test("a revision in words replaces the plan", async ({ browser }) => {
     await askTheAgent(page, words);
     await planWaits(page);
     await expect(planCard(page)).toHaveAttribute("data-plan", "1");
-    await searchBox(page).fill("keep the dome whole");
+    await conversationBox(page).fill("keep the dome whole");
     await expect(boxHint(page)).toContainText("sends your words");
-    await searchBox(page).press("Enter");
+    await conversationBox(page).press("Enter");
     await expect(planCard(page)).toHaveAttribute("data-plan", "2", { timeout: RUN_STEPS_MS });
     await expect(planCard(page)).toContainText("keeping the dome whole");
   });
@@ -385,7 +387,8 @@ test("a plan waiting in the Inbox draws on no page until its conversation is ope
     await askTheAgent(page, words);
     await planWaits(page);
     await expect(planOnPage(page)).toBeVisible();
-    await closeBar(page);
+    await sidePanel(page).getByTestId("going-close").click();
+    await expect(sidePanel(page)).toHaveCount(0);
     await expect(planOnPage(page)).toHaveCount(0);
     await page.getByTestId("going-chip-open").click();
     await expect(planOnPage(page)).toBeVisible({ timeout: RUN_STEPS_MS });

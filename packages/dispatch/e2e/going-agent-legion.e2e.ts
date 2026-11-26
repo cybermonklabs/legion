@@ -20,6 +20,7 @@ import {
 import {
   askTheAgent,
   bar,
+  conversationBox,
   lineOnTop,
   newestRun,
   openBarOver,
@@ -72,8 +73,8 @@ test("a hand-off to Legion is the label and the status the words name, made as t
     });
     const rows = planRows(planOnPage(page)).or(planRows(planCard(page)));
     await expect(rows).toHaveCount(2);
-    await searchBox(page).focus();
-    await searchBox(page).press("Enter");
+    await conversationBox(page).focus();
+    await conversationBox(page).press("Enter");
     await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
     const after = await getIssue(issue.key);
     expect(after.labels).toContain("legion");

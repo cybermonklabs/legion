@@ -6,11 +6,13 @@ import { api } from "../../api/client";
 import type { GoingRun } from "../../api/types";
 import {
   asksPerson,
+  clearPanelFocus,
   continueRun,
   conversationTitle,
   draftOf,
   dropQueued,
   goingState,
+  handOffToPanel,
   newConversation,
   newestRun,
   openConversation,
@@ -22,6 +24,7 @@ import {
   setLevel,
   setPlace,
   setUndone,
+  setWide,
   startRun,
   stopRun,
   titleWords,
@@ -684,4 +687,60 @@ test("a run's record read again is the newest read's, though an older read answe
     read.mockRestore();
     runs.restore();
   }
+});
+
+// The panel at the side widens to the app's content area and docks back (A6), and it does so
+// without touching the run, its conversation or its plan's draft: only the width is the store's
+// to hold. Only the side has a width, so a widened panel that moves over the page, or closes,
+// comes back docked, and a press made where the conversation is not at the side does nothing.
+test("widening and docking the panel change only its width, and only the side is ever wide", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "split CORE-1"));
+  try {
+    await startRun("split CORE-1", CONTEXT, "alice");
+    setDraft({ edits: new Map(), plan: 1, run: "r-1", unticked: new Set([1]) });
+
+    setWide(true);
+    expect(goingState().wide).toBe(false);
+    setPlace("side");
+    setWide(true);
+    const wide = goingState();
+    expect(wide.wide).toBe(true);
+    setWide(false);
+    const docked = goingState();
+    expect(docked.wide).toBe(false);
+    // The run, the conversation and the draft are the very ones the press found.
+    expect(docked.runs).toBe(wide.runs);
+    expect(docked.conversation).toBe(wide.conversation);
+    expect(docked.draft).toBe(wide.draft);
+
+    setWide(true);
+    setPlace("over");
+    expect(goingState().wide).toBe(false);
+    setPlace("side");
+    expect(goingState().wide).toBe(false);
+    setWide(true);
+    setPlace("closed");
+    expect(goingState().wide).toBe(false);
+  } finally {
+    runs.restore();
+  }
+});
+
+// The bar hands its run to the panel with one step that starts nothing: the place is the side,
+// docked, and the panel is asked to take the focus in its box once. A request the panel never
+// took is let go with the side, so a panel opened later by a key does not steal the focus.
+test("the handoff puts the conversation at the side, docked, asks for the panel's focus once, and lets it go off the side", () => {
+  setPlace("over");
+  handOffToPanel();
+  expect(goingState().place).toBe("side");
+  expect(goingState().wide).toBe(false);
+  expect(goingState().panelFocus).toBe(true);
+  clearPanelFocus();
+  expect(goingState().panelFocus).toBe(false);
+
+  handOffToPanel();
+  setPlace("closed");
+  expect(goingState().panelFocus).toBe(false);
+  setPlace("side");
+  expect(goingState().panelFocus).toBe(false);
 });

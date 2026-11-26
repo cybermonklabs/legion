@@ -113,6 +113,13 @@ export interface RunStart {
 /** Everything the store holds. */
 export interface GoingState {
   readonly place: PanelPlace;
+  /** Whether the panel at the side is widened to the app's content area (A6), which only the
+   *  side has: every other place holds it false. Widening and docking move nothing of the run,
+   *  its draft or its unsent words. */
+  readonly wide: boolean;
+  /** Whether the panel at the side is to take the focus in its box once it is drawn: set by the
+   *  handoff from the bar (`handOffToPanel`), and let go as the panel takes the focus. */
+  readonly panelFocus: boolean;
   /** The open conversation's runs, oldest first; undefined while none is open. */
   readonly conversation: readonly string[] | undefined;
   readonly runs: ReadonlyMap<string, RunEntry>;
@@ -142,12 +149,14 @@ const INITIAL: GoingState = {
   draft: undefined,
   level: "standard",
   onPage: new Map(),
+  panelFocus: false,
   place: "closed",
   queued: undefined,
   refusal: undefined,
   runs: new Map(),
   starting: undefined,
   undone: new Map(),
+  wide: false,
 };
 
 let state: GoingState = INITIAL;
@@ -420,7 +429,14 @@ export function setPlace(place: PanelPlace): void {
     return;
   }
   if (state.place !== "closed" || place !== "over") {
-    set({ ...state, place });
+    // Only the side is ever widened, and only it takes the focus the handoff asked for: another
+    // place, or a close, docks it and lets that request go.
+    set({
+      ...state,
+      panelFocus: place === "side" && state.panelFocus,
+      place,
+      wide: place === "side" && state.wide,
+    });
     return;
   }
   const open = newestRun();
@@ -442,6 +458,31 @@ export function setPlace(place: PanelPlace): void {
     place,
     refusal: undefined,
   });
+}
+
+/** Widens the panel at the side to the app's content area (A6), or docks it back to its side
+ *  width. Nothing but its width changes: its conversation, its runs, its plan's draft and the
+ *  words the person has not sent stay where they are. It does nothing while the conversation is
+ *  not at the side. */
+export function setWide(wide: boolean): void {
+  if (state.place === "side" && wide !== state.wide) {
+    set({ ...state, wide });
+  }
+}
+
+/** Hands the conversation over to the panel at the side from the bar over the page, and has the
+ *  panel take the focus in its box once it is drawn and the bar's dialog has given the focus
+ *  back (`clearPanelFocus`). It is the one step the bar's Open in panel and its Enter on the line
+ *  Ask take once their run has started (`useAsk`): it starts nothing and changes no run. */
+export function handOffToPanel(): void {
+  set({ ...state, panelFocus: true, place: "side", wide: false });
+}
+
+/** Lets the handoff's request for the focus go, as the panel has taken it. */
+export function clearPanelFocus(): void {
+  if (state.panelFocus) {
+    set({ ...state, panelFocus: false });
+  }
 }
 
 /** Sets the level the next run takes. */

@@ -258,14 +258,76 @@ export function MoveButton({
   );
 }
 
+/** The glyph of "Widen the panel": two arrows that point apart. */
+function WidenIcon(): ReactNode {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 16 16">
+      <path
+        d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.25"
+      />
+    </svg>
+  );
+}
+
+/** The glyph of "Dock at the side": the page, and a panel at its right. */
+function DockIcon(): ReactNode {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 16 16">
+      <rect
+        height="11"
+        rx="1.5"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        width="13"
+        x="1.5"
+        y="2.5"
+      />
+      <rect fill="currentColor" height="7" rx="0.75" width="3" x="9.5" y="4.5" />
+    </svg>
+  );
+}
+
+/** How the panel at the side is sized, and the press that changes it: `wide` while it fills the
+ *  app's content area, and `onToggle` widens it or docks it back to its side width. */
+export interface PanelSize {
+  readonly wide: boolean;
+  readonly onToggle: () => void;
+}
+
+/** The button that widens the panel to the app's content area or docks it back, as an icon with
+ *  its words as its tooltip and its name: "Widen the panel" while it is at the side width, "Dock
+ *  at the side" while it is wide. It is one button in one place, so the focus stays on it as it
+ *  changes. */
+function SizeButton({ size }: { readonly size: PanelSize }): ReactNode {
+  const words = size.wide ? "Dock at the side" : "Widen the panel";
+  return (
+    <button
+      aria-label={words}
+      className={HEADER_ICON_BUTTON}
+      data-testid="going-size"
+      onClick={size.onToggle}
+      title={words}
+      type="button"
+    >
+      {size.wide ? <DockIcon /> : <WidenIcon />}
+    </button>
+  );
+}
+
 /**
  * The header of the conversation, in the bar and in the panel (design v3, states 2 and 10), one
  * set in both: the conversation's title, its first question on one line, then History, a new
  * conversation, the button that moves it, and Close. The move and Close are icons with their
  * words as their tooltips, so the title keeps the room: over the page a pin, "Keep at the side";
- * at the side the page with the bar over it, "Open over the page"; and Close is × on both. While
- * History shows (`history`), the header names it, "History", with a back arrow that leaves it,
- * and History is pressed. Each press is the surface's own.
+ * at the side the page with the bar over it, "Open over the page"; and Close is × on both. The
+ * panel at the side adds one more icon between the move and Close, which widens it to the app's
+ * content area and docks it back (`size`, A6). While History shows (`history`), the header names
+ * it, "History", with a back arrow that leaves it, and History is pressed. Each press is the
+ * surface's own.
  */
 export function ConversationHeader({
   history,
@@ -274,6 +336,7 @@ export function ConversationHeader({
   onHistory,
   onMove,
   onNew,
+  size,
 }: {
   readonly history: boolean;
   readonly move: "Keep at the side" | "Open over the page";
@@ -281,6 +344,8 @@ export function ConversationHeader({
   readonly onHistory: () => void;
   readonly onMove: () => void;
   readonly onNew: () => void;
+  /** The panel's width control; none where the surface has no width of its own, as the bar. */
+  readonly size?: PanelSize;
 }): ReactNode {
   const title = useGoingValue(conversationTitle);
   const open = useGoingValue((of) => of.conversation !== undefined || of.starting !== undefined);
@@ -345,6 +410,7 @@ export function ConversationHeader({
         </button>
       ) : null}
       <MoveButton move={move} onMove={onMove} />
+      {size === undefined ? null : <SizeButton size={size} />}
       <button
         aria-label="Close"
         className={HEADER_ICON_BUTTON}

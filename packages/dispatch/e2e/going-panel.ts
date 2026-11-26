@@ -93,6 +93,23 @@ export function countAskedRuns(page: Page): { readonly words: string[] } {
   return asked;
 }
 
+/** Counts the agent runs the page starts, its `POST /api/v1/going/runs` from here on, each with
+ *  the body it sent: the words, the level, the line pressed and the page's context. The bar's
+ *  short answer is no run of these: it is `POST /api/v1/going/requests` (`countAskedRuns`). */
+export function countStartedRuns(page: Page): { readonly bodies: Record<string, unknown>[] } {
+  const started = { bodies: [] as Record<string, unknown>[] };
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "POST" && url.pathname === "/api/v1/going/runs") {
+      const body: unknown = request.postDataJSON();
+      started.bodies.push(
+        body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {}
+      );
+    }
+  });
+  return started;
+}
+
 /** A structured reply with a block of `kind`, its spec naming the read that fills it. */
 export function withBlock(kind: string, spec: unknown, answer = "Here it is."): ChatReply {
   return { final: { answer, block: { kind, spec, title: `The ${kind}` } } };

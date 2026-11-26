@@ -2239,7 +2239,10 @@ test("a run another writer's delete withdrew takes its plan's card away with its
   let withdrawn: { mockRestore: () => void } | undefined;
   try {
     await screen.findByTestId("going-plan");
-    expect(screen.getByTestId("going-run-answer")).toHaveTextContent("harbour comet");
+    // The answer's text and the plan's card come from two reads: wait for the text as well.
+    await waitFor(() =>
+      expect(screen.getByTestId("going-run-answer")).toHaveTextContent("harbour comet")
+    );
     // Another writer deletes the comment the run read: the page reads every run's record again,
     // which now reads the run withdrawn.
     withdrawn = spyOn(api, "goingRun").mockImplementation(async () =>

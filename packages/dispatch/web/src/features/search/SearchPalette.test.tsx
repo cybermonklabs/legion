@@ -30,7 +30,8 @@ import type {
   SearchResponse,
   SearchResult,
 } from "../../api/types";
-import { goingState, setPlace } from "../going/going-store";
+import { goingState, setLevel, setPlace, useGoingValue } from "../going/going-store";
+import { SidePanel } from "../going/SidePanel";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -2202,6 +2203,11 @@ test("after the arrows, new words let a best match take the head again as it arr
 // Esc in the empty box stops the run; New brings the search back. Words sent while the run works
 // wait under it (state 3's last bullet): × drops them, and the run's end sends them as the next
 // turn, or as the revision of the plan it ended waiting on.
+//
+// Enter on the line Ask hands the run to the panel at the side (the last rows of this file), so
+// the palette's own harness here, which keeps the dialog open where the shell would close it, reads
+// the conversation the bar holds while it is over the page: the one a run started there begins,
+// as Do's does, and the one Ctrl-K brings back from the panel.
 
 const WORDS = "who looks after the comet";
 
@@ -2660,6 +2666,100 @@ test("an answer that ends in a question mark but whose frame does not say it wai
     bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
     expect(talkBox()).toHaveAttribute("placeholder", "Ask a follow-up…");
     expect(screen.getByTestId("going-run-state")).toHaveTextContent("Done");
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Enter on the line Ask (and the card's Open in panel, which AnswerPanel.test.tsx holds) is one
+// action that hands the run to the panel at the side: one run, of the bar's words, level and
+// context; the bar closes; and the focus is in the panel's box once the dialog has given it back.
+// The rows above keep the palette open as their own harness, since the shell, not the palette,
+// closes it; these two draw the bar and the panel as `app.tsx` does, the bar open only while the
+// conversation is over the page.
+
+/** The shell's two parts of the conversation: the bar, open while the conversation is over the
+ *  page, and the panel, drawn while it is at the side. */
+function ConversationShell(): ReactNode {
+  const over = useGoingValue((going) => going.place === "over");
+  return (
+    <>
+      <SearchPalette onClose={() => setPlace("closed")} open={over} />
+      <SidePanel />
+    </>
+  );
+}
+
+function renderShell(entries: string[]): { queryClient: QueryClient; unmount: () => void } {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={entries}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <ConversationShell />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { queryClient, unmount: view.unmount };
+}
+
+test("Enter on the line Ask starts one run with the bar's words, level and context, closes the bar, and puts the focus in the panel's box", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  act(() => {
+    setLevel("deep");
+    setPlace("over");
+  });
+  const view = renderShell(["/projects/LEGION/issues"]);
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull());
+
+    expect(bar.start).toHaveBeenCalledTimes(1);
+    expect(bar.start.mock.calls[0]?.[0]).toEqual({
+      context: { block: "", issue: "", path: "/projects/LEGION/issues", project: "LEGION" },
+      level: "deep",
+      line: "ask",
+      words: WORDS,
+    });
+    expect(goingState().place).toBe("side");
+    const panel = screen.getByTestId("going-side-panel");
+    await waitFor(() =>
+      expect(within(panel).getByRole("textbox", { name: "Ask the command bar" })).toHaveFocus()
+    );
+    // The one run is the panel's conversation, the question at its head.
+    await waitFor(() =>
+      expect(within(panel).getByTestId("going-run-words")).toHaveTextContent(WORDS)
+    );
+    expect(within(panel).getAllByTestId("going-run")).toHaveLength(1);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A start Dispatch refuses shows its reason in the panel the bar handed over to, and no
+// conversation: the refused words are no run, so there is nothing to show twice.
+test("a start Dispatch refuses leaves the panel with its reason and no conversation", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  bar.start.mockRejectedValue(new Error("Dispatch refused the run."));
+  act(() => setPlace("over"));
+  const view = renderShell(["/projects/LEGION/issues"]);
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull());
+    await waitFor(() => expect(goingState().refusal).toBeDefined());
+    expect(goingState().place).toBe("side");
+    expect(goingState().conversation).toBeUndefined();
+    expect(goingState().starting).toBeUndefined();
+    expect(screen.queryByTestId("going-run")).toBeNull();
+    expect(within(screen.getByTestId("going-side-panel")).getByRole("alert")).toBeInTheDocument();
+    expect(bar.start).toHaveBeenCalledTimes(1);
   } finally {
     bar.restore();
     view.unmount();

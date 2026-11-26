@@ -53,6 +53,15 @@ body: |-
   `packages/envoy/going/decision_models.json` records), whose `decision` frame gives the line. The
   short answer of a pause in typing calls the read tools, draws a typed block (`block`) from rows
   the server reads itself, and stops at `POST /api/v1/going/requests/{id}/cancel`.
+  The web draws that short answer as a compact card above the search hits, with a button, Open in
+  panel. The card writes nothing and opens nothing by itself, and no rule of length or content
+  moves an answer: Open in panel, and Enter on the line Ask, are one action, which starts one run
+  with the words, the level and the page context the bar holds now, closes the bar and puts the
+  focus in the box of the conversation's panel at the side. A card whose words were typed past has
+  no button. A header button widens that panel to the app's content area, with the navigation
+  still beside it, and docks it back, without moving the run or the words not yet sent; a link in
+  the panel opens its item in the page, keeps the conversation, and makes that item the context of
+  the next request. Do and File as a new issue keep to the bar.
   Short answers for a project-scoped credential search and read only its own project and
   public projects. An uncovered private project and a missing project give the same refusal.
   `GET /api/v1/projects/{key}/activity` counts a project's events per ISO week, and
