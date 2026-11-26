@@ -6,7 +6,8 @@ body: |-
   agent/v1). A reply of 120 words or more gets one more model turn, which tells the model that
   count and asks for the same facts in fewer than 120 words, or for the same answer again where
   the person's words ask for more than a short answer. There is at most one such turn in a turn of
-  the run, and a reply still long after it is shown whole. The `reply` frame says the count
+  the run, and a reply still long after it is shown whole, as is a reply whose count the server
+  does not give within 10 seconds. The `reply` frame says the count
   (`drawn_words`) and marks a reply held back for length (`held_long`). A tool result whose body is
   a list now names the list's total before the body, such as "[Total: 42 issues in the list
   below.]", so a count in the answer is the server's even where the body is cut; the system prompt

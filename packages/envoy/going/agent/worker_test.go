@@ -35,12 +35,14 @@ import (
 // appends the frames of each step and each frames call to the run's events, answers each call the
 // run makes with what call answers, or refuses it with what refuse answers where it is set and
 // answers a refusal, and keeps each end. A words call (agentwire.KindWords) is kept apart and
-// answered by words, or, where words is nil, with the count of its text's white-space separated
-// words, as the server counts a reply that links nothing: call and refuse never see one.
+// refused with refuseWords where it is set, else answered by words, or, where words is nil, with
+// the count of its text's white-space separated words, as the server counts a reply that links
+// nothing: call and refuse never see one.
 type fakeServer struct {
-	call   func(agentwire.CallRequest) agentwire.CallAnswer
-	refuse func(agentwire.CallRequest) *agentwire.Error
-	words  func(agentwire.CallRequest) agentwire.CallAnswer
+	call        func(agentwire.CallRequest) agentwire.CallAnswer
+	refuse      func(agentwire.CallRequest) *agentwire.Error
+	words       func(agentwire.CallRequest) agentwire.CallAnswer
+	refuseWords *agentwire.Error
 
 	mu         sync.Mutex
 	steps      []agentwire.StepRequest
@@ -106,7 +108,9 @@ func (s *fakeServer) serve(t *testing.T, conn net.Conn) {
 		_ = json.Unmarshal(request.Body, &call)
 		if call.Kind == agentwire.KindWords {
 			s.wordsCalls = append(s.wordsCalls, call)
-			answer = s.answerWords(call)
+			if refusal = s.refuseWords; refusal == nil {
+				answer = s.answerWords(call)
+			}
 			break
 		}
 		s.calls = append(s.calls, call)

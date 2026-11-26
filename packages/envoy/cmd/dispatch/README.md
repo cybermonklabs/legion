@@ -4550,7 +4550,7 @@ and each that the guard decided on where it asked Jev carries `jev_line`, what J
 Every other `reply` frame carries none of them.
 A reply in prose that would end the turn done is then counted as the bar draws it, each link as its item's chip with the issue's key, status and title, by a `words` call (`agentwire.KindWords`, `api/going_agent_words.go`) that the server answers from the text it would store and records nothing of;
 one of 120 words or more is held back once in a turn where the level leaves a model call, its `reply` frame carrying `held_long` and no text, and the next model call is told how many words the person sees and to give the same answer again where the words ask for more than a short answer, else the same facts in fewer than 120 words;
-a reply after that turn, or one whose count failed, ends the turn whole, and each counted reply's frame carries `drawn_words`.
+a reply after that turn, or one whose count failed or drew none within 10 s, ends the turn whole, and each counted reply's frame carries `drawn_words`.
 A model call's response is read up to 8 MiB and its reply up to 512 KiB, past which the run fails `MODEL_REPLY_TOO_LARGE`;
 a 429 is tried again after the time it names, and each 429 is logged at WARN, `agentloop: the model service answered 429, its rate limit`, with the deployment, the attempt, the wait before the retry and whether the call is made again, by the agent and by the server's short answers alike;
 the agent paces its calls to 75% of `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE`, and charges that share the tokens a call spent past its estimate as the call ends, which the next calls wait out.

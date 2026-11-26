@@ -81,15 +81,11 @@ const (
 	// as the run's answer (WordsAnswer): the text as the server stores an answering reply frame's,
 	// each link drawn as its item's chip, an issue's its key, its status and its title. Like the
 	// line call, it records nothing, so its step and call are 0. The agent makes it for a reply in
-	// prose that would end the run's turn done: a reply the bar draws in WordsBound words or more
-	// gets one more model turn, which says how many words the person sees.
+	// prose that would end the run's turn done, and holds the bound of the words (going/agent's
+	// wordsBound): a reply the bar draws in that many words or more gets one more model turn,
+	// which says how many words the person sees.
 	KindWords = "words"
 )
-
-// WordsBound is the bound of the words the bar draws of an answer: an answer has fewer unless the
-// person's words ask for more, and a reply of WordsBound or more gets one more model turn
-// (going/agent's holdLong).
-const WordsBound = 120
 
 // WordsAnswer is a words call's answer: the words the bar draws of the reply's text.
 type WordsAnswer struct {

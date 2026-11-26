@@ -114,11 +114,9 @@ func TestTheWordsStayWithinTheBoundOfAResult(t *testing.T) {
 	// size of the whole answer the note names, 0 where it has no note.
 	given := func(t *testing.T, result string) (body string, raw int, total int) {
 		t.Helper()
-		_, rest, _ := strings.Cut(strings.TrimPrefix(result, storedDataNote+"\n"), "\n")
-		// The list's total stands on a line of its own before the body (resultCount).
-		if line, after, lined := strings.Cut(rest, "\n"); lined && resultTotalLine.MatchString(line) {
-			rest = after
-		}
+		// The body starts after the head line and the list's total (readResult).
+		_, start, _ := readResult(result)
+		rest := result[start:]
 		body, note, shortened := strings.Cut(rest, shortenedPrefix)
 		if len(body) > modelResultLimit {
 			t.Fatalf("the model is given %d bytes of the body, past the bound of %d", len(body), modelResultLimit)

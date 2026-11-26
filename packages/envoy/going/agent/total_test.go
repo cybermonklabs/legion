@@ -106,25 +106,3 @@ func TestASavedListOfEitherShapeReadsAsItsAnswer(t *testing.T) {
 		})
 	}
 }
-
-// TestADrawnBlockIsTheBlockCallsAnswer: the server reads from a run's saved steps the blocks it
-// drew, which an answer may not write again (internal/dispatch/api's going_link_words.go): a
-// draw_block step that the server answered holds its block whole, and a refused block, another
-// tool's step and a block saved only as its first bytes hold none.
-func TestADrawnBlockIsTheBlockCallsAnswer(t *testing.T) {
-	block := `{"kind":"chart","title":"Issues by status","spec":{"x":"status","y":"issues"},"rows":[{"status":"todo","issues":3}]}`
-	call := agentwire.CallRequest{Step: 5, Call: 1, Kind: agentwire.KindBlock}
-	drew := resultText(call, agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(block)})
-	if got, ok := DrawnBlock(savedTool(t, toolDrawBlock, drew)); !ok || string(got) != block {
-		t.Errorf("the draw_block step holds the block %s (%t), want %s", got, ok, block)
-	}
-	for name, body := range map[string]json.RawMessage{
-		"a refused block":     savedTool(t, toolDrawBlock, "the call was refused (BLOCK_REFUSED): step 4 holds no rows"),
-		"another tool's step": savedTool(t, "dispatch_issues", resultText(call, agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(block)})),
-		"a shortened block":   savedTool(t, toolDrawBlock, resultText(call, agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"rows":[` + strings.Repeat(`{"n":1},`, modelResultLimit/8) + `{"n":1}]}`)})),
-	} {
-		if got, ok := DrawnBlock(body); ok {
-			t.Errorf("%s holds the block %.40s, want none", name, got)
-		}
-	}
-}

@@ -1,18 +1,8 @@
 package eval
 
-import "github.com/sjawhar/envoy/going/chips"
-
-// render.go gives the judge an answer as the person reads it in the command bar (RenderAnswer),
-// and gives the bar's renderer, going/chips, the items of a try's store and of the seed.
-
-// RenderAnswer is answer as the judge reads it: written as the bar draws it, each link to an item
-// as the words the bar draws for it, read from items, and each time link with the date its hover
-// shows (chips.RenderAnswer), the renderer the server counts an answer's words with too. A Store
-// answers items for a try's store after its run; a Seed for the seed as it stands before any task,
-// which the calibration answers of labels.json are read against.
-func RenderAnswer(answer string, items chips.Items) string {
-	return chips.RenderAnswer(answer, items)
-}
+// render.go gives the bar's renderer, going/chips, the items of a try's store and of the seed: a
+// Store answers items for a try's store after its run; a Seed for the seed as it stands before any
+// task, which the calibration answers of labels.json are read against.
 
 // IssueChip is the issue's status and title in the store.
 func (s *Store) IssueChip(key string) (string, string, bool) {

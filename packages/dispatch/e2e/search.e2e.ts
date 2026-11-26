@@ -10,7 +10,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
-import { expect, test } from "./test";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -20,6 +20,11 @@ import { asUser } from "./users";
  * once, and a stubbed row runs in one of them. What the palette draws over one fixed answer is in
  * `search.stub.e2e.ts`, and the fixture both files read is in `search.ts`.
  */
+
+/** The hits of one kind in the search palette `dialog`: the options under the group headed `kind`. */
+function hitsOf(dialog: Locator, kind: string): Locator {
+  return dialog.getByRole("group", { exact: true, name: kind }).getByRole("option");
+}
 
 test("Ctrl+K and Cmd+K open the palette, hits grouped by kind navigate a document to its highlighted term", async ({
   browser,
@@ -49,8 +54,7 @@ test("Ctrl+K and Cmd+K open the palette, hits grouped by kind navigate a documen
       "id",
       `search-option-issue-${fixture.firstIssueKey}`
     );
-    const group = (name: string) => dialog.getByRole("group", { exact: true, name });
-    const documentResult = group("Documents").getByRole("option");
+    const documentResult = hitsOf(dialog, "Documents");
     await expect(documentResult).toBeVisible();
     // A document of an issue is named beside its issue.
     await expect(documentResult.getByText(fixture.firstIssueKey, { exact: true })).toBeVisible();
@@ -62,7 +66,7 @@ test("Ctrl+K and Cmd+K open the palette, hits grouped by kind navigate a documen
       "Comments",
     ]);
     // A hit names the issue it belongs to on its own row.
-    await expect(group("Comments").getByRole("option")).toContainText("Other work");
+    await expect(hitsOf(dialog, "Comments")).toContainText("Other work");
 
     const documentID = await documentResult.getAttribute("id");
     expect(documentID).not.toBeNull();
@@ -121,29 +125,26 @@ test("a search term lists marked document, comment, ask, and issue-title results
     // Scoped to the palette: inbox rows carry a priority <select> whose options share the role.
     const dialog = page.getByRole("dialog", { name: "Search" });
     const options = dialog.getByRole("option");
-    const group = (name: string) => dialog.getByRole("group", { exact: true, name });
     // Five rows: the four the term is marked in, and CORE-1, which the term reached through
     // its spec (an issue's keyword vector carries its primary document's text) and whose own
     // title never held it, so its row marks nothing.
     await expect(options).toHaveCount(5);
     for (const option of [
-      group("Issues").getByRole("option").filter({ hasText: "Astrolabe calibration" }),
-      group("Documents").getByRole("option"),
-      group("Comments").getByRole("option"),
-      group("Asks").getByRole("option"),
+      hitsOf(dialog, "Issues").filter({ hasText: "Astrolabe calibration" }),
+      hitsOf(dialog, "Documents"),
+      hitsOf(dialog, "Comments"),
+      hitsOf(dialog, "Asks"),
     ]) {
       await expect(option).toHaveCount(1);
       await expect(option.locator("mark").first()).toHaveText(/astrolabe/i);
     }
-    const foundByItsSpec = group("Issues")
-      .getByRole("option")
-      .filter({ hasText: "Navigation instruments" });
+    const foundByItsSpec = hitsOf(dialog, "Issues").filter({ hasText: "Navigation instruments" });
     await expect(foundByItsSpec).toHaveCount(1);
     await expect(foundByItsSpec.locator("mark")).toHaveCount(0);
     // One heading for each kind, whatever order the server's ranks put them in, and the ask
     // names the issue it is on.
     await expect(dialog.locator('[role="presentation"]')).toHaveCount(4);
-    await expect(group("Asks").getByRole("option")).toContainText(titleIssue.key);
+    await expect(hitsOf(dialog, "Asks")).toContainText(titleIssue.key);
   } finally {
     await context.close();
   }
@@ -198,8 +199,7 @@ test("an ask hit says whether it is answered, and an answered one shows its late
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     await expect(dialog.getByRole("option")).toHaveCount(3);
-    const asks = dialog.getByRole("group", { exact: true, name: "Asks" });
-    await expect(asks.getByRole("option")).toHaveCount(3);
+    await expect(hitsOf(dialog, "Asks")).toHaveCount(3);
 
     const answeredHit = dialog.getByRole("option").filter({ hasText: "Which orrery frame" });
     await expect(answeredHit).toContainText("Answered");
@@ -255,7 +255,7 @@ test("a search for an issue key names the issue in every hit that cites it, mark
     // The palette groups its hits under a heading of their kind (search-model.ts), and a row
     // names no kind of its own.
     for (const name of ["Comments", "Messages"]) {
-      const hit = dialog.getByRole("group", { exact: true, name }).getByRole("option");
+      const hit = hitsOf(dialog, name);
       await expect(hit).toHaveCount(1);
       await expect(hit.locator("mark")).toHaveText([`${cited.key} Gyroscope alignment`]);
       await expect(hit.locator("[data-dispatch-ref] mark")).toHaveCount(1);
@@ -443,10 +443,7 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
     const dialog = page.getByRole("dialog", { name: "Search" });
     for (const body of bodies) {
       await search.fill(body.query);
-      const hit = dialog
-        .getByRole("group", { exact: true, name: "Comments" })
-        .getByRole("option")
-        .filter({ hasText: body.shows });
+      const hit = hitsOf(dialog, "Comments").filter({ hasText: body.shows });
       await expect(hit, body.query).toHaveCount(1);
       // Soft, so a run names every body whose marks moved rather than the first alone.
       await expect.soft(hit.locator("mark"), body.query).toHaveText(body.marks);
@@ -454,10 +451,7 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
     }
     // The query that marks a part of a real key, which the link pass links.
     await search.fill("CORE");
-    const linked = dialog
-      .getByRole("group", { exact: true, name: "Comments" })
-      .getByRole("option")
-      .filter({ hasText: "is waiting on" });
+    const linked = hitsOf(dialog, "Comments").filter({ hasText: "is waiting on" });
     await expect(linked).toHaveCount(1);
     await expect(linked.locator("mark")).toHaveText([`${issue.key} Bench work`]);
     await expect(linked.locator("[data-dispatch-ref] mark")).toHaveCount(1);
@@ -502,10 +496,7 @@ test("a search mark inside a reference stays on the words as the server sent it,
     const dialog = page.getByRole("dialog", { name: "Search" });
 
     await search.fill("CORE");
-    const hit = dialog
-      .getByRole("group", { exact: true, name: "Comments" })
-      .getByRole("option")
-      .filter({ hasText: "quokka" });
+    const hit = hitsOf(dialog, "Comments").filter({ hasText: "quokka" });
     await expect(hit).toHaveCount(1);
     // The issue's title has not come, so its address is words, marked where the server marked it.
     await expect(hit.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
@@ -526,10 +517,7 @@ test("a search mark inside a reference stays on the words as the server sent it,
     await expect(hit.locator("[data-dispatch-ref]")).toHaveCount(1);
 
     await search.fill("CORE/component/nope");
-    const component = dialog
-      .getByRole("group", { exact: true, name: "Comments" })
-      .getByRole("option")
-      .filter({ hasText: missingComponent });
+    const component = hitsOf(dialog, "Comments").filter({ hasText: missingComponent });
     await expect(component).toHaveCount(1);
     await expect(component.locator("mark")).toHaveText(["CORE/component/nope"]);
     await expect(component.locator("[data-dispatch-missing]")).toHaveText([missingComponent]);
@@ -572,10 +560,7 @@ test("a search hit on a stored autolink's key reads as the issue it links to, an
     await page.getByRole("combobox", { name: "Search" }).fill("CORE");
     const dialog = page.getByRole("dialog", { name: "Search" });
 
-    const autolink = dialog
-      .getByRole("group", { exact: true, name: "Documents" })
-      .getByRole("option")
-      .filter({ hasText: "Monday" });
+    const autolink = hitsOf(dialog, "Documents").filter({ hasText: "Monday" });
     await expect(autolink).toHaveCount(1);
     await expect(autolink.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
       `${issue.key} Bench work`
@@ -585,10 +570,7 @@ test("a search hit on a stored autolink's key reads as the issue it links to, an
     await expect(autolink).toContainText(`See ${issue.key} Bench work since Monday.`);
     await expect(autolink).not.toContainText("dispatch://");
 
-    const worded = dialog
-      .getByRole("group", { exact: true, name: "Documents" })
-      .getByRole("option")
-      .filter({ hasText: "Tuesday" });
+    const worded = hitsOf(dialog, "Documents").filter({ hasText: "Tuesday" });
     await expect(worded).toHaveCount(1);
     await expect(worded.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
       "the design"
@@ -627,15 +609,14 @@ test("a project-document hit names its project and opens it; a message hit names
     await search.fill("sextant");
 
     const dialog = page.getByRole("dialog", { name: "Search" });
-    const group = (name: string) => dialog.getByRole("group", { exact: true, name });
     await expect(dialog.getByRole("option")).toHaveCount(3);
     // A project document is named by its project and its name, and carries no status; a message
     // names its issue, with the issue's status (design v3, state 1).
-    const documentHit = group("Documents").getByRole("option");
+    const documentHit = hitsOf(dialog, "Documents");
     await expect(documentHit.getByText("CORE", { exact: true })).toBeVisible();
     await expect(documentHit).toContainText("Design notes");
     await expect(documentHit).not.toHaveAttribute("data-status");
-    const messageHit = group("Messages").getByRole("option");
+    const messageHit = hitsOf(dialog, "Messages");
     await expect(messageHit.getByText(issue.key, { exact: true })).toBeVisible();
     await expect(messageHit).toContainText("Sextant work");
     await expect(messageHit).toHaveAttribute("data-status", "triage");
@@ -653,7 +634,7 @@ test("a project-document hit names its project and opens it; a message hit names
     // The palette opens on the page the reader is already on: Ctrl+K, not another load.
     await page.keyboard.press("Control+k");
     await page.getByRole("combobox", { name: "Search" }).fill("sextant");
-    await group("Documents").getByRole("option").click();
+    await hitsOf(dialog, "Documents").click();
     await expect(page).toHaveURL(
       new RegExp(`/projects/CORE/documents/${document.artifact.slug}\\?q=sextant$`)
     );

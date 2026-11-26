@@ -52,8 +52,8 @@ func RenderAnswer(answer string, items Items) string {
 // no words, and a word with marks around it, **Done**, is one.
 func DrawnWords(answer string, items Items) int {
 	words := 0
-	for _, piece := range strings.Fields(render(answer, items, false)) {
-		if strings.IndexFunc(piece, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0 {
+	for piece := range strings.FieldsSeq(render(answer, items, false)) {
+		if strings.ContainsFunc(piece, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
 			words++
 		}
 	}
@@ -84,9 +84,9 @@ const timeScheme = "dispatch-time:"
 // INSTANT): a date, a time to the minute or finer, and its zone.
 var timeInstant = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$`)
 
-// timeLinkKey is an issue's key as Dispatch writes one: the words of a time link that the bar
-// draws as the issue's chip, which are the key and nothing else (the web's timeLinkIssue).
-var timeLinkKey = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`)
+// timeLinkKey is an issue's key as Dispatch writes one (issueKey): the words of a time link that
+// the bar draws as the issue's chip, which are the key and nothing else (the web's timeLinkIssue).
+var timeLinkKey = regexp.MustCompile("^(?:" + issueKey.String() + ")$")
 
 // shownWords is a link's words as the page reads them for its chip, the text it draws
 // (textContent): spaces around them, a pair of emphasis or code marks around the whole, and a

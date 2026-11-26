@@ -56,7 +56,7 @@ func TestAnAnswerIsRenderedAsTheBarDrawsItsLinks(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := RenderAnswer(c.answer, seed); got != c.want {
+			if got := chips.RenderAnswer(c.answer, seed); got != c.want {
 				t.Errorf("RenderAnswer(%q)\n= %q\nwant %q", c.answer, got, c.want)
 			}
 		})
@@ -104,7 +104,7 @@ func TestATimeLinkIsRenderedWithTheDateItsHoverShows(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := RenderAnswer(c.answer, seed); got != c.want {
+			if got := chips.RenderAnswer(c.answer, seed); got != c.want {
 				t.Errorf("RenderAnswer(%q)\n= %q\nwant %q", c.answer, got, c.want)
 			}
 		})
@@ -151,7 +151,7 @@ func TestATimeLinkWhoseWordsAreAKeyIsRenderedAsTheChipAndTheDate(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := RenderAnswer(c.answer, seed); got != c.want {
+			if got := chips.RenderAnswer(c.answer, seed); got != c.want {
 				t.Errorf("RenderAnswer(%q)\n= %q\nwant %q", c.answer, got, c.want)
 			}
 		})
@@ -175,7 +175,7 @@ func TestAnAnswerWhoseLinksKeepTheirWordsRendersThem(t *testing.T) {
 		"[DEMO-22 · Needs review · Export: progress bar for large exports]; " +
 		"chen@example.com wants to split this epic into CSV export and PDF export ([The CSV and PDF halves share nothing but the export menu. I…]), " +
 		"and the planner waits on the ask about saving the order ([Plan draft: 1) a drag handle on each column header, 2) save…])."
-	if got := RenderAnswer(chips.KeepLinkWords(answer, seed), seed); got != want {
+	if got := chips.RenderAnswer(chips.KeepLinkWords(answer, seed), seed); got != want {
 		t.Errorf("RenderAnswer of the stored answer\n= %q\nwant %q", got, want)
 	}
 }
@@ -190,14 +190,14 @@ func TestATrysStoreRendersAnAnswerAsTheSeedDoes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, answer := range labels.Answers {
-		if fromStore, fromSeed := RenderAnswer(answer.Answer, before), RenderAnswer(answer.Answer, seed); fromStore != fromSeed {
+		if fromStore, fromSeed := chips.RenderAnswer(answer.Answer, before), chips.RenderAnswer(answer.Answer, seed); fromStore != fromSeed {
 			t.Errorf("answer %d (%s) renders on the store as\n%q\nand on the seed as\n%q", i+1, answer.Task, fromStore, fromSeed)
 		}
 	}
 	issue := before.Issues["DEMO-12"]
 	issue.Status = "needs_review"
 	before.Issues["DEMO-12"] = issue
-	if got, want := RenderAnswer("[DEMO-12](/issues/DEMO-12)", before), "[DEMO-12 · Needs review · Export: CSV and PDF]"; got != want {
+	if got, want := chips.RenderAnswer("[DEMO-12](/issues/DEMO-12)", before), "[DEMO-12 · Needs review · Export: CSV and PDF]"; got != want {
 		t.Errorf("the store renders DEMO-12 as %q, want %q", got, want)
 	}
 }

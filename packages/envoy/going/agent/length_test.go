@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
@@ -69,7 +71,7 @@ func drawn(reply replyFrame) int {
 }
 
 // TestAnAnswerUnderTheBoundEndsTheTurnAsItIs: an answer of the command bar's agent has fewer than
-// agentwire.WordsBound words as the bar draws them, its chips' words counted. Before a reply in
+// wordsBound words as the bar draws them, its chips' words counted. Before a reply in
 // prose ends the turn done, the agent asks the server how many words the bar draws of it, with
 // one words call of the run under its lease that records nothing (step and call 0); a reply under
 // the bound ends the turn done as it is, with no other model call than its step's and the
@@ -78,7 +80,7 @@ func TestAnAnswerUnderTheBoundEndsTheTurnAsItIs(t *testing.T) {
 	prose := "[ACME-7](dispatch://ACME-7) waits on " + plainWords("word", 10)
 	fake := agenttest.New(t, lengthScript(prose, "a second turn"))
 	server, client := newFakeServer(t, keptPlan)
-	server.words = func(agentwire.CallRequest) agentwire.CallAnswer { return countedWords(agentwire.WordsBound - 1) }
+	server.words = func(agentwire.CallRequest) agentwire.CallAnswer { return countedWords(wordsBound - 1) }
 	workRun(t, fake.Model(), client, "what does ACME-7 wait on")
 	end, bodies := server.end(t)
 	if end.State != agentwire.StateDone || len(bodies) != 1 || bodies[0].Text != prose || bodies[0].LongWords != 0 {
@@ -87,8 +89,8 @@ func TestAnAnswerUnderTheBoundEndsTheTurnAsItIs(t *testing.T) {
 	if steps, checks := len(stepRequests(fake)), len(checkRequests(fake)); steps != 1 || checks != 1 || fake.Count() != 2 {
 		t.Errorf("the run made %d steps' calls and %d checks of %d model calls, want the answer and the guard's check alone", steps, checks, fake.Count())
 	}
-	if frame := server.lastReply(t); frame.Text != prose || frame.HeldLong || drawn(frame) != agentwire.WordsBound-1 {
-		t.Errorf("the answer's frame carries %q (held long %t) and %d drawn words, want the answer and %d", frame.Text, frame.HeldLong, drawn(frame), agentwire.WordsBound-1)
+	if frame := server.lastReply(t); frame.Text != prose || frame.HeldLong || drawn(frame) != wordsBound-1 {
+		t.Errorf("the answer's frame carries %q (held long %t) and %d drawn words, want the answer and %d", frame.Text, frame.HeldLong, drawn(frame), wordsBound-1)
 	}
 	calls := server.madeWordsCalls()
 	if len(calls) != 1 || calls[0].Text != prose || calls[0].Run != "run-1" || calls[0].LeaseToken != "lease-1" || calls[0].Step != 0 || calls[0].Call != 0 {
@@ -98,7 +100,7 @@ func TestAnAnswerUnderTheBoundEndsTheTurnAsItIs(t *testing.T) {
 
 // TestALongAnswerIsHeldBackAndToldHowManyWordsThePersonSees: at 8a3e562b, 6 of 11 answers to "What
 // is the state of this issue's open children?" drew 120 words or more. A reply the bar draws in
-// agentwire.WordsBound words or more, whose words ask for no more, is held back: saved with its
+// wordsBound words or more, whose words ask for no more, is held back: saved with its
 // count, so the model reads what it wrote, its note saying the person did not see it, and its
 // frame marked and with no prose, so the bar adds nothing of it. The next step's model is told,
 // after it, how many words the person sees and to give the same facts in fewer than 120, and its
@@ -147,7 +149,7 @@ func TestALongAnswerIsHeldBackAndToldHowManyWordsThePersonSees(t *testing.T) {
 }
 
 // TestAnAnswerStillLongAfterItsTurnEndsWhole: one reply of a turn at most is held back as long. A
-// reply still of agentwire.WordsBound words or more after that turn ends the turn done, shown
+// reply still of wordsBound words or more after that turn ends the turn done, shown
 // whole, never cut, and no third step is made.
 func TestAnAnswerStillLongAfterItsTurnEndsWhole(t *testing.T) {
 	first, still := plainWords("first", 150), plainWords("still", 140)
@@ -189,10 +191,13 @@ func TestWordsThatAskForMoreGetTheSameAnswerAgain(t *testing.T) {
 	}
 }
 
-// TestALongAnswerEndsWholeWhereNoTurnIsLeft: a reply of agentwire.WordsBound words or more on the
+// TestALongAnswerEndsWholeWhereNoTurnIsLeft: a reply of wordsBound words or more on the
 // run's last model call, which leaves no call to say it in fewer, ends the turn done whole; and so
 // does one whose words call fails, which holds nothing back and is logged with the run and the
-// cause.
+// cause, and one whose words call draws no count within wordsCallTime. The words call is made once
+// the step's watchdog stopped, and serverCall waits out a sign-in the issuer cannot confirm until
+// the call's context ends, so without a bound of its own a sign-in outage would hold the finished
+// answer until the run stopped.
 func TestALongAnswerEndsWholeWhereNoTurnIsLeft(t *testing.T) {
 	long := plainWords("long", 150)
 	requireWhole := func(t *testing.T, server *fakeServer, fake *agenttest.Model, words int) {
@@ -230,6 +235,35 @@ func TestALongAnswerEndsWholeWhereNoTurnIsLeft(t *testing.T) {
 		warned := log.Lines("the words call of a reply in prose failed")
 		if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, "status 500") {
 			t.Errorf("the log holds %q, want a warning naming run-1 and the status the call answered", warned)
+		}
+	})
+
+	t.Run("the words call draws no count within its bound", func(t *testing.T) {
+		const bound, deadline = 200 * time.Millisecond, 5 * time.Second
+		was := wordsCallTime
+		wordsCallTime = bound
+		t.Cleanup(func() { wordsCallTime = was })
+		var log logtest.Buffer
+		logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+		fake := agenttest.New(t, lengthScript(long, "a shorter answer"))
+		server, client := newFakeServer(t, keptPlan)
+		server.refuseWords = &agentwire.Error{Code: agentwire.CodeSignInUnavailable, Message: "the sign-in issuer did not answer"}
+		// The test's own deadline stops a run whose words call waits on past its bound, so the
+		// test fails rather than hangs.
+		ctx, cancel := context.WithTimeout(t.Context(), deadline)
+		defer cancel()
+		a := &agent{client: client, config: Config{Model: fake.Model()}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+		newWorker(ctx, a, &agentwire.ClaimedRun{ID: "run-1", Words: "what did the team write", Level: "fast", Mode: "ask", LeaseToken: "lease-1"}, func() {}).work()
+		if ctx.Err() != nil {
+			t.Fatalf("the run still waited on its words call at the test's deadline of %s, want its turn ended within the call's bound of %s", deadline, bound)
+		}
+		requireWhole(t, server, fake, -1)
+		if calls := server.madeWordsCalls(); len(calls) == 0 {
+			t.Errorf("the run made no words call, want one refused %s", agentwire.CodeSignInUnavailable)
+		}
+		warned := log.Lines("the words call of a reply in prose failed")
+		if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, "no count within "+bound.String()) {
+			t.Errorf("the log holds %q, want a warning naming run-1 and the call's bound", warned)
 		}
 	})
 }

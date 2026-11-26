@@ -30,7 +30,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/going/chips"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -39,8 +38,13 @@ import (
 )
 
 // goingReplyFrame is the name of the frame of a model call of a run, which the agent saves with
-// its step (going/agent's frameReply and replyFrame).
-const goingReplyFrame = "reply"
+// its step (going/agent's frameReply and replyFrame), and goingBlockFrame that of the block a
+// draw_block call of the run drew, as the server answered it, which the agent saves with the
+// call's tool step (going/agent's frameBlock).
+const (
+	goingReplyFrame = "reply"
+	goingBlockFrame = "block"
+)
 
 // goingKeepLinkWords writes, in place, the text of each reply frame of frames that answers - one
 // that names no tool call, which the bar draws as the run's answer (web
@@ -112,58 +116,67 @@ func goingStoredAnswer(text string, results *goingRunResults, items *goingAnswer
 	return kept, nil
 }
 
-// goingRunResults is the result text of each tool step of a run, and each block a draw_block
-// step of it drew, read from q once, when it is first asked of a key or of a code block that
-// holds JSON, so an answer that names no bare key and holds no such block reads none. Every tool
-// step of the run is saved in an earlier step call than the model step whose reply answers, so
-// the read holds them all. A read that fails keeps its error (err), and nothing is found after it.
+// goingRunResults is the result text of each tool step of a run, read from q once, when it is
+// first asked of a key, and each block the run drew, read from q once, when it is first asked of a
+// code block that holds JSON, so an answer that names no bare key and holds no such block reads
+// neither. Every tool step of the run is saved, with the block frame of a block it drew, in an
+// earlier step call than the model step whose reply answers, so each read holds them all. A read
+// that fails keeps its error (err), and nothing is found after it.
 type goingRunResults struct {
 	ctx     context.Context
 	q       queryer
 	run     string
 	results []string
-	// blocks is each block the run drew (agent.DrawnBlock), as its JSON decodes.
+	// blocks is each block the run drew, its block frame's data as it decodes.
 	blocks []any
-	read   bool
-	err    error
-}
-
-// load reads the run's tool steps, once, and reports whether the read did not fail.
-func (r *goingRunResults) load() bool {
-	if r.read {
-		return r.err == nil
-	}
-	r.read = true
-	rows, err := r.q.Query(r.ctx, `select body from going_run_steps where run_id = $1::uuid and kind = $2 order by step`, r.run, agentwire.StepTool)
-	var bodies [][]byte
-	if err == nil {
-		bodies, err = pgx.CollectRows(rows, pgx.RowTo[[]byte])
-	}
-	if err != nil {
-		r.err = fmt.Errorf("read the tool results of run %s: %w", r.run, err)
-		return false
-	}
-	for _, body := range bodies {
-		var step struct {
-			Result *string `json:"result"`
-		}
-		if json.Unmarshal(body, &step) == nil && step.Result != nil {
-			r.results = append(r.results, *step.Result)
-		}
-		if drawn, ok := agent.DrawnBlock(body); ok {
-			var block any
-			if json.Unmarshal(drawn, &block) == nil {
-				r.blocks = append(r.blocks, block)
-			}
-		}
-	}
-	return true
+	// read and drawn are set once results, and blocks, were read.
+	read, drawn bool
+	err         error
 }
 
 // returned reports whether key stands as a whole token in a tool result of the run
 // (chips.HoldsKey): a read of the run returned it.
 func (r *goingRunResults) returned(key string) bool {
-	return r.load() && slices.ContainsFunc(r.results, func(result string) bool { return chips.HoldsKey(result, key) })
+	if !r.read && r.err == nil {
+		r.read = true
+		rows, err := r.q.Query(r.ctx, `
+			select body->>'result' from going_run_steps
+			where run_id = $1::uuid and kind = $2 and body->>'result' is not null
+			order by step
+		`, r.run, agentwire.StepTool)
+		if err == nil {
+			r.results, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		}
+		if err != nil {
+			r.err = fmt.Errorf("read the tool results of run %s: %w", r.run, err)
+		}
+	}
+	return r.err == nil && slices.ContainsFunc(r.results, func(result string) bool { return chips.HoldsKey(result, key) })
+}
+
+// loadBlocks reads the blocks the run drew, its events' block frames, once, and reports whether
+// no read failed.
+func (r *goingRunResults) loadBlocks() bool {
+	if r.drawn || r.err != nil {
+		return r.err == nil
+	}
+	r.drawn = true
+	rows, err := r.q.Query(r.ctx, `select data from going_run_events where run_id = $1::uuid and name = $2`, r.run, goingBlockFrame)
+	var frames [][]byte
+	if err == nil {
+		frames, err = pgx.CollectRows(rows, pgx.RowTo[[]byte])
+	}
+	if err != nil {
+		r.err = fmt.Errorf("read the blocks run %s drew: %w", r.run, err)
+		return false
+	}
+	for _, data := range frames {
+		var block any
+		if json.Unmarshal(data, &block) == nil {
+			r.blocks = append(r.blocks, block)
+		}
+	}
+	return true
 }
 
 // goingDrawFence is the info string of a code block that holds a block for the bar to draw.
@@ -179,7 +192,7 @@ func (r *goingRunResults) drawnFence(info, body string) bool {
 		return true
 	}
 	var written any
-	if json.Unmarshal([]byte(body), &written) != nil || !r.load() {
+	if json.Unmarshal([]byte(body), &written) != nil || !r.loadBlocks() {
 		return false
 	}
 	return slices.ContainsFunc(r.blocks, func(block any) bool { return reflect.DeepEqual(block, written) })
@@ -205,29 +218,38 @@ var (
 // goingAnswerItems is what the bar draws for each item an answer links (chips.Items), read from q
 // for the run's person, as the bar reads it for them: an item reserved for another author
 // (refs.VisibleKind) is one it holds nothing of, as is one no row holds. It reads the person's
-// login with its first item. A read that fails keeps its error (err), and nothing more is read.
+// login with its first item where it was not given the person's credential (asked), and each item
+// once: a read made again answers what the first answered. A read that fails keeps its error
+// (err), and nothing more is read.
 type goingAnswerItems struct {
 	ctx context.Context
 	q   queryer
 	run string
 	// reader is the person's credential as a visibility predicate binds it (refs.VisibilityArg),
-	// read once asked is set.
+	// read, or given, once asked is set.
 	reader any
 	asked  bool
-	err    error
+	// rows is what each read scanned, by its query and its arguments, nil for no row.
+	rows map[goingItemRead][]string
+	err  error
+}
+
+// goingItemRead is one read of goingAnswerItems: its query, and its arguments as %q writes them.
+type goingItemRead struct {
+	query, args string
 }
 
 // IssueChip is the issue's status and title.
 func (r *goingAnswerItems) IssueChip(key string) (string, string, bool) {
 	var status, title string
-	found := r.read(goingAnswerIssueQuery, []any{&status, &title}, key)
+	found := r.read(goingAnswerIssueQuery, []*string{&status, &title}, key)
 	return status, title, found
 }
 
 // DocumentName is the name of the document or file of owner with slug.
 func (r *goingAnswerItems) DocumentName(owner, slug string) (string, bool) {
 	var name string
-	found := r.read(goingAnswerDocumentQuery, []any{&name}, owner+"/"+slug)
+	found := r.read(goingAnswerDocumentQuery, []*string{&name}, owner+"/"+slug)
 	return name, found
 }
 
@@ -238,20 +260,28 @@ func (r *goingAnswerItems) ItemText(kind, issue, id string) (string, bool) {
 	var found bool
 	switch kind {
 	case "ask":
-		found = r.read(goingAnswerAskQuery, []any{&written}, id)
+		found = r.read(goingAnswerAskQuery, []*string{&written}, id)
 	case "comment":
-		found = r.read(goingAnswerCommentQuery, []any{&written}, id)
+		found = r.read(goingAnswerCommentQuery, []*string{&written}, id)
 	case "message":
-		found = r.read(goingAnswerMessageQuery, []any{&written}, id, issue)
+		found = r.read(goingAnswerMessageQuery, []*string{&written}, id, issue)
 	}
 	return written, found
 }
 
 // read scans the row query answers for args, and the person's credential after them, into into,
-// and reports whether there was one.
-func (r *goingAnswerItems) read(query string, into []any, args ...any) bool {
+// and reports whether there was one; a read of the same query and args made before answers as it
+// did (rows).
+func (r *goingAnswerItems) read(query string, into []*string, args ...any) bool {
 	if r.err != nil {
 		return false
+	}
+	key := goingItemRead{query: query, args: fmt.Sprintf("%q", args)}
+	if row, held := r.rows[key]; held {
+		for at, value := range row {
+			*into[at] = value
+		}
+		return row != nil
 	}
 	if !r.asked {
 		var login string
@@ -261,13 +291,26 @@ func (r *goingAnswerItems) read(query string, into []any, args ...any) bool {
 		}
 		r.reader, r.asked = refs.VisibilityArg(model.Actor{Kind: "user", ID: login}), true
 	}
-	err := r.q.QueryRow(r.ctx, query, append(args, r.reader)...).Scan(into...)
+	scanned := make([]any, len(into))
+	for at, value := range into {
+		scanned[at] = value
+	}
+	err := r.q.QueryRow(r.ctx, query, append(args, r.reader)...).Scan(scanned...)
+	var row []string
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return false
 	case err != nil:
 		r.err = fmt.Errorf("read an item the answer of run %s links: %w", r.run, err)
 		return false
+	default:
+		row = make([]string, len(into))
+		for at, value := range into {
+			row[at] = *value
+		}
 	}
-	return true
+	if r.rows == nil {
+		r.rows = map[goingItemRead][]string{}
+	}
+	r.rows[key] = row
+	return row != nil
 }

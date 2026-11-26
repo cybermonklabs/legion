@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/going/chips"
 	"github.com/sjawhar/envoy/going/eval"
 )
 
@@ -31,7 +32,7 @@ func newJudge(chat chatSettings, deployment string, limits *limiter, written tim
 
 // renderedLabel is one calibration answer of labels.json as the judge reads it: its task, the
 // task's words and facts, and the answer rendered against the seed as it stands before any task
-// (eval.RenderAnswer), with the label the two labelling agents agreed.
+// (chips.RenderAnswer), with the label the two labelling agents agreed.
 type renderedLabel struct {
 	Task     string   `json:"task"`
 	Words    string   `json:"words"`
@@ -50,7 +51,7 @@ func renderedLabels(tasks []eval.Task, seed *eval.Seed) ([]renderedLabel, error)
 	for i, answer := range labels.Answers {
 		task := tasks[slices.IndexFunc(tasks, func(t eval.Task) bool { return t.ID == answer.Task })]
 		rendered[i] = renderedLabel{
-			Task: answer.Task, Words: task.Words, Facts: task.Grade.Facts, Rendered: eval.RenderAnswer(answer.Answer, seed), label: answer.Label,
+			Task: answer.Task, Words: task.Words, Facts: task.Grade.Facts, Rendered: chips.RenderAnswer(answer.Answer, seed), label: answer.Label,
 		}
 	}
 	return rendered, nil
@@ -79,7 +80,7 @@ func printRenderedLabels(w io.Writer, tasks []eval.Task, seed *eval.Seed) error 
 func writeCalibration(w io.Writer, deployment string, c calibrationResult) string {
 	fmt.Fprintln(w, "## The judge")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "The judge reads each answer with its links rendered as the bar's chips (going/eval RenderAnswer).")
+	fmt.Fprintln(w, "The judge reads each answer with its links rendered as the bar's chips (going/chips RenderAnswer).")
 	if c.err != nil {
 		fmt.Fprintf(w, "The calibration did not run: %v\n\n", c.err)
 		return "the judge's calibration did not run"

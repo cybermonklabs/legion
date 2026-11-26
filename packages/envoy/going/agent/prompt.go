@@ -47,7 +47,7 @@ import (
 // date on hover: a time in words alone left out the clock time, or the year, the judge asked for.
 // At 59e2a6ec the model wrote facts as a link's words - a comment's author, an ask's issue, a
 // holder's title on a link to its issue - which the bar, and the judge's view of the answer
-// (eval.RenderAnswer), replace with the item's chip, so no one read them (answer-17, find-18,
+// (chips.RenderAnswer), replace with the item's chip, so no one read them (answer-17, find-18,
 // status-02): the rules say what each chip shows and put every other fact outside the link. Two
 // tries of answer-01 summed up the page issue's thread without its priority and assignee, which
 // the rules ask for an issue whose thread the answer sums up too. In the preview at ce5fdd99,

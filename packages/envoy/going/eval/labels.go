@@ -10,8 +10,8 @@ import (
 // The labels of labels.json are the calibration of the judge (R13): JudgeCalibrationAnswers
 // answers of answer tasks, each labelled pass or fail against its task's facts by two agents of
 // different model families, each on its own, and then agreed between them with the discussion
-// that agreed it. The eval program puts each answer to the judge, rendered by RenderAnswer against
-// the seed, and prints how many of the agreed labels the judge's verdict meets, against
+// that agreed it. The eval program puts each answer to the judge, rendered by chips.RenderAnswer
+// against the seed, and prints how many of the agreed labels the judge's verdict meets, against
 // JudgeAgreementFloor.
 
 // The two labels an answer takes.
@@ -21,7 +21,7 @@ const (
 )
 
 // Labels is labels.json: who labelled, and each labelled answer. Each label is given to the answer
-// as the person reads it in the bar: rendered by RenderAnswer against the seed's store, as it
+// as the person reads it in the bar: rendered by chips.RenderAnswer against the seed's store, as it
 // stands before any task, which is also what the judge reads it as.
 type Labels struct {
 	// Labellers are the two agents that labelled every answer, by the name each label gives, and
@@ -38,8 +38,8 @@ type Labeller struct {
 }
 
 // LabelledAnswer is one answer of an answer task, its label and how the label was reached. The
-// label is given to the answer as the person reads it, rendered by RenderAnswer against the seed's
-// store.
+// label is given to the answer as the person reads it, rendered by chips.RenderAnswer against the
+// seed's store.
 type LabelledAnswer struct {
 	// Task is the task the answer answers, whose words and facts the judge reads it against.
 	Task string `json:"task"`

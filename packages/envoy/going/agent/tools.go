@@ -780,8 +780,9 @@ func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (ag
 // the server cut. callServer may write a mendNote after them.
 const (
 	resultHead      = "step %d, call %d: status %d\n"
-	listTotal       = "[Total: %d %s in the list below.]\n"
-	pageTotal       = "[Total: %d matching %s; the list below holds %d of them.]\n"
+	totalPrefix     = "[Total: "
+	listTotal       = totalPrefix + "%d %s in the list below.]\n"
+	pageTotal       = totalPrefix + "%d matching %s; the list below holds %d of them.]\n"
 	shortenedPrefix = "\n[This answer holds "
 	shortenedNote   = shortenedPrefix + "%d bytes and you were given the first %d: read the rest with another call, a narrower one or one with an offset or a limit, or do without it.]"
 )
@@ -824,25 +825,30 @@ func resultText(call agentwire.CallRequest, answer agentwire.CallAnswer) string 
 // its first bytes alone, so the total stands before the body, where no cut reaches it. Any other
 // body has no such line, nor does an answer the server cut, whose body does not parse.
 func resultCount(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
-	// Only a list, or an object of a tool whose label counts a list, is decoded.
+	// Only a list, or an object of a tool whose label counts a list, is decoded; a list's rows are
+	// counted unread.
 	noun := namedLabel(call.Tool).Count
 	trimmed := bytes.TrimLeft(answer.Body, " \t\r\n")
 	if answer.Cut || len(trimmed) == 0 || trimmed[0] != '[' && (trimmed[0] != '{' || noun == "") {
 		return ""
 	}
-	var decoded any
-	if json.Unmarshal(answer.Body, &decoded) != nil {
-		return ""
-	}
-	list, _ := decoded.([]any)
-	if object, isObject := decoded.(map[string]any); isObject {
-		var listed bool
-		if list, listed = answerList(object, noun); !listed {
+	if trimmed[0] == '[' {
+		var rows []json.RawMessage
+		if json.Unmarshal(answer.Body, &rows) != nil {
 			return ""
 		}
-		if total, numeric := object["total"].(float64); numeric && total >= 0 && total == float64(int(total)) {
-			return fmt.Sprintf(pageTotal, int(total), countNoun(int(total), noun), len(list))
-		}
+		return fmt.Sprintf(listTotal, len(rows), countNoun(len(rows), noun))
+	}
+	var object map[string]any
+	if json.Unmarshal(answer.Body, &object) != nil {
+		return ""
+	}
+	list, listed := answerList(object, noun)
+	if !listed {
+		return ""
+	}
+	if total, numeric := object["total"].(float64); numeric && total >= 0 && total == float64(int(total)) {
+		return fmt.Sprintf(pageTotal, int(total), countNoun(int(total), noun), len(list))
 	}
 	return fmt.Sprintf(listTotal, len(list), countNoun(len(list), noun))
 }
@@ -863,7 +869,7 @@ func countNoun(n int, noun string) string {
 // or pageTotal, and the start of shortenedNote.
 var (
 	resultHeadLine  = regexp.MustCompile(`^step (\d+), call (\d+): status (\d+)$`)
-	resultTotalLine = regexp.MustCompile(`^\[Total: \d+ (?:matching )?[a-z ]+(?: in the list below|; the list below holds \d+ of them)\.\]$`)
+	resultTotalLine = regexp.MustCompile(`^` + regexp.QuoteMeta(totalPrefix) + `\d+ (?:matching )?[a-z ]+(?: in the list below|; the list below holds \d+ of them)\.\]$`)
 	shortenedStart  = regexp.MustCompile(`^` + regexp.QuoteMeta(shortenedPrefix) + `(\d+) bytes and you were given the first (\d+):`)
 )
 
@@ -929,18 +935,6 @@ func ReadSavedResult(body json.RawMessage) (SavedResult, error) {
 	return saved, nil
 }
 
-// DrawnBlock is the block a saved tool step's body holds where its call was a draw_block that
-// the server drew: the block call's answer whole, a going.BlockData as its JSON, which the step
-// showed as its block frame. It is false for every other step: another tool's, a block the server
-// refused, and a block saved only as its first bytes.
-func DrawnBlock(body json.RawMessage) (json.RawMessage, bool) {
-	saved, err := ReadSavedResult(body)
-	if err != nil || saved.Tool != toolDrawBlock || saved.Status/100 != 2 || saved.Shortened || saved.Cut || !json.Valid(saved.Body) {
-		return nil, false
-	}
-	return saved.Body, true
-}
-
 // parseResult reads what resultText wrote of a call's answer: the call's number within its step,
 // its status and its body, and whether that body is whole. It reports false where result holds no
 // call's answer: a refusal, or a tool's own words, such as find_tools'.
@@ -959,7 +953,7 @@ func readResult(result string) (SavedResult, int, bool) {
 	if !answered || numbers == nil {
 		return SavedResult{}, 0, false
 	}
-	if strings.HasPrefix(rest, "[Total: ") {
+	if strings.HasPrefix(rest, totalPrefix) {
 		if total, body, lined := strings.Cut(rest, "\n"); lined && resultTotalLine.MatchString(total) {
 			rest = body
 		}

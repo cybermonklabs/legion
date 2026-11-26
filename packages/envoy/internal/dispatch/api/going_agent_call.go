@@ -200,7 +200,7 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 	case agentwire.KindLine:
 		answer, refusal = a.lineCall(ctx, request, caller)
 	case agentwire.KindWords:
-		answer, refusal = a.wordsCall(ctx, request)
+		answer, refusal = a.wordsCall(ctx, request, run.login)
 	}
 	if refusal == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		// What a route answered once the call's own time was over is not the call's answer: the

@@ -762,7 +762,7 @@ func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) (bool
 		reply.Tools, reply.Labels = []string{}, []string{}
 	}
 	if !asked && len(tools) == 0 && step.Finish != finishLength {
-		if planned, _, _ := w.turnSoFar(); !planned {
+		if !w.turnSoFar().planned {
 			return true, &proseReply{body: body, frame: reply}
 		}
 	}

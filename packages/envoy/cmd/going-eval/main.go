@@ -31,7 +31,7 @@
 // leaves (eval.GradeEnd), an answer task by a judge model reading the answer against the task's
 // facts, and every message and comment of the person's by c13's rule (eval.CheckPersonWrites).
 // The judge reads an answer as the person reads it in the bar, with each link rendered as the
-// bar's chip draws it from the store the try left (eval.RenderAnswer); the check of the links it
+// bar's chip draws it from the store the try left (chips.RenderAnswer); the check of the links it
 // holds reads it as written. A try the judge cannot read is unjudged, neither a pass nor a fail,
 // and is put to the judge again once at the run's end. The tries of one task run before the next
 // task starts, --parallel of them at once.

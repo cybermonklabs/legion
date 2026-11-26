@@ -215,8 +215,8 @@ func (w *worker) jevLine() string {
 // other is checked (checkProse), and a check that fails flags nothing: the reply ends the turn as
 // it is, and the failure is logged. A reply that passes, or that no check flagged, would end the
 // turn done as it is, and first the bar's count of its words decides (holdLong, length.go): one of
-// agentwire.WordsBound words or more is held back once in the turn where the level leaves a model
-// call (saveLong), and the next step's model is told longTold. A flagged reply is held back where
+// wordsBound words or more is held back once in the turn where the level leaves a model call
+// (saveLong), and the next step's model is told longTold. A flagged reply is held back where
 // the turn held back none before it and the run's level leaves it a model call (saveNoPlan): the
 // turn goes on, and the next step's model is told noPlanTold. Any other flagged reply ends the turn
 // done with noPlanSaid before its text. The frame of a reply the check was made for says what the
@@ -247,11 +247,11 @@ func (w *worker) endProse(prose *proseReply) stepOutcome {
 			slog.Warn("agent: the check of a reply in prose failed, so the reply ends the turn unchecked", "run", w.run.ID, "error", err)
 		}
 	}
-	_, nudged, lengthened := w.turnSoFar()
+	turn := w.turnSoFar()
 	outcome := stepOutcome{state: agentwire.StateDone}
 	switch {
 	case !flagged:
-		held, kept := w.holdLong(prose, lengthened)
+		held, kept := w.holdLong(prose, turn.heldLong)
 		switch {
 		case !kept:
 			return stepOutcome{}
@@ -260,7 +260,7 @@ func (w *worker) endProse(prose *proseReply) stepOutcome {
 		default:
 			w.saveModel(prose.body, prose.frame, nil, true)
 		}
-	case !nudged && w.level.spent(w.name, w.used) == "":
+	case !turn.nudged && w.level.spent(w.name, w.used) == "":
 		// spent answers a reason once this step was the level's last model call, the one offered
 		// no tool (Bounds.Calls 1), or once the run's working time is spent: then no call is left
 		// to mend the reply with, and the reply ends the turn as the default case says.
@@ -276,13 +276,20 @@ func (w *worker) endProse(prose *proseReply) stepOutcome {
 
 // saveNoPlan saves prose as a reply the guard held back: its body marked NoPlan, so the run's
 // history tells the model noPlanTold after it and settled reads no end of the turn in it, a
-// restarted worker's too; its note says nothing changed before its text, as the run's older steps
-// and a later turn of the conversation read it; and its frame marked NoPlan with no text, so the
-// bar adds nothing of it to the answer, and the frame still says where the model call's time went.
+// restarted worker's too; its note says nothing changed (noPlanSaid); and its frame marked NoPlan
+// (saveHeld).
 func (w *worker) saveNoPlan(prose *proseReply) {
 	prose.body.NoPlan, prose.frame.NoPlan = true, true
+	w.saveHeld(prose, noPlanSaid)
+}
+
+// saveHeld saves prose as a reply held back, its body and its frame marked by the hold
+// (saveNoPlan, saveLong): its note says said before its text, as the run's older steps and a
+// later turn of the conversation read it, and its frame has no text, so the bar adds nothing of
+// it to the answer, and the frame still says where the model call's time went.
+func (w *worker) saveHeld(prose *proseReply, said string) {
 	frame, _ := json.Marshal(prose.frame)
-	w.save(agentwire.StepRequest{Step: prose.frame.Step, Kind: agentwire.StepModel, Note: note(noPlanSaid + " " + prose.body.Text),
+	w.save(agentwire.StepRequest{Step: prose.frame.Step, Kind: agentwire.StepModel, Note: note(said + " " + prose.body.Text),
 		Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, prose.body)
 }
 
@@ -362,40 +369,49 @@ func noPlanText(words, prose string) string {
 	return fmt.Sprintf("The person's words:\n%s\n\nThe reply:\n%s\n", words, prose)
 }
 
+// turnState is what turnSoFar reads of the run's turn so far: whether it holds a plan, whether
+// the guard held back a reply of it (saveNoPlan), and whether a reply of it was held back as long
+// (saveLong).
+type turnState struct {
+	planned, nudged, heldLong bool
+}
+
 // turnSoFar reads the steps of the run's turn so far, those after its last person step, which
 // starts a turn of its own: whether the turn holds a plan - a plan the server kept (a propose_plan
 // step that was not refused), its review, a row of it that ran, or the person's approval of one,
 // whose rows run in the turn it starts, a person step that does not read counted so - whether the
 // guard held back a reply of the turn (saveNoPlan), and whether a reply of it was held back as
 // long (saveLong). A step older than the history's whole turns is read by its note.
-func (w *worker) turnSoFar() (planned, nudged, lengthened bool) {
+func (w *worker) turnSoFar() turnState {
+	var turn turnState
 	for at := len(w.history) - 1; at >= 0; at-- {
 		step := w.history[at]
 		switch step.Kind {
 		case agentwire.StepPerson:
 			var body agentwire.PersonStep
-			return planned || json.Unmarshal(step.Body, &body) != nil || body.Revise == "", nudged, lengthened
+			turn.planned = turn.planned || json.Unmarshal(step.Body, &body) != nil || body.Revise == ""
+			return turn
 		case agentwire.StepReview:
-			planned = true
+			turn.planned = true
 		case agentwire.StepTool:
 			if len(step.Body) == 0 {
-				planned = planned || strings.HasPrefix(step.Note, toolProposePlan+" ")
+				turn.planned = turn.planned || strings.HasPrefix(step.Note, toolProposePlan+" ")
 				continue
 			}
 			var body toolBody
-			planned = planned || json.Unmarshal(step.Body, &body) == nil && (body.Row != nil || body.Call.Tool == toolProposePlan && !body.Error)
+			turn.planned = turn.planned || json.Unmarshal(step.Body, &body) == nil && (body.Row != nil || body.Call.Tool == toolProposePlan && !body.Error)
 		case agentwire.StepModel:
 			if len(step.Body) == 0 {
-				nudged = nudged || strings.HasPrefix(step.Note, noPlanSaid)
-				lengthened = lengthened || strings.HasPrefix(step.Note, longSaid)
+				turn.nudged = turn.nudged || strings.HasPrefix(step.Note, noPlanSaid)
+				turn.heldLong = turn.heldLong || strings.HasPrefix(step.Note, longSaid)
 				continue
 			}
 			var body modelBody
 			if json.Unmarshal(step.Body, &body) == nil {
-				nudged = nudged || body.NoPlan
-				lengthened = lengthened || body.LongWords > 0
+				turn.nudged = turn.nudged || body.NoPlan
+				turn.heldLong = turn.heldLong || body.LongWords > 0
 			}
 		}
 	}
-	return planned, nudged, lengthened
+	return turn
 }

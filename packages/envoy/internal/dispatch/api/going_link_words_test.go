@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
 )
@@ -147,18 +146,17 @@ func TestAnAnswerIsStoredWithoutTheBlocksItsRunDrew(t *testing.T) {
 				"chain": []map[string]any{{"op": "count"}}, "field": "count",
 			}})
 		}
-		// The answer writes the block step 4 drew again, indented, and a block for the bar to
-		// draw, before a JSON block and a block of code of its own.
-		var body []byte
+		// The answer writes the block the run drew, its block frame, again, indented, and a block
+		// for the bar to draw, before a JSON block and a block of code of its own.
+		var block []byte
 		if err := rig.database.Pool.QueryRow(context.Background(), `
-			select s.body from going_run_steps s join going_runs r on r.id = s.run_id where r.words = $1 and s.step = 4
-		`, words).Scan(&body); err != nil {
-			t.Errorf("read the block step: %v", err)
+			select e.data from going_run_events e join going_runs r on r.id = e.run_id where r.words = $1 and e.name = $2
+		`, words, goingBlockFrame).Scan(&block); err != nil {
+			t.Errorf("read the block frame: %v", err)
 		}
-		block, drew := agent.DrawnBlock(body)
 		var indented bytes.Buffer
-		if !drew || json.Indent(&indented, block, "", "  ") != nil {
-			t.Errorf("step 4 holds no block the run drew: %s", body)
+		if json.Indent(&indented, block, "", "  ") != nil {
+			t.Errorf("the run's block frame %s does not read as JSON", block)
 		}
 		return answered("DEMO's issues:\n\n```json\n" + indented.String() + "\n```\n\n```draw\n{\"kind\":\"metric\",\"title\":\"The issues of DEMO\"}\n```\n\n" + kept)
 	})

@@ -1,6 +1,7 @@
 package chips
 
 import (
+	"iter"
 	"regexp"
 	"strings"
 )
@@ -24,29 +25,13 @@ func RewriteLinks(markdown string, link func(out *strings.Builder, written, word
 func rewriteMarkdown(markdown string, link func(out *strings.Builder, written, words, href string), text func(out *strings.Builder, markdown string, start, end int)) string {
 	var out strings.Builder
 	out.Grow(len(markdown))
-	fence, from := "", 0
-	for at := 0; at < len(markdown); {
-		end := strings.IndexByte(markdown[at:], '\n') + 1
-		if end == 0 {
-			end = len(markdown) - at
-		}
-		line := markdown[at : at+end]
-		if fence == "" {
-			if opened := codeFence(line); opened != "" {
-				rewriteInline(&out, markdown[from:at], link, text)
-				fence, from = opened, at
-			}
-		} else if closesFence(line, fence) {
-			out.WriteString(markdown[from : at+end])
-			fence, from = "", at+end
-		}
-		at += end
+	from := 0
+	for block := range fencedBlocks(markdown) {
+		rewriteInline(&out, markdown[from:block.start], link, text)
+		out.WriteString(markdown[block.start:block.end])
+		from = block.end
 	}
-	if fence != "" {
-		out.WriteString(markdown[from:])
-	} else {
-		rewriteInline(&out, markdown[from:], link, text)
-	}
+	rewriteInline(&out, markdown[from:], link, text)
 	return out.String()
 }
 
@@ -60,14 +45,15 @@ func writeText(out *strings.Builder, markdown string, start, end int) {
 // backticks or tildes or more.
 var fenceLine = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
 
-// codeFence is the fence line opens a fenced code block with, "" for a line that opens none: a
-// backtick fence whose info string holds a backtick is no fence.
-func codeFence(line string) string {
+// codeFence is the fence line opens a fenced code block with, "" for a line that opens none, and
+// its info string, the words after the fence: a backtick fence whose info string holds a backtick
+// is no fence.
+func codeFence(line string) (string, string) {
 	match := fenceLine.FindStringSubmatch(line)
 	if match == nil || (match[1][0] == '`' && strings.Contains(line[len(match[0]):], "`")) {
-		return ""
+		return "", ""
 	}
-	return match[1]
+	return match[1], strings.TrimSpace(line[len(match[0]):])
 }
 
 // closesFence reports whether line closes the code block fence opened: a fence of the same mark,
@@ -77,6 +63,47 @@ func closesFence(line, fence string) bool {
 	return match != nil && match[1][0] == fence[0] && len(match[1]) >= len(fence) && strings.TrimSpace(line[len(match[0]):]) == ""
 }
 
+// fencedBlock is one fenced code block of markdown (fencedBlocks): where the line that opens it
+// starts, where its body, the lines between its fences, starts and ends, where it ends, after the
+// line that closes it, and its info string (codeFence).
+type fencedBlock struct {
+	start, body, bodyEnd, end int
+	info                      string
+}
+
+// fencedBlocks yields each fenced code block of markdown in order. A block whose fence closes
+// nowhere runs to the end of markdown, its body too, as CommonMark reads one.
+func fencedBlocks(markdown string) iter.Seq[fencedBlock] {
+	return func(yield func(fencedBlock) bool) {
+		var block fencedBlock
+		fence := ""
+		for at := 0; at < len(markdown); {
+			end := strings.IndexByte(markdown[at:], '\n') + 1
+			if end == 0 {
+				end = len(markdown) - at
+			}
+			line := markdown[at : at+end]
+			switch {
+			case fence == "":
+				if fence, block.info = codeFence(line); fence != "" {
+					block.start, block.body = at, at+end
+				}
+			case closesFence(line, fence):
+				block.bodyEnd, block.end = at, at+end
+				if !yield(block) {
+					return
+				}
+				fence = ""
+			}
+			at += end
+		}
+		if fence != "" {
+			block.bodyEnd, block.end = len(markdown), len(markdown)
+			yield(block)
+		}
+	}
+}
+
 // DropCodeBlocks is markdown with each fenced code block that drop reports true for taken out,
 // its fence lines with it. drop is given the block's info string, the words after its opening
 // fence, and its body, the lines between its fences. Every other block, and all other text, stays
@@ -84,32 +111,13 @@ func closesFence(line, fence string) bool {
 // reads one.
 func DropCodeBlocks(markdown string, drop func(info, body string) bool) string {
 	var out strings.Builder
-	// written is where the markdown not yet written to out starts; opened is where the line that
-	// opened the block in hand starts, and body where its body does.
-	fence, info, written, opened, body := "", "", 0, 0, 0
-	for at := 0; at < len(markdown); {
-		end := strings.IndexByte(markdown[at:], '\n') + 1
-		if end == 0 {
-			end = len(markdown) - at
+	// written is where the markdown not yet written to out starts.
+	written := 0
+	for block := range fencedBlocks(markdown) {
+		if drop(block.info, markdown[block.body:block.bodyEnd]) {
+			out.WriteString(markdown[written:block.start])
+			written = block.end
 		}
-		line := markdown[at : at+end]
-		switch {
-		case fence == "":
-			if fence = codeFence(line); fence != "" {
-				info, opened, body = strings.TrimSpace(line[len(fenceLine.FindString(line)):]), at, at+end
-			}
-		case closesFence(line, fence):
-			if drop(info, markdown[body:at]) {
-				out.WriteString(markdown[written:opened])
-				written = at + end
-			}
-			fence = ""
-		}
-		at += end
-	}
-	if fence != "" && drop(info, markdown[body:]) {
-		out.WriteString(markdown[written:opened])
-		written = len(markdown)
 	}
 	if written == 0 {
 		return markdown
