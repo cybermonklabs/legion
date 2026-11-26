@@ -163,7 +163,7 @@ func (c *newsClaims) holderOf(ctx context.Context, tx pgx.Tx, records record.Sto
 // none (newsClaims), and where it holds none, member reads them, once, with the root's key. A
 // reader in a transaction weighs the architect claims the store records (record.ArchitectRuns);
 // the outbox's start weighs the machine's live view (runs, withLiveView), as the outbox routes a
-// notice (noticeArchitect).
+// notice (noticeRecipient).
 func (c *newsClaims) owningIssue(ctx context.Context, tx pgx.Tx, records record.Store, member record.Issue) (string, error) {
 	if c.owner != nil {
 		return c.owner(member), nil
