@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // shared is this test process's one template database and the clone drops still in flight. Main
@@ -149,9 +150,12 @@ func Main(prefix string, run func() int) int {
 	if shared.template == "" {
 		return code
 	}
+	ctx, cancel := teardownContext()
+	defer cancel()
 	// Through testdb.Drop: the template takes no connection (prepare), so a forced drop of it ends
-	// nothing, and Drop's retry waits out a backend that has not exited yet.
-	if err := testdb.Drop(context.Background(), shared.admin, shared.template); err != nil {
+	// nothing, and Drop waits out a backend that has not exited until this binary's teardown
+	// deadline.
+	if err := testdb.Drop(ctx, shared.admin, shared.template); err != nil {
 		fmt.Fprintf(os.Stderr, "testpg: drop the template database %s: %v\n", shared.template, err)
 		if code == 0 {
 			code = 1
@@ -168,8 +172,8 @@ const adminConns = 4
 // dropSlots holds the drops in flight to half the admin pool's adminConns connections. A clone
 // takes one of those connections too, and a `drop database … with (force)` forces a checkpoint
 // and waits for it: with every connection on drops — a package whose parallel subtests each clone
-// one database queues one drop per subtest that ends — the next clone waits for a checkpoint on
-// its own clock, which is the cost dropInBackground exists to move off it.
+// one database queues one drop per test that ends — the next clone waits for a checkpoint on its
+// own clock, which is the cost dropInBackground exists to move off it.
 var dropSlots = make(chan struct{}, adminConns/2)
 
 // dropInBackground drops name without waiting for it; Main waits for every drop. Drops in flight
@@ -178,19 +182,21 @@ func dropInBackground(name string) {
 	shared.drops.Go(func() {
 		dropSlots <- struct{}{}
 		defer func() { <-dropSlots }()
-		// Drop rather than a bare statement: a forced drop terminates every other session of
-		// the database, which PostgreSQL refuses to a login that is neither superuser nor a
-		// member of pg_signal_backend as soon as one session belongs to another role — an
-		// autovacuum worker, which attaches to a database a test has just filled. Every Legion
-		// pod shares one server whose test login holds neither privilege, so without the wait
-		// this drop fails the package (dispatch://INFRA-714 round six). Drop also waits out the
-		// 55006 a forced drop answers while a backend it terminated has not exited yet.
-		if err := testdb.Drop(context.Background(), shared.admin, name); err != nil {
+		ctx, cancel := teardownContext()
+		defer cancel()
+		if err := testdb.Drop(ctx, shared.admin, name); err != nil {
 			shared.dropMu.Lock()
 			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))
 			shared.dropMu.Unlock()
 		}
 	})
+}
+
+// teardownContext bounds each clone drop and the template drop after m.Run returns. It reads the
+// test timeout lazily, once m.Run has parsed its flags; under -timeout 0 its fallback starts when
+// this teardown starts.
+func teardownContext() (context.Context, context.CancelFunc) {
+	return context.WithDeadline(context.Background(), testwait.TeardownDeadline())
 }
 
 // prepare opens the admin pool and migrates the template every Clone copies. It logs one line to

@@ -13,16 +13,17 @@ import (
 )
 
 // Who writes an issue's plan and the rating of its retro (PUT /api/v1/issues/{key}/plans/{id},
-// PUT /api/v1/issues/{key}/steps/{id}/rating): the session of the daemon of the issue's project
-// alone, over a credential of that project. The variant's write is held to the same writer here
-// where a person carries the daemon's id. plans_test.go has what each write takes and the read of
-// a project's finished issues.
+// PUT /api/v1/issues/{key}/steps/{id}/rating): the session of the daemon of the issue's project,
+// or the session of another project's daemon that the request's broker token proves
+// (isIssueDaemon; steps_test.go holds that case). The variant's write is held to the same writer
+// here where a person carries the daemon's id. plans_test.go has what each write takes and the
+// read of a project's finished issues.
 
-// Only the daemon of the issue's project rates a retro, as only it writes the retro's record: a
-// person, an agent's session and the daemon of another project, each sending the rating the
-// daemon's own write lands with, are refused 403 STEP_WRITER, whether the retro's record exists or
-// not, and the retro the daemon recorded stays unrated; the daemon's rating of it lands, which is
-// the control.
+// Under a credential that proves no session, only the daemon of the issue's project rates a retro,
+// as only it writes the retro's record: a person, an agent's session and the daemon of another
+// project, each sending the rating the daemon's own write lands with, are refused 403 STEP_WRITER,
+// whether the retro's record exists or not, and the retro the daemon recorded stays unrated; the
+// daemon's rating of it lands, which is the control.
 func TestARatingIsTheDaemonsAlone(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -107,56 +108,10 @@ func workflowRows(t *testing.T, database *store.Store) int {
 	return rows
 }
 
-// A credential scoped to one project writes no plan and no rating of another project's issue,
-// though it proves the session of that issue's daemon and the body names that session, so the
-// project check alone stands between them: 403 PROJECT_SCOPE with nothing written. The same writes
-// over a credential scoped to the issue's project land, which is the control.
-func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
-	t.Parallel()
-	rig := newBrokerTokenRig(t)
-	caller := newBrokerCaller(t)
-	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": "OTH", "name": "OTH"}); created.Code != http.StatusCreated {
-		t.Fatalf("create project OTH: status=%d body=%s", created.Code, created.Body.String())
-	}
-	created := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": "OTH", "title": "Plans of OTH"})
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create an issue in OTH: status=%d body=%s", created.Code, created.Body.String())
-	}
-	issue := decodeBody[struct {
-		Key string `json:"key"`
-	}](t, created).Key
-	const elsewhere, own = "a-daemon-token-scoped-to-another-project", "a-daemon-token-scoped-to-the-issues-project"
-	for token, projects := range map[string][]string{elsewhere: {brokerTestProject}, own: {"OTH"}} {
-		answer := liveNamedToken(caller.jkt)
-		answer.Session, answer.Projects = legionDaemonSessionPrefix+"OTH", projects
-		rig.broker.Says(token, answer)
-	}
-	daemon := daemonSessionOf("OTH")
-
-	for _, write := range []struct {
-		name, path string
-		body       map[string]any
-	}{
-		{"plan", "/api/v1/issues/" + issue + "/plans/" + uuid.NewString(), defaultPlanBody(daemon, 1)},
-		{"rating", "/api/v1/issues/" + issue + "/steps/" + uuid.NewString() + "/rating",
-			withFields(retroIdentity(daemon, 1), map[string]any{"rating": 3, "rating_reason": "The plan was late."})},
-	} {
-		before := workflowRows(t, rig.database)
-		refused := rig.serve(caller.presenting(t, http.MethodPut, write.path, elsewhere, write.body))
-		expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusForbidden,
-			codeProjectScope, brokerTestProject, "OTH")
-		if after := workflowRows(t, rig.database); after != before {
-			t.Fatalf("the refused %s took the workflow store from %d rows to %d, want none written", write.name, before, after)
-		}
-		if answered := rig.serve(caller.presenting(t, http.MethodPut, write.path, own, write.body)); answered.Code != http.StatusOK {
-			t.Fatalf("the same %s over a credential of OTH: status=%d body=%s, want 200", write.name, answered.Code, answered.Body.String())
-		}
-	}
-}
-
-// Only the daemon of the issue's project writes its plan, as it writes its steps (403 STEP_WRITER);
-// an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND; a closed issue takes it; the write
-// appends no event and answers the plan as it stands.
+// Under a credential that proves no session, only the daemon of the issue's project writes its
+// plan, as it writes its steps (403 STEP_WRITER); an issue Dispatch does not hold is 404
+// ISSUE_NOT_FOUND; a closed issue takes it; the write appends no event and answers the plan as it
+// stands.
 func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
