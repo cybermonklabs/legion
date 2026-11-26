@@ -73,7 +73,6 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 	gate := DesignGate{Issue: key, Step: DesignStepSpec, ArtifactID: "doc-spec", LatestVersion: 1}
 	phaseRow := PhaseRow{Issue: key, Role: claim.RoleTester, Claim: "legion-LEGION-310-tester"}
 	slot := Slot{Issue: key, Index: 7, AdmittedAt: at}
-	noForget := func(context.Context, pgx.Tx, string, KeptDecisions, []QueuedChanges) error { return nil }
 	type step func(t *testing.T, ctx context.Context, tx pgx.Tx)
 	seedPlan := func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 		v, tasks, steps := ownersPlan(key, generation, 1, "architect-310", planGivenAt)
@@ -113,23 +112,23 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "a clear of its generation", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), noForget)
+			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), forgetNothing)
 			must(t, err)
 		}, marks: true},
 		{name: "a clear of its tree's generation", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			_, err := store.ClearTreeGeneration(ctx, tx, key, noForget)
+			_, err := store.ClearTreeGeneration(ctx, tx, key, forgetNothing)
 			must(t, err)
 		}, marks: true},
 		{name: "a clear that deletes a gate alone", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutGate(ctx, tx, gate))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), noForget)
+			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), forgetNothing)
 			must(t, err)
 		}, marks: true},
 		{name: "control: a clear of a generation that holds nothing", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), noForget)
+			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), forgetNothing)
 			must(t, err)
 		}},
 		{name: "a handout", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {

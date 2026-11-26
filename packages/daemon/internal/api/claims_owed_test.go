@@ -236,8 +236,9 @@ func TestClaimOwedIsTheProductionCheckLookItsTesterHolds(t *testing.T) {
 	tester.owesNothing(t)
 }
 
-// The three sources disagree here, and the claim's own live assignment is what says which kind of
-// work its turn is on, as it says for the completion route. A merged close spares the tester's
+// The three sources disagree here. The look the claim serves decides only whether its turn is on
+// an open look, and a report reaches the check route only when it names its check
+// (checkOpenedAt). A merged close spares the tester's
 // claim and opens a look behind its running testing turn: the record holds the look open for the
 // tester, while the tester still serves its testing task. A report from that turn is refused as no
 // report on production (CHECK_LOOK_NOT_SERVED), so the turn owes nothing — not the look, and not
