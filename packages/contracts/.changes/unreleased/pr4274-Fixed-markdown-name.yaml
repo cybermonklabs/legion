@@ -5,10 +5,10 @@ body: |-
   The `dispatch artifact` rule texts (`PATH_KEEPS_BYTES`, `ARTIFACT_CONTENT_NAME_RULE`) say that a
   name ending in `.md` or `.markdown` makes a `--path` upload Markdown whatever the path, that a
   name with any other extension stores the file as its bytes whatever the path, and that under a
-  name with no extension a path that does not end in `.md` or `.markdown` is stored as its bytes.
-  `uploadTypeFrom` says which of the three a name is. It skips a name's trailing extensions of
-  digits alone (`rows.jsonl.1` is a `.jsonl` name, `Plan v1.2` has none), and the inline-content
-  rule reads a name the same way.
+  name with no extension a path that, as the command resolves it, does not end in `.md` or
+  `.markdown` is stored as its bytes. `uploadTypeFrom` says which of the three a name is. It skips
+  a name's trailing extensions of the digits 0 to 9 alone (`rows.jsonl.1` is a `.jsonl` name,
+  `Plan v1.2` has none), and the inline-content rule reads a name the same way.
   `uploadExtensionOf` gives the extension that decides, from the name trimmed as Go's
   `strings.TrimSpace` trims it (`goTrimSpace` in `@legion/contracts/go-blank`): an extension holds
   letters, marks, digits, `_`, `-` and `+`, up to 32 characters, so `notes.md/` has none.

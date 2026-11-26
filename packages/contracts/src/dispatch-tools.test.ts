@@ -1068,7 +1068,7 @@ describe("dispatchToolSpecs", () => {
     const artifactOwner =
       "Exactly one of issue and project is required; with project, artifact names the document.";
     const notMarkdownName =
-      "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and \"rows.jsonl\" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.";
+      "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and \"rows.jsonl\" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path, as the command resolves it, does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of the digits 0 to 9 alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.";
     const edit = { artifact: "spec.md", ops: [{ op: "delete", find: "x" }] };
     const readOwner =
       "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one.";
@@ -1516,10 +1516,10 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  // INFRA-4071 R15: the name decides the type an upload goes up as. A trailing extension of
-  // digits alone is a version or a date, not a type, so the extension before it decides, and a
-  // name with none left takes the path's type.
-  test("reads an upload's type from its name, past trailing extensions of digits alone", () => {
+  // INFRA-4071 R15: the name decides the type an upload goes up as. A trailing extension of the
+  // digits 0 to 9 alone is a version or a date, not a type, so the extension before it decides,
+  // and a name with none left takes the path's type.
+  test("reads an upload's type from its name, past trailing extensions of the digits 0 to 9 alone", () => {
     const rows: Array<[string, "markdown" | "name" | "path"]> = [
       ["Plan v1.2", "path"],
       ["Notes 2026.11", "path"],

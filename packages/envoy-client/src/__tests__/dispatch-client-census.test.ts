@@ -3,11 +3,12 @@ import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contrac
 import { bearerCredential } from "../bearer";
 import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 
-// Every write the `dispatch` command makes carries one key because every request DispatchClient
-// makes goes through its one request function. This drives every method of the class through a
-// recording fetch, so a method added later that reaches Dispatch any other way - its own fetch, the
-// global one, a write without the key - fails here, as does a method the table below leaves out.
-// `UNKEYED` names the one write sent with no key, and why.
+// Every POST or PATCH the `dispatch` command makes carries one key, but the one `UNKEYED` names
+// with why, and every read, PUT or DELETE carries none, because every request DispatchClient makes
+// goes through its one request function. This drives every method of the class through a
+// recording fetch, so a method added later that reaches Dispatch any other way - its own fetch,
+// the global one, a POST or a PATCH without the key - fails here, as does a method the table below
+// leaves out.
 
 /** The names of DispatchClient's methods: every function member but the injected fetch. */
 type ClientMethod = Exclude<
@@ -159,7 +160,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
     }),
 };
 
-test("every DispatchClient method reaches Dispatch through its one request function, every write keyed", async () => {
+test("every DispatchClient method reaches Dispatch through its one request function, every POST and PATCH keyed", async () => {
   // Every method, which is every own property of the prototype that is one: `token` is an
   // accessor (the secret the client presents, which a broker credential renews), not a call.
   const methods = Object.getOwnPropertyNames(DispatchClient.prototype).filter((name) => {

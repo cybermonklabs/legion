@@ -4555,7 +4555,8 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
     // What Dispatch stores as a markdown document: an upload of inline text (`--content`,
     // `--content-file`), which the CLI takes only under a name whose extension is .md or .markdown
     // or with none, or a `--path` file the CLI sends as text/markdown (uploadTypeFrom: its name's
-    // extension is .md or .markdown, or it has none and its path ends in .md or .markdown).
+    // extension is .md or .markdown, or it has none and its path, as the command resolves it, ends
+    // in .md or .markdown).
     beforeAll(() => {
       fs.writeFileSync(path.join(work, "notes.txt"), "The person said: ship it on Friday.\n");
       fs.writeFileSync(path.join(work, "name-md.txt"), "brief.md\n");
@@ -4604,8 +4605,9 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       ]);
     });
     // The name says the kind wherever it has an extension, whatever the path, and a last part of
-    // digits alone is no extension (uploadTypeFrom): x.markdown sent from x.txt is a document, Plan
-    // v1.2 has no extension so its .md path makes it one, and cases.txt sent from cases.md is a file.
+    // the digits 0 to 9 alone is no extension (uploadTypeFrom): x.markdown sent from x.txt is a
+    // document, Plan v1.2 has no extension so its .md path makes it one, and cases.txt sent from
+    // cases.md is a file.
     test("(m) x.markdown sent from x.txt and Plan v1.2 sent from plan.md are reviewed and marked", async () => {
       fs.writeFileSync(path.join(work, "x.txt"), BRIEF);
       fs.writeFileSync(path.join(work, "plan.md"), BRIEF);

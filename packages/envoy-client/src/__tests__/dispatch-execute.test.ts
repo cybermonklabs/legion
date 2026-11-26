@@ -11947,10 +11947,10 @@ describe("executeDispatchTool", () => {
   // text/markdown whatever its path; a name with any other extension goes up as that extension's
   // type whatever its path, so cases.txt sent from cases.md is a file of the bytes as written; only
   // a name with no extension keeps the path's type, so a Markdown path under a plain title is still
-  // a document. A name's trailing extension of digits alone is a version or a date, not a type:
-  // rows.jsonl.1 reads as .jsonl, and Plan v1.2 has no extension. A path skips no such extension,
-  // so plan.md.1 under a name with no extension is a file. The stub stores each upload as the
-  // server's artifactKind does, and the answer names the kind it stored.
+  // a document. A name's trailing extension of the digits 0 to 9 alone is a version or a date, not
+  // a type: rows.jsonl.1 reads as .jsonl, and Plan v1.2 has no extension. A path skips no such
+  // extension, so plan.md.1 under a name with no extension is a file. The stub stores each upload
+  // as the server's artifactKind does, and the answer names the kind it stored.
   describe("the kind an upload is stored as", () => {
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
     const sha256 = (bytes: ArrayBuffer | Uint8Array) =>
@@ -12105,7 +12105,7 @@ describe("executeDispatchTool", () => {
         });
       });
 
-      test(`a trailing extension of digits alone is no extension, ${read}`, async () => {
+      test(`a trailing extension of the digits 0 to 9 alone is no extension, ${read}`, async () => {
         const rows = text('{"row_id": 1}\n{"row_id": 2}\n');
         expect(await upload("rows.jsonl.1", "rows.md", rows, gated)).toEqual({
           declared: ["application/octet-stream"],
@@ -12126,7 +12126,7 @@ describe("executeDispatchTool", () => {
 
       // INFRA-4071 R15, review 6011588028: the type comes from the extension that decides
       // (uploadExtensionOf), never from the whole name, so notes.txt.1 goes up as .txt's type.
-      test(`a name past a trailing extension of digits alone goes up as the type of the extension that decides, ${read}`, async () => {
+      test(`a name past a trailing extension of the digits 0 to 9 alone goes up as the type of the extension that decides, ${read}`, async () => {
         const notes = text("one\ntwo\n");
         const data = text('{"row_id": 1}\n');
         expect([
@@ -12616,7 +12616,7 @@ describe("executeDispatchTool", () => {
         }) as unknown as typeof fetch,
       })
     ).rejects.toThrow(
-      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.`
+      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path, as the command resolves it, does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of the digits 0 to 9 alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.`
     );
     expect(requests).toEqual([]);
   });
@@ -12990,10 +12990,11 @@ describe("executeDispatchTool", () => {
         " Send the text Dispatch stores, which is between the two marker lines below." +
         " To keep the text as you wrote it, send it as a file with path (--path <file>), which" +
         " stores the file as its bytes, unchanged, under a name whose extension is not .md or" +
-        " .markdown, whatever the path, and under a name with no extension when the path does not" +
-        " end in .md or .markdown (a name whose extension is .md or .markdown makes the upload" +
-        " Markdown whatever its path; a name's trailing extensions of digits alone do not" +
-        " count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension)." +
+        " .markdown, whatever the path, and under a name with no extension when the path, as the" +
+        " command resolves it, does not end in .md or .markdown (a name whose extension is .md or" +
+        " .markdown makes the upload Markdown whatever its path; a name's trailing extensions of" +
+        " the digits 0 to 9 alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as" +
+        " no extension)." +
         "\n--- the text Dispatch stores ---\n- one\n" +
         "--- end of the text Dispatch stores ---",
     ]);

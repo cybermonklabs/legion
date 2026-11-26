@@ -551,7 +551,7 @@ describe("DispatchClient", () => {
       const headers = request.init.headers as Record<string, string>;
       expect(headers.Authorization).toBe("Bearer secret");
       expect(headers.Accept).toBe("application/json");
-      // Every write carries a key of its own; no read carries one.
+      // Every POST here carries a key of its own; no read carries one.
       if (request.init.method === "GET") expect(headers["Idempotency-Key"]).toBeUndefined();
       else expect(headers["Idempotency-Key"]).toBeString();
     }

@@ -965,16 +965,20 @@ throws a transport failure as a `DispatchUnreachableError`, naming the configure
 failure's class, never the runtime's message, and the advice for a moved URL ("Dispatch at <url>
 is unreachable: …"): a read prints it as it stands, and an unsettled write quotes it whole as its
 failure. A PUT or a DELETE, and `dispatch api`'s write through `sendRoute` (any method but GET, a
-POST or a PATCH among them), each go once and carry no key, and each is unsettled the same way,
-with one attempt and no `key`, when its transport fails after it went out, the call's deadline
-ends it in flight or Dispatch answers its own 5xx (`#send`); its message says to check whether it
-took effect before retrying it, with no words of a key. A gateway's 5xx to it stays a
-`DispatchGatewayError`, whose advice already says the write may or may not have reached Dispatch,
-and its caller's cancellation in flight and a transport failure that reached no server, such as a
-refused connection, are thrown as they are. A GET is never unsettled. The two POSTs whose routes
-store nothing, the markdown round trip and the related search, keep their key and their attempts
-but are no writes, so each of their endings is thrown as a read's would be, with none of these
-words.
+POST or a PATCH among them), carry no key, and each goes once but for a resend after
+`401 BROKER_TOKEN_NOT_ACTIVE` and, for a PUT or a DELETE, after an old build's answer of no route,
+neither of which Dispatch ran. Each is unsettled the same way, with one attempt and no `key`, when
+its transport fails after it went out, its answer's body breaks off after the status came, the
+call's deadline ends it in flight or Dispatch answers its own 5xx (`#send`, which reads such a
+write's whole body inside the request); its message says to check whether it took effect before
+retrying it, with no words of a key. A body lost so names the request and the status ("lost the
+body of its <status> answer (<the failure's class>)"), as a keyed write's does. A gateway's 5xx to
+it stays a `DispatchGatewayError`, whose advice already says the write may or may not have reached
+Dispatch, and its caller's cancellation in flight and a transport failure that reached no server,
+such as a refused connection, are thrown as they are. A GET is never unsettled. The two POSTs whose
+routes store nothing, the markdown round trip and the related search, keep their key and their
+attempts but are no writes, so each of their endings is thrown as a read's would be, with none of
+these words.
 
 A write Dispatch made whose answer is gone is a `DispatchWriteLandedError` (`code`, an
 `IdempotencyLandedCode`, and
@@ -1405,11 +1409,12 @@ grows past the bytes one document holds over the version it replaces. A check Di
 the upload reaches the dry run with no change here. An unmarked answer says nothing of the text,
 whatever its status. The upload's `--name`, not its path, decides which `--path` file Dispatch
 stores as a Markdown document, which the upload carries as `text/markdown` (`uploadIsDocument`). A
-name's trailing extensions of digits alone do not count, so the name `plan.md.1` reads as .md and
-`Plan v1.2` has no extension. A name whose extension is .md or .markdown makes one whatever the
-path, a name with another extension makes a file whatever the path (`cases.txt` sent from
-cases.md), and a name with no extension makes one only when the resolved path itself ends in .md
-or .markdown: the path skips no digits, so `--name plan --path plan.md.1` makes a file. Such a
+name's trailing extensions of the digits 0 to 9 alone do not count, so the name `plan.md.1` reads
+as .md and `Plan v1.2` has no extension. A name whose extension is .md or .markdown makes one
+whatever the path, a name with another extension makes a file whatever the path (`cases.txt` sent
+from cases.md), and a name with no extension makes one only when the path, as the command
+resolves it, ends in .md or .markdown: the path skips no digits, so `--name plan --path plan.md.1`
+makes a file. Such a
 file is held to the same checks, in the same place: once the flags are read, before the argument
 check and before anything that needs Dispatch, the command reads it once, as its upload reads it
 (`documentFileRead`; the command table names the field, `DispatchCommand.documentPathField`), and
@@ -1572,11 +1577,12 @@ would send percent-encoded, and one with a `.` or `..` segment, plain or percent
 URL parser would resolve any of those out of `/api/v1`; each refusal names the path, so the
 credential goes to no other server and no other route. It sends the request once, and once more
 only after Dispatch answers that the token it presented is not live (Dispatch authenticated
-nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. A write that fails
-in transport after it went out, reaches the command's deadline or gets Dispatch's own 5xx may or
-may not have taken effect: it exits 1 with the message of a `DispatchWriteUnsettledError` of one
-attempt and no key (`#send`), which says so and to check whether it took effect before retrying
-it. On a 2xx answer it exits 0 and prints Dispatch's JSON, indented as every command prints it;
+nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. A write may or may
+not have taken effect when it failed in transport after it went out, its answer's body broke off
+after the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx: it
+exits 1 with the message of a `DispatchWriteUnsettledError` of one attempt and no key (`#send`),
+which says so and to check whether it took effect before retrying it. On a 2xx answer it exits 0
+and prints Dispatch's JSON, indented as every command prints it;
 any other 2xx body as it came, byte for byte, with nothing added and nothing else on standard
 output: a bodiless 204 as nothing, a body typed JSON that is empty or does not parse, and stored
 content, such as a file version's bytes (`GET /api/v1/artifacts/{id}/versions/{number}`) or a

@@ -9,10 +9,10 @@ body: |-
   was stored as a document with its text changed. Only a name with no extension keeps the type of
   the path as the upload resolves it (`--path notes.md/` sends notes.md, a document), and an upload
   goes up as `text/markdown` exactly when the CLI holds it for AskGate's marker (`gatedWrite` takes
-  the directory the path resolves against). A name's trailing extension of digits alone does not
-  count (`rows.jsonl.1` is a `.jsonl` name, `Plan v1.2` has none), while a path counts only when it
-  ends in `.md` or `.markdown` itself (`--name plan --path plan.md.1` stores a file), and the CLI
-  holds an upload for AskGate's marker by the same reading. The
+  the directory the path resolves against). A name's trailing extension of the digits 0 to 9 alone
+  does not count (`rows.jsonl.1` is a `.jsonl` name, `Plan v1.2` has none), while a path counts
+  only when it ends in `.md` or `.markdown` itself (`--name plan --path plan.md.1` stores a file),
+  and the CLI holds an upload for AskGate's marker by the same reading. The
   declared type is the deciding extension's (`notes.txt.1` goes up as `text/plain`), a name of 4,096
   characters reaches Dispatch's own refusal, and a name-only upload, the empty-document create, is
   not held for an AskGate marker. The check that refuses an upload under a name the owner already
@@ -27,8 +27,9 @@ body: |-
   replaces the rule of the `--dry-run` round trip entry, a path that ends in .md or .markdown.
 
   A `dispatch` write that may have reached Dispatch says so and tells the caller to check before it
-  retries: a keyed write whose every attempt failed on the network, an unkeyed `PUT` or `DELETE` or
-  a `dispatch api` write that failed in transport after it went out or at its deadline, and
+  retries: a keyed write whose every attempt failed on the network after it went out, an unkeyed
+  `PUT` or `DELETE` or a `dispatch api` write that failed in transport after it went out, whose
+  answer's body broke off after its status came, or that its deadline ended in flight, and
   Dispatch's own JSON `5xx`, which before read as a refusal. A refusal Dispatch decided prints none
   of those words, and neither does a read or a request that writes nothing (the markdown round
   trip, the related search).

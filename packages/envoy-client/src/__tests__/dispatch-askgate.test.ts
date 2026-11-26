@@ -610,11 +610,12 @@ describe("AskGate at the dispatch CLI", () => {
   });
 
   // An upload is a document when its name says so whatever the path (x.markdown sent from x.txt),
-  // or when its name has no extension and the path ends in .md or .markdown: Plan v1.2's last part
-  // is digits alone, and notes.md/'s holds a `/`, neither of which is an extension
-  // (uploadExtensionOf), so each one's .md path makes it a document. The path is read as the CLI
-  // resolves it, which drops a trailing `/`, `/.` and `x/..`: at 1299d195 the gate read
-  // notes.md/ as written and let it post, and the upload went up as text/markdown, a document.
+  // or when its name has no extension and the path, as the command resolves it, ends in .md or
+  // .markdown: Plan v1.2's last part is the digits 0 to 9 alone, and notes.md/'s holds a `/`,
+  // neither of which is an extension (uploadExtensionOf), so each one's .md path makes it a
+  // document. The path is read as the CLI resolves it, which drops a trailing `/`, `/.` and `x/..`:
+  // at 1299d195 the gate read notes.md/ as written and let it post, and the upload went up as
+  // text/markdown, a document.
   test("an issue with a spec and a markdown upload are gated", async () => {
     writeFileSync(join(stateDir, "notes.md"), "# Notes\n");
     writeFileSync(join(stateDir, ".md"), "# Notes\n");

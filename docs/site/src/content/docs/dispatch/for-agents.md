@@ -13,10 +13,11 @@ them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref). 
 nothing. `dispatch artifact` and its dry run refuse alike, with exit 1, a document's text past
 1 MiB, and one holding a NUL character or a byte that is not UTF-8, whether it is read from
 `--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (one whose
-`--name` ends in `.md` or `.markdown`, whatever the path, where a trailing extension of digits alone
-in the name does not count, so the name `plan.md.1` reads as `.md`; or one whose `--name` has no
-extension while the path itself ends in `.md` or `.markdown`, which the path `plan.md.1` does
-not): once the flags are read, before the arguments are checked and before anything that needs
+`--name` ends in `.md` or `.markdown`, whatever the path, where a trailing extension of the digits
+0 to 9 alone in the name does not count, so the name `plan.md.1` reads as `.md`; or one whose
+`--name` has no extension while the path, as the command resolves it, ends in `.md` or
+`.markdown`, which the path `plan.md.1` does not): once the flags are read, before the arguments
+are checked and before anything that needs
 Dispatch, so with Dispatch off too. Then the dry run asks Dispatch, as the call does.
 For text given inline, in `--content-file` or on stdin, it asks how Dispatch would store the
 text, and refuses a text that Dispatch would store under another spelling. For a Markdown `--path`
@@ -463,17 +464,19 @@ sends when a write fails, and can send after the write committed), says the writ
 have taken effect: read it back before you run the command again, since a new command is a new key.
 A refusal Dispatch decided, such as a 4xx with its code, prints that refusal and none of those
 words: the write did not take effect. Reads, the `PUT` and `DELETE` of `dispatch follow` and
-`dispatch claim --release`, and the `DELETE` of `dispatch delete-comment` and `dispatch
-delete-message`, carry no key. Each goes once, and again
+`dispatch project-update`, the `DELETE` of `dispatch claim --release`, and the `DELETE` of
+`dispatch delete-comment` and `dispatch delete-message`, carry no key. Each goes once, and again
 only where Dispatch did nothing with it: once more after Dispatch calls the token it presented
-dead, and on an old build's "no route" during a rolling release. Such a `PUT` or `DELETE` that fails
-in transport after it went out, reaches the command's deadline or gets Dispatch's own 5xx may or may
-not have taken effect too, and the command says so and to check whether it did before retrying it.
+dead, and on an old build's "no route" during a rolling release. Such a `PUT` or `DELETE` may or
+may not have taken effect too when it failed in transport after it went out, its answer's body
+broke off after the status came, the command's deadline ended it in flight or it got Dispatch's
+own 5xx, and the command says so and to check whether it did before retrying it.
 `dispatch api`'s request, a write too, carries no key either: it goes once, and once more only after
-Dispatch calls the token it presented dead. Its write (any method but `GET`) that fails in transport
-after it went out, reaches the command's deadline or gets Dispatch's own 5xx may or may not have
-taken effect too, and the command says so: read what the write would have changed before you send
-it again. Its `GET` never ends that way. The markdown round trip `dispatch artifact` asks before
+Dispatch calls the token it presented dead. Its write (any method but `GET`) may or may not have
+taken effect too when it failed in transport after it went out, its answer's body broke off after
+the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx, and the
+command says so: read what the write would have changed before you send it again. Its `GET` never
+ends that way. The markdown round trip `dispatch artifact` asks before
 it uploads inline text, and the search `dispatch related` runs, are `POST`s that store nothing: they
 are keyed and asked again like a write, but a failure of either is told as a read's, with none of
 those words. A script that calls the API directly can send its own key on any `POST`, `PATCH`, `PUT`

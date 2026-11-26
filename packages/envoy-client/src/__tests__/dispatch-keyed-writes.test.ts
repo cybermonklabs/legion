@@ -27,9 +27,11 @@ import {
   DispatchWriteUnsettledError,
 } from "../dispatch-http";
 
-// Every write the `dispatch` command makes (a POST or a PATCH) carries one `Idempotency-Key` for
-// that call, and asks Dispatch again under it while an attempt gets no definitive answer, so a
-// dropped answer never makes the session's write land twice and a short outage never fails it.
+// Every POST or PATCH the `dispatch` command makes, but `dispatch api`'s, carries one
+// `Idempotency-Key` for that call, and asks Dispatch again under it while an attempt gets no
+// definitive answer, so a dropped answer never makes the session's write land twice and a short
+// outage never fails it. A read, a PUT, a DELETE and `dispatch api`'s request go through `#send`
+// with no key.
 // Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, so the write
 // asks again without asking anything first. `dispatch-keyed-resend.test.ts` uses a Bun stand-in;
 // `dispatch-keyed-resend-live.test.ts` is the real-server coverage.

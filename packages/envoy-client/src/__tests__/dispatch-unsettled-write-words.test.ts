@@ -13,15 +13,18 @@ import { messageFor } from "../errors";
 // decided prints none of them, and neither does a request that writes nothing (INFRA-4071 R16,
 // dispatch://INFRA-4395). The command reads what it prints, so each row runs a command through
 // `executeDispatchTool` against a stub on a real socket: a dropped connection is Bun's own
-// transport failure, passed through the command's fetch as a session meets it.
+// transport failure, and a body that breaks off after its status and headers came is Bun's own
+// failure to read it, each passed through the command's fetch as a session meets it.
 
 const makeDirectory = temporaryDirectories("dispatch-unsettled-write-words");
 
 /** What the stub does with one request it read whole: answer it with Dispatch's JSON or with a
- *  page in its place, or drop the connection. */
+ *  page in its place, send a status and headers whose body breaks off after `cut`, or drop the
+ *  connection. */
 type Reply =
   | { readonly status: number; readonly json: unknown }
   | { readonly status: number; readonly html: string }
+  | { readonly status: number; readonly cut: string }
   | "drop";
 
 /**
@@ -67,6 +70,10 @@ async function stubDispatch(options: {
         socket.destroy();
         return;
       }
+      if ("cut" in reply) {
+        answerCut(socket, reply.status, reply.cut);
+        return;
+      }
       const key = options.keyed ? header("idempotency-key") : undefined;
       if ("json" in reply) answer(socket, reply.status, reply.json, key);
       else answer(socket, reply.status, reply.html, key, "text/html");
@@ -109,6 +116,18 @@ function answer(
       `Content-Type: ${type}\r\n` +
       (key === undefined ? "" : `Idempotency-Key: ${key}\r\n`) +
       `Content-Length: ${Buffer.byteLength(text)}\r\nConnection: close\r\n\r\n${text}`
+  );
+}
+
+/** Answers `socket` with `status` and JSON headers whose `Content-Length` is larger than `part`,
+ *  sends `part` alone of the body, and destroys the socket once it is written: the body breaks
+ *  off after the status came. */
+function answerCut(socket: Socket, status: number, part: string): void {
+  socket.write(
+    `HTTP/1.1 ${status} ${REASONS[status] ?? "Status"}\r\n` +
+      "Content-Type: application/json\r\n" +
+      `Content-Length: ${Buffer.byteLength(part) + 64}\r\nConnection: close\r\n\r\n${part}`,
+    () => socket.destroy()
   );
 }
 
@@ -413,5 +432,86 @@ describe("the words a dispatch write that may have landed prints", () => {
     expect(text).toStartWith(`Dispatch at ${dispatch.url} is unreachable: `);
     expect(text).toEndWith(MOVED_HINT);
     expect(text).not.toContain("may or may not");
+  });
+
+  // A body that breaks off after the status and headers came: the request reached whatever
+  // answered, and whether the write ran was the body's to say, so a write that loses it may or
+  // may not have taken effect, as a keyed write that loses it does (`body-broken`,
+  // write-outcome.ts); a GET's loss is thrown as it came. Each read of a body has a row for a
+  // write and one for a GET: the 2xx `#route` reads as bytes, the 5xx `#send` reads for
+  // Dispatch's own refusal (a GET's non-2xx goes to `#response` from `#route`), and the answer
+  // `#response` reads as text for a PUT.
+  const cutSuccess: Reply = { status: 201, cut: '{"id":"5a66' };
+  const cutFailure: Reply = { status: 500, cut: '{"code":"INTERNAL","er' };
+  const lostBody = (text: string, request: string, status: number): void => {
+    expect(text).toStartWith(`${request} lost the body of its ${status} answer (`);
+    expect(text).toEndWith(
+      ") (its only attempt), and an attempt of the write may have reached Dispatch, so it may " +
+        `or may not have taken effect${CHECK_FIRST}`
+    );
+  };
+  // A GET's read that breaks off prints the runtime's own reset, as it came.
+  const thrownAsItCame = (text: string): void => {
+    expect(text).toStartWith("ECONNRESET: ");
+    expect(text).not.toContain("lost the body");
+    expect(text).not.toContain("may or may not");
+  };
+
+  test("dispatch api's POST answered 201 whose body breaks off may or may not have taken effect (#route's read of a 2xx)", async () => {
+    const dispatch = await dispatchOn(false, () => cutSuccess);
+
+    const text = await api(dispatch.url, "POST");
+
+    expect(dispatch.requests).toEqual([`POST ${API_ROUTE}`]);
+    lostBody(text, `POST ${dispatch.url}${API_ROUTE}`, 201);
+  });
+
+  test("dispatch api's GET answered 200 whose body breaks off prints none of the words (#route's read of a 2xx)", async () => {
+    const dispatch = await dispatchOn(false, () => ({ status: 200, cut: '{"id":"5a66' }));
+
+    const text = await printed(dispatch.url, "dispatch_api", { path: API_ROUTE });
+
+    expect(dispatch.requests).toEqual([`GET ${API_ROUTE}`]);
+    thrownAsItCame(text);
+  });
+
+  test("dispatch api's POST answered 500 whose body breaks off may or may not have taken effect (#send's read of a 5xx)", async () => {
+    const dispatch = await dispatchOn(false, () => cutFailure);
+
+    const text = await api(dispatch.url, "POST");
+
+    expect(dispatch.requests).toEqual([`POST ${API_ROUTE}`]);
+    lostBody(text, `POST ${dispatch.url}${API_ROUTE}`, 500);
+  });
+
+  test("dispatch api's GET answered 500 whose body breaks off prints none of the words (#route's read of a non-2xx through #response)", async () => {
+    const dispatch = await dispatchOn(false, () => cutFailure);
+
+    const text = await printed(dispatch.url, "dispatch_api", { path: API_ROUTE });
+
+    expect(dispatch.requests).toEqual([`GET ${API_ROUTE}`]);
+    thrownAsItCame(text);
+  });
+
+  test("an unkeyed PUT answered 200 whose body breaks off may or may not have taken effect (#response's read)", async () => {
+    const dispatch = await dispatchOn(true, (request) =>
+      request === ASK_READ ? askRead : { status: 200, cut: '{"followers":["sess' }
+    );
+
+    const text = await follow(dispatch.url);
+
+    expect(dispatch.requests).toEqual([ASK_READ, FOLLOW]);
+    lostBody(text, `PUT ${dispatch.url}/api/v1/asks/${ASK}/followers/session-1`, 200);
+  });
+
+  test("the read of the ask whose body breaks off prints none of the words and sends no PUT (#response's read)", async () => {
+    const dispatch = await dispatchOn(true, (request) =>
+      request === ASK_READ ? { status: 200, cut: '{"ask":{"id":"5a66' } : closed
+    );
+
+    const text = await follow(dispatch.url);
+
+    expect(dispatch.requests).toEqual([ASK_READ]);
+    thrownAsItCame(text);
   });
 });

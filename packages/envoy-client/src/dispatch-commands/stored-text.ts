@@ -172,8 +172,8 @@ export function documentFieldRefusal(field: string, text: string): Error | undef
  * be, and so is a Markdown file sent under a title (`Design notes`, `Plan v1.2`, `notes.md/`) or
  * from `notes.md/`, which the path resolves to notes.md. Every other upload declares the type Bun
  * gives the extension that decides in its name (`x.<extension>`, uploadExtensionOf, past trailing
- * extensions of digits alone), whatever the path, so cases.txt sent from cases.md is a file of the
- * bytes as written, notes.txt.1 goes up as `text/plain` and rows.jsonl.1 as
+ * extensions of the digits 0 to 9 alone), whatever the path, so cases.txt sent from cases.md is a
+ * file of the bytes as written, notes.txt.1 goes up as `text/plain` and rows.jsonl.1 as
  * `application/octet-stream`; a name with no extension, or no name, declares the type Bun reads
  * from the resolved path. A type of those that is still `text/markdown` goes up as
  * `application/octet-stream`. The call uploads this file, or the bytes read of it under its type,

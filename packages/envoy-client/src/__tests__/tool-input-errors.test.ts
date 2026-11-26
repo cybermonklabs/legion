@@ -190,11 +190,11 @@ describe("formatZodIssues", () => {
         '"rows.jsonl" is not a Markdown name. Upload the file under the same name with ' +
         "path (--path <file>), which stores the file as its bytes, unchanged, under a name whose " +
         "extension is not .md or .markdown, whatever the path, and under a name with no extension " +
-        "when the path does not end in .md or .markdown (a name whose extension is .md or " +
-        ".markdown makes the upload Markdown whatever its path; a name's trailing extensions of " +
-        "digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no " +
-        "extension); a document takes a name whose extension is .md or .markdown, or one with no " +
-        "extension.",
+        "when the path, as the command resolves it, does not end in .md or .markdown (a name " +
+        "whose extension is .md or .markdown makes the upload Markdown whatever its path; a " +
+        "name's trailing extensions of the digits 0 to 9 alone do not count, so rows.jsonl.1 " +
+        "reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension " +
+        "is .md or .markdown, or one with no extension.",
     ]);
     expect(problemsFor("dispatch_search", { query: "a" })).toEqual([
       "--query: Too small: expected string to have >=2 characters",

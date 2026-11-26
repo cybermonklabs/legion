@@ -1144,14 +1144,13 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
  * whether the request is a write: any method but `GET`, less a `POST` whose route stores nothing
  * (`writes: false`, `WriteCall.writes`). A status that cannot clear answers the same request the
  * same way. One that can (`gatewayClears`) may clear for a read, and for a 2xx, which reaches here
- * only for a read, a PUT, a DELETE or `sendRoute`'s write (a POST or a PATCH among them): a keyed
- * write's 2xx is the write table's (`#endWrite` reads it, never `#payloadOf`), and `#route` gives
- * every 2xx's body that is not Dispatch's JSON back as it came, or refuses one that holds a
- * credential it presented (`DispatchCredentialEchoError`). A 2xx page here is the gateway's own
- * page, which it answers in Dispatch's place, so the request did not reach Dispatch and a repeat
- * cannot write twice. A write answered with another status may already have taken effect only
- * when the request reached Dispatch (`reachesDispatch`), where a blind retry could apply it
- * twice; otherwise it did not, and a retry may succeed as for a read.
+ * only for a read, a PUT or a DELETE, none of which writes twice: a keyed write's 2xx is the write
+ * table's (`#endWrite` reads it, never `#payloadOf`), and `#route` gives every 2xx's body that is
+ * not Dispatch's JSON back as it came, or refuses one that holds a credential it presented
+ * (`DispatchCredentialEchoError`), so the 2xx of `sendRoute`'s write never reaches here. A write
+ * answered so may already have taken effect only when the request reached Dispatch
+ * (`reachesDispatch`), where a blind retry could apply it twice; otherwise it did not, and a retry
+ * may succeed as for a read.
  */
 function gatewayAdvice(writes: boolean, status: number): string {
   if (!gatewayClears(status)) {
@@ -1210,10 +1209,12 @@ export interface DispatchClientOptions {
 }
 
 /**
- * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
- * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
- * `writeRetry` paces it, and where a broker token Dispatch says is no longer live is traded
- * afresh and the request sent once more.
+ * JSON HTTP client for Dispatch's native-tool API. Reads, PUTs, DELETEs and `sendRoute`'s write
+ * go through `#send` with no key, each sent once, and again only after an old build's answer of
+ * no route (`#noRoute`, which `#route` does not use) or as below; every other POST or PATCH goes
+ * through `#write`, under one `Idempotency-Key`, on `writeRetry`'s pacing. In both, a request
+ * whose broker token Dispatch says is no longer live is sent once more with a token traded
+ * afresh.
  *
  * `credential` is what every request presents: a bearer (`bearerCredential`, src/bearer.ts), or
  * what the secrets broker trades this machine's identity for, or the identity of a person signed
@@ -2707,13 +2708,15 @@ export class DispatchClient {
    * A PUT, a DELETE or `sendRoute`'s write (any method but GET, a POST or a PATCH among them) is
    * a write all the same, with no key to ask again under, so each ending after which it may have
    * taken effect is a `DispatchWriteUnsettledError` of one attempt and no key: Dispatch's own
-   * 5xx, which it sends when a write fails and which can come after the write committed, and no
+   * 5xx, which it sends when a write fails and which can come after the write committed; no
    * answer once the request went out (`#sendOnce`), where its transport failed after it went out
-   * or the call's deadline ended it in flight. Two endings with no answer are thrown as they are:
-   * the caller's own stop in flight, and a transport failure that reached no server
-   * (`reachedNothing`). A gateway's 5xx stays its `DispatchGatewayError`, whose advice already
-   * says the write may or may not have reached Dispatch. A GET is never unsettled: each of its
-   * endings is thrown as it came.
+   * or the call's deadline ended it in flight; and an answer whose body broke off after its status
+   * came, or whose body the deadline ended, since `#sendOnce` reads a write's body whole and the
+   * request reached whatever answered. Two endings with no definitive answer are thrown as they
+   * are: the caller's own stop in flight, before the answer or during its body, and a transport
+   * failure that reached no server (`reachedNothing`). A gateway's 5xx stays its
+   * `DispatchGatewayError`, whose advice already says the write may or may not have reached
+   * Dispatch. A GET is never unsettled: each of its endings is thrown as it came.
    */
   async #send(
     method: string,
@@ -2744,9 +2747,10 @@ export class DispatchClient {
 
   /** One request of `#send`'s (a read, a PUT, a DELETE or `sendRoute`'s write), presenting the
    *  credential for it, and the headers it presented; `signal` aborts it beside the client's own
-   *  signal. A write that got no answer is thrown as `#send` says: as a
-   *  `DispatchWriteUnsettledError` of one attempt, naming the request and how it ended, or as
-   *  the failure itself. */
+   *  signal. A write's answer comes back with its body read whole inside the request, under that
+   *  same signal; a read's comes back unread, for its caller to read. A write that got no
+   *  definitive answer is thrown as `#send` says: as a `DispatchWriteUnsettledError` of one
+   *  attempt, naming the request and how it ended, or as the failure itself. */
   async #sendOnce(
     method: string,
     url: string,
@@ -2770,14 +2774,17 @@ export class DispatchClient {
       Accept: accept,
       ...(body === undefined ? {} : { "Content-Type": body.type }),
     };
+    // The request as the unsettled message names it: `<METHOD> <url>`.
+    const request = (): string =>
+      `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
+    let answer: Response;
     try {
-      const answer = await this.#fetch(url, {
+      answer = await this.#fetch(url, {
         method,
         headers: requestHeaders(headers, presented, this.#userAgent),
         signal: limit,
         ...(body === undefined ? {} : { body: body.content }),
       });
-      return { answer, presented };
     } catch (error) {
       if (method === "GET") throw error;
       const stop = stoppedEvent(limit, true, error);
@@ -2787,17 +2794,48 @@ export class DispatchClient {
       ) {
         throw error;
       }
-      const request = `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
       const last = error instanceof Error ? error : new Error(String(error));
       throw new DispatchWriteUnsettledError(
         last,
         1,
         undefined,
         stop === "deadline-in-flight"
-          ? `${request} had no definitive answer when its deadline ended it`
-          : noAnswer(request, last)
+          ? `${request()} had no definitive answer when its deadline ended it`
+          : noAnswer(request(), last)
       );
     }
+    // A read's body is its caller's to read, a file version's bytes among them. A status that
+    // carries no body has none to read, and one outside 200 to 599, which only something in
+    // Dispatch's place sends, cannot be carried by a `Response` made here, so it is handed on as it
+    // came.
+    const { status, statusText, headers: answerHeaders } = answer;
+    if (method === "GET" || NULL_BODY_STATUSES.has(status) || status < 200 || status > 599) {
+      return { answer, presented };
+    }
+    // The answer's headers came and its body may not, whole: the request reached whatever
+    // answered, and whether the write ran was the body's to say, as for a keyed write
+    // (`body-broken`, write-outcome.ts). Its callers read an answer made from the bytes read here.
+    let bytes: ArrayBuffer;
+    try {
+      bytes = await answer.arrayBuffer();
+    } catch (error) {
+      const stop = stoppedEvent(limit, true, error);
+      if (stop === "cancelled-in-flight") throw error;
+      if (stop === "deadline-in-flight") {
+        throw new DispatchWriteUnsettledError(
+          error instanceof Error ? error : new Error(String(error)),
+          1,
+          undefined,
+          `${request()} had no definitive answer when its deadline ended it`
+        );
+      }
+      const lost = `${request()} lost the body of its ${status} answer (${errorClass(error)})`;
+      throw new DispatchWriteUnsettledError(new Error(lost), 1, undefined, lost);
+    }
+    return {
+      answer: new Response(bytes, { status, statusText, headers: answerHeaders }),
+      presented,
+    };
   }
 
   /**
