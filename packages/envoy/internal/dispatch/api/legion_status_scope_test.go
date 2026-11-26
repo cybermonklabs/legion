@@ -971,8 +971,9 @@ func TestACascadeThatWritesALegionIssueIsRefusedWhole(t *testing.T) {
 // TestNoMintHoldsLegionStatus: no credential mints a personal token that holds legion-status,
 // alone or beside person, and no edit gives it to one, and no such call changes a token. A
 // credential that may mint (a browser sign-in, a personal token holding approve) is refused 400
-// TOKEN_SCOPES_INPUT. A broker token scoped to a person holds person alone and never approve
-// (brokerTokenActor), so the mint route's own scope refuses it first, 403 OAUTH_SCOPE_REQUIRED.
+// TOKEN_SCOPES_INPUT. A broker token a machine holds, scoped to a person, holds person alone and
+// never approve (brokerTokenActor), so the mint route's own scope refuses it first, 403
+// OAUTH_SCOPE_REQUIRED.
 // The table's own check refuses a row that holds it, so a write that passes the API cannot store
 // one either.
 func TestNoMintHoldsLegionStatus(t *testing.T) {
