@@ -296,7 +296,8 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 //     yet known. Failed, retired and already suspended claims stay as they are and hold nothing;
 //
 //   - no task, notice, message or start waits for delivery to a role of the pod, but a start
-//     queued for news alone, which wakes the claim a release suspends (pods.IdleView.Waiting);
+//     queued for news alone, or a worker start that waits for an admission slot its issue does not
+//     hold, each of which wakes the claim a release suspends when it runs (pods.IdleView.Waiting);
 //
 //   - each live role's session reported, after its last turn, that it runs no background work. A
 //     claim with no report, or one whose report predates its last turn, is never released: that
@@ -679,7 +680,11 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a
 //     release taken under it would leave that start to find its pod gone and to provision the
-//     workspace afresh (IdleHoldUnownedDelivery);
+//     workspace afresh (IdleHoldUnownedDelivery). A worker start that waits for an admission slot
+//     its issue does not hold is not counted (pods.IdleView.Waiting): the issue waits in the
+//     admission line, which can take days, and when the slot comes the start provisions the
+//     workspace afresh from origin, as it would after any release. The release reads the disk
+//     before it deletes it, so no work that origin lacks goes with it (Read);
 //
 //   - the pod has recorded nothing for the whole idle period, read as the newest write to any
 //     claim row of the issue (view.QuietSince, compared as IdleRelease compares it)

@@ -102,6 +102,13 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
+	// WaitsForItsSlot is whether issue owes a worker a start of its current phase and generation
+	// that waits for its admission slot while no slot of the issue stands
+	// (record.SuperviseRequest.NeedsSlot, which the outbox holds back until the slot comes): such
+	// an issue waits in the admission line, and the slot's start is what brings its worker back,
+	// so its backstop wakes no one (podBackstopDue). An older such start brings no one back, since
+	// admission finishes it without acting, so it silences no backstop.
+	WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
 	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
 	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
@@ -424,6 +431,14 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // release, whatever else did or did not happen. The row is fired under a conditional update, so a
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts.
+//
+// A backstop of an issue that waits for its admission slot fires and wakes no one
+// (Pods.WaitsForItsSlot). The issue gave its slot back to wait on another, or had its work come
+// back, and owes its worker a start that the outbox holds until the slot comes; the idle rule
+// releases its pod meanwhile. A wake would tell that worker to take up its phase while the
+// admission cap says the issue may not run, and its pod would go idle, be released and be woken
+// again, each idle period and backstop, for the whole wait. The slot's start brings the worker
+// back, with its task.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -435,6 +450,15 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, fact.Issue, fact.Role)
 	if err != nil || !found {
 		return intake.Result{}, err
+	}
+	waits, err := e.cfg.Pods.WaitsForItsSlot(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if waits {
+		e.logOnCommit(ctx, "wake: the backstop of an issue that waits for its admission slot wakes no one; the slot's start brings the role back",
+			"issue", fact.Issue, "role", fact.Role)
+		return intake.Result{}, nil
 	}
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
 	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())

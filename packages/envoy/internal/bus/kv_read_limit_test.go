@@ -288,6 +288,8 @@ func (s *slowReads) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.StreamInfo
 func TestAServerThatAnswersEveryReadLateKeepsALimitAboveItsDelay(t *testing.T) {
 	start := time.Now()
 	reads := &slowReads{delay: 3 * time.Second, leaderFrom: start.Add(6 * time.Second)}
+	// The bound under test, not a wait: a limit kept above the delay finds the leader at about
+	// 10.5 s, and one set back answers at about 15 s, so 13 s tells the two apart (above).
 	ctx, cancel := context.WithTimeout(t.Context(), 13*time.Second)
 	defer cancel()
 	err := awaitStreamLeader(ctx, slog.Default(), reads, afterOpen, "KV_envoy_slow_reads_test")
@@ -308,6 +310,8 @@ func TestAServerThatAnswersEveryReadLateKeepsALimitAboveItsDelay(t *testing.T) {
 // reads and answer at about 15 s, after the wait ended.
 func TestTheStepsOfOneStartShareOneRunOfReads(t *testing.T) {
 	reads := &slowReads{delay: 3 * time.Second}
+	// The bound under test, not a wait: steps that share the run of reads find the leader inside
+	// 13 s, and a step that learnt the delay again answers at about 15 s (above).
 	ctx, cancel := context.WithTimeout(withReadLimit(t.Context()), 13*time.Second)
 	defer cancel()
 	start := time.Now()
