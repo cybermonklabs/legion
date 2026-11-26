@@ -1979,7 +1979,11 @@ func startSupervisedSandboxRole(
 // pod: the Stop names the issued generation, never the previous one, which is the caller's. The
 // start deadline runs on the rig's fake clock (g.r.clock), which the test moves past it only once
 // the launcher holds the Start: on the wall clock's one second, a loaded CI runner once got the
-// deadline's error without the launcher ever receiving the Start (run 45723523570).
+// deadline's error without the launcher ever receiving the Start (run 45723523570). The waits that
+// stay on the wall clock, the first spawn's and the issued generation's Stop (stopIssuedChild), run
+// under a boot timeout as long as the test binary's deadline allows (withWaitsToTheDeadline): under
+// the one second they had, a Stop whose write a loaded machine held past it failed, the runtime
+// closed the launcher's connection, and the launcher never received the Stop this test is about.
 func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t *testing.T) {
 	t.Parallel()
 	for name, previous := range map[string]bool{
@@ -1987,9 +1991,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 		"on the same pod as its previous locator": true,
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, withOptions(func(o *Options) {
-				o.BootTimeout, o.TerminationGrace = time.Second, 50*time.Millisecond
-			}))
+			g := newRig(t, nil, withWaitsToTheDeadline())
 			spec := workerSpec(t)
 			first := g.spawn(spec)
 			delayed := g.scriptedStartLauncher(spec.Claim, 1, func(shimwire.LauncherStart) *shimwire.LauncherStartResult { return nil })
