@@ -116,8 +116,9 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 	return ""
 }
 
-// bandWords names the band an entry waits in, as the counts of its sentence read it: `at P1`,
-// or `with no priority` for an entry neither it nor its tree root has a priority for.
+// bandWords names the band an entry waits in, as the counts of its sentence read it: `at P1`, or
+// `with no priority` for an entry Dispatch resolves no priority for, or, with an older Dispatch
+// that resolves none, one that neither it nor its tree root has a priority for.
 func bandWords(priority record.Priority) string {
 	if priority == record.NoPriority {
 		return "with no priority"
@@ -126,9 +127,23 @@ func bandWords(priority record.Priority) string {
 }
 
 // priorityPlaced is the sentence that says which priority placed entry in the line and whose it
-// is (record.LineEntry.Priority): the issue's own, its tree root's, or
-// none on either, whose band stands after P3.
+// is (record.LineEntry.Priority). Where Dispatch resolves the issue's priority
+// (record.Resolved.Known) it is the issue's own, or the one of the issue Dispatch names in
+// `priority_from`, the nearest above it on its Dispatch parent chain that has one, never the Legion
+// tree root; else, on a Dispatch release that resolves none, the issue's own, its tree root's, or
+// none on either. An entry with none waits after P3.
 func priorityPlaced(entry record.LineEntry) string {
+	if resolved := entry.Issue.Resolved; resolved.Known {
+		switch {
+		case resolved.Priority != record.NoPriority && resolved.From != "":
+			return "It waits at " + entry.Priority.String() + ", the priority of " + resolved.From + ", the nearest issue above it in Dispatch that has one."
+		case resolved.Priority != record.NoPriority:
+			return "It waits at " + entry.Priority.String() + ", its own priority."
+		case entry.Issue.Parent == nil:
+			return "It has no priority, so it waits after every issue at P0 to P3."
+		}
+		return "Neither it nor any issue above it in Dispatch has a priority, so it waits after every issue at P0 to P3."
+	}
 	switch {
 	case entry.Issue.Priority != record.NoPriority:
 		return "It waits at " + entry.Priority.String() + ", its own priority."

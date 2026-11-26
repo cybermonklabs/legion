@@ -1,9 +1,10 @@
 // packages/envoy-client/src/dispatch-commands/host-session.ts
 //
-// The session a `dispatch` command acts as under the host that runs it, and the Dispatch it reads
-// there (`hostSession`, `hostedDispatch`), or, where no host runs `dispatch api`, the Dispatch it
-// reads from the environment alone (`unhostedDispatch`); `dispatch-cli.ts` takes each from here.
-// Neither `dispatch-cli.ts` nor `api.ts` is imported here, so neither import is a cycle.
+// The session a `dispatch` command acts as under the host that runs it, with the session's state
+// directory, and the Dispatch it reads there (`hostSessionDirectory`, `hostedDispatch`), or, where
+// no host runs `dispatch api`, the Dispatch it reads from the environment alone
+// (`unhostedDispatch`); `dispatch-cli.ts` takes each from here. Neither `dispatch-cli.ts` nor
+// `api.ts` is imported here, so neither import is a cycle.
 
 import { brokerRouteConfigured } from "../broker-credential";
 import {
@@ -13,7 +14,9 @@ import {
   tokenFilesSet,
 } from "../dispatch-config";
 import type { DispatchHost } from "../dispatch-cwd";
+import { sessionDirectory } from "../dispatch-session-directory";
 import type { EnvoyConfig } from "../envoy-config";
+import { messageFor } from "../errors";
 import {
   handedConfigFile,
   type SessionConfigFile,
@@ -57,7 +60,7 @@ export type HostSession =
  * else the host's own rule. A host that is none of `HOSTS`, or a session id that is not set, is
  * the usage error every command refuses with.
  */
-export function hostSession(
+function hostSession(
   hostName: string | undefined,
   env: Readonly<Record<string, string>>
 ): HostSession {
@@ -90,6 +93,30 @@ export function hostSession(
     (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
     sessionConfigFile(host, env);
   return { host, sessionId, file };
+}
+
+/** A {@link HostSession} with the state directory of its session, or the usage error a command
+ *  refuses with. */
+export type HostSessionDirectory =
+  | (Exclude<HostSession, { readonly problem: string }> & { readonly dir: string })
+  | { readonly problem: string };
+
+/**
+ * The session a command acts as under the host `hostName` names ({@link hostSession}), and that
+ * session's state directory (`sessionDirectory`). The problem is `hostSession`'s, else the
+ * refusal of a session id that is not one plain path segment, as `messageFor` prints it.
+ */
+export function hostSessionDirectory(
+  hostName: string | undefined,
+  env: Readonly<Record<string, string>>
+): HostSessionDirectory {
+  const hosted = hostSession(hostName, env);
+  if ("problem" in hosted) return hosted;
+  try {
+    return { ...hosted, dir: sessionDirectory(env, hosted.sessionId) };
+  } catch (error) {
+    return { problem: messageFor(error) };
+  }
 }
 
 /** Dispatch as a command under a host reads it, or the usage error the command refuses with;

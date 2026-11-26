@@ -133,6 +133,11 @@ import {
   SUBJECT_SEGMENT_REPLACED,
   uncapturedTopicRefusal,
 } from "../src/subject";
+import {
+  renderDispatchFrameSchema,
+  renderDispatchFrameSchemaGo,
+  renderDispatchFrameVerdicts,
+} from "./gen-go-dispatch-frame";
 import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
@@ -1399,6 +1404,8 @@ ${definitions.join("\n\n")}
 const envelope = (await Bun.file(envelopeFile).json()) as Schema;
 const blockSchema = (await Bun.file(blockSchemaFile).json()) as BlockSchemaDocument;
 
+const dispatchFrameSchema = renderDispatchFrameSchema();
+
 // Every generated file this script owns, each marked with the language it is written in: a Go
 // file is gofmt-formatted before it is written and before it is compared.
 const outputs = [
@@ -1427,7 +1434,22 @@ const outputs = [
     rendered: renderBlockSchemaTypes(blockSchema),
     language: "ts",
   },
-] satisfies { path: string; rendered: string; language: "go" | "ts" }[];
+  {
+    path: resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),
+    rendered: dispatchFrameSchema,
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../fixtures/dispatch-frame-verdicts.json"),
+    rendered: renderDispatchFrameVerdicts(),
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_frame_generated.go"),
+    rendered: renderDispatchFrameSchemaGo(dispatchFrameSchema),
+    language: "go",
+  },
+] satisfies { path: string; rendered: string; language: "go" | "ts" | "json" }[];
 const fmt = Bun.which("gofmt");
 
 // `--check` pipes each Go render through gofmt and compares every render with the committed

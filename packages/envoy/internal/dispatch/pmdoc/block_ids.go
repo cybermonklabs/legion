@@ -16,8 +16,9 @@ var blockIDGenerator = struct {
 	mint func() string
 }{mint: newBlockID}
 
-// SetBlockIDGenerator replaces the block ID generator. Passing nil restores UUID v4 IDs
-// (newBlockID). Fixture generators and tests use this to make generated documents deterministic.
+// SetBlockIDGenerator replaces the block ID generator for the whole process. Passing nil restores
+// UUID v4 IDs (newBlockID). Tests use it to make the ids of a parse deterministic; a caller that
+// needs its own ids beside other parses passes its generator to ParseWithBlockIDs instead.
 func SetBlockIDGenerator(mint func() string) {
 	blockIDGenerator.Lock()
 	defer blockIDGenerator.Unlock()
@@ -161,8 +162,14 @@ func BlockIDRepairCount(tree *Node) (repairs int) {
 }
 
 // EnsureBlockIDsCount gives every block in tree a unique blockId and reports how many missing
-// (storedBlockID) or duplicate IDs it replaced.
+// (storedBlockID) or duplicate IDs it replaced. The ids come from the package-level generator
+// (SetBlockIDGenerator); ParseWithBlockIDs stamps a parse from a generator its caller holds.
 func EnsureBlockIDsCount(tree *Node) (stamped int) {
+	return ensureBlockIDs(tree, mintBlockID)
+}
+
+// ensureBlockIDs is EnsureBlockIDsCount with mint minting every id it stamps.
+func ensureBlockIDs(tree *Node, mint func() string) (stamped int) {
 	seen := make(map[string]struct{})
 	Walk(tree, func(node *Node) bool {
 		if node.Type == "doc" || isInlineNodeType(node.Type) {
@@ -179,7 +186,7 @@ func EnsureBlockIDsCount(tree *Node) (stamped int) {
 		}
 		var id string
 		for {
-			id = mintBlockID()
+			id = mint()
 			if _, duplicate := seen[id]; !duplicate && id != "" {
 				break
 			}
