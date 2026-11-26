@@ -378,34 +378,10 @@ export async function headsEvents(file: string, headsFile: string, world: string
   };
   const head = headOf("702");
   const handoff = async (phase: "implement" | "test" | "review") => {
-    const body =
-      phase === "implement"
-        ? {
-            schemaVersion: 1,
-            phase,
-            issue: fixture.issue,
-            head,
-            filesChanged: ["docs/usage.md"],
-          }
-        : phase === "test"
-          ? {
-              schemaVersion: 1,
-              phase,
-              issue: fixture.issue,
-              head,
-              classSearch: [],
-            }
-          : {
-              schemaVersion: 1,
-              phase,
-              issue: fixture.issue,
-              head,
-              decision: "approved",
-              critical: 0,
-              important: 0,
-              minor: 0,
-              keyFindings: [],
-            };
+    // Each role's prompt asks for `head` and, where the role has one, `note`, and nothing else: the
+    // issue, the phase and the version are the record's, and a decision or a finding is the
+    // review's on GitHub.
+    const body = { head };
     const recorded = await createHandoff(
       fixture.issue,
       phase,
