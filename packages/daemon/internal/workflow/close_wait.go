@@ -353,8 +353,7 @@ func (e *Engine) enterVerifying(ctx context.Context, tx pgx.Tx, issue record.Iss
 }
 
 // waitEntered is what every entry into verifying queues after its write: the row that writes
-// close-wait.md and the first read of the checks. Projects with a production check also get the
-// close-waits notice here. A project without one gets the notice after that read names its checks.
+// close-wait.md, the first read of the checks, and the close-waits notice.
 func (e *Engine) waitEntered(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView, pr *record.PullRequest) error {
 	if err := e.publishWait(ctx, tx, issue); err != nil {
 		return err
@@ -368,9 +367,6 @@ func (e *Engine) waitEntered(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	e.logOnCommit(ctx, "workflow: a merged issue waits in verifying for the checks of its goal", "issue", issue.Key, "tree", issue.Tree,
 		"pullRequest", number, "beneath", view.wait.Beneath)
-	if e.checkRole() == "" {
-		return nil
-	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-waits", Role: claim.RoleArchitect, Reason: closeWaitsReason(issue, number, view.wait)})
 }
 
@@ -661,7 +657,7 @@ func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		for _, check := range stored.Checks {
 			ids = append(ids, fmt.Sprintf("%s (%s)", check.ID, strings.Trim(check.Answer+", "+check.Reason, ", ")))
 		}
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-waits", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
+		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-wait-no-result", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 			"No role of this project runs a check after the merge of %s. These checks have no pass:%s\nHave an eligible agent run each check and record its result.",
 			issue.Key, listed(ids))}); err != nil {
 			return err
