@@ -237,6 +237,10 @@ type Engine struct {
 	updateByRunningFix         bool
 	fixBranchFromRecordedPush  bool
 
+	// afterOldGenerationRunEnd is a test hook after an off-walk run of an earlier generation ends.
+	// It confirms that deletion waits until every old-generation run of its task has ended.
+	afterOldGenerationRunEnd func(context.Context, pgx.Tx, record.IssueStepRun) error
+
 	// For a task's CI news (ci_news.go), each the fault its test plants first: assignFromSettlement
 	// gives the implementer a repair assignment of each failed run of a settlement (reportRuns);
 	// stateFromSettlement writes yes for a check whose run the settlement says succeeded
