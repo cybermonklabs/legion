@@ -1135,10 +1135,11 @@ function permanentRefusal(status: number, code: string): boolean {
   );
 }
 
-/** `method route` of the run's own Dispatch with `body` as the daemon's own session writes it
- * (`actor`, dispatch/client.go's `daemonActor`). Throws a DispatchRefusal for an answer Dispatch
- * refused, naming the route and what Dispatch answered, and an error for none at all or a run
- * that names no Dispatch. */
+/** `method route` of the run's own Dispatch with `body` as the daemon's own session writes it (its
+ * `actor` as dispatch/client.go's `HTTPClient.actor` names it: the session of the key's project,
+ * `DaemonSession`, or under dispatch_token_broker the daemon's own project's, the same on an issue
+ * of that project). Throws a DispatchRefusal for an answer Dispatch refused, naming the route and
+ * what Dispatch answered, and an error for none at all or a run that names no Dispatch. */
 async function dispatchWrite(method: string, route: string, body: object): Promise<void> {
   if (DISPATCH_URL === "") throw new Error("the run names no Dispatch (DISPATCH_URL)");
   const token =

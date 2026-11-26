@@ -878,8 +878,8 @@ export interface LabelShapes {
    * `startStep`, `endStep` and `reportEndedStep`, main's since #4400, 53980e0e32, the steps of a
    * phase read off workflow/plan.go's `DefaultSteps` from #4488 and off the walk of the run since
    * #4611, 5dfd9cdbb0a), in the fields, the words, the places and the id step-records.ts restates
-   * (`WRITES_STEPS`, with `STEPS_OF_PHASE` or `STEPS_ON_WALK`). False for main `ff2a10ef`'s
-   * daemon, whose outbox has no such kind. */
+   * (`WRITES_STEPS` and `STEP_PUT`, with `STEPS_OF_PHASE` or `STEPS_ON_WALK`). False for main
+   * `ff2a10ef`'s daemon, whose outbox has no such kind. */
   readonly writesSteps: boolean;
   /** A completion that carries a rating of the plan (`planRating` with `planReason`) and does not
    * end the retro is refused 400 PLAN_RATING_UNEXPECTED, in the words `PLAN_RATING_UNEXPECTED`
@@ -1132,16 +1132,16 @@ const ACT_RUNS = Object.values(STEPS).filter(({ kind }) => kind !== "step");
 /** The texts every daemon that records each run of a step holds, each built from step-records.ts's
  * tables where one restates it, so a daemon that writes another field, word, result or id is of no
  * shape the rig reads: the outbox's kind, its executor's write of every field of the row
- * (`stepWriteOf`) through the client's route under the daemon's actor and the body that route
- * takes, and the wait `execute` makes of the router's 404 of a Dispatch older than the route
- * (`waitsForTheRoute`, for the record lane and the role holders' publication); the result of each
- * move (`endOf`, which ends no step stopped since #4464: a head that conflicts with its base moves
- * no issue); the id's namespace and name. The identity every write carries (`stepWrite`), the
- * moment alone at the start and the report alone after the end are in `STEPS_WITHOUT_VARIANT`
- * (before #5014) or `STEPS_WITH_VARIANT` (since #5014, where each write carries the issue's
- * experiment and variant, nil for an issue of no group). Where the task, its steps and a phase's
- * place are read, and how the end is written, are each shape's own (`STEPS_OF_PHASE`,
- * `STEPS_ON_WALK`). */
+ * (`stepWriteOf`) through the client's route and the body that route takes, and the wait `execute`
+ * makes of the router's 404 of a Dispatch older than the route (`waitsForTheRoute`, for the record
+ * lane and the role holders' publication); the result of each move (`endOf`, which ends no step
+ * stopped since #4464: a head that conflicts with its base moves no issue); the id's namespace and
+ * name. The client's call of the route under the daemon's actor is in `STEP_PUT`, as each shape's
+ * client spells that actor. The identity every write carries (`stepWrite`), the moment alone at
+ * the start and the report alone after the end are in `STEPS_WITHOUT_VARIANT` (before #5014) or
+ * `STEPS_WITH_VARIANT` (since #5014, where each write carries the issue's experiment and variant,
+ * nil for an issue of no group). Where the task, its steps and a phase's place are read, and how
+ * the end is written, are each shape's own (`STEPS_OF_PHASE`, `STEPS_ON_WALK`). */
 const WRITES_STEPS: readonly Marker[] = [
   {
     file: "daemon/internal/record/outbox.go",
@@ -1164,10 +1164,6 @@ const WRITES_STEPS: readonly Marker[] = [
     text: "return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish",
   },
   {
-    file: "daemon/internal/dispatch/client.go",
-    text: 'return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{\n\t\tStepWrite: write,\n\t\tActor:     daemonActor(key),\n\t}, nil)',
-  },
-  {
     file: "daemon/internal/dispatch/types.go",
     text: `type StepWrite struct {\n${STEP_WRITE_FIELDS.map(([name, type, key]) => `\t${name.padEnd(11)}${type.padEnd(11)}\`json:"${key}"\``).join("\n")}\n}`,
   },
@@ -1184,6 +1180,21 @@ const WRITES_STEPS: readonly Marker[] = [
     text: 'name := fmt.Sprintf("%s/%d/%s/%s/%d/%d", issue, generation, place.Task, place.Kind, place.Place, starts)',
   },
 ];
+/** The client's call of the route of a step record (client.go's `PutStep`), under the actor the
+ * daemon writes it as, as main's daemon spells it: `daemonActor(key)`, the session of the key's
+ * project, from #4400 (53980e0e32c) until #4682 (5833fb7f86a), and `c.actor(key)` since, the
+ * session the client writes as (`WritesAs`) or, for a client made with no option, the session of
+ * the key's project (`DaemonSession`). Under dispatch_token_broker the daemon's client writes as
+ * the session of its own project, so on an issue of that project either spelling names
+ * `legion-daemon:<PROJECT>`, as the stand-in writes. */
+const putStep = (actor: string): Marker => ({
+  file: "daemon/internal/dispatch/client.go",
+  text: `return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{\n\t\tStepWrite: write,\n\t\tActor:     ${actor},\n\t}, nil)`,
+});
+const STEP_PUT: Readonly<Record<"since4400" | "since4682", Marker>> = {
+  since4400: putStep("daemonActor(key)"),
+  since4682: putStep("c.actor(key)"),
+};
 /** The three `stepWrite` lines common to main's shapes from #4488 until #5014 (0986c960d9e),
  * before each write carried the issue's experiment and variant (`drawn`). */
 const STEPS_WITHOUT_VARIANT: readonly Marker[] = [
@@ -1964,14 +1975,32 @@ export function labelShapes(checkout: string): LabelShapes {
     ]),
     writesSteps: sourceShape(checkout, "the record of each run of a step", [
       {
-        name: "main's daemon and Dispatch since #5014, which name the issue's experiment and variant on each step record",
-        markers: [...WRITES_STEPS, ...STEPS_ON_WALK, ...STEPS_WITH_VARIANT, STEP_ROUTE],
+        name: "main's daemon and Dispatch since #4682, whose client writes each step record as the session it writes as",
+        markers: [
+          ...WRITES_STEPS,
+          STEP_PUT.since4682,
+          ...STEPS_ON_WALK,
+          ...STEPS_WITH_VARIANT,
+          STEP_ROUTE,
+        ],
+        value: true,
+      },
+      {
+        name: "main's daemon and Dispatch from #5014 until #4682, which name the issue's experiment and variant on each step record",
+        markers: [
+          ...WRITES_STEPS,
+          STEP_PUT.since4400,
+          ...STEPS_ON_WALK,
+          ...STEPS_WITH_VARIANT,
+          STEP_ROUTE,
+        ],
         value: true,
       },
       {
         name: "main's daemon and Dispatch from #4611 until #5014, which read the step a run stands at off the walk of its run",
         markers: [
           ...WRITES_STEPS,
+          STEP_PUT.since4400,
           ...STEPS_ON_WALK,
           ...STEPS_WITHOUT_VARIANT,
           STEP_END_ON_WALK_WITHOUT_VARIANT,
@@ -1981,7 +2010,13 @@ export function labelShapes(checkout: string): LabelShapes {
       },
       {
         name: "main's daemon and Dispatch from #4488 until #4611, which read the step of a phase off DefaultSteps",
-        markers: [...WRITES_STEPS, ...STEPS_WITHOUT_VARIANT, ...STEPS_OF_PHASE, STEP_ROUTE],
+        markers: [
+          ...WRITES_STEPS,
+          STEP_PUT.since4400,
+          ...STEPS_WITHOUT_VARIANT,
+          ...STEPS_OF_PHASE,
+          STEP_ROUTE,
+        ],
         value: true,
       },
       {

@@ -93,7 +93,7 @@ interface DispatchWrite {
 }
 
 /** The session the daemon writes every Dispatch write of the run's issue as
- * (dispatch/client.go's `daemonActor`). */
+ * (dispatch/client.go's `HTTPClient.actor`, the session of the key's project, `DaemonSession`). */
 const DAEMON_ACTOR = { kind: "session", id: "legion-daemon:LWEVAL" };
 /** A write of the issue's status or a message, as the daemon sends it. */
 const IssueWrite = z.strictObject({

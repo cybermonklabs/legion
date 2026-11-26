@@ -1965,12 +1965,21 @@ describe("the shapes of a label's daemon source", () => {
       );
   });
 
+  // The client's call of the route of a step record (daemon-pane.ts's `STEP_PUT`): under
+  // `c.actor(key)`, main's since #4682 (5833fb7f86a), and under `daemonActor(key)` before it.
+  const CLIENT = "daemon/internal/dispatch/client.go";
+  const PUT_STEP =
+    'return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{\n\t\tStepWrite: write,\n\t\tActor:     c.actor(key),\n\t}, nil)';
+  const PUT_STEP_BEFORE = PUT_STEP.replace("c.actor(key)", "daemonActor(key)");
+
   // Catches: a source of main from #4611 until #5014 (0986c960d9e), whose step writes carry no
-  // experiment or variant, read as no shape: the base label at main 58ba1b4b is one. And a source
-  // that mixes the two (one `stepWrite` call with `drawn`, one without) read as either.
+  // experiment or variant and whose client writes them under `daemonActor(key)`, read as no shape:
+  // the base label at main 58ba1b4b is one. And a source that mixes the two (one `stepWrite` call
+  // with `drawn`, one without) read as either.
   test("a daemon source whose step writes carry no variant, main's from #4611 until #5014, writes each step, and one that mixes the two is of no shape", () => {
     const STEPS = "daemon/internal/workflow/steps.go";
     const before: (readonly [string, string, string])[] = [
+      [CLIENT, PUT_STEP, PUT_STEP_BEFORE],
       [
         STEPS,
         "Generation: issue.Generation,\n\t\tStepExperiment: drawn}",
@@ -1981,8 +1990,23 @@ describe("the shapes of a label's daemon source", () => {
       ),
     ];
     expect(labelShapes(copyWith(CHECKOUT, before)).writesSteps).toBe(true);
-    expect(() => labelShapes(copyWith(CHECKOUT, before.slice(0, 2)))).toThrow(
+    expect(() => labelShapes(copyWith(CHECKOUT, before.slice(0, 3)))).toThrow(
       "is no shape of the record of each run of a step this rig reads"
+    );
+  });
+
+  // Catches: a source of main from #5014 until #4682 (5833fb7f86a), whose client writes each step
+  // record under `daemonActor(key)`, or one of main's since #4682, under `c.actor(key)`, read as no
+  // shape, as this checkout's was when the forward merge brought #4682 in under a marker of the old
+  // spelling alone. And a source whose client holds the call in both spellings read as either, not
+  // refused as two shapes at once.
+  test("a daemon source whose client writes a step record under daemonActor, main's from #5014 until #4682, writes each step, as one under c.actor since #4682 does, and one that holds both is of two shapes", () => {
+    expect(labelShapes(copyOf(CHECKOUT)).writesSteps).toBe(true);
+    expect(labelShapes(copyOf(CHECKOUT, CLIENT, PUT_STEP, PUT_STEP_BEFORE)).writesSteps).toBe(true);
+    expect(() =>
+      labelShapes(copyOf(CHECKOUT, CLIENT, PUT_STEP, `${PUT_STEP}\n\t${PUT_STEP_BEFORE}`))
+    ).toThrow(
+      "it holds the markers of two shapes at once, main's daemon and Dispatch since #4682, whose client writes each step record as the session it writes as, and main's daemon and Dispatch from #5014 until #4682, which name the issue's experiment and variant on each step record"
     );
   });
 
