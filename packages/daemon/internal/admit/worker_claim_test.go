@@ -254,7 +254,11 @@ func TestAHeldStartOfAKeyedAgentStoppedSinceIsFinished(t *testing.T) {
 		t.Fatalf("the held starts of %s = %d, %v; want the tester's one: the case's premise", key, held, err)
 	}
 
-	apply(t, pool, admission, "observe", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
+	// The fact that drives the pass: an issue of the project nobody handed to Legion, in backlog,
+	// which admission records nothing of. It is applied through the mirror as the daemon applies
+	// it, and the mirror's write of the issue's row is the record the pass runs for (the pass rule,
+	// Admission.Apply). So the repair is the only thing the pass can write for key.
+	applyMirrored(t, pool, admission, "observe", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
 		Title: "someone else's", Rank: "Z", ResolvedRepo: "acme/widgets"}, workflow.New(record.NewStore(), workflow.Config{Project: testProject,
 		Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil))
 
