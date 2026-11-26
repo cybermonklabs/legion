@@ -607,7 +607,7 @@ func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(earlier, func(version record.PlanVersion) bool { return version.Generation == issue.Generation })
+	return slices.ContainsFunc(earlier, func(version record.PlanVersion) bool { return version.Generation == issue.Generation }), nil
 }
 
 // sameVersion says whether next is held, the version in force, as its owner gave it: an owner's
