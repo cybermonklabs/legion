@@ -601,9 +601,9 @@ test("a decision the view read holds stands in its part where the tree read has 
   const parts = await entriesOf(children, view, [], [], treeAnswer([decision("first", tied)]));
 
   expect(
-    idsOf(parts).review.toSorted(),
+    [...idsOf(parts).review].sort(),
     "the review list holds each waiting decision the Decisions view read holds"
-  ).toEqual([D("first"), D("later")].toSorted());
+  ).toEqual([D("first"), D("later")].sort());
 });
 
 // The seam's reads are refreshed by the events that change them alone, as every read of the page
