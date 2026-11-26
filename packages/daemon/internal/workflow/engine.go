@@ -210,6 +210,9 @@ type Engine struct {
 	noAskAtWay                 bool
 	askAtWayWithNoRules        bool
 	wayFromRecordedHead        bool
+	// noRunFixesCIMark leaves out the mark of a run's tasks as taking a fix at the run's first
+	// step (takeFirstPlan). Only a test sets it.
+	noRunFixesCIMark bool
 	// For the branches beside a fix (fix_branches.go), each the fault its test plants first:
 	// noEndBesideDelete takes out the deletion of the branches beside a task's fixes that its move
 	// into the retro with no hold queues, at a transition and at the release of an end hold

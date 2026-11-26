@@ -15,7 +15,9 @@ import (
 // (record.PlanTask.FixesCI), whatever plan the first step takes: the default rows it writes, an
 // owner's plan given at generation 0 and carried from its start, and an owner's plan given at the
 // run's own generation, which it keeps. Each plan reads false before the first step, as a plan
-// the release before stored does, so the flag is the first step's.
+// the release before stored does, so the flag is the first step's. The control, kept: with the
+// first step's mark left out (the seam noRunFixesCIMark) the carried plan's task reads false after
+// the first step, which the subtest asserts.
 func TestARunThatStartsUnderThisReleaseTakesTheFlag(t *testing.T) {
 	t.Run("the default rows", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -44,6 +46,22 @@ func TestARunThatStartsUnderThisReleaseTakesTheFlag(t *testing.T) {
 
 		if task := taskOf(t, pool, engine, "LEGION-209"); task.Task != "a" || !task.FixesCI {
 			t.Fatalf("the carried task after the first step = %+v, want a with fixes_ci true", task)
+		}
+	})
+
+	t.Run("the control: with the mark left out the carried task reads false", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		engine.noRunFixesCIMark = true
+		recordedAt(t, pool, "LEGION-208", "LEGION-208")
+		mustTake(t, "version 1 at generation 0", applyFacts(t, pool, engine)(planID("LEGION-209", 0, 1),
+			ownersPlan(t, "LEGION-209", 0, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+		recordedAt(t, pool, "LEGION-209", "LEGION-208")
+
+		firstStep(t, pool, engine, "LEGION-209")
+
+		if task := taskOf(t, pool, engine, "LEGION-209"); task.Task != "a" || task.FixesCI {
+			t.Fatalf("the carried task after a first step that left the mark out = %+v, want a with fixes_ci false", task)
 		}
 	})
 
@@ -112,10 +130,24 @@ func TestARunningRunOfTheReleaseBeforeKeepsNoFlag(t *testing.T) {
 
 // The testing move leaves a check that a CI job runs to the fix: an issue in testing at its tested
 // head, where a check that no CI job runs passes and one that a CI job runs failed, goes to
-// review on the tester's completion, and the end of its task holds the failed check for CI.
+// review on the tester's completion. The review's approval and the owner's sign-off pass the task's
+// last step, and its end holds the failed check for CI, from the retro; the check's pass at the
+// head releases the hold, and the retro starts.
 func TestTheJoinsTestingMoveLeavesCIToTheFix(t *testing.T) {
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, ofSet(passOf("k1", "tester"), "k1", "k2"), ofSet(inCI(stateOf("k2", "no", "fail", "ci"), "failure"), "k1", "k2"))
 	r.complete(headOne, 2)
 	assertPhase(t, r.pool, phase.Reviewing)
+
+	move(t, r.pool, r.engine, "LEGION-208", TriggerReviewApproved, "", record.PhaseRow{})
+	assertPhase(t, r.pool, phase.Accepting)
+	if result := signsOff(t, r.pool, r.engine, "LEGION-208"); result.Refusal != nil {
+		t.Fatalf("the owner's sign-off was refused: %+v", result.Refusal)
+	}
+	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Retro, Reason: record.HoldForCI}) {
+		t.Fatalf("LEGION-208 after the sign-off stands in %s with hold %+v, want held at its end for its CI", issue.Phase, issue.Hold)
+	}
+
+	r.states(headOne, 3, ofSet(inCI(stateOf("k2", stateYes, "", "ci"), "success"), "k1", "k2"))
+	assertPhase(t, r.pool, phase.Retro)
 }
