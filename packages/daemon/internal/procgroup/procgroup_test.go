@@ -406,15 +406,30 @@ func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 // while it writes the index and removes it from its own signal handler; SIGKILL runs no handler, so
 // a git killed outright leaves that lock behind and every later git and jj of the repository fails
 // on it (dispatch://INFRA-3098). The child here stands in for that git: it takes a lock before it
-// reports that it is running, removes it on SIGTERM and leaves. The lock must be gone by the time
-// the run ends, and the run must end while the grace's clock has not moved at all, which is what
+// reports that it is running, and on SIGTERM it removes the lock and leaves, but only once the row
+// has written the let-go file its handler waits for. While it waits, the group outlives its
+// SIGTERM, so the stop's grace is pending on the fake clock and the row reads it there
+// (graceArmed). A grace that left the injected clock, such as a real timer or a real sleep of
+// StopGrace, is never armed there, so that wait fails and names the grace; a handler that left at
+// once would let such a grace still end the run, at the group's exit or a real second later. The
+// lock must be gone by the time the run ends, and the run must end while the grace's clock has not
+// moved at all: a stop that sat out its grace on the injected clock never returns, which is what
 // tells a grace that ends as soon as the group is gone from one slept in full on every stop.
 func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 	dir := t.TempDir()
 	ready, lock := filepath.Join(dir, "ready"), filepath.Join(dir, "index.lock")
-	child := startChild(t, `: >"$2"; trap 'rm -f "$2"; exit 0' TERM; : >"$1"; `+childLives, ready, lock)
+	letGo := filepath.Join(dir, "let-go")
+	// The handler's wait for letGo ($3) has no bound of its own: startChild kills the group once
+	// the test ends, so a row that fails before it lets the child go leaves nothing running.
+	child := startChild(t, `: >"$2"; trap 'until [ -e "$3" ]; do sleep 0.01; done; rm -f "$2"; exit 0' TERM; : >"$1"; `+childLives, ready, lock, letGo)
 
 	child.stop()
+	// The handler holds the group past its SIGTERM until the row lets it go, so the grace is
+	// armed on the fake clock from the moment the stop began.
+	child.graceArmed(t)
+	if err := os.WriteFile(letGo, nil, 0o600); err != nil {
+		t.Fatalf("let the child's SIGTERM handler go: %v", err)
+	}
 	// The grace's fake clock never moves here, so a run that ends is one the group's own exit
 	// ended, not the grace running out.
 	err := child.wait(t)
