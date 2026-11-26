@@ -3,6 +3,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   CellLine,
   DispatchProxyLine,
+  ForwardReadings,
   Judgment,
   LaunchAnswer,
   LaunchRequest,
@@ -12,6 +13,10 @@ import {
   PlansAnswerSource,
   PodCallLine,
   parseManifest,
+  RigDaemonReady,
+  RigDaemonRecord,
+  RigDaemonRequest,
+  RigDaemonStatus,
   RunRow,
   Score,
   type ScoreClause,
@@ -619,6 +624,132 @@ test("a plans-answer source parses, and one with a short sha256 or an unknown fi
     parsing({
       "a short sha256": [PlansAnswerSource, { ...source, sha256: SHA256.slice(1) }],
       "an unknown field": [PlansAnswerSource, { ...source, project: "DEMO" }],
+    })
+  ).toEqual([]);
+});
+
+const RIG_DAEMON_REQUEST = {
+  moment: "retro",
+  role: "implementer",
+  issue: "ACME-1",
+  steps: ["implementer", "reviewer", "acceptance:owner"],
+  world: "/work/worlds/forward-only/retro-defect",
+  dispatchUrl: "http://127.0.0.1:4100",
+  dispatchTokenFile: "/work/run/dispatch-token",
+  envoyUrl: "http://127.0.0.1:4200",
+  natsUrl: "nats://127.0.0.1:4222",
+  postgresUrl: "postgres://ci@127.0.0.1:5432/rig",
+  ghLog: "/work/run/gh.jsonl",
+  omp: "/work/bin/omp",
+  home: "/work/run/home",
+  profile: "/work/run/profile",
+  paneLogs: "/work/run/panes",
+  paneDaemon: "label",
+};
+const RIG_DAEMON_READY = {
+  daemonUrl: "http://127.0.0.1:4300",
+  claim: "claim-1",
+  session: "session-2",
+  replaced: "session-1",
+  generation: 1,
+  head: COMMIT,
+  systemPrompt: "/work/run/prompt.md",
+  sessionDir: "/work/run/home/.omp/agent/sessions",
+};
+const RIG_DAEMON_STATUS = {
+  at: AT,
+  paneAlive: true,
+  turn: "idle",
+  activity: { backgroundWork: { running: false }, phase: { nextReminderAt: null } },
+};
+const RIG_DAEMON_RECORD = {
+  issue: "ACME-1",
+  phase: "merging",
+  generation: 1,
+  calls: [
+    {
+      at: AT,
+      method: "POST",
+      path: "/legion/v1/defects/report",
+      status: 200,
+      body: { issue: "ACME-1" },
+      answer: { defect: "d-1", state: "recorded", nextChange: 1 },
+    },
+  ],
+  defects: [
+    {
+      id: "d-1",
+      text: "src/config.ts loadConfig returns DEFAULTS on a parse error",
+      role: "implementer",
+      head: COMMIT,
+      generation: 1,
+      carriedBy: null,
+      withdrawn: null,
+    },
+  ],
+  steps: [
+    { task: "t1", step: 1, kind: "implementer", role: "implementer", attempt: 1, result: "passed" },
+  ],
+};
+const FORWARD_READINGS = {
+  messages: [{ index: 3, item: 1, verdict: "no", reader: "reader-1", model: "claude-opus-5-5" }],
+};
+
+test("each file of the label's daemon in the rig parses, and one with an extra key does not", () => {
+  expect(
+    parsing({
+      request: [RigDaemonRequest, RIG_DAEMON_REQUEST],
+      "request, the intercept control": [
+        RigDaemonRequest,
+        { ...RIG_DAEMON_REQUEST, paneDaemon: "intercept-report" },
+      ],
+      ready: [RigDaemonReady, RIG_DAEMON_READY],
+      "ready at a first launch": [RigDaemonReady, { ...RIG_DAEMON_READY, replaced: null }],
+      status: [RigDaemonStatus, RIG_DAEMON_STATUS],
+      "status before a turn ended": [RigDaemonStatus, { ...RIG_DAEMON_STATUS, activity: null }],
+      record: [RigDaemonRecord, RIG_DAEMON_RECORD],
+      readings: [ForwardReadings, FORWARD_READINGS],
+    })
+  ).toEqual([
+    "request",
+    "request, the intercept control",
+    "ready",
+    "ready at a first launch",
+    "status",
+    "status before a turn ended",
+    "record",
+    "readings",
+  ]);
+  expect(
+    parsing({
+      request: [RigDaemonRequest, { ...RIG_DAEMON_REQUEST, model: "claude-opus-5-5" }],
+      "request, another daemon": [RigDaemonRequest, { ...RIG_DAEMON_REQUEST, paneDaemon: "standin" }],
+      "request without its moment": [RigDaemonRequest, without(RIG_DAEMON_REQUEST, "moment")],
+      ready: [RigDaemonReady, { ...RIG_DAEMON_READY, pid: 7 }],
+      "ready, a short head": [RigDaemonReady, { ...RIG_DAEMON_READY, head: COMMIT.slice(1) }],
+      status: [RigDaemonStatus, { ...RIG_DAEMON_STATUS, phase: "retro" }],
+      record: [RigDaemonRecord, { ...RIG_DAEMON_RECORD, closed: false }],
+      "record, a call with an extra key": [
+        RigDaemonRecord,
+        { ...RIG_DAEMON_RECORD, calls: [{ ...RIG_DAEMON_RECORD.calls[0], session: "s" }] },
+      ],
+      "record, a defect with an extra key": [
+        RigDaemonRecord,
+        { ...RIG_DAEMON_RECORD, defects: [{ ...RIG_DAEMON_RECORD.defects[0], kind: "defect" }] },
+      ],
+      "record, a step with an extra key": [
+        RigDaemonRecord,
+        { ...RIG_DAEMON_RECORD, steps: [{ ...RIG_DAEMON_RECORD.steps[0], model: "m" }] },
+      ],
+      readings: [ForwardReadings, { ...FORWARD_READINGS, run: "r1" }],
+      "readings, item 3": [
+        ForwardReadings,
+        { messages: [{ ...FORWARD_READINGS.messages[0], item: 3 }] },
+      ],
+      "readings, a message with an extra key": [
+        ForwardReadings,
+        { messages: [{ ...FORWARD_READINGS.messages[0], why: "it asks" }] },
+      ],
     })
   ).toEqual([]);
 });
