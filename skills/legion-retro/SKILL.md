@@ -63,7 +63,8 @@ A refusal of `report_defect` is a step that failed: stop as *When retro stops* s
      name the check's block id in the reason.
 
    - With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
-     For a thread that needs a fix, `request_backward_move` with `to: implementing`, the thread's URL in its `reason`.
+     For a thread that needs a fix, call `report_defect` with the thread's URL in its `defect`.
+     Reply `Reported as defect <id>: <one line>` on the thread, with the id that the call answered, and resolve it.
 
 2. **Get a second reading.**
    First list in your session the constraints the issue did not state, choices between two working options, abandoned approaches and reusable code.
