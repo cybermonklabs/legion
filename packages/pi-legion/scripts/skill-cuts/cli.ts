@@ -4558,7 +4558,7 @@ async function continueMixedCommand(
   const unheld = [...(o.only ?? [])].filter((each) => !held.has(each));
   if (unheld.length > 0) {
     throw new Refused(
-      `--only ${onlyFile} names stages no case result of ${r.casesFile} under ${from} holds: ${unheld.map((each) => each.replace("\t", " ")).join(", ")}`
+      `--only ${onlyFile} names stages no case result of ${r.casesFile} under ${from} holds: ${unheld.map((each) => each.replaceAll("\t", " ")).join(", ")}`
     );
   }
   for (const out of new Set(checked.map((each) => each.out))) {
