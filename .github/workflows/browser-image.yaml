@@ -63,13 +63,13 @@ jobs:
     # single ladder, the package set's `apt-get install` at 5 x 300 + 150 = 1650 s, and
     # install-crane's one `ci_tools_fetch`, 1708 s, which is above the record step's two `crane
     # manifest` reads at 2 x (5 x 60 + 150) = 900 s and the decide step's one `crane config`
-    # read of 450 s. The job holds that step AND the 134 s measured above it, so its key is
-    # the two together, 134 + 2460 = 2594 s -> 44 min, which is also one minute above the
-    # report step's own 43, since a job ceiling equal to a step's ceiling cuts that step
-    # before its budget can name the site, which rule 8 refuses since dispatch://INFRA-1545. A
-    # run whose row already names a served digest skips the buildx, login and build steps and
-    # their post steps, 61 s of those 74, and is left with about 13 s of work.
-    timeout-minutes: 44
+    # read of 450 s. The job holds that step at its rounded 43-minute (2580 s) limit AND the
+    # 134 s measured above it, so its key is the two together, 134 + 2580 = 2714 s -> 46 min.
+    # Derived from the unrounded 2460 s arithmetic (44 min), 134 s of build steps left only
+    # 2506 s before the job cut the 2580 s report step (dispatch://INFRA-1545, round 69). A run
+    # whose row already names a served digest skips the buildx, login and build steps and their
+    # post steps, 61 s of those 74, and is left with about 13 s of work.
+    timeout-minutes: 46
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of
