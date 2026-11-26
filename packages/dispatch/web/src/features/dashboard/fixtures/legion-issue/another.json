@@ -3,7 +3,7 @@
   "project": "ACME",
   "configured": true,
   "state": {
-    "phase": "parked",
+    "phase": "unknown_state",
     "phase_since": "2026-11-25T14:04:47.054501Z",
     "phase_start_seen": false,
     "roles": [{ "role": "architect", "state": "working" }, { "role": "planner", "state": "idle" }],

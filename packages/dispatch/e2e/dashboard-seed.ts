@@ -141,7 +141,7 @@ export async function mainHolds(): Promise<MainHolds> {
 
 /** A phase the daemon's list does not hold, for the row that reads "In another phase", and a
  *  claim state it does not hold, for the role that reads "in another state". */
-export const UNLISTED = "parked";
+export const UNLISTED = "unknown_state";
 
 /** A phase as the sampler stores it: the daemon's own word (`LEGION_PHASES`); `awaiting_merge`,
  *  which a daemon before its contract 86 reports and Dispatch still names

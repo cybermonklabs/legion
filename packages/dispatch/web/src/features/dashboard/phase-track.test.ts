@@ -96,7 +96,7 @@ const PHASE_TABLE: readonly PhaseRow[] = [
   {
     body: another,
     configured: true,
-    phase: "parked",
+    phase: "unknown_state",
     row: "another",
     track: { words: PHASE_WORDS.another },
   },
