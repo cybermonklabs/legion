@@ -1695,7 +1695,7 @@ func exchangeAccountIssuers(setting, text string, form exchangeIssuerForm, names
 // issuer names (sessionNamesIssuers), which it would write under as a session while taking the
 // first issuer alone: the refusal names the session the entry reads and says where its issuers go,
 // form.afterEmptySession. parseExchangeAccounts and parseExchangeJobAccounts share it, so both
-// settings refuse such an entry in the same words.
+// settings refuse such an entry in one sentence, each naming its own form.
 func exchangeEntryIssuers(setting, text, session string, form exchangeIssuerForm, names []string, issuers, exchangeTakes []oidc.NamedIssuer) ([]string, error) {
 	if names == nil && sessionNamesIssuers(session, issuers) {
 		return nil, fmt.Errorf(`%s gives the entry %q no issuer field, so the entry reads %q, which names issuers of BROKER_K8S_OIDC_ISSUER, as its session: write its issuers in %s, or, for a session of that text, write the issuer field after it`, setting, text, session, form.afterEmptySession)
